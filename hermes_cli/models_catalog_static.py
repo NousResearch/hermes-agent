@@ -149,7 +149,13 @@ def _xai_curated_models() -> list[str]:
 _OPENAI_CHAT_MODELS = [
     "gpt-5.4", "gpt-5.4-mini", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
 ]
-_MINIMAX_MODELS = ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"]
+_MINIMAX_MODELS = [
+    # The live catalog (https://api.minimax.io/v1/models) is the authority; this is the offline
+    # floor. ``MiniMax-M3.1-Flash`` is the current flagship; the ``-highspeed`` variants and
+    # every later release reach the picker through the live catalog (#142648).
+    "MiniMax-M3.1-Flash", "MiniMax-M3",
+    "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2",
+]
 _TENCENT_MODELS = ["hy4-preview", "hy3", "hy3-preview"]
 # Alibaba DashScope Coding platform (coding-intl): Qwen + third-party (GLM, Kimi, MiniMax, DeepSeek).
 # Classic DashScope keys should override DASHSCOPE_BASE_URL to

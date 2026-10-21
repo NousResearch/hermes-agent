@@ -1951,7 +1951,7 @@ def dispatch_once(
         from hermes_cli import kanban_pause as _pause
     except ImportError:  # pragma: no cover - packaging accident
         _pause = None
-    if _pause is not None and _pause.is_paused(board):
+    if _pause is not None and _pause.is_paused_for(conn):
         return DispatchResult(paused=True)
 
     def _locked_tick() -> DispatchResult:

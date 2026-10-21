@@ -858,6 +858,8 @@ export interface ImageGenerateParams {
   aspect_ratio?: string | null
   probe?: unknown | null
   max_bytes?: number | null
+  profile?: string | null
+  session_id?: string | null
 }
 /** ``probe`` answers ``{available}`` alone; ``image_data`` (data URL) is omitted when the download failed or exceeded ``max_bytes`` so callers fall back to ``image``. */
 export interface ImageGenerateResult {

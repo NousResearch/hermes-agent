@@ -1,8 +1,9 @@
 // Git ops backing the coding rail + Codex-style review pane. Built on `simple-git`
 // (a maintained wrapper around the system git binary — same git the rest of the
-// app shells to, no native build) so we read structured status()/diffSummary()
-// results instead of hand-parsing porcelain. Reads degrade to null/empty on a
-// non-repo / remote backend; mutations reject so the renderer can toast.
+// app shells to, no native build) so we read structured status() results instead
+// of hand-parsing porcelain; per-file +/- come from `diff --numstat -z`. Reads
+// degrade to null/empty on a non-repo / remote backend; mutations reject so the
+// renderer can toast.
 
 import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
@@ -112,42 +113,41 @@ function gitFor(cwd, gitBin) {
   }
 }
 
-// simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
-// to the NEW path so the row addresses the real file for diff/stage.
-function resolveRenamePath(raw) {
-  const path = String(raw || '').trim()
+// `git diff --numstat -z` rows keyed by the LITERAL path status() reports.
+// simple-git's diffSummary() parses `--stat` text, where git C-quotes
+// non-ASCII names ("caf\303\251.txt") and prints renames as `old => new`, so
+// those rows never matched a status() path and showed +0/-0. A rename is an
+// empty path field followed by the old and new path records.
+type NumstatRow = { path: string; added: number; removed: number }
 
-  if (!path.includes(' => ')) {
-    return path
+async function numstat(git, args): Promise<NumstatRow[]> {
+  const records = String(await git.raw(['diff', '--numstat', '-z', ...args])).split('\0')
+  const rows: NumstatRow[] = []
+
+  for (let i = 0; i < records.length; i++) {
+    const parts = records[i].split('\t')
+
+    if (parts.length < 3) {
+      continue
+    }
+
+    const [added, removed] = parts.slice(0, 2).map(n => (n === '-' ? 0 : Number(n) || 0))
+    let file = parts.slice(2).join('\t')
+
+    if (!file) {
+      file = records[i + 2] ?? ''
+      i += 2
+    }
+
+    rows.push({ path: file, added, removed })
   }
 
-  const brace = path.match(/^(.*)\{(.*) => (.*)\}(.*)$/)
-
-  if (brace) {
-    const [, prefix, , to, suffix] = brace
-
-    return `${prefix}${to}${suffix}`.replace(/\/{2,}/g, '/')
-  }
-
-  return path.split(' => ').pop().trim()
+  return rows
 }
 
-// DiffResult.files → Map<path, {added, removed}> (binary files carry no line
-// delta).
-function countsByPath(summary) {
-  const map = new Map()
+const countsByPath = (rows: NumstatRow[]) => new Map(rows.map(row => [row.path, { added: row.added, removed: row.removed }]))
 
-  for (const file of summary.files) {
-    map.set(resolveRenamePath(file.file), {
-      added: file.binary ? 0 : file.insertions,
-      removed: file.binary ? 0 : file.deletions
-    })
-  }
-
-  return map
-}
-
-// Untracked files don't appear in diffSummary(); count insertions from disk so
+// Untracked files don't appear in numstat; count insertions from disk so
 // the review tree can show +N for new files (matches an all-add diff view).
 // Insertions = line count: newline bytes, plus one for a final unterminated
 // line. Binary (NUL byte) → 0, mirroring git numstat's "-".
@@ -304,15 +304,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       }
 
       const range = scope === 'branch' ? `${base}...HEAD` : base
-      const summary = await git.diffSummary([range])
 
-      const files = summary.files.slice(0, REVIEW_FILE_CAP).map(file => ({
-        path: resolveRenamePath(file.file),
-        added: 'insertions' in file ? file.insertions : 0,
-        removed: 'deletions' in file ? file.deletions : 0,
-        status: 'M',
-        staged: false
-      }))
+      const files = (await numstat(git, [range]))
+        .slice(0, REVIEW_FILE_CAP)
+        .map(row => ({ ...row, status: 'M', staged: false }))
 
       // "Last turn" also surfaces files created since the baseline (untracked).
       if (scope === 'lastTurn' && files.length < REVIEW_FILE_CAP) {
@@ -347,15 +342,15 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       // every descendant. The result is also capped before per-file stat/read
       // work and before crossing the Electron IPC boundary.
       git.status(['--untracked-files=normal']),
-      git.diffSummary(['--cached']),
-      git.diffSummary([])
+      numstat(git, ['--cached']),
+      numstat(git, [])
     ])
 
     const stagedCounts = countsByPath(staged)
     const unstagedCounts = countsByPath(unstaged)
 
     const files = status.files.slice(0, REVIEW_FILE_CAP).map(file => {
-      const filePath = resolveRenamePath(file.path)
+      const filePath = file.path
       const sc = stagedCounts.get(filePath) || { added: 0, removed: 0 }
       const uc = unstagedCounts.get(filePath) || { added: 0, removed: 0 }
 
@@ -869,7 +864,6 @@ export {
   fileDiffVsHead,
   gitFor,
   repoStatus,
-  resolveRenamePath,
   REVIEW_FILE_CAP,
   reviewCommit,
   reviewCommitContext,

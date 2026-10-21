@@ -32,6 +32,7 @@ class TrustedTurnOrigin:
     kind: str
     platform: str
     profile: str | None
+    transport_profile: str | None
     workspace_id: str | None
     channel_id: str
     user_id: str | None
@@ -97,7 +98,42 @@ def _binding(event):
             source.user_id, source.thread_id, event.message_id]
 
 
-def capture_origin_claim(runner, event):
+def _pinned_transport_profile(source):
+    from gateway.session_identity import identity_of
+    identity = identity_of(source)
+    if identity is None or identity.transport_inferred:
+        return None
+    if (not isinstance(identity.transport_profile, str) or not identity.transport_profile
+            or source.profile is not None and identity.runtime_profile != source.profile):
+        return None
+    return identity.transport_profile
+
+
+def _native_transport_profile(runner, source, provenance):
+    """Use the receiving connector's verified provenance, not the runtime route."""
+    from gateway.session_identity import identity_of
+    identity = identity_of(source)
+    pinned = _pinned_transport_profile(source)
+    if identity is not None and not identity.transport_inferred and pinned is None:
+        raise RuntimeStoreError("profile_mismatch", field="transport_profile")
+    multiplexed = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
+    if multiplexed and not isinstance(provenance, dict):
+        return None  # native validation rejects this admission separately
+    if isinstance(provenance, dict) and "transport_profile" in provenance:
+        value = provenance["transport_profile"]
+        if value is not None and (not isinstance(value, str) or not value):
+            raise RuntimeStoreError("invalid_params", field="transport_profile")
+        name = value or getattr(runner, "_primary_profile_name", None) or "default"
+    elif multiplexed:
+        name = None
+    else:
+        name = pinned or getattr(runner, "_primary_profile_name", None) or "default"
+    if pinned is not None and name is not None and pinned != name:
+        raise RuntimeStoreError("profile_mismatch", field="transport_profile")
+    return name
+
+
+def capture_origin_claim(runner, event, *, provenance=None, native=False):
     """Snapshot a plugin's narrow event projection before the first admission await."""
     if event.internal or event.source is None:
         return None
@@ -118,20 +154,26 @@ def capture_origin_claim(runner, event):
         raise RuntimeStoreError("permission_denied", field="origin_projector") from exc
     if not valid:
         raise RuntimeStoreError("invalid_params", field="origin_claim")
+    transport_profile = (_native_transport_profile(runner, event.source, provenance)
+                         if native else _pinned_transport_profile(event.source))
     return _json_claim({"version": TRUSTED_TURN_ORIGIN_API_VERSION,
                         "plugin": plugin_id, "platform": event.source.platform.value,
-                        "binding": _binding(event), "claim": detached})
+                        "binding": _binding(event), "transport_profile": transport_profile,
+                        "claim": detached})
 
 
-def restore_origin_claim(runner, event, projected):
+def restore_origin_claim(runner, event, projected, *, provenance=None):
     """Reject an invalid or unavailable projector instead of trusting a stored claim."""
     projected = _json_claim(projected)
-    if not isinstance(projected, dict) or set(projected) != {"version", "plugin", "platform", "binding", "claim"}:
+    if not isinstance(projected, dict) or set(projected) != {
+        "version", "plugin", "platform", "binding", "transport_profile", "claim"
+    }:
         raise RuntimeStoreError("invalid_params", field="origin_claim")
     if (type(projected["version"]) is not int
             or projected["version"] != TRUSTED_TURN_ORIGIN_API_VERSION
             or projected["platform"] != event.source.platform.value
             or projected["binding"] != _binding(event)
+            or projected["transport_profile"] != _native_transport_profile(runner, event.source, provenance)
             or event.internal):
         raise RuntimeStoreError("invalid_params", field="origin_claim")
     projector = _projector(runner, event.source)
@@ -145,7 +187,8 @@ def restore_origin_claim(runner, event, projected):
     if not valid:
         raise RuntimeStoreError("permission_denied", field="origin_claim")
     event._trusted_origin_claim = {"plugin": projector[0], "claim": detached,
-                                   "binding": _binding(event)}
+                                   "binding": _binding(event),
+                                   "transport_profile": projected["transport_profile"]}
 
 
 def origin_for_event(runner, event, source):
@@ -172,16 +215,37 @@ def origin_for_event(runner, event, source):
         projected = capture_origin_claim(runner, event)
         stored = None if projected is None else {"plugin": projected["plugin"],
                                                   "claim": projected["claim"],
-                                                  "binding": projected["binding"]}
+                                                  "binding": projected["binding"],
+                                                  "transport_profile": projected["transport_profile"]}
     if stored is not None and (not isinstance(stored, dict)
                                or stored.get("binding") != _binding(event)):
+        return None
+    from gateway.session_identity import identity_of
+    pinned_transport = _pinned_transport_profile(inbound)
+    identity = identity_of(inbound)
+    if identity is not None and not identity.transport_inferred and pinned_transport is None:
+        return None
+    if (stored is not None and pinned_transport is not None
+            and stored.get("transport_profile") != pinned_transport):
         return None
     claims = {} if stored is None else {stored["plugin"]: stored["claim"]}
     return TrustedTurnOrigin(
         kind="gateway", platform=inbound.platform.value, profile=inbound.profile,
+        transport_profile=(stored["transport_profile"] if stored is not None else pinned_transport),
         workspace_id=inbound.scope_id, channel_id=inbound.chat_id, user_id=inbound.user_id,
         message_ts=str(event.message_id) if event.message_id is not None else None,
         thread_ts=str(inbound.thread_id) if inbound.thread_id is not None else None,
         admission_id=getattr(event, "_native_admission_id", None),
         admitted=True, internal=False, claims=_freeze(claims),
     )
+
+
+class GatewayOriginTurnMixin:
+    """Bind current origin around one agent execution, including queued recursion."""
+
+    async def _run_agent(self, message, context_prompt, history, source, session_id, *, turn_event=None,
+                         **turn_kwargs):
+        with self._profile_scope_for_source(source), bind_turn_origin(
+            origin_for_event(self, turn_event, source)
+        ):
+            return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)

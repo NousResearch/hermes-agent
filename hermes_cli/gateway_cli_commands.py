@@ -70,8 +70,12 @@ def _discard(cli, connection, cmd):
             _cprint(f"  /discard: {len(lost)} lost turn(s) here ({ids}); this session is not interactive,"
                     " so name the admission id(s) to discard: /discard <id>")
             return True
-        _cprint(f"  This discards {len(lost)} lost turn(s) ({ids}) without replaying them.")
-        if input("  Proceed? [y/N] ").strip().lower() not in {"y", "yes"}:
+        # The composer's modal, not input(): a raw read races prompt_toolkit for stdin (cli_modal_mixin).
+        choices = [("once", "Discard", "acknowledge without replaying"), ("cancel", "Keep", "leave the session paused")]
+        raw = cli._prompt_text_input_modal(
+            title="Discard lost turns?", detail=f"{len(lost)} lost turn(s): {ids}. They will not be replayed.",
+            choices=choices)
+        if cli._normalize_slash_confirm_choice(raw, choices) != "once":
             _cprint("  Nothing discarded.")
             return True
     for row in lost:

@@ -216,6 +216,12 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "didn't answer and retrying won't help. Check the account with the provider, or switch "
         "models with /model."
     ),
+    FailoverReason.data_policy_denied.value: (
+        "This conversation holds a result from a connected app that may only go to a model that "
+        "does not train on your data, and '{model}' on {label} can't promise that. Switch models "
+        "with /model, run /compress to summarize the result away, or start fresh with /new. If you "
+        "are on the free tier, no free model can take this content: upgrade, or use /compress or /new."
+    ),
     FailoverReason.upstream_blocked.value: (
         "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
@@ -260,6 +266,9 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (
         "the AI model service refused the request because of a policy on the account"
+    ),
+    FailoverReason.data_policy_denied.value: (
+        "{possessive} context holds a connected-app result that needs a model that does not train on data"
     ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",

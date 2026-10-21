@@ -47,7 +47,22 @@ The choice is stored per install under `update.installs` in `config.yaml`. An
 install that never chose a channel only moves forward: a checkout already newer
 than the latest release (for example one that tracked `main` before this default)
 stays where it is until a newer release ships. Running `--set-channel stable`
-pins the checkout to the exact release commit, even when that is older.
+pins the checkout to the exact release commit, even when that is older; the
+Desktop names that move as a rollback to the release, and `hermes update --check`
+says the checkout is newer, instead of announcing a new update.
+
+The installers (`install.sh`, `install.ps1` and Hermes-Setup) put a new install
+on the latest stable release too. Re-running one over an install that never
+chose a channel moves it onto that release only when the release descends from
+its checkout. Any other checkout (one that followed `main`, or one already past
+the release) stays where it is, and `hermes update` decides that move: it refuses
+a release that predates the session stores the checkout already uses. Over an
+install that chose a channel other than `main`, a rerun keeps its checkout where
+it is: only `hermes update` moves it.
+To install the tip of `main` instead, pass `--channel main` (`-Channel main`
+for `install.ps1`, or set `HERMES_INSTALL_CHANNEL=main` before an
+`irm | iex` one-liner); the installer saves that choice the way
+`hermes update --set-channel main` does. An explicit `--commit` pin still applies.
 Windows Store, MSIX and bundled desktop installs are unaffected; their channel
 is baked into the package (see below).
 
@@ -132,6 +147,57 @@ On Linux and macOS, `hermes update` stops every gateway running from this instal
 - The pause never blocks an update. If it cannot list, record or stop the gateways, it restarts anything it stopped, says so, and the update continues the way it did before the pause existed: gateways run through the swap and are restarted afterwards.
 
 Windows already paused its gateways before the update (they lock files the dependency sync replaces) and restarts them once the update completes, after the builds.
+
+### Upgrading to the gateway-owned session runtime
+
+From this release one gateway per host owns every local session (CLI, TUI, Desktop,
+API, ACP, cron, Bot Chat). What an existing install sees on its first update:
+
+- **`cron.bot_chat_delivery_timeout_seconds` is retired.** Bot Chat deliveries are
+  admitted to the target profile's running gateway and tracked by receipt; there is no
+  cron-side turn left to time out. Config migration v51 removes the key with a one-time
+  note (also from an unversioned `config.yaml`). Without a running gateway the run is
+  recorded `delivery_failed`; it is not redelivered automatically.
+- **Legacy Bot Chat pending records** (`cron/bot_chat_pending/*.json`, left by the
+  retired `hermes chat` delivery lane) are handed to the target's live owner on later
+  scheduler ticks under their own IDs. A `claimed` record was an uncertain CLI turn and
+  is never resent. Records are kept with their final status as evidence.
+- **Work interrupted by the cutover restart is never replayed.** On the first gateway
+  start, an input that was mid-turn (`started`) and any managed worker that was running
+  become `unknown`; queued inputs behind it wait. Inspect the session, then acknowledge
+  with `/discard <admission_id>` in `hermes chat` (or the Desktop/TUI equivalent), or from a
+  script with `hermes sessions discard <session> --yes`, before later inputs run. A cron delivery a gateway had claimed but not finished is likewise
+  fenced `unknown` and recorded `delivery_failed`.
+- **Rolling back is unsupported once the new gateway has written `state.db`.** See
+  [Rolling back to an older release](#rolling-back-to-an-older-release).
+
+### Rolling back to an older release
+
+An older release cannot run on a `state.db` the gateway runtime has written. Each place
+that could do it refuses instead of corrupting history:
+
+- **`hermes update`** refuses a target (`--branch`, a channel switch, a pinned release)
+  that predates the gateway runtime while any profile's `state.db` holds gateway runtime
+  history. It stops before touching the checkout, lists the affected stores and the way
+  back.
+- **An older release run on the upgraded store** (a hand `git checkout` of an old tag)
+  cannot delete or prune sessions with gateway runtime history. `hermes sessions delete`
+  and `prune` stop with `Refused to delete a session that has gateway runtime history`.
+  Older releases still print this inside a traceback, and `prune` rolls back its whole
+  batch.
+- **A running gateway** whose checkout is moved back to such a release stops itself
+  within about 30 seconds, so the older release can start its own.
+
+To go back anyway, restore the state from before the update instead of running the
+older release on the upgraded database:
+
+1. `hermes gateway stop`
+2. Check out the older release.
+3. Restore the newest pre-update snapshot (`/snapshot restore <id>`), or a full backup
+   taken with `hermes update --backup` (`hermes import <backup.zip>`). Quick snapshots
+   skip a `state.db` larger than 1 GiB; large stores need the full backup.
+
+Sessions and messages created after the update are not in that snapshot.
 
 ### Why the gateway restart can take a while
 

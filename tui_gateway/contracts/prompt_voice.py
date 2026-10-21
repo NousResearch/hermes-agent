@@ -43,6 +43,7 @@ class PromptSubmitParams(SessionParams):
     truncate_before_message_id: str | None = None
     confirm_truncate: bool | None = None
     confirm_empty_truncate: bool | None = None
+    confirm_deep_truncate: bool | None = None  # send when the cut archives >1 user turn (enforced next release)
     rebind_survivor_row_ids: list[int] | None = None
     # In-process only: injected by the hosted-room / bot-relay handlers, never accepted from a
     # client (a client dict for ``_turn_author`` answers 4124). Excluded from the rendered wire.
@@ -72,6 +73,10 @@ class PromptSubmitResult(Result):
     survivor_user_row_ids: list[int | None] | None = None
     survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None
+    # RT-37: the gateway's durable ledger held work for this session, so the prompt was admitted into
+    # the OWNER's FIFO (``status: queued``) and runs there after the current turn; nothing runs here.
+    admission_id: str | None = None
+    forwarded: bool | None = None
 
 
 method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,

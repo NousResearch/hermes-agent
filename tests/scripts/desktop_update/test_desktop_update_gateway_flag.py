@@ -127,6 +127,19 @@ def test_every_owed_followup_reaches_the_desktop_result(tmp_path, step):
 
 
 @requires_posix_handoff
+def test_dashboard_only_gateway_restart_followup_gets_no_gateway_hint(tmp_path):
+    """#141071: the step id stays gateway_restart, but a restart owed only for a serve/dashboard unit
+    must not tell the user to run `hermes gateway restart`, which never touches that unit."""
+    line = ("  ⚠ Update follow-up 'gateway_restart' did not finish: serve/dashboard unit(s) hermes-dashboard were not"
+            " restarted onto the new code; see the systemctl advice above (the next launch retries it)")
+    _run_handoff(tmp_path, [], f"{line}\n✓ Update complete!")
+
+    result = json.loads((tmp_path / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert result["manual"] is True and "gateway_restart" in result["message"]
+    assert "hermes gateway restart" not in result["message"]
+
+
+@requires_posix_handoff
 def test_a_clean_update_stays_plain_success(tmp_path):
     _run_handoff(tmp_path, [], "✓ Update complete!")
 

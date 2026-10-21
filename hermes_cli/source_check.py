@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -227,6 +228,21 @@ def _unsupported_reason(stamp: dict, root: Path, *, explicit_root: bool, embedde
     return None
 
 
+def _installed_git(git: str) -> str:
+    """``git`` as given, unless it is a bare ``git`` PATH lacks: then the git ``hermes update`` runs.
+
+    A Windows source install's only git is often the copy install.ps1 staged in PM's store, which
+    is on PATH only inside ``hermes update`` (``expose_pm_git``). Desktop and the dashboard pass a
+    bare ``git`` there, it dies with WinError 2, and the check reports ``head-unavailable``, which
+    Desktop shows as "couldn't reach the update server" while ``hermes update`` works.
+    """
+    if git != "git" or shutil.which(git):
+        return git
+    from hermes_cli.update_pause_record import _git_executable
+
+    return _git_executable()
+
+
 def _read_checkout(root: Path, git: str, embedded: Optional[str]) -> _Checkout:
     # An embedded revision has no checkout to ask: it always tracks the official repository.
     head = embedded or _git_stdout(["rev-parse", "HEAD"], cwd=root, git=git)
@@ -293,6 +309,10 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
         # Forward-only pins the target to this checkout's own HEAD, newer than the release.
         # Always present: Desktop names the release only on an explicit False.
         result["aheadOfRelease"] = bool(getattr(source_target, "ahead", False))
+        # A release HEAD already contains moves the checkout back: Desktop names it a rollback,
+        # not a new update. Local ancestry only; an unknown relation stays an update.
+        result["rollback"] = bool(co.head and co.head != target and not co.embedded and _git_ok(
+            ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git))
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target
@@ -407,7 +427,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
         return {**result, "reason": "disabled"}
     channel = resolve_update_channel(config, root) if channel is None else validate_name(channel)
     forward_only = rides_default_channel(channel_record(config, root), channel, root)
-    co = _read_checkout(root, git, embedded)
+    co = _read_checkout(root, _installed_git(git), embedded)
     desktop_config = _read_json(branch_config_path) if branch_config_path else None
     configured_branch = _configured_branch(desktop_config)
     selected_branch = branch or configured_branch or _checked_out_branch(co.current_branch, "main")

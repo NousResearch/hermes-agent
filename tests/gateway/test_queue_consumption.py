@@ -292,15 +292,15 @@ class TestBusyInputModeQueueFifo:
         runner, adapter = self._make_runner_and_adapter()
         runner.config = SimpleNamespace(multiplex_profiles=True)
         runner._delivery_adapter_for = lambda source: adapter
-        session_key = "agent:brain:telegram:group:shared-room"
+        session_key = "agent:routed:telegram:group:shared-room"
         first = self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO, text="first")
         second = self._media_event("/tmp/b.jpg", "image/jpeg", MessageType.PHOTO, text="second")
-        for turn, bot in ((first, "peppy"), (second, "other-bot")):
+        for turn, bot in ((first, "relay-bot"), (second, "other-bot")):
             turn.source.chat_type = "group"
             turn.source.chat_id = "shared-room"
-            turn.source.profile = "brain"
+            turn.source.profile = "routed"
             turn.source._identity = RoutingIdentity(
-                transport_profile=bot, runtime_profile="brain", authorization_home=tmp_path,
+                transport_profile=bot, runtime_profile="routed", authorization_home=tmp_path,
                 runtime_home=tmp_path, multiplexed=True)
 
         runner._queue_or_replace_pending_event(session_key, first)

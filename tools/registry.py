@@ -267,6 +267,7 @@ _check_fn_core_drop_warned: set[tuple[Callable, Optional[str]]] = set()  # once-
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: set[Callable] = set()
+_EXPECTED_FALSE_CHECK_FNS: set[Callable] = set()
 _BROWSER_IDENTITY_KEYS = (
     "HERMES_SESSION_ID",
     "HERMES_BROWSER_CONTROL_PRINCIPAL",
@@ -276,6 +277,12 @@ _BROWSER_IDENTITY_KEYS = (
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
+    return fn
+
+
+def expected_false_check_fn(fn: Callable) -> Callable:
+    """Mark an availability check whose ``False`` result is a normal mode gate."""
+    _EXPECTED_FALSE_CHECK_FNS.add(fn)
     return fn
 
 
@@ -412,7 +419,11 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "so not searchable either); dependent tools will be unavailable this turn",
                 _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
         else:
-            log = logger.warning if exc_info else logger.info
+            log = (
+                logger.warning
+                if exc_info
+                else logger.debug if fn in _EXPECTED_FALSE_CHECK_FNS else logger.info
+            )
             log(
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)

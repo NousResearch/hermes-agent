@@ -52,7 +52,7 @@ def _kind(metadata: Any) -> Optional[str]:
 
 async def run_pre_send_hook(
     platform: str, chat_id: Any, text: str, *, reply_to: Optional[str], metadata: Any, kind: str,
-) -> Tuple[str, Optional[str]]:
+) -> tuple[str, Optional[str]]:
     """Return ``("send", text)`` (possibly rewritten) or ``("drop", reason)``."""
     try:
         from hermes_cli.lifecycle import ainvoke_hook, has_hook

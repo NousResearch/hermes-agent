@@ -354,7 +354,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
-from gateway.platforms.base_send_metadata import (  # noqa: F401 -- re-exported
+from gateway.platforms.base_send_metadata import (
     _mark_notify_metadata, _platform_name, _reply_anchor_for_event, _thread_metadata_for_event,
     _thread_metadata_for_source)
 from gateway.platforms.base_exec_approval import (

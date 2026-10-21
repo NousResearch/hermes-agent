@@ -26,7 +26,6 @@ export const itNotices = {
       'Questo server non ha potuto confermare l’invio precedente di questo messaggio, quindi potrebbe essere già stato elaborato. Controlla la conversazione prima di inviarlo di nuovo.',
     mcpReloadDeferred:
       'Questa chat è occupata: la modifica MCP si applica quando il turno in corso termina e MCP si ricarica, o alla riapertura della chat',
-    mcpReloadNotInChat: server => `${server} non è attivato in questa chat`,
     mcpReloadUnavailable: servers => `Connessione non riuscita: ${servers}`,
     sessionCommands: itSessionCommands,
     desktopCommands: itDesktopCommands

@@ -749,43 +749,6 @@ export const itWorkspace = {
     snippetsDesc: 'Scegli un prompt iniziale da inserire nella casella di composizione.',
     dropFiles: 'Rilascia i file per allegarli',
     dropSession: 'Rilascia per collegare questa chat',
-    mcpSuggestions: {
-      label: server => `Aggiungi ${server}`,
-      tip: keyword => `Suggerito perché hai menzionato "${keyword}" — clicca per connetterti`,
-      connecting: server => `Connessione a ${server}…`,
-      cancelTip: 'Clicca per annullare',
-      added: server => `${server} aggiunto`,
-      addedTip: 'Connesso — i suoi strumenti sono pronti in questa chat',
-      connectFailed: server => `Impossibile connettersi a ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Usa la skill: ${skill}`,
-      tip: skill => `Hai menzionato "${skill}" — clicca per iniziare con quella skill`,
-      done: skill => `Aggiunta /${skill}`,
-      doneTip: 'La skill viene caricata quando invii'
-    },
-    githubSuggestions: {
-      label: 'Configura GitHub',
-      tip: 'GitHub funziona qui tramite le skill della CLI gh: clicca per collegare il tuo account',
-      done: 'È stato aggiunto /github-auth',
-      doneTip: 'Invia il messaggio e l’agente ti guiderà per accedere a GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Riconnetti ${server}`,
-      tip: server => `Una chiamata a ${server} è appena fallita con un errore di connessione`,
-      working: server => `Riconnessione di ${server}…`,
-      workingTip: 'Clicca per annullare',
-      done: server => `${server} riconnesso`,
-      doneTip: 'Le nuove credenziali sono attive in questa chat',
-      failed: server => `Impossibile riconnettere ${server}`
-    },
-    cronSuggestions: {
-      label: 'Programma questo',
-      tip: phrase => `"${phrase}" sembra ricorrente — eseguilo invece con una pianificazione`,
-      prefix: 'Configuralo come attività pianificata:',
-      done: 'Contrassegnato per la pianificazione',
-      doneTip: 'Invialo e l’agente creerà l’attività'
-    },
     snippets: {
       codeReview: {
         label: 'Revisione del codice',

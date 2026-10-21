@@ -43,6 +43,9 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     assert context['board'] == 'owned' and context['claim_lock'] == task.claim_lock
     assert context['skills'] == ['owned-skill'] and context['goal_mode'] and context['goal_max_turns'] == 3
     assert context['accept_hooks'] is True and 'Goal criteria' in context['goal_text']
+    from gateway.session_local_recovery import local_identity
+    request_id = 'kanban:' + json.dumps(['owned', task.id, task.current_run_id], separators=(',', ':'))
+    assert context['session_id'] == local_identity(str(tmp_path), actor.subject, request_id)
     for changed in ({'run_id': task.current_run_id + 1}, {'board': 'foreign'}, {'claim_lock': 'forged'}, {'cwd': '/tmp'}):
         with pytest.raises(RuntimeStoreError):
             build_kanban_policy(connection, params | changed, config)
@@ -52,6 +55,57 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     from gateway.session_policy import build_policy
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
+
+
+def test_issue_artifact_context_uses_gateway_derived_session_id(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    from contextlib import closing
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    from gateway.session_contract import Principal
+    from gateway.session_local_recovery import local_identity
+    from gateway.session_kanban import build_kanban_policy
+
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
+    monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
+    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda _name: str(tmp_path))
+    workspace = tmp_path / 'issue-workspace'
+    workspace.mkdir()
+    kb.create_board('issue')
+    body = 'Write the requested result artifact.'
+    with closing(connect(board='issue')) as conn:
+        task_id = kb.create_task(
+            conn, title='Issue task', body=body, created_by='github:ISVGitHub/autonomous-entity#27',
+            assignee='default', workspace_kind='dir', workspace_path=str(workspace),
+            model_override='loop-model', provider_override='custom',
+        )
+        binding = {
+            'board': 'issue', 'executor_profile': 'default', 'comment_id': 81,
+            'task_sha256': hashlib.sha256(body.encode()).hexdigest(),
+            'result_files': ['CANARY_RESULT.json'],
+        }
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, 'github_task_binding', binding)
+        kb.recompute_ready(conn)
+        task = kb.claim_task(conn, task_id, claimer='gateway-test')
+
+    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor, native_owner=True)
+    params = {'board': 'issue', 'task_id': task.id, 'run_id': task.current_run_id, 'claim_lock': task.claim_lock}
+    policy, _secrets = build_kanban_policy(connection, params, {
+        'model': {'default': 'loop-model', 'provider': 'custom'},
+    })
+    context = json.loads(policy.kanban_json)
+    request_id = 'kanban:' + json.dumps(['issue', task.id, task.current_run_id], separators=(',', ':'))
+    assert task.session_id is None
+    assert context['session_id'] == local_identity(str(tmp_path), actor.subject, request_id)
+    assert 'session_id=' + context['session_id'] in context['context']
+    assert 'CANARY_RESULT.json' in context['context']
 
 
 @pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
@@ -121,7 +175,8 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
         kb.recompute_ready(conn)
         old = kb.claim_task(conn, task_id)
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
-    monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
+    monkeypatch.setattr('gateway.session_kanban._load_effective_gateway_config', lambda: config)
+    monkeypatch.setattr('gateway.session_kanban._resolve_effective_gateway_model', lambda config: 'loop-model')
     calls = []
     def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
         # Another process reclaims the task while the owner session is being created.

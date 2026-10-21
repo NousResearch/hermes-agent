@@ -237,3 +237,19 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
         lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
         lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
         lines.append("")
+
+
+def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
+    """Render the bounded task context through helpers in this module."""
+    task = _kb.get_task(conn, task_id)
+    if not task:
+        raise ValueError(f"unknown task {task_id}")
+    now = int(time.time())
+    lines: list[str] = []
+    _ctx_header(lines, task)
+    _ctx_attachments(lines, _kb.list_attachments(conn, task_id))
+    _ctx_prior_attempts(lines, conn, task_id, now)
+    _ctx_parent_results(lines, conn, task_id, now)
+    _ctx_role_history(lines, conn, task, now)
+    _ctx_comments(lines, _kb.list_comments(conn, task_id), now)
+    return "\n".join(lines).rstrip() + "\n"

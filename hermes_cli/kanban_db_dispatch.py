@@ -32,15 +32,6 @@ if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
 
-_ISSUE22_TASK_CREATED_BY = "github:ISVGitHub/autonomous-entity#22"
-
-
-def _is_issue22_bound_task(task: Task) -> bool:
-    """True only for the trusted Issue 22 task rows created by issue_ingress."""
-    from hermes_cli.issue_delivery import is_github_task
-    return is_github_task(task)
-
-
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2

@@ -627,18 +627,11 @@ def _ensure_pending_intake_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE issue22_pending_intakes ADD COLUMN {name} {declaration}")
 
 
-def _issue22_executor(config_path: Path) -> tuple[str, str]:
-    """Require one configured Hermes profile and its trusted persistent session id.
-
-    The active-session lease belongs to task execution, not durable admission. The
-    Kanban worker resumes this session and acquires Hermes' normal lease before its
-    first model turn.
-    """
+def _issue22_executor(config_path: Path) -> str:
+    """Resolve the configured Hermes profile; Gateway owns the run session."""
     cfg = load_config(config_path)
     profile = (cfg.issue_ingress_executor_profile or "").strip()
-    session_id = (cfg.issue_ingress_session_id or "").strip()
-    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", profile)
-            or (session_id and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", session_id))):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", profile):
         raise AdmissionRefused("TASK_EXECUTOR_NOT_CONFIGURED")
     try:
         from hermes_cli.profiles import resolve_profile_env
@@ -647,30 +640,7 @@ def _issue22_executor(config_path: Path) -> tuple[str, str]:
             raise FileNotFoundError(profile)
     except Exception as exc:
         raise AdmissionRefused("TASK_EXECUTOR_PROFILE_UNAVAILABLE") from exc
-    # Use native durable session creation; the worker acquires its own live lease.
-    # An ended explicit resume target is never silently revived here.
-    from hermes_state_registry import acquire as acquire_session_db
-    state_db_path = profile_home / "state.db"
-    if not state_db_path.is_file():
-        raise AdmissionRefused("TASK_EXECUTOR_SESSION_UNAVAILABLE")
-    session_db = None
-    try:
-        session_db = acquire_session_db(state_db_path)
-        if not session_id:
-            from hermes_state_ids import new_session_id
-            session_id = new_session_id()
-            session_db.create_session(session_id, source="kanban")
-        session = session_db.get_session(session_id)
-        if session is None or session.get("ended_at") is not None:
-            raise AdmissionRefused("TASK_EXECUTOR_SESSION_UNAVAILABLE")
-    except AdmissionRefused:
-        raise
-    except Exception as exc:
-        raise AdmissionRefused("TASK_EXECUTOR_SESSION_UNAVAILABLE") from exc
-    finally:
-        if session_db is not None:
-            session_db.close()
-    return profile, session_id
+    return profile
 
 
 def issue22_task_is_active(conn: sqlite3.Connection) -> bool:
@@ -733,7 +703,7 @@ def bind_next_pending_task(
                 raise AdmissionRefused("PENDING_COMMENT_CHANGED")
             if issue22_task_is_active(conn):
                 return {"verdict": "BUSY", "reason": "TASK_EXECUTOR_OCCUPIED"}
-            profile, session_id = _issue22_executor(config_path)
+            profile = _issue22_executor(config_path)
             binding_clock = current if now is not None else int(time.time())
             if int(row["expires_at"]) <= binding_clock:
                 raise AdmissionRefused("INTENT_EXPIRED_BEFORE_BINDING")
@@ -741,7 +711,7 @@ def bind_next_pending_task(
                 conn, title=title, body=intent.task_text,
                 created_by=f"github:{pins.repository}#{pins.issue_number}",
                 assignee=profile, workspace_kind="scratch", project_id="",
-                initial_status="ready", session_id=session_id, board="missions",
+                initial_status="ready", board="missions",
                 idempotency_key=f"github-issue:{pins.repository_id}:{pins.issue_number}:{intent.nonce}",
                 max_runtime_seconds=900, max_retries=1,
             )
@@ -749,8 +719,8 @@ def bind_next_pending_task(
                 "repository": pins.repository, "repository_id": pins.repository_id,
                 "issue_number": pins.issue_number, "comment_id": intent.comment_id,
                 "app_id": pins.app_id, "installation_id": pins.installation_id, "actor_id": pins.actor_id,
-                "nonce": intent.nonce, "executor_profile": profile,
-                "session_id": session_id, "recorded_at": current,
+                "nonce": intent.nonce, "executor_profile": profile, "board": "missions",
+                "recorded_at": current,
                 "task_sha256": hashlib.sha256(intent.task_text.encode("utf-8")).hexdigest(),
                 "result_files": list(pins.result_files),
             }
@@ -761,9 +731,9 @@ def bind_next_pending_task(
             )
             updated = conn.execute(
                 "UPDATE issue22_pending_intakes SET dispatch_state='queued',task_id=?, "
-                "session_id=?,executor_profile=?,bound_at=? WHERE repository_id=? "
+                "session_id=NULL,executor_profile=?,bound_at=? WHERE repository_id=? "
                 "AND issue_number=? AND nonce=? AND dispatch_state='awaiting_binding'",
-                (task_id, session_id, profile, current, pins.repository_id, pins.issue_number, intent.nonce),
+                (task_id, profile, current, pins.repository_id, pins.issue_number, intent.nonce),
             )
             if updated.rowcount != 1:
                 raise AdmissionRefused("PENDING_INTAKE_RACE")
@@ -842,13 +812,6 @@ def _publish_pending_task_result(
         "SELECT id,status,outcome,summary,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
         (pending["task_id"],),
     ).fetchone()
-    if task["status"] == "running":
-        delivered = conn.execute(
-            "SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='github_task_running' ORDER BY id DESC LIMIT 1",
-            (pending["task_id"], run["id"] if run else None),
-        ).fetchone()
-        if not delivered:
-            return None
     if task["status"] == "done" and (not run or run["outcome"] != "completed"):
         raise AdmissionRefused("TASK_COMPLETION_EVIDENCE_MISSING")
 
@@ -859,19 +822,30 @@ def _publish_pending_task_result(
     binding = _binding(conn, pending["task_id"])
     if any(binding.get(key) != getattr(pins, key) for key in (
         "repository_id", "issue_number", "app_id", "installation_id", "actor_id",
-    )):
+    )) or binding.get("comment_id") != pending["comment_id"]:
         raise AdmissionRefused("RESULT_TRUST_PINS_CHANGED")
+    owner = None
+    if run:
+        from hermes_cli.issue_delivery import canonical_owner_admission
+        try:
+            owner = canonical_owner_admission(conn, pending["task_id"], run["id"], binding)
+        except ValueError as exc:
+            if task["status"] == "running":
+                return None
+            if task["status"] == "done":
+                raise AdmissionRefused("TASK_OWNER_EVIDENCE_MISSING") from exc
+    session_id = owner["session_id"] if owner else None
     token = auth.get_token()
     if token.permissions.get("issues") != "write":
         raise AdmissionRefused("BRIDGE_ISSUES_WRITE_NOT_GRANTED")
     nonce = pending["nonce"]
     marker = f"<!-- hermes-issue22-task-result:{pending['comment_id']}:{nonce} -->"
     from hermes_cli.issue_delivery import evidence_summary
-    summary = (evidence_summary(run["metadata"], pending["task_id"], pending["session_id"], pending["comment_id"])
+    summary = (evidence_summary(run["metadata"], pending["task_id"], session_id, pending["comment_id"])
                if task["status"] == "done" else "Task blocked; review local run evidence.")
     if task["status"] == "running":
         marker = f"<!-- hermes-issue-task-running:{pending['comment_id']}:{run['id']} -->"
-        summary = "Worker acquired its owner lease and accepted the complete bound TASK; no completion claimed."
+        summary = "Gateway recorded canonical owner admission for this run; no completion claimed."
     body = "\n".join((
         "## Hermes TASK RESULT",
         f"issue_number: {pins.issue_number}",
@@ -879,7 +853,7 @@ def _publish_pending_task_result(
         f"status: {task['status']}",
         f"outcome: {json.dumps((run['outcome'] if run else None) or 'no_run')}",
         f"executor_profile: {json.dumps(pending['executor_profile'])}",
-        f"session_id: {json.dumps(pending['session_id'], ensure_ascii=False)}",
+        f"session_id: {json.dumps(session_id, ensure_ascii=False)}",
         f"summary: {json.dumps(summary, ensure_ascii=False)}",
         marker,
     ))
@@ -891,11 +865,15 @@ def _publish_pending_task_result(
             if not conn.execute("SELECT 1 FROM task_events WHERE task_id=? AND run_id=? AND kind='github_running_status'",
                                 (pending["task_id"], run["id"])).fetchone():
                 kanban_db._append_event(conn, pending["task_id"], "github_running_status",
-                                       {"comment_id": result_id}, run_id=run["id"])
+                                       {"comment_id": result_id, "session_id": session_id}, run_id=run["id"])
+            conn.execute(
+                "UPDATE issue22_pending_intakes SET session_id=? WHERE task_id=? AND session_id IS NULL",
+                (session_id, pending["task_id"]),
+            )
             if fence is not None:
                 fence.assert_current()
         return {"verdict": "ACK", "kind": "TASK", "state": "running", "issue_number": pins.issue_number,
-                "task_id": pending["task_id"], "session_id": pending["session_id"], "comment_id": result_id}
+                "task_id": pending["task_id"], "session_id": session_id, "comment_id": result_id}
 
     terminal_state = "done" if task["status"] == "done" else "blocked"
     if fence is not None:
@@ -912,9 +890,9 @@ def _publish_pending_task_result(
         if prior is not None and prior != result_id:
             raise AdmissionRefused("RESULT_COMMENT_CONFLICT")
         conn.execute(
-            "UPDATE issue22_pending_intakes SET task_result_comment_id=?,dispatch_state=? "
+            "UPDATE issue22_pending_intakes SET task_result_comment_id=?,dispatch_state=?,session_id=COALESCE(session_id,?) "
             "WHERE repository_id=? AND issue_number=? AND nonce=?",
-            (result_id, terminal_state, pending["repository_id"], pins.issue_number, nonce),
+            (result_id, terminal_state, session_id, pending["repository_id"], pins.issue_number, nonce),
         )
         if fence is not None:
             fence.assert_current()

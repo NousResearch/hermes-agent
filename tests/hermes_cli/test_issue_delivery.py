@@ -112,32 +112,7 @@ def test_nonce_cannot_change_kind(bridge):
     conn.close()
 
 
-def _canary_worker(task_id, home):
-    """Execute a fixed synthetic task using native Kanban/session APIs, with no LLM."""
-    os.environ["HERMES_HOME"] = home
-    from tests.waiting import wait_until
-    conn = kbc.connect(board="missions")
-    wait_until(lambda: kb.get_task(conn, task_id).worker_pid == os.getpid(), timeout=10)
-    task = kb.get_task(conn, task_id)
-    lease, refusal = sessions.try_acquire_active_session(session_id=task.session_id, surface="cli", config={})
-    if refusal or lease is None:
-        raise RuntimeError(str(refusal))
-    try:
-        from hermes_cli.issue_delivery import record_worker_delivery
-        record_worker_delivery(conn, task_id, task.session_id)
-        with pytest.raises(ValueError, match="missing workspace artifact"):
-            kb.complete_task(conn, task_id, result="Diagnostic placeholder", expected_run_id=task.current_run_id, fire_lifecycle_hook=False)
-        output = Path(task.workspace_path) / "CANARY_RESULT.json"
-        output.write_text(json.dumps({"task_id": task_id, "session_id": task.session_id,
-                                      "source_comment_id": 81, "result": 17 + 25}))
-        assert kb.complete_task(conn, task_id, result="Computed 42", expected_run_id=task.current_run_id,
-                                metadata={"artifacts": [str(output)]}, fire_lifecycle_hook=False)
-    finally:
-        lease.release()
-        conn.close()
-
-
-def test_source_task_worker_artifact_result_and_crash_recovery(bridge, monkeypatch, tmp_path):
+def test_source_task_uses_canonical_owner_session_for_artifacts_and_result(bridge, monkeypatch):
     from hermes_cli.issue_source_handlers import build_source_handlers
     _admit, poll = build_source_handlers(lambda: kbc.connect(board="missions"), bridge.cfg, enabled=True)
     queued = poll({})
@@ -145,27 +120,36 @@ def test_source_task_worker_artifact_result_and_crash_recovery(bridge, monkeypat
     conn = kbc.connect(board="missions")
     ingress.admit_github_comment(conn, config_path=bridge.cfg, comment_id=81, now=bridge.now)
     task_id = queued["task_id"]
-    session_id = queued["session_id"]
+    task = kb.get_task(conn, task_id)
+    assert task.session_id is None
     assert poll({})["verdict"] == "BUSY"
-    assert kb.get_task(conn, task_id).body == bridge.body
+    assert task.body == bridge.body
     assert bridge.body.strip() in kb.build_worker_context(conn, task_id)
     assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
-    with pytest.raises(ValueError, match="delivered, owned run"):
-        kb.complete_task(conn, task_id, result="Diagnostic placeholder", fire_lifecycle_hook=False)
     monkeypatch.setattr(dispatch, "_profile_exists_fn", lambda: None)
-    worker = []
-
-    def spawn(task, _workspace, board=None):
-        env = dict(os.environ, HERMES_HOME=str(bridge.home))
-        worker.append(subprocess.Popen([sys.executable, "-c",
-            "from tests.hermes_cli.test_issue_delivery import _canary_worker; import sys; _canary_worker(*sys.argv[1:])",
-            task.id, str(bridge.home)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
-        return worker[-1].pid
-
-    dispatch.dispatch_once(conn, board="missions", spawn_fn=spawn)
-    stdout, stderr = worker[0].communicate(timeout=20)
-    assert worker[0].returncode == 0, stdout + stderr
-    assert kb.get_task(conn, task_id).status == "done"
+    dispatch.dispatch_once(
+        conn, board="missions",
+        spawn_fn=lambda _task, _workspace, board=None: os.getpid(),
+    )
+    task = kb.get_task(conn, task_id)
+    assert task and task.current_run_id
+    run_id = task.current_run_id
+    session_id = "canonical-owner-session"
+    request_id = "kanban:" + json.dumps(["missions", task_id, run_id], separators=(",", ":"))
+    with kb.write_txn(conn):
+        kb._append_event(conn, task_id, "owner_admitted", {
+            "db": str(kb.kanban_db_path(board="missions")), "session_id": session_id,
+            "request_id": request_id, "pid": 123, "birth": 456,
+        }, run_id=run_id)
+    output = Path(task.workspace_path) / "CANARY_RESULT.json"
+    output.write_text(json.dumps({"task_id": task_id, "session_id": session_id,
+                                  "source_comment_id": 81, "result": 17 + 25}))
+    with pytest.raises(ValueError, match="artifact set"):
+        kb.complete_task(conn, task_id, result="Diagnostic placeholder", expected_run_id=run_id,
+                         metadata={"artifacts": []}, fire_lifecycle_hook=False)
+    assert kb.complete_task(conn, task_id, result="Computed 42", expected_run_id=run_id,
+                            metadata={"artifacts": [str(output)]}, fire_lifecycle_hook=False)
+    assert task.session_id is None
     original = ingress._owner_write_txn
     from contextlib import contextmanager
 
@@ -191,7 +175,7 @@ def test_source_task_worker_artifact_result_and_crash_recovery(bridge, monkeypat
     assert any(json.loads(Path(item.stored_path).read_text()).get("result") == 42 for item in attached if item.filename.endswith(".json"))
     print("BRIDGE_TRACE=" + json.dumps({"scope": "ISOLATED_FAKE_REST_REAL_SUBPROCESS_NO_LLM", "issue_number": 27,
         "source_comment_id": 81, "task_id": task_id, "session_id": session_id,
-        "worker_pid": worker[0].pid, "useful_result": 42,
+        "useful_result": 42,
         "events": [dict(row) for row in conn.execute("SELECT id,run_id,kind FROM task_events WHERE task_id=? ORDER BY id", (task_id,))],
         "result_comment_id": bridge.comments[-1]["id"], "post_count": len(bridge.comments) - 1}))
     conn.close()
@@ -252,21 +236,13 @@ def test_admission_owner_fence_detects_replaced_registry_lock(tmp_path, monkeypa
         lease.release()
 
 
-def test_native_executor_creates_a_new_durable_session_and_refuses_ended_session(bridge, monkeypatch, tmp_path):
-    from hermes_state import SessionDB
+def test_native_executor_resolves_profile_without_creating_a_session(bridge, monkeypatch, tmp_path):
     profile_home = tmp_path / "profile"; profile_home.mkdir()
-    db = SessionDB(profile_home / "state.db"); db.close()
     cfg = json.loads(bridge.cfg.read_text()); cfg["issue_ingress_executor_profile"] = "canary"
     bridge.cfg.write_text(json.dumps(cfg))
     monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _name: str(profile_home))
-    profile, session_id = _native_executor(bridge.cfg)
-    assert profile == "canary" and session_id
-    db = SessionDB(profile_home / "state.db")
-    assert db.get_session(session_id)["ended_at"] is None
-    db.end_session(session_id, "test complete"); db.close()
-    cfg["issue_ingress_session_id"] = session_id; bridge.cfg.write_text(json.dumps(cfg))
-    with pytest.raises(ingress.AdmissionRefused, match="TASK_EXECUTOR_SESSION_UNAVAILABLE"):
-        _native_executor(bridge.cfg)
+    assert _native_executor(bridge.cfg) == "canary"
+    assert not (profile_home / "state.db").exists()
 
 
 def test_result_marker_from_wrong_bot_is_not_an_ack(bridge):

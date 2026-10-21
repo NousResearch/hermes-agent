@@ -11,7 +11,19 @@ import sqlite3
 from hermes_state_runtime import RuntimeStoreError
 
 
-def build_kanban_policy(connection, params, config):
+def _load_effective_gateway_config():
+    """Keep the config lookup patchable without importing gateway.run at module load."""
+    from gateway.run import _load_gateway_config
+    return _load_gateway_config()
+
+
+def _resolve_effective_gateway_model(config):
+    """Resolve through the bootstrapped Gateway module only when policy needs it."""
+    from gateway.run import _resolve_gateway_model
+    return _resolve_gateway_model(config)
+
+
+def build_kanban_policy(connection, params, config, *, session_id=None):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
     from gateway.session_policy import build_policy
@@ -20,6 +32,11 @@ def build_kanban_policy(connection, params, config):
         raise RuntimeStoreError('permission_denied')
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
+    if session_id is None:
+        from gateway.session_local_recovery import local_identity
+        request_id = 'kanban:' + json.dumps(
+            [params.get('board'), params.get('task_id'), params.get('run_id')], separators=(',', ':'))
+        session_id = local_identity(authority.profile_id, actor.subject, request_id)
     if (set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
             or any(not isinstance(params[k], str) or not params[k] for k in ('board', 'task_id', 'claim_lock'))
             or type(params['run_id']) is not int):
@@ -42,6 +59,8 @@ def build_kanban_policy(connection, params, config):
             if bound and json.loads(bound[0])['request_id'] != 'kanban:' + json.dumps([board, task.id, task.current_run_id], separators=(',', ':')):
                 raise RuntimeStoreError('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
+            from hermes_cli.issue_delivery import append_worker_context
+            context = append_worker_context(conn, task, context, board=board, session_id=session_id)
             skills = list(task.skills or ())
             if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
                 # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
@@ -56,13 +75,12 @@ def build_kanban_policy(connection, params, config):
     private = {}
     policy = build_policy(params_policy, config, private_secrets=private)
     if policy.model is None:
-        from gateway.run import _resolve_gateway_model
-        policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+        policy = replace(policy, model=_resolve_effective_gateway_model(policy.config()))
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
         goal_text='\n\n'.join(p for p in (task.title, task.body) if p), context=context,
-        max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True)
+        max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True, session_id=session_id)
     context['db'] = str(path)
     request = json.loads(policy.request_json)
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
@@ -73,7 +91,6 @@ def build_kanban_policy(connection, params, config):
 async def run_task(connection, params):
     if not connection.native_owner or 'session:create' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    from gateway.run import _load_gateway_config
     from gateway.session_local import create_local_session
     from gateway.session_contract import Submission
     from gateway.session_local_recovery import local_identity
@@ -93,12 +110,14 @@ async def run_task(connection, params):
         policy = restore_policy(saved['policy'])
         context = json.loads(policy.kanban_json or '{}')
         if (not connection.native_owner or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
-                or any(params[k] != context.get(k) for k in params)):
+                or any(params[k] != context.get(k) for k in params)
+                or context.get('session_id', sid) != sid):
             raise RuntimeStoreError('permission_denied')
         from gateway.session_local_recovery import restore_local_session
         ref = restore_local_session(authority, sid)
     else:
-        policy, private = build_kanban_policy(connection, params, _load_gateway_config())
+        policy, private = build_kanban_policy(
+            connection, params, _load_effective_gateway_config(), session_id=sid)
         ref = create_local_session(authority, connection.actor, {'request_id': request_id},
                                    trusted_policy=policy, trusted_secrets=private)
     from hermes_cli.kanban_db_connect import connect_closing
@@ -118,7 +137,8 @@ async def run_task(connection, params):
             marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
                                   (params['task_id'], params['run_id'])).fetchone()
             if marker:
-                if json.loads(marker[0])['session_id'] != ref.session_id:
+                admitted = json.loads(marker[0])
+                if admitted.get('session_id') != ref.session_id or admitted.get('request_id') != request_id:
                     raise RuntimeStoreError('stale_kanban_claim')
             else:
                 task = kb.get_task(conn, params['task_id'])

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -130,41 +131,18 @@ def test_pending_task_nonce_cannot_be_reused_for_different_body():
         conn.close()
 
 
-def test_executor_binding_requires_existing_durable_session_but_not_live_lease(monkeypatch, tmp_path):
+def test_executor_binding_resolves_profile_without_creating_session(monkeypatch, tmp_path):
     profile = tmp_path / "profiles" / "issue22-dispatch"
     profile.mkdir(parents=True)
-    (profile / "state.db").touch()
     from types import SimpleNamespace
     config_path = tmp_path / "source.json"
     monkeypatch.setattr(ingress, "load_config", lambda _path: SimpleNamespace(
-        issue_ingress_executor_profile="issue22-dispatch", issue_ingress_session_id="session-22"))
+        issue_ingress_executor_profile="issue22-dispatch"))
     monkeypatch.setattr(
         "hermes_cli.profiles.resolve_profile_env", lambda _name: str(profile),
     )
-
-    class FakeSessionDB:
-        def __init__(self, session):
-            self.session = session
-            self.closed = False
-
-        def get_session(self, session_id):
-            return {"id": session_id} if self.session else None
-
-        def close(self):
-            self.closed = True
-
-    fake_db = FakeSessionDB(session=True)
-    monkeypatch.setattr(
-        "hermes_state_registry.acquire", lambda _path: fake_db,
-    )
-    assert ingress._issue22_executor(config_path) == ("issue22-dispatch", "session-22")
-    assert fake_db.closed
-
-    monkeypatch.setattr(
-        "hermes_state_registry.acquire", lambda _path: FakeSessionDB(session=False),
-    )
-    with pytest.raises(ingress.AdmissionRefused, match="TASK_EXECUTOR_SESSION_UNAVAILABLE"):
-        ingress._issue22_executor(config_path)
+    assert ingress._issue22_executor(config_path) == "issue22-dispatch"
+    assert not (profile / "state.db").exists()
 
 
 def test_nonce_reuse_with_different_body_is_rejected():
@@ -256,7 +234,7 @@ def test_pending_task_binds_without_live_lease_and_waits_ready_for_executor(monk
     monkeypatch.setattr(
         ingress, "read_authenticated_intent", lambda *a, **kw: active_intent["value"],
     )
-    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: ("grandloop", "session-22"))
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: "grandloop")
 
     monkeypatch.setattr(
         ingress, "_session_owner_fence",
@@ -275,8 +253,8 @@ def test_pending_task_binds_without_live_lease_and_waits_ready_for_executor(monk
             "FROM tasks WHERE id=?", (row["task_id"],),
         ).fetchone()
         assert bound == {"verdict": "ACK", "state": "queued", "task_id": row["task_id"]}
-        assert tuple(row) == ("queued", bound["task_id"], "session-22", "grandloop")
-        assert tuple(task) == ("ready", "grandloop", "session-22", 900, 1)
+        assert tuple(row) == ("queued", bound["task_id"], None, "grandloop")
+        assert tuple(task) == ("ready", "grandloop", None, 900, 1)
         assert ingress.issue22_task_is_active(conn)
         assert conn.execute(
             "SELECT COUNT(*) FROM task_events WHERE kind='github_task_binding'",
@@ -321,7 +299,7 @@ def test_issue22_tasks_are_claimed_by_only_one_concurrent_gateway_dispatcher(mon
     ingress.admit_intent(conn, intent=intent, now=now)
     monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: pins)
     monkeypatch.setattr(ingress, "read_authenticated_intent", lambda *a, **kw: intent)
-    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: ("issue22-dispatch", "session-22"))
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: "issue22-dispatch")
     bound = ingress.bind_next_pending_task(conn, config_path=Path("/tmp/pinned.json"), now=now)
     task_id = bound["task_id"]
     conn.close()
@@ -366,7 +344,7 @@ def test_expired_pending_task_is_never_bound_or_dispatched(monkeypatch):
     )
     ingress.admit_intent(conn, intent=intent, now=1100)
     monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: pins)
-    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: ("grandloop", "session-22"))
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: "grandloop")
     monkeypatch.setattr(
         ingress, "read_authenticated_intent",
         lambda *args, **kwargs: pytest.fail("expired task must not be re-fetched for dispatch"),
@@ -395,18 +373,25 @@ def test_terminal_task_result_recovers_after_post_before_local_commit(monkeypatc
         "(repository_id,issue_number,nonce,body_sha256,comment_id,actor_id,received_at,expires_at,state,"
         "dispatch_state,task_id,session_id,executor_profile,bound_at) "
         "VALUES (1165823465,22,'task_nonce_123456','a',81,548464,1000,1200,'awaiting_binding',"
-        "'queued','task-81','session-22','grandloop',1100)"
+        "'queued','task-81',NULL,'grandloop',1100)"
     )
     conn.executescript("""
         CREATE TABLE tasks (id TEXT, status TEXT, result TEXT);
         CREATE TABLE task_runs (id INTEGER, task_id TEXT, status TEXT, outcome TEXT, summary TEXT, metadata TEXT);
-        CREATE TABLE task_events (task_id TEXT, kind TEXT, payload TEXT);
-        INSERT INTO task_events VALUES ('task-81','github_task_binding','{"repository_id":1165823465,"issue_number":22,"app_id":5343540,"installation_id":172036721,"actor_id":548464}');
+        CREATE TABLE task_events (task_id TEXT, run_id INTEGER, kind TEXT, payload TEXT);
+        INSERT INTO task_events VALUES ('task-81',NULL,'github_task_binding','{"repository_id":1165823465,"issue_number":22,"app_id":5343540,"installation_id":172036721,"actor_id":548464,"comment_id":81,"board":"missions"}');
     """)
+    conn.execute(
+        "INSERT INTO task_events VALUES (?,?,?,?)",
+        ("task-81", 1, "owner_admitted", json.dumps({
+            "session_id": "canonical-session",
+            "request_id": "kanban:" + json.dumps(["missions", "task-81", 1], separators=(",", ":")),
+        })),
+    )
     conn.execute("INSERT INTO tasks VALUES ('task-81','done','Finished safely')")
     conn.execute(
         "INSERT INTO task_runs VALUES (1,'task-81','done','completed','Finished safely',?)",
-        ('{"github_delivery":{"task_id":"task-81","session_id":"session-22","comment_id":81,"artifacts":{"result.json":"abc"}}}',),
+        ('{"github_delivery":{"task_id":"task-81","session_id":"canonical-session","comment_id":81,"artifacts":{"result.json":"abc"}}}',),
     )
     conn.commit()
     comments = []

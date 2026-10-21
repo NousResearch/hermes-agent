@@ -33,15 +33,6 @@ def _int_or(value, default: int) -> int:
         return default
 
 
-def _active_session_refusal_exit_code() -> int:
-    """Keep an Issue 22 TASK pending when its trusted session is already leased."""
-    from hermes_cli.issue_delivery import current_github_worker
-    if current_github_worker():
-        from hermes_cli.kanban_db import KANBAN_SESSION_BUSY_EXIT_CODE
-        return KANBAN_SESSION_BUSY_EXIT_CODE
-    return 1
-
-
 def _interrupt_agent_for_signal(agent, signum) -> None:
     """Hard-interrupt ``agent`` for a shutdown signal, then sleep ``HERMES_SIGTERM_GRACE`` (1.5 s).
 
@@ -508,10 +499,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             print(t("cli.single_query.kanban_run_reclaimed"), file=sys.stderr)
             sys.exit(0)
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
-        exit_single_query(_active_session_refusal_exit_code())
+        exit_single_query(1)
     try:
-        from hermes_cli.issue_delivery import record_current_worker_delivery
-        record_current_worker_delivery(cli.session_id)
         query, single_query_images = _collect_query_images(query, image)
         single_query_image_urls = _collect_kanban_task_images(single_query_images)
         from hermes_cli.observability.shared_metrics_startup import record_cli_one_shot_ready

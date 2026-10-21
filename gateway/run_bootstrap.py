@@ -351,24 +351,20 @@ async def _start_gateway_start_control_socket(runner):
         }
         gateway_config = _load_gateway_config()
         issue22_config = gateway_config.get("issue22_ingress") or {}
-        if issue22_config.get("enabled") is True:
+        if isinstance(issue22_config, dict) and issue22_config.get("enabled") is True:
             bridge_config = os.environ.get("GITHUB_BRIDGE_CONFIG")
             if bridge_config:
                 from hermes_cli import kanban_db_connect
-                from hermes_cli.issue22_gateway_verb import (
-                    build_issue22_admit_handler, build_issue22_poll_handler,
-                )
+                from hermes_cli.issue_source_handlers import build_source_handlers
                 issue22_config_path = Path(bridge_config).expanduser()
                 issue22_board = issue22_config.get("board", "missions")
                 issue22_connect = lambda: kanban_db_connect.connect(board=issue22_board)
-                issue22_admit = build_issue22_admit_handler(
-                    connect_owner_db=issue22_connect, config_path=issue22_config_path, enabled=True,
+                issue22_admit, issue22_poll = build_source_handlers(
+                    issue22_connect, issue22_config_path, enabled=True,
                 )
                 verb_handlers.update({
                     "issue22-admit": issue22_admit,
-                    "issue22-poll": build_issue22_poll_handler(
-                        config_path=issue22_config_path, enabled=True, admit_handler=issue22_admit,
-                    ),
+                    "issue22-poll": issue22_poll,
                 })
             else:
                 logger.warning(

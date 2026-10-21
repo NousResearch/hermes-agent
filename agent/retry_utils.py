@@ -12,6 +12,8 @@ from datetime import datetime, timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
+from utils import base_url_host_matches, base_url_hostname
+
 # Monotonic counter for jitter-seed uniqueness within a process; locked
 # because concurrent gateway sessions retry simultaneously.
 _jitter_counter = 0
@@ -165,6 +167,41 @@ def adaptive_rate_limit_backoff(
     idx = min(attempt - short_attempts - 1, len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) - 1)
     base_delay = _ZAI_CODING_OVERLOAD_LONG_BACKOFF[idx]
     return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+
+
+# Vertex AI answers a CAPACITY shortage on the shared PayGo pool with HTTP 429
+# ``{"error":{"code":429,"message":"Resource exhausted...","status":"RESOURCE_EXHAUSTED"}}``
+# and NO Retry-After header. Google's guidance for these 429s is exponential backoff with
+# jitter plus smoothed traffic — an immediate retry re-enters the same contended window, and
+# the generic ladder (2s base) was measured re-429ing on attempts 2 and 3.
+_VERTEX_CAPACITY_BACKOFF_LADDER = (15.0, 30.0, 60.0, 120.0)
+
+
+def is_vertex_capacity_exhausted(*, base_url: str | None, error: Any) -> bool:
+    """True only for Vertex's capacity 429 (RESOURCE_EXHAUSTED on an ``aiplatform`` host), so
+    every other provider's 429 keeps its existing wait."""
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+    if status != 429:
+        return False
+    host = base_url_hostname(base_url or "")
+    # Vertex hosts: global ``aiplatform.googleapis.com`` and regional
+    # ``<region>-aiplatform.googleapis.com`` (a look-alike host must not qualify).
+    if not host or not (
+        base_url_host_matches(host, "aiplatform.googleapis.com")
+        or host.endswith("-aiplatform.googleapis.com")
+    ):
+        return False
+    text = _error_text(error)
+    return "resource exhausted" in text or "resource_exhausted" in text
+
+
+def vertex_capacity_backoff(attempt: int) -> float:
+    """The Vertex capacity ladder 15→30→60→120s with light jitter. ``attempt`` is 1-based."""
+    idx = min(max(attempt, 1) - 1, len(_VERTEX_CAPACITY_BACKOFF_LADDER) - 1)
+    base_delay = _VERTEX_CAPACITY_BACKOFF_LADDER[idx]
+    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2)
 
 
 def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:

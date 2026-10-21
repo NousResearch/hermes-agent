@@ -1430,11 +1430,11 @@ const BOOT_FAKE_STEP_MS = (() => {
 const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
-const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
+const MACOS_TRAFFIC_LIGHTS_HEIGHT = 20
 
 const WINDOW_BUTTON_POSITION = {
-  x: 24,
-  y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
+  x: 20,
+  y: MACOS_TRAFFIC_LIGHTS_HEIGHT
 }
 
 // Right-edge window-control reservation lives in titlebar-overlay-width.ts

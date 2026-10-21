@@ -304,6 +304,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   sshConfigHosts: () => ipcRenderer.invoke('hermes:ssh-config:hosts'),
   sshResolveHost: host => ipcRenderer.invoke('hermes:ssh-config:resolve', host),
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
+  // Remote gateway plugins: inventory and dialability live in the
+  // main-process registry; setDecisions mirrors the plugins store so
+  // Settings toggles apply to dialing without a restart.
+  remotePlugins: {
+    list: () => ipcRenderer.invoke('hermes:remote-plugins:list'),
+    accepts: url => ipcRenderer.invoke('hermes:remote-plugins-accepts', url),
+    setDecisions: decisions => ipcRenderer.invoke('hermes:remote-plugins-decisions', decisions)
+  },
   // `options` lets a registry-editor draft sign in BEFORE it is saved: the
   // main process settles the draft's connection id up front so the login
   // window writes into the per-connection cookie jar the saved entry will

@@ -253,6 +253,14 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
+      // Remote gateway plugins (main-process registry): scheme inventory,
+      // dialability gate for the Add-Connection flow, and the enable/disable
+      // mirror from the plugins store. Optional: older Electron mains lack it.
+      remotePlugins?: {
+        list?: () => Promise<Array<{ id: string; scheme: string; hint?: string }>>
+        accepts?: (url: string) => Promise<boolean>
+        setDecisions?: (decisions: Record<string, boolean>) => Promise<unknown>
+      }
       oauthLoginConnectionConfig: (
         remoteUrl: string,
         options?: DesktopOauthLoginOptions

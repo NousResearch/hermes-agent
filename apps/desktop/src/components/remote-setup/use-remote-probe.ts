@@ -57,25 +57,53 @@ export function useRemoteProbe({ enabled, url, revision, onResult, onReset }: Re
     setProbeStatus('idle')
     callbacks.current.onReset()
 
-    if (!enabled || !/^https?:\/\//i.test(url) || !window.hermesDesktop?.probeConnectionConfig) {
+    if (!enabled || !window.hermesDesktop?.probeConnectionConfig) {
       return cancel
     }
 
-    setProbeStatus('probing')
-    timer = window.setTimeout(() => {
-      void window.hermesDesktop
-        .probeConnectionConfig(url)
-        .then(result => {
-          if (seq === targetSeq.current) {
-            acceptProbeRef.current(result)
-          }
-        })
-        .catch(() => {
-          if (seq === targetSeq.current) {
-            setProbeStatus('error')
-          }
-        })
-    }, 500)
+    const plainHttp = /^https?:\/\//i.test(url)
+
+    const startProbe = (): void => {
+      setProbeStatus('probing')
+      timer = window.setTimeout(() => {
+        void window.hermesDesktop
+          .probeConnectionConfig(url)
+          .then(result => {
+            if (seq === targetSeq.current) {
+              acceptProbeRef.current(result)
+            }
+          })
+          .catch(() => {
+            if (seq === targetSeq.current) {
+              setProbeStatus('error')
+            }
+          })
+      }, 500)
+    }
+
+    if (plainHttp) {
+      startProbe()
+
+      return cancel
+    }
+
+    // Non-http(s) values (remote-plugin schemes, opaque pasted pairing
+    // material): main owns the dialability decision — the remote plugin registry
+    // canonicalizes and answers, the renderer holds no scheme vocabulary. An
+    // unclaimed scheme simply never starts probing. Cancel-safe via the same
+    // seq guard the probe itself uses.
+    if (!window.hermesDesktop.remotePlugins?.accepts) {
+      return cancel
+    }
+
+    void window.hermesDesktop.remotePlugins
+      .accepts(url)
+      .then(dialable => {
+        if (seq === targetSeq.current && dialable) {
+          startProbe()
+        }
+      })
+      .catch(() => {})
 
     return cancel
   }, [enabled, revision, url])

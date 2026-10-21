@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- host.remotePlugins SDK surface (thin re-export block)
 /**
  * @hermes/plugin-sdk — THE plugin language. The vscode-module model: plugin
  * authors import exactly one module and get everything — they never touch
@@ -575,6 +576,16 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  /**
+   * Remote gateway plugins (main-process scheme registry): the installed
+   * transports a connection UI can offer (`[{ id, scheme, hint }]`). Core
+   * https remotes are not listed — they need no remote plugin. Feature-detect:
+   * older desktops return an empty list, not an error.
+   */
+  remotePlugins: {
+    list: async (): Promise<Array<{ id: string; scheme: string; hint?: string }>> =>
+      (await window.hermesDesktop?.remotePlugins?.list?.()) ?? []
+  },
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),

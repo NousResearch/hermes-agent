@@ -78,5 +78,5 @@ def _restored(cli, connection, result, file_path):
         snapshot = connection.call("session.resume", session_id=cli.session_id)
         connection.state(cli.session_id).adopt_snapshot(snapshot)
         cli.conversation_history = [{k: v for k, v in m.items() if k != "row_id"}
-                                    for m in snapshot.get("messages") or []]
+                                    for m in snapshot.get("messages") or [] if not m.get("archived")]
         print(f"  {_t('rollback.chat_turn_undone')}")

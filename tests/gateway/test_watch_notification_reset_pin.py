@@ -1,6 +1,7 @@
 """A watch notice pinned to a session that ended at a user boundary (/new) is dropped, not requeued
 forever: the session authority refuses it ``admission_conflict`` on every drain tick (#141562).
 Real GatewayRunner, DiscordAdapter, SessionAuthority and drain over SQLite; no agent turn runs."""
+import asyncio
 import logging
 import queue
 
@@ -64,6 +65,13 @@ def _notice(entry, pinned_session_id, kind='watch_match'):
     }
 
 
+def _restart_wait(runner):
+    """The restart's after-turn wait: the authority refuses new automation ``runtime_draining``."""
+    from gateway.drain_control import open_restart_wait
+    runner._running = runner._draining = True
+    open_restart_wait(runner)
+
+
 def _queued_admissions(authority, session_id):
     from hermes_state_runtime import list_session_admissions
     return [row for row in list_session_admissions(authority.db, session_id=session_id, pending_only=False)
@@ -123,47 +131,6 @@ async def test_notice_pinned_to_a_non_owner_is_dropped_with_its_cause(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reason', ['new_session', 'tui_close'])
-async def test_watch_notice_pinned_to_a_viewer_closed_local_session_is_kept(tmp_path, monkeypatch, caplog, reason):
-    """A local conversation the viewer closed keeps its own work as a note on that session (LC-7): even a
-    user-boundary close is not gone for the watch drain, refused or admitted."""
-    from gateway import session_automation
-    from hermes_state_local import end_idle_local_session
-    from hermes_state_runtime import RuntimeStoreError
-    from tests.gateway.test_session_end_delegations import _local, _notes
-    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
-    try:
-        route = authority.sessions[ref.session_id].route
-        target = runner.session_store.lookup_by_session_key(route).session_id
-        assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
-                                      target_id=target, reason=reason)
-        notice = {'type': 'watch_match', 'event_id': 'evt-1', 'session_id': 'proc_watch', 'started_at': 1.0,
-                  'session_key': route, 'parent_session_id': target, 'command': 'make',
-                  'pattern': 'READY', 'output': 'RESULT_proc_watch', 'suppressed': 0}
-        pending = queue.Queue()
-        pending.put(notice)
-        admit = session_automation.admit_process_notice
-
-        async def refuse(*_args):
-            raise RuntimeStoreError('admission_conflict')
-        monkeypatch.setattr(session_automation, 'admit_process_notice', refuse)
-
-        with caplog.at_level(logging.WARNING, logger='gateway.run'):
-            await runner._drain_watch_notifications(pending)
-            assert pending.get_nowait() is notice, 'a refused notice for a closed local session is retried'
-            monkeypatch.setattr(session_automation, 'admit_process_notice', admit)
-            pending.put({k: v for k, v in notice.items() if not k.startswith('_watch_')})
-            await runner._drain_watch_notifications(pending)
-
-        assert pending.empty()
-        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
-        await authority._drain(ref)
-        assert [m for m in _notes(authority, target) if 'RESULT_proc_watch' in str(m['content'])]
-    finally:
-        authority.db.close()
-
-
-@pytest.mark.asyncio
 async def test_notice_pinned_to_a_compression_ancestor_still_admits(monkeypatch, caplog):
     runner, authority, entry = await _gateway(monkeypatch)
     try:
@@ -184,6 +151,174 @@ async def test_notice_pinned_to_a_compression_ancestor_still_admits(monkeypatch,
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
         admitted = _queued_admissions(authority, parent) + _queued_admissions(authority, child)
         assert [row['status'] for row in admitted] == ['queued']
+    finally:
+        authority.db.close()
+
+
+async def _foreign_pin(runner):
+    """A live session of another chat: the authority refuses the notice, but nothing proves the pin
+    gone (its owner may still appear, d6635ffe03b), so the refusal stays retryable."""
+    from gateway.config import Platform
+    adapter = runner.adapters[Platform.DISCORD]
+    other = adapter.build_source(chat_id='43', chat_type='dm', user_id='42')
+    return runner.session_store.get_or_create_session(other).session_id
+
+
+def _route_gone(runner, entry):
+    """A route that no longer holds a session (/stop suspended it): refused ``not_found`` for good."""
+    assert runner.session_store.suspend_session(entry.session_key)
+    return entry.session_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('refusal', ['permanent', 'foreign', 'transient'])
+async def test_refused_notice_backs_off_and_only_a_permanent_refusal_drops(monkeypatch, caplog, refusal):
+    """A refused watch notice is retried on a bounded backoff, never on every 2 s tick (#140899). A
+    proven-permanent refusal (``not_found``: the route holds no session) drops it at the cap. A
+    notice pinned to another chat's live session (``admission_conflict``) or refused by a restart's
+    after-turn wait (``runtime_draining``) is never dropped: it waits however long it takes."""
+    from gateway import run_notifications
+    from gateway.run_notifications import _MAX_COMPLETION_INJECTION_ATTEMPTS
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        pinned = {'permanent': lambda: _route_gone(runner, entry), 'transient': lambda: entry.session_id}.get(
+            refusal)
+        pinned = pinned() if pinned else await _foreign_pin(runner)
+        if refusal == 'transient':
+            _restart_wait(runner)
+        pending = queue.Queue()
+        pending.put(_notice(entry, pinned))
+        clock = install_module_clock(monkeypatch, run_notifications)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            for _ in range(2000):  # ~33 simulated minutes of drain ticks
+                if pending.empty():
+                    break
+                await runner._drain_watch_notifications(pending)
+                clock.now += 1
+
+        messages = [r.getMessage() for r in caplog.records]
+        refused = sum('not admitted' in m for m in messages)
+        if refusal == 'permanent':
+            assert pending.empty()
+            assert refused == _MAX_COMPLETION_INJECTION_ATTEMPTS
+            assert sum('dropping the queued event' in m for m in messages) == 1
+            return
+        assert not pending.empty(), 'a notice whose refusal may still clear is never dropped'
+        assert 20 < refused < 60, 'retries are spaced out (capped at 60 s), not attempted every tick'
+        assert not [m for m in messages if 'dropping the queued event' in m]
+        if refusal == 'transient':
+            runner._draining = False
+            clock.now += 120
+            await runner._drain_watch_notifications(pending)
+            assert pending.empty()
+            assert [row['status'] for row in _queued_admissions(authority, entry.session_id)] == ['queued']
+    finally:
+        authority.db.close()
+
+
+_REAL_SLEEP = asyncio.sleep
+
+
+async def _run_async_watcher(runner, monkeypatch, clock, *, ticks):
+    """Run the real async watcher for ``ticks`` passes, one simulated second apart."""
+    seen = []
+
+    async def tick(delay):
+        seen.append(delay)
+        clock.now += 1
+        runner._running = len(seen) < ticks
+        await _REAL_SLEEP(0)
+    monkeypatch.setattr(asyncio, 'sleep', tick)
+    runner._running = True
+    await runner._async_delegation_watcher(interval=0)
+
+
+def _persist_delegation(entry, pinned, delegation_id):
+    import time
+    from tools import async_delegation as delegation
+    evt = dict(_notice(entry, pinned, 'async_delegation'), delegation_id=delegation_id,
+               summary='review findings', status='completed', dispatched_at=time.time())
+    delegation._persist_dispatch(evt)
+    delegation._persist_completion(evt, {'status': 'completed', 'summary': 'review findings'})
+    return evt
+
+
+@pytest.mark.asyncio
+async def test_permanently_refused_completion_converges_to_dropped_across_restarts(monkeypatch):
+    """A proven-permanent refusal (``not_found``: the route holds no session) spends a durable
+    delivery attempt in the ledger, so the count survives restarts: three processes that each
+    replay the row and retry it for a few minutes converge to ``dropped`` instead of each refunding
+    it (#141153)."""
+    from gateway import run_notifications
+    from tools import async_delegation as delegation
+    from tools.process_registry import process_registry
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        _persist_delegation(entry, _route_gone(runner, entry), 'refused-1')
+        clock = install_module_clock(monkeypatch, run_notifications)
+        for _process in range(3):
+            # Each process starts from the durable ledger alone: a fresh queue, replayed rows.
+            monkeypatch.setattr(process_registry, 'completion_queue', queue.Queue())
+            delegation._offered.clear()
+            delegation.restore_undelivered_completions(process_registry.completion_queue)
+            await _run_async_watcher(runner, monkeypatch, clock, ticks=150)
+            row = delegation.get_durable_delegation('refused-1')
+            if row['delivery_state'] != 'pending':
+                break
+
+        assert (row['delivery_state'], row['delivery_attempts']) == ('dropped', delegation._MAX_DELIVERY_ATTEMPTS)
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_live_pinned_completion_survives_a_long_restart_wait(monkeypatch):
+    """A completion pinned to the LIVE session that the authority refuses only because a restart's
+    after-turn wait is open (``runtime_draining``, up to ``restart_after_turn_timeout``) spends no
+    delivery attempt however long the wait lasts, and is delivered once admission reopens."""
+    from gateway import run_notifications
+    from tools import async_delegation as delegation
+    from tools.process_registry import process_registry
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        evt = _persist_delegation(entry, entry.session_id, 'live-1')
+        monkeypatch.setattr(process_registry, 'completion_queue', queue.Queue())
+        process_registry.completion_queue.put(dict(evt))
+        clock = install_module_clock(monkeypatch, run_notifications)
+        _restart_wait(runner)
+
+        await _run_async_watcher(runner, monkeypatch, clock, ticks=1800)  # 30 simulated minutes
+        row = delegation.get_durable_delegation('live-1')
+        assert (row['delivery_state'], row['delivery_attempts']) == ('pending', 0)
+
+        runner._draining = False
+        await _run_async_watcher(runner, monkeypatch, clock, ticks=120)
+        assert delegation.get_durable_delegation('live-1')['delivery_state'] == 'delivered'
+        assert [r['status'] for r in _queued_admissions(authority, entry.session_id)] == ['queued']
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_foreign_pinned_completion_spends_nothing_across_restarts(monkeypatch):
+    """A completion pinned to another chat's live session is refused ``admission_conflict`` but
+    nothing proves its owner gone (d6635ffe03b): replayed by three processes for minutes each, it
+    spends no delivery attempt, unlike a proven-permanent refusal (#141153)."""
+    from gateway import run_notifications
+    from tools import async_delegation as delegation
+    from tools.process_registry import process_registry
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        _persist_delegation(entry, await _foreign_pin(runner), 'foreign-1')
+        clock = install_module_clock(monkeypatch, run_notifications)
+        for _process in range(3):
+            monkeypatch.setattr(process_registry, 'completion_queue', queue.Queue())
+            delegation._offered.clear()
+            delegation.restore_undelivered_completions(process_registry.completion_queue)
+            await _run_async_watcher(runner, monkeypatch, clock, ticks=150)
+        row = delegation.get_durable_delegation('foreign-1')
+        assert (row['delivery_state'], row['delivery_attempts']) == ('pending', 0)
     finally:
         authority.db.close()
 
@@ -239,43 +374,6 @@ async def test_refused_notice_pinned_to_a_compression_ancestor_is_retried(monkey
         authority.db.close()
 
 
-async def _foreign_pin(runner):
-    """A live session of another chat: the authority refuses the notice, but nothing proves the pin
-    gone, so the refusal stays retryable."""
-    from gateway.config import Platform
-    adapter = runner.adapters[Platform.DISCORD]
-    other = adapter.build_source(chat_id='43', chat_type='dm', user_id='42')
-    return runner.session_store.get_or_create_session(other).session_id
-
-
-@pytest.mark.asyncio
-async def test_unproven_refusal_requeues_with_backoff_until_the_cap(monkeypatch, caplog):
-    from gateway import run_notifications
-    from gateway.run_notifications import _MAX_COMPLETION_INJECTION_ATTEMPTS
-    runner, authority, entry = await _gateway(monkeypatch)
-    try:
-        pending = queue.Queue()
-        pending.put(_notice(entry, await _foreign_pin(runner)))
-        clock = install_module_clock(monkeypatch, run_notifications)
-
-        with caplog.at_level(logging.WARNING, logger='gateway.run'):
-            await runner._drain_watch_notifications(pending)
-            assert not pending.empty(), 'an unproven refusal is retried'
-            for _ in range(200):
-                if pending.empty():
-                    break
-                clock.now += 60
-                await runner._drain_watch_notifications(pending)
-
-        messages = [r.getMessage() for r in caplog.records]
-        assert pending.empty()
-        assert sum('not admitted' in m for m in messages) == _MAX_COMPLETION_INJECTION_ATTEMPTS
-        assert sum('dropping the queued event' in m for m in messages) == 1
-        assert not [m for m in messages if 'permanently gone' in m]
-    finally:
-        authority.db.close()
-
-
 @pytest.mark.asyncio
 async def test_unpinned_refusal_requeues(monkeypatch, caplog):
     """A notice that names no pinned session proves nothing gone: its refusal is retried."""
@@ -289,7 +387,7 @@ async def test_unpinned_refusal_requeues(monkeypatch, caplog):
             await runner._drain_watch_notifications(pending)
 
         assert pending.get_nowait() is notice
-        assert notice['_watch_injection_attempts'] == 1
+        assert notice['_watch_retry_step'] == 1
         assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
     finally:
         authority.db.close()

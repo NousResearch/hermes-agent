@@ -72,7 +72,7 @@ test.skipIf(process.platform === 'win32').each([0o700, 0o750, 0o701])('native HT
   const server = net.createServer(socket => socket.once('data', chunk => {
     const request = JSON.parse(chunk.toString())
     requests.push(request)
-    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', runtime_protocol: 1, ticket: `grant-${requests.length}` } }) + '\n')
+    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: request.params?.profile_id ?? home, instance_id: 'owner', runtime_protocol: 1, ticket: `grant-${requests.length}` } }) + '\n')
   }))
 
   await new Promise<void>(resolve => server.listen(path.join(home, 'gateway.sock'), resolve))
@@ -97,10 +97,27 @@ test.skipIf(process.platform === 'win32').each([0o700, 0o750, 0o701])('native HT
       ['/api/profiles?unused=1', 'post', 'native-profile-create'],
       ['/api/profiles', 'GET', 'native-http'],
       ['/api/profiles/import', 'POST', 'native-http'],
-      ['/api/config', 'POST', 'native-http']
+      ['/api/config', 'POST', 'native-http'],
+      // Rename/delete of the launch profile ride the registry grant (#140345); its SOUL stays native-http.
+      ['/api/profiles/default', 'PATCH', 'native-profile-registry'],
+      ['/api/profiles/default', 'delete', 'native-profile-registry'],
+      ['/api/profiles/default/soul', 'PUT', 'native-http'],
+      // The collection routes of these names stay on the endpoint's own profile.
+      ['/api/profiles/active', 'GET', 'native-http'],
+      ['/api/profiles/active', 'POST', 'native-http'],
+      ['/api/profiles/sessions?profile=default', 'GET', 'native-http']
     ]) {
       await nativeGatewayHttpHeaders(descriptor, endpoint.api_origin + route, home, method)
       expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose })
+    }
+
+    // A profile NAMED active/import/sessions (valid names): its PATCH/DELETE is that profile's own
+    // rename/delete (the collection routes are GET/POST only), on the registry grant for its home.
+    for (const [name, method] of [['active', 'PATCH'], ['import', 'DELETE'], ['sessions', 'DELETE']]) {
+      await fs.mkdir(path.join(home, 'profiles', name), { recursive: true, mode: 0o700 })
+      await nativeGatewayHttpHeaders(descriptor, `${endpoint.api_origin}/api/profiles/${name}`, home, method)
+      expect(requests.at(-1).params).toEqual({ profile_id: await fs.realpath(path.join(home, 'profiles', name)),
+        instance_id: 'owner', purpose: 'native-profile-registry' })
     }
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
@@ -572,6 +589,9 @@ test('a session write that names its owner only in the body gets a grant for tha
   expect(nativeGrantRoute(url, { hidden: true, profile: 'p2' })).toBe('p2')
   // The URL's own selector wins; the gateway refuses a body that disagrees with it.
   expect(nativeGrantRoute(url + '?profile=p3', { profile: 'p2' })).toBe(url + '?profile=p3')
+  // The profile NAMED `active` is the ticket's profile for its own rename; the collection GET is not.
+  expect(nativeGrantRoute('http://127.0.0.1:1/api/profiles/active', { profile: 'p2' }, 'PATCH')).toBe('http://127.0.0.1:1/api/profiles/active')
+  expect(nativeGrantRoute('http://127.0.0.1:1/api/profiles/active', { profile: 'p2' }, 'GET')).toBe('p2')
   expect(nativeGrantRoute('http://127.0.0.1:1/api/profiles/sessions/sidebar?recents_profile=p3', { profile: 'p2' })).toContain('recents_profile=p3')
 
   for (const body of [undefined, null, {}, { profile: '' }, { profile: 7 }, [{ profile: 'p2' }]]) {

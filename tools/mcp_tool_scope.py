@@ -61,3 +61,44 @@ def _resolve_server_key(name: str, scope: Optional[str] = None, *, current: bool
         if scope in scopes and _key_name(key) == name and key in _core._servers:
             return key
     return own
+
+
+# Ledgers keyed by connection key (``tools.mcp_tool``).
+_KEYED_LEDGERS = (
+    "_servers", "_server_scope_keys", "_server_tool_scopes", "_server_connect_errors",
+    "_lazy_server_configs", "_lazy_server_fingerprints", "_lazy_server_tool_names",
+    "_server_connect_retry_after", "_server_connect_failures", "_server_error_counts",
+    "_server_breaker_opened_at", "_server_errors_all_application", "_server_trust_levels",
+    "_tool_read_only_hints", "_server_cost_policies")
+_KEYED_SETS = ("_server_connecting", "_parallel_safe_servers")
+
+
+def rekey_unscoped_connections(scope: str) -> None:
+    """Move every bare-name connection under ``(scope, name)``. A single-profile process keys its
+    connections by bare name; once it starts multiplexing, the launch profile's lookups resolve
+    ``(launch scope, name)``, so without this its live servers read as disconnected until a restart."""
+    from tools.registry import registry
+    with _core._lock:
+        for attr in _KEYED_LEDGERS:
+            ledger = getattr(_core, attr)
+            for key in [k for k in ledger if isinstance(k, str)]:
+                ledger[(scope, key)] = ledger.pop(key)
+        for attr in _KEYED_SETS:
+            keys = getattr(_core, attr)
+            bare = {k for k in keys if isinstance(k, str)}
+            keys.difference_update(bare)
+            keys.update((scope, k) for k in bare)
+        # The owner and the tools follow the key: status, config pruning and /reload-mcp select by
+        # owner == scope, and teardown deregisters from the owner's overlay, not the global map.
+        tool_names = []
+        for key in [k for k, owner in _core._server_scope_keys.items() if owner is None and _key_scope(k) == scope]:
+            _core._server_scope_keys[key] = scope
+            tool_names += getattr(_core._servers.get(key), "_registered_tool_names", None) or ()
+        for key in [k for k in _core._lazy_server_tool_names if _key_scope(k) == scope]:
+            tool_names += _core._lazy_server_tool_names[key]
+        for key in set(_core._servers) | set(_core._lazy_server_tool_names):
+            if _key_scope(key) == scope:
+                _core._server_tool_scopes.setdefault(key, set()).add(scope)
+    from tools.mcp_tool_costs import rekey_unscoped
+    rekey_unscoped(scope)  # chats' spend totals follow their server's policy key
+    registry.move_to_scope(tool_names, scope)

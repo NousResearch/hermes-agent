@@ -1191,6 +1191,15 @@ wins over the profile's own file. It governs the **automatic** path only:
 (and is the supported way to opt back in). Absent or `true` keeps the default
 behaviour described above.
 
+The same setting covers a gateway that booted with only the default profile.
+Normally, once you create a second profile (Desktop's New Agent or
+`hermes profile create`), that gateway starts serving every profile in place,
+with no restart. With `auto_multiplex_migration: false` it keeps serving only
+its own profile, and the new profile is refused with that reason until you run
+`hermes gateway migrate --multiplex` or set the key back to `true`. The key is
+re-read on every profile rescan, so setting it back takes effect within about
+30 seconds, with no restart.
+
 The explicit command is different: `hermes gateway migrate --multiplex` with
 two or more profiles and **no** standalone secondary gateway still applies the
 one remaining step — it sets `gateway.multiplex_profiles: true` and (re)starts

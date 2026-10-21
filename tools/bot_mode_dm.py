@@ -434,8 +434,10 @@ def _dm_delivery_id(dm_file: str | os.PathLike) -> str:
 
 
 class LiveTargetUnavailableError(RuntimeError):
-    """No canonical Bot Chat owner was found BEFORE any intent was pinned: nothing was admitted, so
-    this is a definite no-send the sender may retry, not the ambiguous post-admission state."""
+    """The canonical Bot Chat owner could not be reached with anything admitted — before the
+    intent was pinned, or on a dial that died before the deliver RPC went out: nothing was
+    sent, so this is a definite no-send the sender may retry, not the ambiguous
+    post-admission state."""
 
     reason = "runtime_unavailable"
     resend = "once the target is up"
@@ -483,11 +485,13 @@ def _held_disposition(record: dict | None) -> bool:
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
-    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+    from tools.bot_live_delivery import (PreDialError, deliver_to_live_owner, find_canonical_live_owner,
+                                         read_delivery_result)
     from utils import fsync_directory
 
     intent: dict[str, Any]
     intent_path = Path(_live_intent_file(dm_file))
+    pinned_now = False
     if intent_path.exists():
         intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
@@ -512,6 +516,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
                 stream.flush()
                 os.fsync(stream.fileno())
             fsync_directory(intent_path.parent)
+            pinned_now = True
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None or intent["owner"].get("canonical"):
@@ -528,6 +533,13 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
             # Nothing was admitted while that refusal held the owner's lock, but a same-id attempt
             # may have admitted since: only the owner's settle decides, under that same lock.
             record = settle_held_delivery(home, intent["owner"], intent["message"], **identity)
+        except PreDialError as exc:
+            if not pinned_now:
+                raise  # an earlier attempt under this intent may have admitted: outcome unknown
+            # This call pinned the intent and its first dial died before the RPC went out: nothing
+            # was admitted anywhere, so it is a definite no-send the sender may retry (#139303).
+            _unlink_dm_file(_live_intent_file(dm_file))
+            raise LiveTargetUnavailableError(f"live authority dial failed before admission ({exc})") from exc
     if _held_disposition(record):
         # The callers remove the intent and payload (``_settled_no_send``).
         raise LiveTargetHeldError("Bot Chat is held by another session writer")

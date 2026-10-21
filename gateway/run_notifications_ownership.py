@@ -138,8 +138,8 @@ class GatewayNotificationOwnershipMixin:
             session_id = parent
         return "terminal", session_id, None
 
-    async def _watch_pin_gone(self, evt: dict, refusal: str) -> bool:
-        """True (logged once) when a refused watch notice is pinned to a permanently-gone session.
+    async def _watch_pin_gone(self, evt: dict, refusal: str, *, log: bool = True) -> bool:
+        """True (logged once with ``log``) when a refused watch notice is pinned to a permanently-gone session.
 
         The session authority admits a notice only into its pinned session or that session's
         compression continuation, so after /new it refuses the notice on every retry and the drain
@@ -154,29 +154,10 @@ class GatewayNotificationOwnershipMixin:
         verdict, _owner, _target = await cast(Any, self)._classify_completion_owner(pinned, session_key)
         if verdict != "terminal":
             return False
+        if not log:
+            return True
         live = cast(Any, self).session_store.peek_session_id(session_key) or ""
-        
-        # Pass the classification results to avoid re-lookup in _gone_pin_cause
-        from gateway.run import _USER_BOUNDARY_END_REASONS
-        verdict, hop, row = await cast(Any, self)._lookup_completion_owner(pinned, live)
-        
-        if row is not None:
-            if row.get("ended_at") and row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
-                # Note: "session_reset" is a user boundary (/new) despite "automatic" in the name
-                if row.get("end_reason") == "session_reset":
-                    cause = f"session {hop} was reset (session_reset)"
-                else:
-                    cause = f"session {hop} was closed at a user boundary ({row['end_reason']})"
-            else:
-                cause = f"session {hop} is a subagent transcript with no owning conversation"
-        else:
-            try:
-                missing = await cast(Any, self)._session_db.get_session(hop) is None
-            except (sqlite3.Error, StateDbReplacedError):
-                cause = f"session {hop} could not be re-read"
-            else:
-                cause = f"session {hop} no longer exists" if missing else f"session {hop} has unresolvable delegate provenance"
-        
+        cause = await cast(Any, self)._gone_pin_cause(pinned, live)
         logger.warning(
             "Dropping %s notification of process %s: pinned session %s is permanently gone (%s); the "
             "route now runs %s and refuses it (%s). Output remains available via process(action='log').",

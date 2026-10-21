@@ -441,7 +441,8 @@ class TestSessionConfiguration:
         await router("session/set_config_option", {
             "sessionId": state.session_id, "configId": "custom_toggle", "type": "boolean", "value": True,
         }, False)
-        assert getattr(state, "config_options")["custom_toggle"] is True
+        options = getattr(state, "config_options", None)
+        assert isinstance(options, dict) and options["custom_toggle"] is True
         with pytest.raises(acp.RequestError) as exc:
             await router("session/set_config_option", {
                 "sessionId": state.session_id, "configId": "model", "type": "boolean", "value": True,

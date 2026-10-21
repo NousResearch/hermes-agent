@@ -529,10 +529,15 @@ _CACHE_POINT = {"cachePoint": {"type": "default"}}
 
 
 def cache_point_rejection_placement(exc: BaseException) -> Optional[str]:
-    """Converse section whose cachePoint Bedrock refused, or None. Message-based: the JSON pointer in the
-    ValidationException is the only thing naming the section (raw or SDK-wrapped). Unlocalisable → "tools"."""
+    """Converse section whose cachePoint Bedrock refused, ``"all"`` when the model takes no cachePoint
+    anywhere, or None. Message-based: the JSON pointer in the ValidationException is the only thing
+    naming the section (raw or SDK-wrapped). Unlocalisable → "tools"."""
     msg = str(exc)
     lowered = msg.lower()
+    if "support the cachepoint field" in lowered:  # "This model doesn't support the cachePoint field."
+        return "all"
+    if "cache point cannot be inserted" in lowered:  # "...after the preceding content block for this model."
+        return "messages"
     if "cachepoint" not in lowered or ("not permitted" not in lowered and "extraneous" not in lowered):
         return None
     match = _CACHE_POINT_PATH_PATTERN.search(msg)
@@ -595,11 +600,15 @@ def recover_from_cache_point_rejection(exc: BaseException, kwargs: dict[str, Any
     placement = cache_point_rejection_placement(exc)
     if placement is None:
         return None
-    retry_kwargs = strip_cache_points(kwargs, placement)
+    placements = CACHE_POINT_PLACEMENTS if placement == "all" else (placement,)
+    retry_kwargs = kwargs
+    for section in placements:
+        retry_kwargs = strip_cache_points(retry_kwargs, section)
     if retry_kwargs is kwargs:
         return None
     model_id = str(kwargs.get("modelId", ""))
-    note_cache_point_rejection(model_id, placement)
+    for section in placements:
+        note_cache_point_rejection(model_id, section)
     logger.warning(
         "bedrock: %s rejected a cachePoint block in %s — dropping that cache marker for this model and "
         "retrying. Prompt caching stays active for the remaining sections.", model_id or "model", placement,

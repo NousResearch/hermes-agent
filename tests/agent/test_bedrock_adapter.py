@@ -767,6 +767,37 @@ class TestCachePointRejectionRecovery:
             "[toolChoice] is not permitted"
         )) is None
 
+    def test_classifies_model_level_and_insertion_rejections(self):
+        # Other Bedrock wordings for a model that takes no (or no message-level) cachePoint.
+        from agent.bedrock_adapter import cache_point_rejection_placement
+        assert cache_point_rejection_placement(Exception(
+            "ValidationException: This model doesn't support the cachePoint field. "
+            "Remove cachePoint and try again."
+        )) == "all"
+        assert cache_point_rejection_placement(Exception(
+            "ValidationException: Cache point cannot be inserted after the preceding content "
+            "block for this model. Please remove the invalid cache point and try again."
+        )) == "messages"
+
+    def test_model_level_rejection_strips_every_marker_and_remembers_it(self):
+        from agent.bedrock_adapter import (
+            CACHE_POINT_PLACEMENTS, cache_point_allowed, recover_from_cache_point_rejection,
+        )
+        kwargs = self._nova_kwargs()
+        exc = Exception("ValidationException: This model doesn't support the cachePoint field. "
+                        "Remove cachePoint and try again.")
+        retry = recover_from_cache_point_rejection(exc, kwargs)
+        assert retry is not None
+        assert CACHE_POINT not in retry["toolConfig"]["tools"]
+        assert CACHE_POINT not in retry["system"]
+        assert all(CACHE_POINT not in m["content"] for m in retry["messages"])
+        model = kwargs["modelId"]
+        assert not any(cache_point_allowed(model, p) for p in CACHE_POINT_PLACEMENTS)
+        # Later turns build no markers at all for this model.
+        later = self._nova_kwargs()
+        assert CACHE_POINT not in later["toolConfig"]["tools"] and CACHE_POINT not in later["system"]
+        assert recover_from_cache_point_rejection(exc, retry) is None  # nothing left to strip
+
     def test_strip_removes_only_the_rejected_placement(self):
         from agent.bedrock_adapter import strip_cache_points
         kwargs = self._nova_kwargs()
@@ -1319,6 +1350,32 @@ class TestInferenceProfileContextLength:
         retry = recover_from_cache_point_rejection(exc, kwargs)
         assert retry is not None
         assert {"cachePoint": {"type": "default"}} not in retry["system"]
+
+    def test_unresolved_profile_of_non_caching_model_runs_uncached_after_one_retry(self):
+        # Review case on #142415: fail-open sends markers to a model behind the profile that takes
+        # none, with Bedrock's model-level wording. One stripped retry, then no markers again.
+        from agent import bedrock_adapter
+        client = MagicMock()
+        client.get_inference_profile.side_effect = Exception("AccessDeniedException")
+        runtime = MagicMock()
+        runtime.converse.side_effect = [
+            Exception("ValidationException: This model doesn't support the cachePoint field. "
+                      "Remove cachePoint and try again."),
+            {"output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+             "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}},
+            {"output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+             "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}},
+        ]
+        messages = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello"}, {"role": "user", "content": "Again"}]
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
+                patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=runtime):
+            first = bedrock_adapter.call_converse(region="us-west-2", model=self.ARN, messages=messages)
+            second = bedrock_adapter.call_converse(region="us-west-2", model=self.ARN, messages=messages)
+        assert first.choices[0].message.content == "ok" and second.choices[0].message.content == "ok"
+        assert runtime.converse.call_count == 3  # one rejected call, its retry, then a clean call
+        sent = runtime.converse.call_args_list[2].kwargs
+        assert "cachePoint" not in str(sent)
 
     def test_profile_wrapping_claude_keeps_prompt_cache_markers(self):
         # build_converse_kwargs gates cachePoint on the model id; the opaque profile ARN must be

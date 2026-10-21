@@ -50,7 +50,7 @@ jobs:
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
         with:
           # the action's default buildx (v0.23.0) fails to push manifest lists to Docker Hub
-          buildx-version: 0dbe87f36ed472fe36b6796c3f70b4210a731fc5 # v0.38.1
+          buildx-version: v0.38.1  # a version string: the action rejects a commit SHA and falls back to v0.23.0
       - name: Log in to Docker Hub for ordered alias promotion
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:

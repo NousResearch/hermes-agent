@@ -11,6 +11,7 @@ import contextlib
 import io
 import os
 import pathlib
+import re
 import sqlite3
 
 import pytest
@@ -351,9 +352,9 @@ def test_a_stale_base_source_view_is_replaced_before_the_store_is_stamped(tmp_pa
     assert _stamp(db_path) == str(FTS_STORAGE_VERSION)
 
 
-def test_the_base_realign_finishes_a_pending_trigram_backfill(tmp_path):
-    """The open-time base-index realign clears the shared backfill markers, so it must also complete the trigram."""
-    db_path = tmp_path / "state.db"
+def _interrupted_raw_base_backfill(db_path: pathlib.Path) -> int:
+    """An older release's optimize-storage stopped mid-backfill: raw-``messages`` base index, trigram table and the
+    shared markers left behind, one of two rows indexed. Returns the id of the row the backfill had not reached."""
     db = SessionDB(db_path=db_path)
     _require_trigram(db)
     db.create_session("s1", source="cli")
@@ -373,6 +374,59 @@ def test_the_base_realign_finishes_a_pending_trigram_backfill(tmp_path):
     db.set_meta("fts_rebuild_progress", str(first_id))
     db._conn.commit()
     db.close()
+    return last_id
+
+
+def test_the_base_realign_finishes_a_pending_trigram_backfill(tmp_path):
+    """The open-time base-index realign clears the shared backfill markers, so it must also complete the trigram."""
+    db_path = tmp_path / "state.db"
+    last_id = _interrupted_raw_base_backfill(db_path)
+    db = SessionDB(db_path=db_path)
+    try:
+        assert [row["id"] for row in db.search_messages("大别山")] == [last_id]
+    finally:
+        db.close()
+
+
+class _NoTrigramTokenizerCursor(sqlite3.Cursor):
+    """A SQLite build without the trigram tokenizer opening a store whose trigram table already exists."""
+
+    _TRIGRAM = re.compile(r"\b(?:FROM|INTO)\s+messages_fts_trigram\b(?!_)|tokenize='trigram'", re.IGNORECASE)
+
+    def execute(self, sql, parameters=()):
+        if self._TRIGRAM.search(sql):
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().execute(sql, parameters)
+
+    def executescript(self, sql_script):
+        if self._TRIGRAM.search(sql_script):
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().executescript(sql_script)
+
+
+class _NoTrigramTokenizerConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoTrigramTokenizerCursor)
+
+
+def test_the_base_realign_without_the_trigram_tokenizer_keeps_the_store_open_and_resumes_later(tmp_path, monkeypatch):
+    """Without the tokenizer the realign still opens the store with base search; the trigram index is rebuilt by the
+    first open that has the tokenizer."""
+    db_path = tmp_path / "state.db"
+    last_id = _interrupted_raw_base_backfill(db_path)
+    real_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        kwargs["factory"] = _NoTrigramTokenizerConnection
+        return real_connect(*args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr("hermes_state.sqlite3.connect", connect)
+        db = SessionDB(db_path=db_path)
+        try:
+            assert [row["id"] for row in db.search_messages("deployment")] == [last_id]
+        finally:
+            db.close()
 
     db = SessionDB(db_path=db_path)
     try:

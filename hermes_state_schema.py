@@ -377,10 +377,15 @@ class SessionSchemaMixin:
                 cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
                 # The cleared markers below are shared with the trigram backfill: finish that index too, or rows
                 # an interrupted backfill had not reached stay out of it with nothing left to resume them.
-                if self._sqlite_table_exists(cursor, "messages_fts_trigram") and _meta_row(
-                    cursor, "fts_rebuild_high_water"
-                ) is not None:
-                    cursor.execute("INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')")
+                if _meta_row(cursor, "fts_rebuild_high_water") is not None:
+                    trigram = self._fts_table_probe(cursor, "messages_fts_trigram")
+                    if trigram:
+                        cursor.execute("INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')")
+                    elif trigram is None:
+                        # No usable tokenizer here: detach the index so the first open that has one rebuilds it
+                        # through the missing-trigger repair in _init_fts.
+                        for name in _FTS_TRIGRAM_TRIGGERS:
+                            cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
             cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
             cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
 

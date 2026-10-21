@@ -56,7 +56,7 @@ def test_prune_only_pass_takes_no_snapshot_but_still_ages_old_ones_out(env, monk
 
 
 def test_only_one_process_claims_a_due_pass(env, monkeypatch):
-    curator, home = env["curator"], env["home"]
+    curator = env["curator"]
     monkeypatch.setattr(curator, "should_run_now", lambda now=None: True)
     started, release = threading.Event(), threading.Event()
     runs = []

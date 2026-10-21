@@ -376,9 +376,9 @@ class TestSubcommandCompletion:
             lambda: set(),
         )
 
-        completions = _completions(SlashCommandCompleter(), "/tools enable spotify ")
+        completions = _completions(SlashCommandCompleter(), "/tools enable discord ")
         texts = {c.text for c in completions}
-        assert "spotify" not in texts
+        assert "discord" not in texts
 
 
     def _fake_gateway(self, monkeypatch, platforms):

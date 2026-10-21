@@ -50,7 +50,6 @@ def multiplex_runner(tmp_path, monkeypatch):
     runner.adapters = {}
     runner._profile_configs = {"coder": _home_config(Platform.TELEGRAM, "coder-home")}
     runner._profile_adapters = {"coder": {}}
-    runner._free_tier_startup_line = Mock(return_value=None)
     runner._planned_restart_notice_lock = None
     marker = tmp_path / ".restart_pending.json"
     marker.write_text("{}", encoding="utf-8")
@@ -146,7 +145,6 @@ async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypat
     runner.adapters = {Platform.TELEGRAM: launch}
     runner._profile_configs = {"coder": _home_config(Platform.TELEGRAM, "-100999")}
     runner._profile_adapters = {"coder": {Platform.TELEGRAM: coder}}
-    runner._free_tier_startup_line = Mock(return_value=None)
     runner._planned_restart_notice_lock = None
     marker = tmp_path / ".restart_pending.json"
     marker.write_text("{}", encoding="utf-8")

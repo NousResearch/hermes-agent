@@ -295,7 +295,7 @@ class FakeAdapter(UpstreamAdapter):
         )
 
 
-async def _start_runner(app: "web.Application"):
+async def _start_runner(app: web.Application):
     """Spin up an aiohttp app on an ephemeral localhost port. Returns (runner, base_url)."""
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
@@ -306,7 +306,7 @@ async def _start_runner(app: "web.Application"):
     return runner, f"http://127.0.0.1:{port}"
 
 
-def _build_fake_upstream(captured: dict[str, Any]) -> "web.Application":
+def _build_fake_upstream(captured: dict[str, Any]) -> web.Application:
     async def echo(request):
         body = await request.read()
         captured["requests"].append({
@@ -334,7 +334,7 @@ def _build_fake_upstream(captured: dict[str, Any]) -> "web.Application":
     return app
 
 
-def _build_retrying_fake_upstream(captured: dict[str, Any]) -> "web.Application":
+def _build_retrying_fake_upstream(captured: dict[str, Any]) -> web.Application:
     async def maybe_unauthorized(request):
         body = await request.read()
         auth = request.headers.get("Authorization")
@@ -433,7 +433,7 @@ def _build_sse_upstream(
     frames: list[bytes],
     *,
     path: str = "/v1/chat/completions",
-) -> "web.Application":
+) -> web.Application:
     async def sse(request):
         _ = await request.read()
         resp = web.StreamResponse(

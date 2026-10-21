@@ -9,13 +9,18 @@ import json
 import math
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
+from hermes_state_keys import (
+    CRON_PRINCIPAL_ID, CRON_REQUEST_PREFIX, cron_request_range, cron_run_from_request, legacy_cron_run_job,
+    prefix_range,
+)
+from hermes_state_local import POLICY_PREFIX
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 import itertools
@@ -87,6 +92,30 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
 
 _PROMPT_RESOLVED_SQL = "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved"
 
+# One job's scheduler admissions (``:request_lo``/``:request_hi`` = cron_request_range). The principal
+# is inlined so the partial index applies (a bound parameter cannot prove its WHERE). A request id
+# whose only ``:`` after ``cron:`` ends the job id is unambiguous (fresh execution ids hold none);
+# any other in the range (job ``a`` vs ``a:b``, or an execution id admitted with a ``:`` before that
+# was refused) belongs to the job its creation receipt's policy names, never to a ``:`` split.
+# A legacy id is the prefix plus exactly ``YYYYmmdd_HHMMSS``: the GLOB keeps job ``daily`` from
+# claiming job ``daily_digest``'s ``cron_daily_digest_<ts>`` runs inside the same id range.
+_CRON_POLICY_JOB_SQL = (
+    "(SELECT CASE WHEN json_valid(r) THEN json_extract(r, '$.cron_job.id') END FROM"
+    " (SELECT CASE WHEN json_valid(value) THEN json_extract(value, '$.policy.request_json') END AS r"
+    f" FROM state_meta WHERE key = '{POLICY_PREFIX}' || target_session_id))")
+_CRON_ADMISSION_SQL = (
+    f"principal_id = '{CRON_PRINCIPAL_ID}' AND request_id >= :request_lo AND request_id < :request_hi"
+    f" AND ((instr(substr(request_id, {len(CRON_REQUEST_PREFIX) + 1}), ':') = length(:request_lo) - {len(CRON_REQUEST_PREFIX)}"
+    " AND instr(substr(request_id, length(:request_lo) + 1), ':') = 0)"
+    f" OR {_CRON_POLICY_JOB_SQL} = :job_id)")
+_CRON_RUN_IDS_SQL = (
+    "SELECT id FROM sessions WHERE source = 'cron' AND id >= :prefix AND id < :prefix_hi"
+    " AND substr(id, length(:prefix) + 1) GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]'"
+    f" UNION ALL SELECT target_session_id FROM session_admissions WHERE {_CRON_ADMISSION_SQL}")
+_CRON_EXECUTION_SQL = (
+    "(SELECT substr(request_id, length(:request_lo) + 1) FROM session_admissions"
+    f" WHERE target_session_id = s.id AND {_CRON_ADMISSION_SQL} LIMIT 1)")
+
 
 def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = None) -> dict[str, Any]:
     """Text-free timing evidence for a session export.
@@ -109,7 +138,7 @@ def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = 
         "from_role": prev.get("role"), "to_role": nxt.get("role"),
         "gap_ms": max(0, round((nxt_ts - prev_ts) * 1000)),
     } for (prev, prev_ts), (nxt, nxt_ts) in itertools.pairwise(timestamped)]
-    iso = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    iso = lambda ts: datetime.fromtimestamp(ts, tz=UTC).isoformat()
     first_ts, last_ts = (timestamped[0][1], timestamped[-1][1]) if timestamped else (None, None)
     return {
         "source": "message_timestamps",
@@ -217,20 +246,46 @@ class SessionPortabilityMixin:
                 for r in rows]
 
     def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
-        """Run sessions of one cron job, newest first, in the ``list_sessions_rich`` row shape.
-        Cron runs are flat ``cron_{job_id}_{timestamp}`` sessions that never compress or
-        branch, so this skips ``list_sessions_rich``'s compression-chain CTE /
-        leading-wildcard ``id_query`` path (which seeds from EVERY ``source='cron'`` row)
-        for a ``[prefix, prefix_hi)`` id range scan that scales with the window."""
-        prefix = f"cron_{job_id}_"
-        # Half-open upper bound: bump the final byte so the range covers exactly the prefix.
-        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        """Run sessions of one cron job, newest first, in the ``list_sessions_rich`` row shape,
+        stamped with ``cron_job_id`` and ``cron_execution_id`` (None for a pre-unified run).
+
+        Pre-unified runs are flat ``cron_{job_id}_{timestamp}`` sessions: a ``[prefix,
+        prefix_hi)`` id range. Unified-runtime runs keep their runtime-minted ``local-*`` id, which
+        must not change (exact-retry recovery re-derives it), but the scheduler principal admitted
+        each under ``cron:<job>:<execution>``: a range of ``idx_session_admissions_cron_request``.
+        Both scans scale with this job's runs, never with total cron history or with every local
+        session's policy receipt, and skip ``list_sessions_rich``'s compression-chain CTE.
+
+        Limitation (legacy runs had it too): only a run's FIRST session is listed. A run that
+        compressed continues in a child session this does not return, and the row's liveness
+        (``scheduler_owned``) and detail identity follow that first session, not the tip."""
+        prefix, prefix_hi = prefix_range(f"cron_{job_id}_")
+        request_lo, request_hi = cron_request_range(job_id)
         query = _rich_select(
-            "s.*", "s.source = 'cron' AND s.id >= ? AND s.id < ?",
-            "\n            ORDER BY s.started_at DESC, s.id DESC\n            LIMIT ? OFFSET ?",
+            f"s.*, {_CRON_EXECUTION_SQL} AS cron_execution_id", f"s.source = 'cron' AND s.id IN ({_CRON_RUN_IDS_SQL})",
+            "\n            ORDER BY s.started_at DESC, s.id DESC\n            LIMIT :limit OFFSET :offset",
             prompt_select=f",\n                {_PROMPT_RESOLVED_SQL}",
         )
-        return [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
+        rows = self._read_rows(query, {"prefix": prefix, "prefix_hi": prefix_hi, "request_lo": request_lo,
+                                       "request_hi": request_hi, "job_id": job_id, "limit": limit, "offset": offset})
+        return [{**self._rich_row(row), "cron_job_id": job_id} for row in rows]
+
+    def cron_run_identity(self, session_id: str) -> Optional[dict[str, Any]]:
+        """``{"cron_job_id", "cron_execution_id"}`` of a cron run session, else None: a legacy id
+        names its job (no execution), a unified-runtime run is one probe of its scheduler admission
+        (and, when its request id is ambiguous, of the job its creation receipt's policy names)."""
+        legacy_job = legacy_cron_run_job(session_id)
+        if legacy_job is not None:
+            return {"cron_job_id": legacy_job, "cron_execution_id": None}
+        rows = self._read_rows(
+            "SELECT request_id, " + _CRON_POLICY_JOB_SQL + " AS policy_job FROM session_admissions"
+            " WHERE principal_id = ? AND target_session_id = ? ORDER BY seq LIMIT 1", (CRON_PRINCIPAL_ID, session_id))
+        run = None
+        if rows:
+            run = cron_run_from_request(rows[0]["request_id"])
+            if run is None and isinstance(rows[0]["policy_job"], str):
+                run = cron_run_from_request(rows[0]["request_id"], rows[0]["policy_job"])
+        return {"cron_job_id": run[0], "cron_execution_id": run[1]} if run else None
 
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.
@@ -416,7 +471,8 @@ class SessionPortabilityMixin:
             # stamped even on ended segments.
             donor_db.reopen_session(seg_id)
             donor_db.end_session(seg_id, "adopted_by_profile")
-            donor_db.set_session_archived(seg_id, True)
+            # The session lives on in the adopting profile: not a delete for plugins.
+            donor_db.set_session_archived(seg_id, True, notify=False)
             return True
         except Exception:
             logger.warning("failed to retire donor segment %s after adoption", seg_id, exc_info=True)
@@ -754,6 +810,13 @@ class SessionPortabilityMixin:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}
 
         def _do(conn):
+            from hermes_state_mutation_retirement import retired_in
+            # A user-deleted id stays fenced for good: its row restored beside the fence would list
+            # fine and refuse every turn, so the import is refused by name and writes nothing.
+            ids = [str(item["session"].get("id") or "").strip() for item in normalized]
+            if deleted := [sid for sid in ids if retired_in(conn, sid)]:
+                return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": [
+                    f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted]}
             imported_ids: list[str] = []
             skipped_ids: list[str] = []
             parent_updates: list[tuple[str, str]] = []

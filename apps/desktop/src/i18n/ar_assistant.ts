@@ -1,3 +1,4 @@
+import { arThemePicker } from './ar_theme_picker'
 import type { TranslationOverrides } from './define-locale'
 
 export const arAssistant = {
@@ -15,7 +16,7 @@ export const arAssistant = {
       hideNames: 'إخفاء الأسماء',
       skill: name => `المهارة ${name}`,
       kind: { plugin: 'إضافة', skill: 'مهارة' },
-      tier: { official: 'رسمي', community: 'مجتمعي' },
+      tier: { official: 'رسمي', verified: 'موثّق', community: 'مجتمعي' },
       targetProfile: profile => `يُثبَّت في ملفك الشخصي ${profile}`,
       sendFailed: 'تعذّر إرسال ردك. حاول مرة أخرى.',
       commitLabel: 'الإيداع',
@@ -54,6 +55,12 @@ export const arAssistant = {
         provider: 'خطأ من المزوّد',
         runtime: 'خطأ في بيئة التشغيل المحلية',
         streaming: 'خطأ في اتصال البث'
+      },
+      errorCodes: {
+        cron_session_read_only: {
+          title: 'هذه المحادثة تابعة لمهمة مجدولة',
+          body: 'إنها تشغّل تلك المهمة فقط، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
+        }
       },
       errorRetry: 'إعادة المحاولة',
       errorLimitResets: time => `يُعاد ضبط الحد عند ${time}`,
@@ -120,31 +127,7 @@ export const arAssistant = {
       oneQuestion: 'سؤال واحد',
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },
-    setupChoose: {
-      kinds: {
-        accent: 'لون التمييز',
-        connectors: 'التطبيقات',
-        layout: 'التخطيط',
-        plugins: 'الإضافات',
-        theme: 'المظهر'
-      },
-      loading: 'جار تحميل الخيارات...',
-      unavailable: 'هذه القائمة غير متاحة الآن. رد في المحادثة بدلا من ذلك.',
-      findApp: 'ابحث عن تطبيق',
-      customColor: 'لون مخصص',
-      plugin: 'إضافة',
-      startsLater: 'سنُعِدّ هذه عندما تبدأ.'
-    },
-    startChat: {
-      starting: title => `جار بدء "${title}"...`,
-      startingUntitled: 'جار بدء محادثة...',
-      untitled: 'محادثة جديدة',
-      notStarted: 'تعذر بدء هذه المحادثة.',
-      retry: 'إعادة المحاولة',
-      inProfile: profile => `في ${profile}`,
-      open: 'فتح',
-      openFailed: 'تعذر فتح المحادثة'
-    },
+    themePicker: arThemePicker,
     tool: {
       copyCode: 'نسخ الكود',
       renderingImage: 'جار عرض الصورة...',
@@ -208,8 +191,6 @@ export const arAssistant = {
         runningTool: action => `جار تشغيل ${action.toLowerCase()}`
       },
       titles: {
-        setup_choose: { done: 'طرح سؤال إعداد', pending: 'يطرح سؤال إعداد', pendingAction: 'يسأل' },
-        start_chat: { done: 'بدأ محادثة', pending: 'يبدأ محادثة', pendingAction: 'يبدأ' },
         browser_click: {
           done: 'تم النقر على عنصر الصفحة',
           pending: 'جار النقر على عنصر الصفحة',

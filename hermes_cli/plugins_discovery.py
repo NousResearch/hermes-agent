@@ -69,7 +69,7 @@ def _select_entry_point_group(entry_points: Any, group: str) -> list:
     return [ep for ep in entry_points if ep.group == group]
 
 
-def discover_entrypoint_manifests() -> list["PluginManifest"]:
+def discover_entrypoint_manifests() -> list[PluginManifest]:
     """Return metadata-only manifests for installed entry-point plugins. Kind comes from an import-free source
     scan (memory/model providers route to their own discovery). Capabilities come from the companion
     ``hermes_agent.plugin_capabilities`` group (``<plugin-id>.<capability-id>`` entries pointing at the same
@@ -261,7 +261,9 @@ def gate_manifest(
     category-owned kinds (exclusive / model-provider), bundled auto-loads (backend now, platform deferred),
     then ``plugins.enabled`` opt-in (path-derived key or legacy bare name)."""
     lookup_key = manifest_key(manifest)
-    names = {lookup_key, manifest.name}
+    from hermes_cli.left_core_migration import legacy_plugin_keys
+    # A bundled key that left core (``observability/langfuse``) keeps selecting its catalog plugin.
+    names = {lookup_key, manifest.name, *legacy_plugin_keys(lookup_key)}
 
     def _placeholder(error: Optional[str], level: int, message: str, *args, enabled: bool = False) -> ManifestGate:
         return ManifestGate("placeholder", enabled=enabled, error=error, log=(level, message, lookup_key, *args))

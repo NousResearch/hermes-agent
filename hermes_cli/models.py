@@ -361,7 +361,7 @@ _NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 _nous_recommended_cache: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
 
 
-def _nous_recommended_disk_path() -> "Path":
+def _nous_recommended_disk_path() -> Path:
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "cache" / "nous_recommended_cache.json"
 
@@ -1465,17 +1465,17 @@ def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
 
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     try:
+        from hermes_cli.anon_challenge import background_caller
         from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
-
-        creds = resolve_nous_runtime_credentials()
+        with background_caller():  # never waits on or opens a challenge
+            creds = resolve_nous_runtime_credentials()
         if creds:
             live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
             if live:
                 return live
     except Exception:
         pass
-    # Live failed / no creds: the docs-hosted manifest — NOT the in-repo snapshot — so newly added
-    # Portal models still surface without a Hermes release.
+    # Live failed / no creds: the docs-hosted manifest, so new Portal models surface without a release.
     return get_curated_nous_model_ids() or None
 
 
@@ -1930,10 +1930,9 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
         try:
             entry = (refresh_fn or _default_refresh)()
             if entry:
-                # Under the write lock: the GUI read path spawns one of these per stale provider, so
-                # the plain load-modify-save would let concurrent warms drop each other's rows.
-                with _cache_write_lock:
-                    _store_cache_entry(cache_key, entry)
+                # _store_cache_entry re-reads under the write lock: the GUI read path spawns one of these
+                # per stale provider, so a plain load-modify-save would let concurrent warms drop rows.
+                _store_cache_entry(cache_key, entry)
         except Exception:
             logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
         finally:
@@ -2058,9 +2057,6 @@ def _load_provider_models_cache() -> dict:
         return {}
 
 
-_cache_write_lock = threading.Lock()
-
-
 def _save_provider_models_cache(data: dict) -> None:
     """Persist the cache dict. Best-effort — silent on any error."""
     try:
@@ -2069,26 +2065,17 @@ def _save_provider_models_cache(data: dict) -> None:
         pass
 
 
-def _store_cache_entry(cache_key: str, entry: dict, cache: Optional[dict] = None) -> None:
-    """Write one row into the disk cache (reloading the latest state unless ``cache`` is given)."""
-    if cache is None:
+def _store_cache_entry(cache_key: str, entry: dict) -> None:
+    """Write one row into the disk cache, re-reading it under the thread + cross-process locks: a slow
+    fetch worker or another process must never write back the snapshot it loaded before fetching."""
+    from hermes_cli.models_cache_lock import write_under_cache_lock
+
+    def write_row() -> None:
         cache = _load_provider_models_cache()
-    cache[cache_key] = entry
-    _save_provider_models_cache(cache)
+        cache[cache_key] = entry
+        _save_provider_models_cache(cache)
 
-
-def update_provider_cache_entry(provider: str, models: list[str]) -> None:
-    """Thread-safe single-entry update for parallel prefetch workers: load-modify-save under a lock
-    so concurrent fetches don't clobber each other's rows. Best-effort, silent on any error."""
-    try:
-        normalized = normalize_provider(provider) or (provider or "")
-        if not normalized or not models:
-            return
-        fp = _credential_fingerprint(normalized)
-        with _cache_write_lock:
-            _store_cache_entry(normalized, _cache_entry(fp, models))
-    except Exception:
-        pass
+    write_under_cache_lock(_provider_models_cache_path(), write_row)
 
 
 def _normalized_cache_slug(provider: Optional[str]) -> str:
@@ -2146,13 +2133,13 @@ def cached_provider_model_ids(
         if fresh is None:
             # The live fetch degraded to the curated list; the account's real catalog is on disk.
             return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
-        _store_cache_entry(normalized, fresh, cache)
+        _store_cache_entry(normalized, fresh)
         return _chat_catalog_rows(list(live))
 
     if is_ollama:
         if _ollama_native_probe_reachable():
             # A reachable empty native catalog is authoritative; do not resurrect a stale disk catalog.
-            _store_cache_entry(normalized, _cache_entry(fp, [], now), cache)
+            _store_cache_entry(normalized, _cache_entry(fp, [], now))
             return []
         # A failed/non-native probe is not authoritative: keep a stale catalog rather than blanking
         # the picker during a transient outage.
@@ -2182,16 +2169,23 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         # a stale signed-out probe past an explicit refresh.
         global _copilot_acp_session_memo
         _copilot_acp_session_memo = None
-        if provider is None:
-            path = _provider_models_cache_path()
-            if path.exists():
-                path.unlink()
-            return
-        cache = _load_provider_models_cache()
-        normalized = _normalized_cache_slug(provider)
-        if normalized in cache:
-            del cache[normalized]
-            _save_provider_models_cache(cache)
+        from hermes_cli.models_cache_lock import write_under_cache_lock
+        path = _provider_models_cache_path()
+
+        # Under the cache lock like every other writer: a locked writer that loaded the cache
+        # before this clear would otherwise save its snapshot after it, bringing the row back.
+        def clear_file() -> None:
+            if provider is None:
+                if path.exists():
+                    path.unlink()
+                return
+            cache = _load_provider_models_cache()
+            normalized = _normalized_cache_slug(provider)
+            if normalized in cache:
+                del cache[normalized]
+                _save_provider_models_cache(cache)
+
+        write_under_cache_lock(path, clear_file)
     except Exception:
         pass
 
@@ -2548,12 +2542,12 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 
 # Per-family (model-id prefix → api_mode) routing from OpenCode's published Zen/Go endpoint
 # tables, checked in order. GPT/Codex/Grok and Muse Spark use /v1/responses (Muse Spark 503s on
-# chat/completions); Claude (Zen), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
+# chat/completions); Claude, MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
 # everything else falls through to /v1/chat/completions.
 _OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
     "opencode-go": (
         (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
+        (("claude-", "minimax-", "qwen", "union-alpha"), "anthropic_messages")),
     "opencode-zen": (
         (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
         (("qwen",), "anthropic_messages"))}
@@ -2899,7 +2893,7 @@ def _custom_endpoint_fingerprint(
 
 
 def _cache_entry_valid(
-    entry: Any, fp: str, *, allow_empty: bool = False) -> "TypeGuard[dict[str, Any]]":
+    entry: Any, fp: str, *, allow_empty: bool = False) -> TypeGuard[dict[str, Any]]:
     """Well-formed cache row for fingerprint *fp*. Requires a numeric ``at`` so corrupt disk state
     degrades to a cache miss instead of raising; empty model lists are valid only when the caller
     opts into an authoritative empty catalog."""
@@ -2999,7 +2993,7 @@ def cached_fetch_api_models(
     live = _live()
     if live or isinstance(live, _NativePickerModelList):
         stored = _entry(live, now)
-        _store_cache_entry(cache_key, stored, cache)
+        _store_cache_entry(cache_key, stored)
         return _catalog(stored)
     # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it
     # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).

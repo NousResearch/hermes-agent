@@ -395,6 +395,7 @@ def default_ls_remote(source: str) -> str:
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         timeout=30,
+        check=False,
     )
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or "ls-remote failed").strip()[:200])

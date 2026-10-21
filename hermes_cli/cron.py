@@ -4,7 +4,7 @@ import contextlib
 import json
 import re
 import sys
-from datetime import timezone
+from datetime import timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -119,7 +119,7 @@ def _next_run_overdue_seconds(next_run_at: Any) -> Optional[float]:
     if dt is None:
         return None
     # Same-tzinfo subtraction is wall-clock arithmetic in Python; compare instants.
-    return (now().astimezone(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+    return (now().astimezone(UTC) - dt.astimezone(UTC)).total_seconds()
 
 
 def _next_run_row(job: dict[str, Any]) -> tuple[str, str]:
@@ -311,13 +311,16 @@ def _job_warnings(job: dict[str, Any]) -> list[str]:
 
 
 def cron_tick():
-    """Run due jobs once and exit."""
+    """Run due jobs once and exit (external-scheduler mode: a system crontab calls this).
+
+    No gateway runs here by definition, and none is started: agent jobs are skipped with a logged
+    reason until the gateway is up (headless surfaces refuse rather than spawn)."""
     from cron.scheduler import CronTickYielded, tick
     from hermes_cli.observability.shared_metrics_process import begin_process
 
     begin_process("cron")
     try:
-        tick(verbose=True)
+        tick(verbose=True, headless=True)
     except CronTickYielded as exc:
         # Inert for a one-shot CLI (no boot fingerprint); report cleanly rather than traceback.
         print(color(f"✗ {exc}", Colors.YELLOW))
@@ -625,7 +628,7 @@ def _print_active_jobs_summary(jobs) -> None:
     # job its configured zone), so order by instant, never by ISO text; display the stored stamp.
     # `_parse_aware` hands back one shared ZoneInfo, and Python compares same-tzinfo datetimes
     # by wall clock (wrong across a DST fold) — normalise to UTC before ordering.
-    next_runs = [(parsed.astimezone(timezone.utc), j["next_run_at"]) for j in jobs
+    next_runs = [(parsed.astimezone(UTC), j["next_run_at"]) for j in jobs
                  if (parsed := _parse_aware(j.get("next_run_at"))) is not None]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
@@ -880,6 +883,9 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
         print(f"  Next run: {result['job']['next_run_at']}")
     if action == "run":
         print(f"  {_run_outcome(result.get('job', {}))}")
+        if (job.get('executed') and job.get('execution_success') is False
+                and not job.get('delegation_id') and job.get('execution_mode') != 'background'):
+            return 1
     return 0
 
 

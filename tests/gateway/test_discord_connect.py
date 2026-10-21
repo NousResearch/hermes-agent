@@ -202,7 +202,7 @@ async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monk
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
-    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
 
     intents = SimpleNamespace(
         message_content=False, dm_messages=False, guild_messages=False,
@@ -271,7 +271,7 @@ async def test_connect_clears_previous_fatal_error(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
-    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
 
     intents = SimpleNamespace(
         message_content=False, dm_messages=False, guild_messages=False,
@@ -311,7 +311,7 @@ async def test_connect_timeout_cancels_bot_task(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
-    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
 
     intents = SimpleNamespace(
         message_content=False, dm_messages=False, guild_messages=False,
@@ -335,7 +335,7 @@ async def test_connect_timeout_cancels_bot_task(monkeypatch):
     )
 
     async def fake_wait_for_ready(ready_event, bot_task, timeout):
-        raise asyncio.TimeoutError()
+        raise TimeoutError()
 
     monkeypatch.setattr(
         discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
@@ -359,7 +359,7 @@ async def test_disconnect_cancels_running_bot_task(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
-    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
 
     # Simulate a zombie bot_task that never finishes (as if discord.py is mid-handshake)
     async def _forever():
@@ -701,7 +701,7 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
         "created": 1,
         "deleted": 0,
     }
-    sync = AsyncMock(side_effect=[asyncio.TimeoutError(), summary])
+    sync = AsyncMock(side_effect=[TimeoutError(), summary])
     monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
 
     await adapter._run_post_connect_initialization()
@@ -874,7 +874,7 @@ class TestPrivilegedIntentsRequiredFatal:
             lambda scope, identity, metadata=None: (True, None),
         )
         monkeypatch.setattr(
-            "gateway.status.release_scoped_lock",
+            "gateway.status_scoped_locks.release_scoped_lock",
             lambda scope, identity: None,
         )
 
@@ -919,7 +919,7 @@ async def test_skill_catalog_scan_runs_off_the_event_loop(monkeypatch):
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
-    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
     monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(
         message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False))
     monkeypatch.setattr(discord_platform.commands, "Bot", lambda **kw: FakeBot(intents=kw["intents"]))

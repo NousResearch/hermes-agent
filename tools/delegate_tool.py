@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (
-    _ChildRun, _attach_child, _build_child_goal_message, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
+    _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
@@ -134,7 +134,15 @@ def _open_child_session_db(parent_agent) -> Any:
     # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
     # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
     # .db_path via __getattr__, so this works through them.
+    from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, is_worker_process
     parent_session_db = getattr(parent_agent, "_session_db", None)
+    if is_worker_process() or isinstance(parent_session_db, RuntimeSessionStore):
+        # Missing db_path on a scoped store is NOT permission to open the launch profile: the
+        # owner reserves the child's row and execution under the parent's own (#141793).
+        if not isinstance(parent_session_db, RuntimeSessionStore):
+            raise WorkerPersistenceError('worker_child_registration_required')
+        from agent.runtime_session_child import reserve_child_store
+        return reserve_child_store(parent_session_db)
     if parent_session_db is None:
         return None
     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
@@ -154,7 +162,7 @@ def _apply_child_cache_ttl(child) -> None:
 _CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
 
 
-def _child_compression_cap_tokens(raw) -> "int | None":
+def _child_compression_cap_tokens(raw) -> int | None:
     """Validated ``delegation.compression_threshold_tokens``: an int >= 16000, or None for "no cap".
 
     Unset / ``0`` / ``false`` / ``null`` mean no subagent-specific cap: the child compacts at the
@@ -282,6 +290,7 @@ def _build_child_agent(
                     if child_progress_cb else None
                 ),
                 session_db=child_session_db, parent_session_id=parent_sid, request_overrides=request_overrides,
+                session_id=getattr(child_session_db, "reserved_session_id", None),
                 tool_progress_callback=child_progress_cb,
                 iteration_budget=None,  # fresh budget per subagent
             )
@@ -400,6 +409,18 @@ def _run_single_child(
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
+def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) -> dict[str, Any]:
+    """``_build_child_agent`` override kwargs for a resolved credential bundle (delegate_task and the lifecycle API)."""
+    return {
+        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
+        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
+        "override_request_overrides": creds.get("request_overrides"),
+        "override_acp_command": creds.get("command"),
+        "override_acp_args": creds.get("args"),
+        "routing_cfg": routing_cfg,
+    }
+
+
 def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
@@ -409,14 +430,7 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
+    overrides = _credential_overrides(creds, routing_cfg)
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -431,6 +445,10 @@ def _build_children(
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
+            # An owner refusal can land mid-batch: the siblings built so far hold reservations.
+            for _, _, built in children:
+                _detach_child(parent_agent, built)
+                _close_child(built, "Failed to close child after a refused sibling")
             return [], str(exc)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):

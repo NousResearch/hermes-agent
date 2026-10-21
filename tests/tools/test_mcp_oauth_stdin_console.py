@@ -13,7 +13,7 @@ def test_devnull_stdin_is_not_a_console_on_windows():
     code = ("import sys, os; sys.path.insert(0, os.getcwd()); "
             "from tools.mcp_oauth import _stdin_is_console; print(_stdin_is_console(), sys.stdin.isatty())")
     proc = subprocess.run([sys.executable, "-c", code], stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True, cwd=os.getcwd(), timeout=60)
+                          capture_output=True, text=True, cwd=os.getcwd(), timeout=60, check=False)
     console, isatty = proc.stdout.split()
     assert isatty == "True", "premise: the Windows CRT calls DEVNULL a tty (else this guard is moot)"
     assert console == "False"

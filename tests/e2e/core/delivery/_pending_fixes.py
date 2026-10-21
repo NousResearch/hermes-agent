@@ -65,7 +65,7 @@ def gap_open(pr: int) -> bool:
         env.update({"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
                     "PYTHONPATH": str(REPO_ROOT), **extra_env})
         proc = subprocess.run([sys.executable, "-c", _PRELUDE + script], cwd=str(REPO_ROOT), env=env,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False)
     verdict = proc.stdout.strip().splitlines()[-1:] if proc.returncode == 0 else []
     if verdict not in (["open"], ["fixed"]):
         raise AssertionError(f"probe for #{pr} is broken (rc={proc.returncode}): "

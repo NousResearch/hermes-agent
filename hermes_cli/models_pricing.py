@@ -315,17 +315,18 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
         env_base = None
     api_key = creds_base = ""
     try:
+        from hermes_cli.anon_challenge import background_caller
         from hermes_cli.auth import resolve_nous_runtime_credentials
 
-        creds = resolve_nous_runtime_credentials()
+        with background_caller():  # a pricing read never opens a free-tier challenge
+            creds = resolve_nous_runtime_credentials()
         if creds:
             api_key = creds.get("api_key", "") or ""
             creds_base = (creds.get("base_url", "") or "").strip()
     except Exception:
         pass
     base_url = (env_base or creds_base or _DEFAULT_NOUS_INFERENCE_BASE).rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
+    base_url = base_url.removesuffix("/v1")
     return (api_key, base_url)
 
 

@@ -124,7 +124,7 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
     command = _launchers.installation_command(root, module="source_probe")
     (site_packages(selected_venv(root)) / "selected_probe.py").write_text("VALUE = 'A'\n")
     child_env = {**os.environ, "HERMES_DISABLE_LAZY_INSTALLS": "1"}
-    before = subprocess.run(command, env=child_env, capture_output=True, text=True, timeout=30)
+    before = subprocess.run(command, env=child_env, capture_output=True, text=True, timeout=30, check=False)
     assert before.returncode == 0, before.stderr
     assert json.loads(before.stdout)["executable"] == str(old_python)
 
@@ -175,7 +175,7 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
     assert cmd_gc(None) == 0
     assert not old_python.exists(), "real PM GC did not remove the superseded Python"
     assert new_python.is_file()
-    after = subprocess.run(command, env=child_env, capture_output=True, text=True, timeout=30)
+    after = subprocess.run(command, env=child_env, capture_output=True, text=True, timeout=30, check=False)
     assert after.returncode == 0, after.stderr
     assert json.loads(after.stdout) == {"executable": str(new_python), "value": "B"}
 
@@ -223,6 +223,7 @@ def _fact(root):
     probe = subprocess.run(
         [str(selected / "bin" / "python"), "-I", "-c", "import json,sys; print(json.dumps(sys.prefix))"],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert probe.returncode == 0, probe.stderr
     assert Path(json.loads(probe.stdout)) == selected
@@ -417,6 +418,7 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
              "from pathlib import Path; from pm.environments import activate_dependencies; "
              f"activate_dependencies(Path({str(root)!r}))"],
             capture_output=True, text=True, timeout=30,
+            check=False,
         )
         assert activation_probe.returncode == 0, activation_probe.stderr
         assert activated_old.is_file(), "positive control did not execute the old activation hook"
@@ -432,6 +434,7 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
     result = subprocess.run(
         [str(isolated_python), *invocation, *args], cwd=root,
         env=dict(os.environ), capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     output = json.loads(result.stdout)
@@ -486,6 +489,7 @@ def test_failed_launch_completion_degrades_to_a_warning(source_launch, tmp_path,
     result = subprocess.run(
         [str(isolated_python), str(entry), *argv], cwd=root,
         env=dict(os.environ), capture_output=True, text=True, timeout=60,
+        check=False,
     )
 
     assert result.returncode == 0, result.stderr

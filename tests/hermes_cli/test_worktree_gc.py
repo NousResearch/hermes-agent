@@ -34,6 +34,7 @@ def _git(args, cwd, env=None):
         e.update(env)
     result = subprocess.run(
         ["git", *args], capture_output=True, text=True, cwd=str(cwd), env=e,
+        check=False,
     )
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result.stdout.strip()
@@ -209,6 +210,7 @@ class TestReclaim:
         probe = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", branch],
             capture_output=True, text=True, cwd=str(repo),
+            check=False,
         )
         assert probe.returncode != 0, "branch should be gone with its tree"
 
@@ -418,7 +420,7 @@ class TestCmdWorktreeJson:
         _add_worktree(repo, "hermes-json")
         assert cmd_worktree(self._ns(repo, "list")) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert set(payload) == {"repo", "trees", "external_trees", "branches"}
+        assert set(payload) == {"repo", "trees", "external_trees", "branches", "archives"}
         names = [t["name"] for t in payload["trees"]]
         assert "hermes-json" in names
         tree = next(t for t in payload["trees"] if t["name"] == "hermes-json")

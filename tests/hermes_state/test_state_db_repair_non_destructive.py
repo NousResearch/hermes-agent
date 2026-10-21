@@ -74,9 +74,9 @@ PAGE_SIZE = 4096
 
 def _writer_after_stage(
     db_path: str,
-    ready: "multiprocessing.synchronize.Event",
-    start: "multiprocessing.synchronize.Event",
-    result: "multiprocessing.queues.Queue",
+    ready: multiprocessing.synchronize.Event,
+    start: multiprocessing.synchronize.Event,
+    result: multiprocessing.queues.Queue,
 ) -> None:
     """Try one real cross-process write after staging has begun.
 

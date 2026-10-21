@@ -46,5 +46,5 @@ def test_create_openai_client_preserves_already_suffixed_kimi_url(monkeypatch):
         "base_url": "https://api.kimi.com/coding/v1",
     }
 
-    client = create_openai_client(mock_agent, client_kwargs, reason="test", shared=False)
+    create_openai_client(mock_agent, client_kwargs, reason="test", shared=False)
     assert captured_kwargs.get("base_url") == "https://api.kimi.com/coding/v1"

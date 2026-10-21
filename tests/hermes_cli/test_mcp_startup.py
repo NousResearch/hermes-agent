@@ -44,7 +44,9 @@ def _agent_args(**overrides) -> Namespace:
     return Namespace(**base)
 
 
-def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
+def test_prepare_agent_startup_backgrounds_blocking_mcp_for_rl(monkeypatch):
+    """``hermes rl`` builds its agent in this process: discovery runs off-thread, never blocking.
+    (Chat turns run in the gateway; see the next test.)"""
     stop = threading.Event()
     calls = {"mcp": 0}
 
@@ -88,7 +90,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
 
     try:
         start = time.monotonic()
-        main_mod._prepare_agent_startup(_agent_args())
+        main_mod._prepare_agent_startup(_agent_args(command="rl"))
         elapsed = time.monotonic() - start
         assert elapsed < 2.0
         deadline = time.monotonic() + 3.0
@@ -100,6 +102,22 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         assert thread.is_alive()
     finally:
         stop.set()
+
+
+@pytest.mark.parametrize("command", [None, "chat"])
+def test_chat_client_never_spawns_mcp_servers_the_gateway_owns(monkeypatch, command):
+    """A chat/`-q` client only proxies turns to the gateway: spawning every MCP server here doubled
+    them and held the discovery lock the cold-starting gateway waited on before READY."""
+    calls = {"background": 0, "inline": 0}
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: False)
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery",
+                        lambda **_kwargs: calls.__setitem__("background", calls["background"] + 1))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(
+        discover_plugins=lambda: None, start_background_plugin_discovery=lambda: None))
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool_discovery", types.SimpleNamespace(
+        discover_mcp_tools=lambda **_k: calls.__setitem__("inline", calls["inline"] + 1)))
+    main_mod._prepare_agent_startup(_agent_args(command=command))
+    assert calls == {"background": 0, "inline": 0}
 
 
 def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(

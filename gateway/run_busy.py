@@ -1207,7 +1207,7 @@ class GatewayBusySessionMixin:
             return reply
 
         if event.ephemeral_context_ref is not None:
-            return _queue_fallback(
+            return await _queue_fallback(
                 "Live location context requires its own turn — /steer queued for the next turn."
             )
 

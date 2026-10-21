@@ -302,3 +302,58 @@ def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, su
     assert methods_bot_relay._relay_root() == writer_root
     drained = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
     assert [e["id"] for e in drained["envelopes"]] == [env["id"]]
+
+
+@pytest.mark.parametrize("status", ["queued", "settled", "failed", "ambiguous", "refused"])
+def test_deliver_dispatch_preserves_delivery_identity_and_receipt(home, monkeypatch, status):
+    from tools import bot_live_delivery as live
+    from tui_gateway.contracts import registry
+
+    envelope_id = "a" * 32
+    receipt = {
+        "status": "failed" if status == "refused" else status,
+        "delivery_id": envelope_id,
+        "profile_home": str(home / "profiles" / "ops"),
+        "session_id": "bot-chat",
+        "message": "ping",
+    }
+    if status == "refused":
+        receipt.update(refused=True, error="queue full", reason="target_busy")
+    else:
+        receipt["admission_id"] = "admission-1"
+        if status == "settled":
+            receipt["reply"] = "pong"
+        elif status == "failed":
+            receipt.update(reply="", error="turn failed", reason="unknown", retry_admission_id="retry-1")
+
+    forwarded = []
+
+    def authority(target_home, params):
+        forwarded.append((target_home, params.copy()))
+        return receipt.copy()
+
+    monkeypatch.setattr(live, "authority_delivery", authority)
+    monkeypatch.setattr(registry, "STRICT", True)
+    params = {"id": envelope_id, "profile": "ops", "message": "ping", **SENDER}
+    for rid in (1, 2):
+        response = srv.handle_request({"id": rid, "method": "bot_relay.deliver", "params": params})
+        assert _result(response) == receipt
+    assert [target_home for target_home, _ in forwarded] == [home / "profiles" / "ops"] * 2
+    assert [params["id"] for _, params in forwarded] == [envelope_id] * 2
+    assert all(params["author"] == SENDER_AUTHOR for _, params in forwarded)
+    assert all(not any(key in params for key in SENDER) for _, params in forwarded)
+
+
+@pytest.mark.parametrize("extra", [{"unexpected": True}, {"id": None}, {"id": "../evil"}])
+def test_deliver_dispatch_rejects_invalid_requests_before_authority(home, monkeypatch, extra):
+    from tools import bot_live_delivery as live
+
+    monkeypatch.setattr(live, "authority_delivery", lambda *a, **k: pytest.fail("invalid delivery reached authority"))
+    params = {"id": "a" * 32, "profile": "ops", "message": "ping", **extra}
+    response = srv.handle_request({"id": 1, "method": "bot_relay.deliver", "params": params})
+    error = response["error"]
+    if "unexpected" in extra:
+        assert error["code"] == 4000
+        assert "unexpected" in error["message"]
+    else:
+        assert error["data"]["reason"] == "invalid_params"

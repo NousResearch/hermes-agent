@@ -4,7 +4,7 @@ import { homedir } from 'os'
 import { dirname, join } from 'path'
 import { pathToFileURL } from 'url'
 
-import { Box, Text } from '@hermes/ink'
+import { Box, Link, Text } from '@hermes/ink'
 import * as React from 'react'
 
 import { Accordion } from '../components/accordion.js'
@@ -16,6 +16,7 @@ import { recordParentLifecycle } from '../lib/parentLog.js'
 
 import { openWidget, updateWidget } from './host.js'
 import { defineWidgetApp, listWidgetApps, removeWidgetApp } from './registry.js'
+import { getWidgetSession, useWidgetSession } from './session.js'
 import { isCtrl } from './types.js'
 
 /**
@@ -38,6 +39,8 @@ export const widgetSdk = {
   Box,
   Dialog,
   GridAreas,
+  // Clickable link: OSC 8 for terminals that speak it, plus the TUI's own click-to-open for those that don't.
+  Link,
   Overlay,
   React,
   Shimmer,
@@ -46,6 +49,7 @@ export const widgetSdk = {
   WidgetGrid,
   defineWidgetApp,
   gauge,
+  getSession: getWidgetSession,
   h: React.createElement,
   hbars,
   isCtrl,
@@ -53,6 +57,7 @@ export const widgetSdk = {
   sparkRows,
   sparkline,
   updateWidget,
+  useSession: useWidgetSession,
   useShimmerPhase
 } as const
 

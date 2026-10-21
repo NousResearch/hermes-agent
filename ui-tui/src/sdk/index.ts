@@ -58,6 +58,7 @@ export {
   updateWidget
 } from './host.js'
 export { defineWidgetApp, getWidgetApp, listWidgetApps } from './registry.js'
+export { getWidgetSession, useWidgetSession, type WidgetSession } from './session.js'
 export {
   type ActiveWidget,
   type AmbientZone,

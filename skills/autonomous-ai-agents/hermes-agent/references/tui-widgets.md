@@ -58,6 +58,17 @@ export default function register(sdk) {
 `ShimmerRows`, `useShimmerPhase` — use `ShimmerRows` for loading phases
 instead of a bare "loading…" line.
 
+Links: `h(sdk.Link, { url }, label)` makes a clickable label (OSC 8, plus the
+TUI's own click-to-open for terminals without OSC 8 support). Wrap the label
+in a `Text` for color/underline.
+
+Session: `sdk.useSession()` (hook) and `sdk.getSession()` (outside React)
+return `{ id, cwd }`: the durable session id (`null` until the session exists;
+it changes on /new, /resume and compression) and the session's folder. Put
+`id`/`cwd` in a `useEffect` dependency list so per-session data refetches on a
+switch. Feature-detect (`typeof sdk.useSession === 'function'`) if the widget
+must also run on older TUIs.
+
 Expand/collapse: `sdk.Accordion` — the same primitive the session panel's
 tool/skill sections use. `h(Accordion, { t, title: 'details', count: 3,
 defaultOpen: false }, body)` toggles on CLICK (works in ambient widgets,

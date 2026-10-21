@@ -8,6 +8,7 @@ the ``pre_api_request`` hook and the debug dump. Nothing here imports
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
 from typing import Any
@@ -17,6 +18,22 @@ from hermes_cli.observability.shared_metrics_efficiency import observe_request_t
 from utils import env_var_enabled
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+@contextmanager
+def _agent_profile_scope(agent: Any):
+    """Bind request middleware to the profile that constructed ``agent``."""
+    home = getattr(agent, "_hermes_home", None)
+    if home is None:
+        yield
+        return
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(home))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
 
 
 @dataclass
@@ -142,12 +159,13 @@ def build_api_request(
     try:
         from hermes_cli.middleware import apply_llm_request_middleware
 
-        _llm_request_mw = apply_llm_request_middleware(
-            api_kwargs, task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
-            session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
-            provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
-            api_call_count=api_call_count,
-        )
+        with _agent_profile_scope(agent):
+            _llm_request_mw = apply_llm_request_middleware(
+                api_kwargs, task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+                session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
+                provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
+                api_call_count=api_call_count,
+            )
         api_kwargs = _llm_request_mw.payload
         _original_api_kwargs = _llm_request_mw.original_payload
         _llm_middleware_trace = _llm_request_mw.trace

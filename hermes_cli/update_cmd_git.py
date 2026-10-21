@@ -496,13 +496,18 @@ def _has_http_code(stderr: str, *codes: str) -> bool:
     return any(f"HTTP {code}" in stderr or f"returned error: {code}" in stderr for code in codes)
 
 
-# Ordered (predicate, diagnosis): curl reports HTTP errors as ``unable to access '<url>': ... error: 429``,
-# so rate-limit/outage checks must run BEFORE the generic "unable to access" check. An anonymous fetch
-# answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
-# repo), not a user credentials problem.
-_FETCH_FAILURE_RULES = (
-    (lambda s: _has_http_code(s, "429") or "rate limit" in s.lower(),
-     "✗ GitHub is rate limiting requests or having an outage (HTTP 429) — try again in 5 minutes."),
+#: Printed last when an update stops because GitHub never answered. The Desktop hand-off scripts
+#: (scripts/desktop-update/) match "GitHub couldn't be reached" to show it in the update window
+#: instead of a bare "Update failed (exit 1)": a retry minutes later is the whole fix.
+GITHUB_UNREACHABLE_NOTICE = ("Update failed: GitHub couldn't be reached. There may be an outage, or your"
+                             " internet connection isn't working. Try again later.")
+
+# The diagnoses below that mean GitHub (or the network to it) did not answer, not a local problem.
+# An anonymous fetch answered with HTTP 401 ("could not read Username") is GitHub during an outage
+# (or a renamed/private repo), not a user credentials problem.
+_UNREACHABLE_RULES = (
+    (lambda s: "timed out after" in s,  # _git_run's own NETWORK_GIT_TIMEOUT_SECONDS text
+     "✗ GitHub did not answer in time — a stalled connection or an outage."),
     (lambda s: _has_http_code(s, "500", "502", "503", "504"),
      "✗ GitHub appears to be having an outage — try again in a few minutes (https://www.githubstatus.com)."),
     (lambda s: "Could not resolve host" in s or "unable to access" in s,
@@ -511,6 +516,14 @@ _FETCH_FAILURE_RULES = (
      "✗ GitHub rejected the anonymous fetch (asked for a login) — this usually means a GitHub outage;"
      " try again in a few minutes (https://www.githubstatus.com). If it persists, check"
      " `git remote -v` points at a public repo."),
+)
+# Ordered (predicate, diagnosis): curl reports HTTP errors as ``unable to access '<url>': ... error: 429``,
+# so the rate-limit check must run BEFORE the generic "unable to access" check. A rate limit is not
+# "unreachable": waiting for its reset (or a token) is the fix, and its line says so.
+_FETCH_FAILURE_RULES = (
+    (lambda s: _has_http_code(s, "429") or "rate limit" in s.lower(),
+     "✗ GitHub is rate limiting requests or having an outage (HTTP 429) — try again in 5 minutes."),
+    *_UNREACHABLE_RULES,
     (lambda s: "Authentication failed" in s,
      "✗ Authentication failed — check your git credentials or SSH key."),
     # SSH auth failures never say "Authentication failed" — OpenSSH prints its own
@@ -524,13 +537,47 @@ _FETCH_FAILURE_RULES = (
 )
 
 
+def _fetch_failure_rule(stderr: str):
+    return next((rule for rule in _FETCH_FAILURE_RULES if rule[0](stderr)), None)
+
+
 def _classify_fetch_failure(stderr: str) -> str:
     """Map git-fetch stderr to a one-line diagnosis (caller also prints the raw first line)."""
-    return next((message for matches, message in _FETCH_FAILURE_RULES if matches(stderr)), "✗ Failed to fetch updates from origin.")
+    rule = _fetch_failure_rule(stderr)
+    return rule[1] if rule else "✗ Failed to fetch updates from origin."
 
 
-def _print_fetch_failure(stderr: str) -> None:
-    """Print the classified diagnosis plus bounded raw stderr for diagnosis."""
+def github_unreachable(failure) -> bool:
+    """Whether a failure means GitHub did not answer: a timeout, no route/DNS, or a GitHub-side outage.
+
+    ``failure`` is git stderr or an exception; a wrapped exception is judged by its cause chain
+    (source_releases re-raises a git timeout as ``ValueError(...) from exc``). A rate limit, a
+    rejected credential or a local error is not "unreachable": each has its own fix.
+    """
+    import socket
+    import urllib.error
+
+    seen = set()
+    while failure is not None and id(failure) not in seen:
+        seen.add(id(failure))
+        if isinstance(failure, str):
+            return _fetch_failure_rule(failure) in _UNREACHABLE_RULES
+        if isinstance(failure, subprocess.TimeoutExpired):
+            return True
+        if isinstance(failure, subprocess.CalledProcessError):
+            output = failure.stderr or failure.output or ""
+            return github_unreachable(output.decode("utf-8", "replace") if isinstance(output, bytes) else str(output))
+        if isinstance(failure, urllib.error.HTTPError):
+            return failure.code >= 500
+        if isinstance(failure, (urllib.error.URLError, TimeoutError, ConnectionError, socket.gaierror)):
+            return True
+        failure = failure.__cause__ or failure.__context__
+    return False
+
+
+def _print_fetch_failure(stderr: str, updating: bool = False) -> None:
+    """Print the classified diagnosis plus bounded raw stderr; an ``updating`` run GitHub never
+    answered ends on :data:`GITHUB_UNREACHABLE_NOTICE` (the line the Desktop window shows)."""
     stderr = (stderr or "").strip()
     print(_classify_fetch_failure(stderr))
     if stderr:
@@ -539,6 +586,8 @@ def _print_fetch_failure(stderr: str) -> None:
             print(f"  {line}")
         if len(lines) > 15:
             print(f"  ... ({len(lines) - 15} more lines omitted)")
+    if updating and github_unreachable(stderr):
+        print(f"✗ {GITHUB_UNREACHABLE_NOTICE} No update was applied.")
 
 
 def _probe_fork_bomb(argv: list) -> Optional[bool]:

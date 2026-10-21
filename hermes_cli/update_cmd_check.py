@@ -228,7 +228,13 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
             target = resolve_source_target(selected, git_cmd, root,
                                            forward_only=rides_default_channel(original, selected, root))
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        print(f"✗ Could not resolve the {selected} source channel: {exc}. No update was applied.")
+        from hermes_cli.update_cmd_git import GITHUB_UNREACHABLE_NOTICE, github_unreachable
+
+        if github_unreachable(exc):  # the Desktop update window shows this line (scripts/desktop-update/)
+            print(f"✗ {GITHUB_UNREACHABLE_NOTICE} No update was applied.")
+            print(f"  ({selected} channel: {exc})")
+        else:
+            print(f"✗ Could not resolve the {selected} source channel: {exc}. No update was applied.")
         stop()
         _record_stop("channel_unresolved")
         sys.exit(1)

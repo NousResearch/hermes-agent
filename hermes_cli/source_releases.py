@@ -179,12 +179,16 @@ def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=N
 
 
 def _describe_release_failure(failure: BaseException) -> str:
-    """A transport failure names its cause (a rate limit is not "no release")."""
+    """A transport failure names its cause (a rate limit is not "no release", #137244)."""
     if isinstance(failure, (urllib.error.URLError, TimeoutError)):
         from hermes_cli.github_api import describe_github_failure
 
         # The request that failed, not the configuration: a rejected token retries anonymously.
         return describe_github_failure(failure, authenticated=getattr(failure, "hermes_authenticated", False))
+    from hermes_cli.update_cmd_git import github_unreachable
+
+    if github_unreachable(failure):  # git's own transport (the origin tag check) never answered
+        return f"GitHub could not be reached to verify the stable release: {failure}"
     return f"No published stable release could be verified: {failure}"
 
 

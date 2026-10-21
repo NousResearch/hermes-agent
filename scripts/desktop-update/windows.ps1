@@ -1628,6 +1628,11 @@ try {
     if ($res.Code -ne 0 -and -not $committedAfterExit) {
         $finalCode = $res.Code
         $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        # GitHub never answered (outage, timeout, no network): retrying later is the whole fix, so
+        # say that instead of an exit code (update_cmd_git.GITHUB_UNREACHABLE_NOTICE prints it).
+        if ($res.Output -and $res.Output -match "GitHub couldn't be reached") {
+            $finalMsg = "Update failed: GitHub couldn't be reached. There may be an outage, or your internet connection isn't working. Nothing was changed. Try again later."
+        }
         exit $finalCode
     }
 

@@ -1303,6 +1303,11 @@ elif [ "$CODE" -ne 2 ] && update_committed_after_exit; then
   add_warning "update" "hermes update exited $CODE after the commit point (receipt outcome: $RECEIPT_OUTCOME)"
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
+  # GitHub never answered (outage, timeout, no network): retrying later is the whole fix, so say
+  # that instead of an exit code (update_cmd_git.GITHUB_UNREACHABLE_NOTICE prints it).
+  if printf '%s\n' "$OUT" | grep -q "GitHub couldn't be reached"; then
+    FINAL_MSG="Update failed: GitHub couldn't be reached. There may be an outage, or your internet connection isn't working. Nothing was changed. Try again later."
+  fi
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).

@@ -62,6 +62,10 @@ def _task_in(client, src: str) -> str:
             assert kb.request_review(conn, tid, summary="s", force=True)
         elif src == "done":
             assert kb.complete_task(conn, tid, summary="s", force=True)
+        elif src == "parked":
+            # ``parked`` holds a card nobody can run: clear its assignee and
+            # move it there the way the dispatcher does.
+            conn.execute("UPDATE tasks SET assignee = NULL, status = 'parked' WHERE id = ?", (tid,))
         elif src == kw.ARCHIVED:
             assert kb.archive_task(conn, tid)
         assert kb.get_task(conn, tid).status == src

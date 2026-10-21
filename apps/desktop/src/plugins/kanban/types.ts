@@ -240,6 +240,7 @@ export const COLUMN_META: Record<string, { codicon: string; tone: string }> = {
   triage: { codicon: 'inbox', tone: 'var(--ui-text-tertiary)' },
   todo: { codicon: 'circle-outline', tone: 'var(--ui-text-secondary)' },
   scheduled: { codicon: 'watch', tone: '#a78bfa' },
+  parked: { codicon: 'debug-pause', tone: 'var(--ui-text-secondary)' },
   ready: { codicon: 'play-circle', tone: '#60a5fa' },
   running: { codicon: 'sync', tone: '#34d399' },
   blocked: { codicon: 'error', tone: '#f87171' },

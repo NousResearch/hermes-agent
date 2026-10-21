@@ -113,6 +113,11 @@ class DispatchResult:
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids with no assignee at all — operator-actionable (usually a
     misfiled task waiting for routing)."""
+    parked_unassigned: list[str] = field(default_factory=list)
+    """Ready task ids the dispatcher moved to the ``parked`` column because no
+    assignee and no ``kanban.default_assignee`` could route them. Parked, not
+    skipped: the card stays visible on the board and moves to ``ready`` as
+    soon as it is assigned."""
     auto_assigned_default: list[str] = field(default_factory=list)
     """Unassigned task ids that had ``kanban.default_assignee`` applied this
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
@@ -172,6 +177,11 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        if res.parked_unassigned:
+            # Parked cards are NOT runnable work, so they must not read as
+            # "the dispatcher held something back" — they read as "the board
+            # has cards nobody owns".
+            counts["parked_unassigned"] = counts.get("parked_unassigned", 0) + len(res.parked_unassigned)
         if res.memory_pressure:
             pressure = res.memory_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
@@ -2294,47 +2304,6 @@ def _tick_spawn_budget(
     return True, spawn_budget
 
 
-def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
-    return conn.execute(
-        "SELECT id, assignee FROM tasks "
-        f"WHERE status = '{status}' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
-
-
-def _any_spawnable_review(
-    conn: sqlite3.Connection,
-    review_rows: list[sqlite3.Row],
-    *,
-    per_profile_cap: Optional[int] = None,
-    per_profile_running: Optional[dict[str, int]] = None,
-) -> bool:
-    """Mirror review dispatch gates before reserving ready-lane capacity.
-
-    Unavailable profile metadata retains the historic fail-open behavior. A
-    review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
-    """
-    if not review_rows:
-        return False
-    profile_exists = _profile_exists_fn()
-    running = per_profile_running or {}
-    for row in review_rows:
-        assignee = row["assignee"]
-        if not assignee:
-            continue
-        if profile_exists is not None and not profile_exists(assignee):
-            continue
-        if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
-            continue
-        if check_respawn_guard(conn, row["id"], lane="review") is None:
-            return True
-    return False
-
-
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     """``kanban.default_assignee`` when it names a real profile this home may
     claim (``kanban.dispatch_profiles`` gated, same predicate as the spawn
@@ -2384,10 +2353,12 @@ def _dispatch_once_locked(
     if not may_spawn:
         return result
 
-    ready_rows = _lane_rows(conn, "ready")
+    from hermes_cli import kanban_db_dispatch_routing as _routing
+
+    ready_rows = _routing.lane_rows(conn, "ready")
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
-    review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    review_rows = _routing.lane_rows(conn, "review") if review_dispatch_enabled() else []
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
     # Resolved BEFORE the review reservation so the reservation can see which
@@ -2413,8 +2384,10 @@ def _dispatch_once_locked(
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
     ready_budget = spawn_budget
-    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
+    if spawn_budget is not None and spawn_budget > 0 and _routing.any_spawnable_review(
         conn, review_rows,
+        profile_exists=_profile_exists_fn(),
+        check_respawn_guard=check_respawn_guard,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     ):
         ready_budget = max(spawn_budget - 1, 0)
@@ -2425,20 +2398,34 @@ def _dispatch_once_locked(
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
+
+    def _apply(tid: str) -> bool:
+        return _apply_default_assignee(conn, tid, default_assignee, dry_run=False)
+
+    # Phase 0/1 — routing. Parked cards are re-routed when a fallback
+    # exists; every unassigned card in a lane is routed or parked,
+    # REGARDLESS of the spawn budget. A card that cannot run must leave
+    # ``ready`` even when the tick has no room to spawn: the lane is
+    # ordered by priority, so an unassigned card sitting behind seven
+    # assigned ones was never reached at all, and the board kept
+    # advertising unrunnable work as ``ready``.
+    lanes, routed, parked = _routing.route_lanes(
+        conn, default_assignee=default_assignee, dry_run=dry_run, apply_assignee=_apply,
+        lane_statuses=("ready", "review") if review_dispatch_enabled() else ("ready",),
+    )
+    ready_rows = lanes["ready"]
+    review_rows = lanes.get("review", [])
+    result.parked_unassigned.extend(parked)
+    result.auto_assigned_default.extend(routed)
+
+    # Phase 2 — spawning. Only cards that are assigned now are eligible, and
+    # only while the budget holds.
     for row in ready_rows:
-        if ready_budget is not None and spawned >= ready_budget:
-            break
         row_assignee = row["assignee"]
         if not row_assignee:
-            # Honour kanban.default_assignee so an unassigned task doesn't
-            # park in 'ready' forever.
-            if not default_assignee or not _apply_default_assignee(
-                conn, row["id"], default_assignee, dry_run=dry_run,
-            ):
-                result.skipped_unassigned.append(row["id"])
-                continue
-            row_assignee = default_assignee
-            result.auto_assigned_default.append(row["id"])
+            continue
+        if ready_budget is not None and spawned >= ready_budget:
+            break
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 
@@ -2447,11 +2434,10 @@ def _dispatch_once_locked(
     # checks the FULL shared ``spawn_budget`` — the reservation above caps the
     # ready lane, it grants no extra capacity here.
     for row in review_rows:
+        if not row["assignee"]:
+            continue
         if spawn_budget is not None and spawned >= spawn_budget:
             break
-        if not row["assignee"]:
-            result.skipped_unassigned.append(row["id"])
-            continue
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
     return result

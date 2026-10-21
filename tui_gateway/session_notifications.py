@@ -390,9 +390,37 @@ def _kb_completed(task, payload: dict, title: str) -> str:
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
-    with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+    # **The payload decides which failure this is, and the two are not the
+    # same failure.** A worker killed for exceeding ``max_runtime_seconds``
+    # carries ``limit_seconds``; a worker that ran out of ITERATIONS carries
+    # an ``error`` naming the budget and no limit at all. Reading
+    # ``limit_seconds`` from the second and printing ``max_runtime=0s`` was a
+    # message that named a timeout the worker never hit — the budget was
+    # exhausted, and the cap was 150 iterations, not 0 seconds.
+    #
+    # **The iteration numbers come from the structured fields, not from
+    # parsing the error string.** The event payload carries ``budget_used``
+    # and ``budget_max`` (agent/turn_finalizer.py), and they track whatever
+    # the cap is NOW — so a message that re-reads the number out of the
+    # prose is one refactor away from quoting a stale cap. Read the fields.
+    used = payload.get("budget_used")
+    cap = payload.get("budget_max")
+    if used is not None and cap is not None:
+        return f" ran out of iterations ({int(used)}/{int(cap)}); will retry"
+    # The string form is the fallback for a payload written before the
+    # structured fields existed.
+    error = str(payload.get("error") or "")
+    if "Iteration budget" in error:
+        return f" ran out of iterations ({error.split('(')[-1].split(')')[0]}); will retry"
+    limit = payload.get("limit_seconds")
+    if limit is not None:
+        try:
+            return f" timed out (max_runtime={int(limit)}s); will retry"
+        except (TypeError, ValueError):
+            # A malformed limit is still a TIMEOUT, not an exhausted budget.
+            # Saying "max_runtime=0s" would name a cap the worker never hit.
+            return " timed out (max_runtime=unknown); will retry"
+    return " stopped before it finished; will retry"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.

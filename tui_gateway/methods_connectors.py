@@ -82,8 +82,8 @@ def _account_gate_closed(rid):
 
 
 def _account_identity_error(rid):
-    """Opening the Connectors page or connecting from it is the user asking for apps: create the
-    guest identity here when the user has none. Operation polls never call this."""
+    """Connecting from the Connectors page is the user asking for apps: create the guest identity
+    here when the user has none. Page reads and operation polls never call this."""
     from tools.connectors import ensure_guest_identity
     from tui_gateway.contracts.connectors import ConnectorErrorReason
 
@@ -222,6 +222,7 @@ def _account_connector_connect(rid, request):
 
 
 def _connector_rpc(rid, params, action):
+    from tools.connectors import guest_identity_pending
     from tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorsConnectParams, ConnectorsListParams
 
     model = ConnectorsListParams if action == "status" else ConnectorsConnectParams
@@ -232,6 +233,9 @@ def _connector_rpc(rid, params, action):
         with _account_scope(request):
             if closed := _account_gate_closed(rid):
                 return _ok(rid, {"available": False, "connectors": []}) if action == "status" else closed
+            if action == "status" and guest_identity_pending():
+                # Opening the page creates no identity; the bundled catalog lists the apps.
+                return _ok(rid, {"available": True, "connectors": []})
             if setup_error := _account_identity_error(rid):
                 return setup_error
             return _account_connector_list(rid) if action == "status" else _account_connector_connect(rid, request)

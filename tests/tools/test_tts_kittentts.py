@@ -23,7 +23,7 @@ def clear_kittentts_cache():
 
 @pytest.fixture
 def mock_kittentts_module():
-    """Inject a fake kittentts + soundfile module that return stub objects."""
+    """Inject a fake kittenml + soundfile module that return stub objects."""
     fake_model = MagicMock()
     # 24kHz float32 PCM at ~2s of silence
     fake_model.generate.return_value = [0.0] * 48000
@@ -42,7 +42,7 @@ def mock_kittentts_module():
 
     with patch.dict(
         "sys.modules",
-        {"kittentts": fake_kittentts, "soundfile": fake_sf},
+        {"kittenml": fake_kittentts, "soundfile": fake_sf},
     ):
         yield fake_model, fake_cls
 
@@ -80,6 +80,37 @@ class TestGenerateKittenTts:
         assert call_kwargs["clean_text"] is False
 
 
+class TestImport:
+    def test_kittenml_comes_first(self, monkeypatch):
+        import sys
+        from tools.tts_tool import _import_kittentts
+
+        current, legacy = MagicMock(), MagicMock()
+        monkeypatch.setitem(sys.modules, "kittenml", current)
+        monkeypatch.setitem(sys.modules, "kittentts", legacy)
+        assert _import_kittentts() is current.KittenTTS
+
+    def test_a_legacy_kittentts_install_still_works(self, monkeypatch):
+        import sys
+        from tools.tts_tool import _check_kittentts_available, _import_kittentts
+
+        legacy = MagicMock()
+        monkeypatch.setitem(sys.modules, "kittenml", None)
+        monkeypatch.setitem(sys.modules, "kittentts", legacy)
+        assert _import_kittentts() is legacy.KittenTTS
+        with patch("tools.tts_tool._package_installed", side_effect=lambda name: name == "kittentts"):
+            assert _check_kittentts_available()
+
+    def test_neither_installed_names_kittenml(self, monkeypatch):
+        import sys
+        from tools.tts_tool import _import_kittentts
+
+        monkeypatch.setitem(sys.modules, "kittenml", None)
+        monkeypatch.setitem(sys.modules, "kittentts", None)
+        with pytest.raises(ImportError, match="kittenml"):
+            _import_kittentts()
+
+
 
 
 
@@ -88,6 +119,7 @@ class TestDispatcherBranch:
     def test_kittentts_not_installed_returns_helpful_error(self, monkeypatch, tmp_path):
         """When provider=kittentts but package missing, return JSON error with setup hint."""
         import sys
+        monkeypatch.setitem(sys.modules, "kittenml", None)
         monkeypatch.setitem(sys.modules, "kittentts", None)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -101,4 +133,5 @@ class TestDispatcherBranch:
 
         result = json.loads(text_to_speech_tool(text="Hello"))
         assert result["success"] is False
-        assert "kittentts" in result["error"].lower()
+        assert "kittenml" in result["error"].lower()
+        assert "hermes setup tts" in result["error"].lower()

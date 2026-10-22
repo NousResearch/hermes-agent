@@ -65,7 +65,7 @@ def _install_neutts_deps() -> bool:
 
 def _install_kittentts_deps() -> bool:
     """Install KittenTTS dependencies with user approval. Returns True on success."""
-    _setup._info(None, "Installing kittentts Python package (~25-80MB model downloaded on first use)...", None)
+    _setup._info(None, "Installing the kittenml Python package for KittenTTS (~25-80MB model downloaded on first use)...", None)
     return _install_tts_extra("kittentts")
 
 

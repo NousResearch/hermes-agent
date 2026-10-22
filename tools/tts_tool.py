@@ -77,8 +77,20 @@ _import_elevenlabs = _sdk_importer("elevenlabs.client", "ElevenLabs", feature="t
 _import_openai_client = _sdk_importer("openai", "OpenAI")
 _import_mistral_client = _sdk_importer("mistralai.client", "Mistral", feature="tts.mistral")
 _import_sounddevice = _sdk_importer("sounddevice")
-_import_kittentts = _sdk_importer("kittentts", "KittenTTS")
 _import_piper = _sdk_importer("piper", "PiperVoice")  # piper-tts wheels embed espeak-ng
+
+
+def _import_kittentts() -> Any:
+    """KittenTTS from kittenml, else from a legacy kittentts install (the 0.8.1 wheel).
+
+    When neither imports, kittenml's own ImportError names what is missing."""
+    try:
+        return _sdk_importer("kittenml", "KittenTTS")()
+    except ImportError as exc:
+        try:
+            return _sdk_importer("kittentts", "KittenTTS")()
+        except ImportError:
+            raise exc from None
 
 
 def _importable(importer: Callable[[], Any]) -> bool:
@@ -97,7 +109,7 @@ def _package_installed(name: str) -> bool:
 
 
 def _check_neutts_available() -> bool: return _package_installed("neutts")
-def _check_kittentts_available() -> bool: return _package_installed("kittentts")
+def _check_kittentts_available() -> bool: return _package_installed("kittenml") or _package_installed("kittentts")
 def _check_piper_available() -> bool: return _package_installed("piper")
 
 
@@ -186,7 +198,7 @@ _BUILTIN_DISPATCH: dict[str, tuple] = {
                "NeuTTS provider selected but neutts is not installed. "
                "Run hermes setup tts and choose NeuTTS; espeak-ng is also required."),
     "kittentts": (lambda: _importable(_import_kittentts), "KittenTTS (local, ~25MB)", "_generate_kittentts",
-                  "KittenTTS provider selected but 'kittentts' package not installed. "
+                  "KittenTTS provider selected but 'kittenml' package not installed. "
                   "Run 'hermes setup tts' and choose KittenTTS."),
     "piper": (lambda: _importable(_import_piper), "Piper (local)", "_generate_piper_tts",
               "Piper provider selected but 'piper-tts' package not installed. "

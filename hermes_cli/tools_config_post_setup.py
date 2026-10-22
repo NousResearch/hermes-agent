@@ -128,7 +128,7 @@ _PYTHON_POST_SETUP_HOOKS: dict = {
         on_install=(f"Model sizes: {_LOCAL_STT_MODEL_SUMMARY}",
                     "Change via stt.local.model in config.yaml")),
     "kittentts": _python_hook(
-        "kittentts", "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",
+        "kittenml", "kittentts", "kittenml", "Installing kittenml for KittenTTS (~25-80MB model, CPU-only)...",
         on_install=("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo",
                     "Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")),
     "piper": _python_hook(

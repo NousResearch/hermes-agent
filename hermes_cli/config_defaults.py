@@ -186,6 +186,11 @@ DEFAULT_CONFIG = {
         # read-only commands) into one batched turn; the runtime already runs them concurrently. ~70
         # cached tokens. False disables.
         "parallel_tool_call_guidance": True,
+        # Org name in the built-in identity fallback and the Hermes help block.
+        # "" omits those clauses; the docs URL and skill pointer stay. A custom
+        # SOUL.md still overrides the identity slot. Licensing/safety text is
+        # not controlled by this key.
+        "attribution": "Nous Research",
         # Toolchain probe: surfaces Python/pip/uv/PEP-668 state in the system prompt only when
         # something non-default is detected (no pip module, pip/python mismatch, PEP 668 without
         # uv); zero tokens when clean. Skipped for docker/modal/ssh backends (own probe).

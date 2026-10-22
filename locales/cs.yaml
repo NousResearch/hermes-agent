@@ -166,6 +166,7 @@ gateway:
     full_logs_hint: 'Pro nahrání celého protokolu použijte `hermes debug share` ze CLI.'
     share_hint: 'Sdílejte tyto odkazy s týmem Hermes pro podporu.'
     report_label: 'Hlášení'
+    local_refused: '`/debug local` nechává zprávu na počítači, kde Hermes běží, takže z chatu není dostupný. Pošlete `/debug`, ať se souhrnná zpráva nahraje.'
   deny:
     stale: '❌ Příkaz zamítnut (schválení bylo zastaralé).'
     no_pending: 'Žádný čekající příkaz k odmítnutí.'
@@ -447,6 +448,9 @@ gateway:
     state_no: 'Ne'
     queued: '**Navazující zprávy ve frontě:** {count}'
     platforms: '**Připojené platformy:** {platforms}'
+  discard:
+    done: '🗑️ Zahozeno {count} ztracených tahů; znovu se nespustily. Na uložené zprávy se teď odpoví.'
+    nothing: 'Není co zahodit: tento chat nemá žádný tah ztracený při restartu.'
   stop:
     stopped_pending: '⚡ Zastaveno. Agent ještě nezačal — v této relaci můžete pokračovat.'
     stopped: '⚡ Zastaveno. V této relaci můžete pokračovat.'
@@ -689,6 +693,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Něco se pokazilo a nemohl jsem tuto odpověď dokončit.{hint}\nPoužijte /retry pro nový pokus nebo /new pro novou konverzaci. Technické podrobnosti jsou v protokolu brány (`hermes logs`)."
     history_unavailable: '⚠️ Historie této relace je dočasně nedostupná, proto tato zpráva nebyla zpracována. Požádejte operátora, aby zkontroloval state.db, a poté ji po obnovení pošlete znovu. Použijte /reset jen tehdy, pokud skutečně chcete začít novou konverzaci.'
     no_credentials: '⚠️ Nemohl jsem se připojit ke službě modelu AI, proto tato zpráva nebyla zpracována. Použijte /login pro opětovné přihlášení nebo /model pro výběr jiného modelu. Pokud to stále selhává, spusťte na hostiteli `hermes doctor`.'
+    cron_session_read_only: '⚠️ Tento chat patří naplánované úloze a spouští jen ji, takže se vaše zpráva nespustila. Pošlete ji v novém chatu.'
   skills:
     disabled: "Dovednost **{name}** je nainstalována, ale je zakázána.\nPovolte ji pomocí: `hermes skills config`"
     not_installed: "Dovednost **{name}** je dostupná, ale není nainstalována.\nNainstalujte ji pomocí: `hermes skills install {install_name}`"
@@ -1532,6 +1537,8 @@ slash:
     description: 'Importovat sdílený archiv profilu jako nový profil'
   stop:
     description: 'Ukončit všechny běžící procesy na pozadí'
+  discard:
+    description: 'Zahodí tah ztracený při restartu Hermesu, aby fronta tohoto chatu znovu běžela'
   pause:
     description: "Globálně pozastavit novou práci (nouzové zastavení); '/pause off' obnoví provoz"
   deny:
@@ -1685,6 +1692,21 @@ slash:
   quit:
     description: 'Ukončit CLI (pomocí --delete odstraníte i historii relace)'
 cli:
+  modern:
+    hint_commands: 'příkazy'
+    hint_files: 'soubory'
+    hint_interrupt: 'přerušit'
+    hint_queue: 'fronta'
+    hint_shell: 'shell'
+    hint_steer: 'usměrnit'
+    hint_stop: 'zastavit'
+    placeholder_busy_interrupt: 'pište a přesměrujete tento tah · Tab ho zařadí na potom'
+    placeholder_busy_queue: 'pište a zpráva se zařadí na po tomto tahu'
+    placeholder_busy_steer: 'pište a usměrníte tento tah · Tab ho zařadí na potom'
+    preparing: 'Připravuji {what}…'
+    thought: 'Myšlenka'
+    thought_for: 'Myšlenka za {seconds} s'
+    working: 'Pracuji…'
   billing:
     load_failed: '{label}: {error}'
     load_failed_label: 'Nepodařilo se načíst fakturaci'
@@ -2228,6 +2250,7 @@ cli:
     queue_heading: 'Fronta · {count} ve frontě · /queue list{controls}'
     more_queued: '+{count} dalších'
     transcript_unavailable: 'Živý přepis zatím není k dispozici.'
+    control_pending: 'Odesílám…'
     steer_prompt: 'Pokyn: '
     roster_empty: 'Žádní aktivní podagenti ani procesy na pozadí. Výsledky dorazí do konverzace.'
     entry_gone: 'Tento záznam už není aktivní.'
@@ -2366,6 +2389,14 @@ cli:
     move_out_of_range: 'Přesun ve frontě mimo rozsah. Aktuální velikost: {size}'
     moved: 'Položka fronty {source} přesunuta na {destination}.'
     usage_add: 'Použití: /queue add <prompt>'
+    already_started: 'Položka fronty {index} už se spustila; běží tak, jak byla odeslána.'
+    change_unknown: 'Brána neodpověděla k položce fronty {index} ({error}); než to zkusíte znovu, zkontrolujte /queue list.'
+    edit_refused: 'Položku fronty {index} se nepodařilo upravit: {error}'
+    gateway_refused: 'Brána ji do fronty nezařadila: {error}. Nic se nezařadilo; pošlete ji znovu, až tah skončí.'
+    move_gateway_fifo: 'Brána spouští prompty z fronty v pořadí, v jakém byly odeslány; místo přesouvání je upravte nebo odeberte.'
+    remove_refused: 'Položku fronty {index} se nepodařilo odebrat: {error}'
+    started_stopped: 'Položka fronty {index} už se spustila; brána ji zastavila.'
+    submit_unknown: 'Brána neodpověděla ({error}), takže prompt už může být ve frontě. Než ho pošlete znovu, zkontrolujte /queue list.'
   reload:
     env_reloaded: 'Znovu načten .env (aktualizováno {count} proměnných)'
   steer:
@@ -3006,6 +3037,10 @@ cli:
       usage_disconnect: 'disconnect   Přepne na výchozí backend prohlížeče'
       usage_status: 'status       Zobrazí aktuální režim prohlížeče'
       usage_use: 'use [off]    Přepne do režimu Browser Use (CLI 3.0) / zpět na vestavěné nástroje'
+      checking: 'Zjišťuji vzdálené ladění prohlížeče z rodiny Chromium na {url}...'
+      new_sessions_only: 'Platí pro nové relace — tato si ponechá své stávající nástroje (/new spustí novou).'
+      remote_gateway: '/browser connect a /browser disconnect spravují prohlížeč z rodiny Chromium na hostiteli brány — dostupné jen při připojení k místní bráně.'
+      status_gateway_default: '🌐 Prohlížeč: výchozí backend prohlížeče brány (žádné živé připojení CDP)'
     heartbeat:
       label: 'Heartbeaty'
       paused: '⏸ Heartbeat pozastaven: {prompt}'
@@ -3114,6 +3149,10 @@ cli:
     loaded: '(načteno)'
     not_found: '(nenalezeno)'
     microsoft_entra_id: 'Microsoft Entra ID'
+    google_vertex_oauth: 'Google OAuth (Vertex AI)'
+    key_cmd_token: 'token key_cmd (příkaz)'
+    minimax_oauth: 'MiniMax OAuth'
+    token_provider: 'Poskytovatel tokenu'
     api_key_not_set: 'Nenastaveno!'
     value_not_set: 'nenastaveno'
     section_model: 'Model'
@@ -3295,6 +3334,20 @@ cli:
     next_session_deepens: 'Příští relace `hermes -w` prohloubí klon a automaticky odstraní sloučené pracovní stromy.'
     unpushed_keeping: '⚠ Pracovní strom má neodeslané commity, zachovávám: {path}'
     uncommitted_keeping: '⚠ Pracovní strom obsahuje změny, které ještě nejsou commitnuté; ponechávám: {path}'
+    archive_failed: '✗ Pracovní strom {path} se nepodařilo archivovat, ponechávám ho: {error}'
+    archived: '✓ Pracovní strom archivován do {ref} a odstraněn: {path}'
+    archived_kept: '✓ Pracovní strom archivován do {ref}, ale ponechán ({reason}): {path}'
+    archiving: 'Archivuji {path} … (u velkého stromu to může chvíli trvat)'
+    discarded: 'Pracovní strom odstraněn a jeho změny zahozeny: {path}'
+    exit_choice_archive: 'Archivovat a odstranit (lze obnovit)'
+    exit_choice_discard: 'Odstranit a zahodit změny'
+    exit_choice_keep: 'Ponechat pracovní strom (výchozí)'
+    exit_question_dirty: 'Tento pracovní strom má neuložené změny: {path}'
+    exit_question_unpushed: 'Tento pracovní strom má commity, které nejsou odeslané: {path}'
+    kept_reason: '⚠ Pracovní strom ponechán ({reason}): {path}'
+    restore_hint: 'Obnovte ho pomocí: hermes worktree restore {name}'
+    sweep_archived_kept: 'archivováno, ponecháno ({reason}) → {ref}'
+    sweep_archived_removed: 'archivováno + odstraněno → {ref}'
     clean_up_manually: 'Ruční vyčištění: git worktree remove --force {path}'
     cleaned_up: '✓ Pracovní strom vyčištěn: {path}'
 display:

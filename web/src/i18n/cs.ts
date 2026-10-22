@@ -114,7 +114,6 @@ export const cs = defineLocale({
     sharedMetricsBody:
       'Sdílené metriky jsou jen omezené čítače – nikdy výzvy, soubory, cesty ani text chyb. Shromažďování zůstává na tomto počítači; odesílání do Nous je samostatná volba.',
     sharedMetricsShare: 'Odeslat do Nous',
-    sharedMetricsLocal: 'Pouze lokálně',
     sharedMetricsOff: 'Ne, děkuji',
     sharedMetricsDetails: 'Podrobnosti',
     sharedMetricsSaveFailed: 'Vaši volbu se nepodařilo uložit',

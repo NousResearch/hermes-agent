@@ -31,11 +31,8 @@ export const csOverrides = {
       'Orientační údaje o počítači: rozsah RAM, typ GPU, stáří verze Hermes a kanál vydání, počet chybějících aktualizací, zda se používá místní server modelů',
     readDocs: 'Přečíst úplné podrobnosti',
     share: 'Sbírat a odesílat do Nous',
-    local: 'Sbírat pouze lokálně',
     off: 'Ne, děkuji',
     saveFailed: 'Vaši volbu se nepodařilo uložit',
-    collectLabel: 'Sbírat statistiky používání',
-    collectDesc: 'Omezené čítače uložené v tomto zařízení. Nikdy prompty, soubory, cesty ani text chyb.',
     sendLabel: 'Odesílat statistiky používání do Nous',
     sendDesc:
       'Nahrávat každý denní balíček do telemetrické služby Nous. Odesílají se jen data z okna souhlasu. Vyžaduje zapnutý sběr.',
@@ -43,7 +40,6 @@ export const csOverrides = {
     stripBody: 'Pouze omezené čítače, nikdy prompty ani soubory.',
     stripChoices: {
       share: 'Odeslat do Nous',
-      local: 'Pouze lokálně',
       off: 'Ne, děkuji'
     },
     stripDetails: 'Podrobnosti',
@@ -1053,7 +1049,9 @@ export const csOverrides = {
         unverified: 'Neověřeno',
         verified: 'Ověřeno',
         versionLabel: 'Verze'
-      }
+      },
+      disable: 'Vypnout',
+      enable: 'Zapnout'
     },
     vault: {
       title: 'Hesla a přihlášení',
@@ -2173,7 +2171,25 @@ export const csOverrides = {
       speed: 'Rychlost',
       speedStandard: 'Standardní',
       inheritsFrom: task => `dědí z ${task}`,
-      followTask: task => `Převzít z ${task}`
+      followTask: task => `Převzít z ${task}`,
+      subagents: {
+        catalogFailed: 'Katalog modelů není dostupný. Zadejte poskytovatele a model ručně, nebo to zkuste znovu.',
+        customProvider: 'Vlastní poskytovatel…',
+        customProviderLabel: 'Vlastní poskytovatel subagentů',
+        direct: 'Přímý koncový bod (přepsat)',
+        directActive:
+          'Je aktivní přímý koncový bod a má přednost před uloženým poskytovatelem. Dokud je tento režim zvolený, jeho koncový bod i přihlašovací údaje se zachovají.',
+        directClear:
+          'Použitím této trasy se vymaže přímý koncový bod i jeho uložený klíč. Ostatní nastavení požadavků zůstávají.',
+        draftHint: 'Změny zůstanou místní, dokud se nepoužijí.',
+        inherit: 'Zdědit z hlavního agenta',
+        modelLabel: 'Model subagentů',
+        modelOnly: 'Vlastní model (použít přihlašovací údaje rodiče)',
+        parentModel: 'Použít model rodiče',
+        parentModelWarning:
+          'Zvolený poskytovatel musí model rodiče podporovat. Trasa pouze přes poskytovatele může selhat, pokud je model nekompatibilní. Pokud si tento poskytovatel nastavuje vlastní výchozí model, subagenti použijí ten.',
+        providerLabel: 'Poskytovatel subagentů'
+      }
     },
     localModels: {
       connectionChanged: 'Připojení místních modelů se změnilo',
@@ -2882,11 +2898,6 @@ export const csOverrides = {
         unknown: 'neznámý stav',
         unsupported_gpu: 'GPU není podporováno'
       },
-      catalogTitle: 'Katalog pluginů',
-      catalogBrowse: 'Procházet',
-      catalogHide: 'Skrýt prohlížeč katalogu',
-      catalogHint:
-        'U libovolného pluginu zvolte „+ Přidat k tomuto agentovi“ — prověřené položky se do vybraného profilu instalují z připnutého commitu. Přibalené pluginy agenta a desktopu nabídnou obě části.',
       alreadyInstalled: name => `${name} už je v tomto profilu nainstalován.`,
       catalogProvenance: sha => `Nainstalováno z katalogu Hermes${sha ? ` z připnutého commitu ${sha}` : ''}.`,
       pinnedProvenance: sha =>
@@ -2923,8 +2934,17 @@ export const csOverrides = {
         secretSet: '•••••••• (nastaveno)',
         secretStoredAs: env =>
           `Uloženo do .env profilu jako ${env}, nikdy do config.yaml; ponechte prázdné pro zachování současné hodnoty.`,
-        required: 'Povinné'
-      }
+        required: 'Povinné',
+        optional: '(volitelné)'
+      },
+      updatedGit: name => `${name} aktualizováno na nejnovější commit.`,
+      updateScanBlocked: name =>
+        `Bezpečnostní kontrola zablokovala aktualizaci ${name} (nebezpečný verdikt). Nelze ji obejít.`,
+      updateScanBody: (name, count) =>
+        `Aktualizace ${name} dostala varovný verdikt (${count} ${count === 1 ? 'nález' : count >= 2 && count <= 4 ? 'nálezy' : 'nálezů'}). Každá aktualizace se skenuje. Použijte ji jen tehdy, pokud zdroji důvěřujete:`,
+      updateScanConfirm: 'Přesto aktualizovat',
+      updateScanMore: count => `+ ${count} dalších`,
+      updateScanTitle: name => `Bezpečnostní kontrola označila ${name}`
     },
     officialCatalog: 'Dostupné pro instalaci',
     officialPill: 'Oficiální',
@@ -4397,43 +4417,6 @@ export const csOverrides = {
     snippetsDesc: 'Výběrem návrhu jej vložíte do editoru zprávy.',
     dropFiles: 'Přetažením sem přiložte soubory',
     dropSession: 'Přetažením sem propojte tento chat',
-    mcpSuggestions: {
-      label: server => `Přidat ${server}`,
-      tip: keyword => `Návrh vychází ze zmínky „${keyword}“. Kliknutím server připojíte.`,
-      connecting: server => `Připojování ${server}…`,
-      cancelTip: 'Kliknutím zrušíte',
-      added: server => `Přidáno ${server}`,
-      addedTip: 'Připojeno — nástroje serveru jsou v tomto chatu připravené',
-      connectFailed: server => `Nelze připojit ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Použít dovednost: ${skill}`,
-      tip: skill => `Zmínili jste „${skill}“. Kliknutím použijete tuto dovednost.`,
-      done: skill => `Přidáno /${skill}`,
-      doneTip: 'Dovednost se načte po odeslání zprávy.'
-    },
-    githubSuggestions: {
-      label: 'Nastavit GitHub',
-      tip: 'GitHub zde funguje prostřednictvím dovednosti pro gh CLI. Kliknutím připojíte svůj účet.',
-      done: 'Přidáno /github-auth',
-      doneTip: 'Pošlete zprávu a agent vás provede GitHubem.'
-    },
-    repairSuggestions: {
-      label: server => `Znovu připojit ${server}`,
-      tip: server => `Volání serveru ${server} právě selhalo kvůli chybě připojení`,
-      working: server => `Znovu se připojujeme ${server}…`,
-      workingTip: 'Kliknutím zrušíte',
-      done: server => `Znovu připojeno ${server}`,
-      doneTip: 'Aktualizované přihlašovací údaje jsou v tomto chatu ihned aktivní',
-      failed: server => `Nelze znovu připojit ${server}`
-    },
-    cronSuggestions: {
-      label: 'Naplánuj to.',
-      tip: phrase => `„${phrase}“ zní jako opakovaná úloha. Můžete ji spustit podle plánu.`,
-      prefix: 'Naplánujte si to jako naplánovanou práci:',
-      done: 'Označeno k naplánování',
-      doneTip: 'Pošlete to a agent vytvoří práci.'
-    },
     snippets: {
       codeReview: {
         label: 'Kontrola kódu',
@@ -5702,6 +5685,18 @@ export const csOverrides = {
         free_tier_refused: {
           title: 'Hermes to bez přihlášení nemohl odeslat',
           body: 'Přihlášení účtem Nous je zdarma.'
+        },
+        cron_session_read_only: {
+          body: 'Spouští jen tuto úlohu, takže se vaše zpráva nespustila. Pošlete ji v novém chatu.',
+          title: 'Tento chat patří naplánované úloze'
+        },
+        SESSION_OWNER_BUSY: {
+          body: 'V tomto chatu právě běží jiný tah a vaše zpráva se do jeho fronty nevešla. Nic se neodeslalo. Zkuste to znovu, až tah skončí.',
+          title: 'Hermes je v tomto chatu zaneprázdněn'
+        },
+        SESSION_OWNER_UNCONFIRMED: {
+          body: 'Brána včas nepotvrdila vaši zprávu. Pokud se zařadila do fronty, spustí se, jakmile předchozí tah skončí nebo se vyřeší. Než ji pošlete znovu, zkontrolujte chat.',
+          title: 'Vaše zpráva už může být ve frontě'
         }
       },
       errorAuthKinds: {
@@ -6383,7 +6378,6 @@ export const csOverrides = {
       'Server nemohl potvrdit dřívější odeslání této zprávy, takže už mohla proběhnout. Než ji pošlete znovu, zkontrolujte konverzaci.',
     mcpReloadDeferred:
       'Tato konverzace je zaneprázdněná: změna MCP se projeví, až její tah skončí a MCP se znovu načte, nebo až konverzaci otevřete znovu',
-    mcpReloadNotInChat: server => `${server} není v této konverzaci zapnutý`,
     mcpReloadUnavailable: servers => `Nepřipojeno: ${servers}`,
     sessionCommands: {
       countOne: count => `${count} zpráva ve frontě`,
@@ -6399,8 +6393,193 @@ export const csOverrides = {
       undidOne: count => `vráceno ${count} zpráva — odebraná zpráva je v editoru`,
       undidOther: count => `vráceno ${count} zpráv — odebraná zpráva je v editoru`,
       undoNothing: 'není co vrátit',
-      undoUsage: 'použití: /undo [N]'
-    }
+      undoUsage: 'použití: /undo [N]',
+      busy: command =>
+        `relace je zaneprázdněná — Hermes stále odpovídá. Nejprve zastavte aktuální odpověď (tlačítko Stop, nebo Ctrl+C v terminálu) a potom spusťte /${command}.`,
+      busyCompressing: command => `relace je zaneprázdněná — běží /compress; spusťte /${command}, až skončí.`,
+      queueEditKept:
+        'Zpráva se spustila nebo byla zamítnuta dřív, než se vaše úprava uložila. Upravený text máte ve vstupním poli.',
+      queueEditKeptTitle: 'Zpráva ve frontě se nezměnila',
+      queueEditUnconfirmed:
+        'Hermes nemohl vaši úpravu potvrdit. Uložte znovu, ať se stejná úprava zkusí znovu; nikdy se nezařadí dvakrát.',
+      queueEditUnconfirmedTitle: 'Úprava nebyla potvrzena'
+    },
+    compactedTurnUnavailable: 'Tato zpráva byla při komprimaci chatu shrnuta, takže už ji nelze obnovit ani upravit.',
+    desktopCommands: {
+      agentsEmpty: 'V tomto chatu nejsou žádní aktivní subagenti ani procesy na pozadí.',
+      checkpointsDisabled:
+        'Kontrolní body nejsou pro tuto relaci povoleny (nastavte checkpoints.enabled v config.yaml).',
+      checkpointsEmpty: 'Pro tento pracovní adresář zatím nejsou žádné kontrolní body.',
+      checkpointsHeader: 'Kontrolní body (nejnovější první):',
+      checkpointsHint:
+        'Obnovte pomocí /rollback <n> [soubor] (s --all se přepíší i vaše vlastní úpravy); náhled zobrazíte pomocí /rollback diff <n>.',
+      configDefaults: '(výchozí hodnoty)',
+      configFooter:
+        'Nastavení měňte v Nastavení, nebo upravte config.yaml pomocí `hermes config edit` na hostiteli brány.',
+      configHeader: 'Konfigurace (zobrazení, schvalování, vkládání a nastavení hlasu; ostatní položky se nezobrazují):',
+      error: message => `chyba: ${message}`,
+      exportRemote:
+        '/export zabalí profil z hostitele brány, což není tento počítač. Spusťte `hermes profile export` na tomto hostiteli.',
+      historyEmpty: 'Zatím žádné zprávy.',
+      historyHeader: count => `Historie konverzace (${count} zpráv):`,
+      historyHermes: 'Hermes',
+      historyYou: 'Vy',
+      importRemote:
+        '/import instaluje profil na hostiteli brány, což není tento počítač. Spusťte `hermes profile import <archiv>` na tomto hostiteli.',
+      noDiff: 'Od tohoto kontrolního bodu žádné změny.',
+      processesHeader: count => `Procesy na pozadí (${count}):`,
+      reopenForRewind: 'Znovu otevřete tento chat, abyste viděli přetočenou konverzaci.',
+      restored: hash => (hash ? `Kontrolní bod ${hash} obnoven.` : 'Kontrolní bod obnoven.'),
+      rewound: count => `Přetočeno zpět ${count} zpráv z této konverzace.`,
+      rollbackFailed: error => `Vrácení změn selhalo: ${error}`,
+      rollbackUsage: 'použití: /rollback [list] | diff <n|hash> | <n|hash> [soubor] [--all]',
+      saveCancelled: 'Neuloženo (zrušeno).',
+      saveDialogTitle: 'Uložit konverzaci',
+      saveLegacyRefused:
+        'Neuloženo: tato brána neumí exportovat redigovanou, pojmenovanou ani ne-JSON kopii. Aktualizujte bránu, nebo spusťte /save bez voleb, aby se na hostiteli brány zapsal surový JSON.',
+      saveUnsupported: 'chyba: tato verze Desktopu neumí ukládat soubory',
+      saveUsage: 'použití: /save [json|md|html] [název-souboru] [redact]',
+      savedOnHost: path => `Uloženo na hostiteli brány: ${path}`,
+      savedTo: path => `Konverzace uložena do ${path}`,
+      statusRunning: 'běží',
+      subagentFallback: 'subagent',
+      subagentsHeader: count => `Subagenti (${count}):`,
+      timestampsOff:
+        'Časová razítka: vypnuto (v tomto okně; chcete-li je zachovat, nastavte display.timestamps v config.yaml)',
+      timestampsOn:
+        'Časová razítka: zapnuto (v tomto okně; chcete-li je zachovat, nastavte display.timestamps v config.yaml)',
+      timestampsUsage: 'použití: /timestamps [on|off|status]',
+      toolCalls: count => `${count} volání nástrojů`,
+      unknownError: 'neznámá chyba',
+      unknownPath: '(neznámá cesta)'
+    },
+    staleTurnUnavailable: 'Tato zpráva už v historii tohoto chatu není.'
+  },
+  catalog: {
+    about: 'O katalogu',
+    add: 'Přidat',
+    added: 'Přidáno',
+    addedDate: 'Přidáno',
+    allCategories: 'Všechny kategorie',
+    allSources: 'Všechny zdroje',
+    alphabetical: 'Název',
+    author: 'Autor',
+    back: 'Zpět na výsledky',
+    cardView: 'Zobrazení karet',
+    category: 'Kategorie',
+    clearFilters: 'Zrušit filtry',
+    commands: 'Příkazy',
+    destinationChanged: 'Cíl se změnil. Zavřete tento dialog a otevřete odkaz k instalaci znovu.',
+    developer: {
+      docs: 'Dokumentace pro vývojáře',
+      heading: 'Vývojářský režim',
+      pitch: 'Vytvořili jste nástroj, konektor, plugin nebo mod?',
+      pitchFollowUp: 'Chcete, ale nevíte jak?',
+      submit: 'Odeslat mod',
+      title: 'Tvořte pro Hermes'
+    },
+    discover: 'Objevovat',
+    discoverKind: kind => `Objevte ${kind}`,
+    documentation: 'Dokumentace',
+    explorePlugins: 'Prozkoumat pluginy',
+    exploreSkills: 'Prozkoumat dovednosti',
+    featured: 'Doporučené',
+    filters: 'Filtry',
+    hooks: 'Hooky',
+    installComplete: name => `„${name}“ je nainstalováno`,
+    installDescription: 'Tato dovednost bude dostupná v nových relacích. Instalujte jen zdroje, kterým důvěřujete.',
+    installHint: 'Než něco nainstalujete, projděte si zdroj. Změny se projeví v nových relacích.',
+    installTitle: name => `Nainstalovat „${name}“?`,
+    installTo: 'Nainstalovat do',
+    installed: 'Nainstalováno',
+    installing: 'Instaluje se…',
+    license: 'Licence',
+    listView: 'Seznam',
+    loadFailed: 'Katalog se nepodařilo načíst',
+    middleware: 'Middleware',
+    more: 'Zobrazit více',
+    moreToExplore: 'Další k objevování',
+    moreToExploreBlurb: 'Menší kouty katalogu na jednom místě.',
+    mostStarred: 'Nejvíce hvězd',
+    newest: 'Nejnovější',
+    nextSlide: 'Další doporučený',
+    noResults: 'Žádné výsledky',
+    pinned: 'Ověřený commit',
+    platforms: 'Platformy',
+    previousSlide: 'Předchozí doporučený',
+    recentlyUpdated: 'Nedávno aktualizované',
+    related: 'Podobné',
+    repository: 'Repozitář',
+    requires: 'Vyžaduje',
+    results: count =>
+      `${count.toLocaleString()} ${count === 1 ? 'výsledek' : count >= 2 && count <= 4 ? 'výsledky' : 'výsledků'}`,
+    retry: 'Zkusit znovu',
+    screenshots: 'Snímky obrazovky',
+    searchPlugins: 'Hledat pluginy',
+    searchSkills: 'Hledat dovednosti',
+    seeAll: 'Zobrazit vše',
+    skillsFor: category => `Dovednosti pro ${category.toLowerCase()}.`,
+    slideOf: (index, count) => `${index} z ${count}`,
+    snapshotHint: 'Z katalogu Hermes. Procházením se zdrojové repozitáře nekontaktují.',
+    sortBy: 'Řadit podle',
+    source: 'Zdroj',
+    tags: 'Štítky',
+    thisComputer: 'Tento počítač',
+    tier: 'Úroveň',
+    tierLabels: {
+      community: 'Komunita',
+      official: 'Oficiální',
+      verified: 'Ověřeno'
+    },
+    tiers: {
+      official: {
+        blurb: 'Vytváří a udržuje Nous Research.',
+        title: 'Oficiální pluginy'
+      },
+      verified: {
+        blurb: 'Od společnosti, která integraci vytváří; ověřeno Nous.',
+        title: 'Ověřené pluginy'
+      }
+    },
+    tools: 'Nástroje',
+    toolsets: {
+      callCount: (count, calls) => `${count} volání`,
+      essentials: 'Základy',
+      essentialsBlurb: 'Na čem běží většina práce v Hermesu.',
+      mostUsed: 'Nejpoužívanější',
+      mostUsedBlurb: 'Sady nástrojů, po kterých Hermes na tomto profilu sahá nejčastěji.',
+      themes: {
+        connect: {
+          blurb: 'Účty, další agenti, chytrá domácnost a hledání nad rámec webu.',
+          label: 'Propojit a oslovit'
+        },
+        create: {
+          blurb: 'Prohlížejte obrázky a video, přepisujte hlas a vytvářejte média.',
+          label: 'Vidět, slyšet a tvořit'
+        },
+        more: {
+          blurb: 'Všechno ostatní, co tento profil může zapnout.',
+          label: 'Další nástroje'
+        },
+        recall: {
+          blurb: 'Co si Hermes pamatuje, a dovednosti i historii, ve kterých umí hledat.',
+          label: 'Paměť a znalosti'
+        },
+        work: {
+          blurb: 'Ovládejte prohlížeč a desktop, upravujte soubory, spouštějte kód a plánujte práci.',
+          label: 'Procházet, pracovat a automatizovat'
+        }
+      },
+      toolCount: count => `${count} ${count === 1 ? 'nástroj' : count >= 2 && count <= 4 ? 'nástroje' : 'nástrojů'}`
+    },
+    tryAnother: 'Zkuste jiné hledání, nebo zrušte filtry.',
+    updatedDate: 'Aktualizováno',
+    version: 'Verze'
+  },
+  gatewayGroupOpen: {
+    lookupFailed: 'Skupinu se na bráně nepodařilo dohledat. Zkuste to znovu.',
+    missing: 'Tato skupina brány už neexistuje.',
+    opening: 'Otevírání skupiny brány…'
   }
 } satisfies TranslationOverrides
 

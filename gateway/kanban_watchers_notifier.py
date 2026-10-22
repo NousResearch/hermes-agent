@@ -310,13 +310,18 @@ class _Collector:
         """
         run_summaries: dict = {}
         for event in events:
-            # A NULL run_id can never match a run row, so no explicit guard is needed.
+            # Legacy rows predate the run_id stamp; ``get_run`` does ``int(run_id)``,
+            # so a None would raise rather than miss. Skip them explicitly.
             run_id = getattr(event, "run_id", None)
-            if event.kind != "completed" or getattr(event, "task_id", None) != sub["task_id"]:
+            if (
+                run_id is None
+                or event.kind != "completed"
+                or getattr(event, "task_id", None) != sub["task_id"]
+            ):
                 continue
             try:
                 run = self.kb.get_run(conn, run_id)
-            except Exception as run_exc:
+            except Exception as run_exc:  # health: allow BLE001 -- one bad run row must not abort the tick's delivery
                 logger.debug("kanban notifier: run summary lookup failed for %s: %s", sub["task_id"], run_exc)
                 continue
             if (
@@ -451,8 +456,8 @@ _COMPLETION_TEXT_FIELDS = {"OUTCOME", "RESULT", "SUMMARY", "CHECKS", "BLOCKERS",
 _COMPLETION_ENGLISH_WORDS = frozenset({
     "a", "an", "and", "after", "approval", "are", "as", "available", "blocked", "by",
     "change", "changes", "check", "checks", "complete", "completed", "commit", "committed",
-    "continue", "done", "failed", "failure", "for", "from", "is", "local", "merge", "merged",
-    "next", "no", "not", "or", "partial", "pass", "passed", "publish", "pushed", "required",
+    "continue", "done", "failed", "failure", "for", "from", "is", "local",
+    "next", "no", "not", "or", "partial", "pass", "passed", "required",
     "review", "run", "safe", "security", "separate", "static", "status", "step", "summary", "task",
     "test", "tests", "the", "to", "unavailable", "unknown", "was", "were", "with", "without", "work",
 })

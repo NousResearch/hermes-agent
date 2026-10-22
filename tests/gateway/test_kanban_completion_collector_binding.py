@@ -135,20 +135,33 @@ def test_missing_run_is_not_bound(board):
 
 
 def test_event_without_run_id_is_not_bound(board):
-    """A completed event with no run_id cannot be matched to a run at all.
+    """A legacy completed event (no run_id stamp) binds no summary and does not raise.
 
-    Legacy rows predate the ``run_id`` stamp. The bind is impossible rather than
-    guarded — SQL ``WHERE id = NULL`` matches nothing — so this pins that no
-    summary reaches the formatter for such a row.
+    ``get_run`` coerces with ``int(run_id)``, so passing ``None`` raises rather than
+    missing. The collector must skip the row up front; this pins both the empty bind
+    and the fact that the tick still delivers.
     """
     conn, tid = board
     kb.complete_task(conn, tid, summary="SUMMARY=done\nNEXT_STEP=none\n")
     conn.execute("UPDATE task_events SET run_id = NULL WHERE task_id = ?", (tid,))
     conn.commit()
 
-    delivery = _claim(_collector(), conn, tid)
+    lookups: list = []
 
-    assert delivery is not None and delivery["run_summaries"] == {}
+    class _KB:
+        get_task = staticmethod(kb.get_task)
+
+        @staticmethod
+        def get_run(_conn, _run_id):
+            lookups.append(_run_id)
+            return kb.get_run(_conn, _run_id)
+
+    delivery = _claim(_collector(_KB), conn, tid)
+
+    assert delivery is not None, "a NULL run_id must not abort the delivery"
+    assert delivery["run_summaries"] == {}
+    # Skipped before the lookup: get_run coerces with int(), so a None would raise.
+    assert lookups == [], "a legacy row must not reach get_run at all"
 
 
 def _raise(_conn, _run_id):

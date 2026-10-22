@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerAttachments, type ComposerAttachment, updateComposerAttachment } from '@/store/composer'
+import { $notifications } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
 import { droppedFileInlineRefs } from '../composer/inline-refs'
@@ -13,6 +14,7 @@ import {
   HERMES_PATHS_MIME,
   partitionDroppedFiles,
   resolveImageAttachmentPreview,
+  stageDroppedFilePath,
   useComposerActions
 } from './use-composer-actions'
 
@@ -268,6 +270,18 @@ describe('extractDroppedFiles', () => {
     expect(result[0]?.url).toBeUndefined()
   })
 
+  // The browser Webapp has no host path for a dropped folder: report it, never drop it silently.
+  it('keeps a path-less dropped folder on the attach pipeline, where it is reported', async () => {
+    const transfer = stubTransfer([{ path: 'my-repo', isDirectory: true }])
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ file: expect.any(File), isDirectory: true, path: '' }])
+    expect(partitionDroppedFiles(result).osDrops).toHaveLength(1)
+    await expect(stageDroppedFilePath(result[0]!)).rejects.toThrow("Folders can't be attached by dropping them")
+  })
+
   it('does not duplicate a folder that appears in both items and files', () => {
     // Chromium lists a dropped folder in transfer.files too (as a size-0 File);
     // the items pass claims its path first so the files fallback skips it.
@@ -389,6 +403,27 @@ describe('useComposerActions native image drops', () => {
     finishSave('/test/screenshot.png')
     expect(await pending).toBe(false)
     expect(add).not.toHaveBeenCalled()
+  })
+
+  it('warns about a dropped folder it cannot attach instead of staging its File', async () => {
+    const stageFileForAttach = vi.fn(async () => '/srv/uploads/web-my-repo')
+    const value = { getPathForFile: () => '', stageFileForAttach }
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value })
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '/w', requestGateway: vi.fn() })
+    )
+
+    let attached = true
+
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([{ file: new File([], 'shots.png'), isDirectory: true, path: '' }])
+    })
+
+    expect(attached).toBe(false)
+    expect(stageFileForAttach).not.toHaveBeenCalled()
+    expect($notifications.get().at(-1)).toMatchObject({ kind: 'warning' })
+    expect($notifications.get().at(-1)?.message).toContain("Could not attach shots.png: Folders can't be attached")
   })
 
   it('copies dropped screenshot bytes before trusting a transient macOS path', async () => {

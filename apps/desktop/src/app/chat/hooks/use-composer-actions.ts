@@ -47,6 +47,11 @@ export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
 }
 
+/** A dropped File the composer sends as an image; never a folder, which has no bytes. */
+function isDroppedImage(file: File, filePath: string, isDirectory?: boolean): boolean {
+  return !isDirectory && (file.type.startsWith('image/') || isImagePath(file.name) || isImagePath(filePath))
+}
+
 /**
  * Read an attachment's thumbnail preview, local disk first. Paperclip picks,
  * clipboard saves, and OS drops always hand us paths on THIS machine — the
@@ -117,6 +122,11 @@ export interface DroppedFile {
 export async function stageDroppedFilePath(candidate: DroppedFile): Promise<string> {
   if (candidate.path) {
     return candidate.path
+  }
+
+  // A folder without a host path has no bytes to stage.
+  if (candidate.isDirectory) {
+    throw new Error("Folders can't be attached by dropping them. Use Attach → Folder… instead.")
   }
 
   if (!candidate.file || !window.hermesDesktop?.stageFileForAttach) {
@@ -240,10 +250,10 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
       seenPaths.add(path)
     }
 
+    // A folder with no host path (the browser Webapp) keeps its File, so the
+    // drop reaches the attach pipeline and is reported there, not dropped.
     if (isDirectory) {
-      if (path) {
-        result.push({ isDirectory: true, path })
-      }
+      result.push(path ? { isDirectory: true, path } : { file, isDirectory: true, path })
 
       return
     }
@@ -834,7 +844,7 @@ export function useComposerActions({
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
         const filePath = knownPath || fallbackPath || ''
-        const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
+        const isImage = isDroppedImage(file, filePath, isDirectory)
 
         if (isImage) {
           // Persist the File bytes into Desktop's durable composer-image cache

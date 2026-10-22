@@ -497,6 +497,52 @@ class TestBrowserVaultTools:
         assert "s3cret-pw" not in json.dumps([str(c) for c in run_cmd.call_args_list]) and "s3cret-pw" not in raw
 
 
+    def test_supervisor_reattaches_to_the_configured_browser_after_it_restarted(self):
+        """A configured browser (browser.cdp_url) whose supervisor gave up when it went away: the next fill
+        attaches to it again, its endpoint resolved afresh, instead of asking the local agent-browser daemon
+        (which finds no browser, or one in the sandbox, not this one)."""
+        from tools import browser_vault_tool
+
+        fresh = object()
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
+             patch("tools.browser_tool_cdp._get_cdp_override_raw", return_value="http://127.0.0.1:9222"), \
+             patch("tools.browser_tool_cdp._get_cdp_override",
+                   return_value="ws://127.0.0.1:9222/devtools/browser/after-restart"), \
+             patch("tools.browser_tool_session._run_browser_command") as run_cmd:
+            reg.get.return_value = None   # dropped from the registry after its last reconnect failed
+            reg.get_or_start.return_value = fresh
+            assert browser_vault_tool._ensure_supervisor("task-1") is fresh
+        assert reg.get_or_start.call_args.kwargs["cdp_url"] == "ws://127.0.0.1:9222/devtools/browser/after-restart"
+        run_cmd.assert_not_called()
+
+    def test_origin_read_reattaches_too(self):
+        """The origin check before a fill goes through the same attach, so it does not fall back to the CLI."""
+        from tools import browser_vault_tool
+
+        class Supervisor:
+            def evaluate_runtime(self, expression):
+                return {"ok": True, "result": "https://example.com/login"}
+
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
+             patch("tools.browser_tool_cdp._get_cdp_override_raw", return_value="http://127.0.0.1:9222"), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=Supervisor()), \
+             patch("tools.browser_tool_session._run_browser_command") as run_cmd:
+            reg.get.return_value = None
+            out = browser_vault_tool._eval_js("task-1", "location.href")
+        assert out == {"success": True, "result": "https://example.com/login"}
+        run_cmd.assert_not_called()
+
+    def test_without_a_configured_browser_the_local_daemon_is_asked_as_before(self):
+        from tools import browser_vault_tool
+
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
+             patch("tools.browser_tool_cdp._get_cdp_override_raw", return_value=""), \
+             patch("tools.browser_tool_session._run_browser_command", return_value={"success": False}) as run_cmd:
+            reg.get.return_value = None
+            assert browser_vault_tool._ensure_supervisor("task-1") is None
+        assert run_cmd.call_args.args[1:] == ("get", ["cdp-url"])
+        reg.get_or_start.assert_not_called()
+
     def test_vault_canary_redacted_from_browser_cdp_results(self, store):
         """P1-1 regression: a filled, non-token-shaped canary password must be
         unrecoverable through a model-facing browser_cdp-style result."""

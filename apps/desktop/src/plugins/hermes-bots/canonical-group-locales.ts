@@ -84,6 +84,9 @@ export interface CanonicalGroupMessages {
   continued: string
   routingAuto: string
   routingAutoHint: string
+  statusBlocked: string
+  statusApprovals: string
+  statusAttention: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -172,7 +175,10 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Continue',
     continued: 'Continued',
     routingAuto: 'Pick who answers automatically',
-    routingAutoHint: 'A quick model call picks who a message is for. @mentions still go straight to the people you name.'
+    routingAutoHint: 'A quick model call picks who a message is for. @mentions still go straight to the people you name.',
+    statusBlocked: 'Blocked',
+    statusApprovals: '{count} waiting for approval',
+    statusAttention: 'Needs attention: {count}'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -259,7 +265,10 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: '続ける',
     continued: '再開しました',
     routingAuto: '回答者を自動で選ぶ',
-    routingAutoHint: '短いモデル呼び出しで、メッセージの宛先を選びます。@メンションはそのまま指名した相手に届きます。'
+    routingAutoHint: '短いモデル呼び出しで、メッセージの宛先を選びます。@メンションはそのまま指名した相手に届きます。',
+    statusBlocked: 'ブロック中',
+    statusApprovals: '承認待ち {count} 件',
+    statusAttention: '要対応 {count} 件'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -346,7 +355,10 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: '继续',
     continued: '已继续',
     routingAuto: '自动选择回答者',
-    routingAutoHint: '一次快速的模型调用会判断消息是发给谁的。@提及仍直接发给你点名的人。'
+    routingAutoHint: '一次快速的模型调用会判断消息是发给谁的。@提及仍直接发给你点名的人。',
+    statusBlocked: '已阻塞',
+    statusApprovals: '{count} 项等待批准',
+    statusAttention: '{count} 项需要处理'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -433,7 +445,10 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: '繼續',
     continued: '已繼續',
     routingAuto: '自動選擇回答者',
-    routingAutoHint: '一次快速的模型呼叫會判斷訊息是給誰的。@提及仍直接送給你點名的人。'
+    routingAutoHint: '一次快速的模型呼叫會判斷訊息是給誰的。@提及仍直接送給你點名的人。',
+    statusBlocked: '已封鎖',
+    statusApprovals: '{count} 項等待核准',
+    statusAttention: '{count} 項需要處理'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -520,7 +535,10 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'متابعة',
     continued: 'تمت المتابعة',
     routingAuto: 'اختيار من يجيب تلقائيًا',
-    routingAutoHint: 'يختار استدعاء سريع للنموذج لمن الرسالة. الإشارات @ تصل مباشرة إلى من تسمّيهم.'
+    routingAutoHint: 'يختار استدعاء سريع للنموذج لمن الرسالة. الإشارات @ تصل مباشرة إلى من تسمّيهم.',
+    statusBlocked: 'محظور',
+    statusApprovals: '{count} بانتظار الموافقة',
+    statusAttention: '{count} تحتاج إلى انتباه'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -610,7 +628,10 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Продолжить',
     continued: 'Продолжено',
     routingAuto: 'Выбирать отвечающих автоматически',
-    routingAutoHint: 'Быстрый вызов модели определяет, кому адресовано сообщение. @упоминания по-прежнему идут прямо тем, кого вы назвали.'
+    routingAutoHint: 'Быстрый вызов модели определяет, кому адресовано сообщение. @упоминания по-прежнему идут прямо тем, кого вы назвали.',
+    statusBlocked: 'Заблокировано',
+    statusApprovals: 'Ждут подтверждения: {count}',
+    statusAttention: 'Требуется внимание: {count}'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -699,7 +720,10 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Continuer',
     continued: 'Reprise',
     routingAuto: 'Choisir automatiquement qui répond',
-    routingAutoHint: 'Un appel rapide au modèle choisit à qui s\'adresse un message. Les @mentions vont toujours directement aux personnes nommées.'
+    routingAutoHint: 'Un appel rapide au modèle choisit à qui s\'adresse un message. Les @mentions vont toujours directement aux personnes nommées.',
+    statusBlocked: 'Bloqué',
+    statusApprovals: '{count} en attente d’approbation',
+    statusAttention: '{count} à traiter'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -789,7 +813,10 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Fortsetzen',
     continued: 'Fortgesetzt',
     routingAuto: 'Automatisch wählen, wer antwortet',
-    routingAutoHint: 'Ein kurzer Modellaufruf wählt, an wen eine Nachricht gerichtet ist. @Erwähnungen gehen weiterhin direkt an die genannten Personen.'
+    routingAutoHint: 'Ein kurzer Modellaufruf wählt, an wen eine Nachricht gerichtet ist. @Erwähnungen gehen weiterhin direkt an die genannten Personen.',
+    statusBlocked: 'Blockiert',
+    statusApprovals: '{count} warten auf Freigabe',
+    statusAttention: 'Aufmerksamkeit erforderlich: {count}'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -878,6 +905,9 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Continuar',
     continued: 'Reanudado',
     routingAuto: 'Elegir automáticamente quién responde',
-    routingAutoHint: 'Una llamada rápida al modelo elige a quién va dirigido un mensaje. Las @menciones siguen yendo directamente a quienes nombras.'
+    routingAutoHint: 'Una llamada rápida al modelo elige a quién va dirigido un mensaje. Las @menciones siguen yendo directamente a quienes nombras.',
+    statusBlocked: 'Bloqueado',
+    statusApprovals: '{count} esperando aprobación',
+    statusAttention: 'Atención necesaria: {count}'
   }
 } satisfies Record<string, CanonicalGroupMessages>

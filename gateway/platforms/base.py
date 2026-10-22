@@ -3003,6 +3003,15 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks[session_key] = (
             callback if generation is None else (int(generation), callback))
 
+    def record_post_delivery_receipt(self, session_key: str, result: SendResult) -> None:
+        """Record the final text delivery result for the callback that owns this processing task."""
+        if session_key and result is not None:
+            self._post_delivery_receipts[session_key] = result
+
+    def get_post_delivery_receipt(self, session_key: str) -> Optional[SendResult]:
+        """Return this processing task's final text delivery result, when one was attempted."""
+        return self._post_delivery_receipts.get(session_key) if session_key else None
+
     @staticmethod
     def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
         """Async wrapper running ``callbacks`` in order with per-callback exception isolation;
@@ -3626,7 +3635,7 @@ class BasePlatformAdapter(ABC):
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
     async def _play_tts_file(
-        self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
+        self, event: MessageEvent, session_key: str, text_content: str, tts_path: str, first: bool,
         metadata: Dict[str, Any], record_delivery: Callable) -> bool:
         """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
         along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
@@ -3636,6 +3645,8 @@ class BasePlatformAdapter(ABC):
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
+        if caption:
+            self.record_post_delivery_receipt(session_key, tts_result)
         return bool(caption and getattr(tts_result, "success", False))
 
     async def _record_delivery_obligation(
@@ -3780,6 +3791,7 @@ class BasePlatformAdapter(ABC):
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        self.record_post_delivery_receipt(session_key, result)
         return result, delivery_adapter
 
     async def _send_final_text(
@@ -3965,7 +3977,7 @@ class BasePlatformAdapter(ABC):
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
+                            event, session_key, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
                             _record_delivery)
                     finally:
                         with contextlib.suppress(OSError):

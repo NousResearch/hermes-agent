@@ -1,11 +1,15 @@
 """Invariants for the gateway's confirmed-delivery observer."""
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent
+from gateway.turn_context import TurnContext
 
 
 class _Adapter(BasePlatformAdapter):
@@ -28,55 +32,83 @@ class _Adapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+def _hook_context():
+    return {
+        "platform": "telegram", "user_id": "user-1", "chat_id": "chat-1",
+        "thread_id": "thread-1", "session_id": "session-1", "message": "inbound",
+    }
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("streaming", [False, True])
-async def test_post_delivery_observer_is_ordered_after_confirmed_final_delivery(streaming):
-    """Both final-delivery paths defer the observer until the adapter releases it."""
+async def test_nonstream_observer_follows_real_final_send_and_generation():
+    """The processing task records the final send before releasing its generation-owned hook."""
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner(GatewayConfig())
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
     adapter = _Adapter(SendResult(success=True, message_id="out-9"))
+    source = adapter.build_source("chat-1", user_id="user-1", thread_id="thread-1")
+    event = MessageEvent(text="inbound", source=source, message_id="in-4")
+    session_key, run_generation = "session-key", 7
+    interrupt_event = asyncio.Event()
+    setattr(interrupt_event, "_hermes_run_generation", run_generation)
+    adapter._active_sessions[session_key] = interrupt_event
 
-    hook_ctx = {
-        "platform": "telegram", "user_id": "user-1", "chat_id": "chat-1", "thread_id": "thread-1",
-        "session_id": "session-1", "message": "inbound",
-    }
+    async def handler(_event):
+        await runner._hmwa_post_turn_hooks(
+            _hook_context(), {"model": "m", "provider": "p"}, "final",
+            adapter=adapter, session_key=session_key, run_generation=run_generation,
+        )
+        return "final"
 
-    await runner._hmwa_post_turn_hooks(
-        hook_ctx, {"model": "m", "provider": "p"}, "final", adapter=adapter,
-        session_key="session-key", message_id="out-9", streaming=streaming,
-    )
+    adapter.set_message_handler(handler)
+    await adapter._process_message_background(event, session_key)
 
-    assert [call.args[0] for call in runner.hooks.emit.await_args_list] == ["agent:end"]
-    if not streaming:
-        adapter._post_delivery_receipts["session-key"] = adapter.result
-    callback = adapter.pop_post_delivery_callback("session-key")
-    await callback()
-    assert [call.args[0] for call in runner.hooks.emit.await_args_list] == ["agent:end", "agent:post_delivery"]
-    payload = runner.hooks.emit.await_args_list[-1].args[1]
-    assert payload == {
-        "platform": "telegram", "user_id": "user-1", "chat_id": "chat-1", "thread_id": "thread-1",
-        "session_id": "session-1", "message_id": "out-9", "response": "final", "model": "m",
-        "provider": "p", "delivery_confirmed": True,
-    }
+    assert adapter.sent == ["final"]
+    assert [call.args[0] for call in runner.hooks.emit.await_args_list] == [
+        "agent:end", "agent:post_delivery",
+    ]
+    assert runner.hooks.emit.await_args_list[-1].args[1]["message_id"] == "out-9"
 
 
 @pytest.mark.asyncio
-async def test_post_delivery_observer_skips_failed_final_send():
-    """A failed final transport send cannot produce a confirmed-delivery event."""
+@pytest.mark.parametrize("confirmed", [False, True])
+async def test_stream_observer_requires_confirmed_receipt_and_uses_outbound_id(confirmed):
+    """A streamed response emits only after confirmation, with no inbound-id fallback."""
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner(GatewayConfig())
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
-    adapter = _Adapter(SendResult(success=False, error="offline"))
-    adapter._post_delivery_receipts["session-key"] = adapter.result
-    await runner._hmwa_post_turn_hooks(
-        {"platform": "telegram", "user_id": "u", "chat_id": "c", "thread_id": "", "session_id": "s", "message": "in"},
-        {"model": "m", "provider": "p"}, "final", adapter=adapter, session_key="session-key",
+    adapter = _Adapter(SendResult(success=True, message_id="unused"))
+    runner.adapters[Platform.TELEGRAM] = adapter
+    source = adapter.build_source("chat-1", user_id="user-1", thread_id="thread-1")
+    session_key, run_generation = "session-key", 11
+    consumer = SimpleNamespace(
+        final_response_sent=confirmed,
+        final_content_delivered=False,
+        message_id="out-stream-3",
+        delivered_final_matches=lambda text: text == "final",
+    )
+    result = {"final_response": "final", "model": "m", "provider": "p"}
+    turn_ctx = TurnContext(
+        source=source, session_key=session_key, run_generation=run_generation,
+        stream_consumer_holder=[consumer],
     )
 
-    await adapter.pop_post_delivery_callback("session-key")()
-    assert [call.args[0] for call in runner.hooks.emit.await_args_list] == ["agent:end"]
+    await runner._run_agent_mark_streamed_delivery(result, turn_ctx)
+    await runner._hmwa_post_turn_hooks(
+        _hook_context(), result, "final", adapter=adapter, session_key=session_key,
+        run_generation=run_generation,
+    )
+    callback = adapter.pop_post_delivery_callback(session_key, generation=run_generation)
+    assert callback is not None
+    await callback()
+
+    events = [call.args[0] for call in runner.hooks.emit.await_args_list]
+    assert events == (["agent:end", "agent:post_delivery"] if confirmed else ["agent:end"])
+    if confirmed:
+        payload = runner.hooks.emit.await_args_list[-1].args[1]
+        assert payload["message_id"] == "out-stream-3"
+        assert payload["delivery_confirmed"] is True

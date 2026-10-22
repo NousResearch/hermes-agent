@@ -21,7 +21,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -1471,7 +1471,7 @@ class GatewayTurnMixin:
             return ""
 
     async def _hmwa_post_turn_hooks(
-        self, hook_ctx, agent_result, response, *, adapter=None, session_key="", message_id=None, streaming=False,
+        self, hook_ctx, agent_result, response, *, adapter=None, session_key="", run_generation=None,
     ):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
@@ -1481,18 +1481,19 @@ class GatewayTurnMixin:
 
         if adapter is not None and session_key and hasattr(adapter, "register_post_delivery_callback"):
             async def _post_delivery_observer():
-                receipt = getattr(adapter, "_post_delivery_receipts", {}).get(session_key)
-                if not streaming and not (receipt and receipt.success):
+                receipt = adapter.get_post_delivery_receipt(session_key)
+                if not (receipt and receipt.success):
                     return
                 await self.hooks.emit("agent:post_delivery", {
                     "platform": hook_ctx["platform"], "user_id": hook_ctx["user_id"],
                     "chat_id": hook_ctx["chat_id"], "thread_id": hook_ctx["thread_id"],
                     "session_id": hook_ctx["session_id"],
-                    "message_id": (getattr(receipt, "message_id", None) if receipt else message_id),
+                    "message_id": getattr(receipt, "message_id", None),
                     "response": response or "", "model": agent_result.get("model", ""),
                     "provider": agent_result.get("provider", ""), "delivery_confirmed": True,
                 })
-            adapter.register_post_delivery_callback(session_key, _post_delivery_observer)
+            adapter.register_post_delivery_callback(
+                session_key, _post_delivery_observer, generation=run_generation)
 
         # Pending process watchers (check_interval on background processes)
         try:
@@ -2017,8 +2018,7 @@ class GatewayTurnMixin:
                 response = f"{response}\n\n{_footer_line}"
             await self._hmwa_post_turn_hooks(
                 hook_ctx, agent_result, response, adapter=self._adapter_for_source(source), session_key=session_key,
-                message_id=str(event.message_id) if event.message_id else None,
-                streaming=bool(agent_result.get("already_sent")),
+                run_generation=run_generation,
             )
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
@@ -3593,7 +3593,7 @@ class GatewayTurnMixin:
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
     async def _run_agent_edit_streamed_message(
-        self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
+        self, _sc, source, response, content, *, session_key, _sk, ok, fail_result, fail_exc,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
         ``response["already_sent"]`` and log ``ok``. ``fail_result`` (None = trust the call) logs a
@@ -3609,6 +3609,11 @@ class GatewayTurnMixin:
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
+        receipt_adapter = getattr(self, "_adapter_for_source")(source)
+        if receipt_adapter is not None and session_key:
+            message_id = _sc.message_id if _sc.message_id and _sc.message_id != "__no_edit__" else None
+            receipt_adapter.record_post_delivery_receipt(
+                session_key, SendResult(success=True, message_id=message_id))
         logger.info(*ok)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
@@ -3656,6 +3661,11 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
+            receipt_adapter = getattr(self, "_adapter_for_source")(source)
+            if receipt_adapter is not None and session_key:
+                message_id = _sc.message_id if _sc.message_id and _sc.message_id != "__no_edit__" else None
+                receipt_adapter.record_post_delivery_receipt(
+                    session_key, SendResult(success=True, message_id=message_id))
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.
@@ -3667,7 +3677,7 @@ class GatewayTurnMixin:
                 )
             elif _sc_msg_id and _sc_msg_id != "__no_edit__" and getattr(_sc, "adapter", None) is not None:
                 await self._run_agent_edit_streamed_message(
-                    _sc, source, response, _final, _sk=_sk,
+                    _sc, source, response, _final, session_key=session_key, _sk=_sk,
                     ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
@@ -3681,7 +3691,7 @@ class GatewayTurnMixin:
             # Transformed after streaming: edit the streamed message instead of sending a duplicate.
             if _sc.message_id:
                 await self._run_agent_edit_streamed_message(
-                    _sc, source, response, response["final_response"], _sk=_sk,
+                    _sc, source, response, response["final_response"], session_key=session_key, _sk=_sk,
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )

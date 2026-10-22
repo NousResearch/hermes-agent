@@ -781,14 +781,19 @@ class _ChildRun:
         # Seed the child's cwd record from the parent's: same starting directory,
         # but the child's later `cd`s stay in its own record. Per-session container
         # isolation keys containers by task_id; the child must share the PARENT's.
+        # The parent's record is read in the parent's scope; the child's is written in the child's (cwd records
+        # are keyed by the active profile, and a profile-routed child looks its own up as that profile).
+        from tools.delegate_tool_routes import child_profile_scope
         with _quiet("Child cwd seed failed: %s"):
             from tools.terminal_tool import get_session_cwd, record_session_cwd, register_container_alias
-            record_session_cwd(self.child_task_id, get_session_cwd(self.parent_task_id))
+            parent_cwd = get_session_cwd(self.parent_task_id)
+            with child_profile_scope(self.child):
+                record_session_cwd(self.child_task_id, parent_cwd)
             register_container_alias(self.child_task_id, self.parent_task_id)
 
         self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
         if self.worktree_info is not None:
-            with _quiet("worktree cwd seed failed: %s"):
+            with _quiet("worktree cwd seed failed: %s"), child_profile_scope(self.child):
                 from tools.terminal_tool import record_session_cwd as _rsc
                 _rsc(self.child_task_id, self.worktree_info["path"])
             # The child's context is already built; carry the isolation contract on

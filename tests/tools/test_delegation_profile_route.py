@@ -319,3 +319,30 @@ def test_one_profile_under_two_labels_resolves_once_and_keeps_each_label(two_pro
     assert rp.call_count == 1
     assert (first.label, second.label) == ("reviewer", "fixer")
     assert first.creds == second.creds and first.creds["model"] == "coder-model"
+
+
+@pytest.mark.parametrize("worktree", [None, {"path": "/work/wt-1", "branch": "subagent/wt-1"}])
+def test_profile_child_reads_the_starting_directory_seeded_for_it(two_profiles, worktree):
+    """cwd records are keyed by the active profile on a multiplexed host: the child's starting directory (the
+    parent's, or its isolated worktree) is recorded where the child, running as the target profile, reads it."""
+    from tools.delegate_tool_child_run import _ChildRun
+    from tools.delegate_tool_routes import child_profile_scope
+    from tools.terminal_tool import clear_session_cwd, get_session_cwd, record_session_cwd
+
+    _, coder = two_profiles
+
+    class _Child:
+        _delegate_profile_home = coder
+
+    class _Parent:
+        _current_task_id = "parent-task"
+
+    record_session_cwd("parent-task", "/work/repo")
+    run = _ChildRun(_Child(), _Parent(), 0, "work as coder", None, None)
+    try:
+        with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=worktree):
+            run.seed_workspace()
+        with child_profile_scope(run.child):
+            assert get_session_cwd(run.child_task_id) == (worktree or {}).get("path", "/work/repo")
+    finally:
+        clear_session_cwd("parent-task")

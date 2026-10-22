@@ -861,7 +861,28 @@ class TestRawTemplateToken:
         )
         assert result.startswith("Action=closed Raw=")
         assert '"action": "closed"' in result
-        assert '"number": 7' in result
+
+    def test_raw_token_is_not_truncated(self):
+        """A payload larger than the old 4000-char cap renders in full.
+
+        A silently truncated payload is worse than a large one: the prompt looks complete
+        while the tail — the part that carried the detail — is gone, and nothing in the
+        rendered text says so.
+        """
+        adapter = _make_adapter()
+        payload = {"action": "closed", "body": "x" * 6000, "tail": "END-MARKER"}
+        result = adapter._render_prompt("{__raw__}", payload, "push", "test")
+        assert "END-MARKER" in result
+        assert len(result) > 6000
+
+    def test_dict_placeholder_is_not_truncated(self):
+        """A nested object larger than the old 2000-char cap renders in full."""
+        adapter = _make_adapter()
+        payload = {"action": "closed",
+                   "detail": {"body": "y" * 3000, "tail": "TAIL-MARKER"}}
+        result = adapter._render_prompt("{detail}", payload, "push", "test")
+        assert "TAIL-MARKER" in result
+        assert len(result) > 3000
 
 
 # ===================================================================

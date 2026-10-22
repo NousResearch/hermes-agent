@@ -1,11 +1,16 @@
+import argparse
+
 import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from dataclasses import replace
+
 from hermes_cli.kanban_swarm import (
     SwarmWorkerSpec,
     create_swarm,
     latest_blackboard,
+    parse_worker_arg,
     post_blackboard_update,
 )
 
@@ -47,6 +52,112 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
         assert all(created.root_id in (task.body or "") for task in workers)
     finally:
         conn.close()
+
+
+def test_create_swarm_passes_goal_mode_to_worker_cards_only(tmp_path):
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Ship a memo",
+            workers=[
+                SwarmWorkerSpec(profile="w1", title="A", body="A",
+                                goal_mode=True, goal_max_turns=7),
+                SwarmWorkerSpec(profile="w2", title="B", body="B"),
+            ],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+        )
+        w1 = kb.get_task(conn, created.worker_ids[0])
+        w2 = kb.get_task(conn, created.worker_ids[1])
+        root = kb.get_task(conn, created.root_id)
+        verifier = kb.get_task(conn, created.verifier_id)
+        synthesizer = kb.get_task(conn, created.synthesizer_id)
+        assert w1.goal_mode is True and w1.goal_max_turns == 7
+        assert w2.goal_mode is False and w2.goal_max_turns is None
+        assert root.goal_mode is False
+        assert verifier.goal_mode is False and verifier.goal_max_turns is None
+        assert synthesizer.goal_mode is False and synthesizer.goal_max_turns is None
+    finally:
+        conn.close()
+
+
+def test_create_swarm_goal_max_turns_without_goal_mode_does_not_force_on(tmp_path):
+    """--worker-goal-max-turns without --worker-goal: persist turns, keep goal_mode off."""
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Ship a memo",
+            workers=[
+                SwarmWorkerSpec(profile="w1", title="A", body="A", goal_max_turns=9),
+            ],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+        )
+        w1 = kb.get_task(conn, created.worker_ids[0])
+        verifier = kb.get_task(conn, created.verifier_id)
+        assert w1.goal_mode is False and w1.goal_max_turns == 9
+        assert verifier.goal_mode is False and verifier.goal_max_turns is None
+    finally:
+        conn.close()
+
+
+def test_cmd_swarm_worker_goal_flags_apply_to_parsed_worker_specs_only(tmp_path):
+    """CLI path: parse_worker_arg + --worker-goal / --worker-goal-max-turns."""
+    parsed = parse_worker_arg("w1:Draft A")
+    assert parsed.goal_mode is False and parsed.goal_max_turns is None
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        workers = [
+            replace(parse_worker_arg(raw), goal_mode=True, goal_max_turns=4)
+            for raw in ("w1:Draft A", "w2:Draft B")
+        ]
+        created = create_swarm(
+            conn,
+            goal="Ship a memo",
+            workers=workers,
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+        )
+        for worker_id in created.worker_ids:
+            task = kb.get_task(conn, worker_id)
+            assert task.goal_mode is True and task.goal_max_turns == 4
+        root = kb.get_task(conn, created.root_id)
+        verifier = kb.get_task(conn, created.verifier_id)
+        synthesizer = kb.get_task(conn, created.synthesizer_id)
+        assert root.goal_mode is False and root.goal_max_turns is None
+        assert verifier.goal_mode is False and verifier.goal_max_turns is None
+        assert synthesizer.goal_mode is False and synthesizer.goal_max_turns is None
+    finally:
+        conn.close()
+
+
+def test_swarm_parser_exposes_worker_goal_flags():
+    from hermes_cli.kanban_parser import build_parser
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "swarm", "Ship a memo",
+        "--worker", "w1:A",
+        "--verifier", "reviewer",
+        "--synthesizer", "writer",
+        "--worker-goal",
+        "--worker-goal-max-turns", "7",
+    ])
+    assert args.worker_goal is True
+    assert args.worker_goal_max_turns == 7
+
+    omitted = parser.parse_args([
+        "kanban", "swarm", "Ship a memo",
+        "--worker", "w1:A",
+        "--verifier", "reviewer",
+        "--synthesizer", "writer",
+        "--worker-goal-max-turns", "3",
+    ])
+    assert omitted.worker_goal is False
+    assert omitted.worker_goal_max_turns == 3
 
 
 def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(

@@ -15,7 +15,8 @@ from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import (
-    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal,
+    structured_tool_result_failed)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -216,34 +217,31 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     return _canonical_json(args)
 
 
-def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
-    """Fallback classifier used only when callers don't pass ``failed``; mirrors
-    ``agent.display._detect_tool_failure`` so the guardrail never disagrees with the CLI's ``[error]`` tag."""
+def classify_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
+    """Fallback classifier sharing tool-envelope semantics with the live display seam."""
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
-
-    # A harness REFUSAL of a redundant call (repeated identical read/search) carries
-    # ``"error"`` for the model's benefit -- exactly what the substring test below keys
-    # on -- but nothing failed; counting it lets the cheap refusal feed the streak that
-    # fires the next, harder one. Mirrored in ``agent.display._detect_tool_failure``.
-    if is_guardrail_refusal(result):
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+    if is_guardrail_refusal(data):
         return False, ""
 
     if tool_name == "terminal":
-        data = safe_json_loads(result)
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         return (True, f" [exit {exit_code}]") if exit_code is not None and exit_code != 0 else (False, "")
 
-    data = safe_json_loads(result)
+    # No re-parse here: ``safe_json_loads`` returns None for a dict, so re-parsing the
+    # already-parsed ``data`` above silently dropped every dict-shaped tool result.
     if isinstance(data, dict):
-        failed = data.get("success") is False
-        if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
+        failed = structured_tool_result_failed(data)
+        if tool_name == "memory" and failed and "exceed the limit" in str(data.get("error") or ""):
             return True, " [full]"
-        # Same rule as _detect_tool_failure: a JSON object is judged by its top-level
-        # shape, never by a substring scan of its nested content.
-        err = data.get("error") or data.get("message")
-        return (True, " [error]") if (err and (failed or "error" in data)) or shape_failure_error(data) else (False, "")
-    return (True, " [error]") if has_failure_marker(result) else (False, "")
+        # Same rule as _detect_tool_failure: the envelope decides, and a JSON object is
+        # judged by its top-level shape, never by a substring scan of nested content.
+        return (True, " [error]") if failed or shape_failure_error(data) else (False, "")
+    # Unparseable text only, and only through the value-aware marker.
+    if data is None and isinstance(result, str) and has_failure_marker(result):
+        return True, " [error]"
+    return False, ""
 
 
 # Guardrail verdict text injected into the conversation, keyed by decision code.

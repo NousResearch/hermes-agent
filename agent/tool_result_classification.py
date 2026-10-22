@@ -79,6 +79,20 @@ def shape_failure_error(data: dict) -> str | None:
     return str(first.get("message") or first) if isinstance(first, dict) else str(first)
 
 
+def structured_tool_result_failed(data: dict[str, Any]) -> bool:
+    """Classify the tool envelope, never nested diagnostic findings or text."""
+    if any(data.get(key) is False for key in ("success", "ok")):
+        return True
+    if any(data.get(key) is True for key in ("failed", "isError")):
+        return True
+    if data.get("status") in ("error", "failed") or data.get("error"):
+        return True
+    return any(
+        isinstance(code, int) and not isinstance(code, bool) and code != 0
+        for code in (data.get("exit_code"), data.get("returncode"))
+    )
+
+
 def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
     """Return True when a file mutation result proves the write landed."""
     if tool_name not in FILE_MUTATING_TOOL_NAMES or not isinstance(result, str):

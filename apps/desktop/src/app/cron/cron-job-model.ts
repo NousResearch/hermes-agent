@@ -57,6 +57,12 @@ export interface CronModelChoice {
   provider: string
 }
 
+export interface CronEditorUpdateOptions {
+  initialModel?: null | string
+  initialProvider?: null | string
+  scriptOnlyJob: boolean
+}
+
 /** Encode the provider/model pair as an opaque Select value without delimiter ambiguity. */
 export function cronModelChoiceValue(provider: string, model: string): string {
   return JSON.stringify([provider, model])
@@ -132,7 +138,7 @@ export function lastErrorSummary(lastError: string | null | undefined): string {
 }
 
 /** Build the API update payload, preserving an empty prompt on script-only jobs. */
-export function cronEditorUpdates(values: CronEditorSaveValues, options: { scriptOnlyJob: boolean }): CronJobUpdates {
+export function cronEditorUpdates(values: CronEditorSaveValues, options: CronEditorUpdateOptions): CronJobUpdates {
   const updates: CronJobUpdates = {
     deliver: values.deliver,
     name: values.name,
@@ -150,8 +156,19 @@ export function cronEditorUpdates(values: CronEditorSaveValues, options: { scrip
   // write both axes so resetting to "default" clears a previous pin (the
   // backend normalizes null/'' to "no override").
   if (!options.scriptOnlyJob) {
-    updates.model = values.model.trim() || null
-    updates.provider = values.provider.trim() || null
+    const model = values.model.trim()
+    const provider = values.provider.trim()
+
+    updates.model = model || null
+    updates.provider = provider || null
+
+    // The editor does not expose the per-job endpoint. Retaining it after a
+    // model binding changes can pair an old provider endpoint with the new
+    // provider, which the runtime correctly refuses. Do not clear it for
+    // unrelated edits, where the existing override remains intentional.
+    if (model !== asText(options.initialModel).trim() || provider !== asText(options.initialProvider).trim()) {
+      updates.base_url = null
+    }
   }
 
   return updates

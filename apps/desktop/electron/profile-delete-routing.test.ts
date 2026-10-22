@@ -7,6 +7,7 @@ import {
   decideProfileDeleteAction,
   dispatchConnectionScopedProfileDelete,
   localProfilePoolKeys,
+  namedProfileIsLive,
   ProfileDeletionGate,
   profileNameFromDeleteRequest,
   resolveRouteProfile
@@ -138,6 +139,43 @@ test('assertLocalProfileCanStart rejects a delayed retry after the profile direc
   assert.throws(() => assertLocalProfileCanStart('selena', gate, () => false), /Profile "selena" no longer exists/)
   assert.doesNotThrow(() => assertLocalProfileCanStart('default', gate, () => false))
   assert.doesNotThrow(() => assertLocalProfileCanStart('selena', gate, profile => profile === 'selena'))
+})
+
+test('namedProfileIsLive rejects a marker-less profile shell but accepts every identity marker', () => {
+  const profileHome = '/hermes/profiles/selena'
+  const tombstone = '/hermes/profiles/.deleted/selena'
+
+  for (const marker of ['config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state.db']) {
+    assert.equal(
+      namedProfileIsLive(
+        profileHome,
+        tombstone,
+        () => false,
+        candidate => candidate === `${profileHome}/${marker}`
+      ),
+      true,
+      marker
+    )
+  }
+
+  assert.equal(
+    namedProfileIsLive(
+      profileHome,
+      tombstone,
+      () => false,
+      () => false
+    ),
+    false
+  )
+  assert.equal(
+    namedProfileIsLive(
+      profileHome,
+      tombstone,
+      candidate => candidate === tombstone,
+      () => false
+    ),
+    false
+  )
 })
 
 test('localProfilePoolKeys returns every local process scope for one profile', () => {

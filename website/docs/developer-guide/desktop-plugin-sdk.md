@@ -1441,6 +1441,7 @@ type DesktopSettingValues = {
   'intro-splash.v1': boolean
   'reasoning.collapsedByDefault': boolean
   sessionListDensity: 'compact' | 'comfortable' | 'detailed'
+  statusbarVisible: boolean
   tabStripDefault: 'auto' | 'always' | 'never'
 }
 host.settings.get<K extends DesktopSettingKey>(key: K): DesktopSettingValues[K]
@@ -1475,6 +1476,13 @@ adapt your own rendering.
 const dispose = host.settings.subscribe('chatTextScale', pct => setMyFontScale(pct / 100))
 ctx.onDispose(dispose)
 ```
+
+`statusbarVisible` is the whole-status-bar visibility preference behind
+Cmd/Ctrl+Shift+S and ⌘K → Toggle status bar (on by default; hiding it unmounts
+the bar). In Simple mode, as with `reasoning.collapsedByDefault`, a read gives
+the effective value on screen and a write is a session-only reveal that leaves
+the stored preference alone. Prefer it over `ctx.runAction('view.toggleStatusbar')`
+when the plugin needs a known state rather than a flip.
 
 Arbitration: the allowlist above is closed. An unknown key or a value outside
 the key's type throws **synchronously** (`Unsupported desktop setting: …` /

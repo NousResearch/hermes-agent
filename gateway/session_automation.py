@@ -83,6 +83,7 @@ async def admit_process_notice(runner, authority, adapter, event, evt):
     """Admit a process notice. A completion and the withdrawal of its process's waiting ticks hold
     the heartbeat lock together; a tick already holds it (``deliver_heartbeat``)."""
     identity = producer_identity(runner, evt)
+    _canonicalize_producer_source(runner, authority, event, identity)
     if evt.get('type') == 'heartbeat':
         # The tick's raw output rides its stored admission: a later tick folds from the ledger.
         event.metadata['heartbeat_tick'] = {'output': str(evt.get('output') or ''),
@@ -342,6 +343,30 @@ def committed_route_envelope(authority, entry):
     return envelope if envelope is not None and 'provenance' in envelope else None
 
 
+def _producer_route_envelope(authority, entry, identity):
+    """A retry borrows its first admission's context; only a new wake borrows the latest speaker."""
+    from hermes_state_runtime import find_session_admission
+    row = find_session_admission(authority.db, principal_id='automation:' + entry.session_key,
+                                 session_id=authority.logical_owner(entry.session_id), request_id=identity)
+    return row['payload']['native_text_v1'] if row else committed_route_envelope(authority, entry)
+
+
+def _canonicalize_producer_source(runner, authority, event, identity):
+    """Borrow the committed speaker/provenance only after proving the producer's route and pin."""
+    entry = _owner(runner, event, authority)
+    if event.source.platform == Platform.LOCAL:
+        return
+    envelope = _producer_route_envelope(authority, entry, identity)
+    if envelope is None:
+        return
+    from gateway.session_envelope import restore_native_source
+    from gateway.session_identity import replace_source
+    # A shared thread's origin keeps its first speaker, not the last admitted one. Reuse the
+    # native provenance restore without turning a stale or foreign pin into a valid wake.
+    source = restore_native_source({'native_text_v1': envelope}, runner)
+    event.source = replace_source(source, message_id=None)
+
+
 def snapshot_automation(authority, adapter, event, identity):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
@@ -356,7 +381,7 @@ def snapshot_automation(authority, adapter, event, identity):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     from gateway.session_envelope import restore_native
     owner = authority.logical_owner(entry.session_id)
-    envelope = committed_route_envelope(authority, entry)
+    envelope = _producer_route_envelope(authority, entry, identity)
     if envelope is None:
         raise RuntimeStoreError('not_found')
     # Persisted origins deliberately omit relay trust. Borrow only an exact

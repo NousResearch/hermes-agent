@@ -382,6 +382,8 @@ class GatewayPluginInjectionMixin:
             metadata={"gateway_session_key": session_key, "gateway_session_id": session_id},
         )
         try:
+            from gateway.session_automation import _canonicalize_producer_source
+            _canonicalize_producer_source(self, authority, event, identity)
             await authority.admit_automation(adapter, event, identity)
         except RuntimeStoreError as exc:
             logger.warning("Plugin message injection refused by the session authority: plugin=%s session=%s (%s)",

@@ -2521,14 +2521,7 @@ def _read_main_api_key_if_same_origin(aux_base_url: str) -> str | Callable[[], s
     return _read_main_api_key()
 
 
-# Compatibility mirrors for older readers/tests; the ContextVar below is
-# authoritative (overlapping gateway sessions make a process-global unsafe).
-_RUNTIME_MAIN_PROVIDER: str = ""
-_RUNTIME_MAIN_MODEL: str = ""
-_RUNTIME_MAIN_BASE_URL: str = ""
-_RUNTIME_MAIN_API_KEY: Any = ""
-_RUNTIME_MAIN_API_MODE: str = ""
-_RUNTIME_MAIN_AUTH_MODE: str = ""
+# The live main runtime, per context: overlapping gateway sessions make a process-global unsafe.
 _RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_runtime_main", default=None)
 )
@@ -2711,40 +2704,9 @@ def _relay_sync_stream(
     )
 
 
-_RUNTIME_MAIN_COMPAT_SNAPSHOT: tuple[Any, ...] = ("", "", "", "", "", "")
-_RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()
-
-
-def _publish_runtime_main_mirrors(values: tuple[Any, ...]) -> None:
-    """Write the legacy globals + compat snapshot (``_MAIN_RUNTIME_FIELDS`` order) under the lock."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY
-    global _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE, _RUNTIME_MAIN_COMPAT_SNAPSHOT
-    with _RUNTIME_MAIN_COMPAT_LOCK:
-        (_RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL,
-         _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE) = values
-        _RUNTIME_MAIN_COMPAT_SNAPSHOT = tuple(values)
-
-
-def _compat_runtime_main() -> Optional[dict[str, Any]]:
-    """Expose deliberately patched legacy globals as a main context.
-
-    Mirrors must never become runtime inputs: a direct patch counts only when it differs from
-    the mirrored snapshot and only on the main thread.
-    """
-    if threading.current_thread() is not threading.main_thread():
-        return None
-    values = (_RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL,
-              _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE)
-    if values == _RUNTIME_MAIN_COMPAT_SNAPSHOT:
-        return None
-    return dict(zip(_MAIN_RUNTIME_FIELDS, values))
-
-
 def _runtime_main_value(field: str) -> Any:
-    """Read one runtime field through context-local/controlled legacy state."""
+    """Read one field of the current context's main runtime ("" when unbound)."""
     runtime = _RUNTIME_MAIN_CONTEXT.get()
-    if runtime is None:
-        runtime = _compat_runtime_main()
     return (runtime.get(field) or "") if isinstance(runtime, dict) else ""
 
 
@@ -2755,9 +2717,7 @@ def set_runtime_main(
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
-    Context-local so concurrent gateway sessions don't clobber each other; legacy mirrors are
-    updated for old readers. ``cache_scope`` is the rotation-stable logical cache scope,
-    preferred over ``session_id`` for prompt_cache_key derivation.
+    Context-local so concurrent gateway sessions don't clobber each other.
 
     ``cache_scope`` is the rotation-stable logical cache scope (compression- lineage root —
     agent/prompt_cache_scope.py) resolved once per turn by turn_context; auxiliary Responses calls prefer it
@@ -2774,10 +2734,7 @@ def set_runtime_main(
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
     }
-    # Publish authoritative context before updating the locked mirrors.
-    token = _RUNTIME_MAIN_CONTEXT.set(runtime)
-    _publish_runtime_main_mirrors(tuple(runtime[field] for field in _MAIN_RUNTIME_FIELDS))
-    return token
+    return _RUNTIME_MAIN_CONTEXT.set(runtime)
 
 
 def reset_runtime_main(token: contextvars.Token) -> None:
@@ -2792,7 +2749,7 @@ def reset_runtime_main(token: contextvars.Token) -> None:
 
 @contextlib.contextmanager
 def scoped_runtime_main(main_runtime: Optional[dict[str, Any]]):
-    """Temporarily bind an explicit runtime without touching legacy mirrors."""
+    """Temporarily bind an explicit runtime for the current context."""
     runtime = _normalize_main_runtime(main_runtime)
     token = _RUNTIME_MAIN_CONTEXT.set(runtime or None)
     try:
@@ -2804,7 +2761,6 @@ def scoped_runtime_main(main_runtime: Optional[dict[str, Any]]):
 def clear_runtime_main() -> None:
     """Clear the runtime override in the current context."""
     _RUNTIME_MAIN_CONTEXT.set(None)
-    _publish_runtime_main_mirrors(("", "", "", "", "", ""))
 
 
 def _resolve_custom_runtime() -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -3104,10 +3060,7 @@ def _normalize_main_runtime(main_runtime: Optional[dict[str, Any]]) -> dict[str,
     — preserved as-is so aux clients share main-agent auth.
     """
     if main_runtime is None:
-        # Context-local state first; compat mirrors may hold another concurrent session's endpoint/key.
         main_runtime = _RUNTIME_MAIN_CONTEXT.get()
-        if main_runtime is None:
-            main_runtime = _compat_runtime_main()
     if not isinstance(main_runtime, dict):
         return {}
     normalized: dict[str, Any] = {}

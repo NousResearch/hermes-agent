@@ -4830,8 +4830,8 @@ class TestCustomEndpointApiKeyInheritance:
 
 
     def test_runtime_override_key_is_used(self, monkeypatch):
-        """When _RUNTIME_MAIN_API_KEY is set (by set_runtime_main), it takes
-        precedence over config.yaml for the custom endpoint key."""
+        """A key bound by set_runtime_main takes precedence over config.yaml
+        for the custom endpoint key."""
         import agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -4842,8 +4842,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch.object(ac, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key"), \
-             patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
+        with ac.scoped_runtime_main({"base_url": "https://gw.example.com/v1", "api_key": "sk-runtime-key"}), \
              patch("hermes_cli.config.load_config", return_value={"model": {}}), patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             _client, _model = resolve_provider_client(

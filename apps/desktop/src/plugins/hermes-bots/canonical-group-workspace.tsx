@@ -1,7 +1,7 @@
 import { Button, Textarea } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverActivity, CanonicalGroupRoster, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupRoster, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
@@ -16,7 +16,7 @@ type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomState {
   room: CanonicalRoom & { authority_epoch?: number; latest_seq?: number }
-  driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] }
+  driver_status?: CanonicalDriverStatus<CanonicalPendingAction>
 }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
@@ -177,6 +177,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <div className="min-w-0">
         <h2 className="text-sm font-medium">{state?.room.name || labels.loadingGroup}</h2>
         <CanonicalGroupRoster label={labels.members} labels={labels} members={state?.room.members} phases={phases} />
+        <CanonicalGroupAttention driver={state?.driver_status} labels={labels} />
       </div>
       <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
     </header>

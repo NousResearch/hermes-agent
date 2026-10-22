@@ -257,3 +257,28 @@ it('reads only new log events, and the whole log again when the room authority c
   expect(since().at(-1)).toBe(0)
   expect(screen.queryByText('First reply')).toBeNull()
 })
+
+it('says what the room waits on beside the live work, never instead of it', async () => {
+  const members = [{ member_id: 'ops', profile: 'ops', handle: 'ops', display_name: 'Ops' },
+    { member_id: 'qa', profile: 'qa', handle: 'qa', display_name: 'QA' }]
+
+  let driver: Record<string, unknown> | undefined = {
+    running: true, working: true, blocked: true, member_activity: [{ member_id: 'ops', status: 'running' }],
+    pending_actions: [
+      { kind: 'retry', member_id: 'qa', task_id: 'failed', execution_generation: 1 },
+      { kind: 'approval', member_id: 'ops', task_id: 'live', execution_generation: 1, request_id: 'r1', approval: { choices: ['deny'] } }
+    ]
+  }
+
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room', members }, driver_status: driver } : method === 'groups.log' ? { events: [] } : {})
+  const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'waiting' }} />)
+  await screen.findByText('Blocked · 1 waiting for approval · Needs attention: 1')
+  expect(screen.getByRole('status').textContent).toBe('Working: Ops')
+
+  view.unmount()
+  // A gateway whose driver is down sends no driver status.
+  driver = undefined
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'stopped' }} />)
+  await screen.findByText('Group driver unavailable. Update or reconnect the owning gateway.')
+})

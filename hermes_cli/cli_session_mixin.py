@@ -905,17 +905,14 @@ class CLISessionMixin:
             write_breadcrumb(self.session_id)
 
     def _is_session_yolo_active(self) -> bool:
-        """Whether YOLO bypass is on for this session: reads ``tools.approval._session_yolo``
-        (not a stale env var) and honors the frozen process-start ``--yolo`` flag."""
+        """Whether this session bypasses approvals via /yolo, --yolo, or config."""
         try:
-            from tools.approval import _YOLO_MODE_FROZEN, is_session_yolo_enabled
+            from tools.approval import is_approval_bypass_active_for_session
         except Exception:
             return False
-        if _YOLO_MODE_FROZEN:
-            return True
         # getattr: __new__-built test fixtures skip __init__; the status-bar builders
         # swallow exceptions but would lose every field after the failure.
-        return is_session_yolo_enabled(getattr(self, "session_id", None) or "default")
+        return is_approval_bypass_active_for_session(getattr(self, "session_id", None) or "default")
 
     def _toggle_yolo(self):
         """Toggle per-session YOLO mode (skip dangerous-command approvals).

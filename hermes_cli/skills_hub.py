@@ -1050,6 +1050,10 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         # and both sets are None — never mis-filter on missing info.)
         if enabled_only:
             conditions = skill.get("conditions") or {}
+            # No session_platform: `skills list` runs in a plain CLI, where the
+            # gateway channel is unknown, and _skill_should_show() deliberately
+            # fails open in that case. Platform-gated skills therefore stay
+            # listed here; the runtime prompt still drops them for the channel.
             if not _skill_should_show(conditions, available_tools, available_toolsets):
                 continue
 

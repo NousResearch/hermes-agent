@@ -138,12 +138,13 @@ _EMPTY_CONDITIONS = {
 def _conditional_skill(name, **overrides):
     conditions = dict(_EMPTY_CONDITIONS)
     conditions.update(overrides)
-    return {"name": name, "category": "x", "description": name,
-            "conditions": conditions}
+    return {"name": name, "load_name": name, "category": "x", "description": name,
+            "tier": "builtin", "conditions": conditions}
 
 
 _CONDITIONAL_SKILLS = [
-    {"name": "plain-skill", "category": "x", "description": "no conditions"},
+    {"name": "plain-skill", "load_name": "plain-skill", "category": "x", "description": "no conditions",
+     "tier": "builtin"},
     _conditional_skill("needs-term-ts", requires_toolsets=["terminal"]),
     _conditional_skill("fb-web-ts", fallback_for_toolsets=["web"]),
     _conditional_skill("needs-ws-tool", requires_tools=["web_search"]),
@@ -161,7 +162,7 @@ def conditional_env(monkeypatch, hub_env):
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
     monkeypatch.setattr(
-        skills_tool, "_find_all_skills",
+        skills_tool, "_skill_catalog",
         lambda **_kwargs: [dict(s) for s in _CONDITIONAL_SKILLS],
     )
     monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
@@ -234,6 +235,37 @@ def test_enabled_only_shows_everything_when_resolution_fails(conditional_env, mo
     output = _capture_enabled_only(monkeypatch, None, None)
     for skill in _CONDITIONAL_SKILLS:
         assert skill["name"] in output
+
+
+def test_enabled_only_keeps_platform_gated_skill_visible(hub_env, monkeypatch):
+    """`skills list` has no gateway channel, so platform gates fail open here.
+
+    _skill_should_show() only rejects on session_platforms when a platform is
+    actually supplied; the CLI never supplies one. Pinning this keeps the
+    listing honest about what it can and cannot know — the runtime prompt
+    builder applies the same predicate with the real channel and drops it.
+    """
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+    from agent import skill_utils
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(
+        skills_tool, "_skill_catalog",
+        lambda **_kwargs: [_conditional_skill("telegram-only", session_platforms=["telegram"])],
+    )
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda platform=None: set())
+
+    output = _capture_enabled_only(monkeypatch, set(), set())
+    assert "telegram-only" in output
+
+    from agent.prompt_builder import _skill_should_show
+
+    conditions = {"session_platforms": ["telegram"]}
+    assert _skill_should_show(conditions, set(), set(), session_platform="discord") is False
+    assert _skill_should_show(conditions, set(), set()) is True
 
 
 @pytest.mark.parametrize(

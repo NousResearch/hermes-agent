@@ -16,8 +16,13 @@ export function isMissingRpcMethod(error: unknown): boolean {
   return /method not found|-32601|unknown method|no such method/i.test(message)
 }
 
-export function isOutOfSyncRpcParams(error: Error | string): boolean {
-  return /out of sync \(different versions\)/i.test(error.toString())
+/** True when a JSON-RPC call was refused because the client and the backend are out of sync —
+ *  the legacy dispatch answers an unknown key (``extra="forbid"``) as 4000 with this exact
+ *  message (`tui_gateway/contracts/registry.py::validate_params`). The message match is the only
+ *  signal that survives the IPC bridge; callers use it to fall back to the params the OLD
+ *  backend accepts rather than failing the action. */
+export function isOutOfSyncRpcParams(error: unknown): boolean {
+  return /out of sync \(different versions\)/i.test(String(error))
 }
 
 /** REST twin of isMissingRpcMethod: the route does not exist on this backend.

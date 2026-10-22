@@ -71,22 +71,25 @@ test('a legacy (non-canonical) dial strips canonical-only identity keys the serv
   }
 })
 
-test('a legacy dial branches from a message with the serve contract\'s count, never the canonical row boundary', async () => {
-  // N20: the legacy `session.branch` contract is closed (extra="forbid"); `through_message_id`
-  // answered 4000 "out of sync", which is not a missing method, so "Branch from here" failed.
+test('a legacy dial KEEPS the canonical row boundary and the 4000 refusal reads as out-of-sync', async () => {
+  // Contract 9: the legacy `session.branch` now carries `through_message_id` on the
+  // wire too — the renderer's local list can be a compacted model projection shorter
+  // than the authoritative display, so the `count` alone cuts the child at an EARLIER
+  // message. A pre-v9 backend is extra="forbid" and answers that key with 4000 "out
+  // of sync"; forkBranch recognises exactly that refusal (isOutOfSyncRpcParams) and
+  // retries the same branch count-only, which the old backend accepts.
   const wsPackage = 'ws'
   const { WebSocketServer } = await import(wsPackage)
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await new Promise<void>(resolve => server.once('listening', resolve))
-  const allowed = new Set(['session_id', 'name', 'count', 'idempotency_key'])
+  const sent: any[] = []
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
-      const unknown = Object.keys(frame.params).filter(key => !allowed.has(key))
-
-      socket.send(JSON.stringify(unknown.length
-        ? { jsonrpc: '2.0', id: frame.id, error: { code: 4000, message: `invalid params: ${unknown}` } }
-        : { jsonrpc: '2.0', id: frame.id, result: { session_id: 'child', kept: frame.params.count } }))
+      sent.push(frame)
+      socket.send(JSON.stringify(frame.params.through_message_id === undefined
+        ? { jsonrpc: '2.0', id: frame.id, result: { session_id: 'child', kept: frame.params.count } }
+        : { jsonrpc: '2.0', id: frame.id, error: { code: 4000, message: 'invalid params for session.branch: through_message_id: extra fields not permitted — the client and the Hermes backend are out of sync (different versions); run `hermes update` and restart both' } }))
     })
   })
   const client = new HermesGateway()
@@ -95,13 +98,20 @@ test('a legacy dial branches from a message with the serve contract\'s count, ne
     const address = server.address() as { port: number }
     await client.connect(`ws://127.0.0.1:${address.port}/api/ws?ticket=legacy`)
     await expect(client.request('session.branch', { session_id: 'parent', idempotency_key: 'k', count: 3, through_message_id: 41 }))
-      .resolves.toMatchObject({ session_id: 'child', kept: 3 })
+      .rejects.toThrow(/out of sync/)
+    const wire = sent.find(frame => frame.params?.through_message_id !== undefined)
+    expect(wire?.params).toEqual({ session_id: 'parent', idempotency_key: 'k', count: 3, through_message_id: 41 })
   } finally {
     client.close()
 
     for (const socket of server.clients) { socket.terminate() }
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
+
+  const { isOutOfSyncRpcParams } = await import('@/lib/gateway-rpc')
+
+  expect(isOutOfSyncRpcParams(new Error('invalid params for session.branch: through_message_id: extra fields not permitted — the client and the Hermes backend are out of sync (different versions); run `hermes update` and restart both'))).toBe(true)
+  expect(isOutOfSyncRpcParams(new Error('nothing to branch — send a message first'))).toBe(false)
 })
 
 test('a compress settle resumes under the caller\'s original timeout and abort signal', async () => {

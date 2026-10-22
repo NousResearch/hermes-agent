@@ -417,9 +417,9 @@ describe('default-route profile adoption', () => {
       await flushAsync()
 
       if (connectionId) {
-        expect(desktop.getConnectionFor).toHaveBeenCalledWith(route)
+        expect(desktop.getConnectionFor).toHaveBeenCalledWith({ ...route, redial: true })
       } else {
-        expect(desktop.getConnection).toHaveBeenCalledWith('coder')
+        expect(desktop.getConnection).toHaveBeenCalledWith('coder', { redial: true })
         expect(desktop.getConnectionFor).not.toHaveBeenCalled()
       }
 

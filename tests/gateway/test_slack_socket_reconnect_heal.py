@@ -295,3 +295,102 @@ class TestSocketModeRestart:
         await adapter._socket_watchdog_loop()
 
         assert reasons == ["transport disconnected"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_restarts_when_receiver_task_dies(self, adapter):
+        live = MagicMock()
+        live.done.return_value = False
+        dead = MagicMock()
+        dead.done.return_value = True
+        adapter._socket_mode_task = live
+        adapter._handler = MagicMock()
+        adapter._handler.client.message_receiver = dead
+        adapter._socket_transport_connected = AsyncMock(return_value=True)
+        adapter._socket_ping_pong_stale = MagicMock(return_value=False)
+        adapter._socket_watchdog_interval_s = 0.01
+        reasons = []
+
+        async def restart(reason):
+            reasons.append(reason)
+            adapter._running = False
+
+        adapter._restart_socket_mode = restart
+        try:
+            await asyncio.wait_for(adapter._socket_watchdog_loop(), timeout=0.1)
+        except asyncio.TimeoutError:
+            pass
+        assert reasons == ["message_receiver stopped"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_restarts_when_processor_task_dies(self, adapter):
+        live = MagicMock()
+        live.done.return_value = False
+        dead = MagicMock()
+        dead.done.return_value = True
+        adapter._socket_mode_task = live
+        adapter._handler = MagicMock()
+        adapter._handler.client.message_processor = dead
+        adapter._socket_transport_connected = AsyncMock(return_value=True)
+        adapter._socket_ping_pong_stale = MagicMock(return_value=False)
+        adapter._socket_watchdog_interval_s = 0.01
+        reasons = []
+
+        async def restart(reason):
+            reasons.append(reason)
+            adapter._running = False
+
+        adapter._restart_socket_mode = restart
+        try:
+            await asyncio.wait_for(adapter._socket_watchdog_loop(), timeout=0.1)
+        except asyncio.TimeoutError:
+            pass
+        assert reasons == ["message_processor stopped"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_rotates_silent_but_connected_socket(self, adapter):
+        import time
+        live = MagicMock()
+        live.done.return_value = False
+        adapter._socket_mode_task = live
+        adapter._handler = MagicMock()
+        adapter._handler.client.message_receiver = live
+        adapter._handler.client.message_processor = live
+        adapter._handler.client.current_session_monitor = live
+        adapter._socket_handler_started_monotonic = time.monotonic() - 900
+        adapter._socket_transport_connected = AsyncMock(return_value=True)
+        adapter._socket_ping_pong_stale = MagicMock(return_value=False)
+        adapter._socket_watchdog_interval_s = 0.01
+        reasons = []
+
+        async def restart(reason):
+            reasons.append(reason)
+            adapter._running = False
+
+        adapter._restart_socket_mode = restart
+        try:
+            await asyncio.wait_for(adapter._socket_watchdog_loop(), timeout=0.1)
+        except asyncio.TimeoutError:
+            pass
+        assert reasons == ["scheduled socket renewal"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_does_not_rotate_fresh_socket(self, adapter):
+        import time
+        live = MagicMock()
+        live.done.return_value = False
+        adapter._socket_mode_task = live
+        adapter._handler = MagicMock()
+        adapter._handler.client.message_receiver = live
+        adapter._handler.client.message_processor = live
+        adapter._handler.client.current_session_monitor = live
+        adapter._socket_handler_started_monotonic = time.monotonic()
+        adapter._socket_transport_connected = AsyncMock(return_value=True)
+        adapter._socket_ping_pong_stale = MagicMock(return_value=False)
+        adapter._socket_watchdog_interval_s = 0.01
+        async def stop_after_checks():
+            adapter._running = False
+            return True
+        adapter._socket_transport_connected = stop_after_checks
+        adapter._restart_socket_mode = AsyncMock()
+        await adapter._socket_watchdog_loop()
+        adapter._restart_socket_mode.assert_not_awaited()

@@ -30,7 +30,7 @@ loop's outer error owner and the finalizer both see the same terminal state.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 VERDICT_ALLOW = "allow"
 VERDICT_DROP = "drop"
@@ -104,8 +104,8 @@ def _record(agent: Any, *, turn_id: str, verdict: str, content: Any) -> None:
 def gate_final_output(
     agent: Any,
     *,
-    candidate: Dict[str, Any],
-    context: Dict[str, Any],
+    candidate: dict[str, Any],
+    context: dict[str, Any],
     turn_id: Optional[str] = None,
 ) -> str:
     """Evaluate ``llm_final_output_commit`` for ``candidate`` and record the verdict.

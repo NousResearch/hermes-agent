@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Reuses the real-AIAgent fixture (mirrors test_run_agent's) and the response builders.
-from tests.agent.test_dropped_tool_call_recovery import loop_agent  # noqa: F401
+from tests.agent.test_dropped_tool_call_recovery import loop_agent
 from tests.agent.test_run_agent import _mock_response
 
 _SECRET = "TOP-SECRET-CANDIDATE"

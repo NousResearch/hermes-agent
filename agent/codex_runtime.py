@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.turn_final_output import FINAL_OUTPUT_REFUSAL_COPY
@@ -850,7 +850,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     # A refusal carries its own error text (same copy as the generic path); a DROP is an
     # advisory policy outcome and keeps turn.error as it was.
     error = FINAL_OUTPUT_REFUSAL_COPY if final_output == "refused" else turn.error
-    result_extra: Dict[str, Any] = {}
+    result_extra: dict[str, Any] = {}
     if terminal:
         # Carried on the result so the failed-turn closers (and the gateway's own) honor
         # the disposition instead of re-deriving a candidate. A refusal keeps the generic

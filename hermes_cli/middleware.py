@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ def run_llm_stream_text_middleware(
 
 
 def run_llm_final_output_commit_middleware(
-    candidate: Dict[str, Any], context: Dict[str, Any] | None = None,
+    candidate: dict[str, Any], context: dict[str, Any] | None = None,
 ) -> str:
     """Gate final-output commit through registered ``llm_final_output_commit`` middleware.
 

@@ -31,7 +31,7 @@ class _FakeAgent:
     _current_streamed_assistant_text = ""
     _stream_options_unsupported = False
     stream_delta_callback = None
-    _stream_diag_capture_response = lambda self, *a: None  # noqa: E731
+    _stream_diag_capture_response = lambda self, *a: None
 
     def __init__(self):
         self._reset_raises: type | None = None

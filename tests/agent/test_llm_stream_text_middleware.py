@@ -254,7 +254,7 @@ def _suppressed_stream_call(monkeypatch, agent, chunks):
     call.provider_tool_in_flight = {"yes": False}
     call.last_chunk_time = {"t": 0.0}
     call._stream_timeouts = lambda: (1.0, 1.0, 1.0)
-    call._new_diag = lambda: {}
+    call._new_diag = dict
     call._set_managed_stream = lambda stream: stream
     call._count_chunk = lambda diag, chunk: None
     call._stream_attempt_is_active = lambda stream_attempt_id: True

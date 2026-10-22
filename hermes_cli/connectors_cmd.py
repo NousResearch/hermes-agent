@@ -60,7 +60,7 @@ def _match_named(app: str, rows: list[dict[str, Any]], name: str) -> dict[str, A
 def _list(args) -> int:
     from tools.connectors.managed import managed_client
 
-    rows = managed_client().list_connectors()
+    rows = managed_client(creates_guest=True).list_connectors()
     if not rows:
         print("No connectors are available.")
         return 0

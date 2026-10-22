@@ -1,0 +1,64 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, renderHook, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
+
+import { useHostedConnectors } from './queries'
+
+const row = { connected: false, connector: 'notion', enabled: true, gateway_disabled_tools: [] }
+
+function gateway(listed: object[]) {
+  const request = vi.fn(
+    async (method: string) =>
+      ({
+        'connectors.accounts': { accounts: [] },
+        'connectors.catalog': { connectors: [] },
+        'connectors.list': { available: true, connectors: listed },
+        'connectors.policy.get': { effective: { mode: 'unrestricted' }, layers: [] }
+      })[method]
+  )
+
+  // SAFETY: the page's queries call only `request` on the primary socket.
+  setPrimaryGateway({ request } as never)
+  setPrimaryGatewayConnectionId('connection-1')
+
+  return request
+}
+
+function mount() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+
+  return renderHook(() => useHostedConnectors('default'), { wrapper })
+}
+
+const asked = (request: ReturnType<typeof gateway>, method: string) =>
+  request.mock.calls.some(([name]) => name === method)
+
+afterEach(cleanup)
+
+describe('connector rules on the Connectors page', () => {
+  it('are not asked for while the list is empty (no identity yet)', async () => {
+    const request = gateway([])
+    const { result } = mount()
+
+    await waitFor(() => expect(result.current.phase).toBe('ready'))
+    await waitFor(() => expect(asked(request, 'connectors.catalog')).toBe(true))
+
+    expect(asked(request, 'connectors.policy.get')).toBe(false)
+    expect(result.current.rulesFailed).toBe(false)
+  })
+
+  it('are asked for once the gateway lists apps', async () => {
+    const request = gateway([row])
+
+    mount()
+
+    await waitFor(() => expect(asked(request, 'connectors.policy.get')).toBe(true))
+  })
+})

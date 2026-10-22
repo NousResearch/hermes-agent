@@ -1,12 +1,19 @@
-"""The desktop Connectors page and the guest identity behind hosted connectors.
+"""The desktop Connectors page, the CLI and the agent tool, and the guest identity behind hosted connectors.
 
 Contracts, for a user with no Nous identity (the fake account service in
-``tests.hermes_cli.anon_portal``, Hermes' real RPC handlers):
-- opening the page (list, catalog, accounts, rules) creates no identity and still lists the hosted apps
-- the first connect creates exactly one, and arms the connector sign-in offer, not the trial's
+``tests.hermes_cli.anon_portal``, Hermes' real RPC handlers and CLI):
+- opening the page (list, catalog, accounts) creates no identity; the catalog comes from the Portal's
+  public route, asked once and without a bearer, and rules are refused rather than invented
+- ``hermes connectors list`` and the agent's ``manage_connections`` status each create exactly one
+  identity and make the gateway list call, as before
+- the first connect creates one identity, arms the connector sign-in offer, and the page then reads
+  the signed-in routes
 """
 
 from __future__ import annotations
+
+import json
+from argparse import Namespace
 
 import pytest
 
@@ -17,6 +24,16 @@ from tests.waiting import wait_until
 from tools.connectors import live
 
 ACCOUNT = {"owner": {"type": "account"}}
+CATALOG = {"connectors": [{"slug": "notion", "name": "Notion", "description": "Docs", "category": "Productivity",
+                           "logoUrl": None, "state": "live"}]}
+
+
+class _Response:
+    def __init__(self, body):
+        self.status_code, self._body, self.headers = 200, body, {}
+
+    def json(self):
+        return self._body
 
 
 @pytest.fixture
@@ -27,44 +44,88 @@ def portal(monkeypatch, tmp_path):
     live.reset_for_tests()
 
 
-def _call(method: str, params: dict | None = None) -> dict:
-    response = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}})
-    assert "result" in response, response
-    return response["result"]
+@pytest.fixture
+def connector_portal(monkeypatch):
+    """The Portal's connector routes: every request as ``(path, sent a bearer)``."""
+    requests = []
+
+    class Transport:
+        def request(self, method, url, *, headers=None, json=None, timeout=None):
+            path = "/" + url.split("://", 1)[1].split("/", 1)[1]
+            requests.append((path, "Authorization" in (headers or {})))
+            return _Response({"accounts": []} if path.endswith("/accounts") else CATALOG)
+
+    monkeypatch.setattr("tools.connectors.portal.client._default_transport", Transport)
+    return requests
 
 
-def test_opening_the_page_creates_no_identity_and_lists_the_bundled_catalog(portal, monkeypatch):
-    from tools.connectors.portal.catalog_snapshot import CATALOG
+@pytest.fixture
+def gateway(monkeypatch):
+    """The connector gateway: every list call, and an instant connect."""
+    lists = []
 
-    def no_client(**_):
-        raise AssertionError("no gateway client may be built before an identity exists")
-
-    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", no_client)
-
-    assert _call("connectors.list", ACCOUNT) == {"available": True, "connectors": []}
-    catalog = _call("connectors.catalog")["connectors"]
-    assert [row["slug"] for row in catalog] == [row["slug"] for row in CATALOG] and catalog
-    assert _call("connectors.accounts") == {"accounts": []}
-    assert _call("connectors.policy.get")["layers"] == []
-
-    assert portal.creates() == 0 and portal.calls == []
-
-
-def test_first_connect_creates_one_identity_and_arms_the_connector_offer(portal, monkeypatch):
     class Gateway:
         def __init__(self, **_):
             pass
+
+        def list_connectors(self, *, timeout=None):
+            lists.append(1)
+            return [{"connector": "notion", "enabled": True, "connected": False}]
 
         def connections(self, names, **_):
             return {"results": [{"connector": name, "status": "active", "connection_id": "c1"} for name in names]}
 
     monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Gateway)
+    return lists
+
+
+def _call(method: str, params: dict | None = None) -> dict:
+    return srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}})
+
+
+def _result(method: str, params: dict | None = None) -> dict:
+    response = _call(method, params)
+    assert "result" in response, response
+    return response["result"]
+
+
+def test_opening_the_page_creates_no_identity_and_reads_the_public_catalog(portal, connector_portal, gateway):
+    assert _result("connectors.list", ACCOUNT) == {"available": True, "connectors": []}
+    assert [row["slug"] for row in _result("connectors.catalog")["connectors"]] == ["notion"]
+    assert _result("connectors.accounts") == {"accounts": []}
+    assert _call("connectors.policy.get")["error"]["code"] == 4032
+
+    assert connector_portal == [("/api/v1/connectors/catalog/public", False)]
+    assert portal.creates() == 0 and gateway == []
+
+
+@pytest.mark.parametrize("entry", ["cli", "agent"])
+def test_explicit_lists_still_create_one_identity_and_list_from_the_gateway(portal, gateway, entry):
+    from hermes_cli.connectors_cmd import cmd_connectors
+    from tools.connectors.gateway.config import connectors_available
+    from tools.connectors.tool import manage_connections
+
+    if entry == "cli":
+        assert cmd_connectors(Namespace(connectors_action="list")) == 0
+    else:
+        result = json.loads(manage_connections({"action": "status"}, connectors_available=connectors_available))
+        assert result["connectors"][0]["connector"] == "notion"
+
+    assert portal.creates() == 1 and gateway == [1]
+
+
+def test_first_connect_creates_one_identity_then_the_page_reads_signed_in(
+        portal, connector_portal, gateway, monkeypatch):
     monkeypatch.setattr(free_tier_offer, "_clock", lambda: 1_000_000.0)
 
-    _call("connectors.connect", {**ACCOUNT, "connectors": ["gmail"]})
+    _result("connectors.connect", {**ACCOUNT, "connectors": ["notion"]})
 
-    assert wait_until(lambda: "connector_nudge_due_in" in _call("free_tier.status"), timeout=5)
-    status = _call("free_tier.status")
+    assert wait_until(lambda: "connector_nudge_due_in" in _result("free_tier.status"), timeout=5)
+    status = _result("free_tier.status")
     assert status["connector_nudge_due_in"] == free_tier_offer.OFFER_DELAY_S
     assert "nudge_due_in" not in status and status["has_guest"] and not status["available"]
+
+    assert _result("connectors.list", ACCOUNT)["connectors"][0]["connector"] == "notion"
+    _result("connectors.catalog")
+    assert connector_portal == [("/api/v1/connectors/catalog", True)]
     assert portal.creates() == 1

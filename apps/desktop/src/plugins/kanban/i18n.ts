@@ -232,7 +232,7 @@ export const en: KanbanMessages = {
   col: {
     triage: { label: 'Triage', help: 'Raw ideas — a specifier fleshes out the spec.' },
     todo: { label: 'Todo', help: 'Waiting on dependencies, or unassigned.' },
-    scheduled: { label: 'Scheduled', help: 'Waiting for a scheduled time to arrive.' },
+    scheduled: { label: 'Scheduled', help: 'Parked by an agent; released only by unblock.' },
     ready: { label: 'Ready', help: 'Dependencies satisfied — assign a profile and the dispatcher runs it.' },
     running: { label: 'Running', help: 'Claimed by a worker — an agent is on it. Set by the dispatcher.' },
     blocked: { label: 'Blocked', help: 'The worker asked for human input.' },
@@ -243,7 +243,7 @@ export const en: KanbanMessages = {
   locked: {
     review: 'Review is entered by the dispatcher when a review agent takes the card.',
     running: 'Running is set by the dispatcher when a worker claims the card.',
-    scheduled: 'Scheduled needs a wake-up time — agents set it; it can’t be dragged into.'
+    scheduled: 'Scheduled is set by agents and released by unblock; it can’t be dragged into.'
   },
   arcRunning: 'An agent is working on this now.',
   arcStale: 'Claimed, but no worker heartbeat for 2+ minutes — the dispatcher will reclaim it.',
@@ -322,7 +322,7 @@ export const en: KanbanMessages = {
   couldNotEstimate: 'Could not estimate',
   complexity: { S: 'Small', M: 'Medium', L: 'Large' },
   introBody:
-    'You don’t run the cards — agents do. Put a card in Ready with an assignee and an agent picks it up within a minute. No assignee, no run. Triage: an agent rewrites the idea into a proper task first. Todo: waiting on other cards. Scheduled: waiting on a timer. Running and Review: the agents’ lanes, hands off. Blocked: it’s waiting on you. Results come back on the card.',
+    'You don’t run the cards — agents do. Put a card in Ready with an assignee and an agent picks it up within a minute. No assignee, no run. Triage: an agent rewrites the idea into a proper task first. Todo: waiting on other cards. Scheduled: parked until unblocked. Running and Review: the agents’ lanes, hands off. Blocked: it’s waiting on you. Results come back on the card.',
   introGotIt: 'Got it',
   evtCreated: (where, assignee) =>
     `created${where ? ` in ${where}` : ''}${assignee ? ` · assigned to ${assignee}` : ''}`,
@@ -340,7 +340,7 @@ export const en: KanbanMessages = {
   evtReclaimed: 'reclaimed — returned to the queue',
   evtSpecified: 'spec written by the triage agent',
   evtPromoted: 'dependencies done — promoted to Ready',
-  evtScheduled: 'scheduled for later',
+  evtScheduled: 'scheduled (parked)',
   evtArchived: 'archived',
   evtReprioritized: priority => `priority set to ${priority}`,
   someone: 'someone',
@@ -460,7 +460,7 @@ const ja: KanbanMessages = {
   col: {
     triage: { label: 'トリアージ', help: '生のアイデア — スペシファイアが仕様に整えます。' },
     todo: { label: 'Todo', help: '依存関係の待ち、または未割り当て。' },
-    scheduled: { label: 'スケジュール', help: '予定時刻を待っています。' },
+    scheduled: { label: 'スケジュール', help: 'エージェントが保留中。unblock でのみ解除されます。' },
     ready: { label: 'Ready', help: '依存関係が解決済み — プロフィールを割り当てるとディスパッチャが実行します。' },
     running: { label: '実行中', help: 'ワーカーが取得済み — エージェントが作業中。ディスパッチャが設定します。' },
     blocked: { label: 'ブロック', help: 'ワーカーが人間の入力を求めています。' },
@@ -471,7 +471,7 @@ const ja: KanbanMessages = {
   locked: {
     review: 'レビューは、レビューエージェントがカードを取得するとディスパッチャによって設定されます。',
     running: '実行中は、ワーカーがカードを取得するとディスパッチャによって設定されます。',
-    scheduled: 'スケジュールには起動時刻が必要です — エージェントが設定します。ドラッグでは移動できません。'
+    scheduled: 'スケジュールはエージェントが設定し、unblock で解除されます。ドラッグでは移動できません。'
   },
   arcRunning: 'エージェントが現在作業中です。',
   arcStale: '取得済みですが、2分以上ワーカーのハートビートがありません — ディスパッチャが再取得します。',
@@ -550,7 +550,7 @@ const ja: KanbanMessages = {
   couldNotEstimate: '見積もりできませんでした',
   complexity: { S: '小', M: '中', L: '大' },
   introBody:
-    'カードはあなたではなくエージェントが実行します。担当を設定したカードを Ready に置くと、1分以内にエージェントが取得します。担当がなければ実行されません。トリアージ: エージェントがまずアイデアを適切なタスクに書き直します。Todo: 他のカード待ち。スケジュール: タイマー待ち。実行中とレビュー: エージェントのレーンなので手を出さないでください。ブロック: あなたの対応待ちです。結果はカードに戻ってきます。',
+    'カードはあなたではなくエージェントが実行します。担当を設定したカードを Ready に置くと、1分以内にエージェントが取得します。担当がなければ実行されません。トリアージ: エージェントがまずアイデアを適切なタスクに書き直します。Todo: 他のカード待ち。スケジュール: unblock されるまで保留。実行中とレビュー: エージェントのレーンなので手を出さないでください。ブロック: あなたの対応待ちです。結果はカードに戻ってきます。',
   introGotIt: '了解',
   evtCreated: (where, assignee) => `作成${where ? `（${where}）` : ''}${assignee ? `・${assignee} に割り当て` : ''}`,
   evtMovedTo: col => `${col} へ移動`,
@@ -567,7 +567,7 @@ const ja: KanbanMessages = {
   evtReclaimed: '再取得 — キューに戻しました',
   evtSpecified: 'トリアージエージェントが仕様を作成',
   evtPromoted: '依存関係が完了 — Ready に昇格',
-  evtScheduled: '後で実行するようスケジュール',
+  evtScheduled: 'スケジュール（保留）',
   evtArchived: 'アーカイブ済み',
   evtReprioritized: priority => `優先度を ${priority} に設定`,
   someone: '誰か',
@@ -687,7 +687,7 @@ const zh: KanbanMessages = {
   col: {
     triage: { label: '分诊', help: '原始想法 — 由细化代理整理出规格。' },
     todo: { label: '待办', help: '等待依赖，或未分配。' },
-    scheduled: { label: '已排期', help: '等待预定时间到来。' },
+    scheduled: { label: '已排期', help: '由代理搁置；仅可通过 unblock 释放。' },
     ready: { label: '就绪', help: '依赖已满足 — 分配一个配置档，调度器即会运行它。' },
     running: { label: '运行中', help: '已被工作单元领取 — 有代理在处理。由调度器设置。' },
     blocked: { label: '受阻', help: '工作单元需要人工输入。' },
@@ -698,7 +698,7 @@ const zh: KanbanMessages = {
   locked: {
     review: '审查状态由调度器在审查代理领取卡片时设置。',
     running: '运行中由调度器在工作单元领取卡片时设置。',
-    scheduled: '排期需要唤醒时间 — 由代理设置；无法拖入。'
+    scheduled: '排期由代理设置，仅可通过 unblock 释放；无法拖入。'
   },
   arcRunning: '有代理正在处理它。',
   arcStale: '已领取，但超过 2 分钟没有工作单元心跳 — 调度器将重新领取。',
@@ -776,7 +776,7 @@ const zh: KanbanMessages = {
   couldNotEstimate: '无法估算',
   complexity: { S: '小', M: '中', L: '大' },
   introBody:
-    '卡片不由你运行，而是由代理运行。把带有负责人的卡片放入“就绪”，代理会在一分钟内领取。没有负责人就不会运行。分诊：代理先把想法改写成合适的任务。待办：等待其他卡片。已排期：等待计时器。运行中与审查：这是代理的通道，请勿插手。受阻：正在等你。结果会回到卡片上。',
+    '卡片不由你运行，而是由代理运行。把带有负责人的卡片放入“就绪”，代理会在一分钟内领取。没有负责人就不会运行。分诊：代理先把想法改写成合适的任务。待办：等待其他卡片。已排期：搁置至解除阻塞。运行中与审查：这是代理的通道，请勿插手。受阻：正在等你。结果会回到卡片上。',
   introGotIt: '知道了',
   evtCreated: (where, assignee) => `已创建${where ? `（${where}）` : ''}${assignee ? `・分配给 ${assignee}` : ''}`,
   evtMovedTo: col => `移动到 ${col}`,
@@ -793,7 +793,7 @@ const zh: KanbanMessages = {
   evtReclaimed: '已重新领取 — 已放回队列',
   evtSpecified: '分诊代理已撰写规格',
   evtPromoted: '依赖已完成 — 提升为就绪',
-  evtScheduled: '已排期稍后运行',
+  evtScheduled: '已排期（搁置）',
   evtArchived: '已归档',
   evtReprioritized: priority => `优先级设为 ${priority}`,
   someone: '某人',
@@ -911,7 +911,7 @@ const zhHant: KanbanMessages = {
   col: {
     triage: { label: '分類', help: '原始想法 — 由細化代理整理出規格。' },
     todo: { label: '待辦', help: '等待相依項目，或未指派。' },
-    scheduled: { label: '已排程', help: '等待預定時間到來。' },
+    scheduled: { label: '已排程', help: '由代理擱置；僅可透過 unblock 釋放。' },
     ready: { label: '就緒', help: '相依項目已滿足 — 指派一個設定檔，排程器便會執行它。' },
     running: { label: '執行中', help: '已被工作單元領取 — 有代理在處理。由排程器設定。' },
     blocked: { label: '受阻', help: '工作單元需要人工輸入。' },
@@ -922,7 +922,7 @@ const zhHant: KanbanMessages = {
   locked: {
     review: '審查狀態由排程器在審查代理領取卡片時設定。',
     running: '執行中由排程器在工作單元領取卡片時設定。',
-    scheduled: '排程需要喚醒時間 — 由代理設定；無法拖入。'
+    scheduled: '排程由代理設定，僅可透過 unblock 釋放；無法拖入。'
   },
   arcRunning: '有代理正在處理它。',
   arcStale: '已領取，但超過 2 分鐘沒有工作單元心跳 — 排程器將重新領取。',
@@ -1000,7 +1000,7 @@ const zhHant: KanbanMessages = {
   couldNotEstimate: '無法估算',
   complexity: { S: '小', M: '中', L: '大' },
   introBody:
-    '卡片不由你執行，而是由代理執行。把有負責人的卡片放入「就緒」，代理會在一分鐘內領取。沒有負責人就不會執行。分類：代理先把想法改寫成合適的任務。待辦：等待其他卡片。已排程：等待計時器。執行中與審查：這是代理的通道，請勿插手。受阻：正在等你。結果會回到卡片上。',
+    '卡片不由你執行，而是由代理執行。把有負責人的卡片放入「就緒」，代理會在一分鐘內領取。沒有負責人就不會執行。分類：代理先把想法改寫成合適的任務。待辦：等待其他卡片。已排程：擱置至解除阻塞。執行中與審查：這是代理的通道，請勿插手。受阻：正在等你。結果會回到卡片上。',
   introGotIt: '知道了',
   evtCreated: (where, assignee) => `已建立${where ? `（${where}）` : ''}${assignee ? `・指派給 ${assignee}` : ''}`,
   evtMovedTo: col => `移至 ${col}`,
@@ -1017,7 +1017,7 @@ const zhHant: KanbanMessages = {
   evtReclaimed: '已重新領取 — 已放回佇列',
   evtSpecified: '分類代理已撰寫規格',
   evtPromoted: '相依項目已完成 — 提升為就緒',
-  evtScheduled: '已排程稍後執行',
+  evtScheduled: '已排程（擱置）',
   evtArchived: '已封存',
   evtReprioritized: priority => `優先順序設為 ${priority}`,
   someone: '某人',

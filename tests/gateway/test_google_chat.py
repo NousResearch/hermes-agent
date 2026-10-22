@@ -180,10 +180,14 @@ def adapter(tmp_path):
         tmp_path / "google_chat_thread_counts.json"
     )
     yield a
-    try:
-        a._loop.close()
-    except Exception:
-        pass
+    async def finish_pending():
+        pending = asyncio.all_tasks() - {asyncio.current_task()}
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    a._loop.run_until_complete(finish_pending())
+    a._loop.close()
 
 
 def _make_pubsub_message(data: dict, *, attributes=None):
@@ -552,9 +556,11 @@ class TestOnPubsubMessage:
     def test_callback_exception_does_not_escape(self, adapter):
         env = _make_chat_envelope(text="hola")
         msg = _make_pubsub_message(env)
-        with patch.object(
-            adapter, "_submit_on_loop", side_effect=RuntimeError("boom")
-        ):
+        def fail_submit(coro):
+            coro.close()
+            raise RuntimeError("boom")
+
+        with patch.object(adapter, "_submit_on_loop", side_effect=fail_submit):
             # Must not re-raise (would trigger Pub/Sub infinite redelivery).
             adapter._on_pubsub_message(msg)
         msg.ack.assert_called_once()

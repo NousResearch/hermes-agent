@@ -425,6 +425,78 @@ def test_android_python_reaches_the_unmanaged_start(tmp_path, monkeypatch):
     assert spawned == [home.resolve()]
 
 
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("registered,container_home,reason", [
+    (False, None, None),
+    (False, "data", None),
+    (True, "data", None),
+    (True, None, "service_identity_unverified"),
+    (True, "", "service_identity_unverified"),
+    (True, "foreign", "profile_mismatch"),
+])
+def test_s6_runtime_requires_a_registered_gateway(registered, container_home, reason, tmp_path, monkeypatch):
+    """Generic s6 uses normal startup. Registered gateways still require a verified home."""
+    from hermes_cli import gateway as gw, gateway_runtime as runtime, gateway_runtime_start as start
+    from hermes_cli import main, service_manager
+    from hermes_cli.container_boot import reconcile_profile_gateways
+
+    home = tmp_path / "data"
+    home.mkdir(mode=0o700)
+    scandir = tmp_path / "service"
+    scandir.mkdir()
+    comm = tmp_path / "comm"
+    comm.write_text("s6-svscan\n", encoding="utf-8")
+    basedir = tmp_path / "s6"
+    basedir.mkdir()
+    environment = tmp_path / "HERMES_HOME"
+    if container_home is not None:
+        environment.write_text(str(tmp_path / container_home) if container_home else "", encoding="utf-8")
+
+    paths = {"/proc/1/comm": comm, "/run/s6/basedir": basedir}
+    monkeypatch.setattr(service_manager, "Path", lambda path: paths.get(str(path), Path(path)))
+    monkeypatch.setattr(service_manager, "S6_DYNAMIC_SCANDIR", scandir)
+    monkeypatch.setattr(service_manager.S6ServiceManager, "__init__",
+                        lambda self: setattr(self, "scandir", scandir))
+    read_text = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda path, *args, **kwargs: read_text(
+        environment if str(path) == "/run/s6/container_environment/HERMES_HOME" else path,
+        *args, **kwargs))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
+    if registered:
+        monkeypatch.setattr(service_manager, "_HERMES_UID", os.getuid())
+        monkeypatch.setattr(service_manager, "_HERMES_GID", os.getgid())
+        reconcile_profile_gateways(hermes_home=home, scandir=scandir, container_argv=())
+        assert (scandir / "gateway-default" / "down").is_file()
+    started, commands = [], []
+
+    def s6_run(command, *args, **kwargs):
+        commands.append((command, *args))
+        if command == "s6-svc":
+            assert args == ("-u", str(scandir / "gateway-default"))
+            started.append("s6")
+        return subprocess.CompletedProcess([command, *args], 0, "false", "")
+
+    def spawn(target, **kwargs):
+        assert target == home
+        started.append("unmanaged")
+
+    monkeypatch.setattr(service_manager, "_s6_run", s6_run)
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", spawn)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *args, **kwargs:
+                        runtime.GatewayDiscovery("ready" if started else "absent"))
+
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+
+    assert result.reason_code == reason
+    assert result.state == ("inaccessible" if reason else "ready")
+    assert started == ([] if reason else ["s6" if registered else "unmanaged"])
+    assert bool(commands) == (registered and reason is None)
+    assert service_manager.detect_service_manager() == ("s6" if registered else "none")
+    assert main._s6_supervised_gateway_run(["gateway", "run"]) is registered
+
+
 def test_s6_runtime_ensure_starts_the_registered_gateway_slot(tmp_path, monkeypatch):
     """A Docker TUI client starts its s6 gateway instead of probing systemd."""
     from hermes_cli import gateway_runtime_service as service

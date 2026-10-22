@@ -283,6 +283,14 @@ def _run_worker_turns(agent, frame, history):
         return result
     except Exception as exc:
         code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc))
+        # An empty attempt diagnostic leaves the board and the retry worker with a bare exit
+        # code, so an owner refusal reads as an unexplained crash. Record only non-payload
+        # facts: the deterministic skill-gate signature, else the exception TYPE NAME. The
+        # message stays out — arbitrary exception text can carry private payloads.
+        if type(exc) is ValueError and str(exc) == 'kanban_skills_unavailable':
+            last_output = 'Kanban worker failed: kanban_skills_unavailable'
+        else:
+            last_output = f'Kanban worker failed: {type(exc).__name__}'
         raise
     finally:
         _record_worker_result(context, code, last_output)

@@ -154,11 +154,15 @@ call it:
   record. Records live in `guest_handoff.json` beside the shared Nous store, keyed by a hash of the
   `anon_` credential and bound to the destination account, so profiles sharing one free-tier
   identity share one record and one claim.
-- `drain` runs the claim outside every lock, bounded to about 10 s: after a shared-store write, when a
-  `guest_handoff.deferred()` block exits (a surface that saves under its own lock, such as the
-  desktop poller, wraps the save in it), after a free-tier reconcile, and on every Nous keepalive tick,
-  which resumes a retry an earlier process left. It also runs `settle_after_upgrade` once per
-  replacement, so every replacing writer settles.
+- `drain` runs the claim outside every lock, bounded to about 10 s (each record, refresh and request
+  checks the remaining budget): after a shared-store write, when a `guest_handoff.deferred()` block
+  exits (a surface that saves under its own lock, such as the desktop poller, wraps the save in it),
+  after a free-tier reconcile, and on every Nous keepalive tick, which resumes a retry an earlier
+  process left. It only moves apps; config completion (`settle_after_upgrade`) stays with the
+  sign-in that saved the account.
+- Every attempt is reserved in one locked read-modify-write that checks the record is still due,
+  under the attempt cap, and bound to the account whose Bearer is about to be sent (the token's
+  `sub` must equal the record's destination). Apps never go to any other account.
 
 Answers: `claimed` records what moved (and refreshes the account token only when
 `cohort_carried`); `unknown_token` is Gone, read as "probably moved" after an earlier attempt (a lost

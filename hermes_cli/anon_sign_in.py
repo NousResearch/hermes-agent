@@ -443,14 +443,14 @@ def run_sign_in(
         from hermes_cli.guest_handoff import deferred, note_promoted
         with open_scope():
             # The handoff runs once the surface's lock is released, never inside it.
-            with deferred() as handoff:
+            with deferred():
                 with guard() as may_persist:
                     if may_persist:
                         # The completed promotion already moved the apps: nothing left to claim.
                         note_promoted(anon_token, account_email=str(outcome.get("account_email") or "") or None)
                         _core.persist_nous_credentials(account_state)
             if may_persist:
-                settled = handoff.settle(account_state)
+                settled = _core.settle_after_upgrade(account_state)
     except Exception as exc:
         # persist_nous_credentials takes the auth-store lock, writes auth.json, takes the shared
         # store's file lock and reseeds the credential pool: a lock timeout or a read-only home

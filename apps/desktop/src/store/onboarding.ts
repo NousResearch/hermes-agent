@@ -818,8 +818,6 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
     return false
   }
 
-  // With nothing set up the check's sentence restates the picker in terminal terms (CLI commands, the
-  // home path), so the default stands.
   const reason = (runtime.unconfigured ? null : runtime.reason) || state.reason || DEFAULT_ONBOARDING_REASON
 
   if (shouldPreserveConfiguredOnBootRace(runtime, state)) {

@@ -20,12 +20,13 @@ interface CanonicalGroupHeaderProps {
   onRename: (name: string) => void
   onStop: () => void
   room?: CanonicalRoom
+  stopping: boolean
   statuses: Map<string, MemberStatus>
   working: boolean
 }
 
 /** Title (opens the details panel), each member's live chip, and quiet icon actions. */
-export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, detailsOpen, driver, onBack, onDetails, onDisband, onRename, onStop, room, statuses, working }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, detailsOpen, driver, onBack, onDetails, onDisband, onRename, onStop, room, statuses, stopping, working }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
   const [renaming, setRenaming] = useState<null | string>(null)
   const [ending, setEnding] = useState(false)
@@ -44,8 +45,8 @@ export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, det
     </Tip>
 
   return <>
-    <RoomHeader backLabel={labels.back} onBack={onBack} onStop={busy || !canStop ? undefined : onStop} onTitle={onDetails}
-      stopLabel={labels.stopGroup} title={room?.name || labels.loadingGroup} titleExpanded={detailsOpen} titleLabel={labels.groupDetails} trailing={<>
+    <RoomHeader backLabel={labels.back} onBack={onBack} onStop={canStop ? onStop : undefined} onTitle={onDetails}
+      stopDisabled={stopping} stopLabel={labels.stopGroup} title={room?.name || labels.loadingGroup} titleExpanded={detailsOpen} titleLabel={labels.groupDetails} trailing={<>
         {canRename && action(labels.rename, 'edit', () => setRenaming(room?.name ?? ''), busy || !room)}
         {canDisband && action(labels.disband, 'trash', () => setEnding(true), busy || !room)}
       </>}

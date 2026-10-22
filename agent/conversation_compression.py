@@ -4224,9 +4224,16 @@ def compress_context(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
             agent.session_id or "none", _pre_msg_count, len(compressed), f"{_compressed_est:,}",
         )
-        lifecycle.commit_status = (
-            "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
-        )
+        if getattr(agent, "_persist_disabled", False):
+            # Background-review copies share the primary session id, but never
+            # write their compacted transcript to its session store.
+            split_status = lifecycle.commit_status = "not_persisted"
+        else:
+            lifecycle.commit_status = (
+                "committed"
+                if split_status in {"not_applicable", "in_place_committed", "rotated_committed"}
+                else "aborted"
+            )
         # A rewrite that survived a later bookkeeping failure is still what the model sees: count it as saved.
         rewritten = commit.compacted_in_place or compressed is not messages
         if rewritten or lifecycle.commit_status == "committed":

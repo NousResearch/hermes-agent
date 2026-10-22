@@ -3491,6 +3491,12 @@ display:
   review:
     routing_fallback_warning: "⚠ Az auxiliary.background_review.provider='{task_provider}' ('{task_model}' modell) nem irányítható ({error}); visszaesés erre: {provider}/{model}"
     reasoning_effort_warning: "⚠ Az auxiliary.background_review.reasoning_effort='{effort}' hatástalan, amíg az áttekintő modell nem a fő modell"
+    staged_summary: "Háttérben futó felülvizsgálat összevonása ({action} a(z) {target} területen): {detail}"
+    staged_message: "A háttérben futó felülvizsgálat nem törölhet memória-bejegyzéseket felügyelet nélkül. A javasolt {action} művelet jóváhagyásra vár — ellenőrizd a /memory pending paranccsal (jóváhagyás az alkalmazáshoz, elutasítás az elvetéshez)."
+    staged_action:
+      batch: "kötegelt művelet"
+      replace: "csere"
+      remove: "eltávolítás"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 A(z) '{name}' skill javítva: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 A(z) '{name}' skill {verb}: {description}"

@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' ('{task_model}' modeli) yönlendirilemedi ({error}); {provider}/{model} kullanılıyor"
     reasoning_effort_warning: "⚠ inceleme modeli ana model değilken auxiliary.background_review.reasoning_effort='{effort}' ayarının bir etkisi yok"
+    staged_summary: "Arka plan incelemesi birleştirmesi ({target} içinde {action}): {detail}"
+    staged_message: "Arka plan incelemesi, bellek girdilerini gözetimsiz silemez. Önerilen {action} onayınız için aşamalandırıldı — /memory pending ile inceleyin (uygulamak için onaylayın, bırakmak için reddedin)."
+    staged_action:
+      batch: "toplu işlem"
+      replace: "değiştirme"
+      remove: "silme"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 '{name}' skill'i yamalandı: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 '{name}' skill'i {verb}: {description}"

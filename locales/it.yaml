@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (modello '{task_model}') non instradabile ({error}); fallback su {provider}/{model}"
     reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' non ha effetto finché il modello di revisione non è quello principale"
+    staged_summary: "Consolidamento della revisione in background ({action} in {target}): {detail}"
+    staged_message: "La revisione in background non può eliminare voci di memoria senza supervisione. L'operazione proposta di {action} è stata messa in attesa per la tua approvazione — esaminala con /memory pending (approva per applicare, rifiuta per scartare)."
+    staged_action:
+      batch: "operazione in blocco"
+      replace: "sostituzione"
+      remove: "rimozione"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' corretta: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb}: {description}"

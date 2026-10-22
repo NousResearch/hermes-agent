@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (модель '{task_model}') не удалось направить ({error}); переключаемся на {provider}/{model}"
     reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' не действует, пока модель ревью не совпадает с основной моделью"
+    staged_summary: "Консолидация фоновой проверки ({action} в {target}): {detail}"
+    staged_message: "Фоновая проверка не может удалять записи памяти без присмотра. Предложенное действие {action} отложено для вашего одобрения — проверьте его через /memory pending (одобрить, чтобы применить; отклонить, чтобы отменить)."
+    staged_action:
+      batch: "пакетная операция"
+      replace: "замена"
+      remove: "удаление"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Навык '{name}' исправлен: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Навык '{name}' {verb}: {description}"

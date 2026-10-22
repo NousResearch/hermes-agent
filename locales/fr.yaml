@@ -3791,6 +3791,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (modèle '{task_model}') n'a pas pu être routé ({error}) ; repli sur {provider}/{model}"
     reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' n'a aucun effet tant que le modèle de revue n'est pas le modèle principal"
+    staged_summary: "Consolidation de la révision en arrière-plan ({action} dans {target}) : {detail}"
+    staged_message: "La révision en arrière-plan ne peut pas supprimer des entrées mémoire sans surveillance. La proposition de {action} a été mise en attente pour votre approbation — examinez-la avec /memory pending (approuver pour appliquer, ignorer pour abandonner)."
+    staged_action:
+      batch: "lot"
+      replace: "remplacement"
+      remove: "suppression"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' corrigée : \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb} : {description}"

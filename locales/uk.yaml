@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (модель '{task_model}') не вдалося маршрутизувати ({error}); використовується резервний варіант {provider}/{model}"
     reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' не діє, поки модель перевірки не є основною моделлю"
+    staged_summary: "Консолідація фонового перегляду ({action} у {target}): {detail}"
+    staged_message: "Фоновий перегляд не може видаляти записи пам’яті без нагляду. Запропоновану дію {action} відкладено для вашого схвалення — перегляньте її через /memory pending (схвалити, щоб застосувати; відхилити, щоб скасувати)."
+    staged_action:
+      batch: "пакетна операція"
+      replace: "заміна"
+      remove: "видалення"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Навичку '{name}' виправлено: «{old}» → «{new}»"
     skill_changed_verbose: "📝 Навичку '{name}' {verb}: {description}"

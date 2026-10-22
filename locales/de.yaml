@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (Modell '{task_model}') konnte nicht geroutet werden ({error}); Rückfall auf {provider}/{model}"
     reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' hat keine Wirkung, solange das Review-Modell nicht das Hauptmodell ist"
+    staged_summary: "Hintergrundprüfung der Konsolidierung ({action} in {target}): {detail}"
+    staged_message: "Die Hintergrundprüfung darf Speichereinträge nicht unbeaufsichtigt löschen. Das vorgeschlagene {action} wurde für deine Genehmigung vorgemerkt — prüfe es mit /memory pending (zum Anwenden genehmigen, zum Verwerfen löschen)."
+    staged_action:
+      batch: "Stapel"
+      replace: "Ersetzen"
+      remove: "Entfernen"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' gepatcht: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb}: {description}"

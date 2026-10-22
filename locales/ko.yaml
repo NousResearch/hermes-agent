@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (모델 '{task_model}')을(를) 라우팅할 수 없어요 ({error}). {provider}/{model}(으)로 대체해요"
     reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}'은(는) 리뷰 모델이 메인 모델이 아닐 때는 효과가 없어요"
+    staged_summary: "백그라운드 검토 통합({target}에서 {action}): {detail}"
+    staged_message: "백그라운드 검토는 감독 없이 메모리 항목을 삭제할 수 없습니다. 제안된 {action} 작업이 승인을 위해 보류되었습니다. /memory pending으로 검토하세요(승인하면 적용, 거부하면 폐기)."
+    staged_action:
+      batch: "일괄 작업"
+      replace: "바꾸기"
+      remove: "삭제"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 스킬 '{name}' 패치됨: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 스킬 '{name}' {verb}: {description}"

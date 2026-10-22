@@ -12,6 +12,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.i18n import t
 from utils import is_truthy_value
 from tools.registry import no_cache_check_fn
 
@@ -200,16 +201,17 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             return unmatched
         from tools import write_approval as wa
         FAILURE_CLASS.set("staged")
+        action_key = "batch" if operations is not None else action
+        action_label = t(f"display.review.staged_action.{action_key}")
+        target_label = t(f"display.review.label.{'user' if target == 'user' else 'memory'}")
         record = wa.stage_write(
             wa.MEMORY, payload,
-            summary=(f"background review consolidation ({'batch' if operations is not None else action} "
-                     f"on {target}): {detail}")[:200],
+            summary=t("display.review.staged_summary", action=action_label, target=target_label,
+                      detail=detail)[:200],
             origin=wa.current_origin())
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
+            "message": t("display.review.staged_message", action=action_label),
         }, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)

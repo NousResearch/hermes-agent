@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ níorbh fhéidir auxiliary.background_review.provider='{task_provider}' (samhail '{task_model}') a ródú ({error}); ag titim siar ar {provider}/{model}"
     reasoning_effort_warning: "⚠ níl aon éifeacht ag auxiliary.background_review.reasoning_effort='{effort}' fad nach í an phríomhshamhail samhail an athbhreithnithe"
+    staged_summary: "Comhdhlúthú athbhreithnithe cúlra ({action} in {target}): {detail}"
+    staged_message: "Ní féidir leis an athbhreithniú cúlra iontrálacha cuimhne a scriosadh gan mhaoirseacht. Cuireadh an {action} molta ar stáitse le do cheadú — athbhreithnigh é le /memory pending (ceadaigh lena chur i bhfeidhm, diúltaigh lena chaitheamh amach)."
+    staged_action:
+      batch: "baisc"
+      replace: "athsholáthar"
+      remove: "baint"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Scil '{name}' paisteáilte: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Scil '{name}' {verb}: {description}"

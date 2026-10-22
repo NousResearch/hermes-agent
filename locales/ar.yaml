@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ تعذّر توجيه auxiliary.background_review.provider='{task_provider}' (النموذج '{task_model}') ({error})؛ سيتم الرجوع إلى {provider}/{model}"
     reasoning_effort_warning: "⚠ لا أثر لـ auxiliary.background_review.reasoning_effort='{effort}' ما دام نموذج المراجعة ليس النموذج الرئيسي"
+    staged_summary: "دمج مراجعة الخلفية ({action} في {target}): {detail}"
+    staged_message: "لا يمكن لمراجعة الخلفية حذف إدخالات الذاكرة دون إشراف. تم وضع {action} المقترح في الانتظار لموافقتك — راجعه باستخدام /memory pending (وافق للتطبيق، وارفض للتجاهل)."
+    staged_action:
+      batch: "عملية مجمعة"
+      replace: "استبدال"
+      remove: "إزالة"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 عُدّلت المهارة '{name}': \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 المهارة '{name}' {verb}: {description}"

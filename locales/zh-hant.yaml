@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}'（模型 '{task_model}'）無法路由（{error}）；改用 {provider}/{model}"
     reasoning_effort_warning: "⚠ 當檢閱模型不是主模型時，auxiliary.background_review.reasoning_effort='{effort}' 不會生效"
+    staged_summary: "背景審查整合（在{target}中{action}）：{detail}"
+    staged_message: "背景審查不能在無人看管時刪除記憶條目。建議的{action}已暫存，等待你的核准——請用 /memory pending 審查（核准以套用，捨棄以移除）。"
+    staged_action:
+      batch: "批次操作"
+      replace: "取代"
+      remove: "刪除"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 技能 '{name}' 已修補：\"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 技能 '{name}' {verb}：{description}"

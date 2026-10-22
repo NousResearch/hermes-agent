@@ -3474,6 +3474,12 @@ display:
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (modelo '{task_model}') não pôde ser roteado ({error}); usando {provider}/{model} como alternativa"
     reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' não tem efeito enquanto o modelo de revisão não for o modelo principal"
+    staged_summary: "Consolidação da revisão em segundo plano ({action} em {target}): {detail}"
+    staged_message: "A revisão em segundo plano não pode excluir entradas de memória sem supervisão. A proposta de {action} foi preparada para sua aprovação — revise-a com /memory pending (aprove para aplicar, descarte para abandonar)."
+    staged_action:
+      batch: "lote"
+      replace: "substituição"
+      remove: "remoção"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' modificada: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb}: {description}"

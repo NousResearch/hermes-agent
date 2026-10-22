@@ -971,6 +971,34 @@ class TestBackgroundReviewDeleteGate:
         # Fail-closed: the original entry is untouched.
         assert "entry the fork must not rewrite" in store._entries_for("memory")
 
+    def test_staged_background_replace_uses_active_language(self, store, tmp_path, monkeypatch):
+        """Regression for #136986: the pending-review frame follows display.language."""
+        from agent.i18n import reset_language_cache
+        from tools.write_approval import MEMORY, get_pending
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_LANGUAGE", "es")
+        reset_language_cache()
+        store.add("user", "Le importa la estética")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="replace", target="user", old_text="Le importa", content="Prefiere lo clásico", store=store))
+        finally:
+            reset_current_write_origin(token)
+            reset_language_cache()
+
+        record = get_pending(MEMORY, result["pending_id"])
+        assert record["summary"] == (
+            "Revisión en segundo plano (reemplazar en Perfil de usuario): "
+            "- replace entry matching 'Le importa' -> whole entry becomes: Prefiere lo clásico"
+        )
+        assert result["message"] == (
+            "La revisión en segundo plano no puede eliminar entradas de memoria sin supervisión. "
+            "La propuesta de reemplazar se preparó para tu aprobación — revísala con /memory pending "
+            "(aprueba para aplicar, descarta para eliminarla)."
+        )
+
     def test_batch_containing_remove_staged_whole_batch(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         store.add("memory", "rule one")

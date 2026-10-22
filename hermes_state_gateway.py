@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
+from hermes_state_compression import _UNSET_CREATED_SQL
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -235,7 +236,7 @@ class SessionGatewayMixin:
         self, session_id: str, *, source: str, user_id: str | None = None, session_key: str | None = None,
         chat_id: str | None = None, chat_type: str | None = None, thread_id: str | None = None, display_name: str | None = None,
         origin_json: str | None = None, include_compression_ancestors: bool = False,
-        transport_profile: str | None = None) -> None:
+        transport_profile: str | None = None, created_source: str | None = None) -> None:
         """Persist the gateway routing peer for an existing session row. ``display_name`` / ``origin_json``:
         ``None`` leaves the stored value untouched (consumers read routing data from state.db, not
         sessions.json). ``include_compression_ancestors`` keeps a compression lineage on one routing peer
@@ -251,7 +252,7 @@ class SessionGatewayMixin:
             return
         identity = (
             session_key, source, user_id, chat_id, chat_type, thread_id, display_name, origin_json,
-            transport_profile)
+            transport_profile, created_source)
         ancestors = include_compression_ancestors
         query_params = [session_id, *identity] if ancestors else [*identity, session_id]
         def _do(conn):
@@ -262,7 +263,9 @@ class SessionGatewayMixin:
                        chat_type = ?, thread_id = ?,
                        display_name = COALESCE(?, display_name),
                        origin_json = COALESCE(?, origin_json),
-                       transport_profile = COALESCE(?, transport_profile)
+                       transport_profile = COALESCE(?, transport_profile),
+                       created_source = CASE WHEN {_UNSET_CREATED_SQL.format(col="created_source")}
+                                        THEN COALESCE(?, created_source) ELSE created_source END
                    {"WHERE id IN (SELECT id FROM compression_lineage)" if ancestors else "WHERE id = ?"}""",
                 query_params,
             )

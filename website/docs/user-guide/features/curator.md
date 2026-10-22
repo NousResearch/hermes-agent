@@ -44,7 +44,7 @@ A run has two phases:
 By default the curator only **prunes** — the deterministic inactivity pass marks skills stale and archives long-unused ones. The opinionated LLM **consolidation** pass (umbrella-building, merging overlapping skills) is off by default because it costs aux-model tokens on every run and makes broad structural changes to your library. Turn it on with `curator.consolidate: true`, or run it once on demand with `hermes curator run --consolidate`.
 :::
 
-Pinned skills are off-limits to both the curator's auto-transitions and the agent's own `skill_manage` tool. See [Pinning a skill](#pinning-a-skill) below.
+Pinned skills are skipped by the curator's auto-transitions, and the agent's `skill_manage` tool refuses to **delete** them; edits and patches still go through. To stop the autonomous passes from changing a skill's *content*, lock it instead. See [Pinning a skill](#pinning-a-skill) and [Locking a skill's content](#locking-a-skills-content) below.
 
 ## Configuration
 
@@ -109,6 +109,8 @@ hermes curator pause          # stop runs until resumed
 hermes curator resume
 hermes curator pin <skill>    # never auto-transition this skill
 hermes curator unpin <skill>
+hermes curator lock <skill>   # autonomous passes may not change its content
+hermes curator unlock <skill>
 hermes curator adopt <skill>    # hand an unmanaged skill to the curator
 hermes curator adopt --all-unmanaged   # hand over every unmanaged skill
 hermes curator list-unmanaged   # itemize skills with no provenance marker
@@ -310,9 +312,10 @@ Skills that ARE agent-created follow the full lifecycle:
 - Pinned skills bypass all auto-transitions
 - Archives are recoverable via `hermes curator restore <name>`
 
-If you want to protect a specific skill from ever being touched — for example a
-hand-authored skill you rely on — use `hermes curator pin <name>`. See the next
-section.
+If you want to protect an agent-created skill from archival, use
+`hermes curator pin <name>`. If you want the autonomous passes to stop changing a
+skill's content — for example a hand-authored skill you rely on — use
+`hermes curator lock <name>`. Both are described below.
 
 ## Pinning a skill
 
@@ -336,7 +339,32 @@ Only **agent-created** skills can be pinned — `hermes curator pin` refuses on 
 
 A small set of **protected built-ins** can be hardcoded as never-archivable and never-consolidatable, regardless of `curator.prune_builtins`, pin state, or LLM judgment. These back load-bearing UX, so silently archiving one would turn its slash command into an "Unknown command" error with no signal to you. (The set is currently empty — `plan`, its original member, graduated to a built-in `/plan` command with no skill on disk.) Protected built-ins are filtered out of the curator's candidate list entirely, so the consolidation pass never sees them.
 
-If you want a stronger guarantee than "no deletion" — for instance, freezing a skill's content entirely while the agent still reads it — edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin guards tool-driven deletion, not your own filesystem access.
+If you want a stronger guarantee than "no deletion" — freezing a skill's content against the autonomous passes while the agent still reads it — lock it (next section). Neither pin nor lock guards your own filesystem access: editing `~/.hermes/skills/<name>/SKILL.md` in your editor always works.
+
+## Locking a skill's content
+
+Pinning stops archival. Locking stops the **autonomous passes from changing what a skill says**, while the skill stays readable, listed in the skill index, auto-loadable and usable exactly as before.
+
+```bash
+hermes curator lock <skill>
+hermes curator unlock <skill>
+hermes curator status          # lists locked skills
+```
+
+Once a skill is locked:
+
+- `skill_manage` **refuses** `patch`, `edit`, `write_file`, `remove_file` and `delete` on it when the write comes from the background self-improvement review or the curator's LLM consolidation pass — the two origins with no user in the loop. The refusal covers the whole skill directory (`SKILL.md`, `references/`, `scripts/`, `templates/`, `assets/`), both the single-op and the atomic batch form of the tool, and it tells the fork not to retry or recreate the skill under another name. Unlocked skills next to it keep learning as usual.
+- **Foreground writes are not blocked.** When you ask the agent in a normal turn to change a locked skill, the edit goes through: the lock is against unattended drift, not against you. To review user-directed writes too, turn on [`skills.write_approval`](./skills.md#gating-agent-skill-writes-skillswrite_approval); the two compose.
+- A corrupt or unreadable `.usage.json` makes the autonomous write **fail closed** (refused with an explanation) rather than quietly treating the skill as unlocked. Repair the sidecar, or run `hermes curator unlock <skill>` to rewrite it.
+- Any skill that resolves in the active profile can be locked — hand-written, agent-created, bundled or hub-installed. The skill must exist: `lock` refuses a name it cannot resolve, so a typo never records a lock for a skill that is not there.
+
+The flag is stored as `"locked": true` on the skill's entry in `~/.hermes/skills/.usage.json` — the same sidecar as `pinned`, so it is **per profile**: `hermes -p work curator lock deploy-runbook` locks that profile's copy and leaves every other profile's `deploy-runbook` unchanged.
+
+What a lock is not:
+
+- It is **not a sandbox.** It is a policy inside the skill tool and the curator. The agent's generic file tools and `terminal` can still change files under the skills directory if the process can write there. For a path-level gate on the file tools, add a basename pattern such as `SKILL.md` to `security.protected_instruction_extra_patterns` (writes then ask a human first); shell commands need filesystem permissions or a read-only mount.
+- It does **not** change archival or the inactivity clock. Hand-written skills are never archived autonomously anyway; for an agent-created skill you also want kept out of `stale → archived`, pin it as well.
+- It does **not** stop `hermes update` / `hermes skills update` from refreshing a bundled skill you have not modified — those syncs are not `skill_manage` writes.
 
 ## Usage telemetry
 

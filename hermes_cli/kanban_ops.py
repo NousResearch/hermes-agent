@@ -182,6 +182,29 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     # surface immediately.
     kb.init_db()
 
+    # The standalone loop IS this store's dispatcher while it runs, so it takes the
+    # SAME singleton lock the gateway's embedded dispatcher takes. That closes the
+    # two-dispatchers-racing hazard the banner used to merely warn about, and it is
+    # what makes the owner record below truthful (only the lock holder may write it).
+    from gateway.kanban_watchers_common import (
+        _acquire_singleton_lock,
+        _release_singleton_lock,
+        _resolve_store_home,
+        clear_dispatcher_owner,
+        write_dispatcher_owner,
+    )
+
+    _store_home = _resolve_store_home() or kb.kanban_home()
+    _lock_path = _store_home / "kanban" / ".dispatcher.lock"
+    _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
+    if _lock_state == "contended":
+        return _err(
+            f"kanban daemon: another dispatcher already holds this store's dispatcher "
+            f"lock ({_lock_path}) — refusing to start a second one. Stop the gateway "
+            f"(its embedded dispatcher) first.", 2,
+        )
+    write_dispatcher_owner(_store_home, tree=str(Path(__file__).resolve().parents[1]))
+
     pidfile = getattr(args, "pidfile", None)
     if pidfile:
         try:
@@ -193,8 +216,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     verbose = bool(getattr(args, "verbose", False))
     print(
         f"Kanban dispatcher running STANDALONE via --force (interval={args.interval}s, "
-        f"pid={os.getpid()}). Ctrl-C to stop. NOTE: if a gateway is also running with "
-        f"dispatch_in_gateway=true (default), you have two dispatchers racing for claims.",
+        f"pid={os.getpid()}), holding this store's dispatcher lock. Ctrl-C to stop.",
         file=sys.stderr,
     )
 
@@ -257,6 +279,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             on_tick=_on_tick,
         )
     finally:
+        clear_dispatcher_owner(_store_home)
+        _release_singleton_lock(_lock_handle)
         if pidfile:
             try:
                 Path(pidfile).unlink()

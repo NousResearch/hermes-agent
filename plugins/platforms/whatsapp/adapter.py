@@ -1098,13 +1098,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         bridge_mime = str(data.get("mime") or "").strip()
         for url in data.get("mediaUrls", []):
             mime = bridge_mime or (SUPPORTED_DOCUMENT_TYPES.get(Path(url).suffix.lower(), "application/octet-stream") if msg_type == MessageType.DOCUMENT else default_mime)
-            if url.startswith(("http://", "https://")) and msg_type in {MessageType.PHOTO, MessageType.VOICE, MessageType.AUDIO}:
+            if url.startswith(("http://", "https://")):
+                # Ingress admission requires a local regular file: a remote URL that survives here
+                # drops the WHOLE message (RuntimeStoreError: invalid_params), text included. Skip the
+                # entry and let the text through, the way Signal skips a failed attachment.
+                if msg_type not in {MessageType.PHOTO, MessageType.VOICE, MessageType.AUDIO}:
+                    print(f"[{self.name}] Skipping uncached remote {label or msg_type.name.lower()}: {url}", flush=True)
+                    continue
                 cacher, ext = (cache_image_from_url, ".jpg") if msg_type == MessageType.PHOTO else (cache_audio_from_url, ".ogg")
                 try:
                     url = await cacher(url, ext=ext)
                     print(f"[{self.name}] Cached user {label}: {url}", flush=True)
                 except Exception as e:
                     print(f"[{self.name}] Failed to cache {label}: {e}", flush=True)
+                    continue
                 accepted.append((url, mime))
             elif label is not None and os.path.isabs(url):
                 if _is_allowed_bridge_path(url):

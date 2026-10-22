@@ -120,6 +120,10 @@ from hermes_cli.update_cmd_maint import (
 from datetime import UTC
 logger = logging.getLogger(__name__)
 
+# A Windows pause happens before the update reaches the gateway prompt.  Unlike
+# the POSIX pause, its token does not live in ``update_cmd_posix_pause``.
+_windows_gateways_paused_for_prompt = False
+
 
 def get_default_hermes_root() -> NoReturn:
     # Shim to suppress old updater work until relaunch. No path is safe to invent.
@@ -390,7 +394,8 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     import uuid as _uuid
     from hermes_constants import get_hermes_home
 
-    if _posix_pause.gateways_paused():  # the gateway that would relay it is stopped for the update
+    if _windows_gateways_paused_for_prompt or _posix_pause.gateways_paused():
+        # The gateway that would relay it is stopped for the update.
         print(f"  → {prompt_text} → {default or '(empty)'} (gateways are paused for the update)")
         return default
     home = get_hermes_home()
@@ -1781,9 +1786,13 @@ def _apply_pulled_update(
 
 def _pause_gateways_for_update(opts):
     """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs."""
+    global _windows_gateways_paused_for_prompt
     try:
-        return _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
-            no_gateway_restart=opts.no_gateway_restart)
+        windows_pause = _m()._pause_windows_gateways_for_update()
+        if windows_pause:
+            _windows_gateways_paused_for_prompt = bool(windows_pause.get("resume_needed"))
+            return windows_pause
+        return _posix_pause.arm_pause(no_gateway_restart=opts.no_gateway_restart)
     except RuntimeError:  # update_cmd_windows._abort_on_error / ServicePauseFailed: nothing moved
         _record_stop("gateway_pause_failed")
         raise
@@ -1800,6 +1809,8 @@ def _update_run_channel(args) -> str:
 
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
+    global _windows_gateways_paused_for_prompt
+    _windows_gateways_paused_for_prompt = False
     # Marks this frame as the CURRENT updater for
     # _old_updater.in_historical_update(); historical on-disk updaters do not
     # declare this local, so only they hand off through retired shims.

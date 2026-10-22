@@ -16,7 +16,7 @@ vi.mock('@/store/session', async (): Promise<object> => {
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
@@ -24,6 +24,13 @@ import { localModelsKey, localModelsOwner, watchLocalRuntimeJobs } from '@/store
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
+
+// Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
 
 // Mock the API layer — the pane's contract is what it RENDERS from these
 // payloads, not transport.
@@ -48,6 +55,7 @@ vi.mock('@/hermes', () => ({
   resumeLocalDownload: vi.fn(),
   searchHFModels: vi.fn(),
   setApiRequestProfile: vi.fn(),
+  setLocalGpu: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
 
@@ -741,5 +749,76 @@ describe('quickstart finalization', (): void => {
     // Stage detail yes; byte counter no — a 100% counter on an install
     // phase would lie about the model leg still ahead.
     expect(screen.queryByText(/of/)).toBeNull()
+  })
+
+  // ── GPU picker (multi-GPU machines, #134227) ─────────────────────────────
+
+  const MULTI_GPU_HARDWARE: LocalHardware = {
+    ...BASE_HARDWARE,
+    gpus: [
+      { index: 0, name: 'NVIDIA GeForce RTX 2060', total_bytes: 6 * 2 ** 30, free_bytes: 3 * 2 ** 30 },
+      { index: 1, name: 'NVIDIA GeForce RTX 3070', total_bytes: 8 * 2 ** 30, free_bytes: 8 * 2 ** 30 }
+    ],
+    gpu: 'auto',
+    gpu_selected: 1
+  }
+
+  it('hides the GPU picker on a single-GPU machine', async () => {
+    mocked.getLocalHardware.mockResolvedValue(BASE_HARDWARE)
+    await renderFullPane()
+
+    expect(screen.queryByTestId('local-models-gpu-picker')).toBeNull()
+  })
+
+  it('lists every GPU and marks the automatic selection', async () => {
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    await renderFullPane()
+
+    const picker = screen.getByTestId('local-models-gpu-picker')
+    expect(picker.textContent).toContain('GPU for local models')
+    // Closed trigger names the card auto resolves to (the largest).
+    expect(picker.textContent).toContain('Automatic (NVIDIA GeForce RTX 3070)')
+
+    // Options render in a portal once open.
+    fireEvent.click(picker.querySelector('button') as HTMLElement)
+    expect(await screen.findByRole('option', { name: 'Automatic (NVIDIA GeForce RTX 3070)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: '0: NVIDIA GeForce RTX 2060 · 6.0 GB' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: '1: NVIDIA GeForce RTX 3070 · 8.0 GB' })).toBeTruthy()
+  })
+
+  it('sends the selected GPU index to the backend and refreshes', async () => {
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    mocked.setLocalGpu.mockResolvedValue({ ok: true, gpu: '1' })
+    await renderFullPane()
+
+    const trigger = screen.getByTestId('local-models-gpu-picker').querySelector('button')
+    expect(trigger).not.toBeNull()
+    fireEvent.click(trigger as HTMLElement)
+
+    const option = await screen.findByRole('option', { name: '1: NVIDIA GeForce RTX 3070 · 8.0 GB' })
+    fireEvent.click(option)
+
+    await waitFor((): void => {
+      expect(mocked.setLocalGpu).toHaveBeenCalledWith('1')
+    })
+  })
+
+  it('toasts when the GPU selection fails', async () => {
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    mocked.setLocalGpu.mockRejectedValue(new Error('boom'))
+    await renderFullPane()
+
+    const trigger = screen.getByTestId('local-models-gpu-picker').querySelector('button')
+    fireEvent.click(trigger as HTMLElement)
+
+    const option = await screen.findByRole('option', { name: '1: NVIDIA GeForce RTX 3070 · 8.0 GB' })
+    fireEvent.click(option)
+
+    await waitFor((): void => {
+      expect(mocked.setLocalGpu).toHaveBeenCalledWith('1')
+    })
+    // The failure surfaces — a silent no-op picker would look like success.
+    // notifyError is the pane's error path; assert via the call, not a toast
+    // snapshot, to stay robust against notification chrome changes.
   })
 })

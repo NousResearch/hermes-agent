@@ -465,7 +465,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
                                             engine_tag=engine.tag)
 
             sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
-                                        models_max=models_max,
+                                        models_max=models_max, backend=engine.backend,
                                         port=int(section.get("port", 0)) or None)
             try:
                 sup.start()

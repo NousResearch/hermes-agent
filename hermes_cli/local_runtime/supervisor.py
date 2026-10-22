@@ -108,6 +108,18 @@ def _direct_io_args(executable: Path) -> tuple[str, ...]:
     return ("-dio",) if "--direct-io" in help_text else ()
 
 
+def _gpu_pin_env(backend: str) -> dict[str, str]:
+    """Env pinning the server to the selected GPU (#134227); {} when no pin applies.
+
+    Never raises: a probe miss means no pin, and the server still boots.
+    """
+    with suppress(Exception):
+        from hermes_cli.local_runtime.hardware import gpu_pin_env
+
+        return gpu_pin_env(backend)
+    return {}
+
+
 class LlamaServerSupervisor:
     """Own one llama-server router process for the life of a Hermes session."""
 
@@ -121,7 +133,8 @@ class LlamaServerSupervisor:
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 backend: str = ""):
         # The exact engine binary (PM store path, backend-selected), handed
         # in by boot — the supervisor never discovers binaries itself: a
         # legacy-directory scan could resurrect bytes pm did not pin.
@@ -131,6 +144,9 @@ class LlamaServerSupervisor:
         self.port = port or _stable_port()
         self.api_key = _stable_api_key()
         self.extra_args = list(extra_args or [])
+        # Engine backend (cuda/vulkan/hip/metal/cpu) from boot; picks the *_VISIBLE_DEVICES
+        # variable for the spawn-side GPU pin (#134227). Empty = unknown, pins nothing.
+        self.backend = backend
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
         self.proc: subprocess.Popen | None = None
@@ -204,8 +220,13 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
+        # The GPU pin rides the child env so pricing and placement share one resolver
+        # (hardware.selected_nvidia_card); resolved per spawn, so a restart after a card
+        # change re-pins correctly (#134227).
+        child_env = server_child_env(os.environ)
+        child_env.update(_gpu_pin_env(self.backend))
         self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
-                                             cwd=str(exe.parent), env=server_child_env(os.environ))
+                                             cwd=str(exe.parent), env=child_env)
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a

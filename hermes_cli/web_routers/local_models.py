@@ -591,9 +591,52 @@ def local_models_hardware():
         "uma": budget.uma, "vram_total_bytes": budget.total_device_bytes, "vram_usable_bytes": budget.usable_vram_bytes,
         "ram_total_bytes": ram_total, "ram_available_bytes": ram_avail, "vram_label": _human_gb(budget.total_device_bytes),
         "gpu_name": None, "gpu_util_percent": None, "vram_used_bytes": None,
+        # GPU selection (#134227): every detected card, the configured selection, and the
+        # resolved card — the picker lists these; pricing already follows gpu_selected.
+        "gpus": [{"index": c["index"], "name": c["gpu_name"],
+                  "total_bytes": c["total_bytes"], "free_bytes": c["free_bytes"]}
+                 for c in hardware.nvidia_cards()],
+        "gpu": hardware._configured_gpu_selection(),
+        "gpu_selected": (hardware.selected_nvidia_card() or {}).get("index"),
     }
     out.update(_quiet(_nvidia_smi_facts, {}))
     return out
+
+
+class GpuSelectionBody(BaseModel):
+    gpu: str
+
+
+@router.post("/api/local-models/gpu")
+async def local_models_gpu(body: GpuSelectionBody):
+    """Choose which GPU the managed runtime uses on a multi-GPU machine (#134227).
+
+    ``auto`` lets the engine place layers (the budget prices the largest card); an explicit
+    nvidia-smi index pins BOTH pricing and the server spawn to that card. Durable (config
+    write under the same lock as every local_runtime mutation) and applied now: a running
+    server is bounced so the pin takes effect without a Hermes restart.
+    """
+    value = (body.gpu or "").strip()
+    if value.lower() != "auto" and not value.isdigit():
+        raise HTTPException(status_code=422, detail="gpu must be 'auto' or a GPU index like '1'")
+
+    def _apply() -> None:
+        with _CONFIG_MUTATION_LOCK:
+            config = config_mod.load_config()
+            config.setdefault("local_runtime", {})["gpu"] = value
+            config_mod.save_config(config)
+        # A running server keeps its old placement until bounced; refresh is best-effort —
+        # no server, no bounce needed, and the pin applies at the next spawn.
+        with contextlib.suppress(Exception):
+            bootstrap.refresh_local_runtime()
+
+    try:
+        await asyncio.to_thread(_apply)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"ok": True, "gpu": value}
 
 
 # ── catalog: priced for THIS machine before download ─────────

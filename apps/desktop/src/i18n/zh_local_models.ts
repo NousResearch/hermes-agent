@@ -31,6 +31,10 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   vram: label => `${label} 显存`,
   ram: label => `${label} 内存`,
   unifiedMemory: '统一内存',
+  gpuLabel: '用于本地模型的 GPU',
+  gpuAuto: largestName => `自动（${largestName}）`,
+  gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
+  gpuSelectFailed: '无法更改 GPU 选择',
   modelsTitle: '模型',
   recommended: '推荐',
   recommendedReason: {

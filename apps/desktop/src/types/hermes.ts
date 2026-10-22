@@ -1482,6 +1482,13 @@ export interface LocalModelsStatus {
   models_dir: string
 }
 
+export interface LocalGpu {
+  index: number
+  name: string
+  total_bytes: number
+  free_bytes: number
+}
+
 export interface LocalHardware {
   uma: boolean
   vram_total_bytes: number
@@ -1492,6 +1499,12 @@ export interface LocalHardware {
   gpu_name: string | null
   gpu_util_percent: number | null
   vram_used_bytes: number | null
+  /** Every detected GPU (nvidia-smi order); empty on non-NVIDIA or probe miss. */
+  gpus?: LocalGpu[]
+  /** The configured selection: 'auto' or an explicit GPU index. */
+  gpu?: string
+  /** The card selection resolved to (largest under auto); null on probe miss. */
+  gpu_selected?: number | null
 }
 
 export interface LocalCatalogModel {

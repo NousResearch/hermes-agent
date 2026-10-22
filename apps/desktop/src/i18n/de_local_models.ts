@@ -22,6 +22,10 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
   vram: label => `${label} GPU-Speicher`,
   ram: label => `${label} RAM`,
   unifiedMemory: 'Kombinierter Speicher',
+  gpuLabel: 'GPU für lokale Modelle',
+  gpuAuto: largestName => `Automatisch (${largestName})`,
+  gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
+  gpuSelectFailed: 'GPU-Auswahl konnte nicht geändert werden',
   modelsTitle: 'Modelle',
   recommended: 'Empfohlen',
   recommendedReason: {

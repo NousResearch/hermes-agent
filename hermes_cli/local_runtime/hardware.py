@@ -219,11 +219,113 @@ def _nvidia_smi_path() -> str | None:
 
 
 def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
-    """(total bytes, free bytes, name, optional packed PCI ID) from the shared nvidia-smi query, or None."""
+    """(total bytes, free bytes, name, optional packed PCI ID) of the SELECTED card, or None.
+
+    Selection-aware (#134227): the card priced here is the card the spawn pins, via
+    ``selected_nvidia_card()``. Single-card machines get their only card — the historical answer.
+    """
+    card = selected_nvidia_card()
+    if card is None:
+        return None
+    return card["total_bytes"], card["free_bytes"], card["gpu_name"], card.get("gpu_pci_id")
+
+
+# ── GPU selection (#134227): one resolver, two consumers ──────
+#
+# A machine can hold a display card plus a dedicated compute card. The budget probe and the
+# managed server's spawn must agree on WHICH card that is, or the catalog prices a card the
+# engine never touches. Everything below reads the same shared query and the same config key.
+
+
+def nvidia_cards() -> list[dict]:
+    """Every NVIDIA card from the shared query, in nvidia-smi (PCI bus) order; [] on any miss."""
     query = _cached_nvidia_gpu_query()
     if query is None:
+        return []
+    return list(query.get("cards") or [query])
+
+
+def _configured_gpu_selection() -> str:
+    """``local_runtime.gpu``: "auto" (default), or a pin ("0", "1", …). Reads are cached by
+    ``load_config_readonly``; this must never raise — a config miss means auto."""
+    with suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+
+        return str((load_config_readonly().get("local_runtime") or {}).get("gpu") or "auto")
+    return "auto"
+
+
+def _env_visible_devices() -> str | None:
+    """The single card a user's own *_VISIBLE_DEVICES pin (if any) leaves visible, else None.
+
+    A user who exports CUDA_VISIBLE_DEVICES=1 before Hermes has already chosen; pricing must
+    follow that card or it prices a card the engine cannot see. Multi-card lists and unknown
+    formats read as None (both cards visible -> the engine places layers itself).
+    """
+    for key in ("CUDA_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
+        value = os.environ.get(key, "").strip()
+        if value and re.fullmatch(r"\d+", value):
+            return value
+    return None
+
+
+def selected_nvidia_card() -> dict | None:
+    """The card the managed runtime prices and pins, or None (no NVIDIA card / probe miss).
+
+    Order of authority: ``local_runtime.gpu`` pin > the user's own *_VISIBLE_DEVICES single-card
+    pin > auto. Auto mirrors llama.cpp's placement rule among discrete devices: the largest card,
+    first smi row breaking ties. A stale or malformed pin NEVER blocks budgeting — it falls back
+    to auto, so removing a card degrades to today's behaviour instead of failing the probe.
+    """
+    cards = nvidia_cards()
+    if not cards:
         return None
-    return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
+    configured = _configured_gpu_selection().strip()
+    if configured.lower() != "auto" and re.fullmatch(r"\d+", configured):
+        pinned = next((c for c in cards if c["index"] == int(configured)), None)
+        if pinned is not None:
+            return pinned
+        logger.warning("local_runtime.gpu=%s matches no detected card (have %s); using auto",
+                       configured, [c["index"] for c in cards])
+    else:
+        env = _env_visible_devices()
+        if env is not None:
+            pinned = next((c for c in cards if c["index"] == int(env)), None)
+            if pinned is not None:
+                return pinned
+    return max(cards, key=lambda c: (c["total_bytes"], -c["index"]))
+
+
+# The spawn-side pin per backend. CUDA enumerates fastest-first by default, NOT in smi/PCI
+# order — pinning by smi index without fixing the order silently selects the wrong card.
+_GPU_PIN_ENV_KEYS = {"cuda": ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"),
+                     "vulkan": ("GGML_VK_VISIBLE_DEVICES", None),
+                     "hip": ("HIP_VISIBLE_DEVICES", None)}
+
+
+def gpu_pin_env(backend: str) -> dict[str, str]:
+    """Environment pinning the managed server to the selected card, or {} when no pin applies.
+
+    Auto and single-card machines pin nothing: llama.cpp places layers itself (largest discrete
+    device), matching the auto pricing rule. An explicit pin that cannot be honoured (probe miss)
+    pins nothing rather than pinning a wrong card — the server still boots.
+    """
+    keys = _GPU_PIN_ENV_KEYS.get(backend)
+    if keys is None:  # cpu/metal: no device selection to do
+        return {}
+    selected = selected_nvidia_card()
+    cards = nvidia_cards()
+    if selected is None or len(cards) < 2:
+        # One card (or a probe miss): nothing to choose — but an explicit config pin still
+        # applies on a probe miss... it cannot resolve an index, so it pins nothing.
+        return {}
+    if _configured_gpu_selection().strip().lower() == "auto":
+        return {}
+    visible, order = keys
+    env = {visible: str(selected["index"])}
+    if order is not None:
+        env[order] = "PCI_BUS_ID"
+    return env
 
 
 _gpu_query_cache: tuple[float, dict | None] | None = None
@@ -262,19 +364,38 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
-        total_mib, free_mib, name, raw_id, used_mib, util = next(
-            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
-        pci_id = None
-        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
-            pci_id = int(raw_id, 16)
-        data = {
-            "gpu_name": name.strip(),
-            "total_bytes": int(total_mib) << 20,
-            "free_bytes": int(free_mib) << 20,
-            "used_bytes": int(used_mib) << 20,
-            "gpu_util_percent": int(util),
-            "gpu_pci_id": pci_id,
-        }
+
+        def _card(row: str, index: int) -> dict | None:
+            """One nvidia-smi CSV row -> one card dict, or None when the row is malformed."""
+            try:
+                total_mib, free_mib, name, raw_id, used_mib, util = next(
+                    csv.reader([row], skipinitialspace=True))
+                pci_id = None
+                with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
+                    pci_id = int(raw_id, 16)
+                return {
+                    "index": index,  # nvidia-smi row order == PCI bus order, the stable identity
+                    "gpu_name": name.strip(),
+                    "total_bytes": int(total_mib) << 20,
+                    "free_bytes": int(free_mib) << 20,
+                    "used_bytes": int(used_mib) << 20,
+                    "gpu_util_percent": int(util),
+                    "gpu_pci_id": pci_id,
+                }
+            except (StopIteration, ValueError):
+                return None
+
+        # One row per card (#134227): a display card plus a dedicated compute card is a common
+        # topology, and selection/placement need the whole list. The top-level keys stay the
+        # FIRST row so single-card callers (statusbar facts) keep their historical answer.
+        rows = [card for card in
+                (_card(line, i) for i, line in enumerate(out.stdout.strip().splitlines()))
+                if card is not None]
+        if not rows:
+            _gpu_query_cache = (now, None)
+            return None
+        data = dict(rows[0])
+        data["cards"] = rows
         _gpu_query_cache = (now, data)
         return data
     _gpu_query_cache = (now, None)

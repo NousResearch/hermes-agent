@@ -345,6 +345,12 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    localModels: {
+      gpuLabel: 'GPU для локальных моделей',
+      gpuAuto: largestName => `Автоматически (${largestName})`,
+      gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
+      gpuSelectFailed: 'Не удалось изменить выбор GPU'
+    },
     subpages: {
       appearanceTheme: 'Тема',
       appearanceTypography: 'Шрифты и масштаб',

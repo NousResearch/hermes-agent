@@ -147,6 +147,15 @@ export function setLocalServer(action: 'start' | 'stop', scope?: LocalModelsScop
   })
 }
 
+export function setLocalGpu(gpu: string, scope?: LocalModelsScope): Promise<{ gpu: string; ok: boolean }> {
+  return hermesApi<{ gpu: string; ok: boolean }>({
+    ...(scope ?? profileScoped()),
+    body: { gpu },
+    method: 'POST',
+    path: '/api/local-models/gpu'
+  })
+}
+
 // ── Hugging Face browser + sideload ─────────────────────────────
 
 export interface HFSearchHit {

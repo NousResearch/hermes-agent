@@ -1349,6 +1349,11 @@ catalog: CatalogTranslations
       vram: (label: string) => string
       ram: (label: string) => string
       unifiedMemory: string
+      /** GPU picker (multi-GPU machines only, #134227). */
+      gpuLabel: string
+      gpuAuto: (largestName: string) => string
+      gpuEntry: (index: number, name: string, vram: string) => string
+      gpuSelectFailed: string
       modelsTitle: string
       recommended: string
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer

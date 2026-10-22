@@ -2724,6 +2724,10 @@ DEFAULT_CONFIG = {
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
+        # Which GPU the managed server uses on a multi-GPU machine. auto = let the engine
+        # place layers (the budget prices the largest card); an explicit nvidia-smi index
+        # ("0", "1", …) pins both pricing and the server to that card (#134227).
+        "gpu": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).

@@ -20,6 +20,10 @@ export const enLocalModels: Translations['settings']['localModels'] = {
   vram: label => `${label} GPU memory`,
   ram: label => `${label} RAM`,
   unifiedMemory: 'Unified memory',
+  gpuLabel: 'GPU for local models',
+  gpuAuto: largestName => `Automatic (${largestName})`,
+  gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
+  gpuSelectFailed: 'Could not change the GPU selection',
   modelsTitle: 'Models',
   recommended: 'Recommended',
   /* The Recommended badge's tooltip, keyed by the resolver branch that

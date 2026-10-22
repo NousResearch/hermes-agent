@@ -155,18 +155,25 @@ export function CanonicalGroupAttention({ driver, labels }: { driver?: Canonical
   return parts.length ? <p aria-live="polite" className="text-xs text-(--ui-text-secondary)">{parts.join(' · ')}</p> : null
 }
 
-/** The room's read, action and driver notices, above its log. */
-export function CanonicalGroupNotices({ readError, error, notice, unavailable, labels, onRefresh }: {
+/** The room's read, action, journal and driver notices, above its log. */
+export function CanonicalGroupNotices({ readError, error, journalError, notice, unavailable, labels, onRefresh, onJournalReload }: {
   readError: string
   error: string
+  journalError: string
   notice: string
   unavailable: boolean
-  labels: { refresh: string; driverUnavailable: string }
+  labels: { refresh: string; driverUnavailable: string; journalLoadFailed: string; journalReload: string; details: string }
   onRefresh: () => void
+  onJournalReload: () => void
 }) {
   return <>
     {readError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{readError}<Button onClick={onRefresh}>{labels.refresh}</Button></div>}
     {error && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{error}</div>}
+    {journalError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">
+      <p>{labels.journalLoadFailed}</p>
+      <Button onClick={onJournalReload}>{labels.journalReload}</Button>
+      <details><summary>{labels.details}</summary>{journalError}</details>
+    </div>}
     {notice && <p aria-live="polite" className="px-3 py-1.5 text-xs text-(--ui-text-secondary)">{notice}</p>}
     {unavailable && <p className="px-3 py-1.5 text-xs text-(--ui-text-tertiary)">{labels.driverUnavailable}</p>}
   </>

@@ -1504,11 +1504,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        // A password/secret/vault/approval card that timed out vanished
-        // silently; say what happened and how to get it back. An approval's
-        // tool row carries only the model-facing "BLOCKED" result, so the
-        // person otherwise cannot tell the command never ran. Clarify already
-        // records its own "(timed out)" line via tool.complete.
+        // Timed-out cards need a notice: approval tool rows carry only the
+        // model-facing BLOCKED result. Clarify records its own line via tool.complete.
         const timeoutNotice = promptTimeoutNotice(ev.payload?.method, ev.payload?.reason)
 
         if (timeoutNotice) {

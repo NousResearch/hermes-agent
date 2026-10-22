@@ -346,3 +346,23 @@ def test_profile_child_reads_the_starting_directory_seeded_for_it(two_profiles, 
             assert get_session_cwd(run.child_task_id) == (worktree or {}).get("path", "/work/repo")
     finally:
         clear_session_cwd("parent-task")
+
+
+def test_profile_child_uses_the_target_profiles_persistent_container(two_profiles):
+    """Persistent Docker keys its container by profile: a child routed to ``coder`` inside a launch-profile
+    session runs in coder's container (coder's image, mounts, env), while the session's delivery identity
+    (HERMES_SESSION_PROFILE, read by notifications) stays the parent's."""
+    from gateway.session_context import clear_session_vars, get_session_env, set_session_vars
+    from tools import terminal_tool
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    _, coder = two_profiles
+    _set_config(coder, terminal={"backend": "docker", "container_persistent": True})
+    tokens = set_session_vars(session_key="agent:main:telegram:dm:1", profile="default")
+    try:
+        with delegated_profile_scope(coder):
+            assert terminal_tool._resolve_container_task_id("child-task") == "profile:coder"
+            assert get_session_env("HERMES_SESSION_PROFILE", "") == "default"
+    finally:
+        clear_session_vars(tokens)
+

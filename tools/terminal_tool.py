@@ -118,6 +118,19 @@ def _current_session_profile() -> str:
     return get_session_env("HERMES_SESSION_PROFILE", "")
 
 
+def _container_profile() -> str:
+    """Profile whose persistent container a session-bound command uses: a bound routed (non-launch) home's
+    profile (a profile-routed subagent runs in its target's home while the session, and the delivery identity
+    HERMES_SESSION_PROFILE carries, stay the parent's), else the session's. The launch home's own work keeps
+    the session's key whatever the launch profile is named."""
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from tools.environments.local import _is_routed_home
+
+    override = get_hermes_home_override()
+    routed = profile_name_for_home(override) if override and _is_routed_home(override) else None
+    return routed or _current_session_profile() or "default"
+
+
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
 )
@@ -518,7 +531,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return _routed_home_task_key(scope.docker_profile_scoped) or "default"
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")
-    profile = _current_session_profile() or "default"
+    profile = _container_profile()
     base = "default" if profile == "default" else f"profile:{profile}"
     return _workspace_container_key(base, task_id)
 

@@ -1023,7 +1023,7 @@ export const CANONICAL_GROUP_LOCALES = {
     routingAuto: 'Automatisch wählen, wer antwortet',
     routingAutoHint: 'Ein kurzer Modellaufruf wählt, an wen eine Nachricht gerichtet ist. @Erwähnungen gehen weiterhin direkt an die genannten Personen.',
     statusBlocked: 'Blockiert',
-    statusApprovals: '{count} warten auf Freigabe',
+    statusApprovals: 'Freigabe ausstehend: {count}',
     statusAttention: 'Aufmerksamkeit erforderlich: {count}',
     stopped: 'Stopp angefordert',
     nothingRunning: 'Keine neuen Antworten wurden abgebrochen.',

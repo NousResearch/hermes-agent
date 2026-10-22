@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ 파일 변경 검증기: 위의 문구가 어떻게 보이든, 이번 턴에 파일 편집 {count}건이 실패했어요. `git status`나 `read_file`로 실제 반영된 내용을 확인하세요."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "실패"
+    state_not_modified: "수정되지 않음"
+    state_validation_failed: "수정됨, 검증 실패"
+    state_partial: "패치 실패 전에 수정됨"
   shared:
     and_more: "  • … 외 {count}개 더"
     the_model: "모델"

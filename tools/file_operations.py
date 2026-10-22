@@ -28,7 +28,8 @@ from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
-    _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
+    _introduced_lint_failure, _strip_terminal_fence_leaks, _validation_failure_error,
+    normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
 from tools import file_operations_native as _native_io
@@ -1550,6 +1551,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # otherwise normalize CRLF files and drop the BOM (prepend only when absent).
         if original_ending == "\r\n":
             content = _normalize_line_endings(content, "\r\n")
+        # Lint the pre-BOM content: in-process linters such as ast.parse reject a
+        # literal U+FEFF, which would misreport every BOM-marked file as broken.
+        lint_content = content
         if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
         # ``dirs_created`` means "parent dirs ensured" (mkdir -p is folded into
@@ -1566,17 +1570,22 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if verify_error is not None:
             return verify_error
 
-        lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+        lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=lint_content)
         # LSP diagnostics are a separate channel, fired only when the syntax tier is
         # clean (no point asking an LSP about a file that won't parse).
         lsp_diagnostics: Optional[str] = None
         if lint_result.success or lint_result.skipped:
             lsp_diagnostics = self._maybe_lsp_diagnostics(
                 path, pre_content=pre_content, post_content=content, started=started) or None
+        introduced = _introduced_lint_failure(lint_result)
+        # The bytes landed either way; a NEW lint failure makes the write an error the
+        # model must repair, while ``applied`` keeps "changed on disk" distinguishable.
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
             _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
-            lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics)
+            lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics,
+            applied=True, validated=None if lint_result.skipped else not introduced,
+            error=_validation_failure_error(path, lint_result) if introduced else None)
 
     # --- PATCH (replace mode) -----------------------------------------------
 
@@ -1652,7 +1661,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if file_ending:
             new_content = _normalize_line_endings(new_content, file_ending)
         write_result = self.write_file(path, new_content, pre_content=raw_content)
+        writes = [(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)]
         if write_result.error:
+            # The bytes may have landed and then failed validation: keep that state
+            # distinct from an ordinary write error.
+            if write_result.applied and write_result.validated is False:
+                return PatchResult(
+                    diff=self._unified_diff(content, new_content, path), files_modified=[path],
+                    lint=write_result.lint, applied=True, validated=False,
+                    lsp_diagnostics=write_result.lsp_diagnostics, error=write_result.error, _writes=writes)
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
         verify_error = self._verify_patch_persisted(path, new_content)
         if verify_error is not None:
@@ -1660,11 +1677,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # write_file already ran the lint delta on these bytes (pre = the raw read).
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
-            lint=write_result.lint,
+            lint=write_result.lint, applied=True, validated=write_result.validated,
             note="\n".join(n for n in (*correction_notes, boundary_note([strategy])) if n) or None,
             # From the internal write_file call, whose baseline was the pre-patch content.
-            lsp_diagnostics=write_result.lsp_diagnostics,
-            _writes=[(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)])
+            lsp_diagnostics=write_result.lsp_diagnostics, _writes=writes)
 
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch (``*** Begin Patch`` / ``*** Update File:`` /

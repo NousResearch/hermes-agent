@@ -79,18 +79,48 @@ def shape_failure_error(data: dict) -> str | None:
     return str(first.get("message") or first) if isinstance(first, dict) else str(first)
 
 
-def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
-    """Return True when a file mutation result proves the write landed."""
+def _file_mutation_payload(tool_name: str, result: Any) -> dict | None:
     if tool_name not in FILE_MUTATING_TOOL_NAMES or not isinstance(result, str):
-        return False
+        return None
     try:
         data = json.loads(result.strip())
-    except Exception:
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
+    """Return whether any requested edit physically landed.
+
+    This remains true for a V4A patch that applied only some operations before
+    a later operation failed, and for an edit that landed but failed validation.
+    """
+    data = _file_mutation_payload(tool_name, result)
+    if data is None:
         return False
-    if not isinstance(data, dict) or data.get("error"):
+    if data.get("applied") is True:
+        return True
+    if data.get("error"):
         return False
     if tool_name == "write_file":
         return "bytes_written" in data
-    if tool_name == "patch":
-        return data.get("success") is True
-    return False
+    return data.get("success") is True
+
+
+def file_mutation_validation_failed(tool_name: str, result: Any) -> bool:
+    """Return whether a mutation landed but requires validation repair."""
+    data = _file_mutation_payload(tool_name, result)
+    return (data is not None and data.get("applied") is True
+            and data.get("validated") is False and bool(data.get("error")))
+
+
+def file_mutation_settled(tool_name: str, result: Any) -> bool:
+    """Return whether a file mutation result is not a tool failure: it landed cleanly, or it
+    landed and only failed validation (the file changed; the model must repair it). A V4A
+    patch that landed some operations before another failed is still a failure."""
+    if not file_mutation_result_landed(tool_name, result):
+        return False
+    if file_mutation_validation_failed(tool_name, result):
+        return True
+    data = _file_mutation_payload(tool_name, result)
+    return not (data or {}).get("error")

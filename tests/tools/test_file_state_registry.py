@@ -263,6 +263,25 @@ class FileToolsIntegrationTests(unittest.TestCase):
         with open(p) as f:
             self.assertEqual(f.read(), "B wrote\n")
 
+    def test_validation_failed_write_still_marks_sibling_read_stale(self):
+        p = self._write_seed("shared.py", "value = 1\n")
+        for task in ("agentA", "agentB"):
+            r = json.loads(read_file_tool(path=p, task_id=task))
+            self.assertNotIn("error", r)
+
+        w_b = json.loads(write_file_tool(
+            path=p,
+            content="def broken(:\n",
+            task_id="agentB",
+        ))
+        self.assertTrue(w_b.get("applied"), w_b)
+        self.assertFalse(w_b.get("validated"), w_b)
+        self.assertIn("VALIDATION FAILED AFTER EDIT", w_b.get("error", ""))
+
+        warning = file_state.check_stale("agentA", p)
+        self.assertIsNotNone(warning)
+        self.assertIn("agentB", warning)
+
 
 
 

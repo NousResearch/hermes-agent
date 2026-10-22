@@ -3546,6 +3546,9 @@ explainer:
     header: "⚠️ Fájlmódosítás-ellenőrző: {count} fájlszerkesztés SIKERTELEN volt ebben a körben, bármit is sugall a fenti szöveg. Futtasd a `git status` vagy a `read_file` parancsot, hogy lásd, mi került be valójában."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "sikertelen"
+    state_not_modified: "nem módosult"
+    state_validation_failed: "módosult; az ellenőrzés sikertelen"
+    state_partial: "módosult, mielőtt a javítás meghiúsult"
   shared:
     and_more: "  • … és még {count}"
     the_model: "A modell"

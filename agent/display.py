@@ -19,7 +19,7 @@ from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import (
-    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
+    shape_failure_error, file_mutation_settled, has_failure_marker, is_guardrail_refusal)
 
 logger = logging.getLogger(__name__)
 
@@ -1038,7 +1038,7 @@ def is_neutral_failure(tool_name: str, result: Any) -> bool:
 
 def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
-    if result is None or file_mutation_result_landed(tool_name, result):
+    if result is None or file_mutation_settled(tool_name, result):
         return False, ""
     data = result if isinstance(result, dict) else safe_json_loads(result)
     # A harness REFUSAL of a redundant call (repeated identical read/search) is not a

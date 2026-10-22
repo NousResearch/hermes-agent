@@ -48,6 +48,10 @@ class WriteResult:
     verified: Optional[bool] = None
     _content_sha256: Optional[str] = None
     lint: Optional[dict[str, Any]] = None
+    # Whether the file changed.
+    applied: Optional[bool] = None
+    # Lint result; None when skipped.
+    validated: Optional[bool] = None
     # LSP semantic diagnostics, kept separate from ``lint`` (syntax) so the model
     # reads the two as independent signals. None when LSP is off/inapplicable.
     lsp_diagnostics: Optional[str] = None
@@ -67,6 +71,8 @@ class PatchResult:
     files_created: list[str] = field(default_factory=list)
     files_deleted: list[str] = field(default_factory=list)
     lint: Optional[dict[str, Any]] = None
+    applied: Optional[bool] = None  # see WriteResult.applied
+    validated: Optional[bool] = None  # see WriteResult.validated
     lsp_diagnostics: Optional[str] = None  # see WriteResult.lsp_diagnostics
     error: Optional[str] = None
     # Success-shaped no-op: the edit was already present, nothing written; ``note`` says why.
@@ -80,8 +86,10 @@ class PatchResult:
     # Emission order is part of the output contract.
     _DICT_FIELDS: ClassVar[tuple] = (
         "diff", "files_modified", "files_created", "files_deleted",
-        "lint", "lsp_diagnostics", "error",
+        "lint", "applied", "validated", "lsp_diagnostics", "error",
     )
+    # Emitted whenever set, so ``validated: false`` is not dropped as falsy.
+    _TRISTATE_FIELDS: ClassVar[frozenset] = frozenset({"applied", "validated"})
 
     def to_dict(self) -> dict:
         result: dict[str, Any] = {"success": self.success}
@@ -91,7 +99,7 @@ class PatchResult:
             result["note"] = self.note
         for key in self._DICT_FIELDS:
             value = getattr(self, key)
-            if value:
+            if value or (key in self._TRISTATE_FIELDS and value is not None):
                 result[key] = value
         return result
 
@@ -181,6 +189,30 @@ class LintResult:
         if self.message:
             result["message"] = self.message
         return result
+
+
+def _introduced_lint_failure(lint_result: LintResult) -> bool:
+    """Return whether this edit introduced a lint failure.
+
+    Lint is normally advisory.  A syntax/lint error that was already present
+    before the edit is not attributable to this operation, so it remains
+    advisory.  A post-edit error without that pre-existing marker must be
+    treated as an incomplete mutation: the file changed, but the agent must
+    repair it before continuing.
+    """
+    if lint_result.success or lint_result.skipped:
+        return False
+    return "pre-existing lint errors" not in (lint_result.message or "").lower()
+
+
+def _validation_failure_error(path: str, lint_result: LintResult) -> str:
+    """Make a validation failure impossible to mistake for a clean edit."""
+    detail = str(lint_result.output or "Validation failed").strip()
+    return (
+        f"VALIDATION FAILED AFTER EDIT: '{path}' was modified but is not valid. "
+        f"Do not treat this edit as complete; repair the reported error before continuing. "
+        f"{detail}"
+    )
 
 
 @dataclass

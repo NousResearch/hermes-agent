@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ Lêerwysiging-verifieerder: {count} lêerwysiging(s) het in hierdie beurt MISLUK, ongeag enige bewoording hierbo wat anders mag suggereer. Voer `git status` of `read_file` uit om te bevestig wat werklik geland het."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "misluk"
+    state_not_modified: "nie gewysig nie"
+    state_validation_failed: "gewysig; validering het misluk"
+    state_partial: "gewysig voordat die patch misluk het"
   shared:
     and_more: "  • … en nog {count}"
     the_model: "Die model"

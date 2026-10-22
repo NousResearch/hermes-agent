@@ -374,6 +374,9 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
     """May paused gateways start on this checkout now? ``(verdict, reason when not)``."""
     from hermes_cli._early_recovery import interrupted_pull_marker
     root = root or install_root()
+    from hermes_cli.update_plugin_guards import pending_reason
+    if reason := pending_reason(root):
+        return False, reason
     if (root / ".git").exists():
         if interrupted_pull_marker(root).exists():
             return False, "the checkout is mid-pull (interrupted-pull marker present)"

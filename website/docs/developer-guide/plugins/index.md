@@ -227,6 +227,69 @@ explicit supported subset, not a claim of full Agent Plugins conformance.
 
 ## Native plugin compatibility contract
 
+### Required source update checks
+
+An installed native plugin may declare a relative Python script in `plugin.yaml`:
+
+```yaml
+name: my-plugin
+post_update_check: checks/source_compat.py
+```
+
+Hermes runs a declared check when the plugin is installed and enabled. The
+script receives `--hermes-root PATH --profile NAME --phase source|runtime`.
+The `source` phase runs after the checkout move under the old interpreter,
+before dependency sync; keep it compatible with the old runtime and do not
+require live credentials. The `runtime` phase runs under the newly selected
+interpreter after dependency sync and can exercise an isolated behavioral
+fixture. Both phases must exit zero within 30 seconds. For a
+profile that must keep the plugin available, also list it under
+`plugins.update_guards` in that profile's `config.yaml`. The profile-owned
+list survives an updated checkout and makes a missing, disabled, or damaged
+checker an update refusal rather than silently dropping the requirement. A
+shared source update examines the default and every installed named profile,
+including standalone and parked profiles.
+
+A same-revision `hermes update` runs the check again before dependency repair.
+If an earlier update left admission pending, a retry may add guards but cannot
+remove or replace any guard recorded by that pending update. It must verify
+all earlier and new guards before clearing the startup hold.
+During dependency preparation, a plugin named in `plugins.update_guards` cannot
+be automatically disabled or left out because its Python, manifest, Hermes
+version, build, or dependency requirements no longer fit. PM records a failed
+sync rather than publishing a smaller selection. The check runs again under the
+newly selected Python before the completion process may restart a paused gateway.
+Until that selected-runtime check passes, a durable install-scoped marker keeps
+paused gateways and new gateway launches stopped. An incomplete check after the source revision changed
+is reported as a partial update with exit 1 and an owed dependency follow-up:
+the source has changed, but the gateway is not ready. Retry `hermes update` after
+fixing the dependency or restore both source and environment from a tested backup.
+Automatic source-and-environment rollback is not provided at that stage.
+If a later update attempt rolls back to the still-unadmitted revision, the
+original marker remains; only a return to the source revision and dependency
+selection it started from, or a successful selected-runtime check, removes it.
+An interruption before source movement can also leave the conservative marker
+on the old revision. Rerun
+`hermes update` to complete admission before starting its gateway.
+
+During a Git source update Hermes runs each required script with
+`--hermes-root <pulled-checkout>` and `--profile <name>` after the checkout move
+but before dependency changes or gateway restart. Exit zero admits the update;
+any nonzero exit, missing script, or 30-second timeout refuses it. Hermes
+restores the previous source revision through its verified rollback path and
+resumes the paused gateway fleet on that revision. The script receives a
+temporary `HERMES_HOME`, no stdin, and no inherited credential environment.
+It should inspect the source contract with only the currently installed Python
+standard library and packages; it cannot rely on the target's new dependencies
+being installed yet. Its second invocation uses the selected Python and can check
+that the target API and dependencies import together. The script is trusted installed
+plugin code, not a sandbox
+for an adversarial plugin. On the ZIP update path, guarded installations refuse
+the update before download because that path cannot offer this rollback point.
+Normal plugins need no update check. Installations that require uninterrupted
+plugin service should verify the new source and dependency environment in a
+separate checkout before updating their running installation.
+
 Native `plugin.yaml` plus `register(ctx)` plugins are protected by behavior,
 not by one global plugin API number. Hermes does not expose a
 `PLUGIN_API_VERSION`, require a manifest-wide `api:` match, or attach an API

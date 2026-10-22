@@ -79,6 +79,12 @@ def transition(tmp_path):
         "from pathlib import Path\n"
         "def get_process_hermes_home():\n"
         "    return Path(os.environ['HERMES_HOME'])\n"
+        "def get_default_hermes_root():\n"
+        "    return Path(os.environ['HERMES_HOME'])\n"
+        "def set_hermes_home_override(home):\n"
+        "    return None\n"
+        "def reset_hermes_home_override(token):\n"
+        "    return None\n"
     )
     (package / "venv_sync.py").write_text(
         "from hermes_cli.probe import event\n"
@@ -389,6 +395,31 @@ def test_unwritable_gateway_status_never_fails_a_settled_commit(tmp_path, monkey
     assert update_completion._settle_after_commit(request, result, "dependencies", "pip failed") == 0
     answer = json.loads(result.read_text(encoding="utf-8-sig"))
     assert answer["exit_code"] == 0 and answer["receipt"] == receipt
+
+
+@pytest.mark.platforms("posix")
+def test_required_plugin_dependency_failure_is_explicit_and_never_restarts(transition, capsys, monkeypatch):
+    from hermes_cli import update_plugin_guards
+
+    root, _git, _old, _new, request = transition
+    monkeypatch.setenv("HERMES_HOME", request["home"])
+    request["plugin_update_guards"] = [{"profile": "sample", "plugin_id": "context-check",
+                                         "script": "/guard/check.py", "digest": "frozen"}]
+    update_plugin_guards.arm_pending(root, (
+        update_plugin_guards.UpdateGuard("sample", "context-check", Path("/guard/check.py"), "frozen"),))
+    (root / "pm/__init__.py").write_text(
+        "def sync_venv(**kw): raise RuntimeError('required plugin dependency conflict')\n",
+        encoding="utf-8")
+    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    shutil.copy2(update_plugin_guards.__file__, root / "hermes_cli/update_plugin_guards.py")
+
+    result = update_completion.run_completion(request)
+
+    assert result["exit_code"] == 1
+    assert [row["step"] for row in result["receipt"]["followups"]] == ["dependencies"]
+    assert "Required plugin verification is incomplete" in capsys.readouterr().out
+    events = [json.loads(line)["name"] for line in (root / "events.jsonl").read_text().splitlines()]
+    assert "restart" not in events
 
 
 @pytest.mark.parametrize("cleanup_failure", [None, "kill", "wait"])

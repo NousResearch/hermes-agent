@@ -33,6 +33,9 @@ from hermes_cli import update_cmd_commit as _commit
 from hermes_cli import update_cmd_posix_pause as _posix_pause
 from hermes_cli.update_cmd_pause_gate import _checkout_move, _moves_for
 from hermes_cli import update_cmd_check as _check
+from hermes_cli import update_plugin_guards as _plugin_guards
+from hermes_cli.update_plugin_guards import (
+    arm_noop_or_stop as _arm_noop_plugin_guard, prepare_or_stop as _prepare_plugin_update_guards)
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (
@@ -992,6 +995,7 @@ def _roll_back_broken_update(git_cmd, pre_pull_sha, failing_path, syntax_error, 
                     print(f"  ✗ Could not check out {rollback_branch}; restoring its commit detached.")
         if rollback_result.returncode == 0:
             interrupted_pull_marker(root).unlink(missing_ok=True)
+            _plugin_guards.clear_after_verified_rollback(Path(root), pre_pull_sha)
             _commit.disarm_commit_obligations()  # back on the code this run started from
             print("  ✓ Rollback complete — your install is unchanged.")
             print("  Try ``hermes update`` again later once a fix lands.")
@@ -1093,7 +1097,7 @@ def _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha) -> N
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
     keep_stash, target_ref=None, pre_sync_sha=None, rollback_branch=None, sync_upstream=False, assume_yes=False,
-    in_place_update=False, _windows_gateway_resume=None, expected_sha=None):
+    in_place_update=False, _windows_gateway_resume=None, expected_sha=None, plugin_update_guards=()):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
     custom branch -> merge, same branch -> rescue ref then reset; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns the SHA HEAD had to move off."""
@@ -1131,6 +1135,9 @@ def _pull_updates(
             print(f"✗ {refused}.")
             _record_stop("commit_point_refused")
             sys.exit(1)
+        _arm_noop_plugin_guard(Path(_m().PROJECT_ROOT), plugin_update_guards,
+                               _windows_gateway_resume, on_failure=_commit.disarm_commit_obligations,
+                               pre_sha=pre_pull_sha)
         try:
             # The paused gateways' tree gate must know this move's target before git writes a file.
             with _checkout_move(_windows_gateway_resume, target_sha):
@@ -1144,6 +1151,7 @@ def _pull_updates(
             # handed back at the run's start, else owed for the HEAD it settled on; torn: owed for
             # the commit the next launch's restore lands on.
             if _commit.settle_failed_tree_move(_m().PROJECT_ROOT):
+                _plugin_guards.clear_after_verified_rollback(Path(_m().PROJECT_ROOT), pre_pull_sha)
                 _commit.disarm_commit_obligations()
             else:
                 _commit.owe_restore_of(_m().PROJECT_ROOT, pre_pull_sha)
@@ -1173,6 +1181,13 @@ def _pull_updates(
         _rollback_if_pulled_syntax_error(
             git_cmd, pre_sync_sha or pre_pull_sha, rollback_branch=rollback_branch,
             _windows_gateway_resume=_windows_gateway_resume)
+        if refusal := _plugin_guards.check_pulled_plugin_compatibility(
+                Path(_m().PROJECT_ROOT), plugin_update_guards, phase="source"):
+            _roll_back_broken_update(
+                git_cmd, pre_sync_sha or pre_pull_sha, "plugin compatibility check", refusal,
+                rollback_branch=rollback_branch, _windows_gateway_resume=_windows_gateway_resume,
+                header="✗ Pulled code failed a required plugin update check:",
+                stop_class="plugin_update_rollback")
         if sync_upstream:
             # Only a validated update is published to the fork (#97052 sync, after the commit point).
             _push_synced_fork(git_cmd, _m().PROJECT_ROOT)
@@ -1729,7 +1744,7 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
-    _windows_gateway_resume=None) -> None:
+    _windows_gateway_resume=None, plugin_update_guards=()) -> None:
     """"Already up to date" path: restore stash, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     # A parked branch the update switched off stays on the target: re-parking on the stale branch
@@ -1747,6 +1762,15 @@ def _finish_already_up_to_date(
                 f"{_count} unmerged commit(s) kept on '{current_branch}'.")
         else:
             print(f"  ✓ Checkout was parked on '{current_branch}' (fully merged) — switched back to {branch}.")
+
+    if refusal := _plugin_guards.check_pulled_plugin_compatibility(
+            Path(_m().PROJECT_ROOT), plugin_update_guards, phase="source"):
+        print(f"✗ Required plugin update check failed on the current checkout: {refusal}")
+        print("  No dependency sync or gateway restart was attempted.")
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        _record_stop("plugin_update_guard_noop_refused")
+        sys.exit(1)
+    _arm_noop_plugin_guard(Path(_m().PROJECT_ROOT), plugin_update_guards, _windows_gateway_resume)
 
     if completion_request is not None:
         # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
@@ -1925,6 +1949,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         current_branch = _current_branch_name(git_cmd, check=True)
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
         _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
+        plugin_update_guards = _prepare_plugin_update_guards(_windows_gateway_resume)
+        completion_request["plugin_update_guards"] = _plugin_guards.guard_records(plugin_update_guards)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
@@ -1934,7 +1960,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if commit_count == 0:
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
-                completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume)
+                completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume,
+                plugin_update_guards=plugin_update_guards)
             return
 
         if release_sha:
@@ -1955,7 +1982,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             rollback_branch=_plan.rollback_branch,
             sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
             in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume,
-            expected_sha=completion_request.get("expected_sha"))
+            expected_sha=completion_request.get("expected_sha"),
+            plugin_update_guards=plugin_update_guards)
         _apply_pulled_update(
             git_cmd, branch, movement_baseline, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)

@@ -70,7 +70,7 @@ async def prepare_model(authority, live, payload, prepared):
         return refusal
     frozen = old.config()
     # The committed selection freezes the ONE picked endpoint (its key stays a private secret).
-    provider_secrets, retired, moved = ({}, (), {}) if old.follows_profile else _freeze_selected_provider(
+    provider_secrets, retired, relocated = ({}, (), {}) if old.follows_profile else _freeze_selected_provider(
         resolution, frozen, result.target_provider)
     if old.follows_profile:
         # A following session switches FROM the profile's current route: measured from its creation
@@ -81,11 +81,11 @@ async def prepare_model(authority, live, payload, prepared):
         held = bound_route_holds(frozen.get('model'), frozen, followed, config)
         # Every other route-bound key follows the profile's current route.
         kept = ('api_key', 'api', 'api_key_from') if held else ()
-        moved = tuple(k for k in ROUTE_BOUND_KEYS if k not in kept)
-        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in moved}
+        route_fields = tuple(k for k in ROUTE_BOUND_KEYS if k not in kept)
+        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in route_fields}
         # The profile's inline key and its private-secret pointer are not copied into the receipt:
         # its secrets stay at the profile's own path, never re-committed under this session.
-        frozen['model'].update({k: followed[k] for k in moved
+        frozen['model'].update({k: followed[k] for k in route_fields
                                 if k in followed and k not in ('api_key', 'api', 'api_key_from')})
     # The one selection shape config.yaml gets (#25106): api_mode follows the target, a context pin
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
@@ -122,7 +122,7 @@ async def prepare_model(authority, live, payload, prepared):
     # The picked entry's private subtree is replaced whole: a key or header its current declaration
     # withdrew must not follow it to the new endpoint.
     # An unrelated entry the pick displaced carries its own secrets to its new index.
-    secrets = {moved.get(path[:2], path[:2]) + path[2:]: value for path, value in secrets.items()}
+    secrets = {relocated.get(path[:2], path[:2]) + path[2:]: value for path, value in secrets.items()}
     secrets = {path: value for path, value in secrets.items() if path[:2] not in retired}
     secrets.update(provider_secrets)
     # A cleared field's private value must not be re-hydrated into the new route by config().

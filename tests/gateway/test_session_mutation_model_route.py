@@ -106,6 +106,32 @@ async def test_following_pick_validates_on_the_current_endpoint_with_its_own_key
 
 
 @pytest.mark.asyncio
+async def test_following_pick_with_frozen_config_secrets_does_not_crash(home, endpoints):
+    """A following session can retain unrelated private config while a model pick updates its route.
+    Route-field cleanup and provider-secret relocation are separate operations; the former must not
+    replace the relocation map with a tuple and crash while iterating the retained secrets."""
+    (_, url), _ = endpoints
+    (home / 'config.yaml').write_text(json.dumps({
+        'model': {'provider': 'custom', 'default': 'original', 'base_url': url, 'api_key': 'key-a'},
+        'providers': {'spare': {'base_url': 'http://127.0.0.1:9/v1', 'api_key': 'spare-secret'}},
+        'env': {'RETAINED_SECRET': 'private-value'},
+    }), encoding='utf-8')
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    try:
+        live = await _create(owner, authority, home, 'follow-with-secret')
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+
+        response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'custom'})
+
+        assert 'result' in response, response
+        assert _route(runner, live) == ('picked', url, 'key-a')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
 async def test_a_superseded_pick_takes_its_launch_key_with_it(home):
     """The key a keyed alias pick bound authenticates the alias's endpoint. Once a profile change
     supersedes the pick and the followed route moves to another endpoint, that endpoint gets its own

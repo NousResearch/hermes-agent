@@ -11,6 +11,7 @@ import time
 import types
 from pathlib import Path
 
+import psutil
 import pytest
 
 import hermes_state_wal
@@ -246,7 +247,7 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
-def test_stale_claim_reclaim_without_spawn_counts_toward_breaker(kanban_home):
+def test_stale_claim_reclaim_without_spawn_counts_toward_breaker(kanban_home, monkeypatch):
     """A claim that expires without a worker ever spawning is a non-success
     attempt (#111306): each automatic reclaim advances ``consecutive_failures``
     and the breaker trips at ``failure_limit`` instead of the card spinning
@@ -254,11 +255,21 @@ def test_stale_claim_reclaim_without_spawn_counts_toward_breaker(kanban_home):
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="never spawned", assignee="a")
         host = kb._claimer_id().split(":", 1)[0]
+        def dead_claimer(pid):
+            assert pid == 999991
+            raise psutil.NoSuchProcess(pid)
+        monkeypatch.setattr(psutil, "Process", dead_claimer)
         for expected in (1, 2):
-            kb.claim_task(conn, t, claimer=f"{host}:worker")
-            # No _set_worker_pid: the claimer never spawned a worker.
+            kb.claim_task(conn, t, claimer=f"{host}:999991")
+            # No _set_worker_pid: the claimer never spawned a worker. Age the
+            # claim past the dead-claimer launch bound as well as its TTL.
             conn.execute(
                 "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+                (int(time.time()) - 3600, t),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
                 (int(time.time()) - 3600, t),
             )
             assert kb.release_stale_claims(

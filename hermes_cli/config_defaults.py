@@ -1089,7 +1089,7 @@ DEFAULT_CONFIG = {
     # NeuTTS/KittenTTS 2000).
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
-        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "gemini" | "deepinfra" | "mittwald" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         # Seconds a local engine (Piper, KittenTTS) stays loaded after the last speech toggle
         # turns off, so a quick re-activation (wake word, voice-chat restart) skips the reload.
@@ -1165,6 +1165,16 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
         },
+        "mittwald": {
+            "model": "Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            # aiden, dylan, eric, ono_anna, ryan, serena, sohee, uncle_fu, vivian
+            "voice": "ryan",
+            # Word form or ISO-639-1 (mapped): Auto, Chinese, English, French, German,
+            # Italian, Japanese, Korean, Portuguese, Russian, Spanish, Beijing_Dialect,
+            # Sichuan_Dialect. "" = server default.
+            "language": "",
+            # optional "base_url" key overrides MITTWALD_BASE_URL for TTS only
+        },
     },
 
     "stt": {
@@ -1172,8 +1182,8 @@ DEFAULT_CONFIG = {
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
         "echo_transcripts": True,
         # No seeded "provider" (a stored value is an explicit pick; unset = autodetect): local | groq |
-        # openai | mistral | elevenlabs | deepinfra | xai. Global language hint unless a per-provider one
-        # overrides it; "en" because Whisper auto-detect misreads short clips; "" = auto; "es", ...
+        # openai | mistral | elevenlabs | deepinfra | xai | mittwald. Global language hint unless a
+        # per-provider one overrides it; "en" because Whisper auto-detect misreads short clips; "" = auto.
         "language": "en",
         "streaming": False,  # live partial text while speaking (openai/xai/elevenlabs); failure = file path
         # Pre-upload ffmpeg silence trim (local whisper uses VAD); failure = raw upload.
@@ -1222,6 +1232,11 @@ DEFAULT_CONFIG = {
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
+        },
+        "mittwald": {
+            "model": "whisper-large-v3-turbo",
+            "language": "",  # auto-detect; set "en", "de", ... (ISO 639-1) to force
+            # optional "base_url" key overrides MITTWALD_BASE_URL for STT only
         },
     },
 

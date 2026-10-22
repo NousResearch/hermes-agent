@@ -123,9 +123,11 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "tts.provider": _select(
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
+        "mittwald",
     ),
     "stt.provider": _select(
-        "Speech-to-text provider", "local", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"),
+        "Speech-to-text provider", "local", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra",
+        "mittwald"),
     "stt.local.model": _select("Local faster-whisper model size", *STT_MODEL_CATALOG["local"]),
     "stt.groq.model": _select("Groq Whisper model", *STT_MODEL_CATALOG["groq"]),
     "stt.openai.model": _select("OpenAI transcription model", *STT_MODEL_CATALOG["openai"]),
@@ -134,6 +136,7 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "stt.mistral.model": _select("Mistral Voxtral transcription model", *STT_MODEL_CATALOG["mistral"]),
     "stt.xai.model": _select("xAI transcription model", *STT_MODEL_CATALOG["xai"]),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", *STT_MODEL_CATALOG["elevenlabs"]),
+    "stt.mittwald.model": _select("mittwald AI Hosting Whisper model", *STT_MODEL_CATALOG["mittwald"]),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"

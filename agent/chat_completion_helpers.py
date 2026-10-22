@@ -2158,6 +2158,12 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
         api_messages.append(api_msg)
 
+    # Runtime-only elicitation: this must never enter the durable transcript as
+    # user-authored content. Add it before sequence repair so strict providers
+    # still receive a valid alternating request when history already ends in user.
+    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+    api_messages.append({"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+
     effective_system = agent._cached_system_prompt or ""
     if agent.ephemeral_system_prompt:
         effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
@@ -2290,11 +2296,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
     summary_call_outcome = "failed"
 
-    # Shared constant so compaction recognizers can identify this runtime nudge by its stable
-    # content after SessionDB projection strips metadata flags.
-    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    nudge = append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
-
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
@@ -2315,11 +2316,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             break
 
     except InterruptedError:
-        # Cancellation is not a summary failure: drop the unanswered nudge and let the
-        # finalizer end the turn as interrupted so the pending message is requeued.
+        # Cancellation is not a summary failure: the runtime-only API nudge was never
+        # appended to the durable transcript, so the finalizer can requeue the pending message.
         summary_call_outcome = "cancelled"
-        if messages and messages[-1] is nudge:
-            messages.pop()
         raise
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)

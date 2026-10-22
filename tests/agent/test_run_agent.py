@@ -2440,6 +2440,38 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    def test_summary_control_is_api_only_and_strict(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "inspect the failure"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "failure details"},
+        ]
+
+        assert agent._handle_max_iterations(messages, 1) == "Summary"
+
+        assert [(message["role"], message.get("content")) for message in messages] == [
+            ("user", "inspect the failure"),
+            ("assistant", None),
+            ("tool", "failure details"),
+            ("assistant", "Summary"),
+        ]
+        sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert sent[-1]["role"] == "user"
+        assert "maximum number of tool-calling iterations" in sent[-1]["content"]
+        assert set(sent[-1]) == {"role", "content"}
+        assert [message["role"] for message in sent] == [
+            "system", "user", "assistant", "tool", "user",
+        ]
+
     @pytest.mark.parametrize("api_mode,platform", [
         ("chat_completions", "cli"), ("chat_completions", "cron"),
         ("anthropic_messages", "cli"),

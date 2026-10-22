@@ -101,3 +101,41 @@ test.skipIf(process.platform === 'win32')('a linked profile mints for the home t
     await Promise.all([root, target, links].map(dir => fs.rm(dir, { recursive: true, force: true })))
   }
 })
+
+// A Desktop launched on a linked profile gets that profile's endpoint from `gateway ensure`: the target
+// it is served at, minted through the root's control socket (`control_home`). Its own name and its
+// siblings' root come from there, never from the target's path (#142944), even when that path still
+// reads `<x>/profiles/<name>` because `profiles/` itself links into another tree.
+const linkedLayouts: Record<string, (root: string, store: string) => Promise<string>> = {
+  entry: async (root, store) => {
+    await fs.mkdir(path.join(root, 'profiles'), { mode: 0o700 })
+    await fs.symlink(store, path.join(root, 'profiles', 'work'), 'dir')
+
+    return store
+  },
+  profiles: async (root, store) => {
+    const work = path.join(store, '.hermes', 'profiles', 'work')
+    await fs.mkdir(work, { recursive: true, mode: 0o700 })
+    await fs.symlink(path.dirname(work), path.join(root, 'profiles'), 'dir')
+
+    return work
+  }
+}
+
+test.skipIf(process.platform === 'win32').each(Object.keys(linkedLayouts))('a Desktop launched on a linked profile routes its own and sibling requests through the root (%s)', async layout => {
+  const [root, store] = await Promise.all(['gw-root-', 'gw-store-'].map(shortSocketTmpDir))
+  const target = await linkedLayouts[layout](root, store)
+  const gateway = await controlSocket(root, [root, target])
+  const descriptor = { gatewayEndpoint: { ...endpointFor(target), control_home: root }, baseUrl: ORIGIN }
+
+  try {
+    for (const profile of ['work', 'default']) {
+      await nativeGatewayHttpHeaders(descriptor, `${ORIGIN}/api/sessions?profile=${profile}`)
+    }
+
+    expect(gateway.requests.map(request => request.profile_id)).toEqual([target, root])
+  } finally {
+    await gateway.close()
+    await Promise.all([root, store].map(dir => fs.rm(dir, { recursive: true, force: true })))
+  }
+})

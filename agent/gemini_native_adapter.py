@@ -662,7 +662,32 @@ def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
+def _prompt_feedback_block_error(response: dict[str, Any]) -> Optional[GeminiAPIError]:
+    """Surface candidate-less prompt refusals without inventing an HTTP failure."""
+    if response.get("candidates"):
+        return None
+    feedback = response.get("promptFeedback")
+    if not isinstance(feedback, dict):
+        return None
+    block_reason = feedback.get("blockReason")
+    if not isinstance(block_reason, str) or not block_reason.strip():
+        return None
+    block_reason = block_reason.strip()
+    if block_reason.upper() == "BLOCK_REASON_UNSPECIFIED":
+        return None
+    # Gemini delivers this refusal in a successful response/SSE event, not an HTTP 400.
+    error = GeminiAPIError(
+        f"Gemini blocked the prompt: {block_reason}", code="gemini_prompt_blocked",
+        details={"blockReason": block_reason, "promptFeedback": feedback},
+    )
+    metadata = response.get("usageMetadata")
+    error.usage = _usage_from_metadata(metadata) if isinstance(metadata, dict) and metadata else None
+    return error
+
+
 def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespace:
+    if error := _prompt_feedback_block_error(resp):
+        raise error
     candidates = resp.get("candidates") or []
     cand = parts = None
     if isinstance(candidates, list) and candidates:
@@ -771,6 +796,8 @@ def _tool_call_slot(fc: dict[str, Any], part: dict[str, Any], part_index: int, a
 
 
 def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices: dict[str, dict[str, Any]]) -> list[_GeminiStreamChunk]:
+    if error := _prompt_feedback_block_error(event):
+        raise error
     candidates = event.get("candidates") or []
     if not candidates:
         return []

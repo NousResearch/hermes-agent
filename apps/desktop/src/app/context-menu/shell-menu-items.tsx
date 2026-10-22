@@ -10,7 +10,7 @@ import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 
-import { navigateToWorkspacePage, NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '../routes'
+import { navigateToWorkspacePage, NEW_CHAT_ROUTE, SESSION_IMPORT_ROUTE, SETTINGS_ROUTE } from '../routes'
 
 /** Bare right-click on app chrome: the window verbs (the old shell fallback). */
 function shellSections(
@@ -33,6 +33,13 @@ function shellSections(
     onSelect: () => navigateToWorkspacePage(navigate, SETTINGS_ROUTE)
   })
 
+  const sessionImport = renderActionItem(kit, {
+    icon: 'cloud-download',
+    key: 'shell-session-import',
+    label: t.sessionImport.action,
+    onSelect: () => navigate(SESSION_IMPORT_ROUTE)
+  })
+
   const update = renderActionItem(kit, {
     icon: 'cloud-download',
     key: 'shell-update',
@@ -41,12 +48,13 @@ function shellSections(
   })
 
   if (primaryOnly) {
-    return [[newChat, settings, update]]
+    return [[newChat, sessionImport, settings, update]]
   }
 
   return [
     [
       newChat,
+      sessionImport,
       canOpenNewWindow()
         ? renderActionItem(kit, {
             icon: 'multiple-windows',

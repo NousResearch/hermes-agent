@@ -144,6 +144,7 @@ import {
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  SESSION_IMPORT_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution
 } from '../../routes'
@@ -451,6 +452,17 @@ export function ChatSidebar({
   const navItems = useMemo(
     () => applySidebarNavPrefs([...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)), navPrefs),
     [contributedNav, interfaceMode, navPrefs]
+  )
+
+  const openSessionImport = useCallback(
+    () =>
+      onNavigate({
+        id: 'session-import',
+        icon: props => <Codicon name="cloud-download" {...props} />,
+        label: t.sessionImport.action,
+        route: SESSION_IMPORT_ROUTE
+      }),
+    [onNavigate, t.sessionImport.action]
   )
 
   const panesFlipped = useStore($panesFlipped)
@@ -1906,6 +1918,22 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
+                        {!showArchived && !agentsGrouped && (
+                          <Tip label={t.sessionImport.action}>
+                            <Button
+                              aria-label={t.sessionImport.action}
+                              className={HEADER_ACTION_BTN}
+                              onClick={event => {
+                                event.stopPropagation()
+                                openSessionImport()
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name="cloud-download" size="0.75rem" />
+                            </Button>
+                          </Tip>
+                        )}
                         {/* The flat-list header "+" is a drag source too — the
                             same gesture as the nav's "New session" row: drag
                             it onto a chat zone's tab strip / edge / center to

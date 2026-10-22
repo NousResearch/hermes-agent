@@ -280,6 +280,17 @@ describe('session drop targeting onto the Pinned section', () => {
     expect(section.hasAttribute('data-session-drop-hover')).toBe(false)
   })
 
+  it('keeps an already-pinned session in place when its tile tab is dropped on Pinned', () => {
+    $sessions.set([{ id: 'dragged', cwd: '', _lineage_root_id: 'root-1' } as never])
+    $pinnedSessionIds.set(['root-1', 'other'])
+    const section = mountPinnedSection()
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect($pinnedSessionIds.get()).toEqual(['root-1', 'other'])
+    expect(section.hasAttribute('data-session-drop-hover')).toBe(false)
+  })
+
   it('is not a target for a row dragged from inside Pinned — that reorders', () => {
     const section = mountPinnedSection()
     const row = document.getElementById('row')!

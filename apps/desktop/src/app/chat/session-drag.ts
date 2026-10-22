@@ -52,7 +52,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { translateNow } from '@/i18n'
-import { pinSession, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
@@ -205,7 +205,14 @@ export function startSessionDrag(
       // instead the session lists become unpin targets. Any other row gets
       // Pinned as its pin target.
       const fromPinned = Boolean(source?.closest(PIN_DROP_SELECTOR))
-      const pinEl = fromPinned ? null : queryAllVisible<HTMLElement>(PIN_DROP_SELECTOR)[0]
+
+      // A session that's already pinned (e.g. dragged from its tile tab) has
+      // nothing to pin either: pinSession would re-append it to the bottom.
+      const alreadyPinned = draggedSession
+        ? $pinnedSessionIds.get().includes(sessionPinId(draggedSession))
+        : $pinnedSessionIds.get().includes(payload.id)
+
+      const pinEl = fromPinned || alreadyPinned ? null : queryAllVisible<HTMLElement>(PIN_DROP_SELECTOR)[0]
       pinTarget = pinEl ? { el: pinEl, rect: snapRect(pinEl) } : null
       unpinTargets = fromPinned
         ? queryAllVisible<HTMLElement>(UNPIN_DROP_SELECTOR).map(el => ({ el, rect: snapRect(el) }))

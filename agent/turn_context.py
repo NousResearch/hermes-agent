@@ -68,7 +68,7 @@ def _preflight_request_tokens(
             exc_info=True,
         )
     charge_stale_thinking = _agent_stale_thinking_on_wire(agent)
-    estimate_messages = messages
+    estimate_messages = _preflight_reasoning_projection(agent, messages)
     if charge_stale_thinking and getattr(agent, "api_mode", "") == "anthropic_messages":
         from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
 
@@ -105,6 +105,56 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
         )
     except Exception:
         return True
+
+
+_REASONING_REPLAY_FIELDS = frozenset({"reasoning", "reasoning_content", "reasoning_details"})
+
+
+def _thinking_only_assistant(msg: dict[str, Any]) -> bool:
+    """Whether preserving reasoning is the only way to keep this assistant row meaningful."""
+    if msg.get("role") != "assistant" or msg.get("tool_calls"):
+        return False
+    content = msg.get("content")
+    if isinstance(content, str) and content.strip():
+        return False
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                if block:
+                    return False
+                continue
+            block_type = block.get("type")
+            if block_type == "text" and isinstance(block.get("text"), str) and block["text"].strip():
+                return False
+            if block_type not in {"thinking", "redacted_thinking", "text"}:
+                return False
+    return any(msg.get(key) for key in _REASONING_REPLAY_FIELDS)
+
+
+def _reasoning_replay_source(agent: Any, msg: dict[str, Any], *, finished: bool) -> dict[str, Any]:
+    """Return the request-only reasoning source, preserving mandatory pads and thinking-only rows."""
+    strip = getattr(agent, "_strip_finished_reasoning_replay", None)
+    enabled = strip() if callable(strip) else bool(
+        getattr(agent, "_strip_finished_reasoning_replay_flag", False)
+        and getattr(agent, "api_mode", "chat_completions") == "chat_completions"
+    )
+    if not (finished and msg.get("role") == "assistant" and enabled and not _thinking_only_assistant(msg)):
+        return msg
+    return {key: value for key, value in msg.items() if key not in _REASONING_REPLAY_FIELDS}
+
+
+def _preflight_reasoning_projection(agent: Any, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mirror finished-turn reasoning trimming for preflight without changing durable history."""
+    current_user = next(
+        (idx for idx in range(len(messages) - 1, -1, -1)
+         if isinstance(messages[idx], dict) and messages[idx].get("role") == "user"),
+        -1,
+    )
+    return [
+        _reasoning_replay_source(agent, msg, finished=idx < current_user)
+        if isinstance(msg, dict) else msg
+        for idx, msg in enumerate(messages)
+    ]
 
 
 def compose_multimodal_context_part(
@@ -1313,7 +1363,11 @@ def build_api_messages(
 
         # Replay stored reasoning on every carrier the active route reads (and strip the
         # rest): message_sanitization.reasoning_replay_route owns the decision.
-        agent._copy_reasoning_content_for_api(msg, api_msg)
+        reasoning_source = _reasoning_replay_source(agent, msg, finished=idx < split)
+        if reasoning_source is not msg:
+            for field in _REASONING_REPLAY_FIELDS:
+                api_msg.pop(field, None)
+        agent._copy_reasoning_content_for_api(reasoning_source, api_msg)
         # finish_reason is rejected by strict APIs (e.g. Mistral).
         api_msg.pop("finish_reason", None)
         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer

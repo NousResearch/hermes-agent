@@ -1898,6 +1898,19 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+### Finished-turn reasoning replay
+
+Chat Completions routes replay prior assistant reasoning by default. To reduce the prompt cost of
+long conversations, set `model.strip_finished_reasoning_replay: true`. Hermes then omits reasoning
+from completed assistant rows before the current user message, while preserving thinking-only rows,
+the current turn, and the one-space reasoning pad required by tool-call providers. Stored history is
+unchanged. Native provider transports keep their own replay contracts.
+
+```yaml
+model:
+  strip_finished_reasoning_replay: true
+```
+
 ### Answer length (`text_verbosity`)
 
 Responses-API models (OpenAI GPT-5 family and later, direct OpenAI, ChatGPT Codex and Azure routes) also accept a separate knob for how long the final natural-language answer is, independent of reasoning depth:

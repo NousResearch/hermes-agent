@@ -186,12 +186,28 @@ class ReasoningParamsMixin:
         fallback activation swaps the flag and ``restore_primary_runtime()`` restores it."""
         return bool(getattr(self, "_reasoning_echo_flag", False))
 
+    def _strip_finished_reasoning_replay(self) -> bool:
+        """Whether chat-completions history omits completed-turn reasoning on the wire."""
+        return (
+            getattr(self, "api_mode", "chat_completions") == "chat_completions"
+            and bool(getattr(self, "_strip_finished_reasoning_replay_flag", False))
+        )
+
     @staticmethod
     def _read_reasoning_echo_from_config() -> bool:
         """Read ``model.reasoning_echo`` from config; False on any error."""
         try:
             from hermes_cli.config import load_config_readonly
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _read_strip_finished_reasoning_replay_from_config() -> bool:
+        """Read ``model.strip_finished_reasoning_replay`` from config; False on error."""
+        try:
+            from hermes_cli.config import load_config_readonly
+            return bool((load_config_readonly().get("model") or {}).get("strip_finished_reasoning_replay"))
         except Exception:
             return False
 

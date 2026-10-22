@@ -33,6 +33,7 @@ from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.plugins_origin import PluginOriginContextMixin, PluginOriginManagerMixin
+from hermes_cli.plugins_mcp_dispatch import PluginMCPDispatchContextMixin, PluginMCPDispatchManagerMixin
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
@@ -80,8 +81,7 @@ class PluginToolOverrideError(PermissionError):
 
 logger = logging.getLogger(__name__)
 
-# ``HERMES_PLUGINS_DEBUG=1`` tees verbose discovery logs to stderr in addition to agent.log. Read
-# once at import; tests flip it mid-process via ``_install_plugin_debug_handler(force=True)``.
+# ``HERMES_PLUGINS_DEBUG=1`` tees discovery logs; tests re-install after changing it.
 _PLUGINS_DEBUG = env_var_enabled("HERMES_PLUGINS_DEBUG")
 _DEBUG_HANDLER_INSTALLED = False
 
@@ -226,7 +226,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginOriginContextMixin):
+class PluginContext(PluginMCPDispatchContextMixin, PluginOriginContextMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -1147,7 +1147,7 @@ def _resolve_hook_callback_timeout() -> float:
     return timeout
 
 
-class PluginManager(PluginOriginManagerMixin, PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
+class PluginManager(PluginMCPDispatchManagerMixin, PluginOriginManagerMixin, PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
     def __init__(self, scope_key: Optional[str] = None) -> None:

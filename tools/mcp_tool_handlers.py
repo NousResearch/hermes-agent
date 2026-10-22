@@ -624,6 +624,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
+        # Mandatory profile policy is checked at the last common native MCP
+        # boundary, including deferred tool_search, concurrent calls, direct
+        # plugin calls and safe workers that skip optional tool hooks. A denial
+        # happens before any trust prompt, charge, lazy spawn or transport call.
+        from tools.mcp_dispatch_guard import admit_mcp_dispatch
+        args, denial = admit_mcp_dispatch(server_name, tool_name, args, **kwargs)
+        if denial is not None:
+            return tool_error(denial)
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         booked: list = []  # a costed call's charge; refunded when the call never reaches the server
         error = _trust_gate_check(server_name, tool_name, booked)
@@ -680,6 +688,10 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
     payload, ``required`` validated before any transport work."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
+            from tools.mcp_dispatch_guard import admit_mcp_dispatch
+            args, denial = admit_mcp_dispatch(server_name, op, args, **kwargs)
+            if denial is not None:
+                return tool_error(denial)
             from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
             server = _discovery._get_connected_server_for_call(server_name)
             if not server or not server.session:

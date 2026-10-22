@@ -131,6 +131,27 @@ def _body_decode_reason(exc: ValueError) -> tuple[str, Optional[int]]:
     return str(reason), position
 
 
+def _body_json_type_name(value: object) -> str:
+    """The JSON type of a parsed body, named as JSON names it -- and nothing else.
+
+    ``json.loads`` yields only the five non-object types named here, so the
+    fallback is unreachable for this body; it exists so that a loader which
+    widens the set cannot put an exception's own text into the WARNING. The
+    value itself is never read: only its type is.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):  # before int: bool is an int subclass
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    return type(value).__name__
+
+
 class _AiohttpBridgeAdapter:
     """HttpServerAdapter bridging SDK route registrations into our aiohttp app; without it
     ``App()`` unconditionally imports fastapi/uvicorn and allocates a ``FastAPI()``."""
@@ -153,6 +174,21 @@ class _AiohttpBridgeAdapter:
                     request.content_length if request.content_length is not None else "unknown",
                     reason,
                     position if position is not None else "unknown",
+                )
+                return web.Response(
+                    status=400,
+                    body=json.dumps({"error": "invalid JSON body"}),
+                    content_type="application/json",
+                )
+            if not isinstance(body, dict):
+                logger.warning(
+                    "[teams] refused a request body that is not a JSON object: %s %s from %s "
+                    "(%s bytes): top-level %s",
+                    request.method,
+                    request.path,
+                    request.remote,
+                    request.content_length if request.content_length is not None else "unknown",
+                    _body_json_type_name(body),
                 )
                 return web.Response(
                     status=400,

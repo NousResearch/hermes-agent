@@ -574,6 +574,7 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 # hermes_cli.setup. They import this module lazily inside bodies, so this is cycle-free.
 
 from hermes_cli.setup_tts import setup_tts
+from hermes_cli.setup_agui import setup_agui
 from hermes_cli.setup_terminal import setup_terminal_backend
 from hermes_cli.setup_platforms import setup_gateway
 from hermes_cli.setup_summary import _print_setup_summary
@@ -591,6 +592,7 @@ SETUP_SECTIONS = [
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("agui", "AG-UI Adapter", setup_agui),
 ]
 
 

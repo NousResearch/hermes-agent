@@ -15,6 +15,18 @@ from functools import lru_cache
 # Listed here so all "carry over on relaunch" metadata lives in one file.
 PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-p", True)]
 
+
+def first_positional_argv() -> str | None:
+    """First command token, skipping known global flags and their values.
+
+    An unknown ``--foo bar`` can classify ``bar`` as positional, at worst
+    forcing a one-time plugin discovery, as it did before this extraction.
+    """
+    import sys
+
+    args = command_argv(sys.argv[1:])
+    return args[0] if args else None
+
 # Static snapshot fallback for ``top_level_value_flag_sets`` — used only if introspecting the
 # live parser fails. The derived path is authoritative; tests/hermes_cli/
 # test_top_level_value_flags_parity.py fails CI if the parser grows a value-taking flag this

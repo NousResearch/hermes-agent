@@ -223,6 +223,7 @@ dependencies = [
   "nemo-relay>=0.10,<0.11; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",]
 
 [project.optional-dependencies]
+agui = ["ag-ui-protocol==0.1.19"]
 # High-performance event loop — uvloop replaces the stdlib asyncio loop with
 # a libuv-backed implementation for ~2-4x throughput on uvicorn.  Gated as an
 # optional extra because libuv's ./configure does not run on Android/Termux
@@ -499,6 +500,7 @@ web = [
   "python-multipart==0.0.32",
 ]
 all = [
+  "hermes-agent[agui]",
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be prepared on demand by PM — i.e. things every
   # session can use, things needed before the agent loop is alive
@@ -564,6 +566,7 @@ build-backend = "setuptools.build_meta"
 hermes = "hermes_cli.main:main"
 hermes-agent = "agent.legacy_cli:main"
 hermes-acp = "acp_adapter.entry:main"
+hermes-agui = "agui_adapter.cli:main"
 
 [tool.hermes]
 # Extras that only an explicit selection installs (setup, sync_venv). Bundles
@@ -663,6 +666,7 @@ include = [
   "cron",
   "cron.*",
   "acp_adapter",
+  "agui_adapter",
   "plugins",
   "plugins.*",
   "providers",

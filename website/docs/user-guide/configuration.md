@@ -73,6 +73,30 @@ cannot override, via a system-level managed directory. See
 [Managed Scope](./managed-scope.md).
 :::
 
+## AG-UI Adapter
+
+Configure the standalone HTTP/SSE adapter with `hermes setup agui` or the
+`agui` section in `~/.hermes/config.yaml`. The defaults are:
+
+```yaml
+agui:
+  host: 127.0.0.1
+  port: 8000
+  toolsets: [hermes-acp]
+  provider: ""
+  model: ""
+  api_mode: ""
+  base_url: ""
+  frontend_tool_timeout: 60       # Seconds to wait for a browser tool result
+  max_conversations: 16           # Active and idle agents; reject excess admission
+  conversation_idle_timeout: 1800 # Seconds before closing an idle conversation
+```
+
+Leave `base_url` and model/provider/API overrides blank to use the normal
+Hermes model configuration.
+Setting `base_url` selects an explicit endpoint and bypasses provider resolution.
+A non-loopback `host` requires the `HERMES_AGUI_SESSION_TOKEN` secret in `.env`.
+
 ## Runtime Limits
 
 Long-running Hermes server surfaces (including the gateway and

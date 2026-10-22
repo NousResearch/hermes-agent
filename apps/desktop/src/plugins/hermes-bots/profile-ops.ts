@@ -28,7 +28,7 @@ import {
   botRosterKey,
   botSelectionKey,
   commitBotMetaV2,
-  isDefaultBot,
+  deleteResetsDefault,
   persistBotMetaSnapshot,
   ROSTER_KEY,
   saveBotMeta
@@ -434,7 +434,7 @@ interface CliExecResult {
  * appearance below is dropped like any deleted bot's. */
 export async function deleteBot(bot: RosterRow) {
   const route = botConnectionRoute(bot)
-  const resetsDefault = isDefaultBot(bot) || String(route?.targetProfile || '').toLowerCase() === 'default'
+  const resetsDefault = deleteResetsDefault(bot)
 
   if (typeof host.deleteProfile === 'function') {
     if (route) {

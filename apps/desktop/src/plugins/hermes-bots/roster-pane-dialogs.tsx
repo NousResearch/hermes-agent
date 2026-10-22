@@ -2,7 +2,7 @@ import { ConfirmDialog, host } from '@hermes/plugin-sdk'
 import type { useI18n } from '@hermes/plugin-sdk'
 
 import { CreateAgentDialog, CreateGroupChatDialog, GroupDialog } from './create-dialog'
-import { isDefaultBot, type useRoster } from './data'
+import { deleteResetsDefault, type useRoster } from './data'
 import { EditProfileDialog } from './edit-profile-dialog'
 import { disbandGroupChat, openGroupChat } from './group-chat-view'
 import type { useBots } from './i18n'
@@ -35,7 +35,7 @@ interface renderRosterDialogsProps {
 
 /** "Delete" on the default bot resets it (its profile is the install and holds every other bot),
  *  so its confirmation names exactly what is wiped and what is kept. */
-function DeleteBotDialog({
+export function DeleteBotDialog({
   b,
   deleting,
   onClose,
@@ -48,7 +48,7 @@ function DeleteBotDialog({
   refetch: ReturnType<typeof useRoster>['refetch']
   t: ReturnType<typeof useI18n>['t']
 }) {
-  const resets = Boolean(deleting && isDefaultBot(deleting))
+  const resets = Boolean(deleting && deleteResetsDefault(deleting))
 
   return (
     <ConfirmDialog

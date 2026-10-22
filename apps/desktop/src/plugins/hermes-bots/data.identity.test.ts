@@ -22,6 +22,7 @@ import {
   botRosterKey,
   botSelectionKey,
   clearBotAttention,
+  deleteResetsDefault,
   filterBots,
   isDefaultBot,
   mentionNameForms,
@@ -196,6 +197,37 @@ describe('source-qualified keys', () => {
     expect(botMetaKey(orphan)).toBe(botSelectionKey(orphan))
     expect(isDefaultBot(orphan)).toBe(false)
     expect(isDefaultBot(row({ name: 'default', remoteSource: true, sourceScoped: true }))).toBe(true)
+  })
+})
+
+describe('which Delete resets the default profile', () => {
+  const route = { connectionId: 'source-a', mode: 'remote' as const }
+
+  it('resets for the default bot itself', () => {
+    expect(deleteResetsDefault(row({ name: 'default' }))).toBe(true)
+  })
+
+  it('resets for an alias bot whose backend target is the default profile', () => {
+    // The row's own profile is "worker", but deleting it reaches the default profile; the
+    // confirmation must say "reset", not "delete worker" (PR #141671 review).
+    const alias = row({
+      name: 'worker',
+      route: { ...route, profile: 'worker', targetProfile: 'default' },
+      sourceScoped: true
+    })
+
+    expect(isDefaultBot(alias)).toBe(false)
+    expect(deleteResetsDefault(alias)).toBe(true)
+  })
+
+  it('does not reset for an ordinary named bot or an orphaned row', () => {
+    expect(deleteResetsDefault(row({ name: 'ops' }))).toBe(false)
+    expect(
+      deleteResetsDefault(
+        row({ name: 'ops', route: { ...route, profile: 'ops', targetProfile: 'ops' }, sourceScoped: true })
+      )
+    ).toBe(false)
+    expect(deleteResetsDefault(row({ name: 'ops', remoteSource: true, sourceScoped: true }))).toBe(false)
   })
 })
 

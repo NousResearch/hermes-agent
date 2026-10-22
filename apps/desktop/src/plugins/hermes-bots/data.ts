@@ -1294,6 +1294,26 @@ export function isDefaultBot(bot: Partial<RosterRow> | null | undefined): boolea
   )
 }
 
+/** True when "Delete" on this row RESETS the default profile instead of deleting one: the row is
+ *  the default bot, or its connection route's backend target is the default profile (an alias bot).
+ *  The single predicate behind both the delete action and its confirmation copy, so the dialog
+ *  can never describe a deletion while the action resets the default profile. Non-throwing: an
+ *  orphaned row (owner connection removed) falls back to isDefaultBot. */
+export function deleteResetsDefault(bot: Partial<RosterRow> | null | undefined): boolean {
+  if (isDefaultBot(bot)) {
+    return true
+  }
+
+  const resolved = resolveBotConnectionRoute(bot)
+
+  return (
+    resolved.status === 'resolved' &&
+    String(resolved.route?.targetProfile || '')
+      .trim()
+      .toLowerCase() === 'default'
+  )
+}
+
 export function newBotChat(bot: RosterRow) {
   if (typeof host.newChat !== 'function') {
     host.notify?.({

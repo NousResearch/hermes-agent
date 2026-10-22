@@ -189,14 +189,13 @@ it('shows which bots are working, and still says the group is working on a gatew
   const phase = (name: string) => screen.getByText(name).closest('li')?.getAttribute('data-phase')
   expect([phase('Ops'), phase('QA')]).toEqual(['working', 'queued'])
 
+  // The same mounted room clears both indicators on its next poll once the turn settles.
+  driver = { working: false, member_activity: [] }
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull(), { timeout: 5_000 })
+  expect([phase('Ops'), phase('QA')]).toEqual(['idle', 'idle'])
+
   view.unmount()
   driver = { working: true }
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'older' }} />)
   await waitFor(() => expect(screen.getByRole('status').textContent).toBe('The group is working…'))
-
-  cleanup()
-  driver = { working: false, member_activity: [] }
-  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'idle' }} />)
-  await waitFor(() => expect(screen.getByText('Ops').closest('li')?.getAttribute('data-phase')).toBe('idle'))
-  expect(screen.queryByRole('status')).toBeNull()
 })

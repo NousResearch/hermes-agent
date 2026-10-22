@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { InputEvent } from './events/input-event.js'
-import { INITIAL_STATE, parseMultipleKeypresses, type ParsedInput } from './parse-keypress.js'
+import { INITIAL_STATE, type ParsedInput, parseMultipleKeypresses } from './parse-keypress.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 
 // ConPTY win32-input-mode (microsoft/terminal spec #4999): every KEY_EVENT_RECORD
@@ -10,6 +10,7 @@ import { PASTE_END, PASTE_START } from './termio/csi.js'
 // decoder, so the composer filled with `[79;24;79;1;48;1_` text and Ctrl+C never
 // fired. Spec defaults: omitted Vk/Sc/Uc/Kd/Cs = 0, omitted Rc = 1.
 const ESC = '\x1b'
+
 const rec = (vk: number, sc: number, uc: number, kd: 0 | 1, cs: number, rc = 1): string =>
   `${ESC}[${vk};${sc};${uc};${kd};${cs};${rc}_`
 
@@ -21,7 +22,7 @@ const SHIFT = 0x0010
 const NUMLOCK = 0x0020
 const ENHANCED = 0x0100
 
-const PRINTABLE = /^[ -~ -￿]+$/
+const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 
 /** Mirror the composer's insert gate (ui-tui/src/components/textInput.tsx). */
 const composerWouldInsert = (event: InputEvent): boolean =>
@@ -67,6 +68,7 @@ const captured = [
   rec(67, 46, 3, 1, LEFT_CTRL | NUMLOCK),
   rec(67, 46, 3, 0, LEFT_CTRL | NUMLOCK)
 ]
+
 const capturedNames = ['o', 'n', 'c', 'e', 'space', 'backspace', 'c']
 const capturedText = ['O', 'n', 'c', 'e', ' ', '', '']
 

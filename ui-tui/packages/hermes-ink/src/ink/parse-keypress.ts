@@ -82,6 +82,7 @@ const WIN32_SHIFT = 0x0010
 // wRepeatCount is a WORD, but a keyboard batches at most a few auto-repeats
 // into one record; cap it so a corrupt record cannot expand into a key flood.
 const WIN32_MAX_REPEAT = 32
+
 // Virtual keys that carry no UnicodeChar, as the tail of the legacy xterm
 // sequence the same terminal sends outside win32-input-mode
 // (CSI [1;mod] letter, or CSI number [;mod] ~), so the existing parser maps them.
@@ -111,6 +112,32 @@ const WIN32_VK_SEQUENCE: Record<number, string> = {
 }
 
 /**
+ * Legacy xterm sequence for a win32-input-mode record that carries a virtual
+ * key but no character (arrows, Home/End, F-keys, ...), with the modifier
+ * parameter the terminal would have added; null for modifier-only or unknown
+ * keys.
+ */
+function win32VirtualKeySequence(vk: number, cs: number, alt: boolean): string | null {
+  const tail = WIN32_VK_SEQUENCE[vk]
+
+  if (!tail) {
+    return null
+  }
+
+  const modifier = 1 + (cs & WIN32_SHIFT ? 1 : 0) + (alt ? 2 : 0) + (cs & WIN32_CTRL ? 4 : 0)
+
+  if (modifier === 1) {
+    return `\x1b[${tail}`
+  }
+
+  if (tail.endsWith('~')) {
+    return `\x1b[${tail.slice(0, -1)};${modifier}~`
+  }
+
+  return `\x1b[1;${modifier}${tail}`
+}
+
+/**
  * Decode one win32-input-mode record into the keypresses the legacy VT
  * encoding of the same key would have produced, by translating it to that
  * encoding and reusing parseKeypress. Returns null when `s` is not a record.
@@ -120,8 +147,8 @@ const WIN32_VK_SEQUENCE: Record<number, string> = {
  */
 function parseWin32InputRecord(
   s: string,
-  pendingSurrogate: string
-): { keys: ParsedKey[]; pendingSurrogate: string } | null {
+  pendingSurrogate: string | undefined
+): { keys: ParsedKey[]; pendingSurrogate: string | undefined } | null {
   const match = WIN32_INPUT_RE.exec(s)
 
   if (!match) {
@@ -140,7 +167,7 @@ function parseWin32InputRecord(
     return { keys: [], pendingSurrogate }
   }
 
-  const none = { keys: [], pendingSurrogate: '' }
+  const none = { keys: [], pendingSurrogate: undefined }
 
   if (uc > 0xffff) {
     return none
@@ -151,21 +178,13 @@ function parseWin32InputRecord(
   let sequence: string
 
   if (uc === 0) {
-    const tail = WIN32_VK_SEQUENCE[vk]
+    const vkSequence = win32VirtualKeySequence(vk, cs, alt)
 
-    if (!tail) {
+    if (!vkSequence) {
       return none
     }
 
-    const modifier = 1 + (cs & WIN32_SHIFT ? 1 : 0) + (alt ? 2 : 0) + (cs & WIN32_CTRL ? 4 : 0)
-
-    if (modifier === 1) {
-      sequence = `\x1b[${tail}`
-    } else if (tail.endsWith('~')) {
-      sequence = `\x1b[${tail.slice(0, -1)};${modifier}~`
-    } else {
-      sequence = `\x1b[1;${modifier}${tail}`
-    }
+    sequence = vkSequence
   } else {
     let char = String.fromCharCode(uc)
 
@@ -188,7 +207,7 @@ function parseWin32InputRecord(
 
   const count = Math.min(Math.max(repeat, 1), WIN32_MAX_REPEAT)
 
-  return { keys: Array.from({ length: count }, () => parseKeypress(sequence)), pendingSurrogate: '' }
+  return { keys: Array.from({ length: count }, () => parseKeypress(sequence)), pendingSurrogate: undefined }
 }
 
 function createPasteKey(content: string): ParsedKey {
@@ -428,7 +447,7 @@ export function parseMultipleKeypresses(
   const keys: ParsedInput[] = []
   let inPaste = prevState.mode === 'IN_PASTE'
   let pasteBuffer = prevState.pasteBuffer
-  let win32Surrogate = prevState._win32Surrogate ?? ''
+  let win32Surrogate = prevState._win32Surrogate
 
   for (const token of tokens) {
     if (token.type === 'sequence') {
@@ -501,7 +520,7 @@ export function parseMultipleKeypresses(
     incomplete: tokenizer.buffer(),
     pasteBuffer,
     _tokenizer: tokenizer,
-    ...(win32Surrogate ? { _win32Surrogate: win32Surrogate } : {})
+    _win32Surrogate: win32Surrogate
   }
 
   return [keys, newState]

@@ -292,7 +292,10 @@ function ModelResults({
       return [...models]
     }
 
-    return fuzzyRank(models, q, modelSearchText).map(r => r.item)
+    return fuzzyRank(models, q, model => {
+      const alias = provider.model_aliases?.[model]
+      return alias ? `${modelSearchText(model)} ${alias}` : modelSearchText(model)
+    }).map(r => r.item)
   }
 
   // Only configured providers (those with curated models) are selectable
@@ -365,6 +368,7 @@ function ModelResults({
               // real load percent inline (keyed by exact model id — remote
               // providers never match).
               const loadProgress = loadingModels[model]
+              const aliasName = provider.model_aliases?.[model]
 
               return (
                 <CommandItem
@@ -384,7 +388,16 @@ function ModelResults({
                   value={`${provider.slug}:${model}`}
                 >
                   <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
-                    <HighlightMatches foldSeparators query={search} text={model} />
+                    {aliasName ? (
+                      <>
+                        <HighlightMatches foldSeparators query={search} text={aliasName} />{' '}
+                        <span className="text-muted-foreground">
+                          (<HighlightMatches foldSeparators query={search} text={model} />)
+                        </span>
+                      </>
+                    ) : (
+                      <HighlightMatches foldSeparators query={search} text={model} />
+                    )}
                   </span>
                   {loadProgress && (
                     <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>

@@ -219,3 +219,29 @@ describe('ModelPickerDialog search ranking', () => {
     })
   })
 })
+
+describe('ModelPickerDialog aliases', () => {
+  it('finds, labels, and selects an injected alias by its real model id', async () => {
+    const onSelect = vi.fn()
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        {
+          slug: 'openrouter',
+          name: 'OpenRouter',
+          models: ['vendor/aliased-model'],
+          model_aliases: { 'vendor/aliased-model': 'fast-model' },
+          authenticated: true
+        }
+      ]
+    })
+    renderPicker({ currentModel: '', currentProvider: '', onSelect })
+
+    const alias = await screen.findByText('fast-model')
+    expect(screen.getByText('(vendor/aliased-model)')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'fast-model' } })
+    fireEvent.click(alias.closest('[cmdk-item]')!)
+
+    expect(onSelect).toHaveBeenCalledWith({ provider: 'openrouter', model: 'vendor/aliased-model' })
+  })
+})

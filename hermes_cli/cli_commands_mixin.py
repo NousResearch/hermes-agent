@@ -822,21 +822,13 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _cp(f"  {_t('shared.agent_busy', command='/resume')}")
         from cli import _sync_process_session_id
         target = _command_arg(cmd_original)
+        from hermes_cli.cli_session_browser import is_resume_browser_request, show_session_choices
+        browse = is_resume_browser_request(self, target)
         # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
         if len(target) >= 2 and target[0] + target[-1] in {"<>", "[]", '""', "''"}:
             target = target[1:-1].strip()
-        if not target:
-            _cp(f"  {_t('resume.usage')}")
-            if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot bare-number selection; must be the same list the table showed
-                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
-                # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
-                # next line instead of having to retype `/resume 3`. The list here must match the one shown
-                # by _show_recent_sessions and used for index resolution below — all three go through
-                # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
-                return
-            return _cp(f"  {_t('resume.tip_find_sessions')}")
+        if browse or not target:
+            return show_session_choices(self, reason="resume")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
         self._pending_resume_sessions = None
         if not self._session_db:
@@ -898,7 +890,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """``(session_id, meta)`` for a numbered selection, title, or id (an empty compression-chain head
         redirects to the descendant holding the transcript); None after printing why it was not resolved."""
         if target.isdigit():
-            sessions = self._list_recent_sessions(limit=10)
+            sessions = getattr(self, "_listed_resume_sessions", None)
+            if sessions is None:
+                sessions = self._list_recent_sessions(limit=10)
             index = int(target)
             if index < 1 or index > len(sessions):
                 return _cp(*_lines(_gt("resume.out_of_range", index=index)))
@@ -922,15 +916,15 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return target_id, session_meta
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
-        """Handle /sessions [list|<id_or_title>] — bare/``list`` prints the recent-sessions table;
-        an explicit target delegates to /resume so both spellings behave identically."""
+        """Browse sessions when interactive; explicit targets delegate to /resume."""
+        if getattr(self, "_agent_running", False):
+            return _cp(f"  {_t('shared.agent_busy', command='/sessions')}")
+        from hermes_cli.cli_session_browser import show_session_choices
         arg = _command_arg(cmd_original)
         if arg and arg.lower() not in {"list", "ls", "browse"}:
             self._handle_resume_command(f"/resume {arg}")
-        elif not self._session_db:
-            _cp(_db_unavailable_line())
-        elif not self._show_recent_sessions(reason="sessions"):
-            _cp(f"  {_t('sessions.none_yet')}")
+        else:
+            show_session_choices(self, reason="sessions")
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the

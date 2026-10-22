@@ -20,9 +20,12 @@ import pytest
 from agent.prompt_builder import (
     GATEWAY_MESSAGING_GUIDANCE,
     NON_MESSAGING_PLATFORM_KEYS,
-    PLATFORM_HINTS,
 )
 from agent.system_prompt import build_system_prompt_parts
+from plugins.platforms.slack.adapter_hint import PLATFORM_HINT as SLACK_HINT
+from plugins.platforms.telegram.adapter_hint import PLATFORM_HINT as TELEGRAM_HINT
+
+MESSAGING_HINTS = {"slack": SLACK_HINT, "telegram": TELEGRAM_HINT}
 
 
 def _stable_prompt(agent):
@@ -69,7 +72,7 @@ class TestMessagingPlatformsGetGuidance:
     @pytest.mark.parametrize("platform", ["slack", "telegram"])
     def test_guidance_follows_platform_hint(self, platform):
         stable = _stable_prompt(_make_agent(platform=platform))
-        hint = PLATFORM_HINTS[platform]
+        hint = MESSAGING_HINTS[platform]
         assert hint in stable
         assert stable.index(GATEWAY_MESSAGING_GUIDANCE) > stable.index(hint)
 
@@ -129,7 +132,7 @@ class TestGuidanceSurvivesPlatformHintOverride:
         )
         stable = _stable_prompt(agent)
         assert "Custom replacement slack hint." in stable
-        assert PLATFORM_HINTS["slack"] not in stable
+        assert MESSAGING_HINTS["slack"] not in stable
         assert GATEWAY_MESSAGING_GUIDANCE in stable
 
     def test_append_override_keeps_guidance(self):
@@ -138,7 +141,7 @@ class TestGuidanceSurvivesPlatformHintOverride:
             _platform_hint_overrides={"telegram": "Extra appended note."},
         )
         stable = _stable_prompt(agent)
-        assert PLATFORM_HINTS["telegram"] in stable
+        assert MESSAGING_HINTS["telegram"] in stable
         assert "Extra appended note." in stable
         assert GATEWAY_MESSAGING_GUIDANCE in stable
 

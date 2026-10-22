@@ -6459,7 +6459,7 @@ class SlackAdapter(BasePlatformAdapter):
         """
         raw = self.config.extra.get("native_mention_only_channels")
         if raw is None:
-            raw = os.getenv("SLACK_NATIVE_MENTION_ONLY_CHANNELS", "")
+            raw = _scoped_gate_env("SLACK_NATIVE_MENTION_ONLY_CHANNELS")
         return parse_chat_id_set(raw)
 
     def _slack_mention_patterns(self) -> list[re.Pattern]:

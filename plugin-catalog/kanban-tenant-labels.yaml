@@ -1,0 +1,26 @@
+name: kanban-tenant-labels
+title: Kanban Tenant Labels
+repo: https://github.com/mszenfeld/hermes-kanban-tenant-labels
+sha: "48f4f34da212c8322e50dbcbbd4dfd2936ca6d41"
+version: "0.3.0"
+description: "Shows each Kanban card's tenant as a colored label on the card in Hermes Desktop, with automatic colors and pinned colors in Settings. Disclosure — the Desktop SDK has no Kanban card slot, so while the Kanban page is open the plugin adds one <span> to each card tile and watches the Kanban page with a MutationObserver; it reads task ids, titles and tenants from the bundled Kanban plugin's board snapshots in the SDK's queryClient; it stores pinned colors in ctx.storage; no network requests, no backend, no telemetry; no background processes beyond a 750 ms route check while Desktop runs."
+maintainer: mszenfeld
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/mszenfeld/hermes-kanban-tenant-labels#readme
+image: https://raw.githubusercontent.com/mszenfeld/hermes-kanban-tenant-labels/48f4f34da212c8322e50dbcbbd4dfd2936ca6d41/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mszenfeld/hermes-kanban-tenant-labels/48f4f34da212c8322e50dbcbbd4dfd2936ca6d41/docs/media/board-light.png
+  - https://raw.githubusercontent.com/mszenfeld/hermes-kanban-tenant-labels/48f4f34da212c8322e50dbcbbd4dfd2936ca6d41/docs/media/board-dark.png
+  - https://raw.githubusercontent.com/mszenfeld/hermes-kanban-tenant-labels/48f4f34da212c8322e50dbcbbd4dfd2936ca6d41/docs/media/settings.png
+readme: true
+platforms: []
+known_issues:
+  - "Desktop-only package: leave its Agent switch off. With the Agent half enabled, agent.log reports a missing __init__.py on every start."
+  - "Relies on the Kanban card markup and query keys of Hermes Desktop. After a Desktop update, cards can stop getting labels until the plugin is updated; the board keeps working."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

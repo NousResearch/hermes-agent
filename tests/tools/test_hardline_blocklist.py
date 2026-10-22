@@ -70,6 +70,13 @@ _HARDLINE_BLOCK = [
     "rm -rf ${HOME}",
     'rm -rf "${HOME}"',
     "rm -fr ${HOME}",
+    # Absolute home-path spellings (2026-10-22 audit): the tilde rules did not cover
+    # the literal expanded home dir or HERMES_HOME; these fell past the floor.
+    "rm -rf /home/john",
+    "rm -rf /home/john/",
+    'rm -rf "/home/john"',
+    "rm -rf /mnt/data/hermes",
+    "rm -rf /mnt/data/hermes/*",
     # Filesystem format
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",

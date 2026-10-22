@@ -454,22 +454,32 @@ def _hook_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """History as the ``post_llm_call`` payload: text masked, live list untouched.
 
     Context-engine plugins persist from this payload — hermes-lcm's ``ingest`` writes its
-    own store from it — so it is a second write path that no transcript redaction
-    reaches. Copies are shallow (role, ids and timestamps are the same objects) and only
-    text leaves change. Nothing is masked when no hook is registered, so sessions with no
-    plugin pay no cost.
+    own store from it — so it is a second write path that no transcript redaction reaches.
+    Both text leaves are masked: ``content``, and the ``api_content`` sidecar, which holds
+    the exact bytes the wire sent including injected context, so masking only ``content``
+    leaves the credential readable one key over. The masking is ``agent.redact``'s — the
+    same helper the transcript writer calls — so a plugin store and state.db cannot drift.
+    Copies are shallow (role, ids and timestamps are the same objects) and only text leaves
+    change. Nothing is masked when no hook is registered, so sessions with no plugin pay no
+    cost.
     """
     try:
-        from agent.redact import redact_message_content
+        from agent.redact import redact_message_content, redact_message_text
         from hermes_cli.lifecycle import has_hook
-    except Exception:
+    except ImportError:
         return list(messages)
     if not has_hook("post_llm_call"):
         return list(messages)
     out: list[dict[str, Any]] = []
     for msg in messages:
-        if isinstance(msg, dict) and "content" in msg:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        if "content" in msg:
             msg = {**msg, "content": redact_message_content(msg.get("content"))}
+        sidecar = msg.get("api_content")
+        if isinstance(sidecar, str) and sidecar:
+            msg = {**msg, "api_content": redact_message_text(sidecar)}
         out.append(msg)
     return out
 

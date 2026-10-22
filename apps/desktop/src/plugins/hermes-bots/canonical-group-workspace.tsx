@@ -1,7 +1,7 @@
 import { Button, Textarea } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupRoster, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupNotices, CanonicalGroupRoster, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
@@ -48,6 +48,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const busyRef = useRef(false)
   const alive = useRef(true)
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
+  const [stopping, setStopping] = useState(false)
+  const stopPending = useRef(false)
+  // One cancellation intent survives uncertain replies; a confirmed Stop lets the next one start fresh.
+  const stopIntent = useRef<string | null>(null)
+  const [notice, setNotice] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
   const heldDraft = useRef<{ text: string; attachments: Attachment[] } | null>(null)
@@ -165,6 +170,35 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     })
   }
 
+  // Stop has its own busy state: it stays available while a Send is in flight.
+  const stop = async () => {
+    if (stopPending.current) {return}
+    stopPending.current = true
+    stopIntent.current ??= crypto.randomUUID()
+    setStopping(true)
+    setNotice('')
+    setError('')
+
+    try {
+      const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: stopIntent.current })
+      const cancelled = result?.cancelled
+
+      if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
+      stopIntent.current = null
+
+      if (alive.current) {
+        setNotice(cancelled ? labels.stopped : labels.nothingRunning)
+        await refresh()
+      }
+    } catch (e) {
+      if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
+    } finally {
+      stopPending.current = false
+
+      if (alive.current) {setStopping(false)}
+    }
+  }
+
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
     mutate(() => actCanonicalGroup(binding, action, choice))
 
@@ -179,11 +213,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         <CanonicalGroupRoster label={labels.members} labels={labels} members={state?.room.members} phases={phases} />
         <CanonicalGroupAttention driver={state?.driver_status} labels={labels} />
       </div>
-      <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
+      <Button disabled={stopping || !state?.driver_status} onClick={() => void stop()}>{labels.stop}</Button>
     </header>
-    {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
-    {error && <div role="alert">{error}</div>}
-    {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
+    <CanonicalGroupNotices error={error} labels={labels} notice={notice} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
+      readError={readError} unavailable={Boolean(state && !state.driver_status)} />
     <div className="min-h-0 flex-1 overflow-auto" role="log">
       <CanonicalGroupHistory binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events}
         members={state?.room.members} />

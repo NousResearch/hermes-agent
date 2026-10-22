@@ -1,4 +1,4 @@
-import { GlyphSpinner } from '@hermes/plugin-sdk'
+import { Button, GlyphSpinner } from '@hermes/plugin-sdk'
 
 import type { CanonicalRoomMember } from './canonical-groups'
 
@@ -104,4 +104,21 @@ export function CanonicalGroupAttention({ driver, labels }: { driver?: Canonical
   const parts = canonicalRoomAttention(driver, labels)
 
   return parts.length ? <p aria-live="polite" className="text-xs text-(--ui-text-secondary)">{parts.join(' · ')}</p> : null
+}
+
+/** The room's read, action and driver notices, above its log. */
+export function CanonicalGroupNotices({ readError, error, notice, unavailable, labels, onRefresh }: {
+  readError: string
+  error: string
+  notice: string
+  unavailable: boolean
+  labels: { refresh: string; driverUnavailable: string }
+  onRefresh: () => void
+}) {
+  return <>
+    {readError && <div role="alert">{readError}<Button onClick={onRefresh}>{labels.refresh}</Button></div>}
+    {error && <div role="alert">{error}</div>}
+    {notice && <p aria-live="polite">{notice}</p>}
+    {unavailable && <p>{labels.driverUnavailable}</p>}
+  </>
 }

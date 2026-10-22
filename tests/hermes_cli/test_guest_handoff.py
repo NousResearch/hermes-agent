@@ -44,6 +44,7 @@ class ClaimPortal(FakePortal):
         self.claims: list[dict] = []
         self.refreshes = 0
         self.locks_held_during_claim: list[bool] = []
+        self.on_claim = None                    # side effect run as each claim arrives
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/anonymous/claim":
@@ -51,6 +52,8 @@ class ClaimPortal(FakePortal):
             self.locks_held_during_claim.append(guest_handoff._holds_auth_locks())
             self.claims.append({"body": json.loads(request.content),
                                 "authorization": request.headers.get("authorization")})
+            if self.on_claim:
+                self.on_claim()
             answer = self.claim_answers.pop(0) if self.claim_answers else httpx.Response(200, json=CLAIMED)
             if isinstance(answer, Exception):
                 raise answer
@@ -68,7 +71,10 @@ class ClaimPortal(FakePortal):
 def portal(monkeypatch, tmp_path):
     from hermes_cli import guest_handoff
     fake = install_portal(monkeypatch, tmp_path, ClaimPortal())
-    monkeypatch.setattr(guest_handoff, "_sleep", lambda _s: None)
+    # A runner's backoff sleep moves the handoff's own clock instead of the wall clock.
+    skew = [0.0]
+    monkeypatch.setattr(guest_handoff, "_now", lambda: time.time() + skew[0])
+    monkeypatch.setattr(guest_handoff, "_sleep", lambda s: skew.__setitem__(0, skew[0] + s))
     monkeypatch.setattr(guest_handoff, "_local", threading.local())
     # The settle reads the recommended default from the Portal; that is not under test here.
     monkeypatch.setattr("hermes_cli.anon_auth.settle_after_upgrade", lambda _s: {"model": "", "changed": False})
@@ -187,7 +193,8 @@ def _err(status, code, **headers):
 ], ids=lambda v: v if isinstance(v, str) else None)
 def test_each_claim_answer_lands_in_its_state(portal, monkeypatch, answer, state, probably_moved):
     from hermes_cli import guest_handoff
-    monkeypatch.setattr(guest_handoff, "SYNC_BUDGET_SECONDS", 0.0)   # one attempt, no in-run retry
+    monkeypatch.setattr(guest_handoff, "SYNC_BUDGET_SECONDS", 3.0)   # one attempt: every retry waits longer
+    monkeypatch.setattr(guest_handoff, "_BACKOFF_SECONDS", (60.0,))
     anon = _mint_guest()
     portal.claim_answers = [answer]
     _persist(_account())
@@ -244,7 +251,7 @@ def test_retries_give_up_after_the_cap(portal, monkeypatch):
 
 def test_a_retry_only_claims_into_the_destination_account(portal, monkeypatch):
     from hermes_cli import guest_handoff
-    monkeypatch.setattr(guest_handoff, "SYNC_BUDGET_SECONDS", 0.0)
+    monkeypatch.setattr(guest_handoff, "_BACKOFF_SECONDS", (60.0,))
     portal.claim_answers = [_err(409, "account_busy")]
     _mint_guest()
     _persist(_account())
@@ -314,7 +321,104 @@ def test_a_surface_lock_defers_the_claim_until_it_is_released(portal):
         _persist(_account())
         assert portal.claims == [] and _only_record()["state"] == "pending"
     assert len(portal.claims) == 1
-    assert batch.account_email == "sid@example.com" and batch.settled == {"model": "", "changed": False}
+    assert batch.account_email == "sid@example.com"
+
+
+# --- Review round 1: the apps never land in an account the record is not bound to ----------------
+
+def _pending_for(monkeypatch, account) -> None:
+    """A saved account and its pending record, the claim not yet run."""
+    from hermes_cli import auth_nous, guest_handoff
+    _mint_guest()
+    monkeypatch.setattr(auth_nous, "drain", lambda: None)
+    _persist(account)
+    monkeypatch.setattr(auth_nous, "drain", guest_handoff.drain)
+    assert _only_record()["state"] == "pending"
+
+
+def test_a_sign_in_racing_the_claim_never_moves_apps_into_it(portal, monkeypatch):
+    from hermes_cli import auth_nous, guest_handoff
+    _pending_for(monkeypatch, _account())
+    real_bearer = guest_handoff._bearer
+
+    def bearer_after_another_sign_in(**kw):
+        monkeypatch.setattr(auth_nous, "drain", lambda: None)
+        _persist(_account(sub="intruder", refresh="rt_intruder"))   # lands after the bound check
+        return real_bearer(**kw)
+
+    monkeypatch.setattr(guest_handoff, "_bearer", bearer_after_another_sign_in)
+    guest_handoff.drain()
+    assert portal.claims == []
+    assert _only_record()["state"] == "pending" and _only_record()["attempts"] == 0
+
+
+def test_a_destination_rebound_before_the_attempt_is_not_claimed_into_the_old_account(portal, monkeypatch):
+    from hermes_cli import guest_handoff
+    _pending_for(monkeypatch, _account())
+    real_update, fired = guest_handoff._update, []
+
+    def sibling_wins_the_records_lock_first(path, key, change):
+        if not fired:   # the runner's first locked write; a sibling's rebind lands just before it
+            fired.append(True)
+            guest_handoff.note_replacement(
+                {"auth_method": "anonymous", "anon_token": "anon_0001"}, _account(sub="sibling_acct"))
+        return real_update(path, key, change)
+
+    monkeypatch.setattr(guest_handoff, "_update", sibling_wins_the_records_lock_first)
+    guest_handoff.drain()
+    assert portal.claims == []
+    assert _only_record()["destination"] == "sibling_acct" and _only_record()["state"] == "pending"
+
+
+def test_an_attempt_left_at_the_cap_by_a_crash_sends_nothing(portal, monkeypatch):
+    from hermes_cli import guest_handoff
+    _pending_for(monkeypatch, _account())
+    guest_handoff._update(guest_handoff._records_path(), next(iter(_records())),
+                          lambda r: {**r, "state": "retrying", "attempts": guest_handoff.MAX_ATTEMPTS})
+    guest_handoff.drain()
+    assert portal.claims == []
+    assert _only_record()["state"] == "failed" and _only_record()["error"] == "retries_exhausted"
+
+
+def test_a_slow_refusal_at_the_budget_edge_starts_no_refresh_or_second_claim(portal, monkeypatch):
+    from hermes_cli import guest_handoff
+    clock = [1000.0]
+    monkeypatch.setattr(guest_handoff.time, "monotonic", lambda: clock[0])
+    portal.claim_answers = [_err(401, "invalid_token")]
+    portal.on_claim = lambda: clock.__setitem__(0, clock[0] + guest_handoff.SYNC_BUDGET_SECONDS + 5)
+    _mint_guest()
+    _persist(_account())
+    assert len(portal.claims) == 1 and portal.refreshes == 0
+    assert _only_record()["state"] == "pending" and _only_record()["attempts"] == 0
+
+
+def test_corrupt_records_neither_block_a_sign_in_nor_stop_token_renewal(portal, monkeypatch):
+    from hermes_cli import guest_handoff, nous_auth_keepalive
+    path = guest_handoff._records_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    renewed = []
+    monkeypatch.setattr(nous_auth_keepalive, "_refresh_selected_pool_entry", lambda **_kw: renewed.append(1) or True)
+    nous_auth_keepalive.refresh_nous_auth_keepalive_once()
+    assert renewed == [1]
+
+    _mint_guest()
+    _persist(_account())
+    assert _only_record()["state"] == "claimed"
+    assert path.with_suffix(".json.corrupt").read_text(encoding="utf-8") == "{not json"
+
+
+def test_a_move_bound_to_another_account_reads_as_paused(portal, monkeypatch):
+    from hermes_cli import guest_handoff
+    portal.claim_answers = [_err(409, "account_busy")]
+    monkeypatch.setattr(guest_handoff, "_BACKOFF_SECONDS", (60.0,))
+    _mint_guest()
+    _persist(_account())
+    assert guest_handoff.handoff_status()["state"] == "retrying"
+    _persist(_account(sub="someone_else", refresh="rt_other"))
+    status = guest_handoff.handoff_status()
+    assert status["state"] == "paused"
+    assert "another Nous account" in guest_handoff.status_lines(status)[0]
 
 
 def test_auth_status_shows_what_moved(portal, capsys):

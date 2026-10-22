@@ -16,6 +16,9 @@ shown afterwards. Sign-in code knows nothing about this; two halves keep it that
   retry left by an earlier process). The synchronous run is bounded (``SYNC_BUDGET_SECONDS``) so a
   CLI or the desktop sees a result; what is still retrying resumes on a later run.
 
+The apps only ever go to the record's destination: every attempt is reserved in one locked
+read-modify-write that also proves the Bearer about to be sent belongs to that destination.
+
 User copy never says guest / anonymous / claim.
 """
 
@@ -35,6 +38,8 @@ from typing import Any, Iterator, Optional
 logger = logging.getLogger("hermes_cli.auth")
 
 IDLE, PENDING, RETRYING, CLAIMED, GONE, FAILED = "idle", "pending", "retrying", "claimed", "gone", "failed"
+# Read side only: an active record bound to an account this profile no longer holds.
+PAUSED = "paused"
 _ACTIVE = frozenset({PENDING, RETRYING})
 HANDOFF_FILENAME = "guest_handoff.json"
 SYNC_BUDGET_SECONDS = 10.0
@@ -64,19 +69,9 @@ _sleep = time.sleep
 
 @dataclass
 class HandoffBatch:
-    """What one :func:`drain` did: each record it ran, and the config settle when a replacement on
-    this thread asked for one (``anon_auth.settle_after_upgrade``)."""
+    """What one :func:`drain` did: the public view of each record it ran."""
 
     results: list[dict[str, Any]] = field(default_factory=list)
-    settled: Optional[dict[str, Any]] = None
-
-    def settle(self, account_state: dict[str, Any]) -> dict[str, Any]:
-        """The settle this drain ran, else run it now (a sign-in that replaced no guest still moves
-        a config the free tier's route left behind)."""
-        if self.settled is not None:
-            return self.settled
-        from hermes_cli.anon_auth import settle_after_upgrade
-        return settle_after_upgrade(account_state)
 
     @property
     def account_email(self) -> Optional[str]:
@@ -112,10 +107,18 @@ def _lock(path: Path, holder: threading.local, timeout_seconds: float) -> Iterat
         yield
 
 
-def _load(path: Path) -> dict[str, Any]:
+def _load(path: Path, *, heal: bool = False) -> dict[str, Any]:
+    """The records file. An unparseable one reads as empty; *heal* (writers, under the records lock)
+    moves it aside to ``.corrupt`` first, so a bad file neither blocks a sign-in nor loses its data."""
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
+        data = {}
+    except ValueError:
+        logger.warning("Free-tier handoff records at %s are unreadable%s", path,
+                       "; moved aside to .corrupt" if heal else "")
+        if heal:
+            path.replace(path.with_suffix(".json.corrupt"))
         data = {}
     records = data.get("records") if isinstance(data, dict) else None
     return {"_schema": 1, "records": records if isinstance(records, dict) else {}}
@@ -127,10 +130,11 @@ def _save(path: Path, data: dict[str, Any]) -> None:
 
 
 def _update(path: Path, key: str, change) -> Optional[dict[str, Any]]:
-    """Apply *change(record) -> record* to one record under the records lock (innermost lock: it is
-    taken under the auth-store locks by the hook, and never holds another lock itself)."""
+    """Apply *change(record) -> record | None* to one record under the records lock and return what
+    was written (None: nothing written). The innermost lock: the hook takes it under the auth-store
+    locks, and it never holds another lock itself."""
     with _lock(path.with_suffix(".lock"), _records_lock_holder, 15.0):
-        data = _load(path)
+        data = _load(path, heal=True)
         record = change(data["records"].get(key))
         if record is not None:
             record["updated_at"] = _iso(_now())
@@ -139,16 +143,10 @@ def _update(path: Path, key: str, change) -> Optional[dict[str, Any]]:
         return record
 
 
-def _destination(state: dict[str, Any]) -> Optional[str]:
+def _subject(access_token: Any) -> Optional[str]:
     from hermes_cli.auth_constants import _decode_jwt_claims
-    sub = _decode_jwt_claims(state.get("access_token")).get("sub")
+    sub = _decode_jwt_claims(access_token).get("sub")
     return str(sub) if sub else None
-
-
-def _queued() -> set[str]:
-    if not hasattr(_local, "queued"):
-        _local.queued = set()
-    return _local.queued
 
 
 # --- The hook: no network, runs under the writer's locks ------------------------------------------
@@ -169,14 +167,14 @@ def note_replacement(previous: Any, new: Any) -> None:
     from hermes_cli.anon_auth import is_guest_state
     if not is_guest_state(previous) or is_guest_state(new) or not isinstance(new, dict):
         return
-    anon_token = previous.get("anon_token")
-    if not isinstance(anon_token, str) or not anon_token or not new.get("access_token"):
-        return
+    anon_token, destination = previous.get("anon_token"), _subject(new.get("access_token"))
+    if not isinstance(anon_token, str) or not anon_token or not destination:
+        return  # no account subject: nothing a claim could ever be proven to land in
     try:
         path = _records_path()
     except RuntimeError:
         return  # no Hermes home yet (pre-setup): there is no shared store either
-    home, destination = _home_key(), _destination(new)
+    home = _home_key()
 
     def change(record: Optional[dict[str, Any]]) -> dict[str, Any]:
         if record is None:
@@ -189,7 +187,6 @@ def note_replacement(previous: Any, new: Any) -> None:
         return record
 
     record = _update(path, _token_key(anon_token), change)
-    _queued().add(home)
     logger.info("Nous sign-in replaced the free tier; handoff %s (%s)", record["state"],
                 _token_key(anon_token)[:8])
 
@@ -237,33 +234,28 @@ def deferred() -> Iterator[HandoffBatch]:
         _local.holds -= 1
     ran = drain()
     if ran is not None:
-        batch.results, batch.settled = ran.results, ran.settled
+        batch.results = ran.results
 
 
 def drain() -> Optional[HandoffBatch]:
-    """Run this profile's due records now, then settle the config once when a replacement on this
-    thread asked for it. None when a lock or a :func:`deferred` block on this thread holds it back."""
+    """Run this profile's due records now. None when a lock or a :func:`deferred` block on this
+    thread holds it back."""
     if getattr(_local, "holds", 0) or getattr(_local, "running", False) or _holds_auth_locks():
         return None
-    home = _home_key()
-    settle = home in _queued()
-    _queued().discard(home)
     _local.running = True
     try:
-        batch = HandoffBatch(results=run_due(budget_seconds=SYNC_BUDGET_SECONDS))
+        return HandoffBatch(results=run_due(budget_seconds=SYNC_BUDGET_SECONDS))
     finally:
         _local.running = False
-    if settle:
-        from hermes_cli.anon_auth import is_guest_state, settle_after_upgrade
-        from hermes_cli.auth import get_provider_auth_state
-        account = get_provider_auth_state("nous")
-        if isinstance(account, dict) and not is_guest_state(account):
-            batch.settled = settle_after_upgrade(account)
-    return batch
+
+
+def _remaining(deadline: float) -> float:
+    return deadline - time.monotonic()
 
 
 def run_due(*, budget_seconds: float = SYNC_BUDGET_SECONDS) -> list[dict[str, Any]]:
-    """Attempt every active, due record of this profile. Returns their public views."""
+    """Attempt every active, due record of this profile within *budget_seconds*. Returns their public
+    views; a record the budget did not reach stays as it is for a later run."""
     try:
         path = _records_path()
     except RuntimeError:
@@ -273,7 +265,13 @@ def run_due(*, budget_seconds: float = SYNC_BUDGET_SECONDS) -> list[dict[str, An
            if record.get("state") in _ACTIVE and home in record.get("profiles", ())
            and float(record.get("next_attempt_at") or 0) <= now]
     deadline = time.monotonic() + budget_seconds
-    return [view for key in due if (view := _run_one(path, key, deadline)) is not None]
+    results = []
+    for key in due:
+        if _remaining(deadline) <= 0:
+            break
+        if (view := _run_one(path, key, deadline)) is not None:
+            results.append(view)
+    return results
 
 
 def _account_bound_to(record: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -285,82 +283,110 @@ def _account_bound_to(record: dict[str, Any]) -> Optional[dict[str, Any]]:
     if not isinstance(account, dict) or is_guest_state(account) or not account.get("access_token"):
         return None
     destination = record.get("destination")
-    return account if not destination or _destination(account) == destination else None
+    return account if destination and _subject(account["access_token"]) == destination else None
 
 
 def _run_one(path: Path, key: str, deadline: float) -> Optional[dict[str, Any]]:
     record = _load(path)["records"].get(key)
     if record is None or _account_bound_to(record) is None:
-        return None
+        return None  # a cheap skip; the binding that counts is proven in ``_reserve``
     # The claim lock spans read -> claim -> write so two processes never claim one record twice.
     # Order: claim lock, then the auth-store locks (token refresh), then the records lock. A lock
     # timeout anywhere in here is contention, not a verdict: the record stays as it is for a later run.
     try:
-        with _lock(path.with_name(HANDOFF_FILENAME + ".claim.lock"), _claim_lock_holder, CLAIM_TIMEOUT_SECONDS + 5):
+        with _lock(path.with_name(HANDOFF_FILENAME + ".claim.lock"), _claim_lock_holder,
+                   max(0.1, _remaining(deadline))):
             return _claim_locked(path, key, deadline)
     except TimeoutError:
         return None
 
 
-def _claim_locked(path: Path, key: str, deadline: float) -> Optional[dict[str, Any]]:
-    reauthed = False
-    while True:
-        record = _load(path)["records"].get(key)
-        account = _account_bound_to(record) if record else None
-        if record is None or record["state"] not in _ACTIVE or account is None:
-            return public_view(record) if record else None
-        prior_attempts = int(record.get("attempts") or 0)
+def _reserve(path: Path, key: str, bearer_subject: Optional[str]) -> Optional[tuple[dict[str, Any], int]]:
+    """Reserve one attempt in a single locked read-modify-write: the record is still active and due,
+    under the attempt cap, and bound to the very account whose Bearer is about to be sent. Returns
+    ``(record, attempts before this one)``, or None when nothing may be sent now. A record found at
+    the cap (a crash after its last send) is closed as Failed instead."""
+    reserved: list[int] = []
+
+    def change(record: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        if (record is None or record["state"] not in _ACTIVE
+                or float(record.get("next_attempt_at") or 0) > _now()
+                or not bearer_subject or record.get("destination") != bearer_subject):
+            return None
+        prior = int(record.get("attempts") or 0)
+        if prior >= MAX_ATTEMPTS:
+            return {**record, "state": FAILED, "error": "retries_exhausted"}
+        reserved.append(prior)
         # Counted before the request leaves: an answer lost to a crash still counts as an attempt.
-        _update(path, key, lambda r: {**r, "attempts": prior_attempts + 1, "last_attempt_at": _iso(_now())})
-        outcome, payload, retry_after = _attempt(record["anon_token"], account, force=reauthed)
-        logger.info("Free-tier handoff attempt %d (%s): %s", prior_attempts + 1, key[:8],
-                    payload.get("error") or outcome)
-        if outcome == _REAUTH and not reauthed:
+        return {**record, "attempts": prior + 1, "last_attempt_at": _iso(_now())}
+
+    record = _update(path, key, change)
+    return (record, reserved[0]) if reserved else None
+
+
+def _claim_locked(path: Path, key: str, deadline: float) -> Optional[dict[str, Any]]:
+    from hermes_cli.auth import get_provider_auth_state
+    from hermes_cli.auth_constants import AuthError
+    force = False
+    while True:
+        current = _load(path)["records"].get(key)
+        if current is None or _remaining(deadline) <= 0:
+            return public_view(current) if current else None
+        try:
+            bearer = _bearer(force=force, timeout=_remaining(deadline))
+        except AuthError as exc:
+            logger.info("Free-tier handoff (%s): account token unavailable (%s)", key[:8], exc.code)
+            return public_view(current)
+        reservation = _reserve(path, key, _subject(bearer))
+        if reservation is None:
+            return public_view(_load(path)["records"].get(key) or current)
+        record, prior = reservation
+        outcome, payload, retry_after = _post(
+            record["anon_token"], bearer, get_provider_auth_state("nous") or {},
+            timeout=min(CLAIM_TIMEOUT_SECONDS, max(0.1, _remaining(deadline))))
+        logger.info("Free-tier handoff attempt %d (%s): %s", prior + 1, key[:8], payload.get("error") or outcome)
+        if outcome == _REAUTH and not force:
             # A refused bearer never reached the claim, so it is not an attempt.
-            _update(path, key, lambda r: {**r, "attempts": prior_attempts})
-            reauthed = True
+            _update(path, key, lambda r: {**r, "attempts": prior} if r.get("attempts") == prior + 1 else None)
+            force = True
             continue
-        record = _update(path, key, lambda r: _apply(r, outcome, payload, retry_after, prior_attempts))
+        record = _update(path, key, lambda r: _apply(r, outcome, payload, retry_after, prior))
         if outcome == _CLAIMED and payload.get("cohort_carried") is True:
-            _refresh_account_token()
+            _refresh_account_token(timeout=max(1.0, _remaining(deadline)))
         wait = max(0.0, float(record.get("next_attempt_at") or 0) - _now())
-        if record["state"] != RETRYING or time.monotonic() + wait > deadline:
+        if record["state"] != RETRYING or wait >= _remaining(deadline):
             return public_view(record)
         _sleep(wait)
 
 
-def _bearer(*, force: bool) -> str:
+def _bearer(*, force: bool, timeout: float) -> str:
     from hermes_cli import auth
     if force:
         with auth._RESOLVE_TOKEN_CACHE_LOCK:
             auth._RESOLVE_TOKEN_CACHE.pop(_home_key(), None)
-        return auth.resolve_nous_access_token(refresh_skew_seconds=_FORCE_REFRESH_SKEW)
-    return auth.resolve_nous_access_token()
+        return auth.resolve_nous_access_token(timeout_seconds=timeout, refresh_skew_seconds=_FORCE_REFRESH_SKEW)
+    return auth.resolve_nous_access_token(timeout_seconds=timeout)
 
 
-def _refresh_account_token() -> None:
+def _refresh_account_token(*, timeout: float) -> None:
     """The account's token picks up the carried cohort only on its next mint, so mint it now."""
     from hermes_cli.auth_constants import AuthError
     try:
-        _bearer(force=True)
+        _bearer(force=True, timeout=timeout)
     except AuthError as exc:
         logger.info("Free-tier handoff: account token refresh after the move failed: %s", exc)
 
 
-def _attempt(anon_token: str, account: dict[str, Any], *, force: bool) -> tuple[str, dict[str, Any], Optional[float]]:
+def _post(anon_token: str, bearer: str, account: dict[str, Any], *,
+          timeout: float) -> tuple[str, dict[str, Any], Optional[float]]:
     from agent.retry_utils import parse_retry_after_seconds
     from hermes_cli.anon_auth import _anon_headers
     from hermes_cli.auth import _nous_portal_base_url, _resolve_verify
-    from hermes_cli.auth_constants import AuthError, httpx
+    from hermes_cli.auth_constants import httpx
     from hermes_cli.auth_nous import _nous_http_client
-    try:
-        bearer = _bearer(force=force)
-    except AuthError as exc:
-        return (_RETRY, {"error": str(exc.code or "account_token_unavailable")},
-                exc.retry_after if exc.retryable else None)
     verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=account)
     try:
-        with _nous_http_client(CLAIM_TIMEOUT_SECONDS, verify) as client:
+        with _nous_http_client(timeout, verify) as client:
             response = client.post(
                 f"{_nous_portal_base_url(account).rstrip('/')}/api/anonymous/claim",
                 headers={**_anon_headers(), "authorization": f"Bearer {bearer}"}, json={"token": anon_token})
@@ -428,7 +454,8 @@ def public_view(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def handoff_status() -> dict[str, Any]:
-    """This profile's latest handoff, or ``{"state": "idle"}``. A pure read (no lock, no network)."""
+    """This profile's latest handoff, or ``{"state": "idle"}``. A pure read (no lock, no network). An
+    active move bound to an account this profile no longer holds reads as ``paused``."""
     try:
         records = _load(_records_path())["records"].values()
     except RuntimeError:
@@ -437,7 +464,11 @@ def handoff_status() -> dict[str, Any]:
     mine = [r for r in records if home in r.get("profiles", ())]
     if not mine:
         return {"state": IDLE}
-    return public_view(max(mine, key=lambda r: str(r.get("updated_at") or "")))
+    latest = max(mine, key=lambda r: str(r.get("updated_at") or ""))
+    view = public_view(latest)
+    if latest.get("state") in _ACTIVE and _account_bound_to(latest) is None:
+        view["state"] = PAUSED
+    return view
 
 
 def status_lines(status: dict[str, Any]) -> list[str]:
@@ -447,6 +478,9 @@ def status_lines(status: dict[str, Any]) -> list[str]:
     moved, dropped = status.get("moved_toolkits") or [], status.get("dropped_toolkits") or []
     if state in _ACTIVE:
         return ["Moving your free-tier apps to this account; Hermes keeps trying in the background."]
+    if state == PAUSED:
+        return ["Your free-tier apps are set to move to another Nous account. Sign in to that account "
+                "to finish moving them."]
     if state == FAILED:
         return [f"Your free-tier apps could not be moved ({status.get('error')})."]
     if state == GONE:

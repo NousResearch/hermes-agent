@@ -158,8 +158,12 @@ def refresh_nous_auth_keepalive_once(
 
     with launch_profile_scope_if_multiplexed():
         # A free-tier handoff an earlier run left retrying resumes here (next boot, then each tick).
+        # Its failure must not stop the token renewal below; the record stays for the next tick.
         from hermes_cli.guest_handoff import drain
-        drain()
+        try:
+            drain()
+        except Exception:
+            logger.warning("Nous auth keepalive: free-tier handoff check failed", exc_info=True)
         pool_result = _refresh_selected_pool_entry(
             min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
         )

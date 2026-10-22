@@ -302,7 +302,7 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
     """
     from hermes_cli.web_server_profiles import _profile_scope
     from hermes_cli.auth import _poll_for_token, persist_nous_credentials, refresh_nous_oauth_from_state
-    from hermes_cli import guest_handoff
+    from hermes_cli import anon_auth, guest_handoff
     import httpx
     portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
 
@@ -354,7 +354,7 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
                     return
                 persist_nous_credentials(full_state)
         # A config left on the free tier's route by a retired identity still has to move.
-        settled = handoff.settle(full_state)
+        settled = anon_auth.settle_after_upgrade(full_state)
     with _oauth_sessions_lock:
         sess["account_email"] = handoff.account_email
         sess["model"] = settled.get("model") or None

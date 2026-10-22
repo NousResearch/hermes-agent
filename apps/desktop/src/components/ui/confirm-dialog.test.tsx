@@ -47,4 +47,20 @@ describe('ConfirmDialog secondary action', () => {
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))
     expect(onSecondary).not.toHaveBeenCalled()
   })
+
+  it.each(['Cancel', 'Remove from sidebar'])(
+    'preserves keyboard activation of %s instead of confirming',
+    async label => {
+      const { onConfirm } = renderWithSecondary()
+      const button = await screen.findByRole('button', { name: label })
+      button.focus()
+
+      for (const key of ['Enter', ' ']) {
+        // Native button activation must remain uncancelled; a dialog shortcut
+        // must not turn the focused Cancel/secondary action into confirmation.
+        expect(fireEvent.keyDown(button, { key })).toBe(true)
+        expect(onConfirm).not.toHaveBeenCalled()
+      }
+    }
+  )
 })

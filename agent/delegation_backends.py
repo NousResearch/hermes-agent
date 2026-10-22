@@ -15,7 +15,7 @@ session context, else from the parent agent's session id.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Optional
 
 from agent.delegation_registry import DEFAULT_BACKEND, _registry, backend_status, configured_backend
@@ -108,3 +108,21 @@ def session_delegation_config(config: Mapping[str, Any], parent_agent: Any) -> M
     if override is None or override == configured_backend(config):
         return config
     return {**config, "backend": override}
+
+
+class DelegationBackends:
+    """``ctx.delegation_backends``: this API for plugins, as plain data. It is a host remote facade, so a plugin
+    running under ``plugins.isolation: host`` lists and switches the owner process's backends and sessions, not
+    copies in its own process."""
+
+    def list_backends(self) -> list[dict[str, Any]]:
+        return [asdict(info) for info in list_backends()]
+
+    def get_session_backend(self, session_key: str) -> Optional[str]:
+        return get_session_backend(session_key)
+
+    def set_session_backend(self, session_key: str, name: Optional[str]) -> None:
+        set_session_backend(session_key, name)
+
+    def set_global_backend(self, name: str, session_key: str = "") -> None:
+        set_global_backend(name, session_key=session_key)

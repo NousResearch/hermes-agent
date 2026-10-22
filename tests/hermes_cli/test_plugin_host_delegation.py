@@ -29,6 +29,12 @@ class Hosted(DelegationProvider):
 
 def register(ctx):
     ctx.register_delegation_provider(Hosted())
+
+    def switch(raw_args, session_key=""):
+        names = [b["name"] for b in ctx.delegation_backends.list_backends()]
+        ctx.delegation_backends.set_session_backend(session_key, raw_args.strip())
+        return f"{os.getpid()} {','.join(names)} -> {ctx.delegation_backends.get_session_backend(session_key)}"
+    ctx.register_command("deleg-switch", switch)
 '''
 
 
@@ -69,6 +75,16 @@ def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_
         refused, err = resolve_task_routes([{"goal": "refused by the hosted plugin", "option": "b"}], config, None)
         assert err is None and "b is closed" in refused[0].error
         assert json.dumps(params) == json.dumps(schema_extension(config)[0])
+
+        # The /delegation seam acts on THIS process's sessions (ctx.delegation_backends is a host remote facade).
+        from agent.delegation_backends import get_session_backend, set_session_backend
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        out = invoke_plugin_command(plugins_mod.get_plugin_command_handler("deleg-switch"), "default",
+                                    session_key="chat-a")
+        pid, listed = out.split(" ", 1)
+        assert int(pid) != os.getpid() and listed == "default,hosted-map -> default"
+        assert get_session_backend("chat-a") == "default"
+        set_session_backend("chat-a", None)
     finally:
         manager.unload()
         manager._plugin_host().shutdown()

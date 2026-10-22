@@ -389,6 +389,13 @@ class PluginContext:
         from agent.subagent_lifecycle import SubagentLifecycleService, get_active_subagent_parent
         return SubagentLifecycleService(get_active_subagent_parent)
 
+    @cached_property
+    def delegation_backends(self) -> Any:
+        """``agent.delegation_backends.DelegationBackends``: list delegation backends and switch them per session or
+        globally (a ``/delegation`` command); a host remote facade, so it acts on the owner process."""
+        from agent.delegation_backends import DelegationBackends
+        return DelegationBackends()
+
     @property
     def profile_name(self) -> str:
         """Active profile name (``"default"``, the ``~/.hermes/profiles/<name>`` id, or ``"custom"``),

@@ -162,6 +162,10 @@ _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 # input[].id / function names longer than this are a non-retryable 400 ("string too
 # long"). Codex message ids can run 400+ chars; Hermes ``msg_...`` ids stay under the cap.
 _MAX_RESPONSES_ITEM_ID_LENGTH = 64
+# Leave enough stack headroom for the preflight callers and Python's container handling.
+# External tool schemas and replayed summaries are untrusted payload shapes, so reject malformed
+# nesting before the sanitizer can exhaust the interpreter stack (#137058).
+_MAX_HARMONY_STRUCTURE_DEPTH = 256
 
 # Provider-executed built-in tools: declared by ``type`` alone, run server-side,
 # reported via the ``*_call`` output items below; preflight passes them through.
@@ -243,20 +247,27 @@ def _neutralize_harmony_tokens(text: str) -> str:
     return "".join(result) + text[cursor:]
 
 
-def _neutralize_harmony_structure(value: Any) -> Any:
+def _neutralize_harmony_structure(value: Any, *, _depth: int = 0) -> Any:
     """Neutralize JSON-like values (tuples → lists). A reserved token in an object *key* is
     rejected, not rewritten — renaming could desync a tool schema from the executor contract."""
+    if _depth > _MAX_HARMONY_STRUCTURE_DEPTH:
+        raise ValueError(
+            "Codex Responses payload nesting exceeds the maximum supported depth."
+        )
     if isinstance(value, str):
         return _neutralize_harmony_tokens(value)
     if isinstance(value, (list, tuple)):
-        return [_neutralize_harmony_structure(item) for item in value]
+        return [_neutralize_harmony_structure(item, _depth=_depth + 1) for item in value]
     if isinstance(value, dict):
         if any(isinstance(key, str) and _neutralize_harmony_tokens(key) != key for key in value):
             raise ValueError(
                 "Reserved Harmony tokens in a JSON object key cannot be "
                 "neutralized without changing its contract."
             )
-        return {key: _neutralize_harmony_structure(item) for key, item in value.items()}
+        return {
+            key: _neutralize_harmony_structure(item, _depth=_depth + 1)
+            for key, item in value.items()
+        }
     return value
 
 

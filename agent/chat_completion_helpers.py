@@ -2724,6 +2724,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # Intake artifacts survive Relay failure, suppressed/callback-less delivery and retries.
         self._chat_images_seen: set[str] = set()
         self._chat_image_markers: list[str] = []
+        self._chat_content_parts: list[str] = []
+        self._chat_reasoning_parts: list[str] = []
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
         self.last_chunk_time = {"t": time.time()}
         self.prompt_progress = {"progress": None, "t": 0.0}  # latest llama-server prompt progress
@@ -3036,8 +3038,8 @@ class _StreamingCall(StreamingWaitMonitor):
         """Stream a chat completions response."""
         import httpx as _httpx
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
-        content_parts: list = []
-        reasoning_parts: list = []
+        content_parts = self._chat_content_parts = []
+        reasoning_parts = self._chat_reasoning_parts = []
         # Live-display accumulator for detail-derived reasoning text: de-gluing must
         # compare against what the display actually received, not ``reasoning_parts``
         # (a provider that mirrors the same text in both fields would otherwise read
@@ -3620,6 +3622,9 @@ class _StreamingCall(StreamingWaitMonitor):
         if isinstance(e, InterruptedError):
             self.result["error"] = e
             return False
+        if getattr(self, "_writer_token", None) is not None and not self._writer_still_current("Stream recovery"):
+            self.result["error"] = InterruptedError("Stream attempt was superseded by a newer writer")
+            return False
         if self._chat_image_markers:
             # Already paid for/received an image (including save failures): never replay this request.
             self.deltas_were_sent["yes"] = True
@@ -3952,6 +3957,12 @@ class _StreamingCall(StreamingWaitMonitor):
         handler reclassifies it as undelivered (#112419)."""
         error = self.result["error"]
         _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
+        _partial_reasoning = None
+        if self._chat_image_markers:
+            # Image receipt suppresses reconnects even without a display callback.
+            # Recover the worker's raw channels, not the callback-only buffer.
+            _partial_text = "".join(self._chat_content_parts) or _partial_text
+            _partial_reasoning = "".join(self._chat_reasoning_parts) or None
         for marker in self._chat_image_markers:
             if marker not in (_partial_text or ""):
                 _partial_text = (_partial_text + "\n" if _partial_text else "") + marker
@@ -4001,7 +4012,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 "Partial stream delivered before error; returning length-truncated stub with %s chars of "
                 "recovered content so the loop can continue from where the stream died: %s",
                 len(_partial_text or ""), error)
-        _stub = _build_partial_stream_stub("assistant", _partial_text, None,
+        _stub = _build_partial_stream_stub("assistant", _partial_text, _partial_reasoning,
             getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names,
             api_mode=getattr(self.agent, "api_mode", None))
         if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:

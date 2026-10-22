@@ -50,7 +50,7 @@ def queue_admitted_turn(cli, store) -> None:
         try:
             frame = events.get_nowait()
         except queue.Empty:
-            if state.gaps != state.attached_gaps and not reattach_idle(store, state):
+            if (connection.closed or state.gaps != state.attached_gaps) and not reattach_idle(store, state):
                 return
             recover_history(store, state)
             recover_queued(cli, store)

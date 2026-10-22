@@ -466,3 +466,18 @@ def test_chat_q_says_why_a_turn_was_interrupted(capsys):
     code = asyncio.run(GatewayChatView(Client(), {"stored_session_id": SID}).run("hi", oneshot=True))
     assert code == 130
     assert "Turn interrupted (Gateway shutting down); it was not retried." in capsys.readouterr().err
+
+
+def test_idle_viewer_reconnects_after_foreground_turn_consumed_disconnect(gateway, conn):
+    from tests.hermes_cli.test_gateway_tools_notify import _idle_cli
+    gateway.lives[0].drop_on_submit = True
+    result = GatewayAgent(connection=conn, session_id=SID).run_conversation('local')
+    assert result['failure_reason'] == 'gateway_connection'
+    conn._thread.join(5)
+    assert conn.closed and conn.events.empty()
+
+    _idle_cli(conn)._drain_process_notifications('cli-idle')
+
+    assert conn.epoch == 2
+    assert conn.state(SID).subscription_id == 'sub-2'
+    assert 'prompt.submit' not in [method for method, _ in gateway.lives[1].calls]

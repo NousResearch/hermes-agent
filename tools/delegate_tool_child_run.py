@@ -436,27 +436,31 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
     serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
-    released and an endpoint-matching entry is leased by id instead (#68237)."""
+    released and an endpoint-matching entry is leased by id instead (#68237). Child work, so it runs in the child's
+    profile scope: a lease may refresh that profile's OAuth entries, and ``_swap_credential`` re-reads TLS/header
+    config for the bound endpoint."""
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
     from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
+    from tools.delegate_tool_routes import child_profile_scope
     base_url = getattr(child, "base_url", None)
-    leased_cred_id = child_pool.acquire_lease()
-    if leased_cred_id is not None:
-        with _quiet("Failed to bind child to leased credential: %s"):
-            # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
-            # mutable cursor that may already point at someone else's pick.
-            leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
-            if not _entry_serves_endpoint(leased_entry, base_url):
-                child_pool.release_lease(leased_cred_id)
-                leased_entry = next(
-                    (e for e in child_pool.entries() if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)),
-                    None,
-                )
-                leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
-            if leased_entry is not None and hasattr(child, "_swap_credential"):
-                child._swap_credential(leased_entry)
+    with child_profile_scope(child):
+        leased_cred_id = child_pool.acquire_lease()
+        if leased_cred_id is not None:
+            with _quiet("Failed to bind child to leased credential: %s"):
+                # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
+                # mutable cursor that may already point at someone else's pick.
+                leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
+                if not _entry_serves_endpoint(leased_entry, base_url):
+                    child_pool.release_lease(leased_cred_id)
+                    leased_entry = next(
+                        (e for e in child_pool.entries() if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)),
+                        None,
+                    )
+                    leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
+                if leased_entry is not None and hasattr(child, "_swap_credential"):
+                    child._swap_credential(leased_entry)
     return child_pool, leased_cred_id
 
 def _merge_late_steer(result: dict[str, Any], subagent_id: Optional[str], child: Any) -> None:
@@ -497,7 +501,8 @@ def _validate_child_output_schema(
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
         # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
         from agent.delegation_context import delegated_child_context
-        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+        from tools.delegate_tool_routes import child_profile_scope
+        with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
             _retry_result = child.run_conversation(
                 user_message=build_retry_message(_schema_errors), task_id=child_task_id,
                 stream_callback=relay_child_text,
@@ -860,10 +865,9 @@ class _ChildRun:
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            from tools.delegate_tool_routes import delegated_profile_scope
+            from tools.delegate_tool_routes import child_profile_scope
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
-            with delegated_profile_scope(getattr(child, "_delegate_profile_home", None)), \
-                    delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )

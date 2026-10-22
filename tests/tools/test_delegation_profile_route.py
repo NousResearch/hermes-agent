@@ -133,3 +133,41 @@ def test_secret_missing_from_target_profile_never_falls_back_to_the_launch_env(t
         assert get_secret("PROBE_SECRET") is None  # launch value sits in os.environ; never borrowed
     assert get_secret("PROBE_SECRET") == "launch-secret"
     assert json.loads(json.dumps(_snapshot()))["model"] == "launch-model"
+
+
+def test_profile_child_lease_and_schema_retry_run_inside_the_target_profile(two_profiles):
+    """The startup lease (``_swap_credential`` reloads TLS/headers from config) and the output_schema retry turn
+    are child work: they run as the routed profile, like the first conversation."""
+    from types import SimpleNamespace
+
+    from tools.delegate_tool_child_run import _lease_child_credential, _validate_child_output_schema
+
+    launch, coder = two_profiles
+    seen = {}
+
+    class _Pool:
+        def acquire_lease(self, credential_id=None):
+            return "e1"
+
+        def entries(self):
+            return [SimpleNamespace(id="e1", base_url="https://coder.invalid/v1", last_status=None)]
+
+    class _Child:
+        base_url, session_id, _delegate_profile_home = "https://coder.invalid/v1", "child-1", coder
+        _credential_pool, _delegate_output_schema = _Pool(), {"type": "object", "required": ["ok"]}
+
+        def _swap_credential(self, entry):
+            seen["lease"] = _snapshot()
+            return True
+
+        def run_conversation(self, user_message, **kw):
+            seen["retry"] = _snapshot()
+            return {"final_response": '{"ok": true}', "api_calls": 1}
+
+    child = _Child()
+    _lease_child_credential(child)
+    outcome = _validate_child_output_schema(child, {"final_response": "not json"}, 0, "t-1", None)
+    assert outcome.valid and outcome.retries == 1
+    assert seen["lease"]["home"] == str(coder) and seen["lease"]["model"] == "coder-model"
+    assert seen["retry"] == {"home": str(coder), "secret": "coder-secret", "model": "coder-model"}
+    assert _snapshot() == {"home": str(launch), "secret": "launch-secret", "model": "launch-model"}

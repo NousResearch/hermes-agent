@@ -135,6 +135,13 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
         reset_hermes_home_override(home_token)
 
 
+def child_profile_scope(child: Any) -> contextlib.AbstractContextManager:
+    """The profile scope a built child's own work runs in (its startup credential lease, every conversation turn
+    incl. the output_schema retry); a no-op for children without a profile route. Parent bookkeeping (registry,
+    heartbeat, progress, result assembly) stays outside it."""
+    return delegated_profile_scope(getattr(child, "_delegate_profile_home", None))
+
+
 def _profile_route(home: Path, label: Optional[str]) -> TaskRoute:
     """The profile's own primary route, resolved inside its scope (its config.yaml + secrets). The
     child never borrows the launching profile's key, pool or fallback chain."""

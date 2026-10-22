@@ -17,7 +17,7 @@
  * exit reason reaches desktop.log and the boot UI).
  */
 
-import { execFile } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 
 import { electronProcessStartMarker } from './parent-process-identity'
@@ -26,19 +26,79 @@ import { hiddenWindowsChildOptions } from './windows-child-options'
 
 export function execText(command: string, args: string[], { timeout = 3000 } = {}): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const child = execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
-      if (error) {
-        reject(error)
-      } else if (timeout > 0 && child.killed) {
-        // A SIGTERM handler can exit zero after execFile's timeout fired.
-        reject(new Error(`${command} timed out after ${timeout}ms`))
-      } else {
-        resolve(String(stdout || '').trim())
-      }
+    // spawn, not execFile: execFile ends its stdin pipe (`stdin.end()`), and
+    // Windows OpenSSH's `ssh -G` hangs indefinitely when stdin is a closed
+    // pipe (#118983). The 10s `ssh -G` fingerprint probe then times out on
+    // every attempt and the desktop SSH connect loop retries forever, never
+    // spawning the backend. `execFile` hangs even with stdio overridden, so
+    // the fix is the spawn itself; stdin is 'ignore' because these probes are
+    // noninteractive and a pipe nothing writes or closes wedges `ssh -G`.
+    const child = spawn(command, args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'pipe'] }))
+
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+
+    child.stdout?.on('data', chunk => {
+      stdout += chunk
+    })
+    child.stderr?.on('data', chunk => {
+      stderr += chunk
     })
 
-    // These probes are noninteractive; do not leave readers waiting for input.
-    child.stdin?.end()
+    const timer = timeout > 0
+      ? setTimeout(() => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+
+          try {
+            child.kill()
+          } catch {
+            // already gone
+          }
+
+          const error: any = new Error(`${command} timed out after ${timeout}ms`)
+          error.killed = true
+          reject(error)
+        }, timeout)
+      : null
+
+    const finish = (settler: () => void) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      settler()
+    }
+
+    child.on('error', error => {
+      finish(() => reject(error))
+    })
+
+    child.on('close', (code, signal) => {
+      finish(() => {
+        if (signal && !code) {
+          // A SIGTERM handler can exit zero after our timeout fired.
+          reject(new Error(`${command} timed out after ${timeout}ms`))
+        } else if (code !== 0) {
+          const error: any = new Error(`${command} exited with code ${code}`)
+          error.code = code
+          error.stderr = stderr
+          reject(error)
+        } else {
+          resolve(String(stdout || '').trim())
+        }
+      })
+    })
   })
 }
 

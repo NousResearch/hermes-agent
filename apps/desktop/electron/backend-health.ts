@@ -54,6 +54,16 @@ export function isConnectionRefusedError(error: unknown): boolean {
   return (error as { code?: unknown } | null)?.code === 'ECONNREFUSED'
 }
 
+const RESOURCE_PRESSURE_CODES = new Set(['ENOBUFS', 'EMFILE', 'ENFILE', 'EADDRNOTAVAIL'])
+
+/** Local socket allocation failed; this is not evidence that the backend died. */
+export function isHostResourcePressureError(error: unknown): boolean {
+  const transportError = error as { code?: string; cause?: { code?: string } } | null
+
+  // Node HTTP exposes code directly; native fetch wraps it in cause.
+  return RESOURCE_PRESSURE_CODES.has(transportError?.code ?? transportError?.cause?.code ?? '')
+}
+
 export const REMOTE_SESSION_EXPIRED_MESSAGE =
   'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
 
@@ -249,6 +259,22 @@ function supersededError() {
   return error
 }
 
+function rejectTerminalReadinessError(error: unknown, options: HermesReadyOptions): void {
+  // Preserve resource-pressure errors: failure to allocate a socket says
+  // nothing about backend liveness and must not trigger a replacement spawn.
+  if (isHostResourcePressureError(error)) {
+    throw error
+  }
+
+  if (options.probeIsCredentialed && isAuthRejectionError(error)) {
+    throw makeReauthRequiredError(error instanceof Error ? error.message : String(error))
+  }
+
+  if (options.alreadyBound && isConnectionRefusedError(error)) {
+    throw new Error(`Hermes backend did not become ready: ${(error as Error).message}`)
+  }
+}
+
 export async function waitForHermesReady(baseUrl: string, options: HermesReadyOptions): Promise<void> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_BACKEND_READY_TIMEOUT_MS
   const pollMs = options.pollMs ?? DEFAULT_BACKEND_READY_POLL_MS
@@ -274,7 +300,6 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
   const base = baseUrl.replace(/\/+$/, '')
   const deadline = now() + timeoutMs
   const probeHealth = options.probeHealth ?? options.fetchPublicJson
-  const probeIsCredentialed = Boolean(options.probeIsCredentialed)
   let lastError: unknown = null
   let useStatusFallback = false
 
@@ -300,13 +325,7 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
       // report a dead session as "ready", deferring the failure to the first
       // real API call. Applies to the /api/status leg too — it is routed
       // through the same credentials.
-      if (probeIsCredentialed && isAuthRejectionError(error)) {
-        throw makeReauthRequiredError(error instanceof Error ? error.message : String(error))
-      }
-
-      if (options.alreadyBound && isConnectionRefusedError(error)) {
-        throw new Error(`Hermes backend did not become ready: ${(error as Error).message}`)
-      }
+      rejectTerminalReadinessError(error, options)
 
       // An explicitly missing route means the backend predates /api/health.
       // So does a gate-shaped 401 on an ANONYMOUS probe: the dashboard auth

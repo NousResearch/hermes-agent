@@ -146,5 +146,18 @@ describe('model-status-label', () => {
     it('falls back to the store while options are still loading', () => {
       expect(currentPickerSelection(store, undefined)).toEqual(store)
     })
+
+    it('falls back to the catalog current pair when a persisted provider has no catalog row', () => {
+      const catalog = {
+        model: 'hermes-4',
+        provider: 'custom:local',
+        providers: [{ aliases: ['local'], models: ['hermes-4'], name: 'Local', slug: 'custom:local' }]
+      }
+
+      expect(currentPickerSelection({ model: 'old-model', provider: 'custom' }, catalog)).toEqual({
+        model: 'hermes-4',
+        provider: 'custom:local'
+      })
+    })
   })
 })

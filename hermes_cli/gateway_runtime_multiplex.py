@@ -12,15 +12,29 @@ the root's ``gateway_state.json`` (a standalone default gateway clears it).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
-def multiplexer_root_for(home: Path) -> Path | None:
-    """Default root that may multiplex *home*, when *home* is a named profile under it."""
+def profile_entry(home: Path) -> Path | None:
+    """The ``<root>/profiles/<name>`` entry that is *home* itself: its own folder, or the link a linked
+    profile is served through. Never the profile enclosing a home nested inside it, which
+    ``named_profile_home`` answers for any path within."""
     from hermes_constants import named_profile_home
-    if named_profile_home(home) is None:
+    named = named_profile_home(home)
+    if named is None or named == home:
+        return named
+    same = os.path.normcase(os.path.realpath(named)) == os.path.normcase(os.path.realpath(home))
+    return named if same else None
+
+
+def multiplexer_root_for(home: Path) -> Path | None:
+    """Default root that may multiplex *home*, when *home* is a named profile under it. A linked
+    profile's resolved home lies outside ``profiles/``: its root is its entry's, never the target's."""
+    named = profile_entry(home)
+    if named is None:
         return None
-    root = home.parent.parent
+    root = named.parent.parent
     return root if root != home else None
 
 

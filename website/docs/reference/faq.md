@@ -722,7 +722,7 @@ See [Subagent Delegation](../user-guide/features/delegation.md) for more on how 
 
 **Scenario:** In OpenClaw, you had multiple independent agents bound to specific WhatsApp chats — one for a family shopping list group, another for your private chat. Can Hermes do this?
 
-**Current limitation:** Hermes profiles each require their own WhatsApp number/session. You cannot bind multiple profiles to different chats on the same WhatsApp number — the WhatsApp bridge (Baileys) uses one authenticated session per number.
+**Current limitation (Baileys):** Hermes profiles each require their own WhatsApp number/session. You cannot bind multiple profiles to different chats on the same WhatsApp number — the Baileys bridge uses one authenticated session per number.
 
 **Workarounds:**
 
@@ -730,11 +730,13 @@ See [Subagent Delegation](../user-guide/features/delegation.md) for more on how 
 
 2. **Use cron jobs for specialized tasks.** For a shopping list tracker, set up a cron job that monitors a specific chat and manages the list — no separate agent needed.
 
-3. **Use separate numbers.** If you need truly independent agents, pair each profile with its own WhatsApp number. Virtual numbers from services like Google Voice work for this.
+3. **Use separate phone accounts for Baileys.** Pair each profile with its own registered WhatsApp phone account, using a supported number you can retain and recover. WhatsApp [lists VoIP numbers as unsupported](https://faq.whatsapp.com/684051319521343), so Google Voice and similar services are not reliable supported registration choices.
 
 4. **Use Telegram or Discord instead.** These platforms support per-chat binding more naturally — each Telegram group or Discord channel gets its own session, and you can run multiple bot tokens (one per profile) on the same account.
 
 See [Profiles](../user-guide/profiles.md) and [WhatsApp setup](../user-guide/messaging/whatsapp.md) for more details.
+
+If you mean an agent created in **WhatsApp → Settings → Agents**, use [WhatsApp Agent Platform](../user-guide/messaging/whatsapp-agent-platform.md) instead. Its API key authenticates an agent chat; it does not use Baileys phone pairing. Install and enable the community plugin on the owning Hermes profile and use one poller per key.
 
 ### Controlling what shows up in Telegram (hiding logs and reasoning)
 

@@ -5382,6 +5382,8 @@ export const deOverrides = {
     branchNeedsChat: 'Starten Sie einen Chat oder setzen Sie ihn fort, bevor Sie abzweigen.',
     sessionBusy: 'Session beschäftigt',
     branchStopCurrent: 'Stoppen Sie den laufenden Turn, bevor Sie von diesem Chat abzweigen.',
+    branchSettledTitle: 'Von der letzten abgeschlossenen Nachricht abzweigen',
+    branchSettledBody: 'Der aktuelle Turn läuft noch, daher enthält die neue Sitzung alles bis zur letzten abgeschlossenen Nachricht — der laufende Prompt wird nicht kopiert.',
     branchNoText: 'Diese Nachricht hat keinen Text zum Abzweigen.',
     branchTitle: n => `Entwurf: Branch #${n}`,
     branchFailed: 'Abzweigen fehlgeschlagen',

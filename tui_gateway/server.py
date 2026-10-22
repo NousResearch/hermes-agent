@@ -1480,8 +1480,11 @@ def _current_profile_name() -> str:
 # v2 file.attach; v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
-# backend still emits `<kind>.request` notifications the renderer no longer listens for.
-DESKTOP_BACKEND_CONTRACT = 8
+# backend still emits `<kind>.request` notifications the renderer no longer listens for; v9 the branch
+# response carries the mid-turn cut marker, session.info carries turn_in_progress, and the message-level
+# branch keeps the row boundary (through_message_id) — the renderer's compacted projection can be shorter
+# than the authoritative display, so the count alone cuts the child at an EARLIER message.
+DESKTOP_BACKEND_CONTRACT = 9
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -1602,6 +1605,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
         "terminal_backend": _effective_terminal_backend(), "personality": str(personality or ""),
         "running": bool(sess.get("running")), "turn_started_at": _turn_started_at(session),
+        # Presence only (is-not-None): ``_append_inflight_delta`` may replace the dict in place,
+        # and a torn read can at worst flip this one flag by a millisecond — never wrong for the
+        # branch gate, which re-reads it on every branch attempt.
+        "turn_in_progress": sess.get("inflight_turn") is not None,
         "title": _session_live_title(sess, session_key) if session_key else "",
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "", "release_date": "", "update_behind": None, "update_command": "",

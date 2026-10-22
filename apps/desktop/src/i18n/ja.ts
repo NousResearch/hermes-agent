@@ -3601,6 +3601,8 @@ export const jaOverrides = {
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',
     sessionBusy: 'セッションが使用中',
     branchStopCurrent: 'このチャットをブランチする前に現在のターンを停止してください。',
+    branchSettledTitle: '最後の確定メッセージからブランチ',
+    branchSettledBody: '現在のターンは実行中のため、新しいセッションは最後の確定メッセージまでの内容を保持します。実行中のプロンプトはコピーされません。',
     branchNoText: 'このメッセージにはブランチするテキストがありません。',
     branchTitle: n => `下書き: ブランチ #${n}`,
     branchFailed: 'ブランチに失敗しました',

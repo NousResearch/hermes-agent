@@ -795,7 +795,8 @@ export function usePromptActions({
         needsInput: false,
         interrupted: true,
         turnStartedAt: null,
-        turnLive: false
+        turnLive: false,
+        turnInFlight: false
       }
     })
 
@@ -1145,6 +1146,7 @@ export function usePromptActions({
           busy: false,
           awaitingResponse: false,
           turnLive: false,
+          turnInFlight: false,
           turnStartedAt: null,
           messages
         }))
@@ -1280,6 +1282,7 @@ export function usePromptActions({
           busy: false,
           awaitingResponse: false,
           turnLive: false,
+          turnInFlight: false,
           turnStartedAt: null,
           messages
         }))
@@ -1365,6 +1368,7 @@ export function usePromptActions({
         busy: false,
         awaitingResponse: false,
         turnLive: false,
+        turnInFlight: false,
         turnStartedAt: null,
         messages
       }))

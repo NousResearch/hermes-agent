@@ -436,6 +436,11 @@ def _record_inflight_correction(session: dict, text: Any) -> None:
 
 def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
+    # The turn has settled: its reply (and any queued turns it drained) are committed, so the
+    # branch source returns to the full projection. A stale boundary would keep an in-flight
+    # branch cutting the transcript at the PREVIOUS turn's start after the turn it guarded
+    # finished — dropping the just-settled reply from the child.
+    session.pop("branch_turn_boundary", None)
     # A turn that never reached the agent (cancelled/refused before ready) leaves its submit-time row
     # as the durable record of the send; a later turn must not adopt it as its own input.
     session.pop("_submit_user_row", None)

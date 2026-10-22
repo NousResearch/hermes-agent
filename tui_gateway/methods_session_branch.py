@@ -64,21 +64,36 @@ _BRANCH_COPY_FIELDS = (
     "timestamp")
 
 
-def _branch_source_history(db, session: dict, old_key: str) -> list:
+def _branch_source_history(db, session: dict, old_key: str) -> tuple[list, bool]:
     """Rows a branch copies: the persisted DISPLAY projection reconciled with live memory (live history is
-    the MODEL projection — post-compaction summary + tail — the child would lose every archived turn)."""
+    the MODEL projection — post-compaction summary + tail — the child would lose every archived turn).
+
+    Returns ``(rows, mid_turn)``. While a submit turn is in flight, the source is truncated to the
+    TURN-START boundary (``branch_turn_boundary``, the settled raw display length recorded when the turn
+    started) so an in-flight branch keeps exactly the settled transcript — never the in-flight prompt
+    row, queued prompt rows, or mid-turn pivot markers the running turn appends. The half-streamed
+    assistant text is NOT part of the source (it lives in ``inflight_turn``), so it is never copied.
+    When no turn is in flight the boundary is absent and the whole projection is returned unchanged."""
     with session["history_lock"]:
         in_memory_history = [
             dict(msg) for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
             if isinstance(msg, dict)]
-    history = None
+        mid_turn = isinstance(session.get("branch_turn_boundary"), int)
+    raw = None
     if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
         try:
             _, display_history = get_resume_conversations(old_key)
-            history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
+            raw = _reconcile_display_with_live(display_history, in_memory_history)
         except Exception:
             logger.debug("branch display projection read failed", exc_info=True)
-    return history or _visible_branch_history(in_memory_history)
+    if raw is None:
+        raw = in_memory_history
+    if mid_turn:
+        with session["history_lock"]:
+            boundary = session.get("branch_turn_boundary")
+        if isinstance(boundary, int) and len(raw) > boundary:
+            raw = raw[:boundary]
+    return _visible_branch_history(raw), mid_turn
 
 
 def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
@@ -102,7 +117,7 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         if db is None:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
-        history = _branch_source_history(db, session, old_key)
+        history, mid_turn = _branch_source_history(db, session, old_key)
         # The cut: the durable row boundary WINS over the visible-message count.
         # A message-level branch names the exact row the user clicked (the bubble's last
         # durable row). The count the client derives from its LOCAL message list is only a
@@ -141,7 +156,8 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
             if new_sid in _sessions:
                 _sessions[new_sid]["branch_title"] = title
     response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
-                "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid))}
+                "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid)),
+                "mid_turn": bool(mid_turn)}
     if omit_messages:
         response["messages_omitted"] = True
     else:

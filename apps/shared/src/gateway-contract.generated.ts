@@ -558,6 +558,7 @@ export interface SessionLiveInfo {
   personality?: string
   running?: boolean
   turn_started_at?: number | null
+  turn_in_progress?: boolean
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
@@ -3384,6 +3385,7 @@ export interface SessionCwdSetResult {
   personality?: string
   running?: boolean
   turn_started_at?: number | null
+  turn_in_progress?: boolean
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
@@ -3423,6 +3425,7 @@ export interface SessionBranchResult {
   message_count: number
   messages: TranscriptMessage[]
   info: SessionLiveInfo
+  mid_turn?: boolean
 }
 export interface SessionBranchWholeParams {
   session_id: string
@@ -3438,6 +3441,7 @@ export interface SessionBranchWholeResult {
   message_count: number
   messages_omitted: boolean
   info: SessionLiveInfo
+  mid_turn?: boolean
 }
 export interface SessionUndoParams {
   session_id: string

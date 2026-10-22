@@ -4716,6 +4716,8 @@ export const en: Translations = {
     branchNeedsChat: 'Start or resume a chat before branching.',
     sessionBusy: 'Session busy',
     branchStopCurrent: 'Stop the current turn before branching this chat.',
+    branchSettledTitle: 'Branch from the last settled message',
+    branchSettledBody: 'The current turn is still running, so the new session holds everything up to the last settled message — the in-flight prompt is not copied.',
     branchNoText: 'This message has no text to branch from.',
     branchTitle: n => `Draft: Branch #${n}`,
     branchFailed: 'Branch failed',

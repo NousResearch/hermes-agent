@@ -4576,6 +4576,8 @@ export const zhOverrides = {
     branchNeedsChat: '分支前请先开始或恢复一个对话。',
     sessionBusy: '会话忙碌中',
     branchStopCurrent: '分支此对话前请先停止当前回合。',
+    branchSettledTitle: '从最后一条已确认消息分支',
+    branchSettledBody: '当前回合仍在运行，因此新会话保留到最后一条已确认消息为止——正在运行的提示不会被复制。',
     branchNoText: '此消息没有可用于分支的文本。',
     branchTitle: n => `草稿：分支 #${n}`,
     branchFailed: '分支失败',

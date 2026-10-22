@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- defect-1 (contract 9) adds the per-session backendContract to applyRuntimeInfo (extracted into applyBackendContract for CC) — the mid-turn branch gate reads it; kept in this action-utility module pending a broader split
 import { mergeUsage } from '@hermes/shared'
 
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
@@ -2343,6 +2344,7 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
+    | 'backendContract'
     | 'branch'
     | 'cwd'
     | 'fast'
@@ -2447,6 +2449,30 @@ function reportRuntimeInfoAppState(info: SessionRuntimeInfo, owner: SessionOwner
   reportInstallMethodWarning(info.install_warning)
 }
 
+// The backend this session runs on, stamped on every runtime info. The
+// mid-turn branch gate reads it per session: a v9 backend cuts the branch
+// source at the turn-start boundary, an older one copies the in-flight
+// prompt row — the same turnInFlight flag is only safe to act on at >= v9.
+// Absent on a pre-contract backend -> undefined -> gate stays closed.
+// (The backend model is `int | str | None`; normalize the string form.)
+function applyBackendContract(
+  desktopContract: SessionRuntimeInfo['desktop_contract'],
+  sessionState: SessionRuntimeStatePatch
+): void {
+  if (typeof desktopContract === 'number' && Number.isFinite(desktopContract)) {
+    sessionState.backendContract = desktopContract
+    return
+  }
+
+  if (typeof desktopContract === 'string' && desktopContract !== '') {
+    const parsed = Number(desktopContract)
+
+    if (Number.isFinite(parsed)) {
+      sessionState.backendContract = parsed
+    }
+  }
+}
+
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
   { foreground = true, owner }: ApplyRuntimeInfoOptions = {}
@@ -2504,6 +2530,14 @@ export function applyRuntimeInfo(
   if (typeof info.yolo === 'boolean') {
     sessionState.yolo = info.yolo
   }
+
+  // The backend this session runs on, stamped on every runtime info. The
+  // mid-turn branch gate reads it per session: a v9 backend cuts the branch
+  // source at the turn-start boundary, an older one copies the in-flight
+  // prompt row — the same turnInFlight flag is only safe to act on at >= v9.
+  // Absent on a pre-contract backend -> undefined -> gate stays closed.
+  // (The backend model is `int | str | None`; normalize the string form.)
+  applyBackendContract(info.desktop_contract, sessionState)
 
   if (info.usage) {
     // Runtime info is an authoritative snapshot. Keep a complete per-runtime

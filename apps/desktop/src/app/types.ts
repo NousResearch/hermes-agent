@@ -206,6 +206,24 @@ export interface ClientSessionState {
    *  False while a submit is only optimistically armed — the discriminator the
    *  no-payload settle gate needs now that turnStartedAt is seeded at send. */
   turnLive: boolean
+  /** The backend reports a live model turn IN FLIGHT (``turn_in_progress`` —
+   *  ``inflight_turn is not None``). Unlike {@link busy} (which a manual
+   *  compaction hold ALSO sets, re-anchoring the session key mid-flight) this
+   *  is false during a hold: no inflight turn exists, so nothing can be cut at
+   *  a turn-start boundary. Drives the relaxed mid-turn branch gate — a real
+   *  turn lets the branch proceed "up to the last settled message", while a
+   *  hold keeps the blanket "Session busy" refusal. Older backends never report
+   *  it, so it stays false and the historic blanket gate is preserved. */
+  turnInFlight?: boolean
+  /** The backend's DESKTOP_BACKEND_CONTRACT as this session's runtime last
+   *  reported it (`session.create` / `session.resume` `desktop_contract`),
+   *  undefined until first reported. A mid-turn branch is only safe when the
+   *  backend cuts the branch source at the turn-start boundary — a v9
+   *  capability — so the relaxed gate also requires this >=
+   *  MID_TURN_BRANCH_BACKEND_CONTRACT. Tracked PER SESSION (not globally)
+   *  because a tile can branch a session whose backend is a different, older
+   *  connection than the focused one. */
+  backendContract?: number
   /** Cumulative token usage, updated per completed turn. Per-session twin of
    *  the primary-only $currentUsage — the statusbar reads it for a focused
    *  tile's context count. Null until the first turn reports. */

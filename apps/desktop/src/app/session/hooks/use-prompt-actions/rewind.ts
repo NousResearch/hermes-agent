@@ -658,6 +658,7 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
     // with no clock is settled by the first running=false heartbeat, so a
     // regenerate racing a heartbeat would lose its spinner mid-flight.
     turnLive: false,
+    turnInFlight: false,
     turnStartedAt: Date.now()
   }
 }
@@ -887,6 +888,7 @@ export function applyRewindOptimistic(
     // Same as applyReloadOptimistic: seed the clock so the no-payload settle
     // gate holds through the submit round trip but never latches (#86795).
     turnLive: false,
+    turnInFlight: false,
     turnStartedAt: Date.now()
   }
 }

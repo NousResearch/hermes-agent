@@ -5389,6 +5389,8 @@ export const frOverrides = {
     branchNeedsChat: 'Démarrez ou reprenez une conversation avant de créer une branche.',
     sessionBusy: 'Session occupée',
     branchStopCurrent: 'Arrêtez le tour actuel avant de créer une branche pour cette conversation.',
+    branchSettledTitle: 'Créer une branche à partir du dernier message traité',
+    branchSettledBody: 'Le tour actuel est toujours en cours ; la nouvelle session conserve tout jusqu’au dernier message traité — le prompt en cours n’est pas copié.',
     branchNoText: 'Ce message ne contient pas de texte à partir duquel créer une branche.',
     branchTitle: n => `Brouillon : branche nº${n}`,
     branchFailed: 'Échec de la création de la branche',

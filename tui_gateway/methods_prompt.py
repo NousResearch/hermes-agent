@@ -804,6 +804,13 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
+        # Turn-start boundary: the display-projection length the branch source is truncated to
+        # while this turn runs. Recorded AFTER any submit-time truncation (above) and BEFORE the
+        # in-flight user row is persisted, so a mid-turn branch keeps exactly the settled
+        # transcript — never the in-flight prompt, queued prompt rows, or mid-turn pivot markers
+        # the turn will append. Cleared when the turn settles (``_clear_inflight_turn``).
+        session["branch_turn_boundary"] = (
+            len(session.get("display_history_prefix") or []) + len(session.get("history") or []))
         _start_inflight_turn(session, text, display_kind=display_kind)
     return None, fields
 

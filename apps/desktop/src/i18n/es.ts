@@ -5366,6 +5366,8 @@ export const esOverrides = {
     branchNeedsChat: 'Inicia o reanuda un chat antes de ramificar.',
     sessionBusy: 'Sesión ocupada',
     branchStopCurrent: 'Detén el turno actual antes de ramificar este chat.',
+    branchSettledTitle: 'Ramificar desde el último mensaje asentado',
+    branchSettledBody: 'El turno actual sigue en curso, así que la nueva sesión conserva todo hasta el último mensaje asentado; el prompt en curso no se copia.',
     branchNoText: 'Este mensaje no tiene texto desde el que ramificar.',
     branchTitle: n => `Borrador: rama n.º ${n}`,
     branchFailed: 'No se pudo ramificar',

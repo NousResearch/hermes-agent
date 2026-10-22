@@ -4159,6 +4159,10 @@ catalog: CatalogTranslations
     branchNeedsChat: string
     sessionBusy: string
     branchStopCurrent: string
+    /** Mid-turn branch, relaxed gate: the child holds the settled transcript (the
+     *  in-flight turn that started after the last settled message is not copied). */
+    branchSettledTitle: string
+    branchSettledBody: string
     branchNoText: string
     branchTitle: (n: number) => string
     branchFailed: string

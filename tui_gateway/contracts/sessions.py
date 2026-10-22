@@ -423,6 +423,11 @@ class SessionBranchResult(Result):
     message_count: int
     messages: list[TranscriptMessage]
     info: SessionLiveInfo
+    # True when the parent's turn was still in flight: the child was cut at the
+    # turn-start boundary, so it holds the settled transcript WITHOUT the in-flight
+    # prompt (``message_count`` already reflects that shorter cut). Clients can say
+    # so instead of implying the whole conversation was copied.
+    mid_turn: bool = False
 
 
 method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
@@ -443,6 +448,9 @@ class SessionBranchWholeResult(Result):
     message_count: int
     messages_omitted: bool
     info: SessionLiveInfo
+    # True when the parent's turn was still in flight: the child was cut at the
+    # turn-start boundary (see SessionBranchResult.mid_turn).
+    mid_turn: bool = False
 
 
 method("session.branch_whole", params=SessionBranchWholeParams, result=SessionBranchWholeResult,

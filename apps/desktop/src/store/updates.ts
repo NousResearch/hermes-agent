@@ -118,6 +118,15 @@ function isUpdateToastSnoozed(): boolean {
 //     (approval/clarify/sudo/secret/vault/MCP setup); a v6 backend's
 //     `<kind>.request` notifications would never render a card.
 export const REQUIRED_BACKEND_CONTRACT = 8
+// v9 capabilities this client may DEPEND ON (not just detect): the branch
+// response's mid-turn cut marker, session.info's turn_in_progress, and the
+// message-level branch keeping the row boundary (through_message_id). The
+// mid-turn branch gate relaxes ONLY when the session's OWN backend reported
+// >= this (tracked per session in ClientSessionState.backendContract) — a v8
+// backend also emits message.start, so turnInFlight alone would relax the gate
+// against a backend whose _branch_live has no turn-start boundary cut (the
+// in-flight prompt row would land in the child).
+export const MID_TURN_BRANCH_BACKEND_CONTRACT = 9
 const SKEW_TOAST_ID = 'backend-contract-skew'
 const GUI_SKEW_TOAST_ID = 'gui-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so

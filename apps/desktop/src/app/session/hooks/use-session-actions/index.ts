@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- defect-1 (contract 9) adds the relaxed mid-turn branch gate (turnInFlight + backendContract discriminators) to branchLoadedSession and its callers
 import { mergeUsage } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -31,7 +32,7 @@ import {
   toChatMessages
 } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
-import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -135,6 +136,7 @@ import { $archivedSessions } from '@/store/sidebar-archive'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
+import { MID_TURN_BRANCH_BACKEND_CONTRACT } from '@/store/updates'
 import { isWatchWindow } from '@/store/windows'
 import type {
   SessionCreateResponse,
@@ -240,6 +242,15 @@ interface SessionActionsOptions {
 
 export interface BranchLoadedSessionOptions {
   busy: boolean
+  /** True while a live model turn is in flight (backend `turn_in_progress`). Distinct
+   *  from {@link busy}: a manual-compaction hold is busy WITHOUT an inflight turn and
+   *  re-anchors the session key mid-flight, so it must keep the blanket gate. Absent on
+   *  pre-v9 backends, which then keep the historic blanket "Session busy" refusal. */
+  turnInFlight?: boolean
+  /** This session's backend DESKTOP_BACKEND_CONTRACT (its own create/resume runtime
+   *  info). The relaxed mid-turn gate only works against a v9 backend — the one that
+   *  cuts the branch source at the turn-start boundary. Undefined until first reported. */
+  backendContract?: number
   contextDrift?: () => null | string
   cwd?: string
   messageId?: string
@@ -2708,6 +2719,19 @@ export function useSessionActions({
                   branchCount === undefined ? 'session.branch_whole' : 'session.branch',
                   branchParams
                 ).catch(err => {
+                  // A pre-v9 legacy backend is extra="forbid" and refuses the canonical row
+                  // boundary (through_message_id) with 4000 "out of sync". That is the OLD
+                  // backend, so the count-only prefix is exactly what it accepts — the pre-v9
+                  // behaviour. Retry the same message-level branch count-only rather than
+                  // failing the branch; a genuine (non-skew) refusal still throws.
+                  if (isOutOfSyncRpcParams(err) && branchCount !== undefined) {
+                    return requestBranchGateway<SessionCreateResponse>('session.branch', {
+                      session_id: sourceSessionId,
+                      idempotency_key: key,
+                      count: branchCount
+                    })
+                  }
+
                   if (!isMissingRpcMethod(err)) {
                     throw err
                   }
@@ -2898,6 +2922,8 @@ export function useSessionActions({
   const branchLoadedSession = useCallback(
     async ({
       busy,
+      turnInFlight,
+      backendContract,
       contextDrift,
       cwd,
       messageId,
@@ -2911,7 +2937,28 @@ export function useSessionActions({
         return false
       }
 
-      if (busy) {
+      // Mid-turn branching. A live model turn in flight is the ONLY busy state we
+      // relax: the backend cuts the branch source at the turn-start boundary, so
+      // the child holds the settled transcript WITHOUT the in-flight prompt (no
+      // queued rows, no mid-turn pivot markers — they all land after the boundary).
+      // A manual-compaction hold is busy with NO inflight turn and re-anchors the
+      // session key mid-flight; that state keeps the blanket refusal.
+      //
+      // The boundary cut is a v9 capability (turn_in_progress + branch_turn_boundary),
+      // so the relaxation is additionally gated on this session's OWN backend having
+      // reported contract >= MID_TURN_BRANCH_BACKEND_CONTRACT. This is not cosmetic:
+      // message.start fires on v8 backends too, so turnInFlight alone would relax the
+      // gate against a backend whose _branch_live has no boundary cut — the in-flight
+      // prompt row would land in the child. A pre-v9 backend (or one whose runtime
+      // info has not yet been applied) reports < 9 and keeps the historic "Session
+      // busy" gate.
+      const hasBoundaryCut =
+        typeof backendContract === 'number' &&
+        backendContract >= MID_TURN_BRANCH_BACKEND_CONTRACT
+
+      const relaxed = busy && Boolean(turnInFlight) && hasBoundaryCut
+
+      if (busy && !relaxed) {
         notify({ kind: 'warning', title: copy.sessionBusy, message: copy.branchStopCurrent })
 
         return false
@@ -2963,6 +3010,13 @@ export function useSessionActions({
 
       clearNotifications()
 
+      if (relaxed) {
+        // Honest copy for the relaxed case: the child holds the settled transcript,
+        // not the in-flight turn that started after the last settled message.
+        // Fired AFTER clearNotifications() so it survives the pre-fork sweep.
+        notify({ kind: 'info', title: copy.branchSettledTitle, message: copy.branchSettledBody })
+      }
+
       return forkBranch(
         branchMessages,
         runtimeId,
@@ -2983,8 +3037,17 @@ export function useSessionActions({
       const storedSessionId = selectedStoredSessionIdRef.current
       const routeToken = getRouteToken()
 
+      // The live turn-in-flight + backend-contract flags live on the session
+      // state (written by the session.info / create-resume event stream). A mid-turn
+      // branch may only proceed when THIS session's backend reported contract >= v9
+      // and has a turn actually in flight; a compaction hold (no inflight turn) or an
+      // older backend keeps the blanket "Session busy" gate.
+      const sessionState = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+
       return branchLoadedSession({
         busy: busyRef.current,
+        turnInFlight: sessionState?.turnInFlight,
+        backendContract: sessionState?.backendContract,
         contextDrift: () => {
           const drift = sessionContextDrift({
             startRouteToken: routeToken,
@@ -3010,7 +3073,14 @@ export function useSessionActions({
         storedSessionId
       })
     },
-    [activeSessionIdRef, branchLoadedSession, busyRef, getRouteToken, selectedStoredSessionIdRef]
+    [
+      activeSessionIdRef,
+      branchLoadedSession,
+      busyRef,
+      getRouteToken,
+      selectedStoredSessionIdRef,
+      sessionStateByRuntimeIdRef
+    ]
   )
 
   // Branch any listed session, not just the open one. Reads the target's stored

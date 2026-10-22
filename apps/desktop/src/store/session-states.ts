@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- defect-1 (contract 9) resets turnInFlight on the turn-settle / reconnect paths (mirrors turnLive)
 /**
  * MULTI-SESSION VIEW STATE — the reactive face of the per-runtime session
  * cache (`sessionStateByRuntimeIdRef` in use-session-state-cache).
@@ -480,6 +481,7 @@ function settleEndedLiveTurn(runtimeId: string) {
       pendingBranchGroup: null,
       streamId: null,
       turnLive: false,
+      turnInFlight: false,
       turnStartedAt: null
     }
   })
@@ -1033,6 +1035,7 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
           awaitingResponse: false,
           busy: false,
           turnLive: false,
+          turnInFlight: false,
           turnStartedAt: null
         })
       }

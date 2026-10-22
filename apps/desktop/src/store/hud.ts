@@ -17,7 +17,8 @@ import { atom } from 'nanostores'
 
 import { requestComposerDraftSync } from '@/store/composer'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $sessions, rememberedSessionProfile } from '@/store/session'
+import { $connection, $sessions, knownSessionOwner, rememberedSessionProfile } from '@/store/session'
+import { isSessionOwnerRoute } from '@/store/session-request-router'
 import { isHudWindow } from '@/store/windows'
 
 /** Whether a HUD window is currently up. In the HUD's own renderer this is
@@ -66,9 +67,16 @@ export function openHud(sessionId?: null | string): void {
     rememberedSessionProfile($sessions.get(), sessionId ?? null, $activeGatewayProfile.get())
   )
 
+  // And WHICH CONNECTION. A profile alone makes main dial the registry primary,
+  // so with a remote primary a HUD opened while looking at "This device" booted
+  // against the remote host — which can't see this desktop. The session's
+  // stamped owner wins; otherwise the connection this window is on.
+  const owner = knownSessionOwner($sessions.get(), sessionId ?? null)
+  const connectionId = (isSessionOwnerRoute(owner) ? owner.connectionId : $connection.get()?.connectionId) ?? null
+
   $hudActive.set(true)
   $hudSession.set(sessionId ?? null)
-  void api.open({ sessionId: sessionId ?? null, profile })
+  void api.open({ sessionId: sessionId ?? null, profile, connectionId })
 }
 
 /** Leave HUD mode. Callable from either window — main closes the child, the

@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -379,6 +380,41 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
+
+
+def test_skill_create_description_over_budget_is_rejected_before_staging(hermes_home):
+    """Regression for #137276: an invalid create must not wait for /skills approve."""
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage
+
+    _set_approval("skills", True)
+    content = "---\nname: long-description\ndescription: " + ("x" * 61) + "\n---\n\nUse it.\n"
+    result = json.loads(skill_manage(action="create", name="long-description", content=content))
+
+    assert result["success"] is False
+    assert "60-char system-prompt budget" in result["error"]
+    assert wa.pending_count("skills") == 0
+
+
+def test_skill_batch_unmatchable_after_earlier_patch_is_rejected_before_staging(hermes_home):
+    """Regression for #137276: staging folds patches in order, without writing them."""
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage
+
+    content = "---\nname: staged-chain\ndescription: Use this test skill.\n---\n\nalpha\n"
+    created = json.loads(skill_manage(action="create", name="staged-chain", content=content))
+    assert created["success"] is True
+    _set_approval("skills", True)
+
+    result = json.loads(skill_manage(action="", name="", operations=[
+        {"action": "patch", "name": "staged-chain", "old_string": "alpha", "new_string": "beta"},
+        {"action": "patch", "name": "staged-chain", "old_string": "alpha", "new_string": "gamma"},
+    ]))
+
+    assert result["success"] is False
+    assert "operations[1]" in result["error"]
+    assert wa.pending_count("skills") == 0
+    assert "alpha" in (Path(hermes_home) / "skills" / "staged-chain" / "SKILL.md").read_text()
 
 
 # ---------------------------------------------------------------------------

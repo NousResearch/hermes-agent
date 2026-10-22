@@ -654,7 +654,7 @@ _skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
-def _run_write_gate(build_staging):
+def _run_write_gate(build_staging, preflight=None):
     """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
     ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
     write_approval cannot be imported."""
@@ -667,6 +667,8 @@ def _run_write_gate(build_staging):
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
+    if preflight and (error := preflight()):
+        return tool_error(error, success=False)
     payload, gist = build_staging(wa)
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
@@ -683,7 +685,113 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
-    return _run_write_gate(_staging)
+    def _preflight():
+        return _preflight_staged_skill_operations([{"action": action, "name": name, **payload_kwargs}])
+
+    return _run_write_gate(_staging, _preflight)
+
+
+def _preflight_staged_skill_operations(operations: list[dict], default_name: str | None = None) -> Optional[str]:
+    """Reject staged operations which cannot apply to the current skill files.
+
+    Approval replays the exact payload later, so staging a malformed create or a
+    patch chain that already cannot match only defers a guaranteed failure to the
+    approver.  This keeps a small in-memory view of touched files and uses the
+    production matcher for each patch in order; it never writes a skill file.
+    """
+    from tools.fuzzy_match import fuzzy_find_and_replace
+
+    files: dict[tuple[str, str], Optional[str]] = {}
+    known_skills: dict[str, Optional[Path]] = {}
+
+    def skill_dir(name: str) -> Optional[Path]:
+        if name not in known_skills:
+            found = _find_skill(name)
+            known_skills[name] = Path(found["path"]) if found else None
+        return known_skills[name]
+
+    def read_file(name: str, label: str) -> Optional[str]:
+        key = (name, label)
+        if key in files:
+            return files[key]
+        directory = skill_dir(name)
+        if directory is None:
+            return None
+        target = directory / label
+        if not target.exists():
+            files[key] = None
+        else:
+            try:
+                files[key] = target.read_text(encoding="utf-8-sig")
+            except OSError:
+                return None
+        return files[key]
+
+    for index, op in enumerate(operations):
+        action = op.get("action", "")
+        name = op.get("name") or default_name or ""
+        prefix = f"operations[{index}] ({action} on '{name}')"
+        if action == "create":
+            if err := (_validate_name(name) or _validate_category(op.get("category"))
+                       or _validate_frontmatter(op.get("content") or "", new_skill=True)
+                       or _validate_content_size(op.get("content") or "")):
+                return f"{prefix}: {err}"
+            if skill_dir(name) is not None:
+                return f"{prefix}: A skill named '{name}' already exists."
+            known_skills[name] = Path()
+            files[(name, "SKILL.md")] = op["content"]
+            continue
+
+        if action == "delete":
+            if skill_dir(name) is None:
+                return f"{prefix}: {_skill_not_found_error(name)}"
+            known_skills[name] = None
+            continue
+
+        if skill_dir(name) is None:
+            return f"{prefix}: {_skill_not_found_error(name)}"
+        if action == "edit":
+            content = op.get("content") or ""
+            if err := _validate_frontmatter(content) or _validate_content_size(content):
+                return f"{prefix}: {err}"
+            files[(name, "SKILL.md")] = content
+            continue
+
+        label = op.get("file_path") or "SKILL.md"
+        if action in {"write_file", "remove_file"}:
+            if err := _validate_file_path(label):
+                return f"{prefix}: {err}"
+        if action == "write_file":
+            content = op.get("file_content")
+            if content is None:
+                return f"{prefix}: file_content is required."
+            if len(content.encode("utf-8")) > MAX_SKILL_FILE_BYTES:
+                return f"{prefix}: File content exceeds {MAX_SKILL_FILE_BYTES:,} bytes."
+            if err := _validate_content_size(content, label=label):
+                return f"{prefix}: {err}"
+            files[(name, label)] = content
+            continue
+        if action == "remove_file":
+            if read_file(name, label) is None:
+                return f"{prefix}: File '{label}' not found in skill '{name}'."
+            files[(name, label)] = None
+            continue
+        if action != "patch":
+            continue
+
+        content = read_file(name, label)
+        if content is None:
+            return f"{prefix}: File not found: {label}"
+        updated, matches, _strategy, error = fuzzy_find_and_replace(
+            content, op.get("old_string") or "", op.get("new_string"), bool(op.get("replace_all")))
+        if error or matches == 0:
+            return f"{prefix}: {error or 'Could not find a match for old_string in the file'}"
+        if err := _validate_content_size(updated, label=label):
+            return f"{prefix}: {err}"
+        if label == "SKILL.md" and (err := _validate_frontmatter(updated)):
+            return f"{prefix}: Patch would break SKILL.md structure: {err}"
+        files[(name, label)] = updated
+    return None
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",

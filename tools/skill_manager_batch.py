@@ -247,7 +247,8 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
             return {"action": "batch", "operations": operations}, gist
-        staged = _smt._run_write_gate(_staging)
+        staged = _smt._run_write_gate(
+            _staging, lambda: _smt._preflight_staged_skill_operations(operations, default_name))
         if staged is not None:
             return staged
     # Every target's lock is held from the snapshot through commit or rollback; the per-op

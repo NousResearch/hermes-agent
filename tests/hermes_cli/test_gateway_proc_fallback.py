@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import hermes_cli.gateway as gateway_mod
+from hermes_cli import update_inventory
 
 
 # ---------------------------------------------------------------------------
@@ -256,28 +257,93 @@ class TestGetServicePidsAllProfiles:
         ]
         assert launchctl_calls == [["launchctl", "list"]]
 
-    @pytest.mark.platforms("linux")
-    def test_all_profiles_preserves_systemd_behavior(self):
-        """systemd scope is unaffected by the all_profiles switch — it already
-        lists every hermes-gateway* unit unconditionally."""
+    def test_all_profiles_empty_when_no_gateway_labels(self):
+        """When no ai.hermes.gateway* labels exist, all_profiles returns empty."""
         with (
-            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+            patch("hermes_cli.gateway.is_macos", return_value=True),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
             patch("subprocess.run") as mock_run,
         ):
-            def _run_side_effect(args, **kwargs):
-                args_list = list(args) if args else []
-                cmd_str = " ".join(str(a) for a in args_list[:4])
-                if "list-units" in cmd_str:
-                    return MagicMock(
-                        returncode=0,
-                        stdout="hermes-gateway-jarvis.service loaded active running\n",
-                        stderr="",
-                    )
-                if "show" in cmd_str and "MainPID" in cmd_str:
-                    return MagicMock(returncode=0, stdout="123\n", stderr="")
-                return MagicMock(returncode=0, stdout="", stderr="")
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="789\t0\tcom.apple.some.other.agent\n",
+                stderr="",
+            )
+            pids = gateway_mod._get_service_pids(all_profiles=True)
 
-            mock_run.side_effect = _run_side_effect
+        assert pids == set()
+
+    def test_all_profiles_handles_broken_pid_column(self):
+        """Non-integer PID entries are silently skipped."""
+        with (
+            patch("hermes_cli.gateway.is_macos", return_value=True),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=(
+                    "-\t0\tai.hermes.gateway.broken\n"
+                    "  123  \t0\tai.hermes.gateway.ok\n"
+                ),
+                stderr="",
+            )
             pids = gateway_mod._get_service_pids(all_profiles=True)
 
         assert pids == {123}
+
+    @pytest.mark.platforms("linux")
+    def test_systemd_fleet_discovery_preserves_named_scan_and_is_opt_in(self):
+        """Fleet discovery validates unnamed units; default discovery does not broaden."""
+        calls = []
+        main_pids = {
+            "hermes-gateway-legacy.service": "123\n",
+            "acme-worker.service": "456\n",
+            "other-worker.service": "789\n",
+        }
+
+        def _run_side_effect(args, **kwargs):
+            calls.append(args)
+            if "list-units" in args:
+                pattern = args[args.index("list-units") + 1]
+                stdout = {
+                    "hermes-gateway*": "hermes-gateway-legacy.service loaded active running\n",
+                    "*.service": (
+                        "hermes-gateway-legacy.service loaded active running\n"
+                        "acme-worker.service loaded active running\n"
+                        "other-worker.service loaded active running\n"
+                    ),
+                    "hermes-gateway": "hermes-gateway-legacy.service loaded active running\n",
+                }[pattern]
+                return MagicMock(returncode=0, stdout=stdout, stderr="")
+            unit = args[args.index("show") + 1]
+            return MagicMock(returncode=0, stdout=main_pids[unit], stderr="")
+
+        with (
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+            patch("hermes_cli.gateway.get_service_name", return_value="hermes-gateway"),
+            patch(
+                "gateway.status._read_process_cmdline",
+                side_effect=lambda pid: {
+                    456: "python -m hermes_cli.main gateway run",
+                    789: "python -m unrelated.worker",
+                }.get(pid),
+            ),
+            patch("subprocess.run", side_effect=_run_side_effect),
+        ):
+            assert gateway_mod._get_service_pids(all_profiles=True) == {123, 456}
+            calls.clear()
+            assert gateway_mod._get_service_pids(all_profiles=False) == {123}
+
+        assert not any("*.service" in args for args in calls)
+
+    def test_inventory_classifier_uses_discovered_systemd_pids(self):
+        """A discovered gateway is systemd while an unrelated manual PID remains manual."""
+        with (
+            patch("hermes_cli.gateway._get_service_pids", return_value={123}),
+            patch("hermes_cli.gateway.find_windows_gateway_services", return_value=[]),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+        ):
+            classify = update_inventory._supervisor_classifier()
+            assert classify(123) == "systemd"
+            assert classify(456) == "manual"

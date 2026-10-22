@@ -7,6 +7,7 @@ subprocesses and child Python ``print()`` calls agree on encoding.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import sys
 
@@ -90,6 +91,11 @@ def _default_windows_editor() -> str:
     return "notepad" if shutil.which("notepad") else ""
 
 
+def _windows_path_comparison_key(path: str) -> str:
+    """Return the lexical Windows form used to compare PATH entries."""
+    return ntpath.normcase(path).rstrip("\\\\/")
+
+
 def _augment_path_with_known_tools() -> None:
     r"""Prepend Hermes-managed tool directories to ``PATH`` (no-op on POSIX / missing dirs).
 
@@ -114,7 +120,10 @@ def _augment_path_with_known_tools() -> None:
         os.path.join(local_appdata, "hermes", "hermes-agent", "venv", "Scripts"),
         os.path.join(local_appdata, "Microsoft", "WinGet", "Links")]
     existing = os.environ.get("PATH", "")
-    existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
-    prepend = [d for d in candidate_dirs if os.path.isdir(d) and d.lower() not in existing_lower]
+    existing_keys = {_windows_path_comparison_key(p) for p in existing.split(os.pathsep) if p}
+    prepend = [
+        directory for directory in candidate_dirs
+        if os.path.isdir(directory) and _windows_path_comparison_key(directory) not in existing_keys
+    ]
     if prepend:
         os.environ["PATH"] = os.pathsep.join([*prepend, existing])

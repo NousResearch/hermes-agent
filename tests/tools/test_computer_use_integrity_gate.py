@@ -57,29 +57,37 @@ def _make_backend(session: _FakeSession, pid: int = 4242):
 
 
 # ---------------------------------------------------------------------------
-# _token_denial_is_determinate: the pure decision (probe-independent)
+# _il_decision: the pure decision (probe-independent)
 # ---------------------------------------------------------------------------
 
 
-def test_decision_refuses_only_when_target_denied_and_own_readable():
-    from tools.computer_use.cua_backend_input import _token_denial_is_determinate
+def test_decision_compares_rids_when_both_readable():
+    """SeDebugPrivilege case: token readability is not the verdict — an elevated caller can open
+    even a System token, so the RID comparison must be the thing that refuses."""
+    from tools.computer_use.cua_backend_input import _il_decision
 
-    assert (
-        _token_denial_is_determinate(lambda: True, lambda: False) is True
-    )  # blocked: target above us
-    assert (
-        _token_denial_is_determinate(lambda: True, lambda: True) is False
-    )  # target at/below us: inject
-    assert (
-        _token_denial_is_determinate(lambda: False, lambda: False) is False
-    )  # permission-blind: degrade
+    reason = _il_decision(0x3000, 0x4000)  # System above High: refuse
+    assert reason is not None
+    assert "0x4000" in reason and "0x3000" in reason  # the refusal message carries both levels
+    assert _il_decision(0x3000, 0x3000) is None  # same level: inject
+    assert _il_decision(0x3000, 0x2000) is None  # below us: inject
 
 
-def test_probe_returns_false_off_windows():
-    """Off Windows (and under any ctypes failure) the probe must never claim a block."""
+def test_decision_blocks_unreadable_target_but_not_a_blind_probe():
+    from tools.computer_use.cua_backend_input import _il_decision
+
+    assert _il_decision(0x3000, None) is not None  # target token denied, ours readable: block
+    assert _il_decision(None, 0x4000) is None  # our own token unreadable: probe is blind, degrade
+    assert _il_decision(None, None) is None  # permission-blind probe: degrade
+
+
+def test_probe_returns_none_off_windows(monkeypatch):
+    """Off Windows (and under any ctypes failure) the probe must never claim a block. ``_WINDOWS``
+    is forced False so the test also holds on a Windows host instead of calling the real probe."""
     from tools.computer_use import cua_backend_input
 
-    assert cua_backend_input._win_input_blocked_by_integrity(1234) is False
+    monkeypatch.setattr(cua_backend_input, "_WINDOWS", False)
+    assert cua_backend_input._win_input_blocked_by_integrity(1234) is None
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +105,14 @@ def _windows_gate(probe):
     )
 
 
+_BLOCKED_REASON = ("the target process runs at integrity 0x4000 (System), above this process at "
+                   "0x3000 (High)")
+
+
 def test_blocked_target_refuses_first_input_without_calling_driver():
     session = _FakeSession()
     be = _make_backend(session)
-    gate1, gate2 = _windows_gate(lambda pid: True)
+    gate1, gate2 = _windows_gate(lambda pid: _BLOCKED_REASON)
     with gate1, gate2:
         res = be.click(x=10, y=20)
 
@@ -111,12 +123,13 @@ def test_blocked_target_refuses_first_input_without_calling_driver():
     # Acceptance: the refusal carries no escalation, so the ladder terminates.
     assert res.escalation is None
     assert "No input was sent" in res.message
+    assert "0x4000" in res.message  # the refusal names the measured levels, not a guess
     assert session.calls == []  # nothing was dispatched: not even one wasted SendInput
 
 
 def test_blocked_target_refuses_keyboard_paths_too():
     be = _make_backend(_FakeSession())
-    gate1, gate2 = _windows_gate(lambda pid: True)
+    gate1, gate2 = _windows_gate(lambda pid: _BLOCKED_REASON)
     with gate1, gate2:
         typed = be.type_text("z")
         pressed = be.key("ctrl+v")
@@ -128,7 +141,7 @@ def test_blocked_target_refuses_keyboard_paths_too():
 def test_unblocked_target_still_sends_to_driver():
     session = _FakeSession()
     be = _make_backend(session)
-    gate1, gate2 = _windows_gate(lambda pid: False)
+    gate1, gate2 = _windows_gate(lambda pid: None)
     with gate1, gate2:
         res = be.click(x=10, y=20)
 
@@ -143,7 +156,6 @@ def test_probe_result_is_cached_per_pid():
 
     def probe(pid):
         calls.append(pid)
-        return False
 
     gate1, gate2 = _windows_gate(probe)
     with gate1, gate2:
@@ -158,7 +170,7 @@ def test_new_pid_is_reprobed_and_can_pass():
     """A blocked verdict must not stick to the next, lower-integrity target."""
     session = _FakeSession()
     be = _make_backend(session, pid=111)
-    gate1, gate2 = _windows_gate(lambda pid: pid == 111)
+    gate1, gate2 = _windows_gate(lambda pid: _BLOCKED_REASON if pid == 111 else None)
     with gate1, gate2:
         blocked = be.click(x=1, y=2)
         be._active_pid = 222
@@ -168,12 +180,13 @@ def test_new_pid_is_reprobed_and_can_pass():
     assert allowed.ok is True
 
 
-def test_off_windows_the_gate_is_inert():
+def test_off_windows_the_gate_is_inert(monkeypatch):
     session = _FakeSession()
     be = _make_backend(session)
-    # _WINDOWS stays False on this host: the probe must never be consulted.
     from tools.computer_use import cua_backend_input
 
+    # Force "off Windows" regardless of host so the test is green on a Windows host too.
+    monkeypatch.setattr(cua_backend_input, "_WINDOWS", False)
     with patch.object(
         cua_backend_input,
         "_win_input_blocked_by_integrity",
@@ -186,7 +199,7 @@ def test_off_windows_the_gate_is_inert():
 def test_no_active_target_skips_gate():
     be = _make_backend(_FakeSession())
     be._active_pid = None
-    gate1, gate2 = _windows_gate(lambda pid: True)
+    gate1, gate2 = _windows_gate(lambda pid: _BLOCKED_REASON)
     with gate1, gate2:
         res = be.click(x=10, y=20)
     # The pre-existing no-target refusal wins; the probe is never reached.

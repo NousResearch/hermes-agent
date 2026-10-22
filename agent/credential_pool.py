@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
+from agent.credential_pool_balanced import STRATEGY_BALANCED, CredentialPoolBalancedMixin
+from agent.credential_pool_cooldown import _exhausted_ttl
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
-from agent.credential_pool_timestamps import _parse_absolute_timestamp
+from agent.credential_pool_quota_window import CredentialPoolQuotaWindowMixin
+from agent.credential_pool_timestamps import _normalize_error_context, _parse_absolute_timestamp
 
 import logging
 import os
@@ -21,7 +24,6 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
-from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
 from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from agent.credential_persistence import (
@@ -120,32 +122,12 @@ STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
 STRATEGY_LEAST_USED = "least_used"
 SUPPORTED_POOL_STRATEGIES = {
+    STRATEGY_BALANCED,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
 }
-
-# Cooldowns before retrying an exhausted credential. Transient 401s cool down
-# briefly so single-key setups recover; 429/402/other take an hour.
-# Provider-supplied reset_at timestamps override these defaults.
-EXHAUSTED_TTL_401_SECONDS = 5 * 60
-EXHAUSTED_TTL_429_SECONDS = 60 * 60
-EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60
-# When the offending key is the sole non-DEAD entry, an hour-long bench means
-# an hour of hard failures. Throttles (429/403/5xx) reset in seconds, so a sole
-# credential cools down briefly instead.
-EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS = 60
-
-# ``FailoverReason.billing`` as a bare string: the pool persists classified
-# failure semantics to JSON and must not import the classifier.
-FAILURE_REASON_BILLING = "billing"
-
-# Billing verdict resting on an ambiguous body (#82154): Anthropic's "out of
-# extra usage" 400 is returned both for genuine overage and for a server-side
-# content-filter rejection, which leaves the credential healthy. Unverified
-# billing gets the short transient cooldown; genuine depletion re-latches.
-FAILURE_REASON_BILLING_UNVERIFIED = "billing_unverified"
 
 # Throttle window for the "no available entries" INFO line. Selection runs on
 # every model call; on Windows several processes share one rotating log behind
@@ -368,36 +350,6 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
-def _exhausted_ttl(
-    error_code: Optional[int],
-    *,
-    sole_credential: bool = False,
-    failure_reason: Optional[str] = None,
-) -> int:
-    """Return cooldown seconds based on the HTTP status that caused exhaustion.
-
-    *sole_credential*: the pool has nothing to rotate to, so transient
-    throttles (429 and the catch-all default covering 403/5xx/unknown) are
-    capped to a brief cooldown; 401 keeps its own already-short TTL.
-
-    *failure_reason* is the classifier verdict: an OpenRouter ``key limit
-    exceeded`` and an xAI spending block both arrive as 403 but are billing,
-    and a 60s retry on a spent account just re-fails. Billing keeps the full
-    bench regardless of status; 402 is billing by definition.
-    Unverified billing (#82154) gets the short cooldown regardless of pool
-    size (the credential may be healthy), unless the status is a true 402.
-    """
-    if error_code == 401:
-        return EXHAUSTED_TTL_401_SECONDS
-    base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
-    if failure_reason == FAILURE_REASON_BILLING_UNVERIFIED and error_code != 402:
-        return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
-    is_billing = error_code == 402 or failure_reason == FAILURE_REASON_BILLING
-    if sole_credential and not is_billing:
-        return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
-    return base
-
-
 def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     """True only when the auth.json singleton is PROVABLY older than *entry*.
 
@@ -413,30 +365,6 @@ def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     if state_ts is None:
         return False
     return state_ts < entry_ts
-
-
-def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[str, Any]:
-    if not isinstance(error_context, dict):
-        return {}
-    normalized: dict[str, Any] = {}
-    for key in ("reason", "message"):
-        value = error_context.get(key)
-        if isinstance(value, str) and value.strip():
-            normalized[key] = value.strip()
-    reset_at = (
-        error_context.get("reset_at")
-        or error_context.get("resets_at")
-        or error_context.get("retry_until")
-    )
-    parsed_reset_at = _parse_absolute_timestamp(reset_at)
-    message = error_context.get("message")
-    if parsed_reset_at is None and isinstance(message, str):
-        retry_delay_seconds = reset_delay_from_message(message)
-        if retry_delay_seconds is not None:
-            parsed_reset_at = time.time() + retry_delay_seconds
-    if parsed_reset_at is not None:
-        normalized["reset_at"] = parsed_reset_at
-    return normalized
 
 
 def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
@@ -963,7 +891,9 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(
+    CredentialPoolAdminMixin, CredentialPoolBalancedMixin, CredentialPoolModelCooldownMixin, CredentialPoolQuotaWindowMixin,
+):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -2124,6 +2054,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
+        base_url: Optional[str] = None, rotating_off: Optional[str] = None,
     ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
@@ -2131,6 +2062,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         not going to serve a request (a forced-refresh target lookup).
         """
         available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
+        if base_url is not None:
+            available = [
+                entry for entry in available
+                if credential_pool_entry_serves_endpoint(entry, base_url)
+            ]
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -2144,6 +2080,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
+        elif self._strategy == STRATEGY_BALANCED and len(available) > 1:
+            entry = self._choose_balanced(available, rotating_off)
         else:
             entry = available[0]
         # Count the selection under every strategy. The counter is ``least_used``'s
@@ -2261,6 +2199,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
         model: Optional[str] = None,
+        require_usable_alternative: bool = False,
+        base_url: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -2273,15 +2213,30 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
             if entry is None:
                 return None
+            if require_usable_alternative:
+                available, _pending = self._available_entries(
+                    clear_expired=True, refresh=False, model=model,
+                )
+                failed_runtime_key = entry.runtime_api_key
+                has_alternative = any(
+                    candidate.id != entry.id
+                    and (not failed_runtime_key or candidate.runtime_api_key != failed_runtime_key)
+                    and credential_pool_entry_serves_endpoint(candidate, base_url)
+                    for candidate in available
+                )
+                if not has_alternative:
+                    return None
             _label = entry.label or entry.id[:8]
-            if self._is_model_scoped_failure(status_code, model, failure_reason):
+            if self._benches_model_only(status_code, model, failure_reason, error_context):
                 # A generic Anthropic 429 (per-model rate limit) or a Codex account model
                 # entitlement rejection: bench this model only, the credential stays
                 # available for its siblings.
                 self._cool_down_model(entry, model, error_context, failure_reason=failure_reason)
                 logger.info("credential pool: %s unavailable for model %s; other models stay available", _label, model)
                 self._current_id = None
-                next_entry, _pending = self._select_unlocked(refresh=False, model=model)
+                next_entry, _pending = self._select_unlocked(
+                    refresh=False, model=model, base_url=base_url, rotating_off=entry.id,
+                )
                 return next_entry
             self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
             # A 402/429/401 is a key-level failure, and the same key can back
@@ -2312,7 +2267,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             else:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
+            next_entry, _pending = self._select_unlocked(refresh=False, base_url=base_url, rotating_off=entry.id)
             if next_entry is not None and next_entry.id == entry.id:
                 # No-recovery guard (#97315): selection handed back the very entry that was
                 # just marked (the auth-store sync adopted fresher tokens, or a quota probe
@@ -2364,9 +2319,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 return None, pending_refresh
 
             below_cap = [e for e in available if self._active_leases.get(e.id, 0) < self._max_concurrent]
-            chosen = min(
-                below_cap or available,
-                key=lambda entry: (self._active_leases.get(entry.id, 0), entry.priority),
+            candidates = below_cap or available
+            chosen = self._choose_balanced_lease(candidates) if self.balanced else min(
+                candidates, key=lambda entry: (self._active_leases.get(entry.id, 0), entry.priority),
             )
             self._active_leases[chosen.id] = self._active_leases.get(chosen.id, 0) + 1
             self._current_id = chosen.id
@@ -2390,13 +2345,20 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
+        *,
+        force: bool = True,
     ) -> Optional[PooledCredential]:
-        """Force-refresh the entry that supplied the failed request.
+        """Refresh the entry that supplied the request (forced by default).
 
         Direct integrations may reload the pool after a request failed, so
         ``current_id`` cannot identify the issuing credential. With no hint,
         select WITHOUT the normal proactive refresh: the forced refresh below
         must consume a rotating refresh token exactly once.
+
+        ``force=False`` is the pre-request path: it returns the matching entry
+        untouched unless it is near expiry, and never moves the cursor, so a
+        caller can keep its own binding without rotating accounts or renewing
+        a healthy token on every request.
         """
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id) if credential_id else None
@@ -2407,6 +2369,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
             if entry is None:
                 return None
+            if not force:
+                if self.provider == "anthropic" and entry.source == "claude_code":
+                    # Borrowed login: the external CLI may have rotated (and revoked) the pair.
+                    entry = self._sync_anthropic_entry_from_credentials_file(entry)
+                if not entry.refresh_token or not self._entry_needs_refresh(entry):
+                    return entry
+                return self._refresh_entry(entry, force=False)
             self._current_id = entry.id
             return self._try_refresh_current_unlocked()
 

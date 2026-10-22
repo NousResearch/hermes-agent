@@ -1,4 +1,5 @@
-"""Relay-side accumulator for the chat_completions streaming wire.
+"""Relay-side helpers: the identity and metadata every ``relay_llm.stream`` call carries, and the
+accumulator for the chat_completions streaming wire.
 
 Relay invokes its collector for every post-intercept chunk and then its finalizer as soon
 as the provider stream ends — concurrently with Hermes' consumer thread, which may not have
@@ -80,3 +81,17 @@ class RelayChatAccumulator:
         # "stop" also covers Nous Portal ``lastOne`` usage frames, which carry no finish_reason.
         return {"model": self._model, "usage": self._usage,
             "choices": [{"message": message, "finish_reason": self._finish_reason or "stop"}]}
+
+
+def _relay_stream_identity(agent, name_default: str) -> dict:
+    """``session_id``/``name``/``model_name`` kwargs for ``relay_llm.stream``."""
+    return {"session_id": str(getattr(agent, "session_id", "") or ""),
+        "name": str(getattr(agent, "provider", "") or name_default),
+        "model_name": str(getattr(agent, "model", "") or "")}
+
+
+def _relay_stream_metadata(agent, api_mode: str) -> dict:
+    call_role = ("delegated" if getattr(agent, "is_subagent", False)
+                 else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
+    return {"api_mode": api_mode, "api_request_id": getattr(agent, "_current_api_request_id", None),
+        "call_role": call_role}

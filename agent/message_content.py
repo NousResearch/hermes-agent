@@ -41,3 +41,11 @@ def flatten_message_text(content: Any, *, sep: str = "\n") -> str:
         return str(content)
     except Exception:
         return ""
+
+
+def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Any | None:
+    """Extract the ``api_content`` sidecar; ``None`` when absent or not text/content parts."""
+    v = msg.get("api_content")
+    if isinstance(v, str) or (isinstance(v, list) and all(isinstance(part, dict) for part in v)):
+        return v
+    return None

@@ -21,7 +21,7 @@ from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_context import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
-from agent.message_content import flatten_message_text
+from agent.message_content import extract_api_content_sidecar, flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
 from agent.plugin_live_notes import pop_plugin_notices
 from agent.skills_index_delta import stage_skills_index_note
@@ -132,11 +132,12 @@ def compose_user_api_content(
     return None if injection is None else content + "\n\n" + injection
 
 
-def substitute_api_content(api_msg: dict[str, Any]) -> Optional[str]:
+def substitute_api_content(api_msg: dict[str, Any]) -> Optional[Any]:
     """Pop the ``api_content`` sidecar and substitute it into ``content`` (keeps the
     prompt-cache prefix byte-stable). Returns the popped sidecar, or ``None``."""
-    sidecar = api_msg.pop("api_content", None)
-    if isinstance(sidecar, str) and sidecar and api_msg.get("role") in ("user", "assistant"):
+    sidecar = extract_api_content_sidecar(api_msg)
+    api_msg.pop("api_content", None)
+    if isinstance(sidecar, (str, list)) and sidecar and api_msg.get("role") in ("user", "assistant"):
         api_msg["content"] = sidecar
     return sidecar
 
@@ -146,11 +147,6 @@ def drop_stale_api_content(msg: dict[str, Any]) -> None:
     (replaying it would resend what the rewrite removed; cost is one cache miss)."""
     msg.pop("api_content", None)
 
-
-def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
-    """Extract the ``api_content`` sidecar; ``None`` when absent/non-string."""
-    v = msg.get("api_content")
-    return v if isinstance(v, str) else None
 
 
 def _pop_turn_note(agent: Any, attr: str) -> str:
@@ -1284,14 +1280,15 @@ def build_api_messages(
         # timestamp) are local bookkeeping: strict OpenAI backends reject unknown keys
         # and only chat-completions strips underscore keys. The token estimator drops
         # the same set, so it never prices bytes the provider never receives.
-        _api_content = api_msg.pop("api_content", None)
+        _api_content = extract_api_content_sidecar(api_msg)
+        api_msg.pop("api_content", None)
         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
             api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
         if msg is current_turn_message and msg.get("role") == "user":
-            if isinstance(_api_content, str) and _api_content:
+            if isinstance(_api_content, (str, list)) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
                 # and every pass this turn sends identical bytes.
                 api_msg["content"] = _api_content
@@ -1303,7 +1300,7 @@ def build_api_messages(
                 if _composed is not None:
                     api_msg["content"] = _composed
         elif (
-            isinstance(_api_content, str) and _api_content
+            isinstance(_api_content, (str, list)) and _api_content
             and msg.get("role") in ("user", "assistant")
         ):
             # Historical row: replay the exact bytes sent live so the prompt-cache

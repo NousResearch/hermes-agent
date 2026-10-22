@@ -302,7 +302,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 logger.error(warnings[-1])
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
-        return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
+        fields = {"message_id": str(last_msg.message_id)}
+        if (returned_thread_id := getattr(last_msg, "message_thread_id", None)) is not None:
+            fields["thread_id"] = str(returned_thread_id)
+        return _success("telegram", chat_id, warnings, **fields)
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: "
                 f"{install_hint('telegram')}"}

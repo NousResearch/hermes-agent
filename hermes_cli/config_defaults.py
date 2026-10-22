@@ -5,6 +5,9 @@ docs of config.yaml.
 """
 
 
+from hermes_cli.config_defaults_slack import SLACK_DEFAULT_CONFIG
+
+
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
 #: (the 3.14 pin shipped between the two without a migration); a saved config still holding one
@@ -1541,20 +1544,7 @@ DEFAULT_CONFIG = {
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
-    "slack": {
-        "require_mention": True,  # require @mention to respond in channels
-        "free_response_channels": "",  # comma-separated channel IDs answered without mention
-        "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
-        "require_mention_channels": "",  # channel IDs where @mention is ALWAYS required
-        # Channel IDs where ONLY a native <@bot> mention counts — mention_patterns
-        # wake words are ignored there. Env: SLACK_NATIVE_MENTION_ONLY_CHANNELS.
-        "native_mention_only_channels": "",
-        # Ignore messages whose first token @mentions another user unless the bot is also mentioned.
-        # Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
-        "ignore_other_user_mentions": False,
-        "thread_require_mention": False,  # require @mention in thread replies too
-        "channel_prompts": {},  # per-channel ephemeral system prompts
-    },
+    "slack": SLACK_DEFAULT_CONFIG,
 
     "discord": {
         "require_mention": True,  # require @mention to respond in server channels

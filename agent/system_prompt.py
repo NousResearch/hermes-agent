@@ -450,7 +450,7 @@ def _cron_delivery_hint(agent: Any) -> str:
     return f"Delivery destination ({deliver_key}): {hint}" if hint else ""
 
 
-def _platform_parts(agent: Any) -> List[str]:
+def _platform_parts(agent: Any) -> list[str]:
     """Platform hint, followed — for messaging-gateway sessions only — by the
     shared operational-constraints note (cannot self-restart the gateway; reply
     gating is enforced by gateway config, not by agent behavior/memory).

@@ -146,9 +146,6 @@ def check_browser_requirements() -> bool:
     cloud mode needs the CLI plus provider credentials (the provider hosts its own Chromium).
     """
     _bt = _origin()
-    # Browser Use CLI backend: browser_exec replaces the whole browser_* surface (incl. browser_cdp/browser_dialog check_fns).
-    if _bt._is_browser_use_cli_mode():
-        return False
     # Camofox only needs the server URL, no agent-browser CLI.
     if _bt._is_camofox_mode():
         return True

@@ -222,12 +222,40 @@ class TestToolSurfaceSwap:
         names = {t["function"]["name"] for t in defs}
         assert "browser_exec" not in names
 
-    def test_browser_exec_present_with_terminal(self, monkeypatch):
+    def test_builtin_browser_tools_remain_without_terminal(self, monkeypatch):
+        """Regression for #139517: Browser Use cannot leave a browser-only session tool-less."""
+        from tools import browser_tool
+
+        monkeypatch.setattr(browser_tool, "_is_browser_use_cli_mode", lambda: True)
         monkeypatch.setattr(bu_cli, "is_browser_use_cli_mode", lambda: True)
-        from tools.registry import registry
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "/test/agent-browser")
+        monkeypatch.setattr(bt_install, "_chromium_installed", lambda: True)
+        from tools.registry import invalidate_check_fn_cache, registry
 
         entry = registry.get_entry("browser_exec")
         monkeypatch.setattr(entry, "check_fn", lambda: True)
+        invalidate_check_fn_cache()
+        import model_tools
+
+        defs = model_tools._compute_tool_definitions(
+            enabled_toolsets=["browser"], quiet_mode=False, skip_tool_search_assembly=True
+        )
+        names = {t["function"]["name"] for t in defs}
+        assert "browser_navigate" in names
+        assert "browser_exec" not in names
+
+    def test_browser_exec_present_with_terminal(self, monkeypatch):
+        from tools import browser_tool
+
+        monkeypatch.setattr(browser_tool, "_is_browser_use_cli_mode", lambda: True)
+        monkeypatch.setattr(bu_cli, "is_browser_use_cli_mode", lambda: True)
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "/test/agent-browser")
+        monkeypatch.setattr(bt_install, "_chromium_installed", lambda: True)
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        entry = registry.get_entry("browser_exec")
+        monkeypatch.setattr(entry, "check_fn", lambda: True)
+        invalidate_check_fn_cache()
         import model_tools
 
         defs = model_tools.get_tool_definitions(
@@ -235,6 +263,7 @@ class TestToolSurfaceSwap:
         )
         names = {t["function"]["name"] for t in defs}
         assert "browser_exec" in names
+        assert "browser_navigate" not in names
 
 
 class TestVaultSupervisorAttach:

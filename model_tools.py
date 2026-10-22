@@ -393,6 +393,16 @@ def _rewrite_browser_exec(td: dict[str, Any], available: set) -> Optional[dict[s
     return td if "terminal" in available else None
 
 
+def _rewrite_builtin_browser_tool(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """Browser Use replaces built-in browser tools only for terminal-capable sessions.
+
+    ``check_fn`` results are process-wide cached, so the browser readiness check
+    cannot decide which surface an individual session may receive. Keep the
+    built-in surface when browser_exec is removed for lack of terminal access.
+    """
+    return None if "browser_exec" in available and "terminal" in available else td
+
+
 def _rewrite_delegate_task(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Trim the child-restrictions line to sibling tools actually present, or drop
     the line when none apply, so the model never learns ghost vocabulary. Two
@@ -472,6 +482,13 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_vault": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }
+
+for _browser_tool_name in (
+    "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_scroll", "browser_back",
+    "browser_press", "browser_get_images", "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+):
+    _DYNAMIC_SCHEMA_REWRITERS[_browser_tool_name] = _rewrite_builtin_browser_tool
+
 
 
 def _apply_dynamic_schemas(tool_defs: list[dict[str, Any]]) -> list[dict[str, Any]]:

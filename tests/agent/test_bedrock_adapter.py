@@ -798,6 +798,32 @@ class TestCachePointRejectionRecovery:
         assert CACHE_POINT not in later["toolConfig"]["tools"] and CACHE_POINT not in later["system"]
         assert recover_from_cache_point_rejection(exc, retry) is None  # nothing left to strip
 
+    def test_section_by_section_rejections_settle_within_one_call(self):
+        # A model that rejects the marker in every section, one section per error, must not fail
+        # the call: each rejection strips one more section, at most once per placement.
+        from agent import bedrock_adapter
+        kwargs = self._nova_kwargs()
+        runtime = MagicMock()
+        ok = {"output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+              "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}}
+        runtime.converse.side_effect = [
+            Exception("Malformed input request: #/system/1: extraneous key [cachePoint] is not permitted"),
+            Exception("Malformed input request: #/messages/2/content/1: extraneous key [cachePoint] is not permitted"),
+            ok,
+        ]
+        first = Exception(NOVA_TOOLS_REJECTION)
+        result = bedrock_adapter.retry_without_rejected_cache_points(runtime.converse, kwargs, first)
+        assert result is ok
+        assert runtime.converse.call_count == 3
+        assert "cachePoint" not in str(runtime.converse.call_args.kwargs)
+
+    def test_section_retry_ignores_unrelated_errors(self):
+        from agent import bedrock_adapter
+        runtime = MagicMock()
+        assert bedrock_adapter.retry_without_rejected_cache_points(
+            runtime.converse, self._nova_kwargs(), Exception("ThrottlingException")) is None
+        runtime.converse.assert_not_called()
+
     def test_strip_removes_only_the_rejected_placement(self):
         from agent.bedrock_adapter import strip_cache_points
         kwargs = self._nova_kwargs()

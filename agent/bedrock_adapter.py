@@ -610,10 +610,30 @@ def recover_from_cache_point_rejection(exc: BaseException, kwargs: dict[str, Any
     for section in placements:
         note_cache_point_rejection(model_id, section)
     logger.warning(
-        "bedrock: %s rejected a cachePoint block in %s — dropping that cache marker for this model and "
-        "retrying. Prompt caching stays active for the remaining sections.", model_id or "model", placement,
+        "bedrock: %s rejected a cachePoint block in %s, dropping that cache marker for this model and "
+        "retrying. %s", model_id or "model", placement,
+        "Prompt caching is off for this model." if placement == "all"
+        else "Prompt caching stays active for the remaining sections.",
     )
     return retry_kwargs
+
+
+def retry_without_rejected_cache_points(method: Any, kwargs: dict[str, Any], exc: BaseException) -> Any:
+    """Raw response of ``method`` retried after a cachePoint rejection, or None when ``exc`` is not one.
+    A model may reject the marker section by section; each new rejection strips one more section,
+    at most once per placement, so the call settles uncached instead of failing."""
+    retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
+    if retry_kwargs is None:
+        return None
+    for _ in range(len(CACHE_POINT_PLACEMENTS) - 1):
+        try:
+            return method(**retry_kwargs)
+        except Exception as again:
+            next_kwargs = recover_from_cache_point_rejection(again, retry_kwargs)
+            if next_kwargs is None:
+                raise
+            retry_kwargs = next_kwargs
+    return method(**retry_kwargs)
 
 
 # --- Encrypted-content redacted-reasoning suppression ---
@@ -1332,9 +1352,9 @@ def call_converse(
     try:
         response = client.converse(**kwargs)
     except Exception as exc:
-        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
-        if retry_kwargs is not None:
-            return normalize_converse_response(client.converse(**retry_kwargs))
+        retried = retry_without_rejected_cache_points(client.converse, kwargs, exc)
+        if retried is not None:
+            return normalize_converse_response(retried)
         redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
         if redacted_retry_kwargs is not None:
             return normalize_converse_response(client.converse(**redacted_retry_kwargs))

@@ -51,16 +51,28 @@ With the `a2a` toolset enabled, the agent gets:
 | `a2a_history(context_id)` | Recall a persisted A2A conversation |
 | `a2a_orchestrate(capability, message, mode?)` | Fan a task out to every peer advertising a capability (`all` / `first` / `best`) |
 
-Configure known peers in `config.yaml`:
+Configure the credential in the active profile's `$HERMES_HOME/.env` (for
+example, `~/.hermes/profiles/research/.env`) and reference its name from
+`config.yaml`:
+
+```dotenv
+A2A_RESEARCHER_TOKEN=replace-with-peer-token
+```
 
 ```yaml
 a2a_agents:
   researcher:
     url: "http://research-box.local:9900"
-    auth: { type: bearer, token: "..." }
+    auth: { type: bearer, token_env: A2A_RESEARCHER_TOKEN }
     timeout: 120
     capabilities: [web_search, research]
 ```
+
+`token_env` is resolved through the active profile's secret scope, preserving
+profile isolation. If both fields exist, `token_env` takes precedence and a
+missing environment secret fails closed rather than falling back to `token`.
+Literal `token` values remain supported for compatibility, but keeping
+credentials in `.env` is recommended.
 
 Then just ask: *"Ask the researcher agent to summarize today's arXiv postings."* Direct URLs work too — `a2a_call` accepts any A2A endpoint.
 

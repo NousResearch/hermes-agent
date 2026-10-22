@@ -19,6 +19,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
+import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
@@ -393,6 +394,14 @@ export function useComposerSubmit({
     // on the way out so it attaches instead of submitting as inert text.
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
+
+    // Slash commands come after setup: the words stay put, and one note (re-shown, never stacked) says why.
+    if (isSlashCommandText(text) && isOnboardingChat(sessionId)) {
+      notify({ id: 'onboarding-slash-off', kind: 'info', message: t.firstRun.slashOffBody, title: t.firstRun.slashOffTitle })
+      focusInput()
+
+      return
+    }
 
     const parked = answerParkedCardWithDraft(text, payloadPresent)
 

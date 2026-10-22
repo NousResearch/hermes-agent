@@ -1631,6 +1631,8 @@
     "firstRun.skipFailed",
     "firstRun.skipTip",
     "firstRun.skippedAll",
+    "firstRun.slashOffBody",
+    "firstRun.slashOffTitle",
     "firstRun.tours.full",
     "firstRun.tours.quick",
     "firstRun.tours.skip",

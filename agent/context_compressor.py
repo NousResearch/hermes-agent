@@ -3799,13 +3799,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
         # call_llm writes the route it actually selected; never pre-resolve a second, stale pair.
+        from agent.auxiliary_auto_routing import compression_main_runtime
         _aux_route: dict[str, str] = {}
         call_kwargs: dict[str, Any] = {
-            "task": "compression",
-            "main_runtime": {
-                "model": self.model, "provider": self.provider, "base_url": self.base_url, "api_key": self.api_key,
-                "api_mode": self.api_mode,
-            },
+            "task": "compression", "main_runtime": compression_main_runtime(self),
             "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.

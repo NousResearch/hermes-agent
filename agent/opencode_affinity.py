@@ -136,7 +136,8 @@ def merge_session_affinity_headers(
 ) -> dict[str, Any]:
     """Merge the affinity header(s) into ``kwargs["extra_headers"]`` (in place).
 
-    Existing per-request headers win, so a caller-pinned value is preserved.
+    Existing per-request headers win, so a caller-pinned value is preserved — matched
+    case-insensitively, since two spellings of one header name would arrive as two values.
     Targets with neither source configured are left untouched.
     """
     headers = opencode_session_headers(provider, base_url, session_id)
@@ -144,7 +145,9 @@ def merge_session_affinity_headers(
     if headers:
         existing = kwargs.get("extra_headers")
         merged = dict(existing) if isinstance(existing, dict) else {}
+        pinned = {key.lower() for key in merged}
         for key, value in headers.items():
-            merged.setdefault(key, value)
+            if key.lower() not in pinned:
+                merged[key] = value
         kwargs["extra_headers"] = merged
     return kwargs

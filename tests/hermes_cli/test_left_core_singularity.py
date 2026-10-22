@@ -59,6 +59,19 @@ def test_the_managed_env_beats_the_homes_env_as_in_load_hermes_dotenv(tmp_path, 
     assert lcm.singularity_in_use(_home(tmp_path, env=home_env)) is in_use
 
 
+@pytest.mark.parametrize("env", [
+    "HPC_BACKEND=singularity\nTERMINAL_ENV=${HPC_BACKEND}\n",
+    "TERMINAL_ENV=${SITE_BACKEND}\n",                    # the process environment supplies the value
+    "TERMINAL_ENV=${UNSET_BACKEND:-singularity}\n",
+])
+def test_dotenv_references_resolve_as_in_load_hermes_dotenv(tmp_path, monkeypatch, env):
+    # load_hermes_dotenv expands ${VAR} / ${VAR:-default} against the file's earlier lines and the
+    # process environment before TERMINAL_ENV picks the backend.
+    monkeypatch.setenv("SITE_BACKEND", "singularity")
+    monkeypatch.delenv("UNSET_BACKEND", raising=False)
+    assert lcm.singularity_in_use(_home(tmp_path, env=env)) is True
+
+
 def test_process_env_backend_counts_only_for_the_launch_home(tmp_path, monkeypatch):
     launch = _home(tmp_path)
     secondary = tmp_path / "profiles" / "work"

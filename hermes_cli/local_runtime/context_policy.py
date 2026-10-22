@@ -178,7 +178,9 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
             and stacked_initial.window >= lean_initial.window
             and stacked.decision.window > stacked_initial.window and lean.decision.spilled):
         return stacked
-    return lean
+    # At an equal window, a lean posture that also spills cannot preserve context.
+    # Keep the priced stacked posture so launch_args supplies its prefill batch flags.
+    return stacked if lean.decision.spilled else lean
 
 
 def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBudget, *,

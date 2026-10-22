@@ -224,7 +224,8 @@ def test_a_session_backend_switch_routes_that_session_only_and_global_persists(t
                                                 {"goal": "route me on a tier", "tier": "a"}],
                                          parent_agent=_parent("chat-a")))["error"]
         owned, unknown = error.split(" Task 1: ")
-        assert "backend is 'default'" in owned and "`/delegation probe-options`" in owned and "/new" in owned
+        assert "backend is 'default'" in owned and "`/delegation default --global` then `/new`" in owned
+        assert "`/delegation probe-options` to switch this session back to the saved backend" in owned
         assert "'tier'" in unknown and "no installed delegation backend" in unknown and len(recorded) == 3
         with pytest.raises(ValueError, match="'nope' is not installed"):
             set_session_backend("chat-a", "nope")
@@ -271,10 +272,12 @@ def test_a_session_switch_refuses_a_task_using_the_previous_backends_parameter(t
         ], parent_agent=_parent("chat-a")))
         refused, plain, work = out["results"]
         assert refused["status"] == "error" and refused["route"] == {"backend": "probe-profiles", "refused": True}
+        # /new starts on the saved backend, so the advice persists the session's pick first or names the saved one.
         assert refused["error"] == (
             "Task 0: this session's delegation backend is 'probe-profiles', which does not take 'option' (declared by "
-            "'probe-options'), so this task was not started. Start a new session with /new for a delegate_task tool "
-            "that matches 'probe-profiles', or switch this session back with `/delegation probe-options`.")
+            "'probe-options'), so this task was not started. Run `/delegation probe-profiles --global` then `/new` for "
+            "a session whose delegate_task choices match 'probe-profiles', or `/delegation probe-options` to switch "
+            "this session back to the saved backend.")
         assert plain["status"] == work["status"] == "completed"
         assert [b["model"] for b in recorded] == ["profile-default-model", "work-model"]
     finally:

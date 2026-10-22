@@ -6,7 +6,8 @@ session's next ``delegate_task`` call. The ``delegate_task`` schema (a backend's
 is part of the cached prompt and keeps following config.yaml, so a backend's own task parameters
 appear in sessions started after a global switch. After a session switch the model may still send the
 previous backend's parameters: each such task is refused (naming the session's backend, the parameter,
-and ``/new`` or ``/delegation <backend>`` as the fix), never run on the new backend's default route.
+and the fix: ``/delegation <backend> --global`` then ``/new``, since ``/new`` starts on the saved backend, or
+``/delegation <saved backend>`` back), never run on the new backend's default route.
 
 Session keys are the ``session_key`` a plugin command handler receives: the gateway/TUI route key, or
 the session id on the classic in-process CLI. ``delegate_task`` resolves the same key from the turn's

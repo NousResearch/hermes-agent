@@ -176,11 +176,14 @@ of dropping it and running the task on the new backend's default route:
 
 ```text
 Task 0: this session's delegation backend is 'profile_routes', which does not take 'option' (declared by
-'model_map'), so this task was not started. Start a new session with /new for a delegate_task tool that
-matches 'profile_routes', or switch this session back with `/delegation model_map`.
+'model_map'), so this task was not started. Run `/delegation profile_routes --global` then `/new` for a
+session whose delegate_task choices match 'profile_routes', or `/delegation model_map` to switch this
+session back to the saved backend.
 ```
 
-A parameter no installed backend declares is refused the same way, with "Resend it without ..." as the fix.
+`/new` starts on the saved backend (`delegation.backend`), so the fix persists the session's pick first or
+names the saved one. When the session follows `config.yaml` (it changed mid-session), the fix is just `/new`.
+A parameter no installed backend declares is refused the same way, with "Resend it without ..." first.
 
 ## Prompt caching
 

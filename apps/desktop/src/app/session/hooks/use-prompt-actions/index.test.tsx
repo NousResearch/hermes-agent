@@ -1606,6 +1606,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(calls[1]?.params).toEqual({
       session_id: RUNTIME_SESSION_ID,
       submission_id: expect.any(String),
+      submitted_at: expect.any(Number),
       text: 'write the implementation plan'
     })
 
@@ -2305,7 +2306,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(await handle!.submitText('continue remotely')).toBe(true)
     expect(ambientRequest).toHaveBeenCalledWith(
       'prompt.submit',
-      { submission_id: expect.any(String), session_id: 'runtime-remote', text: 'continue remotely' },
+      { submission_id: expect.any(String), submitted_at: expect.any(Number), session_id: 'runtime-remote', text: 'continue remotely' },
       1_800_000
     )
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
@@ -2337,10 +2338,44 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'hello after a stop'
       },
       1_800_000
     )
+  })
+
+  it('binds the receipt user_timestamp to the optimistic bubble in place', async () => {
+    // The gateway persists our submitted_at as the row timestamp and echoes it; the bubble takes it
+    // beside the row id so hydration finds the same timestamp it already shows.
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(
+      async (method: string, params?: Record<string, unknown>) =>
+        (method === 'prompt.submit'
+          ? { admission_id: params?.submission_id, status: 'started', user_row_id: 77, user_timestamp: 1_790_594_550 }
+          : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[{ id: 'before', parts: [textPart('before')], role: 'assistant', timestamp: 100 }]}
+      />
+    )
+
+    await handle!.submitText('send time probe')
+
+    const params = requestGateway.mock.calls.find(([method]) => method === 'prompt.submit')?.[1] as Record<string, unknown>
+    const messages = seeds.at(-1)?.messages as Array<{ id: string; rowId?: number; timestamp?: number }>
+
+    expect(typeof params.submitted_at).toBe('number')
+    expect(messages.map(message => message.id)).toEqual(['before', `user-${params.submission_id}`])
+    expect(messages[1]).toMatchObject({ rowId: 77, timestamp: 1_790_594_550 })
   })
 
   it('arms turnStartedAt at submit time instead of waiting for message.start', async () => {
@@ -2414,6 +2449,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'stop! rude interruption',
         interrupted: true
       },
@@ -2424,6 +2460,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenLastCalledWith(
       'prompt.submit',
       {
+        submitted_at: expect.any(Number),
         session_id: RUNTIME_SESSION_ID,
         submission_id: expect.any(String),
         text: 'follow-up without a barge'
@@ -2457,6 +2494,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         queued: true,
         session_id: RUNTIME_SESSION_ID,
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'queued message'
       },
       1_800_000
@@ -2495,6 +2533,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         queued: true,
         session_id: 'rt-session-a',
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'queued for background session'
       },
       1_800_000
@@ -2551,6 +2590,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         queued: true,
         session_id: 'rt-session-b',
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'queued for B mid-switch'
       },
       1_800_000
@@ -2687,6 +2727,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         queued: true,
         session_id: 'rt-session-b-live',
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'queued for B, B already re-bound'
       },
       1_800_000
@@ -2730,6 +2771,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         session_id: 'rt-tab',
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'kickoff for the tab'
       },
       1_800_000
@@ -2783,6 +2825,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         queued: true,
         session_id: 'rt-session-a-rebound',
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'queued for background session'
       },
       1_800_000
@@ -2835,6 +2878,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         queued: true,
         session_id: RUNTIME_SESSION_ID,
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'please send me'
       },
       1_800_000
@@ -3466,6 +3510,7 @@ describe('usePromptActions file attachment sync', () => {
     expect(calls[1]?.params).toEqual({
       session_id: RUNTIME_SESSION_ID,
       submission_id: expect.any(String),
+      submitted_at: expect.any(Number),
       text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
     })
   })
@@ -3522,6 +3567,7 @@ describe('usePromptActions file attachment sync', () => {
       method: 'prompt.submit',
       params: {
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         session_id: RUNTIME_SESSION_ID,
         text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize'
       }
@@ -3864,6 +3910,7 @@ describe('usePromptActions file attachment sync', () => {
       method: 'prompt.submit',
       params: {
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         session_id: RUNTIME_SESSION_ID,
         text: '@file:data/report.txt\n\nsummarize'
       }
@@ -4363,7 +4410,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     expect(calls).toEqual([
       {
         method: 'prompt.submit',
-        params: { submission_id: expect.any(String), session_id: NEW_RUNTIME_ID, text: 'first message of a new chat' }
+        params: { submission_id: expect.any(String), submitted_at: expect.any(Number), session_id: NEW_RUNTIME_ID, text: 'first message of a new chat' }
       }
     ])
   })
@@ -4422,6 +4469,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
       {
         session_id: NEW_RUNTIME_ID,
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         text: 'hello'
       },
       1_800_000
@@ -4719,6 +4767,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
         method: 'prompt.submit',
         params: {
           submission_id: expect.any(String),
+          submitted_at: expect.any(Number),
           session_id: RESUMED_RUNTIME_ID,
           text: 'deliver despite lagging local publication'
         }
@@ -4802,6 +4851,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
         method: 'prompt.submit',
         params: {
           submission_id: expect.any(String),
+          submitted_at: expect.any(Number),
           session_id: QUEUED_RUNTIME_ID,
           text: 'queued prompt for C',
           queued: true

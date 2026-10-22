@@ -35,6 +35,7 @@ class InflightTurn(Result):
     user: str = ""
     display_kind: str | None = None
     display_metadata: dict[str, JsonValue] | None = None
+    user_timestamp: float | None = None
     corrections: list[str] | None = None
     correction_offsets: list[int] | None = None
     error: str | None = None
@@ -45,6 +46,7 @@ class InflightTurn(Result):
 
 class QueuedPrompt(Result):
     user: str
+    user_timestamp: float | None = None
 
 
 class TodoState(Result):

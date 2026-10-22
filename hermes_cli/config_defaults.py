@@ -404,21 +404,21 @@ DEFAULT_CONFIG = {
         # keyless ring; the next call tries the chosen backend again (no sticky failover). Off when
         # keyless_fallback is false.
         "keyless_rescue": True,
-        # Per-vendor tier for vendors with both a keyless free endpoint and a keyed paid path (exa,
-        # parallel, firecrawl, keenable; tavily is opt-in keyless via `hermes tools`, not a ring
-        # member). Set by the `hermes tools` picker. "free" = always anonymous endpoint even with a
-        # key; "paid" = always keyed (missing key = error; vendor excluded from the ring); unset =
-        # keyed when the key is present, else the ring.
+        # Per-vendor tier (exa, parallel, firecrawl, keenable; tavily is opt-in via `hermes tools`,
+        # not a ring member): "free" = always anonymous endpoint even with a key; "paid" = always
+        # keyed, so a missing key errors and the vendor leaves the ring; unset = keyed when the key
+        # is present, else the ring.
         "provider_tier": {},
         # TTL caching for web_search + web_extract: repeat searches (same query + provider) within
         # the TTL come from an in-process memo; repeat extracts from the cache/web store. Concurrent
         # identical searches coalesce into one vendor request. Only successes cached.
         "cache_enabled": True,
         "cache_ttl_minutes": 20,
-        # Hosts always fetched live, never from the extract cache (staging deploys, tunnel URLs,
-        # preview builds). Entries match exactly, as "*.wildcard", or as a domain suffix
-        # ("mysite.dev" also covers "preview.mysite.dev"). localhost/private IPs always exempt.
+        # Hosts always fetched live, never from the extract cache. Match exactly, as "*.wildcard",
+        # or as a domain suffix ("mysite.dev" covers "preview.mysite.dev"). localhost/private exempt.
         "cache_exempt_hosts": [],
+        # Exa search algorithm, e.g. "lite" / "fast" / "deep". "" = send no argument (Exa's default "auto").
+        "exa_search_type": "",
     },
 
     "browser": {

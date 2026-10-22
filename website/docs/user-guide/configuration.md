@@ -2808,7 +2808,7 @@ web:
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
-**Exa:** Set `EXA_API_KEY` in `~/.hermes/.env`. Supports `category` filtering (`company`, `research paper`, `news`, `people`, `personal site`, `pdf`) and domain/date filters.
+**Exa:** Set `EXA_API_KEY` in `~/.hermes/.env`. Supports `category` filtering (`company`, `research paper`, `news`, `people`, `personal site`, `pdf`) and domain/date filters. `web.exa_search_type` picks the search algorithm — `auto` (default), `lite`, `fast`, `instant`, `deep`, `deep-lite`, `deep-reasoning` — and is the single biggest lever on Exa's cost per search (see the [Web Search guide](./features/web-search.md#exa)).
 
 ## Browser
 

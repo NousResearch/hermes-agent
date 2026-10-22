@@ -298,3 +298,114 @@ class TestFirecrawlScrapeTimeout:
         assert len(results) == 1
         assert results[0]["url"] == "https://example.com"
         assert results[0]["content"] == "content"
+
+
+# ---------------------------------------------------------------------------
+# Exa search type (web.exa_search_type)
+# ---------------------------------------------------------------------------
+
+
+class _FakeExaResponse:
+    results: list = []
+
+
+class TestExaSearchType:
+    """``web.exa_search_type`` reaches the SDK as ``type=``, and costs nothing when unset.
+
+    The setting only exists to buy cost/latency control, so the two ways it can be wrong are
+    (a) honouring a value that was never set — a silent behaviour change for every existing
+    user — and (b) quietly substituting a default for a value the vendor would have accepted.
+    Both are asserted here against the real provider, with only the SDK client faked.
+    """
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+        """Keyed Exa with the SDK client faked; returns the kwargs the provider passed."""
+        from plugins.web.exa import provider as exa_provider
+
+        captured: dict = {}
+
+        class _Client:
+            def search(self, query, **kwargs):
+                captured.update(kwargs)
+                captured["_query"] = query
+                return _FakeExaResponse()
+
+        monkeypatch.setenv("EXA_API_KEY", "real")
+        monkeypatch.setattr(exa_provider, "_get_exa_client", lambda: _Client())
+        return captured
+
+    def _config(self, monkeypatch: pytest.MonkeyPatch, **web: object) -> None:
+        import hermes_cli.config as hermes_config
+
+        monkeypatch.setattr(hermes_config, "load_config", lambda: {"web": dict(web)})
+
+    def test_unset_sends_no_type_kwarg(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An absent key must produce the exact request Hermes made before this setting."""
+        captured = self._capture(monkeypatch)
+        self._config(monkeypatch)
+
+        from plugins.web.exa.provider import ExaWebSearchProvider
+
+        result = ExaWebSearchProvider().search("anything", limit=3)
+
+        assert result["success"] is True
+        assert "type" not in captured, "unset exa_search_type must not send type="
+        assert captured["num_results"] == 3
+
+    @pytest.mark.parametrize("configured,expected", [("lite", "lite"), (" DeEp ", "deep"), ("fast", "fast")])
+    def test_configured_type_is_normalised_and_passed(
+        self, monkeypatch: pytest.MonkeyPatch, configured: str, expected: str
+    ) -> None:
+        captured = self._capture(monkeypatch)
+        self._config(monkeypatch, exa_search_type=configured)
+
+        from plugins.web.exa.provider import ExaWebSearchProvider
+
+        assert ExaWebSearchProvider().search("anything")["success"] is True
+        assert captured["type"] == expected
+
+    def test_unknown_type_is_forwarded_not_substituted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Exa ships modes between Hermes releases; a whitelist here would silently downgrade them."""
+        captured = self._capture(monkeypatch)
+        self._config(monkeypatch, exa_search_type="deep-reasoning-v2")
+
+        from plugins.web.exa.provider import ExaWebSearchProvider
+
+        assert ExaWebSearchProvider().search("anything")["success"] is True
+        assert captured["type"] == "deep-reasoning-v2"
+
+    def test_config_read_failure_still_searches_without_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A broken config read must never fail (or reprice) a paid search."""
+        captured = self._capture(monkeypatch)
+
+        import hermes_cli.config as hermes_config
+
+        def _boom() -> dict:
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(hermes_config, "load_config", _boom)
+
+        from plugins.web.exa.provider import ExaWebSearchProvider
+
+        assert ExaWebSearchProvider().search("anything")["success"] is True
+        assert "type" not in captured
+
+    def test_keyless_tier_ignores_the_setting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The anonymous free endpoint is mode-agnostic: the keyed SDK must not be reached."""
+        from plugins.web.exa import provider as exa_provider
+
+        calls: list = []
+        monkeypatch.setattr(
+            "plugins.web.keyless_mcp.search_with_failover",
+            lambda name, query, limit: calls.append((name, query, limit)) or {"success": True, "data": {"web": []}},
+        )
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.setattr(exa_provider, "_get_exa_client", lambda: pytest.fail("keyed client reached"))
+        self._config(monkeypatch, exa_search_type="lite")
+
+        from plugins.web.exa.provider import ExaWebSearchProvider
+
+        result = ExaWebSearchProvider().search("anything")
+
+        assert result["success"] is True
+        assert calls == [("exa", "anything", 5)]

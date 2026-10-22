@@ -9,6 +9,7 @@ cron job store.
 import importlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -60,6 +61,25 @@ class TestScheduleResolution:
 
 
 class TestValidation:
+    def test_url_slot_requires_a_safe_http_url(self):
+        blueprint = get_blueprint("custom-reminder")
+        blueprint = blueprint.__class__(
+            key="watch-page", title="Watch page", description="d", category="general",
+            schedule_template="0 9 * * *", prompt_template="Watch {url}",
+            slots=[BlueprintSlot(name="url", type="url", label="Page URL")],
+        )
+        with patch("tools.url_safety.is_safe_url", return_value=True):
+            assert fill_blueprint(blueprint, {"url": "https://example.com/page"})["prompt"] == (
+                "Watch https://example.com/page"
+            )
+        for value in ("ftp://example.com", "https://[", "https://" + "a" * 2050 + ".com"):
+            with pytest.raises(BlueprintFillError, match="URL"):
+                fill_blueprint(blueprint, {"url": value})
+        with patch("tools.url_safety.is_safe_url", return_value=False), pytest.raises(
+            BlueprintFillError, match="safe"
+        ):
+            fill_blueprint(blueprint, {"url": "http://127.0.0.1/"})
+
     def test_invalid_time_rejected(self):
         with pytest.raises(BlueprintFillError, match="invalid time"):
             fill_blueprint(get_blueprint("morning-brief"), {"time": "25:99"})

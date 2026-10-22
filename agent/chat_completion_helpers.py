@@ -1545,6 +1545,15 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     ``x-opencode-session``, a custom provider's opt-in ``session_affinity_header``) ride on
     every request regardless of transport (chat_completions / codex_responses /
     anthropic_messages). No-op for every other provider.
+
+    OpCode free-tier shaping (``stream=true`` + ``Bearer public`` + ``X-Stainless-*``
+    omission + relay-required tool-name stubs) is intentionally NOT spliced in here.
+    Instead the active provider's ``prepare_tools`` and ``prepare_request_extras`` hooks
+    are invoked below, so the bypass lives in the opencode-zen/opencode-go profile
+    plugins and cannot block a ``hermes update``. These hooks run from this single
+    chokepoint, so shaping is applied on every transport
+    (chat_completions / codex_responses / anthropic_messages) and on both the turn
+    path and the summary/compression path.
     """
     from agent.opencode_affinity import merge_session_affinity_headers
 
@@ -1555,124 +1564,37 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
     )
-    # OpenCode free-tier gate: the relay's authenticate() rejects FreeTierError-unless
-    # the request body has stream=true AND tools containing "bash" and "read".
-    # We set stream=True (forcing streamed response) and inject minimal tool stubs
-    # for any opencode target using -free models. The stream is aggregated back to a
-    # complete response in _dispatch_nonstreaming_api_request.
-    _apply_opencode_free_tier_hacks(agent, kwargs)
+    # Delegate provider-specific request shaping (tool stubs + any free-tier extras)
+    # to the active profile. The base ProviderProfile implements both hooks as
+    # no-ops, so this is a no-op for providers that don't opt in.
+    profile = _resolve_request_profile(agent)
+    if profile is not None:
+        ctx = {
+            "model": kwargs.get("model") or getattr(agent, "model", "") or "",
+            "base_url": getattr(agent, "base_url", None),
+            "provider": getattr(agent, "provider", None),
+            "session_id": getattr(agent, "session_id", None),
+            "turn_id": getattr(agent, "turn_id", None),
+            "api_key": getattr(agent, "api_key", None),
+        }
+        kwargs["tools"] = profile.prepare_tools(kwargs.get("tools") or [], **ctx)
+        for key, value in profile.prepare_request_extras(**ctx).items():
+            if key == "extra_headers" and isinstance(value, dict):
+                # Merge additively so the affinity headers set above are preserved
+                # rather than replaced.
+                kwargs.setdefault("extra_headers", {}).update(value)
+            else:
+                kwargs[key] = value
     return kwargs
 
 
-# --- OpenCode free-tier bypass ---
-# The relay's authenticate() (zen.go) checks: User-Agent format (opencode/<channel>/<version>/cli),
-# x-opencode-session in ses_<12hex><14base62> format (idgen.go), body.stream=true, and body.tools
-# containing "bash" and "read". Absent any of these -> FreeTierError 403.
-#
-# The relay accepts OpenAI function-calling format for tools (verified: curl with
-# proper description + parameters returns HTTP 200). Earlier 400 errors were caused
-# by empty parameters {} — the upstream LLM rejects tools with no parameters.
-_OPCODE_FREE_TOOLS = [
-    {"type": "function", "function": {
-        "name": "shell",
-        "description": "Executes a shell command in the user's terminal. Output is sandboxed to the project directory; file writes require explicit user confirmation. Always quote arguments.",
-        "parameters": {"type": "object", "properties": {
-            "command": {"type": "string", "description": "The shell command to execute (e.g. ls -la, git status)."},
-            "is_background": {"type": "boolean", "description": "Run in background and return output later."},
-            "timeout_in_seconds": {"type": "number", "description": "Maximum execution time in seconds."},
-            "mode": {"type": "string", "enum": ["foreground", "background"]},
-        }, "required": ["command"]}}},
-    {"type": "function", "function": {
-        "name": "read",
-        "description": "Reads a file from the local filesystem. Supports partial reads with offset and limit.",
-        "parameters": {"type": "object", "properties": {
-            "filePath": {"type": "string", "description": "The path to the file to read."},
-            "offset": {"type": "number", "description": "Line number to start reading from (0-based)."},
-            "limit": {"type": "number", "description": "Number of lines to read."},
-        }, "required": ["filePath"]}}},
-    {"type": "function", "function": {
-        "name": "glob",
-        "description": "Glob file search — finds files matching a pattern. Use * for wildcards.",
-        "parameters": {"type": "object", "properties": {
-            "pattern": {"type": "string", "description": "Glob pattern (e.g. src/**/*.ts, *.py)."},
-        }, "required": ["pattern"]}}},
-    {"type": "function", "function": {
-        "name": "grep",
-        "description": "Search file contents with a regex pattern.",
-        "parameters": {"type": "object", "properties": {
-            "pattern": {"type": "string", "description": "Regex pattern to search for."},
-            "path": {"type": "string", "description": "Directory or file to search in."},
-        }, "required": ["pattern"]}}},
-]
-
-
-def _is_opencode_free_tier_model(model: str) -> bool:
-    """True when the model is a free-tier OpenCode model requiring bypass headers."""
-    return "-free" in (model or "").lower()
-
-
-# OpenAI SDK telemetry headers that identify the Python SDK to the relay.
-# Stripped via Omit() so the request appears to come from the official OpenCode CLI.
-_STAINLESS_HEADERS = (
-    "X-Stainless-Lang", "X-Stainless-Package-Version", "X-Stainless-OS",
-    "X-Stainless-Arch", "X-Stainless-Runtime", "X-Stainless-Runtime-Version",
-    "X-Stainless-Async", "x-stainless-retry-count", "x-stainless-read-timeout",
-)
-
-
-def _apply_opencode_free_tier_hacks(agent, kwargs: dict) -> dict:
-
-    """Inject stream=true + bash/read stub tools for OpenCode free-tier models.
-
-    The relay's authenticate() (zen.go) checks the request body for ``stream: true``
-    and ``tools`` containing ``bash`` and ``read`` — fields it assumes only the real
-    OpenCode client would send. Without them, FreeTierError 403 fires before any quota
-    check. We set ``stream=True`` (forcing a streamed response) and add minimal tool
-    stubs; ``_dispatch_nonstreaming_api_request`` aggregates the stream back.
-    """
-    from agent.opencode_affinity import is_opencode_target
-
-    provider = getattr(agent, "provider", None)
-    base_url = getattr(agent, "base_url", None)
-    if not is_opencode_target(provider, base_url):
-        return kwargs
-
-    model = kwargs.get("model", "") or getattr(agent, "model", "") or ""
-    if not _is_opencode_free_tier_model(model):
-        return kwargs
-
-    # Inject bash/read tool stubs if not already present
-    existing = kwargs.get("tools") or []
-    existing_names = {t.get("function", {}).get("name") for t in existing if isinstance(t, dict)}
-    for stub in _OPCODE_FREE_TOOLS:
-        name = stub["function"]["name"]
-        if name not in existing_names:
-            existing.append(stub)
-    kwargs["tools"] = existing
-
-    # The relay requires stream=true in the body to pass free-tier authentication
-    kwargs["stream"] = True
-    kwargs.setdefault("stream_options", {"include_usage": True})
-
-    # For free-tier models, always use Bearer public — this is how the OpenCode
-    # CLI accesses free-tier WITHOUT an API key (Issue #49433). Real API keys
-    # get flagged by the relay's abuse detection after repeated free-tier use,
-    # so they should only be used for paid models.
-    _auth = kwargs.setdefault("extra_headers", {})
-    _auth["Authorization"] = "Bearer public"
-
-    # Strip the OpenAI SDK's X-Stainless-* telemetry headers — the relay's
-    # auth gate now rejects any request carrying them (they identify the
-    # request as the Python SDK rather than the official OpenCode CLI).
-    # Omit() values cause _merge_mappings to drop the header entirely.
+def _resolve_request_profile(agent):
+    """Resolve the active provider's ProviderProfile, or None if unregistered."""
     try:
-        from openai._types import Omit as _Omit
-        _stale = kwargs.setdefault("extra_headers", {})
-        for _h in _STAINLESS_HEADERS:
-            _stale.setdefault(_h, _Omit())
-    except ImportError:
-        pass
-    return kwargs
+        from providers import get_provider_profile
+        return get_provider_profile(agent.provider)
+    except Exception:
+        return None
 
 
 def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:

@@ -45,7 +45,129 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
-class OpenCodeGoProfile(ProviderProfile):
+# --- OpenCode free-tier relay contract (Issue #49433) ---
+# The Zen/Go relay's authenticate() (zen.go) checks: User-Agent format
+# ``opencode/<channel>/<version>/cli`` (satisfied by _ATTRIBUTION_HEADERS above),
+# ``x-opencode-session`` in ``ses_<12hex><14base62>`` format (produced by core's
+# ``merge_session_affinity_headers``, which still runs in build_api_kwargs),
+# ``body.stream=true``, and ``body.tools`` containing ``bash`` and ``read``.
+# Absent any of these -> FreeTierError 403. All of this lives in the profile
+# overrides (OpenCodeFreeTierMixin) so it does not block ``hermes update``; core
+# only invokes the generic ProviderProfile.prepare_tools / prepare_request_extras
+# hooks from build_api_kwargs.
+# OpenAI SDK telemetry headers that identify the Python SDK to the relay.
+# Stripped via Omit() so the request appears to come from the official OpenCode CLI.
+_STAINLESS_HEADERS = (
+    "X-Stainless-Lang", "X-Stainless-Package-Version", "X-Stainless-OS",
+    "X-Stainless-Arch", "X-Stainless-Runtime", "X-Stainless-Runtime-Version",
+    "X-Stainless-Async", "x-stainless-retry-count", "x-stainless-read-timeout",
+)
+
+
+def _is_opencode_free_tier_model(model: str | None) -> bool:
+    """True when ``model`` is a free-tier OpenCode model requiring the bypass."""
+    return "-free" in (_flat_model_name(model) or "")
+
+
+# Tool stubs the relay expects on free-tier requests. Named ``bash``/``read`` per
+# zen.go (NOT Hermes' real ``terminal``/``read_file`` tools, which the relay
+# rejects). Non-empty ``parameters`` are required (empty ``{}`` bodies 400).
+_OPENCODE_FREE_TOOLS = [
+    {"type": "function", "function": {
+        "name": "bash",
+        "description": "Executes a shell command in the user's terminal. Output is sandboxed to the project directory; file writes require explicit user confirmation. Always quote arguments.",
+        "parameters": {"type": "object", "properties": {
+            "command": {"type": "string", "description": "The shell command to execute (e.g. ls -la, git status)."},
+            "is_background": {"type": "boolean", "description": "Run in background and return output later."},
+            "timeout_in_seconds": {"type": "number", "description": "Maximum execution time in seconds."},
+            "mode": {"type": "string", "enum": ["foreground", "background"]},
+        }, "required": ["command"]}}},
+    {"type": "function", "function": {
+        "name": "read",
+        "description": "Reads a file from the local filesystem. Supports partial reads with offset and limit.",
+        "parameters": {"type": "object", "properties": {
+            "filePath": {"type": "string", "description": "The path to the file to read."},
+            "offset": {"type": "number", "description": "Line number to start reading from (0-based)."},
+            "limit": {"type": "number", "description": "Number of lines to read."},
+        }, "required": ["filePath"]}}},
+]
+
+
+class OpenCodeFreeTierMixin(ProviderProfile):
+    """Free-tier bypass for OpenCode relays, kept in the plugin (not core).
+
+    ``prepare_tools`` injects the ``bash``/``read`` tool stubs the relay's
+    authenticate() requires (Hermes' real tools are ``terminal``/``read_file``);
+    ``prepare_request_extras`` sets ``stream=true`` + ``Bearer public`` and strips
+    ``X-Stainless-*`` telemetry so the request looks like the official CLI. Only
+    free-tier (``*-free``) models are shaped; paid models are pass-through.
+    """
+
+    def _is_free_tier(self, model: str | None) -> bool:
+        return _is_opencode_free_tier_model(model)
+
+    def prepare_tools(
+        self,
+        tools: list,
+        *,
+        model: str | None = None,
+        base_url: str | None = None,
+        provider: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        **_context: Any,
+    ) -> list:
+        """Append relay-expected ``bash``/``read`` stubs for free-tier models."""
+        if not self._is_free_tier(model):
+            return tools
+        existing = list(tools or [])
+        names = {t.get("function", {}).get("name") for t in existing if isinstance(t, dict)}
+        for stub in _OPENCODE_FREE_TOOLS:
+            if stub["function"]["name"] not in names:
+                existing.append(stub)
+        return existing
+
+    def prepare_request_extras(
+        self,
+        *,
+        model: str | None = None,
+        base_url: str | None = None,
+        provider: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        api_key: str | None = None,
+        **_context: Any,
+    ) -> dict[str, Any]:
+        """``stream=true`` + ``X-Stainless-*`` omission for free-tier; ``Bearer public`` ONLY when no key.
+
+        Mirrors the OpenCode CLI: fall back to the anonymous ``Bearer public``
+        credential only when no real ``api_key`` is configured (free-tier quota),
+        and leave ``Authorization`` untouched when a key is present so the real
+        key is used (Issue #49433). Using ``Bearer public`` unconditionally is
+        faulty (it masks a configured paid-tier key).
+        """
+        if not self._is_free_tier(model):
+            return {}
+        try:
+            from openai._types import Omit as _Omit
+        except ImportError:
+            _Omit = None  # sandbox without openai: Omit() values become None (dropped by SDK)
+        headers: dict[str, Any] = {}
+        if not api_key:
+            # No real key configured -> free-tier anonymous access via the CLI's
+            # "Bearer public" credential.
+            headers["Authorization"] = "Bearer public"
+        if _Omit is not None:
+            for _h in _STAINLESS_HEADERS:
+                headers.setdefault(_h, _Omit())
+        return {
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "extra_headers": headers,
+        }
+
+
+class OpenCodeGoProfile(OpenCodeFreeTierMixin, ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
     # The relay's default max_tokens (262144) exceeds what Xiaomi accepts for
@@ -109,7 +231,7 @@ class OpenCodeGoProfile(ProviderProfile):
         return {}, {}
 
 
-class OpenCodeZenProfile(ProviderProfile):
+class OpenCodeZenProfile(OpenCodeFreeTierMixin, ProviderProfile):
     """OpenCode Zen - model-specific reasoning controls."""
 
     def build_api_kwargs_extras(

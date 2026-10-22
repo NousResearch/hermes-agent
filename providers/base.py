@@ -239,6 +239,58 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def prepare_tools(
+        self,
+        tools: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        base_url: str | None = None,
+        provider: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        **context: Any,
+    ) -> list[dict[str, Any]]:
+        """Provider-specific preparation of the request's tool list.
+
+        Receives the live ``tools`` list (the only provider hook that does) and
+        returns the list to send in ``api_kwargs["tools"]``. Providers that must
+        synthesize or rewrite tool entries (e.g. OpenCode free-tier relays that
+        gate authentication on specific tool names) override this. Default: pass-through.
+
+        Invoked from ``agent.chat_completion_helpers.build_api_kwargs``, the single
+        chokepoint shared by every transport (chat_completions / codex_responses /
+        anthropic_messages) and by the turn AND summary/compression paths, so an
+        override is never left behind on either.
+        """
+        return tools
+
+    def prepare_request_extras(
+        self,
+        *,
+        model: str | None = None,
+        base_url: str | None = None,
+        provider: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        **context: Any,
+    ) -> dict[str, Any]:
+        """Provider-specific extra top-level api_kwargs to merge additively.
+
+        Returns a mapping merged into the request kwargs by ``build_api_kwargs``.
+        The ``extra_headers`` value is merged *additively* into
+        ``kwargs["extra_headers"]`` (so it preserves affinity headers already set
+        there); every other key (e.g. ``stream``, ``stream_options``) is assigned
+        directly. Default: empty dict.
+
+        Providers that need relay-specific request shaping on free-tier models
+        (OpenCode's ``stream=true`` + ``Bearer public`` + ``X-Stainless-*``
+        omission) override this rather than splicing the logic into core.
+
+        Invoked from ``agent.chat_completion_helpers.build_api_kwargs``, the single
+        chokepoint shared by every transport and by the turn AND summary paths.
+        """
+        return {}
+
     def build_client_kwargs_extras(self, **context: Any) -> dict[str, Any]:
         """Provider-specific OpenAI client keyword arguments.
 

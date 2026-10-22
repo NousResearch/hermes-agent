@@ -9,6 +9,10 @@ answers two ways (#142334):
 * ``(provider, model)`` when the host is an unknown relay — a gateway fronting that provider
   serves the same window, unless the host belongs to a different known provider.
 
+Provider-scoped lookups also key on a CONCRETE provider (``auto``/blank resolved), because a
+picker-started session otherwise reaches the provider-profile hook with a name no profile is
+registered under.
+
 Facade symbols (``_normalize_base_url``, ``_infer_provider_from_url``) are imported inside the
 functions that need them: the facade imports this module at module level, so a module-level import
 back would close the cycle.
@@ -76,4 +80,33 @@ def _endpoint_scoped_context_length(model: str, base_url: str, provider: str = "
         if relay_host and provider_key and provider_key == owner and _relay_model_ids(model_key) & models:
             return ctx
     return None
+
+
+def _concrete_provider_for_metadata(provider: str, base_url: str) -> str:
+    """Concrete provider behind ``auto``/blank, for provider-scoped metadata lookups.
+
+    Picker-started sessions hand this resolver ``auto``, but every provider-scoped tier below keys
+    on a real id — ``get_provider_profile('auto')`` is ``None``, so a registered provider profile's
+    ``get_model_context_length`` hook was dead code for them (#142334).
+
+    A known provider host names its owner for free (the same inference step 5 relies on), so
+    direct connections pay nothing. Behind a relay (`base_url` on an unknown host) the runtime's
+    own resolution is asked — ``hermes_cli.auth.resolve_provider``: config ``model.provider`` →
+    env credential → logged-in OAuth. Returns ``""`` when nothing concrete can be named: no scope
+    beats a wrong one.
+    """
+    raw = (provider or "").strip()
+    if raw and raw.lower() != "auto":
+        return raw
+    from agent.model_metadata import _infer_provider_from_url
+
+    inferred = (_infer_provider_from_url(base_url) or "").strip().lower() if base_url else ""
+    if inferred:
+        return inferred
+    with contextlib.suppress(Exception):  # unconfigured home / AuthError → stay unscoped
+        from hermes_cli.auth import resolve_provider
+        resolved = (resolve_provider("auto") or "").strip().lower()
+        if resolved and resolved != "auto":
+            return resolved
+    return ""
 

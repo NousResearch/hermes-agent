@@ -20,7 +20,10 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
-from agent.model_metadata_relay import _endpoint_scoped_context_length
+from agent.model_metadata_relay import (
+    _concrete_provider_for_metadata,
+    _endpoint_scoped_context_length,
+)
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -2228,15 +2231,18 @@ def get_model_context_length(
     # a generic family default. Mirrors the validation path's base/suffix split
     # in hermes_cli.models.validate_requested_model.
     model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
+    # Provider-scoped metadata keys on a CONCRETE provider: picker-started sessions pass "auto" (no
+    # profile behind that string), so the profile hook would be skipped (#142334).
+    scoped_provider = _concrete_provider_for_metadata(provider, base_url)
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.
-    endpoint_context = _endpoint_scoped_context_length(model, base_url, provider=provider)
+    endpoint_context = _endpoint_scoped_context_length(model, base_url, provider=scoped_provider)
     if endpoint_context is not None:
         return endpoint_context
     # A profile that qualifies its own bound (external processes have no /models probe) wins
     # over the generic caches below; explicit user/endpoint overrides above still take precedence.
     from providers import get_provider_profile
-    profile = get_provider_profile(provider)
+    profile = get_provider_profile(scoped_provider)
     context = profile.get_model_context_length(model) if profile else None
     if type(context) is int and context > 0:
         return context

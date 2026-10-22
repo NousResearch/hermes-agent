@@ -12,6 +12,8 @@ Contract pinned here:
 * canonical host+path matching stays PRIMARY (a canonical host with another path never leaks);
 * the same table answers by ``(provider, model)`` when the host is not canonical — the relay
   fallback, including vendor-prefixed relay ids (``kimi/k3``);
+* ``auto``/blank resolves to a concrete provider before the profile hook;
+* ``catalog_provider`` on a custom route names the upstream vendor for those lookups;
 * an unknown model through a relay still lands on the 256K fallback.
 """
 
@@ -230,3 +232,74 @@ class TestScopedWindowsEndToEnd:
                     assert get_model_context_length(
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
+
+
+class _RecordingProfile:
+    """Provider profile whose declared window stands in for a plugin's ``get_model_context_length``."""
+
+    def __init__(self, value):
+        self.value = value
+        self.seen = []
+
+    def get_model_context_length(self, model):
+        self.seen.append(model)
+        return self.value
+
+
+class TestAutoProviderBeforeProfileHook:
+    """Part 2: ``auto``/blank resolves to a concrete provider, so registered profiles fire."""
+
+    def test_auto_resolves_concrete_provider_for_profile_hook(self):
+        profile = _RecordingProfile(1_234_567)
+        asked = []
+
+        def _profile(name):
+            asked.append(name)
+            return profile if name == "kimi-coding" else None
+
+        with _quiet_tiers(), \
+             patch("hermes_cli.auth.resolve_provider", return_value="kimi-coding"), \
+             patch("providers.get_provider_profile", side_effect=_profile):
+            ctx = get_model_context_length("relay-model", base_url=RELAY, provider="auto")
+
+        assert ctx == 1_234_567
+        assert "kimi-coding" in asked
+
+    def test_blank_provider_resolves_too(self):
+        profile = _RecordingProfile(999_000)
+        with _quiet_tiers(), \
+             patch("hermes_cli.auth.resolve_provider", return_value="kimi-coding"), \
+             patch("providers.get_provider_profile",
+                   side_effect=lambda name: profile if name == "kimi-coding" else None):
+            assert get_model_context_length("relay-model", base_url=RELAY, provider="") == 999_000
+
+    def test_known_host_infers_without_asking_the_resolver(self):
+        """A direct connection's host names its provider: no config/credential read on that path."""
+        asked = []
+
+        def _profile(name):
+            asked.append(name)
+
+        with _quiet_tiers(), \
+             patch("hermes_cli.auth.resolve_provider") as resolver, \
+             patch("providers.get_provider_profile", side_effect=_profile):
+            get_model_context_length("some-model", base_url="https://api.moonshot.ai/v1",
+                                     provider="auto")
+
+        resolver.assert_not_called()
+        assert "kimi-coding" in asked
+
+    def test_explicit_provider_does_not_consult_the_resolver(self):
+        with _quiet_tiers(), \
+             patch("hermes_cli.auth.resolve_provider") as resolver:
+            get_model_context_length("relay-model", base_url=RELAY, provider="deepseek")
+
+        resolver.assert_not_called()
+
+    def test_resolution_failure_falls_through(self):
+        """A resolver that cannot name a provider (AuthError, no config) must not break resolution."""
+        with _quiet_tiers(), \
+             patch("hermes_cli.auth.resolve_provider", side_effect=RuntimeError("no provider")):
+            assert get_model_context_length(
+                "totally-unknown-model-xyz", base_url=RELAY, provider="auto"
+            ) == mm.DEFAULT_FALLBACK_CONTEXT

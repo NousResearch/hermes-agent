@@ -587,12 +587,13 @@ class PluginContext:
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
         self, content: str, role: str = "user", *, session_key: str | None = None,
-        origin: Mapping[str, Any] | None = None,
+        origin: Mapping[str, Any] | None = None, quiet: bool = False,
     ) -> bool:
         """Queue *content* for a session (``session_key``) or a chat in this plugin's own profile
-        (``origin``); ``True`` means a host accepted it. Contract: plugins_injection.py, plugin docs."""
+        (``origin``). ``quiet=True`` suppresses a gateway turn's provisional display until its final
+        reply. ``True`` means a host accepted it. Contract: plugins_injection.py, plugin docs."""
         from hermes_cli.plugins_injection import inject_plugin_message
-        return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
+        return inject_plugin_message(self, content, role, session_key=session_key, origin=origin, quiet=quiet)
 
     def session_cwd(self) -> str:
         """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""

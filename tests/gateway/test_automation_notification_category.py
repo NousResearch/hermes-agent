@@ -178,6 +178,55 @@ async def _native_owner(tmp_path, monkeypatch, human_message_id):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('quiet', [False, True])
+async def test_native_automation_quiet_injection_roundtrip(tmp_path, monkeypatch, quiet):
+    """A quiet plugin wake survives the authority's durable native envelope."""
+    from gateway.session_envelope import restore_native
+    runner, authority, adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
+    try:
+        event = MessageEvent(text='plugin wake', source=source, internal=True, metadata=dict(metadata))
+        event._quiet_plugin_injection = quiet
+        receipt = await authority.admit_automation(adapter, event, 'quiet-plugin-wake')
+        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+        descriptor = row['payload']['native_text_v1']['automation']
+        restored = restore_native(row['payload'], runner)
+        assert descriptor.get('quiet_plugin_injection', False) is quiet
+        assert getattr(restored, '_quiet_plugin_injection', False) is quiet
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('quiet', [False, True])
+async def test_local_automation_quiet_injection_roundtrip(tmp_path, monkeypatch, quiet):
+    """A quiet plugin wake survives the authority's durable local descriptor."""
+    from gateway.session_automation import restore_local_automation
+    from gateway.session_local import create_local_session
+    runner, authority = await _authority(tmp_path, monkeypatch)
+    actor = Principal('test-owner', 'default', frozenset({'session:create', 'session:submit'}), 'fixture')
+    try:
+        ref = create_local_session(authority, actor, dict(
+            request_id='quiet-local', source='gui', model='fixture', toolsets=[],
+        ))
+        live = authority.sessions[ref.session_id]
+        entry = runner.session_store.lookup_by_session_key(live.route)
+        event = MessageEvent(text='plugin wake', source=live.source, internal=True, metadata={
+            'gateway_session_key': live.route, 'gateway_session_id': entry.session_id,
+        })
+        event._quiet_plugin_injection = quiet
+        receipt = await authority.admit_automation(
+            runner._adapter_for_source(live.source), event, 'quiet-local-plugin-wake',
+        )
+        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+        descriptor = row['payload']['local_automation_v1']
+        restored = restore_local_automation(authority, ref, row)
+        assert descriptor.get('quiet_plugin_injection', False) is quiet
+        assert getattr(restored, '_quiet_plugin_injection', False) is quiet
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_native_completion_wake_admits_when_source_differs_only_by_message_id(tmp_path, monkeypatch):
     """A synthetic wake clears ``message_id`` (#52694/#123097) while the committed human
     envelope keeps it; the admission must still match the route and drop the stale anchor."""

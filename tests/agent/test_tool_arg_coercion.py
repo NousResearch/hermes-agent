@@ -132,6 +132,54 @@ class TestCoerceToolArgs:
     def test_empty_args(self):
         assert coerce_tool_args("test_tool", {}) == {}
 
+    def test_typeless_union_coerced_unless_it_accepts_strings(self):
+        """anyOf-only properties are coerced in branch order; a string branch keeps strings as sent."""
+        schema = self._mock_schema({
+            "flag": {"anyOf": [{"type": "boolean"}, {"type": "array", "items": {"type": "string"}}]},
+            "ref": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"flag": "true", "ref": "42"}) == {"flag": True, "ref": "42"}
+            assert coerce_tool_args("test_tool", {"flag": '["a"]'}) == {"flag": ["a"]}
+            assert coerce_tool_args("test_tool", {"flag": "maybe"}) == {"flag": "maybe"}
+
+    def test_typeless_union_branches_behind_a_ref_are_resolved(self):
+        """A union branch that is a local $ref counts with the type it points at; a cycle stays uncoerced."""
+        schema = self._mock_schema({
+            "flag": {"anyOf": [{"$ref": "#/$defs/Flag"}, {"type": "array"}]},
+            "ref": {"anyOf": [{"$ref": "#/$defs/Name"}, {"type": "integer"}]},
+            "node": {"$ref": "#/$defs/Node"},
+        })
+        schema["parameters"]["$defs"] = {
+            "Flag": {"type": "boolean"},
+            "Name": {"type": "string"},
+            "Node": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "integer"}]},
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"flag": "true", "ref": "42", "node": "5"}) == {
+                "flag": True, "ref": "42", "node": "5",
+            }
+
+    def test_typeless_oneof_and_nullable_unions_are_coerced(self):
+        schema = self._mock_schema({
+            "count": {"oneOf": [{"type": "boolean"}, {"type": "integer"}]},
+            "items": {"anyOf": [{"type": "array"}, {"type": "null"}]},
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"count": "7", "items": "[1]"}) == {"count": 7, "items": [1]}
+            assert coerce_tool_args("test_tool", {"count": "true", "items": "null"}) == {"count": True, "items": None}
+
+    def test_union_with_an_untypeable_branch_is_left_alone(self):
+        """A dangling $ref, a type-list branch or an allOf wrapper leave the union unresolved: no reinterpretation."""
+        schema = self._mock_schema({
+            "dangling": {"anyOf": [{"$ref": "#/$defs/Missing"}, {"type": "integer"}]},
+            "typelist": {"anyOf": [{"type": ["boolean", "array"]}, {"type": "integer"}]},
+            "wrapped": {"allOf": [{"anyOf": [{"type": "boolean"}, {"type": "integer"}]}]},
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"dangling": "7", "typelist": "true", "wrapped": "true"}
+            assert coerce_tool_args("test_tool", dict(args)) == args
+
 
 
 

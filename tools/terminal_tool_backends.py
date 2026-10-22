@@ -236,6 +236,15 @@ def _stamp_sandbox_home(env_obj, provider, cwd) -> None:
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
+        from hermes_cli.plugin_host import is_hosted_object
+        if is_hosted_object(provider):
+            # The environment would come back as an opaque placeholder, and its execute() would run outside
+            # this process's interrupt, activity and terminal-scope state: refuse before the host starts a
+            # sandbox nothing here could use or clean up.
+            raise ValueError(
+                f"terminal.backend is {env_type}, a plugin that runs in the plugin host (plugins.isolation: host), "
+                f"and the host cannot hand its environment to Hermes, so commands cannot run in it. Set "
+                f"plugins.isolation: in_process to use this backend.")
         env_obj = provider.create_environment(cwd=cwd, timeout=timeout, task_id=task_id, image=image,
                                               container_config=cc)
         # Stamp the backend name so path-resolution and progress surfaces can identify plugin

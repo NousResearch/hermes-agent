@@ -207,11 +207,12 @@ the browser keep their scratch files under the environment's
 `get_temp_dir()`. An environment that doesn't subclass `BaseEnvironment` and
 has no such method gets the same default `BaseEnvironment` uses.
 
-Both `exec_prefix()` and the `~` home resolution read the environment object
-itself, so they work only for plugins loaded in-process. Under
-`plugins.isolation: host` the environment reaches Hermes as an opaque
-placeholder: Bot Desktop refuses a `supports_streams` backend with a message
-naming the setting, and `default_cwd = "~"` stays a literal `~`.
+A terminal backend runs only in-process: its environment object is what the
+terminal tool, file tools, `exec_prefix()` and the `~` home resolution all
+drive. Under `plugins.isolation: host` the object cannot cross the host
+boundary, so creating the environment refuses with a message naming
+`plugins.isolation: in_process` (before the host starts a sandbox), and Bot
+Desktop refuses a `supports_streams` backend the same way.
 
 ## Session isolation semantics
 

@@ -680,7 +680,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         git_cmd, root, branch, ["--depth", "1"] if is_shallow else [],
     )
     if fetch_result.returncode != 0:
-        _print_fetch_failure(fetch_result.stderr)
+        _print_fetch_failure(fetch_result.stderr, git_cmd=git_cmd, root=root)
         sys.exit(1)
     if is_shallow:
         _check.repair_shallow_grafts(root)
@@ -1916,7 +1916,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"
                       " should_include_obj' in https://hermes-agent.nousresearch.com/docs/getting-started/updating")
-            _print_fetch_failure(fetch_result.stderr)
+            _print_fetch_failure(fetch_result.stderr, git_cmd=git_cmd, root=_m().PROJECT_ROOT)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             _record_stop("git_timeout" if fetch_result.returncode == 124 else "disk_full"
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")

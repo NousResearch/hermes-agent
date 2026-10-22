@@ -5,6 +5,7 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
@@ -3922,43 +3923,6 @@ export const esOverrides = {
     snippetsDesc: 'Elige un prompt inicial para insertarlo en el compositor.',
     dropFiles: 'Suelta archivos para adjuntarlos',
     dropSession: 'Suelta para enlazar este chat',
-    mcpSuggestions: {
-      label: server => `Añadir ${server}`,
-      tip: keyword => `Sugerido porque mencionaste "${keyword}" — haz clic para conectar`,
-      connecting: server => `Conectando ${server}…`,
-      cancelTip: 'Haz clic para cancelar',
-      added: server => `${server} añadido`,
-      addedTip: 'Conectado — sus herramientas están listas en este chat',
-      connectFailed: server => `No se pudo conectar ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Usar habilidad: ${skill}`,
-      tip: skill => `Mencionaste "${skill}" — haz clic para empezar con esa habilidad`,
-      done: skill => `Añadido /${skill}`,
-      doneTip: 'La habilidad se carga cuando envíes'
-    },
-    githubSuggestions: {
-      label: 'Configurar GitHub',
-      tip: 'GitHub funciona aquí mediante las skills de la CLI gh: haz clic para conectar tu cuenta',
-      done: 'Se añadió /github-auth',
-      doneTip: 'Envía el mensaje y el agente te guiará para iniciar sesión en GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Reconectar ${server}`,
-      tip: server => `Una llamada a ${server} acaba de fallar con un error de conexión`,
-      working: server => `Reconectando ${server}…`,
-      workingTip: 'Haz clic para cancelar',
-      done: server => `${server} reconectado`,
-      doneTip: 'Las credenciales nuevas están activas en este chat',
-      failed: server => `No se pudo reconectar ${server}`
-    },
-    cronSuggestions: {
-      label: 'Programar esto',
-      tip: phrase => `"${phrase}" suena recurrente — ejecútalo con un horario en su lugar`,
-      prefix: 'Configúralo como tarea programada:',
-      done: 'Marcado para programar',
-      doneTip: 'Envíalo y el agente creará la tarea'
-    },
     snippets: {
       codeReview: {
         label: 'Revisión de código',
@@ -4910,32 +4874,7 @@ export const esOverrides = {
       react: 'Reaccionar',
       dismissError: 'Descartar error',
       responseStopped: 'Respuesta detenida',
-      errorLayers: {
-        auth: 'Problema de inicio de sesión',
-        billing: 'Créditos agotados',
-        disk: 'Disco lleno',
-        endpoint: 'No se puede conectar con tu servidor de modelos',
-        gateway: 'Hermes tuvo un problema',
-        generic: 'Hermes no pudo terminar esta respuesta',
-        provider: 'El servicio de IA devolvió un error',
-        runtime: 'Hermes tuvo un problema',
-        streaming: 'La respuesta se cortó'
-      },
-      errorLayerBodies: {
-        auth: 'El servicio de IA rechazó tu inicio de sesión. Revisa las credenciales de este proveedor y vuelve a enviar el mensaje.',
-        billing: 'Tu cuenta no tiene créditos para este proveedor. Recarga o cambia de proveedor y vuelve a enviarlo.',
-        disk: 'Tu disco está lleno, así que Hermes no pudo guardar esta conversación. Libera espacio y reinténtalo.',
-        endpoint:
-          'Hermes no puede conectar con tu servidor de modelos personalizado. Comprueba que esté en ejecución y vuelve a enviar el mensaje.',
-        gateway:
-          'Hermes tuvo un problema interno al iniciar esta respuesta. Vuelve a enviar el mensaje; si sigue ocurriendo, envía un diagnóstico.',
-        generic: 'Algo salió mal mientras Hermes respondía. Reinténtalo o copia los detalles si sigue ocurriendo.',
-        provider:
-          'El servicio de IA no pudo completar esta solicitud. Reinténtalo en un momento o cambia de proveedor.',
-        runtime:
-          'Hermes tuvo un problema interno al iniciar esta respuesta. Vuelve a enviar el mensaje; si sigue ocurriendo, envía un diagnóstico.',
-        streaming: 'La conexión se cortó antes de que terminara la respuesta. Reinténtalo para enviarla de nuevo.'
-      },
+      ...esErrorLayers,
       errorCodes: {
         auth: {
           title: (provider: string) => `${provider} rechazó tu inicio de sesión`,
@@ -5041,6 +4980,10 @@ export const esOverrides = {
         cron_session_read_only: {
           title: 'Este chat pertenece a una tarea programada',
           body: 'Solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
+        },
+        workspace_unavailable: {
+          title: 'La carpeta de este chat ya no existe',
+          body: 'La carpeta en la que trabaja este chat se movió o se eliminó, así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o usa «Mover a proyecto» para darle otra al chat, y vuelve a intentarlo.'
         },
         SESSION_NOT_OWNED: {
           title: 'Este chat está abierto en otro sitio',

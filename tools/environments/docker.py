@@ -110,7 +110,7 @@ def _sanitize_label_value(value: str) -> str:
 
 
 # task_id -> host directory name; shared with every backend persisting per-task
-# state on the host (Singularity overlays) so the mapping is fixed in one place.
+# state on the host (the singularity plugin's overlays) so the mapping is fixed in one place.
 _sandbox_dir_name = sanitize_task_id_for_path
 
 
@@ -649,7 +649,7 @@ class DockerEnvironment(BaseEnvironment):
     size-limited tmpfs). The container is the security boundary — its filesystem stays
     writable so agents can install packages. Persistence bind-mounts /workspace and /root."""
 
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
     _profile_scoped_passthrough = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:

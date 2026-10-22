@@ -1586,14 +1586,20 @@ export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
 }
-/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). */
+/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
 export interface RoomDriverStatus {
   running: boolean
   working: boolean
   blocked: boolean
   counts: Record<string, number>
   pending_actions: Record<string, unknown>[]
+  member_activity?: RoomMemberActivity[]
   peer_routes: PeerRouteStatus[]
+}
+/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. */
+export interface RoomMemberActivity {
+  member_id: string
+  status: string
 }
 export interface PeerRouteStatus {
   room_id: string
@@ -1915,6 +1921,7 @@ export interface GatewayCapabilitiesResult {
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
+  desktop_local?: boolean
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
@@ -4527,6 +4534,7 @@ export interface PluginCatalogLookupEntry {
   repo: string
   sha: string
   subdir: string
+  tier?: string
 }
 export interface CanonicalShellExecParams {
   session_id: string

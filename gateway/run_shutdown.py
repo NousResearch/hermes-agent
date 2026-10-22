@@ -1826,10 +1826,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        from gateway.connected_assistance import stop_connected_assistance
+        if not await stop_connected_assistance(self):
+            logger.warning("Connected assistance worker still settling; no further publication is permitted")
         from gateway.run_runtime import drain_gateway_runtime
         await drain_gateway_runtime(self)
         self._mark_api_runs_shutdown_requested()
-        # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):
             try:
@@ -1846,14 +1848,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if callable(stop_watchdog):
             await stop_watchdog()
         await self._cancel_secondary_profile_reconnect_tasks()
-        # Notify all chats with active agents BEFORE draining — adapters are still connected here.
         await self._notify_active_sessions_of_shutdown()
         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
 
     async def _stop_drain_active_work(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``."""
         from gateway.run import GatewayRunner
-        # Pre-mark resume_pending BEFORE the drain so a mid-drain SIGKILL still leaves a durable marker.
         _pre_drain_keys = await GatewayRunner._mark_running_sessions_resume_pending(
             self, "pre-drain mark_resume_pending"
         )

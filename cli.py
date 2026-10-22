@@ -1144,6 +1144,10 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         "queue": ("_cmd_queue", True), "steer": ("_cmd_steer", True), "moa": ("_cmd_moa", True),
     }
 
+    def _handle_findings_command(self, cmd_original):
+        from hermes_cli.connected_assistance import dispatch_findings_command
+        print(dispatch_findings_command(cmd_original.partition(" ")[2]))
+
     @classmethod
     def _slash_handler(cls, canonical: str) -> tuple[str, bool] | None:
         """(method name, pass cmd_original?) for a registered command, else None."""

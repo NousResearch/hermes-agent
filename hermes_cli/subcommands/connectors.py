@@ -9,10 +9,18 @@ def build_connectors_parser(subparsers) -> None:
 
     parser = subparsers.add_parser(
         "connectors", help="Manage hosted app connectors and their accounts",
-        description="List, connect, rename and remove the app accounts Hermes uses through Nous Portal.")
+        description=("List, connect, rename and remove the app accounts Hermes uses through Nous Portal. "
+                     "While the gateway runs, supported connections also receive automatic read-only background "
+                     "assistance using your auxiliary model (normal provider costs apply). "
+                     "Pause with `hermes connectors findings pause`; no monitoring setup is needed."))
     actions = parser.add_subparsers(dest="connectors_action")
 
     actions.add_parser("list", aliases=["ls"], help="Show every connector and whether it is connected")
+
+    import argparse
+    findings = actions.add_parser("findings", help="Private local findings and background assistance controls")
+    findings.add_argument("findings_args", nargs=argparse.REMAINDER,
+                         help="list, show <id>, dismiss <id>, resolve <id>, pause or resume")
 
     accounts = actions.add_parser("accounts", help="Show connected accounts")
     accounts.add_argument("app", nargs="?", help="Only show accounts of this app")

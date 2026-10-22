@@ -5,7 +5,8 @@ import {
   isThinkingEnabled,
   reasoningEffortClamp,
   reasoningEffortLabel,
-  resolveReasoningEffort
+  resolveReasoningEffort,
+  resolveSupportedReasoningEffort
 } from './reasoning-effort'
 
 describe('reasoning-effort', () => {
@@ -45,5 +46,16 @@ describe('reasoning-effort', () => {
     // Off selects nothing on the scale.
     expect(resolveReasoningEffort('none')).toBe('')
     expect(resolveReasoningEffort('bogus')).toBe(DEFAULT_REASONING_EFFORT)
+  })
+
+  it('resolves unsupported levels to the route wire or nearest safe level', () => {
+    const claude46 = ['low', 'medium', 'high', 'max']
+
+    expect(resolveSupportedReasoningEffort('xhigh', claude46, 'max')).toBe('max')
+    expect(resolveSupportedReasoningEffort('xhigh', claude46)).toBe('high')
+    expect(resolveSupportedReasoningEffort('minimal', claude46)).toBe('low')
+    expect(resolveSupportedReasoningEffort('none', claude46)).toBe('')
+    expect(resolveSupportedReasoningEffort('high', [])).toBe('')
+    expect(resolveSupportedReasoningEffort('high')).toBe('high')
   })
 })

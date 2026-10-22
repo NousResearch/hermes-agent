@@ -63,6 +63,8 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
                     migrated.append((name, current_ver, after_ver))
             except Exception as exc:
                 logger.debug("Config migration for profile %s failed: %s", name, exc)
+                print(f"  ⚠️  Profile '{name}': config migration failed: {exc}")
+                print(f"     Run 'hermes -p {name} config migrate' to retry.")
             finally:
                 reset_hermes_home_override(token)
     return migrated

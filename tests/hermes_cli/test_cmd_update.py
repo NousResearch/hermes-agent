@@ -127,3 +127,40 @@ class TestGitTrampolineSelfHeal:
         assert candidates[1] == (
             profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
         )
+
+
+class TestCmdUpdateMissingGitBinary:
+    """``hermes update --check`` with no ``git`` on PATH must exit 1 with a
+    remediation line instead of leaking a FileNotFoundError traceback (#86529).
+
+    subprocess.run(["git", ...]) raises FileNotFoundError, not
+    CalledProcessError, and the --check/--plan preflight runs before the
+    _cmd_update_impl handler that catches the rest of the update failures.
+    """
+
+    def test_preflight_missing_git_exits_cleanly(self, capsys):
+        from types import SimpleNamespace
+
+        from hermes_cli.main import cmd_update
+
+        missing = FileNotFoundError(2, "No such file or directory", "git")
+        with patch("hermes_cli.main._update_preflight_handled", side_effect=missing):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_update(SimpleNamespace(check=True, branch=None))
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "git" in out
+        assert "was not found on PATH" in out
+        assert "Traceback" not in out
+
+    def test_helper_names_the_binary(self, capsys):
+        from hermes_cli.main import _friendly_missing_binary_error
+
+        with pytest.raises(SystemExit) as exc_info:
+            _friendly_missing_binary_error(
+                FileNotFoundError(2, "No such file or directory", "git")
+            )
+
+        assert exc_info.value.code == 1
+        assert "`git` is required" in capsys.readouterr().out

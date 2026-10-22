@@ -2344,6 +2344,22 @@ def _update_preflight_handled(args) -> bool:
     return False
 
 
+def _friendly_missing_binary_error(exc: OSError) -> None:
+    """Report a missing executable instead of a bare traceback.
+
+    ``hermes update`` shells out to git. On a POSIX install with a ``.git``
+    directory but no ``git`` on PATH (slim containers, broken PATH),
+    ``subprocess.run(["git", ...])`` raises ``FileNotFoundError`` — which is NOT
+    a ``CalledProcessError``, so handlers that only catch the latter let it
+    escape as a traceback. The preflight (``--check``/``--plan``) runs before
+    the ``_cmd_update_impl`` handler, which is where this still leaks (#86529).
+    """
+    name = getattr(exc, "filename", None) or (exc.args[0] if exc.args else "git")
+    print(f"✗ `{name}` is required to update Hermes but was not found on PATH.")
+    print("  Install it and try again, or run the update from a different shell.")
+    sys.exit(1)
+
+
 from hermes_cli.update_receipt import update_receipt_scope
 
 
@@ -2357,7 +2373,13 @@ def cmd_update(args):
     from hermes_cli.update_owning_install import retarget_to_owning_install
 
     retarget_to_owning_install(PROJECT_ROOT)
-    if _update_preflight_handled(args):
+    try:
+        handled = _update_preflight_handled(args)
+    except FileNotFoundError as exc:
+        # --check/--plan shell out to git before the _cmd_update_impl handler
+        # below, so a missing binary used to escape as a bare traceback.
+        _friendly_missing_binary_error(exc)
+    if handled:
         return
     gateway_mode = getattr(args, "gateway", False)
 

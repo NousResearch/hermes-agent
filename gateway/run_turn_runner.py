@@ -225,6 +225,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
         want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
+        if ctx.voice_turn and getattr(
+            self._runner._delivery_adapter_for(ctx.source), "_auto_tts_reply_text", True
+        ) is False:
+            # Delay the response until auto-TTS reports delivery: otherwise a streamed text bubble
+            # is already visible before the voice-only fallback can suppress it.
+            want_stream_deltas = False
         # A finite (`-z`, `chat -q`) viewer prints only the terminal reply, like the classic quiet
         # CLI that never wired commentary. Commentary it cannot see must not be recorded as a
         # delivery, or a final that arrives as commentary (codex app-server) suppresses the reply.

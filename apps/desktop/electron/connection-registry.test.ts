@@ -26,6 +26,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseRemoteProfileListing,
+  profileNameFromScope,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
@@ -951,6 +952,12 @@ test('rememberSshEnumeration: a bounced remote source keeps its last-known roste
     profiles: null,
     error: 'boom'
   })
+})
+
+test('profileNameFromScope denormalizes pool scope keys', () => {
+  assert.equal(profileNameFromScope('conn:local::default'), 'default')
+  assert.equal(profileNameFromScope('conn:remote::worker'), 'worker')
+  assert.equal(profileNameFromScope('worker'), 'worker')
 })
 
 test('shouldRetrySshInventory: first try, cooldown, then retry; cache never retries', () => {

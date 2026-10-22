@@ -5,9 +5,11 @@ import { expect, it, vi } from 'vitest'
 
 import {
   PACKAGED_MAIN_MODULE,
+  PACKAGED_RENDERER_ENTRY,
   READY_TOKENS,
   assertBackendReadyArtifactSourceAcceptsBothTokens,
   assertPackagedBackendReadyArtifact,
+  assertUnpackedDesktopDist,
   extractPackagedMainSource,
   resolvePackagedAsarPath
 } from './backend-ready-artifact.mjs'
@@ -33,6 +35,7 @@ async function writeAsar(resources, source) {
   const unpacked = path.join(resources, 'app.asar.unpacked', 'dist')
   await mkdir(unpacked, { recursive: true })
   await writeFile(path.join(unpacked, 'electron-main.mjs'), source)
+  await writeFile(path.join(unpacked, 'index.html'), '<main />')
   await writeFile(path.join(resources, 'app.asar'), 'stub archive')
   return path.join(resources, 'app.asar')
 }
@@ -47,6 +50,18 @@ it('resolves the asar path per platform, including the branded macOS bundle', ()
   })).toBe(path.join('/out/mac', 'Hermes Preview.app', 'Contents', 'Resources', 'app.asar'))
   expect(() => resolvePackagedAsarPath({ electronPlatformName: 'linux' }))
     .toThrow('missing appOutDir')
+})
+
+it('requires both runnable desktop entries to remain unpacked', async () => {
+  const { resources } = await packedAppRoot()
+  try {
+    const asar = await writeAsar(resources, CURRENT_SOURCE)
+    expect(assertUnpackedDesktopDist(asar).files).toEqual([PACKAGED_MAIN_MODULE, PACKAGED_RENDERER_ENTRY])
+    await rm(path.join(`${asar}.unpacked`, PACKAGED_RENDERER_ENTRY))
+    expect(() => assertUnpackedDesktopDist(asar)).toThrow('Missing unpacked desktop bundle file(s): dist/index.html')
+  } finally {
+    await rm(resources, { recursive: true, force: true })
+  }
 })
 
 it('accepts a packaged bundle whose matcher handles both tokens', async () => {

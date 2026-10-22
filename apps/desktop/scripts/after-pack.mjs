@@ -16,7 +16,11 @@ import fs from 'node:fs'
 import { copyFile, mkdir, readdir } from 'node:fs/promises'
 import { runPython } from '../../../scripts/build/python.mjs'
 
-import { assertPackagedBackendReadyArtifact, resolvePackagedAsarPath } from './backend-ready-artifact.mjs'
+import {
+  assertPackagedBackendReadyArtifact,
+  assertUnpackedDesktopDist,
+  resolvePackagedAsarPath
+} from './backend-ready-artifact.mjs'
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
 import { rehashPayloadDigests } from './payload-digests.mjs'
 import { resolveSigningIdentity, signNestedChromium } from './sign-nested-chromium.mjs'
@@ -68,6 +72,7 @@ export default async function afterPack(context) {
   // killing healthy backends on user machines.
   const asarPath = resolvePackagedAsarPath(context)
   assertPackagedBackendReadyArtifact(asarPath)
+  assertUnpackedDesktopDist(asarPath)
   console.log(`[after-pack] verified backend readiness parser in ${asarPath}`)
   const resources = platform === 'darwin'
     ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')

@@ -880,10 +880,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
         The request's scope has closed, so bind the admitted runtime home, including bare routes
         re-homed by ``profile_routes``. ``to_thread`` carries the scope into the worker."""
-        from gateway.run import _profile_runtime_scope
+        from gateway.run import _async_profile_runtime_scope
         envelope = {"version": 1, "route": route_name, "outcome": outcome.value,
                     "delivery_id": event.message_id, "payload": event.raw_message}
-        with _profile_runtime_scope(runtime_home):
+        async with _async_profile_runtime_scope(runtime_home):
             await asyncio.to_thread(self._route_processor.run_completion_script, script, envelope)
 
     async def _end_webhook_session(self, event: MessageEvent, session_chat_id: str) -> None:

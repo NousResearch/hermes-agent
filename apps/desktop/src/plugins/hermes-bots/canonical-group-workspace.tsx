@@ -17,7 +17,10 @@ import { GroupMentionInput } from './group-chat-parts'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: CanonicalRoom; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
+interface RoomState {
+  room: CanonicalRoom & { authority_epoch?: number; latest_seq?: number }
+  driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] }
+}
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
@@ -54,6 +57,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
   const heldDraft = useRef<{ text: string; attachments: Attachment[] } | null>(null)
+  // The log is append-only within one authority epoch: each poll reads only what is new.
+  const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
 
   // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
   useEffect(() => {
@@ -78,8 +83,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const refresh = async () => {
     const version = ++revision.current
     const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
+    const { authority_epoch: epoch, latest_seq: latest } = snapshot.room ?? {}
+    // A new authority epoch (or a log behind what was read) starts the log again.
+    const fresh = epoch !== seen.current.epoch || (typeof latest === 'number' && latest < seen.current.seq)
+    const since = fresh ? 0 : seen.current.seq
     const log: RoomEvent[] = []
-    let cursor = 0
+    let cursor = since
 
     for (;;) {
       const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
@@ -93,8 +102,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     }
 
     if (alive.current && version === revision.current) {
+      seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
       setState(snapshot)
-      setEvents(log)
+      setEvents(current => fresh ? log : [...current, ...log.filter(event => event.seq > since)])
       setReadError('')
     }
   }

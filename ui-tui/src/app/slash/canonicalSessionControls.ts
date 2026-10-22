@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
-import { TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
+import { CANONICAL_REASONING_EFFORTS, TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchOverlayState } from '../overlayStore.js'
@@ -39,6 +39,14 @@ function modelPayload(arg: string) {
       continue
     }
 
+    // A picker-issued level (#138856) rides in the same selection: a busy session defers the pick
+    // and commits model and level together. An unknown level is refused like any other flag.
+    if (flag === '--reasoning' && CANONICAL_REASONING_EFFORTS.has(parts[0]?.toLowerCase() ?? '')) {
+      payload.reasoning = parts.shift()!.toLowerCase()
+
+      continue
+    }
+
     throw new Error(t('canonical.controls.unsupportedModelOption', flag))
   }
 
@@ -54,6 +62,21 @@ export interface MutationSnapshot {
   stored_messages?: Array<Record<string, unknown>>
   revision: number
   execution_generation: number
+  /** The viewer attachment the revision read made (`session.resume` attaches). */
+  subscription_id?: string
+  /** The id the owner resolved the read to and subscribed under; may differ from the one sent. */
+  session_id?: string
+}
+
+/** The CAS tuple read (`session.resume`, which attaches this client as a viewer). */
+async function readCasTuple(gw: MutationGateway, sid: string, onRead?: (snapshot: MutationSnapshot) => void) {
+  const snapshot = asRpcResult<MutationSnapshot>(await gw.request('session.resume', { session_id: sid }))
+
+  if (snapshot) {
+    onRead?.(snapshot)
+  }
+
+  return snapshot
 }
 
 /** One revision-fenced `session.mutate` (`gateway/session_mutations.py`). The CAS tuple comes from a
@@ -76,7 +99,8 @@ export async function mutateCanonical(
   sid: string,
   operation: CanonicalOperation,
   payload: Record<string, unknown> | ((snapshot: MutationSnapshot) => null | Record<string, unknown>),
-  stale: () => boolean = () => false
+  stale: () => boolean = () => false,
+  onRead?: (snapshot: MutationSnapshot) => void
 ) {
   let requests = pending.get(gw)
 
@@ -92,7 +116,7 @@ export async function mutateCanonical(
   let params = requests.get(key)
 
   if (!params) {
-    const snapshot = asRpcResult<MutationSnapshot>(await gw.request('session.resume', { session_id: sid }))
+    const snapshot = await readCasTuple(gw, sid, onRead)
 
     if (stale()) {
       return
@@ -182,14 +206,21 @@ function askModelConfirmation(refusal: ModelConfirmation, arg: string, ctx: Slas
     throw new Error(`${refusal.confirm_message ?? ''}\n\n${t('slashCmd.session.model.confirmStale')}`.trim())
   }
 
+  openModelConfirmation(refusal.confirm_message, refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '', () =>
+    void runCanonicalSessionControl('model', arg, ctx, refusal.confirm)
+  )
+}
+
+/** The guarded-model dialog: an idle pick's refusal and a deferred pick's boundary ask share it. */
+export function openModelConfirmation(detail: string | undefined, target: string, onConfirm: () => void) {
   patchOverlayState({
     confirm: {
       cancelLabel: t('slashCmd.session.model.cancel'),
       confirmLabel: t('slashCmd.session.model.switchAnyway'),
       danger: true,
-      detail: refusal.confirm_message || t('slashCmd.session.model.expensiveDetail'),
-      onConfirm: () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm),
-      title: t('slashCmd.session.model.confirmTitle', refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '')
+      detail: detail || t('slashCmd.session.model.expensiveDetail'),
+      onConfirm,
+      title: t('slashCmd.session.model.confirmTitle', target)
     }
   })
 }
@@ -237,6 +268,14 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
     throw new Error(t('session.main.invalidModelSwitchResponse'))
   }
 
+  if (result.status === 'deferred') {
+    // A turn is running: the owner keeps the pick for the next turn, and session.info repaints the
+    // model when it lands (or a refusal / confirmation follows on session.updated).
+    ctx.transcript.sys(t('slashCmd.session.model.switchedDeferred', result.model))
+
+    return
+  }
+
   patchUiState(state => ({
     ...state,
     info: {
@@ -248,6 +287,11 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
     }
   }))
   ctx.transcript.sys(t('session.main.modelSwitched', result.model))
+
+  if (typeof result.effort === 'string') {
+    // The level committed in the same selection (a deferred result carries none yet).
+    ctx.transcript.sys(t('slashCmd.session.reasoning.current', result.effort))
+  }
 }
 
 type CompressSummary = { headline?: string; noop?: boolean; note?: string; token_line?: string } | null

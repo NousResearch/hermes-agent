@@ -337,16 +337,19 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
     const identity = await readChatIdentity(page)
     assertResolvedIdentity(identity, options, predictedHome)
     // The ordinary host-attach path may reuse the updater's relaunched app's
-    // backend. Observe the ledger the app reads for this home (its machine root),
-    // not an arbitrary listener, and retain the OS listener + installed-tree proof below.
+    // backend, and `hermes gateway ensure` attaches to (or starts, detached) the
+    // canonical gateway. Observe the ledger and gateway_state.json the app's home
+    // resolves to (its machine root), not an arbitrary listener, and retain the
+    // OS listener + installed-tree proof below.
     fs.writeFileSync(path.join(out, `desktop-backend-${options.phase}.log`), connection.logs.map(redact).join('\n'))
     const backend = localBackendProcess(Number(base.port), running.pid, predictedHome ?? options.home)
     // `identity.hermesRoot` was asserted against options.root above. For a listener that
     // descends from this app process, on a platform that cannot read the backend's own
     // environment, those two facts are the available evidence; a ledger-attached host
-    // backend is not tied to the app by ancestry and must prove its tree itself.
-    assertBackendOrigin(backend, options.root, options.origin, { appReportedRoot: identity.hermesRoot })
+    // backend is not tied to the app by ancestry and must prove its tree itself; a canonical
+    // gateway whose cwd is unreadable must report the installed commit.
     const provenanceCommit = readInstallationCommit(options.root, options.origin)
+    assertBackendOrigin(backend, options.root, options.origin, { appReportedRoot: identity.hermesRoot, installedCommit: provenanceCommit })
     if (provenanceCommit !== options['expect-commit']) { throw new Error('Installed commit differs from --expect-commit') }
     // Trace only chat actions. Connection probes can return credential-bearing logs.
     await app.context().tracing.start({ screenshots: true, snapshots: false, sources: false })

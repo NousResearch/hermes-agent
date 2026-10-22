@@ -95,6 +95,19 @@ def _cli_startup_notices(enabled):
     return notices
 
 
+def _unknown_toolsets(enabled, config):
+    """Main's "Unknown toolsets" startup warning (``HermesCLI._init_toolsets``), judged where the plugins
+    load: the session's toolset names the profile's registry, MCP servers, plugin toolsets and platform
+    bundles cannot place (an uninstalled plugin's stale ``platform_toolsets`` entry)."""
+    if "all" in enabled or "*" in enabled:
+        return []
+    with contextlib.suppress(Exception):
+        from hermes_cli.toolset_validation import saved_toolset_resolver
+        known = saved_toolset_resolver(config)
+        return [name for name in enabled if not known(name)]
+    return []
+
+
 def _cli_skills():
     """``hermes_cli.banner.get_available_skills`` as main's classic CLI computed it: ``cmd_chat`` pins
     ``HERMES_KANBAN_BOARD`` before HermesCLI starts, so ``environments: [kanban]`` skills are offered.
@@ -106,7 +119,7 @@ def _cli_skills():
     saved = skills_tool._SKILLS_CACHE.pop(key, None)
     try:
         with scoped_kanban_toolset_selection(["kanban"]):
-            found = skills_tool._find_all_skills()
+            found = skills_tool.find_all_skills()
     finally:
         skills_tool._SKILLS_CACHE.pop(key, None)
         if saved is not None:
@@ -152,7 +165,7 @@ def session_inventory(authority, policy, agent, cwd):
             from hermes_cli.banner import compute_toolset_availability
             info["tool_availability"] = compute_toolset_availability(enabled)
         if policy is not None and policy.source == "cli":
-            info.update(_cli_startup_notices(enabled))
+            info.update(_cli_startup_notices(enabled), unknown_toolsets=_unknown_toolsets(enabled, config))
         with contextlib.suppress(Exception):
             if policy is not None and policy.source == "cli":
                 info["skills"] = _cli_skills()
@@ -210,13 +223,45 @@ def agent_inventory(agent) -> dict:
 def publish_settled_info(turn, agent) -> None:
     """Main's end-of-turn ``session.info`` (``session_workdir._emit_settled_session_info``) for a local
     viewer: the first turn builds the agent, so this is when the banner's ``▸ System Prompt`` row, the
-    agent's tool list and provider first become known. Never breaks the turn."""
+    agent's tool list and provider first become known. Never breaks the turn.
+
+    A ``model_override`` admission (``/model --once``, ``/moa``) built its agent on the one-turn
+    route. That agent must not become the route Desktop, the TUI, and resume read. Drop it from
+    the cache (released once this turn's running slot clears) and publish the model and provider
+    of the policy route, both from one read of the profile."""
     if agent is None:
         return
     with contextlib.suppress(Exception):
+        from gateway.session_cli_turn import cli_turn
         from gateway.session_contract import SessionRef
         from gateway.session_local import local_session_info
+        from gateway.session_policy import policy_for_source
         authority, session_id, _generation = turn._approval_owner
-        info = {**agent_inventory(agent),
-                **local_session_info(authority, SessionRef(authority.profile_id, session_id))}
+        message_id = getattr(getattr(turn, "_ctx", None), "inbound_message_id", None)
+        one_turn = bool(cli_turn(message_id).get("model_override"))
+        live = None
+        if one_turn:
+            sessions = getattr(authority, "sessions", None)
+            live = sessions.get(session_id) if hasattr(sessions, "get") else None
+            evict = getattr(getattr(turn, "_runner", None), "_evict_cached_agent", None)
+            if live is not None and callable(evict):
+                try:
+                    evict(live.route, release_after_turn=True)
+                except Exception:
+                    logger.debug("one-turn agent cache drop failed", exc_info=True)
+        ref = SessionRef(authority.profile_id, session_id)
+        info = {**agent_inventory(agent), **local_session_info(authority, ref)}
+        if one_turn and live is not None:
+            try:
+                runner = getattr(authority, "runner", None) or turn._runner
+                policy = policy_for_source(runner, live.source)
+            except Exception:
+                logger.debug("one-turn policy route unavailable", exc_info=True)
+                policy = None
+            if policy is not None:
+                config, info["model"] = policy.effective(authority, secrets=False)
+                section = config.get("model")
+                provider = section.get("provider") if isinstance(section, dict) else None
+                if provider:
+                    info["provider"] = provider
         turn._publish_execution("session.info", info)

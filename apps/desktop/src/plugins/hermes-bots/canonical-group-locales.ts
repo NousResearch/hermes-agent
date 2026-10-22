@@ -1,4 +1,13 @@
 export interface CanonicalGroupMessages {
+  members: string
+  roomStopped: string
+  roomDisbanded: string
+  authorityLost: string
+  workLimitReached: string
+  turnFailed: string
+  turnCancelled: string
+  turnDeferred: string
+  memberUnavailable: string
   refreshGroups: string
   loadingGroup: string
   loadingGroups: string
@@ -16,10 +25,22 @@ export interface CanonicalGroupMessages {
   attachFiles: string
   removeAttachment: string
   uploadFailed: string
+  memberWorking: string
+  memberQueued: string
+  groupWorking: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
+    roomStopped: 'Group stopped',
+    roomDisbanded: 'Group disbanded',
+    authorityLost: 'Group ownership changed',
+    workLimitReached: 'Group work limit reached',
+    turnFailed: 'Turn failed',
+    turnCancelled: 'Turn cancelled',
+    turnDeferred: 'Turn deferred',
+    memberUnavailable: 'Member unavailable',
+    members: 'Members',
     refreshGroups: 'Refresh gateway groups',
     loadingGroup: 'Loading group…',
     loadingGroups: 'Loading gateway groups…',
@@ -36,9 +57,21 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Group message',
     attachFiles: 'Attach files',
     removeAttachment: 'Remove attachment',
-    uploadFailed: 'Upload failed'
+    uploadFailed: 'Upload failed',
+    memberWorking: 'Working',
+    memberQueued: 'Queued',
+    groupWorking: 'The group is working…'
   },
   ja: {
+    roomStopped: 'グループが停止しました',
+    roomDisbanded: 'グループが解散しました',
+    authorityLost: 'グループの管理元が変更されました',
+    workLimitReached: 'グループの作業上限に達しました',
+    turnFailed: 'ターンに失敗しました',
+    turnCancelled: 'ターンがキャンセルされました',
+    turnDeferred: 'ターンが延期されました',
+    memberUnavailable: 'メンバーは利用できません',
+    members: 'メンバー',
     refreshGroups: 'ゲートウェイのグループを更新',
     loadingGroup: 'グループを読み込み中…',
     loadingGroups: 'ゲートウェイのグループを読み込み中…',
@@ -55,9 +88,21 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'グループメッセージ',
     attachFiles: 'ファイルを添付',
     removeAttachment: '添付ファイルを削除',
-    uploadFailed: 'アップロードに失敗しました'
+    uploadFailed: 'アップロードに失敗しました',
+    memberWorking: '作業中',
+    memberQueued: '待機中',
+    groupWorking: 'グループが作業中です…'
   },
   zh: {
+    roomStopped: '群组已停止',
+    roomDisbanded: '群组已解散',
+    authorityLost: '群组管理端已更改',
+    workLimitReached: '已达到群组工作上限',
+    turnFailed: '回合失败',
+    turnCancelled: '回合已取消',
+    turnDeferred: '回合已推迟',
+    memberUnavailable: '成员不可用',
+    members: '成员',
     refreshGroups: '刷新网关群组',
     loadingGroup: '正在加载群组…',
     loadingGroups: '正在加载网关群组…',
@@ -74,9 +119,21 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: '群组消息',
     attachFiles: '附加文件',
     removeAttachment: '移除附件',
-    uploadFailed: '上传失败'
+    uploadFailed: '上传失败',
+    memberWorking: '工作中',
+    memberQueued: '排队中',
+    groupWorking: '群组正在处理…'
   },
   'zh-hant': {
+    roomStopped: '群組已停止',
+    roomDisbanded: '群組已解散',
+    authorityLost: '群組管理端已變更',
+    workLimitReached: '已達到群組工作上限',
+    turnFailed: '回合失敗',
+    turnCancelled: '回合已取消',
+    turnDeferred: '回合已延後',
+    memberUnavailable: '成員無法使用',
+    members: '成員',
     refreshGroups: '重新整理閘道群組',
     loadingGroup: '正在載入群組…',
     loadingGroups: '正在載入閘道群組…',
@@ -93,9 +150,21 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: '群組訊息',
     attachFiles: '附加檔案',
     removeAttachment: '移除附件',
-    uploadFailed: '上傳失敗'
+    uploadFailed: '上傳失敗',
+    memberWorking: '工作中',
+    memberQueued: '排隊中',
+    groupWorking: '群組正在處理…'
   },
   ar: {
+    roomStopped: 'أُوقفت المجموعة',
+    roomDisbanded: 'حُلّت المجموعة',
+    authorityLost: 'تغيّر مالك المجموعة',
+    workLimitReached: 'بلغت المجموعة حد العمل',
+    turnFailed: 'فشلت الجولة',
+    turnCancelled: 'أُلغيت الجولة',
+    turnDeferred: 'أُجّلت الجولة',
+    memberUnavailable: 'العضو غير متاح',
+    members: 'الأعضاء',
     refreshGroups: 'تحديث مجموعات البوابة',
     loadingGroup: 'جارٍ تحميل المجموعة…',
     loadingGroups: 'جارٍ تحميل مجموعات البوابة…',
@@ -112,9 +181,21 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'رسالة المجموعة',
     attachFiles: 'إرفاق ملفات',
     removeAttachment: 'إزالة المرفق',
-    uploadFailed: 'فشل الرفع'
+    uploadFailed: 'فشل الرفع',
+    memberWorking: 'يعمل',
+    memberQueued: 'في الانتظار',
+    groupWorking: 'المجموعة تعمل…'
   },
   ru: {
+    roomStopped: 'Группа остановлена',
+    roomDisbanded: 'Группа распущена',
+    authorityLost: 'Владелец группы изменился',
+    workLimitReached: 'Достигнут лимит работы группы',
+    turnFailed: 'Ход завершился ошибкой',
+    turnCancelled: 'Ход отменён',
+    turnDeferred: 'Ход отложен',
+    memberUnavailable: 'Участник недоступен',
+    members: 'Участники',
     refreshGroups: 'Обновить группы шлюза',
     loadingGroup: 'Загрузка группы…',
     loadingGroups: 'Загрузка групп шлюза…',
@@ -134,9 +215,21 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Сообщение группе',
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Удалить вложение',
-    uploadFailed: 'Не удалось загрузить файл'
+    uploadFailed: 'Не удалось загрузить файл',
+    memberWorking: 'Работает',
+    memberQueued: 'В очереди',
+    groupWorking: 'Группа работает…'
   },
   fr: {
+    roomStopped: 'Groupe arrêté',
+    roomDisbanded: 'Groupe dissous',
+    authorityLost: 'Gestionnaire du groupe modifié',
+    workLimitReached: 'Limite de travail du groupe atteinte',
+    turnFailed: 'Tour échoué',
+    turnCancelled: 'Tour annulé',
+    turnDeferred: 'Tour différé',
+    memberUnavailable: 'Membre indisponible',
+    members: 'Membres',
     refreshGroups: 'Actualiser les groupes de la passerelle',
     loadingGroup: 'Chargement du groupe…',
     loadingGroups: 'Chargement des groupes de la passerelle…',
@@ -155,9 +248,21 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Message de groupe',
     attachFiles: 'Joindre des fichiers',
     removeAttachment: 'Retirer la pièce jointe',
-    uploadFailed: 'Échec du téléversement'
+    uploadFailed: 'Échec du téléversement',
+    memberWorking: 'En cours',
+    memberQueued: 'En attente',
+    groupWorking: 'Le groupe travaille…'
   },
   de: {
+    roomStopped: 'Gruppe angehalten',
+    roomDisbanded: 'Gruppe aufgelöst',
+    authorityLost: 'Gruppenverwaltung gewechselt',
+    workLimitReached: 'Arbeitslimit der Gruppe erreicht',
+    turnFailed: 'Zug fehlgeschlagen',
+    turnCancelled: 'Zug abgebrochen',
+    turnDeferred: 'Zug verschoben',
+    memberUnavailable: 'Mitglied nicht verfügbar',
+    members: 'Mitglieder',
     refreshGroups: 'Gateway-Gruppen aktualisieren',
     loadingGroup: 'Gruppe wird geladen…',
     loadingGroups: 'Gateway-Gruppen werden geladen…',
@@ -177,9 +282,21 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Gruppennachricht',
     attachFiles: 'Dateien anhängen',
     removeAttachment: 'Anhang entfernen',
-    uploadFailed: 'Hochladen fehlgeschlagen'
+    uploadFailed: 'Hochladen fehlgeschlagen',
+    memberWorking: 'Arbeitet',
+    memberQueued: 'In der Warteschlange',
+    groupWorking: 'Die Gruppe arbeitet…'
   },
   es: {
+    roomStopped: 'Grupo detenido',
+    roomDisbanded: 'Grupo disuelto',
+    authorityLost: 'Propietario del grupo cambiado',
+    workLimitReached: 'Límite de trabajo del grupo alcanzado',
+    turnFailed: 'Turno fallido',
+    turnCancelled: 'Turno cancelado',
+    turnDeferred: 'Turno aplazado',
+    memberUnavailable: 'Miembro no disponible',
+    members: 'Miembros',
     refreshGroups: 'Actualizar grupos de la pasarela',
     loadingGroup: 'Cargando grupo…',
     loadingGroups: 'Cargando grupos de la pasarela…',
@@ -198,6 +315,9 @@ export const CANONICAL_GROUP_LOCALES = {
     groupMessage: 'Mensaje de grupo',
     attachFiles: 'Adjuntar archivos',
     removeAttachment: 'Quitar adjunto',
-    uploadFailed: 'Error al subir'
+    uploadFailed: 'Error al subir',
+    memberWorking: 'Trabajando',
+    memberQueued: 'En cola',
+    groupWorking: 'El grupo está trabajando…'
   }
 } satisfies Record<string, CanonicalGroupMessages>

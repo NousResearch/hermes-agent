@@ -224,10 +224,13 @@ profile, the agent gets a fresh browser **without your logins** for that session
 and its first browser result says why (`real_profile_unavailable`), so it can tell
 you instead of acting as if it were signed in. That happens when:
 
-- **Windows:** a running Chrome/Edge/Brave holds its cookie database with an
-  exclusive (deny-all) lock. To browse as you, **fully quit** the browser first,
-  including any background/tray instance (Chrome's "continue running background
-  apps when closed" keeps a `chrome.exe` alive after you close the window).
+- **Windows, first use only:** a running Chrome/Edge/Brave holds its cookie
+  database with an exclusive (deny-all) lock, so the first copy needs the browser
+  **fully quit**, including any background/tray instance (Chrome's "continue
+  running background apps when closed" keeps a `chrome.exe` alive after you close
+  the window). After one successful copy, a later launch with the browser open
+  reuses that copy instead: your logins are as of the last copy, and they refresh
+  the next time Hermes starts its browser while yours is closed.
 - **Your default browser isn't a supported Chromium** (Firefox, a Beta/Dev/Canary
   channel), or the pinned profile doesn't exist.
 - **The cookie database is unreadable or corrupt**: the message names it and the
@@ -287,9 +290,9 @@ Three things to set up before scheduling one:
   the [credential vault's](./credential-vault.md#headless-sessions) job, and it
   is what carries a run after your own session has expired.
 
-**Windows prerequisite:** the browser has to be fully quit before a snapshot can
-be taken, so a scheduled tick needs it closed beforehand; otherwise the tick runs
-on a fresh, signed-out browser. Hermes never closes it without asking you first
+**Windows prerequisite:** the browser has to be fully quit for the first snapshot.
+After that, a tick that runs while it is open reuses the last snapshot (logins as of
+that copy); with no snapshot yet, the tick runs on a fresh, signed-out browser. Hermes never closes it without asking you first
 (see the note above).
 
 The bundled `product-price-monitor` skill is a worked example of the recurring

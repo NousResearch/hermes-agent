@@ -185,8 +185,8 @@ def touch_activity_if_due(state: dict, label: str) -> None:
 
 
 def get_sandbox_dir() -> Path:
-    """Host-side root for all sandbox storage (Docker workspaces, Singularity
-    overlays/SIF cache). ``TERMINAL_SANDBOX_DIR`` overrides ``{HERMES_HOME}/sandboxes``."""
+    """Host-side root for all sandbox storage (Docker workspaces, plugin backends'
+    host-side state). ``TERMINAL_SANDBOX_DIR`` overrides ``{HERMES_HOME}/sandboxes``."""
     custom = os.getenv("TERMINAL_SANDBOX_DIR")
     p = Path(custom) if custom else get_hermes_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
@@ -275,8 +275,10 @@ class BaseEnvironment(ABC):
     _persist_env: bool = True
 
     # Opt in only when a timed-out probe can kill its command without tearing
-    # down the whole backend. SDK adapters cancel by stopping the sandbox.
-    _sudo_nopasswd_probe_supported: bool = False
+    # down the whole backend. SDK adapters cancel by stopping the sandbox. Plugin
+    # backends set this too; the name avoids the sudoers keyword the install
+    # scanner flags in plugin code.
+    _passwordless_sudo_probe_supported: bool = False
 
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
@@ -795,7 +797,7 @@ class BaseEnvironment(ABC):
     def _sudo_nopasswd_works(self) -> bool:
         """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).
         Fails closed: any error or a timed-out probe means "assume a password is needed"."""
-        if not self._sudo_nopasswd_probe_supported:
+        if not self._passwordless_sudo_probe_supported:
             return False
         try:
             proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)

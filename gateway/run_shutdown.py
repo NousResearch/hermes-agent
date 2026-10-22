@@ -28,7 +28,7 @@ from gateway.restart import (
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
-from gateway.run_runtime import managed_turn_count, stop_managed_turns
+from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
@@ -856,11 +856,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             with _log_suppressed(logging.DEBUG, "Failed interrupting agent during shutdown: %s"):
                 request_hard_interrupt(agent, reason, tool_reason=_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN)
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
-        # API-server / desk / managed-worker turns never enter _running_agents: the drain waited on them.
+        # API/desk/managed-worker turns and side agents never enter _running_agents: the drain waited.
         for count, what in (
             (self._interrupt_api_server_runs(reason), "api_server run(s)"),
             (self._interrupt_deferred_agent_workers(reason), "deferred agent worker(s)"),
-            (stop_managed_turns(self), "managed-worker turn(s)"),
+            (stop_managed_turns(self, reason), "managed-worker turn(s)"), (interrupt_side_agents(self, reason), "side agent(s)"),
         ):
             if count:
                 logger.debug("Interrupted %d %s during shutdown", count, what)
@@ -1268,18 +1268,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return
         with suppress(Exception):
             if hasattr(agent, "shutdown_memory_provider"):
-                # Drain queued memory writes BEFORE teardown (shutdown_all() gives the worker only ~5s, so a
-                # /reset or rotation could drop them). Bounded; a failure never blocks teardown.
-                # The memory manager persists per-turn sync and end-of-session extraction on a single
-                # serialized background worker. shutdown_memory_provider() -> shutdown_all() only gives that
-                # worker a ~5s bounded drain and abandons (cancels) anything still queued past it, so a
-                # /reset — or any gateway session rotation that reaches this cleanup path — could silently
-                # drop writes the session had already handed off. The next session then loads stale memory
-                # (#73297). Give pending work a bounded head start through the manager's own barrier first,
-                # mirroring the CLI exit path (cli.py). Best-effort: a flush failure must never block
-                # teardown.
+                # Drain queued memory writes BEFORE teardown: shutdown_all() gives the single serialized
+                # worker only ~5s and cancels the rest, so a /reset or rotation could drop writes and the
+                # next session loads stale memory (#73297). Bounded, like the CLI exit path; never blocks.
+                # The teardown claim comes first: a /new that stops waiting on this job evicts the agent,
+                # and that soft release must leave extraction + provider shutdown to us.
                 _mm = getattr(agent, "_memory_manager", None)
-                if _mm is not None and hasattr(_mm, "flush_pending"):
+                if _mm is not None:
+                    with suppress(Exception):
+                        _mm.claim_teardown(session_end=True)
                     with suppress(Exception):
                         _mm.flush_pending(timeout=10)
                 # Pass the real transcript so ``on_session_end`` hooks don't see the empty default.
@@ -1387,7 +1384,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             try:
                 from gateway import host_rendezvous as hr
                 record = hr.read_record(hr.ROLE_GATEWAY)
-                if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
+                if record is not None and hr.record_names_live_owner(record) and len(record.profiles) > 1:
                     multiplex = True
             except Exception:
                 multiplex = False
@@ -1683,6 +1680,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._restart_task_started = True
         # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
         self._draining = True
+        from gateway.drain_control import open_restart_wait
+        open_restart_wait(self)  # clients may still answer a turn parked on approval/clarify (#139041)
         # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
         # the boundary from the moment new turns are refused, not only once stop() begins (#115133).
         self._mark_api_runs_shutdown_requested()
@@ -1696,11 +1695,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             await asyncio.sleep(0.05)
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
-        # NOT in _background_tasks: _stop_impl cancels those, which would skip _shutdown_event.set() / exit 75.
-        # _run_restart is a short-lived self-terminating task (calls stop() then returns). Don't add it to
-        # _background_tasks — _stop_impl cancels all entries in that set, which would cancel _run_restart
-        # while it's awaiting _stop_task, propagating CancelledError into _stop_impl and preventing
-        # _shutdown_event.set() / _exit_code = 75. See #12875. We still hold a strong reference in
+        # NOT in _background_tasks: _stop_impl cancels those, which would cancel _run_restart while it
+        # awaits _stop_task and skip _shutdown_event.set() / _exit_code = 75 (#12875). We still hold a strong reference in
         # self._restart_task: a bare asyncio.create_task() keeps only a weak reference, so the event loop
         # may garbage-collect a still-pending task mid-flight. The cancel loop in _stop_impl explicitly
         # skips _restart_task for the same reason it skips _stop_task.
@@ -2220,7 +2216,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
             from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
-            await settle_gateway_runtime(self, budget=_effective_watchdog_leash(self) - ctx.elapsed())
+            await settle_gateway_runtime(self, _effective_watchdog_leash(self) - ctx.elapsed(), GatewayRunner._shutdown_interrupt_reason(self))
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             await GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)

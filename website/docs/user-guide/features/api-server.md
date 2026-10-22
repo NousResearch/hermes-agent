@@ -71,6 +71,88 @@ structured through execution; it is not interpreted as a gateway slash command.
 - Session-chat replies include `status`; their streams report matching terminal run
   events. An assistant finalization frame is not itself proof of successful execution.
 
+## Idempotency keys {#idempotency-keys}
+
+`POST /v1/chat/completions` and `POST /v1/responses` accept an `Idempotency-Key` header.
+What a key guarantees depends on the execution mode:
+
+- **Canonical mode** (the gateway runs a session authority): a key is a durable admission
+  identity. The first request with it is admitted and runs once, and the key belongs to
+  that admission from then on. Keys are scoped to the authenticated API profile and
+  credential, so another profile or a rotated `API_SERVER_KEY` reusing the same client
+  key is a new request. The rest of this section describes this mode.
+- **Legacy mode** (no session authority): non-streaming requests are deduplicated by a
+  5-minute in-memory cache. Streaming requests are not deduplicated.
+
+`/v1/runs` keys have their own ledger and 24-hour retention (see the Runs API below).
+
+**Exact retries and conflicts.** A retry is exact when it repeats the key with the same
+identity fields and the same declared target. Changing an identity field, or sending the
+key to another session, is a conflict: it is refused with `admission_conflict` and
+nothing runs. How the refusal arrives depends on the request:
+
+- **Responses** (JSON or streaming) and **non-streaming Chat Completions:** HTTP 409
+  with error code `admission_conflict`.
+- **Streaming Chat Completions:** the stream has already opened with HTTP 200, so the
+  refusal is its last chunk, with `finish_reason: "error"` and `error.message`
+  `"admission_conflict"`, followed by `data: [DONE]`. Check that chunk, not the status.
+
+The identity fields differ by endpoint:
+
+- **Responses:** `input`, `instructions`, `previous_response_id`, `conversation`,
+  `conversation_history`, `model`, `provider`, `model_options` and `tools`, plus
+  `truncation` when sent.
+- **Chat Completions:** the last user message, the earlier messages (unless
+  `X-Hermes-Session-Id` is sent, in which case history comes from the session), the
+  system prompt, and the turn settings such as the requested model, provider and
+  `model_options`. `tools` and `tool_choice` are not part of it: a retry that changes
+  only those replays the original answer instead of a conflict.
+
+Delivery mode is not part of the identity on either endpoint: a retry may switch
+between JSON and `stream: true` and gets the same answer in the requested form.
+
+**Replay and duplicate prevention are separate.** An exact retry replays the original
+answer only while the server still holds the key's request identity together with its
+replay record or a terminal admission the answer can be rebuilt from. Once replay is no
+longer possible, the key still does not run again while its admission evidence remains:
+the retry is refused as a conflict and nothing executes. A Responses retry can instead
+get HTTP 409 `unknown_execution`: the store holds the key's claim (for example one
+recorded by an older release) but no answer, so whether the first attempt ran is
+unknown. It is not permission to resend the work under a new key; the first attempt may
+already have run.
+
+After a session is deleted (`DELETE /api/sessions/{id}`), its admissions are kept as
+tombstones. Seven days after the delete they become eligible for pruning; they are
+removed only when a prune pass runs, and until then the key behaves as below.
+
+- **Chat Completions:** an exact retry replays the original answer without recreating
+  the session, and the key sent to any other session is refused as a conflict.
+  Once the tombstones are pruned, the key can name new work on a valid new target.
+- **Responses:** replay also needs the response store to keep the key's identity, so
+  it can end before the seven days: settled identities are retained in a bounded
+  number, and `DELETE /v1/responses/{id}` removes one at once. A key whose identity is
+  gone answers 409 `admission_conflict`, even on a live session. Once its identity is
+  gone and its tombstones are pruned, the key can name new work.
+
+:::note
+By default the response store retains the 1,000 most recently settled identities per
+profile (10 per stored-response slot). Pending or running identities are not counted
+and are never dropped, and deleting a response removes its identity sooner. This is a
+current default, not a replay guarantee.
+:::
+
+An explicit `X-Hermes-Session-Id` is never remapped. The deleted session's id stays
+retired even after pruning. An exact keyed retry whose identity is still retained there
+replays, and a changed one is refused as a conflict. A request with no retained
+identity there, such as a fresh request or a retry whose identity was pruned, is refused
+with `not_found`.
+
+A Chat Completions request without `X-Hermes-Session-Id` derives its session from the
+system prompt and first user message. A deleted session's id is never reused, so a new
+conversation that opens like a deleted one gets a new session, and its later turns land
+on that same session, including after a restart. An exact keyed retry of a turn from the
+deleted conversation is not moved; it replays as described above.
+
 ## Endpoints
 
 ### POST /v1/chat/completions
@@ -871,7 +953,7 @@ When CORS is enabled:
 - **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
 - **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
 - **`X-Hermes-Session-Id`** is an allowed request header, so browsers on an allowlisted origin can request session continuation.
-- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
+- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (see [Idempotency keys](#idempotency-keys) for what a key covers and how long it is kept)
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 

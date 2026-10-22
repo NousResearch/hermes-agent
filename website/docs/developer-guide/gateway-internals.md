@@ -22,13 +22,22 @@ hosted-room driver still uses legacy TUI session handlers; the canonical surface
 therefore reports `driver: false` and does not advertise send, retry, approval,
 or peer-grant operations. It never imports that driver to execute a group turn.
 
-`profiles.list` requires `session:read` and returns only the authenticated
-profile, including its display metadata and avatar presence. `include_sessions`
-defaults to true: previews are limited to that actor's canonical local bindings,
-and `canonical_session` resolves the exact hidden `Bot Chat` title, not the most
-recent conversation. Discovery does not create, restore, or unarchive sessions,
-open sibling profile databases, or run inference. Cross-profile discovery requires
-a separately authenticated connection to the relevant owner.
+`profiles.list` requires `session:read` and returns the authenticated profile
+first, with its display metadata and avatar presence, then the served siblings and
+hosted-room destinations as discovery metadata. `include_sessions` defaults to
+true: `canonical_session` resolves the exact `Bot Chat` title, not the most recent
+conversation, and `last_session` is the newest visible local conversation (a hidden
+row never wins). Both count only local chats the actor owns or reads as an operator:
+minted `local-*` chats, and pre-upgrade chats adopted under their durable binding
+(they keep their old id). A sibling's row carries the same fields only when this
+connection already routes session verbs to it (a host-scoped grant: the Desktop's
+shared socket, the dashboard), read from that sibling's own authority with this
+connection's subject and capabilities. A profile-bound ticket gets metadata alone,
+and so does a sibling that is retiring, listed under a name that routes elsewhere,
+or whose store doesn't answer; a sibling still starting is not listed yet. Rows are
+reused while a profile's store has not moved. Discovery does not create, restore,
+or unarchive sessions, open a database handle of its own or reopen one an unserve
+closed, or run inference.
 
 ## Canonical ancillary reads
 
@@ -545,14 +554,15 @@ Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gat
 
 ## Platform Adapters
 
-Most messaging platforms ship as plugin adapters under `plugins/platforms/<name>/adapter.py`; a few legacy adapters still live directly in `gateway/platforms/`. All extend `BasePlatformAdapter` from `gateway/platforms/base.py`:
+Every messaging platform ships as a plugin adapter under `plugins/platforms/<name>/`; `gateway/platforms/` keeps the base class and the HTTP ingress adapters (`api_server`, `webhook`, `msgraph_webhook`). All extend `BasePlatformAdapter` from `gateway/platforms/base.py`:
 
 ```text
 plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── telegram/adapter.py     # Telegram Bot API (long polling or webhook)
 ├── discord/adapter.py      # Discord bot via discord.py
 ├── slack/adapter.py        # Slack Socket Mode
-├── whatsapp/adapter.py     # WhatsApp Business Cloud API
+├── whatsapp/adapter.py     # WhatsApp via the local Baileys bridge
+├── whatsapp_cloud/adapter.py # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # Email via IMAP/SMTP
@@ -562,16 +572,16 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── wecom/adapter.py        # WeCom (WeChat Work) callback
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
+├── signal/adapter.py       # Signal via signal-cli HTTP daemon (SSE + JSON-RPC)
 ├── irc/adapter.py          # IRC (canonical scoped-lock example)
+├── bluebubbles/adapter.py  # Apple iMessage via BlueBubbles macOS server
+├── weixin/adapter.py       # Weixin (personal WeChat) via iLink Bot API
+├── qqbot/                  # QQ Bot (Tencent QQ) via Official API v2
+├── yuanbao/adapter.py      # Yuanbao (Tencent) DM/group WebSocket
 └── …                       # google_chat, ntfy, photon, raft, simplex, …
 
-gateway/platforms/                  # core base + legacy direct adapters
+gateway/platforms/                  # core base + HTTP ingress adapters
 ├── base.py              # BasePlatformAdapter — shared logic for all platforms
-├── signal.py            # Signal via signal-cli REST API
-├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
-├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
-├── qqbot/               # QQ Bot (Tencent QQ) via Official API v2 (sub-package)
-├── yuanbao.py           # Yuanbao (Tencent) DM/group adapter
 ├── msgraph_webhook.py   # Microsoft Graph change-notification webhook (Teams, Outlook, etc.)
 ├── webhook.py           # Inbound/outbound webhook adapter
 └── api_server.py        # REST API server adapter

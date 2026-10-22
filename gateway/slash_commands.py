@@ -230,11 +230,15 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _telegramize_command_mentions
         return _telegramize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
-    def _checkpoint_manager(self):
-        """A CheckpointManager from gateway config, or None when checkpoints are disabled."""
+    def _checkpoint_manager(self, source=None):
+        """A CheckpointManager from a local session's frozen policy, else gateway config; None when disabled."""
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
+        from gateway.session_authorities import active_authority
+        from gateway.session_policy import policy_for_source
         from tools.checkpoint_manager import CheckpointManager
-        cp = _checkpoint_agent_kwargs(_load_gateway_config())
+        policy = policy_for_source(self, source) if source is not None else None
+        cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
+                                      else _load_gateway_config())
         if not cp["checkpoints_enabled"]:
             return None
         # AIAgent kwargs are ``checkpoint_<field>``; CheckpointManager takes the bare field names.
@@ -591,6 +595,15 @@ class GatewaySlashCommandsMixin(
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
 
+    async def _handle_autoprune_command(self, event: MessageEvent) -> str:
+        """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""
+        from hermes_cli.prune_advisor import answered
+        reply = _execute("autoprune", args=event.get_command_args()).text
+        if event.get_command_args().strip() and answered():  # a failed save or `status` keeps it
+            from gateway.run_housekeeping_disk import clear_local_auto_prune_notice
+            clear_local_auto_prune_notice(self, event.source)
+        return reply
+
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
         return _execute("version").text
@@ -676,6 +689,8 @@ class GatewaySlashCommandsMixin(
         def _set_mode(mode: str) -> None:
             self._voice_mode[voice_key] = mode
             self._save_voice_modes()
+            from gateway.session_config import local_voice_transition
+            local_voice_transition(event.source, mode)
             if not adapter:
                 return
             if mode == "off":
@@ -718,7 +733,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from tools.checkpoint_manager import format_checkpoint_list
-        mgr = self._checkpoint_manager()
+        mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
         cwd = self._terminal_cwd()
@@ -769,7 +784,7 @@ class GatewaySlashCommandsMixin(
         cwd = self._terminal_cwd()
         if mode == "session":
             # Cumulative checkpoint-baseline diff.
-            mgr = self._checkpoint_manager()
+            mgr = self._checkpoint_manager(event.source)
             if mgr is None:
                 return t("gateway.diff.not_enabled")
             if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
@@ -1042,7 +1057,12 @@ class GatewaySlashCommandsMixin(
             return t("gateway.footer.usage")
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
-            _write_raw_config_leaf(config_path, ("display", "runtime_footer", "enabled"), new_state)
+            # A local session writes the ``cli`` key, as /reasoning show|hide saves: every local
+            # surface reads it (gateway.display_config.local_display_config), so the setting holds
+            # wherever it was set (T7). A chat's /footer keeps the global key it always wrote.
+            leaf = (("display", "platforms", platform_key) if event.source.platform == Platform.LOCAL
+                    else ("display",)) + ("runtime_footer", "enabled")
+            _write_raw_config_leaf(config_path, leaf, new_state)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)
@@ -1253,6 +1273,22 @@ class GatewaySlashCommandsMixin(
                                       _capture_dump, _is_dpaste_url, _schedule_auto_delete,
                                       collect_debug_report, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
+
+        wants_local = "local" in {w.lower() for w in (event.get_command_args() or "").split()}
+        if wants_local and getattr(event.source, "platform", None) != Platform.LOCAL:
+            # From a chat the report can't stay on the machine; `/debug local` must never fall
+            # through to the public paste. Bare `/debug` is the upload form.
+            return t("gateway.debug.local_refused")
+        if wants_local:
+            # A local session's `/debug local` (main's CLI form) asks for the report on this machine:
+            # return the redacted report for the client to show, with no network call at all (not
+            # even the expired-paste sweep). Uploading stays on the explicit `/debug` form (T7).
+            from hermes_cli.debug import collect_share_bundle
+
+            def _collect_local():
+                return collect_share_bundle(log_lines=200)["report"]
+
+            return await self._run_in_executor_with_context(_collect_local)
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()

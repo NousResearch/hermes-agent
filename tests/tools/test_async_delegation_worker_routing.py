@@ -18,6 +18,8 @@ class Store:
 
     def _apply(self, operation, payload):
         self.calls.append((operation, payload))
+        if operation == 'delegation.read':
+            return {'value': {'delegation_id': payload['delegation_id'], 'result': {'summary': 'done'}}}
         return {'value': True}
 
 

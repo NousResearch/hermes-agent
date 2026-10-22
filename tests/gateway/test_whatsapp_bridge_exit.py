@@ -197,11 +197,17 @@ class TestRecordIsClearedBeforeSpawn:
         proc = MagicMock()
         proc.poll.return_value = None
 
+        # No bridge is running: the health probe answers "not connected" without a real
+        # socket, so connect() takes the spawn path on every host. Without this the probe's
+        # timeout leaves the port-scanner branch to run, and that scan uses subprocess.run,
+        # which the Popen patch below breaks.
         with patch("plugins.platforms.whatsapp.adapter.find_node_executable", return_value="node"), \
              patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
              patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
              patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch.object(adapter, "_probe_bridge_health", new_callable=AsyncMock, return_value=(False, None)), \
+             patch("plugins.platforms.whatsapp.adapter._port_listener_pids", return_value=[]), \
              patch.object(adapter, "_wait_for_bridge", new_callable=AsyncMock, return_value=True), \
              patch.object(adapter, "_attach_to_bridge"), \
              patch.object(adapter, "_mark_connected"), \

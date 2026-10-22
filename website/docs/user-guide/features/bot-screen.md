@@ -213,7 +213,9 @@ icon: when it is the only browser, the pane / `screen status` report **no
 headed browser** until you install a headed one (`apt-get install chromium`).
 The dock icon starts the browser with the same sandbox settings agent-browser
 uses in that container, so the human's Browser and the bot's browser are one
-and the same.
+and the same. Both start it with `--force-renderer-accessibility` too, so
+`computer_use` can read the page's buttons and fields through AT-SPI whichever
+of the two opened the browser first.
 
 ## CLI
 

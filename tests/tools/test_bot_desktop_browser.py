@@ -66,6 +66,12 @@ def test_dock_browser_caps_its_disk_cache():
     assert 0 < int(cap.split("=", 1)[1]) <= 512 * 1024 * 1024
 
 
+def test_dock_browser_shows_its_pages_to_computer_use():
+    """computer_use reads elements through AT-SPI on Linux, and Chromium shows AT-SPI only its own frame until
+    renderer accessibility is forced on: a page in the human-started Browser must still be readable."""
+    assert "--force-renderer-accessibility" in browser.dock_argv("/opt/chrome", "/p/dir")
+
+
 def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
     (user_data_dir / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/abc\n", encoding="utf-8")
     os.symlink(f"host-{pid}", user_data_dir / "SingletonLock")
@@ -293,6 +299,51 @@ def test_headed_chromium_spawn_asks_the_screen_to_start_but_the_env_builder_neve
     monkeypatch.setattr(session, "_prepare_session_socket_dir", lambda name: str(tmp_path))
     session._spawn_and_collect("t", {"session_name": "h_x"}, ["agent-browser"], "open", engine, 5)
     assert len(calls) == starts
+
+
+@pytest.mark.parametrize("user_args", [None, "--lang=de", "--lang=de\n--disable-features=A,B"])
+@pytest.mark.parametrize("headed, display, screen_flags", [(True, ":37", True), (False, ":37", False), (True, None, False)])
+def test_agents_headed_browser_on_the_screen_starts_with_the_dock_browsers_screen_flags(
+        tmp_path, monkeypatch, user_args, headed, display, screen_flags):
+    """The agent often launches the shared browser before a human clicks the dock icon, and Chromium's singleton
+    then forwards that click into the agent's instance: the agent's headed launch on the screen needs the dock
+    Browser's screen flags too, or computer_use sees only the frame whoever started it. They join the sandbox
+    flags or the user's own AGENT_BROWSER_ARGS, never replace them; a headless or off-screen browser gets none."""
+    from tools import browser_tool_cloud as cloud
+    from tools import browser_tool_session as session
+    from tools.bot_desktop import lease
+
+    monkeypatch.setattr(runtime, "ensure_started_for_tool", lambda: None)
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": display} if display else {})
+    monkeypatch.setattr(lease, "human_holds", lambda: False)
+    monkeypatch.setattr(cloud, "_is_headed_mode", lambda: headed)
+    monkeypatch.setattr(session, "_needs_chromium_sandbox_bypass", lambda: True)
+    if user_args is None:
+        monkeypatch.delenv("AGENT_BROWSER_ARGS", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_BROWSER_ARGS", user_args)
+    envs: list = []
+
+    class _Done:
+        returncode = 0
+        def wait(self, timeout=None): return 0
+    def _fake_popen(argv, env, socket_dir, tag, stdin_payload=None):
+        envs.append(env)
+        for slot in ("stdout", "stderr"):
+            Path(socket_dir, f"_{slot}_{tag}").write_text("{}" if slot == "stdout" else "", encoding="utf-8")
+        return _Done()
+    monkeypatch.setattr(session, "_popen_agent_browser", _fake_popen)
+    monkeypatch.setattr(session, "_prepare_session_socket_dir", lambda name: str(tmp_path))
+    session._spawn_and_collect("t", {"session_name": "h_x", "features": {"local": True}}, ["agent-browser"],
+                               "open", "chrome", 5)
+
+    launched = envs[-1].get("AGENT_BROWSER_ARGS", "")
+    base = ",".join(session.CHROMIUM_SANDBOX_BYPASS_ARGS) if user_args is None else user_args
+    assert launched.startswith(base), "the sandbox flags or the user's own are kept as written"
+    sep = "\n" if "\n" in launched else ","
+    added = set(launched.split(sep)) - set(base.split(sep))
+    assert ("--force-renderer-accessibility" in added) == screen_flags
+    assert added <= set(browser.dock_argv("/opt/chrome", "/p/dir")), "one list: the dock's Browser carries them too"
 
 
 def test_janitor_keeps_the_shared_browser_alive_while_a_human_holds_the_lease(monkeypatch):

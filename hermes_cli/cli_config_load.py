@@ -283,6 +283,15 @@ def load_cli_config() -> dict[str, Any]:
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
+    # Same merge primitive as the file above, so drop-in precedence and the terminal-env
+    # contract (a drop-in IS a file for .env-overwrite purposes) come out right. Skipped under
+    # HERMES_IGNORE_USER_CONFIG=1 ("no user config"), but applied when config.yaml is merely
+    # ABSENT — the packaged cli-config.yaml fallback is a base layer, not a user layer.
+    from hermes_cli import config_d
+    if os.environ.get("HERMES_IGNORE_USER_CONFIG") != "1":
+        drop_ins = config_d.load_config_d()
+        _merge_file_config(defaults, drop_ins)
+        _file_has_terminal_config = _file_has_terminal_config or "terminal" in drop_ins
     # Expand ${ENV_VAR} references before bridging to env vars.
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)

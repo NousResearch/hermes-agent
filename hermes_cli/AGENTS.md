@@ -104,6 +104,11 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
   canon, NO defaults — for presence-sensitive readers). If the CLI sees a key and the gateway
   doesn't (or vice versa), you're on the wrong loader — check `DEFAULT_CONFIG` coverage. Never
   hand-roll raw-read → overlay → expand; `read_user_config_raw` is for write-back round-trips only.
+- **`config.d` drop-ins layer over `config.yaml`** — all loaders apply them; order is
+  `DEFAULT_CONFIG < config.yaml < config.d < managed scope`. `hermes_cli/config_d.py`
+  (`apply_config_d_overlay` is the one call-site primitive); the dir derives from the CONFIG PATH,
+  not `get_hermes_home()`; write-back paths stay config.yaml-only. Rules: configuration.md §
+  Drop-in overrides.
 - **Every `DEFAULT_CONFIG` key has a runtime reader, and every reader a registry entry.** Both drift
   modes are silent: a registered key nothing reads (a knob that does nothing) and a reader of a key
   never registered (never shown, never migrated; new roots also go in `_KNOWN_ROOT_KEYS`). For a new
@@ -118,11 +123,9 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
 Skins are **pure data** (`SkinConfig`); no code change to add one. `init_skin_from_config()` reads
 `display.skin` at startup; `get_active_skin()` (cached), `set_active_skin(name)` (`/skin`),
 `load_skin(name)` (user `~/.hermes/skins/*.yaml` → built-ins → default; missing values inherit
-from `default`). Built-ins in `_BUILTIN_SKINS`: `default`, `ares`, `mono`, `slate`. Keys: `colors.*`
-(banner border/title/accent/dim/text, response_border), `spinner.*` (waiting/thinking faces,
-thinking_verbs, wings), `tool_prefix`, `tool_emojis`, `branding.*` (agent_name, welcome,
-response_label, prompt_symbol). Consumers: `banner.py`, `display.py`, `cli.py`. Key-by-key table
-and YAML template: `website/docs/user-guide/features/skins.md`.
+from `default`). Built-ins in `_BUILTIN_SKINS`: `default`, `ares`, `mono`, `slate`. Consumers:
+`banner.py`, `display.py`, `cli.py`. Key-by-key table and YAML template:
+`website/docs/user-guide/features/skins.md`.
 
 ## Update pipeline (`hermes update`)
 
@@ -150,8 +153,9 @@ single-profile commands (`hermes -p x <cmd>`), so there `get_hermes_home()` scop
 profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead bind the active
 profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
 profile — a module constant or import-time read there freezes to the launch profile (rules in
-root). Profiles are independent
-islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
+root). Profiles are independent islands by design — no implicit config inheritance; sharing is
+explicit via `config.d` drop-ins or a symlinked `config.yaml`. `--clone` copies at creation, minus
+messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
 with tools (`TWILIO_`/`EMAIL_`, plus a plugin platform's `shared_env_prefixes`) are stripped only when the source runs that adapter; never a hand

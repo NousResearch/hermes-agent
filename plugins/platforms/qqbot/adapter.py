@@ -1,5 +1,7 @@
-"""QQ Bot platform adapter (Official QQ Bot API v2): WebSocket gateway for inbound
-events, REST (``api.sgroup.qq.com``) for outbound messages and media uploads.
+"""QQ Bot platform adapter (Official QQ Bot API v2).
+
+``qqbot-agent-sdk`` owns the gateway socket, access token, and REST calls.
+This adapter keeps session routing, access policy, inbound dispatch, and delivery.
 
 config.yaml ``platforms.qq.extra``: app_id / client_secret (or QQ_APP_ID /
 QQ_CLIENT_SECRET), markdown_support, dm_policy + allow_from, group_policy +
@@ -13,7 +15,6 @@ from __future__ import annotations
 from pm import install_hint
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import re
@@ -21,15 +22,8 @@ import time
 import uuid
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlparse
-
-try:
-    import aiohttp
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
-    aiohttp = None  # type: ignore[assignment]
 
 try:
     import httpx
@@ -40,36 +34,22 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task, platform_http_client
+from gateway.platforms.helpers import MessageDeduplicator, platform_http_client
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
 
 
-class QQCloseError(Exception):
-    """Raised when the QQ WebSocket closes; carries code + reason for the reconnect loop."""
-
-    def __init__(self, code, reason=""):
-        self.code = int(code) if code else None
-        self.reason = str(reason) if reason else ""
-        super().__init__(f"WebSocket closed (code={self.code}, reason={self.reason})")
-
-
 from .constants import (
-    API_BASE, TOKEN_URL, GATEWAY_URL_PATH, DEFAULT_API_TIMEOUT, FILE_UPLOAD_TIMEOUT,
-    CONNECT_TIMEOUT_SECONDS, RECONNECT_BACKOFF, MAX_RECONNECT_ATTEMPTS, RATE_LIMIT_DELAY,
-    QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
-    DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
-    MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
-from .utils import coerce_list as _coerce_list, build_user_agent
-from .chunked_upload import (
-    ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
+    DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MAX_MESSAGE_LENGTH,
+    MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
+from .utils import coerce_list as _coerce_list
 from .keyboards import (
     ApprovalRequest, InlineKeyboard, InteractionEvent, build_approval_keyboard,
     build_update_prompt_keyboard, parse_approval_button_data, parse_interaction_event,
@@ -78,7 +58,14 @@ from gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
 
 
 def check_qq_requirements() -> bool:
-    return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
+    """httpx plus qqbot-agent-sdk. The SDK ships with the ``all`` extra."""
+    if not HTTPX_AVAILABLE:
+        return False
+    try:
+        import qqbot_agent_sdk  # presence check; the name is unused
+    except ImportError:
+        return False
+    return True
 
 
 _VOICE_EXTENSIONS = (".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".speex", ".flac")
@@ -107,16 +94,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
 
-    # WS close codes that are unrecoverable → stop reconnecting.
-    _FATAL_CLOSE_CODES = {
-        4001: "invalid opcode", 4002: "invalid payload", 4010: "invalid shard",
-        4011: "sharding required", 4012: "invalid API version", 4013: "invalid intent",
-        4014: "intent not authorized", 4914: "offline/sandbox-only", 4915: "banned"}
-    # WS close codes that invalidate the session → clear it and re-identify on
-    # the next Hello. 4009 (connection timeout) is deliberately absent: it is
-    # resumable per the QQ protocol and must keep session state.
-    _SESSION_INVALID_CLOSE_CODES = {4006, 4007} | set(range(4900, 4914))
-
     @property
     def _log_tag(self) -> str:
         """Log prefix including app_id for multi-instance disambiguation."""
@@ -140,7 +117,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     @property
     def is_connected(self) -> bool:
         """Return True only when the QQ WebSocket transport is usable."""
-        return bool(self._running and self._ws and not self._ws.closed)
+        return bool(self._running and self._qq_ws is not None and self._sdk_connected)
+
+    @property
+    def send_path_degraded(self) -> bool:
+        """True until the SDK reports READY. The gateway thread starts before the socket is up."""
+        return not self._sdk_connected
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.QQBOT)
@@ -154,12 +136,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
 
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._http_client: Optional[httpx.AsyncClient] = None
-        self._listen_task: Optional[asyncio.Task] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
-        self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
+        self._qq_api: Any = None
+        self._qq_ws: Any = None
+        self._sdk_connected = False
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
@@ -167,9 +147,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
-        self._access_token: Optional[str] = None
-        self._token_expires_at: float = 0.0
-        self._token_lock = asyncio.Lock()
 
         # Inline-keyboard interaction routing: invoked for every INTERACTION_CREATE
         # after the adapter ACKed it. Defaults to the approval/update-prompt
@@ -189,8 +166,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Authenticate, obtain gateway URL, and open the WebSocket. ``is_reconnect``
         is accepted for interface conformance only (QQBot has no server-side update queue)."""
         for ok, code, what, hint in (
-            (AIOHTTP_AVAILABLE, "qq_missing_dependency", "aiohttp not installed",
-             f". Run: {install_hint('messaging')}"),
             (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: hermes pm repair"),
             (self._app_id and self._client_secret, "qq_missing_credentials",
              "QQ_APP_ID and QQ_CLIENT_SECRET are required", "")):
@@ -205,364 +180,108 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         try:
             # Tighter keepalive pool so idle CLOSE_WAIT sockets drain faster behind proxies.
-            # See #18451.
-            self._http_client = platform_http_client()
+            # See #18451. Injected into the SDK so attachment downloads keep the SSRF guard.
+            from qqbot_agent_sdk import QQApiClient
 
-            await self._open_gateway_ws(log_url=True)
-            self._listen_task = asyncio.create_task(self._listen_loop())
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            from .sdk_bridge import apply_sdk_identity, scoped_websocket_class
+
+            apply_sdk_identity()
+            self._http_client = platform_http_client()
+            self._qq_api = QQApiClient(self._app_id, self._client_secret, log_tag=self._log_tag)
+            self._qq_api.setup(self._http_client)
+            self._qq_ws = scoped_websocket_class()(callbacks=self._sdk_callbacks(), log_tag=self._log_tag)
+            gateway_url = await self._qq_api.get_gateway_url()
+            logger.info("[%s] Connecting to QQ gateway", self._log_tag)
+            self._qq_ws.start(gateway_url, asyncio.get_running_loop())
+            # READY (on_connected) is the first proof the socket is up. Until then the
+            # gateway shows retrying via send_path_degraded.
             self._mark_connected()
-            logger.info("[%s] Connected", self._log_tag)
+            logger.info("[%s] QQ gateway thread started", self._log_tag)
             self._wire_plugin_handlers(None)
             return True
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- startup failure is the QQ response text; a traceback repeats it in the gateway log
             message = f"QQ startup failed: {exc}"
             self._set_fatal_error("qq_connect_error", message, retryable=True)
-            logger.error("[%s] %s", self._log_tag, message, exc_info=True)
+            logger.error("[%s] %s", self._log_tag, message)
             await self._cleanup()
             self._release_platform_lock()
             return False
 
+    def _sdk_callbacks(self):
+        """Sync token/session hooks run on the SDK thread; inbound events hop back here."""
+        from qqbot_agent_sdk import WSCallbacks
+
+        def _set_session(session_id, seq):
+            self._session_id = session_id
+            self._last_seq = seq
+
+        def _on_connected():
+            self._sdk_connected = True
+            if self._running and not self.has_fatal_error:
+                self._mark_connected()
+            logger.info("[%s] Connected", self._log_tag)
+
+        def _on_disconnected():
+            if self._qq_ws is None:
+                return
+            self._sdk_connected = False
+            self._mark_transport_disconnected()
+
+        def _on_fatal(code, message):
+            if self._qq_ws is None:
+                return
+            self._sdk_connected = False
+            self._set_fatal_error(str(code), str(message), retryable=True)
+            # The SDK does not retry an open() that dies before start_listeners().
+            # Ask the gateway to restart this adapter; its own reconnect loop never started.
+            if str(code) != "qq_gateway_open_failed":
+                return
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            # The loop only keeps a weak ref; hold the task on the adapter until it finishes.
+            task = loop.create_task(self._notify_fatal_error())
+            self._qq_open_failed_task = task
+            task.add_done_callback(lambda _done: setattr(self, "_qq_open_failed_task", None))
+
+        async def _on_interaction_event(_event_type, data):
+            await self._on_interaction(data)
+
+        return WSCallbacks(
+            on_message_event=self._on_message,
+            on_connected=_on_connected,
+            on_disconnected=_on_disconnected,
+            on_fatal_error=_on_fatal,
+            get_token=self._qq_api.ensure_token_sync,
+            get_session=lambda: (self._session_id, self._last_seq),
+            set_session=_set_session,
+            set_heartbeat_interval=lambda _seconds: None,
+            clear_token=self._qq_api.clear_token,
+            fail_pending=self._fail_pending,
+            get_gateway_url=self._qq_api.get_gateway_url_sync,
+            on_interaction_event=_on_interaction_event,
+        )
+
     async def disconnect(self) -> None:
+        self._sdk_connected = False
         self._running = False
         self._mark_disconnected()
-        await cancel_task(self._listen_task)
-        await cancel_task(self._heartbeat_task)
-        self._listen_task = self._heartbeat_task = None
+        ws = self._qq_ws
+        self._qq_ws = None
+        if ws is not None and getattr(ws, "_ws_thread", None) is not None:
+            await ws.async_stop()
+        self._qq_api = None
         await self._cleanup()
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self._log_tag)
 
-    async def _close_ws(self) -> None:
-        """Close the WebSocket + its aiohttp session (keeps _http_client alive)."""
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
-
     async def _cleanup(self) -> None:
-        """Close WebSocket, HTTP session, and client; fail pending futures."""
-        await self._close_ws()
+        """Close the injected HTTP client and fail pending futures."""
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
         self._fail_pending("Disconnected")
-
-    # ── Token management ──
-
-    async def _fetch_json(self, what: str, request: Callable[[], Awaitable[Any]]) -> dict[str, Any]:
-        """Run an httpx request and return its JSON; any failure → RuntimeError."""
-        try:
-            resp = await request()
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as exc:
-            raise RuntimeError(f"Failed to get QQ Bot {what}: {exc}") from exc
-
-    def _token_fresh(self) -> bool:
-        return bool(self._access_token) and time.time() < self._token_expires_at - 60
-
-    async def _ensure_token(self) -> str:
-        """Return a valid access token, refreshing if needed (with singleflight)."""
-        if self._token_fresh():
-            return self._access_token
-        async with self._token_lock:
-            if self._token_fresh():  # double-check after acquiring lock
-                return self._access_token
-            data = await self._fetch_json("access token", lambda: self._http_client.post(
-                TOKEN_URL, json={"appId": self._app_id, "clientSecret": self._client_secret},
-                timeout=DEFAULT_API_TIMEOUT))
-            token = data.get("access_token")
-            if not token:
-                raise RuntimeError(f"QQ Bot token response missing access_token: {data}")
-            expires_in = int(data.get("expires_in", 7200))
-            self._access_token = token
-            self._token_expires_at = time.time() + expires_in
-            logger.info("[%s] Access token refreshed, expires in %ds", self._log_tag, expires_in)
-            return self._access_token
-
-    async def _get_gateway_url(self) -> str:
-        token = await self._ensure_token()
-        data = await self._fetch_json("gateway URL", lambda: self._http_client.get(
-            f"{API_BASE}{GATEWAY_URL_PATH}",
-            headers={"Authorization": f"QQBot {token}", "User-Agent": build_user_agent()},
-            timeout=DEFAULT_API_TIMEOUT))
-        url = data.get("url")
-        if not url:
-            raise RuntimeError(f"QQ Bot gateway response missing url: {data}")
-        return url
-
-    # ── WebSocket lifecycle ──
-
-    async def _open_gateway_ws(self, *, log_url: bool = False) -> None:
-        """Token → gateway URL → WebSocket (shared by connect and _reconnect)."""
-        await self._ensure_token()
-        gateway_url = await self._get_gateway_url()
-        if log_url:
-            logger.info("[%s] Gateway URL: %s", self._log_tag, gateway_url)
-        await self._open_ws(gateway_url)
-
-    async def _open_ws(self, gateway_url: str) -> None:
-        await self._close_ws()
-        # Honor proxy env vars for the WebSocket (WSL setups need this).
-        self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
-        proxy_vars = ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
-        ws_proxy = next((v for v in map(os.getenv, proxy_vars) if v), None)
-        self._ws = await self._session.ws_connect(
-            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=ws_proxy,
-        )
-        logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
-
-    async def _listen_loop(self) -> None:
-        """Read WebSocket events and reconnect on errors. Close codes: 4004 → refresh
-        token; 4006/4007/49xx → clear session and re-identify; 4008 → rate limited,
-        back off; _FATAL_CLOSE_CODES → stop."""
-        backoff_idx = 0
-        connect_time = 0.0
-        quick_disconnect_count = 0
-
-        async def reconnect() -> None:
-            nonlocal backoff_idx, quick_disconnect_count
-            if await self._reconnect(backoff_idx):
-                backoff_idx = quick_disconnect_count = 0
-            else:
-                backoff_idx += 1
-
-        while self._running:
-            try:
-                connect_time = time.monotonic()
-                await self._read_events()
-                backoff_idx = quick_disconnect_count = 0
-            except asyncio.CancelledError:
-                return
-            except QQCloseError as exc:
-                if not self._running:
-                    return
-                code = exc.code
-                logger.warning("[%s] WebSocket closed: code=%s reason=%s", self._log_tag, code, exc.reason)
-
-                # Quick disconnect detection (permission issues, misconfiguration)
-                duration = time.monotonic() - connect_time
-                if duration < QUICK_DISCONNECT_THRESHOLD and connect_time > 0:
-                    quick_disconnect_count += 1
-                    logger.info(
-                        "[%s] Quick disconnect (%.1fs), count: %d", self._log_tag, duration, quick_disconnect_count
-                    )
-                    if quick_disconnect_count >= MAX_QUICK_DISCONNECT_COUNT:
-                        logger.error(
-                            "[%s] Too many quick disconnects. "
-                            "Check: 1) AppID/Secret correct 2) Bot permissions on QQ Open Platform",
-                            self._log_tag)
-                        self._set_fatal_error(
-                            "qq_quick_disconnect", "Too many quick disconnects — check bot permissions", retryable=True
-                        )
-                        return
-                else:
-                    quick_disconnect_count = 0
-
-                self._mark_transport_disconnected()
-                self._fail_pending("Connection closed")
-
-                desc = self._FATAL_CLOSE_CODES.get(code)
-                if desc:
-                    logger.error("[%s] Bot is %s. Check QQ Open Platform.", self._log_tag, desc)
-                    self._set_fatal_error(f"qq_{desc}", f"Bot is {desc}", retryable=False)
-                    return
-
-                if code == 4008:
-                    logger.info("[%s] Rate limited (4008), waiting %ds", self._log_tag, RATE_LIMIT_DELAY)
-                    if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        self._mark_disconnected()
-                        return
-                    await asyncio.sleep(RATE_LIMIT_DELAY)
-                    await reconnect()
-                    continue
-
-                if code == 4004:
-                    logger.info("[%s] Invalid token (4004), will refresh and reconnect", self._log_tag)
-                    self._access_token = None
-                    self._token_expires_at = 0.0
-
-                if code in self._SESSION_INVALID_CLOSE_CODES:
-                    logger.info("[%s] Session error (%d), clearing session for re-identify", self._log_tag, code)
-                    self._session_id = None
-                    self._last_seq = None
-
-                await reconnect()
-                if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                    self._mark_disconnected()
-                    return
-
-            except Exception as exc:
-                if not self._running:
-                    return
-                logger.warning("[%s] WebSocket error: %s", self._log_tag, exc)
-                self._mark_transport_disconnected()
-                self._fail_pending("Connection interrupted")
-
-                if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
-                    return
-                await reconnect()
-
-    async def _reconnect(self, backoff_idx: int) -> bool:
-        delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
-        logger.info("[%s] Reconnecting in %ds (attempt %d)...", self._log_tag, delay, backoff_idx + 1)
-        await asyncio.sleep(delay)
-
-        self._heartbeat_interval = 30.0  # reset until Hello
-        try:
-            await self._open_gateway_ws()
-            self._mark_connected()
-            logger.info("[%s] Reconnected", self._log_tag)
-            return True
-        except Exception as exc:
-            logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
-            return False
-
-    async def _read_events(self) -> None:
-        if not self._ws:
-            raise RuntimeError("WebSocket not connected")
-        if self._ws.closed:
-            # Returning normally here would make _listen_loop treat it as a clean
-            # read and retry with backoff reset → 100% CPU spin. Raise instead.
-            raise RuntimeError("WebSocket closed")
-
-        while self._running and self._ws and not self._ws.closed:
-            msg = await self._ws.receive()
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                payload = self._parse_json(msg.data)
-                if payload:
-                    self._dispatch_payload(payload)
-            elif msg.type == aiohttp.WSMsgType.CLOSE:
-                raise QQCloseError(msg.data, msg.extra)
-            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
-                raise RuntimeError("WebSocket closed")
-
-    async def _heartbeat_loop(self) -> None:
-        """Send op 1 heartbeats with the latest seq at 80% of the Hello interval."""
-        with contextlib.suppress(asyncio.CancelledError):
-            while self._running:
-                await asyncio.sleep(self._heartbeat_interval)
-                if not self._ws or self._ws.closed:
-                    continue
-                try:
-                    await self._ws.send_json({"op": 1, "d": self._last_seq})
-                except Exception as exc:
-                    logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
-
-    async def _send_ws_auth(self, name: str, payload: dict[str, Any], sent_msg: str, *log_args) -> bool:
-        """Send an Identify/Resume payload; returns False if the send raised."""
-        try:
-            if self._ws and not self._ws.closed:
-                await self._ws.send_json(payload)
-                logger.info("[%s] " + sent_msg, self._log_tag, *log_args)
-            else:
-                logger.warning("[%s] Cannot send %s: WebSocket not connected", self._log_tag, name)
-        except Exception as exc:
-            logger.error("[%s] Failed to send %s: %s", self._log_tag, name, exc)
-            return False
-        return True
-
-    async def _send_identify(self) -> None:
-        """Send op 2 Identify (reply to Hello); server answers with READY. Intents:
-        C2C_GROUP_AT_MESSAGES | PUBLIC_GUILD_MESSAGES | DIRECT_MESSAGE | INTERACTION."""
-        token = await self._ensure_token()
-        payload = {"op": 2, "d": {
-            "token": f"QQBot {token}",
-            "intents": (1 << 25) | (1 << 30) | (1 << 12) | (1 << 26),
-            "shard": [0, 1],
-            "properties": {"$os": "macOS", "$browser": "hermes-agent", "$device": "hermes-agent"}}}
-        await self._send_ws_auth("Identify", payload, "Identify sent")
-
-    async def _send_resume(self) -> None:
-        """Send op 6 Resume after a reconnect; on failure clear session → Identify next Hello."""
-        token = await self._ensure_token()
-        payload = {"op": 6, "d": {"token": f"QQBot {token}", "session_id": self._session_id, "seq": self._last_seq}}
-        if not await self._send_ws_auth(
-            "Resume", payload, "Resume sent (session_id=%s, seq=%s)", self._session_id, self._last_seq
-        ):
-            self._session_id = None
-            self._last_seq = None
-
-    @staticmethod
-    def _create_task(coro):
-        """Schedule a coroutine; returns None (no error) when no loop is running
-        (tests call _dispatch_payload synchronously)."""
-        try:
-            return asyncio.get_running_loop().create_task(coro)
-        except RuntimeError:
-            return None
-
-    def _close_ws_soon(self) -> None:
-        """Close the WS so _read_events raises and _listen_loop reconnects (with Resume)."""
-        if self._ws and not self._ws.closed:
-            self._create_task(self._ws.close())
-
-    def _dispatch_payload(self, payload: dict[str, Any]) -> None:
-        """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""
-        op, t, s, d = payload.get("op"), payload.get("t"), payload.get("s"), payload.get("d")
-        if isinstance(s, int) and (self._last_seq is None or s > self._last_seq):
-            self._last_seq = s
-
-        if op == 10:  # Hello — reply with Resume (have session) or Identify
-            interval_ms = (d if isinstance(d, dict) else {}).get("heartbeat_interval", 30000)
-            self._heartbeat_interval = interval_ms / 1000.0 * 0.8  # 80% of server interval
-            logger.debug(
-                "[%s] Hello received, heartbeat_interval=%dms (sending every %.1fs)",
-                self._log_tag, interval_ms, self._heartbeat_interval)
-            resume = self._session_id and self._last_seq is not None
-            self._create_task(self._send_resume() if resume else self._send_identify())
-        elif op == 0 and t:  # Dispatch
-            if t == "READY":
-                if isinstance(d, dict):  # store session_id for resume
-                    self._session_id = d.get("session_id")
-                    logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
-            elif t == "RESUMED":
-                logger.info("[%s] Session resumed", self._log_tag)
-            elif t in self._INBOUND_HANDLERS:
-                asyncio.create_task(self._on_message(t, d))
-            elif t == "INTERACTION_CREATE":
-                self._create_task(self._on_interaction(d))
-            else:
-                logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
-        elif op == 11:  # Heartbeat ACK
-            pass
-        elif op == 7:  # Server Reconnect
-            logger.info("[%s] Server requested reconnect (op 7)", self._log_tag)
-            self._close_ws_soon()
-        elif op == 9:  # Invalid Session — d=True resumable, d=False re-identify from scratch
-            if d is not None and bool(d):
-                logger.info("[%s] Invalid session (op 9, resumable)", self._log_tag)
-            else:
-                logger.info("[%s] Invalid session (op 9, not resumable), clearing session", self._log_tag)
-                self._session_id = None
-                self._last_seq = None
-            self._close_ws_soon()
-        else:
-            logger.debug("[%s] Unknown op: %s", self._log_tag, op)
-
-    # ── JSON helpers ──
-
-    @staticmethod
-    def _parse_json(raw: Any) -> Optional[dict[str, Any]]:
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            logger.warning("[QQBot] Failed to parse JSON: %r", raw)
-            return None
-        return payload if isinstance(payload, dict) else None
-
-    @staticmethod
-    def _next_msg_seq(msg_id: str) -> int:
-        """Generate a message sequence number in 0..65535 range."""
-        time_part = int(time.time()) % 100000000
-        rand = int(uuid.uuid4().hex[:4], 16)
-        return (time_part ^ rand) % 65536
 
     # ── Inbound message handling ──
 
@@ -625,12 +344,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.error("[%s] Interaction callback raised: %s", self._log_tag, exc, exc_info=True)
 
     async def _acknowledge_interaction(self, interaction_id: str, code: int = 0) -> None:
-        """ACK a button interaction via ``PUT /interactions/{id}`` (code 0 = success)."""
-        resp = await self._require_http_client().put(
-            f"{API_BASE}/interactions/{interaction_id}",
-            headers=await self._auth_headers(), json={"code": code}, timeout=DEFAULT_API_TIMEOUT)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Interaction ACK failed [{resp.status_code}]: {resp.text[:200]}")
+        """ACK a button interaction through the SDK (code 0 = success)."""
+        await self._require_api().acknowledge_interaction(interaction_id, code=code)
 
     # Button decision → ``choice`` for tools.approval.resolve_gateway_approval. The
     # 3-button layout folds "session" into "always"; ``/approve session`` still works.
@@ -1006,8 +721,16 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return filename.strip().lower().endswith(_VOICE_EXTENSIONS)
 
     def _qq_media_headers(self) -> dict[str, str]:
-        """Authorization header for QQ multimedia CDN downloads (required, else non-200)."""
-        return {"Authorization": f"QQBot {self._access_token}"} if self._access_token else {}
+        """Authorization and Hermes user agent for QQ multimedia CDN downloads."""
+        from qqbot_agent_sdk import build_user_agent
+
+        from .sdk_bridge import apply_sdk_identity
+
+        token = getattr(self._qq_api, "access_token", None) if self._qq_api is not None else None
+        if not token:
+            return {}
+        apply_sdk_identity()
+        return {"Authorization": f"QQBot {token}", "User-Agent": build_user_agent()}
 
     async def _stt_voice_attachment(
         self, url: str, content_type: str, filename: str, *, asr_refer_text: Optional[str] = None,
@@ -1281,56 +1004,23 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     # ── Outbound messaging — REST API ──
 
-    def _require_http_client(self) -> httpx.AsyncClient:
-        if not self._http_client:
-            raise RuntimeError("HTTP client not initialized — not connected?")
-        return self._http_client
+    def _require_api(self):
+        """The connected ``QQApiClient``. Every QQ REST call goes through it."""
+        if self._qq_api is None:
+            raise RuntimeError("QQ API client not initialized — not connected?")
+        return self._qq_api
 
-    async def _api_request(
-        self, method: str, path: str, body: Optional[dict[str, Any]] = None, timeout: float = DEFAULT_API_TIMEOUT,
-    ) -> dict[str, Any]:
-        client = self._require_http_client()
-        headers = await self._auth_headers()
-        try:
-            resp = await client.request(method, f"{API_BASE}{path}", headers=headers, json=body, timeout=timeout)
-            data = resp.json()
-            if resp.status_code >= 400:
-                raise RuntimeError(f"QQ Bot API error [{resp.status_code}] {path}: {data.get('message', data)}")
-            return data
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(f"QQ Bot API timeout [{path}]: {exc}") from exc
-
-    async def _auth_headers(self) -> dict[str, str]:
-        """JSON REST headers with a fresh bot token."""
-        token = await self._ensure_token()
-        return {"Authorization": f"QQBot {token}", "Content-Type": "application/json", "User-Agent": build_user_agent()}
-
-    async def _upload_media(
-        self, target_type: str, target_id: str, file_type: int, url: Optional[str] = None,
-        file_data: Optional[str] = None, srv_send_msg: bool = False, file_name: Optional[str] = None,
-    ) -> dict[str, Any]:
-        path = self._rest_path(target_type, target_id, "files")
-        body: dict[str, Any] = {"file_type": file_type, "srv_send_msg": srv_send_msg}
-        if url:
-            body["url"] = url
-        elif file_data:
-            body["file_data"] = file_data
-        if file_type == MEDIA_TYPE_FILE and file_name:
-            body["file_name"] = file_name
-        for attempt in range(3):  # retry transient upload failures
-            try:
-                return await self._api_request("POST", path, body, timeout=FILE_UPLOAD_TIMEOUT)
-            except RuntimeError as exc:
-                if attempt == 2 or any(kw in str(exc) for kw in ("400", "401", "Invalid", "timeout", "Timeout")):
-                    raise
-                await asyncio.sleep(1.5 * (attempt + 1))
+    def _sent(self, data: Any) -> SendResult:
+        payload = data if isinstance(data, dict) else {}
+        message_id = str(payload.get("id") or uuid.uuid4().hex[:12])
+        return SendResult(success=True, message_id=message_id, raw_response=payload)
 
     _RECONNECT_WAIT_SECONDS = 15.0  # max wait for reconnection before giving up on send
     _RECONNECT_POLL_INTERVAL = 0.5  # is_connected poll interval while waiting
 
     async def _wait_for_reconnection(self) -> bool:
         """Poll is_connected for up to _RECONNECT_WAIT_SECONDS — covers the race where
-        send() lands between a disconnect and _listen_loop's reconnect."""
+        send() lands between a disconnect and the SDK socket reconnect."""
         logger.info(
             "[%s] Not connected — waiting for reconnection (up to %.0fs)", self._log_tag, self._RECONNECT_WAIT_SECONDS
         )
@@ -1395,32 +1085,24 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         retryable = not any(k in error_msg.lower() for k in self._PERMANENT_SEND_ERRORS)
         return SendResult(success=False, error=error_msg, retryable=retryable)
 
-    @staticmethod
-    def _rest_path(chat_type: str, target_id: str, endpoint: str) -> str:
-        """``/v2/{users|groups}/{id}/{endpoint}`` for a c2c user or a group."""
-        kind = "users" if chat_type == "c2c" else "groups"
-        return f"/v2/{kind}/{target_id}/{endpoint}"
-
-    @classmethod
-    def _messages_path(cls, chat_type: str, target_id: str) -> str:
-        return cls._rest_path(chat_type, target_id, "messages")
-
-    async def _post_message(self, path: str, body: dict[str, Any]) -> SendResult:
-        """POST a message body and wrap the response as a successful SendResult."""
-        data = await self._api_request("POST", path, body)
-        return SendResult(success=True, message_id=str(data.get("id", uuid.uuid4().hex[:12])), raw_response=data)
-
     async def _send_text_to(
         self, chat_type: str, target_id: str, content: str, reply_to: Optional[str] = None,
         keyboard: Optional[InlineKeyboard] = None) -> SendResult:
-        """Send text (optionally with an inline keyboard) to a c2c user or group."""
-        self._next_msg_seq(reply_to or target_id)
-        body = self._build_text_body(content, reply_to)
-        if reply_to:
-            body["msg_id"] = reply_to
-        if keyboard is not None:
-            body["keyboard"] = keyboard.to_dict()
-        return await self._post_message(self._messages_path(chat_type, target_id), body)
+        """Send text (optionally with an inline keyboard) through ``QQApiClient``."""
+        api = self._require_api()
+        if keyboard is None:
+            data = await api.send_text(
+                chat_type, target_id, content, reply_to=reply_to,
+                markdown=self._markdown_support, retries=1, max_length=self.MAX_MESSAGE_LENGTH)
+            return self._sent(data)
+        msg = api.build_text_body(
+            content, reply_to=reply_to, markdown=self._markdown_support,
+            max_length=self.MAX_MESSAGE_LENGTH)
+        if chat_type == "group":
+            data = await api.post_group_message(target_id, msg, keyboard=keyboard)
+        else:
+            data = await api.post_c2c_message(target_id, msg, keyboard=keyboard)
+        return self._sent(data)
 
     async def _send_c2c_text(self, openid, content, reply_to=None, keyboard=None) -> SendResult:
         return await self._send_text_to("c2c", openid, content, reply_to, keyboard)
@@ -1438,10 +1120,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return getattr(self, name) if name else None
 
     async def _send_guild_text(self, channel_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
-        body: dict[str, Any] = {"content": content[: self.MAX_MESSAGE_LENGTH]}
-        if reply_to:
-            body["msg_id"] = reply_to
-        return await self._post_message(f"/channels/{channel_id}/messages", body)
+        return await self._send_text_to("guild", channel_id, content, reply_to)
 
     # ── Inline-keyboard outbound helpers (approval / update-prompt flows) ──
 
@@ -1504,16 +1183,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             chat_id, content, build_update_prompt_keyboard(), reply_to=self._last_msg_id.get(chat_id)
         )
 
-    def _build_text_body(self, content: str, reply_to: Optional[str] = None) -> dict[str, Any]:
-        msg_seq = self._next_msg_seq(reply_to or "default")
-        text = content[: self.MAX_MESSAGE_LENGTH]
-        if self._markdown_support:
-            return {"markdown": {"content": text}, "msg_type": MSG_TYPE_MARKDOWN, "msg_seq": msg_seq}
-        body: dict[str, Any] = {"content": text, "msg_type": MSG_TYPE_TEXT, "msg_seq": msg_seq}
-        if reply_to:
-            body["message_reference"] = {"message_id": reply_to}
-        return body
-
     # ── Native media sending ──
 
     async def send_image(
@@ -1546,9 +1215,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _send_media(
         self, chat_id: str, media_source: str, file_type: int, kind: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, file_name: Optional[str] = None) -> SendResult:
-        """Upload media and send as a native message. HTTP(S) URLs → single ``POST
-        .../files`` with ``url=`` (QQ fetches it). Local files → chunked upload
-        (prepare / PUT parts / complete), up to the platform's ~100 MB per-file limit."""
+        """Upload via ``MediaUploader`` and send the rich-media message through the SDK."""
+        from qqbot_agent_sdk import (
+            MediaInfo, MediaUploader, MessageToCreate, QQApiClient, QQMessageType,
+            UploadDailyLimitExceededError, UploadFileTooLargeError)
+
         if not await self._ensure_connected():
             return self._NOT_CONNECTED
         chat_type = self._guess_chat_type(chat_id)
@@ -1556,24 +1227,20 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return SendResult(success=False, error="Guild media send not supported via this path")
 
         try:
-            if self._is_url(media_source):
-                resolved_name = file_name or Path(urlparse(media_source).path).name or "media"
-                upload = await self._upload_media(
-                    chat_type, chat_id, file_type, url=media_source, srv_send_msg=False,
-                    file_name=resolved_name if file_type == MEDIA_TYPE_FILE else None)
-            else:
-                upload = await self._upload_local_file(chat_type, chat_id, media_source, file_type, file_name)
-
-            file_info = upload.get("file_info") or (upload.get("data", {}) or {}).get("file_info")
-            if not file_info:
-                return SendResult(success=False, error=f"Upload returned no file_info: {upload}")
-            body: dict[str, Any] = {
-                "msg_type": MSG_TYPE_MEDIA, "media": {"file_info": file_info}, "msg_seq": self._next_msg_seq(chat_id)}
-            if caption:
-                body["content"] = caption[: self.MAX_MESSAGE_LENGTH]
-            if reply_to:
-                body["msg_id"] = reply_to
-            return await self._post_message(self._messages_path(chat_type, chat_id), body)
+            api = self._require_api()
+            resolved_name = file_name or Path(urlparse(str(media_source)).path).name or "media"
+            file_info = await MediaUploader(
+                api, self._http_client, log_tag=self._log_tag,
+            ).upload(chat_type, chat_id, media_source, file_type, resolved_name)
+            msg = MessageToCreate(
+                msg_type=int(QQMessageType.RICH_MEDIA),
+                msg_seq=QQApiClient.next_msg_seq(chat_id),
+                media=MediaInfo(file_info=file_info),
+                content=(caption or "")[: self.MAX_MESSAGE_LENGTH],
+                msg_id=reply_to or "",
+            )
+            poster = api.post_group_message if chat_type == "group" else api.post_c2c_message
+            return self._sent(await poster(chat_id, msg))
         except UploadDailyLimitExceededError as exc:
             # Non-retryable quota hit; give the model actionable text.
             logger.warning("[%s] Daily upload limit exceeded for %s (%s)", self._log_tag, exc.file_name, exc.file_size_human)
@@ -1588,28 +1255,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 success=False, retryable=False,
                 error=f"{exc.file_name!r} ({exc.file_size_human}) exceeds the QQ per-file upload limit ({exc.limit_human}).")
         except Exception as exc:
-            logger.error("[%s] Media send failed: %s", self._log_tag, exc)
+            logger.error("[%s] Media send (%s) failed: %s", self._log_tag, kind, exc)
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
-
-    async def _upload_local_file(
-        self, chat_type: str, chat_id: str, media_source: str, file_type: int, file_name: Optional[str],
-    ) -> dict[str, Any]:
-        """Chunked-upload a local file; returns the complete response whose ``file_info`` goes
-        into the RichMedia body. Raises UploadDailyLimitExceededError / UploadFileTooLargeError
-        from the uploader, ValueError for placeholder paths like ``<path>``, FileNotFoundError."""
-        client = self._require_http_client()
-        local_path = Path(media_source).expanduser()
-        if not local_path.is_absolute():
-            local_path = (Path.cwd() / local_path).resolve()
-        if not local_path.exists() or not local_path.is_file():
-            if media_source.startswith("<") or len(media_source) < 3:
-                raise ValueError(f"Invalid media source (looks like a placeholder): {media_source!r}")
-            raise FileNotFoundError(f"Media file not found: {local_path}")
-
-        uploader = ChunkedUploader(api_request=self._api_request, http_put=client.put, log_tag=self._log_tag)
-        return await uploader.upload(
-            chat_type=chat_type, target_id=chat_id, file_path=str(local_path), file_type=file_type,
-            file_name=file_name or local_path.name)
 
     # ── Typing indicator ──
 
@@ -1624,12 +1271,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         ):
             return
         try:
-            body = {
-                "msg_type": MSG_TYPE_INPUT_NOTIFY,
-                "msg_id": msg_id,
-                "input_notify": {"input_type": 1, "input_second": self._TYPING_INPUT_SECONDS},
-                "msg_seq": self._next_msg_seq(chat_id)}
-            await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
+            await self._require_api().send_typing(
+                chat_id, msg_id, input_seconds=self._TYPING_INPUT_SECONDS)
             self._typing_sent_at[chat_id] = now
         except Exception as exc:
             logger.debug("[%s] send_typing failed: %s", self._log_tag, exc)

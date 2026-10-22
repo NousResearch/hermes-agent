@@ -1,34 +1,8 @@
-"""QQBot shared utilities — User-Agent, HTTP helpers, config coercion."""
+"""QQBot config coercion shared by the adapter."""
 
 from __future__ import annotations
 
-import platform
-import sys
-from typing import Any, Dict, List
-
-from .constants import QQBOT_VERSION
-
-
-def _get_hermes_version() -> str:
-    """Return the hermes-agent package version, or 'dev' if unavailable."""
-    try:
-        from importlib.metadata import version
-        return version("hermes-agent")
-    except Exception:
-        return "dev"
-
-
-def build_user_agent() -> str:
-    """``QQBotAdapter/<qqbot_version> (Python/<py_version>; <os>; Hermes/<hermes_version>)``."""
-    v = sys.version_info
-    return (f"QQBotAdapter/{QQBOT_VERSION} (Python/{v.major}.{v.minor}.{v.micro}; "
-            f"{platform.system().lower()}; Hermes/{_get_hermes_version()})")
-
-
-def get_api_headers() -> dict[str, str]:
-    """Standard QQBot API headers. ``q.qq.com`` requires ``Accept: application/json``
-    — without it the server returns a JavaScript anti-bot challenge page."""
-    return {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": build_user_agent()}
+from typing import Any
 
 
 def coerce_list(value: Any) -> list[str]:

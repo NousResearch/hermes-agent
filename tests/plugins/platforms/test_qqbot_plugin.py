@@ -94,6 +94,124 @@ def test_cron_deliver_qqbot_without_a_live_gateway():
     assert _resolve_home_env_var("qqbot") == "QQBOT_HOME_CHANNEL"
 
 
+def test_sdk_ws_thread_keeps_caller_context():
+    """The SDK socket thread must see the profile context that called start()."""
+    import asyncio
+    import contextvars
+
+    from plugins.platforms.qqbot.sdk_bridge import scoped_websocket_class
+
+    profile = contextvars.ContextVar("profile")
+    profile.set("profile-a")
+    seen = {}
+
+    class _WS(scoped_websocket_class()):
+        def _run_ws_thread(self, gateway_url):
+            seen["profile"] = profile.get(None)
+            seen["url"] = gateway_url
+
+    ws = _WS(callbacks=None, log_tag="test")
+    ws.start("wss://example.test", asyncio.new_event_loop())
+    ws._ws_thread.join(timeout=2)
+    assert seen == {"profile": "profile-a", "url": "wss://example.test"}
+
+
+def test_sdk_user_agent_carries_hermes_version(monkeypatch):
+    """Outgoing QQ requests keep the Hermes/<version> token the in-tree client sent."""
+    from types import SimpleNamespace
+
+    from qqbot_agent_sdk import build_user_agent, sdk_config
+
+    from plugins.platforms.qqbot.sdk_bridge import apply_sdk_identity
+
+    previous = (sdk_config.source, list(sdk_config.extra_ua_items))
+    monkeypatch.setattr(
+        "hermes_cli.version_info.get_version_info",
+        lambda: SimpleNamespace(base_version="9.9.9"),
+    )
+    try:
+        apply_sdk_identity()
+        agent = build_user_agent()
+        assert "Hermes/9.9.9" in agent
+        assert agent.startswith("QQBotAdapter/")
+        assert sdk_config.source == "hermes"
+    finally:
+        sdk_config.source = previous[0]
+        sdk_config.extra_ua_items = previous[1]
+
+
+def _drain(loop):
+    loop.call_soon(loop.stop)
+    loop.run_forever()
+
+
+def test_ws_thread_exit_before_listen_is_retryable_fatal(monkeypatch):
+    """open() dying before start_listeners() never reaches the SDK reconnect loop."""
+    import asyncio
+
+    from qqbot_agent_sdk import QQWebSocket
+
+    from plugins.platforms.qqbot.sdk_bridge import scoped_websocket_class
+
+    events = []
+
+    class _Callbacks:
+        def on_disconnected(self):
+            events.append("down")
+
+        def on_fatal_error(self, code, message):
+            events.append((code, message))
+
+    def _exit_immediately(self, gateway_url):
+        return None
+
+    monkeypatch.setattr(QQWebSocket, "_run_ws_thread", _exit_immediately)
+    loop = asyncio.new_event_loop()
+    try:
+        ws = scoped_websocket_class()(callbacks=_Callbacks(), log_tag="test")
+        ws.start("wss://example.test", loop)
+        ws._ws_thread.join(timeout=2)
+        _drain(loop)
+    finally:
+        loop.close()
+
+    assert events[0] == "down"
+    assert events[1][0] == "qq_gateway_open_failed"
+    assert "listen loop" in events[1][1]
+
+
+def test_ws_thread_exit_after_listeners_does_not_report_startup_failure(monkeypatch):
+    import asyncio
+
+    from qqbot_agent_sdk import QQWebSocket
+
+    from plugins.platforms.qqbot.sdk_bridge import scoped_websocket_class
+
+    events = []
+
+    class _Callbacks:
+        def on_disconnected(self):
+            events.append("down")
+
+        def on_fatal_error(self, code, message):
+            events.append(code)
+
+    def _listen_then_exit(self, gateway_url):
+        self._listeners_started = True
+
+    monkeypatch.setattr(QQWebSocket, "_run_ws_thread", _listen_then_exit)
+    loop = asyncio.new_event_loop()
+    try:
+        ws = scoped_websocket_class()(callbacks=_Callbacks(), log_tag="test")
+        ws.start("wss://example.test", loop)
+        ws._ws_thread.join(timeout=2)
+        _drain(loop)
+    finally:
+        loop.close()
+
+    assert events == []
+
+
 @pytest.mark.asyncio
 async def test_standalone_sender_reports_missing_credentials(monkeypatch):
     _clear_qq(monkeypatch)

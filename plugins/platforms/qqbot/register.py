@@ -56,7 +56,7 @@ def setup_qqbot() -> None:
     credentials = None
     if prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0) == 0:
         try:
-            from .onboard import qr_register
+            from .sdk_bridge import qr_register
             credentials = qr_register()
         except KeyboardInterrupt:
             print()
@@ -146,7 +146,7 @@ def register(ctx) -> None:
         is_connected=is_connected,
         config_connected_fn=config_connected_extra("app_id", "client_secret"),
         required_env=["QQ_APP_ID", "QQ_CLIENT_SECRET"],
-        install_hint="QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured",
+        install_hint="QQBot: qqbot-agent-sdk/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured",
         setup_fn=setup_qqbot,
         emoji="🐧",
         cron_deliver_env_var="QQBOT_HOME_CHANNEL",

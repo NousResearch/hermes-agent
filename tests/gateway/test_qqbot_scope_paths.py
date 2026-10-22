@@ -249,12 +249,29 @@ class TestDirectSendScope:
         module.AsyncClient = _AsyncClient
         return module
 
+    def _install_sdk(self, monkeypatch, constructed):
+        class QQApiClient:
+            def __init__(self, app_id, client_secret, log_tag=None):
+                constructed.append({"appId": app_id, "clientSecret": client_secret})
+
+            def setup(self, http):
+                return None
+
+            async def send_text(self, kind, chat_id, message, *, markdown=False, retries=1):
+                return {"id": "1"}
+
+        module = types.ModuleType("qqbot_agent_sdk")
+        module.QQApiClient = QQApiClient
+        module.configure = lambda **_kwargs: None
+        monkeypatch.setitem(sys.modules, "qqbot_agent_sdk", module)
+
     @pytest.mark.asyncio
     async def test_scoped_credentials_win_over_environ(self, monkeypatch):
         from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
 
-        captured = []
-        monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx(captured))
+        constructed = []
+        monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx([]))
+        self._install_sdk(monkeypatch, constructed)
         monkeypatch.setenv("QQ_APP_ID", "global-app")
         monkeypatch.setenv("QQ_CLIENT_SECRET", "global-secret")
         ss.set_multiplex_active(True)
@@ -267,19 +284,20 @@ class TestDirectSendScope:
             )
         finally:
             ss.reset_secret_scope(tok)
-        assert captured, "token request never issued"
-        assert captured[0]["appId"] == "profileA-app"
-        assert captured[0]["clientSecret"] == "profileA-secret"
+        assert constructed, "SDK client never constructed"
+        assert constructed[0]["appId"] == "profileA-app"
+        assert constructed[0]["clientSecret"] == "profileA-secret"
 
     @pytest.mark.asyncio
     async def test_unscoped_falls_back_to_environ(self, monkeypatch):
         from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
 
-        captured = []
-        monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx(captured))
+        constructed = []
+        monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx([]))
+        self._install_sdk(monkeypatch, constructed)
         monkeypatch.setenv("QQ_APP_ID", "env-app")
         monkeypatch.setenv("QQ_CLIENT_SECRET", "env-secret")
         await _send_qqbot(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")
-        assert captured, "token request never issued"
-        assert captured[0]["appId"] == "env-app"
-        assert captured[0]["clientSecret"] == "env-secret"
+        assert constructed, "SDK client never constructed"
+        assert constructed[0]["appId"] == "env-app"
+        assert constructed[0]["clientSecret"] == "env-secret"

@@ -2727,7 +2727,7 @@ _RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()
 
 
 def _publish_runtime_main_mirrors(values: tuple[Any, ...]) -> None:
-    """Write the legacy globals + compat snapshot (``_MAIN_RUNTIME_FIELDS`` order) under the lock."""
+    """Write the legacy globals + compat snapshot under the lock."""
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY
     global _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE, _RUNTIME_MAIN_COMPAT_SNAPSHOT
     with _RUNTIME_MAIN_COMPAT_LOCK:
@@ -2748,7 +2748,7 @@ def _compat_runtime_main() -> Optional[dict[str, Any]]:
               _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE)
     if values == _RUNTIME_MAIN_COMPAT_SNAPSHOT:
         return None
-    return dict(zip(_MAIN_RUNTIME_FIELDS, values))
+    return dict(zip(_MAIN_RUNTIME_COMPAT_FIELDS, values))
 
 
 def _runtime_main_value(field: str) -> Any:
@@ -2762,7 +2762,7 @@ def _runtime_main_value(field: str) -> Any:
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "",
+    cache_scope: str = "", default_headers: Optional[dict[str, str]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2784,10 +2784,11 @@ def set_runtime_main(
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
+        "default_headers": dict(default_headers) if isinstance(default_headers, dict) else {},
     }
     # Publish authoritative context before updating the locked mirrors.
     token = _RUNTIME_MAIN_CONTEXT.set(runtime)
-    _publish_runtime_main_mirrors(tuple(runtime[field] for field in _MAIN_RUNTIME_FIELDS))
+    _publish_runtime_main_mirrors(tuple(runtime[field] for field in _MAIN_RUNTIME_COMPAT_FIELDS))
     return token
 
 
@@ -3102,7 +3103,8 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
+_MAIN_RUNTIME_COMPAT_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
+_MAIN_RUNTIME_FIELDS = _MAIN_RUNTIME_COMPAT_FIELDS + ("default_headers",)
 _MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
     "requested_provider", "session_id", "cache_scope",
 )
@@ -3126,6 +3128,11 @@ def _normalize_main_runtime(main_runtime: Optional[dict[str, Any]]) -> dict[str,
         value = main_runtime.get(field)
         if field == "api_key" and callable(value) and not isinstance(value, str):
             normalized[field] = value
+        elif field == "default_headers" and isinstance(value, dict):
+            normalized[field] = {
+                key: header_value for key, header_value in value.items()
+                if isinstance(key, str) and key and isinstance(header_value, str)
+            }
         elif isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
     for identity_field in ("provider", "requested_provider"):
@@ -4578,6 +4585,7 @@ def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[st
 
 def _try_main_provider_route(
     main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
+    main_runtime: Optional[dict[str, Any]] = None,
 ) -> Optional[tuple[Any, str, str]]:
     """Step 1: route aux onto the main provider + main model; None if unusable."""
     if not (main_provider and main_model and main_provider not in {"auto", ""}):
@@ -4616,7 +4624,7 @@ def _try_main_provider_route(
         return None
     client, resolved = resolve_provider_client(
         resolved_provider, main_model, explicit_base_url=explicit_base_url,
-        explicit_api_key=explicit_api_key, api_mode=runtime_api_mode or None,
+        explicit_api_key=explicit_api_key, api_mode=runtime_api_mode or None, main_runtime=main_runtime,
     )
     if client is None:
         return None
@@ -4676,7 +4684,7 @@ def _resolve_auto_route(
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
-    routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
+    routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode, runtime)
     if routed is not None:
         return routed
     if task:
@@ -5117,6 +5125,10 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         from hermes_cli.config import get_custom_provider_extra_headers  # this endpoint's entry, as agent_init
         _custom_headers = {**(_endpoint_default_headers(custom_base, provider, is_vision=req.is_vision) or {}),
                            **get_custom_provider_extra_headers(custom_base)}
+        if main_runtime and isinstance(main_runtime.get("default_headers"), dict):
+            # The live main client already resolved endpoint, user, and entry-specific headers.
+            # Keep it authoritative so title requests carry the same gateway authentication.
+            _custom_headers = {**_custom_headers, **main_runtime["default_headers"]}
         if _custom_headers:
             extra["default_headers"] = _custom_headers
         client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
@@ -5777,6 +5789,14 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
         return _CallableCacheDiscriminator(value)
     if field == "api_key" and isinstance(value, str) and value:
         return ("api-key-digest", hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest())
+    if field == "default_headers" and isinstance(value, dict):
+        digest = hashlib.blake2b(digest_size=16)
+        for key, header_value in sorted(value.items()):
+            digest.update(key.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(header_value.encode("utf-8"))
+            digest.update(b"\0")
+        return ("default-headers-digest", digest.digest())
     return value
 
 

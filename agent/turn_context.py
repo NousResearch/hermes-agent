@@ -540,12 +540,17 @@ def _publish_runtime_main(agent: Any) -> None:
         # (#79017). Resolved with the never-raising variant OUTSIDE the argument list, so a resolution
         # failure can only lose the scope — never the whole runtime binding.
         _cache_scope = resolve_prompt_cache_scope_safe(agent) or ""
+        _client_kwargs = getattr(agent, "_client_kwargs", None)
+        _default_headers = (
+            _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
+        )
         set_runtime_main(
             _str_attr(agent, "provider"), _str_attr(agent, "model"),
             **{k: _str_attr(agent, k) for k in (
                 "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id"
             )},
             cache_scope=_cache_scope,
+            default_headers=_default_headers,
         )
 
 

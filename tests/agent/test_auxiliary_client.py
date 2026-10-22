@@ -5667,3 +5667,56 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
             )
 
         assert resolved_provider == "xai-oauth"
+
+
+def test_auto_title_route_keeps_runtime_default_headers(monkeypatch):
+    """Regression for #138998: title requests reuse gateway auth headers."""
+    import agent.auxiliary_client as aux
+
+    captured = {}
+
+    def build_client(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    aux.shutdown_cached_clients()
+    monkeypatch.setattr(aux, "_create_openai_client", build_client)
+    runtime = {
+        "provider": "custom",
+        "model": "gateway-model",
+        "base_url": "https://gateway.example/v1",
+        "api_key": "gateway-token",
+        "default_headers": {"api-key": "gateway-header-token"},
+    }
+    try:
+        client, model = aux._get_cached_client(
+            "auto", "gateway-model", main_runtime=runtime, task="title_generation"
+        )
+    finally:
+        aux.shutdown_cached_clients()
+
+    assert client is not None
+    assert model == "gateway-model"
+    assert captured["default_headers"]["api-key"] == "gateway-header-token"
+
+
+def test_auto_client_cache_separates_runtime_default_headers():
+    """Gateway credentials from one main runtime cannot serve another runtime."""
+    import agent.auxiliary_client as aux
+
+    runtime = {
+        "provider": "custom",
+        "model": "gateway-model",
+        "base_url": "https://gateway.example/v1",
+        "api_key": "gateway-token",
+    }
+    first = aux._client_cache_key(
+        "auto", async_mode=False,
+        main_runtime={**runtime, "default_headers": {"api-key": "first-header-token"}},
+    )
+    second = aux._client_cache_key(
+        "auto", async_mode=False,
+        main_runtime={**runtime, "default_headers": {"api-key": "second-header-token"}},
+    )
+
+    assert first != second

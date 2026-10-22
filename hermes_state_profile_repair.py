@@ -300,6 +300,9 @@ class SessionProfileRepairMixin:
         gateway wrote before this store's profile was multiplexed (#113884). Only rows still under
         the legacy namespace change; a ``main``-named profile is written in its marked form."""
         from gateway.session import _session_key_namespace
+        from hermes_state_local import POLICY_PREFIX
+        import json
+
         wanted = list(ids)
         if not wanted:
             return 0
@@ -313,8 +316,6 @@ class SessionProfileRepairMixin:
                     f"WHERE id IN ({_session_ids_placeholders(chunk)}) AND substr(session_key, 1, 11) = 'agent:main:'",
                     (new_ns, profile, *chunk)).rowcount
                 # Reconcile local policy receipts in state_meta and gateway_routing for multiplexing
-                from hermes_state_local import POLICY_PREFIX
-                import json
                 meta_keys = [POLICY_PREFIX + sid for sid in chunk]
                 rows = conn.execute(
                     f"SELECT key, value FROM state_meta WHERE key IN ({_session_ids_placeholders(meta_keys)})",
@@ -325,8 +326,13 @@ class SessionProfileRepairMixin:
                         mutated = False
                         route = data.get("route")
                         if route and route.startswith("agent:main:"):
-                            data["route"] = new_ns + route[11:]
+                            legacy_route = route
+                            new_route = new_ns + route[11:]
+                            data["route"] = new_route
                             mutated = True
+                            conn.execute(
+                                "UPDATE gateway_routing SET session_key = ? WHERE session_key = ? AND scope = ''",
+                                (new_route, legacy_route))
                         entry = data.get("entry")
                         if isinstance(entry, dict):
                             skey = entry.get("session_key")
@@ -340,8 +346,8 @@ class SessionProfileRepairMixin:
                                     mutated = True
                         if mutated:
                             conn.execute("UPDATE state_meta SET value = ? WHERE key = ?", (json.dumps(data), key))
-                    except (ValueError, TypeError, KeyError):
-                        pass
+                    except (ValueError, TypeError, KeyError) as exc:
+                        logger.warning("Failed to reconcile local policy receipt %s: %s", key, exc, exc_info=True)
                 for sid in chunk:
                     legacy_route = f"agent:main:local:dm:{sid}"
                     new_route = f"{new_ns}local:dm:{sid}"

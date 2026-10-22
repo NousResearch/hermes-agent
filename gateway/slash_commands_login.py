@@ -31,8 +31,8 @@ class _SignInAttempt:
     cancelled: bool = False
 
 
-# These adapters use "dm" for a broadcast topic, a channel, or an agent peer. Sending a consent
-# link and sign-in code there would publish them rather than deliver them to one person.
+# These adapters use "dm" for a broadcast topic, a channel, or an agent peer. Sending a sign-in
+# link and code there would publish them rather than deliver them to one person.
 _LOGIN_BLOCKED_PLATFORMS = frozenset({"ntfy", "raft", "a2a"})
 
 
@@ -131,11 +131,7 @@ class GatewayLoginCommandsMixin:
             with lock:
                 return attempt.cancelled
 
-        gen = anon_auth.run_sign_in(
-            timeout_seconds=15.0,
-            cancelled=_cancelled,
-            cancel_wins_after_promotion=False,
-        )
+        gen = anon_auth.run_sign_in(timeout_seconds=15.0, cancelled=_cancelled)
         pushed_terminal = False
         try:
             while True:

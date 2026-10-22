@@ -718,6 +718,8 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
             auth._save_auth_store(auth_store)
         auth._write_shared_nous_state(auth_state)
         auth._sync_nous_pool_from_auth_store()
+        from hermes_cli.anon_auth import settle_after_upgrade
+        settle_after_upgrade(auth_state)  # a config left on the free tier's route moves to the account
         print("  Nous Portal login successful.")
         return True
     except KeyboardInterrupt:

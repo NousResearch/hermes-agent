@@ -285,11 +285,8 @@ def _model_flow_nous(config, current_model="", args=None):
     from hermes_cli.nous_subscription import prompt_enable_tool_gateway
     state = get_provider_auth_state("nous")
     from hermes_cli import anon_auth
-    if anon_auth.guest_without_free_tier(state):
-        # A guest that carries no inference here: signing in promotes it and keeps its connectors.
-        print(anon_auth.UPGRADE_HINT)
-        return
-    if not state or not state.get("access_token"):
+    # A free tier with no inference here signs in like no account; its apps move to the account after.
+    if not state or not state.get("access_token") or anon_auth.guest_without_free_tier(state):
         _say("Not logged into Nous Portal. Starting login...", "")
 
         def _login_then_offer_gateway(login_args, pconfig):

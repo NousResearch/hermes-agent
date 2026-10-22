@@ -191,26 +191,6 @@ def note_replacement(previous: Any, new: Any) -> None:
                 _token_key(anon_token)[:8])
 
 
-def note_promoted(anon_token: str, *, account_email: Optional[str]) -> None:
-    """The promotion sign-in (``anon_sign_in.run_sign_in``) already moved this identity's apps on the
-    service: record the handoff as done so the save that follows sends no claim."""
-    if not anon_token:
-        return
-    home = _home_key()
-
-    def change(record: Optional[dict[str, Any]]) -> dict[str, Any]:
-        record = record or {"attempts": 0, "profiles": [], "created_at": _iso(_now())}
-        record.pop("anon_token", None)
-        record.update(state=CLAIMED, error=None, result={
-            "account_email": account_email, "connectors_kind": "moved", "moved_toolkits": [],
-            "dropped_toolkits": []})
-        if home not in record["profiles"]:
-            record["profiles"].append(home)
-        return record
-
-    _update(_records_path(), _token_key(anon_token), change)
-
-
 # --- The runner: outside every lock ---------------------------------------------------------------
 
 def _holds_auth_locks() -> bool:
@@ -473,6 +453,15 @@ def handoff_status() -> dict[str, Any]:
 
 def status_lines(status: dict[str, Any]) -> list[str]:
     """User copy for a non-idle handoff (``hermes auth status nous``)."""
+    lines = result_lines(status)
+    if status.get("state") == CLAIMED and status.get("connectors_kind") not in ("moved", "swapped", "conflict"):
+        lines[0] = f"Signed in as {status.get('account_email') or 'your account'}. {lines[0]}"
+    return lines
+
+
+def result_lines(status: dict[str, Any]) -> list[str]:
+    """What a handoff did, for the line after "Signed in as ..." (every sign-in surface) and for
+    :func:`status_lines`."""
     state = status.get("state")
     where = status.get("account_email") or "your account"
     moved, dropped = status.get("moved_toolkits") or [], status.get("dropped_toolkits") or []
@@ -494,7 +483,7 @@ def status_lines(status: dict[str, Any]) -> list[str]:
     elif kind == "conflict":
         lines = [f"{where} already had its own apps, so the free-tier apps stayed behind."]
     else:
-        lines = [f"Signed in as {where}. There were no free-tier apps to move."]
+        lines = ["There were no free-tier apps to move."]
     if dropped:
         lines.append(f"Reconnect in {where}: {', '.join(dropped)}.")
     return lines

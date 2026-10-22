@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { McpTestResult } from '@/hermes'
 
-import { classifyProbe, freshProbe, NEEDS_AUTH_RE, PROBE_TTL_MS, probeCache, probeKey } from './mcp-probe-cache'
+import { classifyProbe, freshProbe, PROBE_TTL_MS, probeCache, probeKey } from './mcp-probe-cache'
 
 const result = (over: Partial<McpTestResult> = {}): McpTestResult => ({ ok: true, tools: [], ...over })
 
@@ -55,11 +55,5 @@ describe('freshProbe', () => {
     expect(freshProbe(key, 1_000 + PROBE_TTL_MS)).toBeNull()
     expect(freshProbe('missing', 0)).toBeNull()
     probeCache.delete(key)
-  })
-})
-
-describe('NEEDS_AUTH_RE', () => {
-  it('does not match unrelated failure text', () => {
-    expect(NEEDS_AUTH_RE.test('connection timed out after 60000ms')).toBe(false)
   })
 })

@@ -20,12 +20,12 @@ def test_configured_feishu_dependency_check_does_not_load_sdk():
 
     with (
         patch.object(feishu_adapter, "FEISHU_AVAILABLE", False),
-        patch("tools.lazy_deps.ensure", autospec=True) as ensure,
+        patch("pm.ensure_import", autospec=True) as ensure,
     ):
         assert feishu_adapter.check_feishu_requirements() is True
         assert feishu_adapter.FEISHU_AVAILABLE is False
 
-    ensure.assert_called_once_with("platform.feishu", prompt=False)
+    ensure.assert_called_once_with("feishu")
 
 
 def test_feishu_connect_loads_sdk_on_worker_thread():

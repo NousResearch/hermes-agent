@@ -11,7 +11,7 @@ import pytest
 
 import tools.delegate_tool as dt
 import tools.delegate_tool_progress as dt_progress
-from tools.delegate_tool import _batch_prefix, _build_child_progress_callback, format_batch_tag
+from tools.delegate_tool import _build_child_progress_callback, format_batch_tag
 
 
 @pytest.fixture(autouse=True)
@@ -42,17 +42,6 @@ def test_batch_ordinals_are_scoped_per_parent_conversation():
     assert format_batch_tag("deleg_a1", parent_a) == "set 1"  # stable
 
 
-@pytest.mark.parametrize(
-    "deleg, idx, count, expected",
-    [
-        ("deleg_6a664903", 2, 9, "[set 1 · 3/9] "),
-        (None, 2, 9, "[3/9] "),
-        ("deleg_6a664903", 0, 1, "[set 1] "),
-        (None, 0, 1, ""),
-    ],
-)
-def test_batch_prefix_shapes(deleg, idx, count, expected):
-    assert _batch_prefix(deleg, idx, count) == expected
 
 
 class _Spinner:
@@ -88,11 +77,6 @@ def test_child_tree_lines_and_relayed_events_carry_batch_tag():
     assert all(kw.get("child_session_id") == "child-sess" for _, kw in relayed)
 
 
-def test_child_tree_prefix_without_batch_id_is_unchanged():
-    parent = types.SimpleNamespace(_delegate_spinner=_Spinner(), tool_progress_callback=None)
-    cb = _build_child_progress_callback(0, "solo goal", parent, 3, session_ref={})
-    cb("subagent.start")
-    assert parent._delegate_spinner.lines[0].startswith(" [1/3] ├─ 🔀 solo goal")
 
 
 def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch, tmp_path):

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_cli.auth as auth
-import hermes_cli.auth_nous as auth_nous
+from hermes_cli import auth
+from hermes_cli import auth_nous
 from hermes_cli.auth import (
     NOUS_BILLING_MANAGE_SCOPE,
     nous_token_has_billing_scope,
@@ -51,7 +51,7 @@ class TestNousTokenHasBillingScope:
 def _stub_persist(monkeypatch):
     """Neutralize the persistence side-effects so step-up tests are pure."""
     monkeypatch.setattr(auth, "_auth_store_lock", lambda: _NullCtx())
-    monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
+    monkeypatch.setattr(auth, "_load_auth_store", dict)
     monkeypatch.setattr(auth, "_save_provider_state", lambda *a, **kw: None)
     monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **kw: "auth.json")
     monkeypatch.setattr(auth, "_write_shared_nous_state", lambda *a, **kw: None)
@@ -73,7 +73,7 @@ def test_step_up_requests_billing_scope_and_reuses_prior_urls(monkeypatch, _stub
         auth,
         "get_provider_auth_state",
         lambda p: {
-            "scope": "inference:invoke tool:invoke",
+            "scope": "inference:invoke",
             "portal_base_url": "https://preview.example.com",
             "inference_base_url": "https://inf.example.com",
             "client_id": "hermes-cli",
@@ -84,16 +84,15 @@ def test_step_up_requests_billing_scope_and_reuses_prior_urls(monkeypatch, _stub
     def _fake_login(**kw):
         captured.update(kw)
         # Simulate the admin ticking the box → token comes back WITH the scope.
-        return {"scope": "inference:invoke tool:invoke billing:manage", "access_token": "t"}
+        return {"scope": "inference:invoke billing:manage", "access_token": "t"}
 
     monkeypatch.setattr(auth, "_nous_device_code_login", _fake_login)
     monkeypatch.setattr(auth_nous, "_nous_device_code_login", _fake_login)
 
     granted = step_up_nous_billing_scope()
     assert granted is True
-    # Requested scope must include billing:manage, preserving prior scopes.
-    assert NOUS_BILLING_MANAGE_SCOPE in captured["scope"].split()
-    assert "inference:invoke" in captured["scope"].split()
+    # Requests the granted inference scope plus billing access.
+    assert captured["scope"] == "inference:invoke billing:manage"
     # Reuses the prior credential's deployment URLs (so a preview stays a preview).
     assert captured["portal_base_url"] == "https://preview.example.com"
     assert captured["client_id"] == "hermes-cli"

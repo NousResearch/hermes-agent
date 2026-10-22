@@ -5,6 +5,7 @@ description: Local-only iMessage platform plugin backed by a launchd-supervised 
   over a same-user Unix socket.
 maintainer: boobutler
 tier: community
+category: platform
 docs_url: https://github.com/boobutler/hermes-rustpush-imessage
 platforms: []
 capabilities:

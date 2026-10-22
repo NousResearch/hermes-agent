@@ -214,3 +214,47 @@ def test_quiet_notify_loop_injects_owned_async_delegation_events(monkeypatch):
     )
     assert seen == ["[IMPORTANT: delegated reply from C]"]
     assert result == {"final_response": "[IMPORTANT: delegated reply from C]"}
+
+
+def _quiet_drain(monkeypatch, events):
+    from tools import process_registry as pr
+    monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions",
+                        lambda *a, **k: {"waited": [], "completed": [], "timed_out": []})
+    queue = list(events)
+    monkeypatch.setattr(pr.process_registry, "drain_notifications",
+                        lambda *a, **k: [queue.pop(0)] if queue else [])
+
+
+def _quiet_policy(tmp_path, monkeypatch, setting):
+    import json
+    home = tmp_path / f"home-{setting}"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    display = {} if setting is None else {"suppress_warning_notifications": setting}
+    (home / "config.yaml").write_text(json.dumps({"display": display}))
+
+
+@pytest.mark.parametrize("setting", (None, False, True))
+def test_quiet_diagnostic_only_wake_runs_but_reply_displaces_result_only_when_visible(tmp_path, monkeypatch, setting):
+    """Grid sweep: -Q linger had no diagnostic admission rule. A wake made only of automatic early
+    failure notices still runs (the agent may act on it) but under suppression its reply must not
+    replace the requested one-shot answer; absent/false keep legacy displacement."""
+    from hermes_cli import quiet_single_query as qsq
+    _quiet_policy(tmp_path, monkeypatch, setting)
+    _quiet_drain(monkeypatch, [({"type": "completion", "task_failure_notice": True, "session_key": "s"},
+                                "[Background process failed early: exit 7]")])
+    seen = []
+    result = qsq.continue_quiet_notify_completions(
+        "s", lambda text: seen.append(text) or {"final_response": "DIAG_REPLY"}, linger_budget=0.0)
+    assert seen == ["[Background process failed early: exit 7]"], "the wake always runs"
+    assert result == (None if setting is True else {"final_response": "DIAG_REPLY"})
+
+
+def test_quiet_requested_completion_wake_never_muted(tmp_path, monkeypatch):
+    from hermes_cli import quiet_single_query as qsq
+    _quiet_policy(tmp_path, monkeypatch, True)
+    _quiet_drain(monkeypatch, [({"type": "completion", "session_key": "s"}, "[Background process finished: OK]"),
+                                ({"type": "completion", "task_failure_notice": True, "session_key": "s"}, "[failed early]")])
+    result = qsq.continue_quiet_notify_completions(
+        "s", lambda text: {"final_response": "REQUESTED_REPLY"}, linger_budget=0.0)
+    assert result == {"final_response": "REQUESTED_REPLY"}

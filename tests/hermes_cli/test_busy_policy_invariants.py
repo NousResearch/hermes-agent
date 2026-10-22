@@ -10,40 +10,8 @@ rather than hand-maintained.
 from hermes_cli.commands import (
     ACTIVE_SESSION_BYPASS_COMMANDS,
     COMMAND_REGISTRY,
-    VALID_BUSY_POLICIES,
     is_interrupt_then_dispatch,
-    should_bypass_active_session,
 )
-
-# The hand-written frozenset as it existed before the busy_policy refactor.
-# This is a behavior contract, not a snapshot: the derived set must remain a
-# SUPERSET of these names (each had an explicit mid-run handler in the old
-# Guard-2 if-chain and must keep bypassing the busy-reject catch-all).
-_HISTORICAL_BYPASS_NAMES = frozenset(
-    {
-        "agents",
-        "approve",
-        "bg",
-        "btw",
-        "commands",
-        "deny",
-        "help",
-        "new",
-        "profile",
-        "queue",
-        "restart",
-        "status",
-        "steer",
-        "stop",
-        "update",
-        "version",
-    }
-)
-
-
-
-
-
 
 def test_bypass_set_is_derived_from_registry():
     expected = frozenset(

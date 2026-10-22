@@ -126,7 +126,7 @@ def _read_tts_response_bytes(response: Any, *, label: str, limit: Optional[int] 
         _close_response(response)
 
 
-def _parse_json_body(response: Any, raw: bytes) -> Dict[str, Any]:
+def _parse_json_body(response: Any, raw: bytes) -> dict[str, Any]:
     """JSON from the already-read *raw* body. Unit-test doubles often only provide ``.json()``;
     real ``requests`` responses took the streaming path, so production never buffers eagerly."""
     if raw:
@@ -139,7 +139,7 @@ def _parse_json_body(response: Any, raw: bytes) -> Dict[str, Any]:
     return {}
 
 
-def _read_tts_response_json(response: Any, *, label: str, limit: Optional[int] = None) -> Dict[str, Any]:
+def _read_tts_response_json(response: Any, *, label: str, limit: Optional[int] = None) -> dict[str, Any]:
     return _parse_json_body(response, _read_tts_response_bytes(response, label=label, limit=limit))
 
 
@@ -149,7 +149,7 @@ def _write_bytes(output_path: str, audio_bytes: bytes) -> str:
     return output_path
 
 
-def _post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str], **extra: Any):
+def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], **extra: Any):
     """Streaming ``requests.post`` with the shared 60s timeout (body read via the bounded readers)."""
     import requests
     return requests.post(url, headers=headers, json=payload, timeout=60, stream=True, **extra)
@@ -193,7 +193,7 @@ def _rewrite_with_auxiliary_model(
 
 
 # --- Edge TTS (free default) ---
-async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+async def _generate_edge_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     edge_tts = _origin()._import_edge_tts()
     edge_config = tts_config.get("edge") or {}
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
@@ -205,7 +205,7 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
 
 
 # --- ElevenLabs ---
-def _elevenlabs_environment_kwargs(el_config: Dict[str, Any]) -> Dict[str, Any]:
+def _elevenlabs_environment_kwargs(el_config: dict[str, Any]) -> dict[str, Any]:
     """SDK client kwargs for ``tts.elevenlabs.base_url``/``wss_url``; empty (SDK default) without a
     base_url. ``wss_url`` defaults to the base_url host with a ``ws(s)://`` scheme."""
     base_url = (el_config.get("base_url") or "").rstrip("/")
@@ -216,7 +216,7 @@ def _elevenlabs_environment_kwargs(el_config: Dict[str, Any]) -> Dict[str, Any]:
     return {"environment": ElevenLabsEnvironment(base=base_url, wss=wss_url)}
 
 
-def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_elevenlabs(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     api_key = _require_key("ELEVENLABS_API_KEY", "elevenlabs", "Get one at https://elevenlabs.io/")
     el_config = tts_config.get("elevenlabs") or {}
     client = _origin()._import_elevenlabs()(api_key=api_key, **_elevenlabs_environment_kwargs(el_config))
@@ -284,7 +284,7 @@ def _clamped_number(raw: Any, cast, lo, hi):
     return max(lo, min(hi, raw))
 
 
-def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_xai_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     from tools.xai_http import resolve_xai_http_credentials
 
     # TTS is API-billed: a subscription OAuth bearer can authorize chat while
@@ -320,9 +320,9 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 
     # Documented minimal POST /v1/tts shape; optional fields only when they differ from defaults.
     codec = "wav" if output_path.endswith(".wav") else "mp3"
-    payload: Dict[str, Any] = {"text": text, "voice_id": voice_id, "language": language}
+    payload: dict[str, Any] = {"text": text, "voice_id": voice_id, "language": language}
     if codec != "mp3" or sample_rate != DEFAULT_XAI_SAMPLE_RATE or bit_rate != DEFAULT_XAI_BIT_RATE:
-        output_format: Dict[str, Any] = {"codec": codec}
+        output_format: dict[str, Any] = {"codec": codec}
         if sample_rate:
             output_format["sample_rate"] = sample_rate
         if codec == "mp3" and bit_rate:
@@ -358,7 +358,7 @@ _MINIMAX_OFFICIAL_HOSTS = {
     "cn": frozenset({"api.minimaxi.com"})}
 
 
-def _resolve_minimax_tts_runtime(tts_config: Dict[str, Any]) -> _MiniMaxTTSRuntime:
+def _resolve_minimax_tts_runtime(tts_config: dict[str, Any]) -> _MiniMaxTTSRuntime:
     """Select MiniMax region, endpoint and credential atomically: explicit ``tts.minimax.region`` wins,
     else the legacy global credential; ``cn`` only when it is the sole configured credential."""
     mm_config = _section(tts_config, "minimax")
@@ -382,7 +382,7 @@ def _resolve_minimax_tts_runtime(tts_config: Dict[str, Any]) -> _MiniMaxTTSRunti
     return _MiniMaxTTSRuntime(region=region, endpoint=endpoint, credential_source=credential_source, api_key=api_key)
 
 
-def _raise_minimax_api_error(result: Dict[str, Any]) -> None:
+def _raise_minimax_api_error(result: dict[str, Any]) -> None:
     base_resp = result.get("base_resp", {})
     status_code = base_resp.get("status_code", -1)
     if status_code != 0:
@@ -390,7 +390,7 @@ def _raise_minimax_api_error(result: Dict[str, Any]) -> None:
             f"MiniMax TTS API error (code {status_code}): {base_resp.get('status_msg', 'unknown error')}")
 
 
-def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_minimax_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     """Generate audio via MiniMax: ``t2a_v2`` (nested payload, JSON reply with hex audio) or the legacy
     ``text_to_speech`` endpoint (flat payload, raw ``audio/*`` body), detected from the URL."""
     runtime = _resolve_minimax_tts_runtime(tts_config)
@@ -446,10 +446,10 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # --- Mistral (Voxtral TTS) — base64 audio, native Opus for voice bubbles ---
-def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_mistral_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     api_key = _require_key("MISTRAL_API_KEY", "mistral", "Get one at https://console.mistral.ai/")
     mi_config = tts_config.get("mistral") or {}
-    client_kwargs: Dict[str, Any] = {"api_key": api_key}
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
     if mi_config.get("base_url"):
         client_kwargs["server_url"] = mi_config["base_url"]  # the Mistral SDK calls it server_url
     Mistral = _origin()._import_mistral_client()  # ImportError must escape the RuntimeError wrap
@@ -469,7 +469,7 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # --- Google Gemini TTS ---
-def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
+def _read_gemini_persona_prompt(gemini_config: dict[str, Any]) -> str:
     """Read ``tts.gemini.persona_prompt_file`` (relative -> under HERMES_HOME), failing soft."""
     raw = gemini_config.get("persona_prompt_file")
     if not isinstance(raw, str) or not raw.strip():
@@ -482,13 +482,13 @@ def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
         except Exception:
             path = Path.cwd() / path
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8-sig").strip()
     except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Gemini TTS persona prompt file unavailable at %s: %s", path, exc)
         return ""
 
 
-def _gemini_audio_tags_enabled(gemini_config: Dict[str, Any], model: str) -> bool:
+def _gemini_audio_tags_enabled(gemini_config: dict[str, Any], model: str) -> bool:
     """Audio tags are opt-in and only Gemini 3.1 TTS models are known to honor them."""
     raw = gemini_config.get("audio_tags")
     if isinstance(raw, dict):
@@ -527,7 +527,7 @@ def _rewrite_gemini_tts_audio_tags(text: str, persona_prompt: str = "") -> str:
                                          fallback_label="untagged text", level=logging.WARNING)
 
 
-def _compose_gemini_tts_prompt(text: str, gemini_config: Dict[str, Any], persona_prompt: Optional[str] = None) -> str:
+def _compose_gemini_tts_prompt(text: str, gemini_config: dict[str, Any], persona_prompt: Optional[str] = None) -> str:
     """Gemini prompt = persona direction + transcript; a ``{transcript}`` / ``{{transcript}}``
     placeholder is substituted in place, otherwise the transcript is appended under a heading."""
     transcript = text.strip()
@@ -556,7 +556,7 @@ def _gemini_error_detail(response: Any) -> str:
     return message or raw_body.decode("utf-8", errors="replace")[:300]
 
 
-def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     """Generate audio via Gemini ``generateContent`` (``responseModalities=["AUDIO"]``). The reply is
     base64 24kHz mono 16-bit PCM, wrapped as WAV and ffmpeg-converted to the requested container."""
     origin = _origin()
@@ -568,8 +568,10 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
     from hermes_cli.config import get_env_value
-    base_url = str(gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL")
-                   or DEFAULT_GEMINI_TTS_BASE_URL).strip().rstrip("/")
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+    base_url = normalize_gemini_base_url(
+        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
+    )
     persona_prompt = _read_gemini_persona_prompt(gemini_config)
     tts_script = text
     if _gemini_audio_tags_enabled(gemini_config, model):
@@ -583,22 +585,22 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
             "prompt or lower tts.gemini.max_text_length so long-form text is "
             "split with enough prompt headroom.")
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
         },
     }
-    headers = {"Content-Type": "application/json"}
+    # HTTP errors include request URLs, so credentials must stay in headers.
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
     if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
         try:
-            import hermes_cli
-            version = str(hermes_cli.__version__)
+            from hermes_cli.version_info import get_version_info
+            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
         except Exception:
-            version = "0.0.0"
-        headers["X-Goog-Api-Client"] = f"hermes-agent/{version}"  # partner-integration guidance
-    response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers, params={"key": api_key})
+            headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
+    response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers)
     if response.status_code != 200:
         raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")
     try:

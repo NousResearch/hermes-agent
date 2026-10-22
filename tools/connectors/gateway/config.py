@@ -15,6 +15,8 @@ __all__ = [
     "MAX_CALLS_PER_DISPATCH",
     "ConnectorConfig",
     "connectors_available",
+    "ensure_guest_identity",
+    "guest_identity_pending",
     "load_config",
 ]
 
@@ -30,7 +32,7 @@ class ConnectorConfig:
     enabled: bool = True
 
     @classmethod
-    def from_raw(cls, raw: Any) -> "ConnectorConfig":
+    def from_raw(cls, raw: Any) -> ConnectorConfig:
         """Malformed configuration falls back to the enabled default."""
         if isinstance(raw, bool):
             return cls(enabled=raw)
@@ -87,8 +89,8 @@ def connectors_available(
 
     The one gate for the connectors surface, and the tool's ``check_fn``: outside it the tool is
     not in the schema at all, so the model never narrates a gateway 404 to a user the portal has
-    not enabled. Free-tier identities are always in; accounts are in only when the portal says so
-    via the token claim."""
+    not enabled. Free-tier identities are always in, and so is a user with no identity who may get
+    one; accounts are in only when the portal says so via the token claim."""
     try:
         resolved_loader = config_loader or load_config
         if not resolved_loader().enabled:
@@ -98,7 +100,7 @@ def connectors_available(
             from tools.managed_tool_gateway import _read_nous_provider_state
 
             # Availability must not mint or refresh an identity.
-            if is_guest_state(_read_nous_provider_state()):
+            if is_guest_state(_read_nous_provider_state()) or guest_identity_pending():
                 return True
 
             entitlement_check = managed_tools_rolled_out
@@ -106,6 +108,48 @@ def connectors_available(
     except Exception as e:
         logger.debug("Connector availability check failed: %s", e)
         return False
+
+
+def guest_identity_pending() -> bool:
+    """No Nous identity or bearer yet, and a guest one may be created (``nous.guest`` is not false
+    and no earlier mint was refused for good). No network: this feeds the ``check_fn``."""
+    from hermes_cli.anon_auth import guest_allowed, last_mint_failure
+    from tools.managed_tool_gateway import _read_nous_provider_state, peek_nous_access_token
+
+    if not guest_allowed() or _read_nous_provider_state() is not None or peek_nous_access_token():
+        return False
+    failure = last_mint_failure()
+    return not failure or bool(failure["retryable"])
+
+
+_SETUP_FAILED = "Hosted connectors could not be set up. "
+
+
+def guest_setup_failure() -> Optional[str]:
+    """The last failed guest creation for this profile, worded with the wait still left, or None."""
+    from hermes_cli.anon_auth import anon_failure_copy, last_mint_failure
+
+    if not (failure := last_mint_failure()):
+        return None
+    return _SETUP_FAILED + anon_failure_copy(failure["error_code"], retry_after=failure["retry_after"])
+
+
+def ensure_guest_identity() -> Optional[str]:
+    """Create the guest identity on the first hosted connector action, synchronously.
+
+    Returns None when an identity exists or was just created, else the failure copy for the model:
+    a refusal, a rate limit or an unreachable portal, with the wait when there is one."""
+    if not guest_identity_pending():
+        return None
+    from hermes_cli.anon_auth import ensure_portal_identity
+    from hermes_cli.auth_constants import AuthError
+
+    try:
+        if ensure_portal_identity(explicit=True) is not None:
+            return None
+    except AuthError as exc:
+        return _SETUP_FAILED + str(exc)
+    return guest_setup_failure() or _SETUP_FAILED + "Try again shortly."
 
 
 def operation_session_key(session_id: Optional[str]) -> str:
@@ -119,12 +163,6 @@ def operation_session_key(session_id: Optional[str]) -> str:
 
 
 def session_platform() -> str:
-    """The session's surface (``desktop``, ``tui``, ``cli``, a messaging platform, or '').
-
-    Decides whether a card exists for this session. Never infer that from a callback being
-    attached: the GUI bridge attaches callbacks to every backend session, terminal TUI included.
-    Messaging adapters bind the surface as the session platform; the desktop and TUI gateway bind
-    it as the session source (``tui_gateway.server._set_session_context``), so both are read."""
     from gateway.session_context import get_session_env
 
     platform = get_session_env("HERMES_SESSION_PLATFORM", "") or get_session_env("HERMES_SESSION_SOURCE", "")

@@ -18,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import { migrateTilesForProfile } from '@/store/session-states'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -95,6 +96,14 @@ export function RenameProfileDialog({
       }
 
       await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+
+      // The sessions moved with the directory; the tabs, cached tails and
+      // remembered ids keyed by the old name must follow, or every open
+      // dials a backend that no longer exists (#111868).
+      if (!isDefault && scope == null) {
+        migrateTilesForProfile(currentName, trimmed)
+      }
+
       await onRenamed?.(trimmed)
       setStatus('done')
       window.setTimeout(onClose, 800)

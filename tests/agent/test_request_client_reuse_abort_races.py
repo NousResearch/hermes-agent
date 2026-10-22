@@ -205,6 +205,10 @@ def test_stale_abort_is_atomic_with_holder_read(monkeypatch):
     """
     monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.05")
     agent = _make_agent()
+    # A display consumer, so "hello" counts as DELIVERED text: the death after
+    # the stale kill is then a no-retry partial (one stream_error_cleanup close),
+    # not an undelivered failure that retries on a fresh client.
+    agent.stream_delta_callback = lambda text: None
 
     allow_finish = threading.Event()
     worker_close_reasons = []

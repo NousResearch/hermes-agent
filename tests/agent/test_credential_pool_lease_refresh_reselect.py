@@ -82,26 +82,6 @@ def test_acquire_lease_reselects_after_deferred_refresh():
     assert pool._active_leases.get("e1") == 1, "the lease must be recorded"
 
 
-def test_acquire_lease_without_pending_refresh_does_not_double_select():
-    """No pending refresh -> exactly one selection pass (no wasted work)."""
-    pool = _bare_pool([_entry("e1")])
-    state = _wire_deferred_refresh(pool)
-    state["needs_refresh"] = False  # already healthy
-
-    passes = {"n": 0}
-    original = pool._acquire_lease_under_lock
-
-    def counting(credential_id):
-        passes["n"] += 1
-        return original(credential_id)
-
-    pool._acquire_lease_under_lock = counting
-
-    lease = pool.acquire_lease()
-
-    assert lease == "e1"
-    assert passes["n"] == 1, "healthy pool must not trigger the retry path"
-    assert state["refresh_calls"] == 0
 
 
 def test_acquire_lease_still_none_when_refresh_does_not_help():

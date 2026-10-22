@@ -162,7 +162,17 @@ forward needs no response back (the provider was already satisfied), so it rides
 the same outbound WS as `inbound` via a `passthrough_forward` frame rather than
 an HTTP POST. The gateway processes the decoded request through its normal agent
 path (a Discord interaction is decoded to a `MessageEvent` and handled like a
-message; the reply egresses over the outbound / `follow_up` path). `bufferId` is
+message; the reply egresses over the outbound / `follow_up` path). An
+interaction sent inside a thread (partial `channel.type` 10, 11 or 12) is keyed
+like the text lane's thread message: `chat_type: thread`, `thread_id` = the
+thread channel id, `parent_chat_id` = `channel.parent_id`. The connector's
+capability binding for that interaction must derive the same fields, or a later
+`follow_up` names a session the vault never bound. The raw interaction has no
+chat labels, so the gateway gives it the `chat_name` / `chat_topic` the text lane
+last carried for that chat (recorded as observed, so they survive a restart), and
+names the user from the interaction itself: guild nick, else global name, else
+username. The connector's `user_display_name` on a text message must resolve the
+same way, or the two lanes name one user differently. `bufferId` is
 present when the forward was buffered (Phase 5 §5.3 buffered-only flip) and the
 gateway acks it after durable handoff.
 
@@ -386,6 +396,15 @@ primitives assume:
    drain machinery (`gateway_state` running→draining) rather than introduce a
    parallel relay-only idle path — the same integration constraint §3.2 places
    on `going_idle`.
+7. **Suspend only while every messaging connection is relay-fronted — and
+   re-check that at suspend time, not just at boot.** A directly connected
+   platform (Photon iMessage's gRPC stream, BlueBubbles, a bot token dialled from
+   the gateway itself) holds a socket the connector cannot buffer or poke for, so
+   a suspend with one live loses its inbound and never wakes. The gate counts the
+   enabled launch-profile platforms AND the live adapters of every served
+   profile (`gateway.multiplex_profiles` secondaries included), and the idle
+   watcher asks it again before each dormant sequence so a direct adapter that
+   came up after startup (profile reconcile) keeps the instance awake.
 
 These are guarantees the behaviour layer OWES the primitives; the primitives owe
 the behaviour layer only what §3.2/§3.3 already specify (a flip-on-going_idle,
@@ -413,6 +432,16 @@ The gateway calls the transport with action dicts. Source of truth:
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
 `{name, type}`.
+
+**`metadata.profile` (multiplex round-trip).** Every chat-addressed outbound
+frame's `metadata` carries the tenant discriminators the gateway captured from
+the inbound (`scope_id`, `user_id`) and, on a multiplexed gateway, the Hermes
+`profile` the connector routed that chat's inbound to; `follow_up` frames carry
+the profile encoded in their `session_key` namespace. The connector MUST stamp
+the same `profile` on the next `passthrough_forward` / `inbound` for that chat or
+interaction, so a Discord button press after a slash command lands in the same
+profile's session (`gateway/relay/adapter.py::_with_scope`, `send_follow_up`).
+Single-profile gateways never emit the key — frames stay byte-identical.
 
 **`send_media` (Phase 2 media egress).** Media crosses the wire BY REFERENCE:
 `source_url` is either (a) a **connector re-host** the gateway previously
@@ -767,7 +796,7 @@ Typing/status frames always carry the triggering-ts anchor when one is known
 (liveliness is unconditional, both modes): Slack's status line is
 thread-scoped, and in flat mode the send-side anchor strip guarantees the
 status anchor can never leak into reply placement. Semantics of the native
-key: see [Slack](/user-guide/messaging/slack).
+key: see [Slack](../user-guide/messaging/slack.md).
 
 Thread-anchor resolution applies to EVERY send lane — text (`send`) and media
 (`send_media`) alike — through one choke point

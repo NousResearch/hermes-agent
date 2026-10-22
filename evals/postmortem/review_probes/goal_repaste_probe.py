@@ -16,6 +16,7 @@ import socket
 import sqlite3
 import sys
 import tempfile
+import tempfile
 import threading
 from unittest.mock import patch
 
@@ -44,7 +45,8 @@ assert str(Path(goals.__file__).resolve()).startswith(repo)
 server._hermes_home = Path(home.name)
 goals._DB_CACHE.clear()
 goals._get_session_db()
-source = sqlite3.connect('file:/tmp/rf/state_copy.db?mode=ro', uri=True)
+source_db = os.environ.get('RF_STATE_COPY') or str(Path(tempfile.gettempdir()) / 'rf' / 'state_copy.db')
+source = sqlite3.connect(f'file:{source_db}?mode=ro', uri=True)
 source.row_factory = sqlite3.Row
 original = source.execute('SELECT content FROM messages WHERE id=264820').fetchone()['content']
 repeated = source.execute('SELECT content FROM messages WHERE id=267045').fetchone()['content']

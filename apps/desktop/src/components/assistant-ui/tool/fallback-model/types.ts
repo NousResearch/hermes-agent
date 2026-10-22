@@ -7,6 +7,8 @@ export interface ToolPart {
   toolResultMetadata?: ToolResultMetadata
   args?: unknown
   completedAt?: number
+  innerToolName?: string
+  interrupted?: boolean
   isError?: boolean
   result?: unknown
   timestamp?: number

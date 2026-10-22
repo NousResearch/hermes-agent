@@ -20,7 +20,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-import agent.background_review as bg  # noqa: E402
+import agent.background_review as bg
 
 
 def _review_agent(memory_enabled=True, user_profile_enabled=False) -> SimpleNamespace:
@@ -142,7 +142,7 @@ class TestConsolidationProposalSurfaces:
         token = set_current_write_origin("background_review")
         try:
             raw = memory_tool(
-                action="replace", old_text="standing rule", content="consolidated entry", store=store)
+                action="patch", old_text="standing rule", content="consolidated entry", store=store)
         finally:
             reset_current_write_origin(token)
         result = json.loads(raw)
@@ -150,7 +150,7 @@ class TestConsolidationProposalSurfaces:
 
         review_messages = [
             {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "memory", "arguments": json.dumps(
-                {"action": "replace", "old_text": "standing rule", "content": "consolidated entry"})}}]},
+                {"action": "patch", "old_text": "standing rule", "content": "consolidated entry"})}}]},
             {"role": "tool", "tool_call_id": "c1", "content": raw},
         ]
         actions = bg.summarize_background_review_actions(review_messages, [])
@@ -158,7 +158,7 @@ class TestConsolidationProposalSurfaces:
 
     def test_near_limit_denial_end_to_end(self, tmp_path, monkeypatch):
         """add rejected by the budget -> fork follows the 'consolidate now' hint with a
-        replace -> the delete gate stages it -> the proposal surfaces; the store never
+        patch -> the delete gate stages it -> the proposal surfaces; the store never
         changed and nothing was silently lost."""
         import json
 
@@ -174,7 +174,7 @@ class TestConsolidationProposalSurfaces:
         try:
             add_raw = memory_tool(action="add", content="y" * 600, store=store)
             replace_raw = memory_tool(
-                action="replace", old_text="seed entry one", content="merged entry", store=store)
+                action="patch", old_text="seed entry one", content="merged entry", store=store)
         finally:
             reset_current_write_origin(token)
         assert json.loads(add_raw)["success"] is False  # the budget still rejects the add
@@ -190,7 +190,7 @@ class TestConsolidationProposalSurfaces:
                 {"id": "c1", "function": {"name": "memory", "arguments": json.dumps(
                     {"action": "add", "content": "y" * 600})}},
                 {"id": "c2", "function": {"name": "memory", "arguments": json.dumps(
-                    {"action": "replace", "old_text": "seed entry one", "content": "merged entry"})}},
+                    {"action": "patch", "old_text": "seed entry one", "content": "merged entry"})}},
             ]},
             {"role": "tool", "tool_call_id": "c1", "content": add_raw},
             {"role": "tool", "tool_call_id": "c2", "content": replace_raw},

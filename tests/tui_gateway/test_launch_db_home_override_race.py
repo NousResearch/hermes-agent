@@ -46,6 +46,23 @@ def test_get_db_first_touch_under_foreign_override_uses_launch_path(launch_db_en
         reset_hermes_home_override(token)
 
 
+def test_get_db_follows_a_process_home_redirected_after_import(monkeypatch, tmp_path):
+    """The launch handle resolves ``HERMES_HOME`` at first use, not at import (#112692): a harness
+    that redirects the env after ``tui_gateway.server`` is imported must not open the import-time
+    home's state.db. Only the context-local override is ignored (#102526), never the process env."""
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+    monkeypatch.setenv("HERMES_HOME", str(redirected))
+    try:
+        db = server._get_db()
+        assert db is not None
+        assert db.db_path.resolve() == (redirected / "state.db").resolve()
+    finally:
+        registry.close_all()
+
+
 def test_insights_get_reads_the_requested_profile_store_not_the_launch_handle(launch_db_env, monkeypatch, tmp_path):
     """``insights.get {profile}`` was ``scoped=True`` then ``_get_db()``: a scoped first touch pinned
     the launch handle to the foreign store. It must count the requested profile's sessions through
@@ -167,6 +184,17 @@ def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_sto
 
     assert server._session_owns_notification_event("ui1", session, evt) is True
     assert server._get_db().get_session("parent") is None  # never looked up through the launch store
+
+
+def test_restored_delegation_requires_a_live_notification_consumer():
+    """Regression for #138343: a persisted completion cannot wake a detached runtime."""
+    session = {"session_key": "chat", "transport": None}
+    event = {"type": "async_delegation", "session_key": "chat", "restored": True, "startup_replay": True}
+
+    assert server._session_owns_notification_event("ui1", session, event) is False
+
+    session["transport"] = object()
+    assert server._session_owns_notification_event("ui1", session, event) is True
 
 
 def test_foreign_profile_poller_requeues_event_owned_through_another_profiles_lineage(launch_db_env, tmp_path):

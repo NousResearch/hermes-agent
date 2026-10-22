@@ -58,7 +58,7 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
 
         saved_cfg = {}
 
-        def fake_load_config():
+        def fake_readable_config():
             return dict(existing_cfg)  # shallow copy
 
         def fake_save_config(cfg, **_kwargs):
@@ -67,7 +67,7 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
         payload = _base_payload()
 
         with (
-            patch("hermes_cli.config.load_config", side_effect=fake_load_config),
+            patch("hermes_cli.config.require_readable_config_before_write", side_effect=fake_readable_config),
             patch("hermes_cli.config.save_config", side_effect=fake_save_config),
             patch("hermes_cli.web_server_profiles._profile_scope"),
         ):
@@ -91,7 +91,7 @@ def test_moa_save_writes_only_the_moa_section(tmp_path, monkeypatch):
     out-of-band (or was simply stale) rewrote ``fallback_providers`` too. Real config pipeline,
     temp HERMES_HOME.
     """
-    import yaml
+    import hermes_yaml as yaml
     from hermes_cli.config import get_config_path, load_config, read_raw_config
 
     home = tmp_path / ".hermes"

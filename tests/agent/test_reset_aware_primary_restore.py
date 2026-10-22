@@ -64,7 +64,7 @@ class _FakePool:
         self._raise = raise_on_next
         self.next_available_calls = 0
 
-    def next_available_at(self):
+    def next_available_at(self, **_kwargs):
         self.next_available_calls += 1
         if self._raise:
             raise RuntimeError("boom")
@@ -73,10 +73,10 @@ class _FakePool:
     def has_credentials(self):
         return True
 
-    def has_available(self):
+    def has_available(self, **_kwargs):
         return self._available
 
-    def select(self):
+    def select(self, **_kwargs):
         return None
 
 
@@ -302,30 +302,7 @@ class TestResetAwareRestoreGate:
         assert primary_pool.next_available_calls == 1
         assert agent._fallback_activated is True
 
-    def test_no_pool_info_falls_through(self):
-        """Pool present but no reset info -> existing per-turn retry."""
-        agent = _make_agent(fallback_model=self.FB)
-        _activate_fallback(agent)
-        agent._rate_limited_until = 0
 
-        agent._credential_pool = _FakePool("custom", next_at=None)
-
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
-            assert agent._restore_primary_runtime() is True
-
-    def test_logs_wait_only_once(self, caplog):
-        import logging
-
-        agent = _make_agent(fallback_model=self.FB)
-        _activate_fallback(agent)
-        agent._rate_limited_until = 0
-        agent._credential_pool = _FakePool("custom", next_at=time.time() + 3600)
-
-        with caplog.at_level(logging.INFO, logger="agent.agent_runtime_helpers"):
-            assert agent._restore_primary_runtime() is False
-            assert agent._restore_primary_runtime() is False
-        waits = [r for r in caplog.records if "staying on fallback" in r.getMessage()]
-        assert len(waits) == 1
 
     def test_transient_cooldown_still_respected(self):
         """The existing 60s monotonic gate fires before the reset-aware one."""

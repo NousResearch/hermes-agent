@@ -19,6 +19,10 @@ class TurnRetryState:
     anthropic_auth_retry_attempted: bool = False
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
+    # Nous free tier: one model move onto the tier's own model after a ``model_not_free``
+    # refusal, and one route re-read after a wrong-host refusal (``anon_on_paid_host``).
+    welcome_model_switch_attempted: bool = False
+    welcome_route_heal_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
     # Copilot surfaces a stale credential as a 400 ``model_not_available_for_integrator``
     # / ``model_not_supported``, not a 401 — separate guard from the 401 one.
@@ -38,8 +42,12 @@ class TurnRetryState:
     # Transport / rate-limit recovery
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
+    # Credit-limited 402 ("can only afford N tokens") already retried with a lowered output cap.
+    affordable_402_clamp_attempted: bool = False
     # Persistent 401/403 already escalated to the fallback chain once this attempt.
     auth_failover_attempted: bool = False
+    # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).
+    auto_recovery_cycles_used: int = 0
 
     # Restart signals (read by the outer loop after the attempt)
     restart_with_compressed_messages: bool = False
@@ -50,11 +58,3 @@ class TurnRetryState:
     # A user correction cancelled the in-flight request: append a role-safe checkpoint +
     # user message, rebuild the payload, and retry the same logical iteration.
     restart_with_redirected_messages: bool = False
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import fields  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

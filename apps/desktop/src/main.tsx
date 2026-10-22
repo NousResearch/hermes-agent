@@ -7,6 +7,11 @@ import './store/power'
 import './store/translucency'
 // Side-effect: applies the persisted user-bubble transparency on load.
 import './store/user-bubble-transparency'
+// Side-effect: restores chat typography before the first conversation paints.
+import './store/chat-text-scale'
+// Side-effect: mirrors the keep-awake mode to main and listens for main's
+// one-time keep-awake offer. Settings loads lazily, too late for the offer.
+import './store/keep-awake'
 // Dev-only render/state churn counters. MUST precede the `react-dom` import
 // below: react-dom captures the devtools hook at module init, so bippy has to
 // install during THIS import's evaluation or every commit goes unseen
@@ -24,7 +29,7 @@ import App from './app'
 import { RootErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { RootTooltipProvider } from './components/ui/tooltip'
-import { I18nProvider } from './i18n'
+import { ProfileI18nProvider as I18nProvider } from './i18n/profile-provider'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
 import { installRendererAnimationPauseState } from './lib/renderer-loop-pause'
@@ -56,7 +61,7 @@ if (winParam === 'hud') {
 // window) and `browser` are ordinary opaque windows and are deliberately not
 // in here. index.html's pre-paint script skips exactly this list — keep the
 // two in step.
-const TRANSPARENT_WINDOWS = new Set(['hud', 'overlay', 'quick', 'wake', 'intro'])
+const TRANSPARENT_WINDOWS = new Set(['hud', 'overlay', 'quick', 'wake'])
 
 // Each transparent root used to force its host layers see-through when it
 // MOUNTED. That is far too late: `styles.css` above paints the theme's opaque
@@ -78,8 +83,6 @@ if (winParam === 'overlay') {
   void import('./app/quick-entry/quick-entry-root').then(({ mountQuickEntry }) => mountQuickEntry())
 } else if (winParam === 'wake') {
   void import('./app/wake-indicator/wake-indicator-root').then(({ mountWakeIndicator }) => mountWakeIndicator())
-} else if (winParam === 'intro') {
-  void import('./components/intro-reveal/intro-root').then(({ mountIntroReveal }) => mountIntroReveal())
 } else {
   // CSS animations do not inherit Chromium's JS-loop pause policy. Mirror the
   // main window's visibility state to :root so decorative infinite

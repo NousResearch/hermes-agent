@@ -23,36 +23,32 @@ async def test_gateway_startup_discovery_suppresses_interactive_oauth(monkeypatc
     assert seen == [False]
 
 
-def test_mcp_config_reconciler_runs_only_when_config_changes(monkeypatch, tmp_path: Path):
+def test_mcp_config_reconciler_reconciles_every_tick_after_baseline(monkeypatch, tmp_path: Path):
+    """The chore reconciles on DRIFT, not only on a config edit (#112445): a server whose FIRST
+    connect failed never reached ``_servers`` and its config never changes, so a signature-gated
+    chore never came back for it. First tick is baseline only (startup discovery owns it); every
+    later tick reconciles with interactive OAuth suppressed; nothing to report stays silent."""
     from gateway.run_profile_reconcile import _mcp_config_reconciler
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools.mcp_oauth import _is_interactive
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text("mcp_servers:\n  linear:\n    url: https://x/mcp\n")
+    (tmp_path / "config.yaml").write_text("mcp_servers:\n  linear:\n    url: https://x/mcp\n")
     calls: list = []
+    added: list = ["linear"]  # enabled in config, never connected, cooldown lapsed
 
     def fake_reconcile():
         calls.append(_is_interactive())
-        return {"removed": ["linear"], "added": [], "pending": pending.copy()}
+        return {"removed": [], "added": list(added), "pending": []}
 
-    pending: list = []
     monkeypatch.setattr(_mcp_discovery, "reconcile_mcp_servers_with_config", fake_reconcile)
     tick = _mcp_config_reconciler(runner=None)
 
     tick()  # baseline only: startup discovery already reflects this file
-    tick()
     assert calls == []
-    cfg.write_text("model:\n  default: x\n")  # user removes the entry; size changes -> new signature
+    tick()  # config.yaml untouched -- the missing server is still retried
     tick()
-    assert calls == [False], "reconcile must run once per change, with interactive OAuth suppressed"
+    assert calls == [False, False], "reconcile runs each tick after the baseline, OAuth suppressed"
+    added.clear()  # it connected: the chore keeps checking, cheaply, and has nothing to report
     tick()
-    assert calls == [False]
-    cfg.write_text("model:\n  default: y\n")
-    pending.append("linear")  # dropped server was still mid-connect: retry next tick, unchanged file
-    tick()
-    pending.clear()
-    tick()
-    tick()
-    assert calls == [False, False, False], "one retry after a pending teardown, then quiet again"
+    assert calls == [False, False, False]

@@ -40,7 +40,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Optional
 
 # Env var the orchestrator sets to the re-seed payload. Deliberately DISTINCT
@@ -107,13 +107,13 @@ def _parse_timestamp(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except (ValueError, OverflowError):
         return None
     if parsed.tzinfo is None:
         return None
     try:
-        return parsed.astimezone(timezone.utc)
+        return parsed.astimezone(UTC)
     except (OverflowError, ValueError):
         return None
 
@@ -162,7 +162,7 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
         return "no_auth_file"
 
     try:
-        with open(auth_path, "r", encoding="utf-8") as fh:
+        with open(auth_path, "r", encoding="utf-8-sig") as fh:
             store = json.load(fh)
     except (OSError, ValueError):
         # Corrupt/unreadable auth.json: do NOT overwrite blindly. A separate

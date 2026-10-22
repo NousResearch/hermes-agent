@@ -45,11 +45,16 @@ class EventContract:
 
 
 METHODS: dict[str, MethodContract] = {}
+# ``hermes-gateway-v1`` verbs only ``gateway/session_controls.py::AuthorityConnection`` serves
+# (``contracts/canonical.py``), plus explicit overrides where a shared name has a different wire.
+CANONICAL_METHODS: dict[str, MethodContract] = {}
 SERVER_REQUESTS: dict[str, ServerRequestContract] = {}
 EVENTS: dict[str, EventContract] = {}
 
 
 def _declare(table: dict, entry) -> None:
+    # Method names may have different envelopes on independently shipped
+    # transports. Duplicates within one transport's catalog are still errors.
     if entry.name in table:
         raise RuntimeError(f"contract declared twice: {entry.name}")
     table[entry.name] = entry
@@ -58,6 +63,12 @@ def _declare(table: dict, entry) -> None:
 def method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
     entry = MethodContract(name, params, result, doc)
     _declare(METHODS, entry)
+    return entry
+
+
+def canonical_method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
+    entry = MethodContract(name, params, result, doc)
+    _declare(CANONICAL_METHODS, entry)
     return entry
 
 
@@ -77,24 +88,18 @@ def event(name: str, payload: type[Payload] | None = None, *, doc: str = "") -> 
 #
 # Params are validated on every call: an unknown or mistyped key is the CLIENT's bug and answers
 # JSON-RPC ``4000`` with the field path, never a silent ignore. Results and payloads are OUR bug when
-# they drift, so they never break a user's turn: outside the test suite a mismatch is logged once per
-# name; under ``HERMES_TEST_ISOLATION`` (set by ``scripts/run_tests.sh`` / ``tests/conftest.py``) it
 # raises, which is what makes the suite the gate.
 
 STRICT = bool(os.environ.get("HERMES_TEST_ISOLATION"))
-_reported: set[str] = set()
-
 
 class ContractViolation(AssertionError):
-    """A result/payload the gateway produced does not match its declared contract."""
+    """A result or payload the gateway produced does not match its declared contract."""
 
 
 def _report(kind: str, name: str, exc: ValidationError) -> None:
     if STRICT:
         raise ContractViolation(f"{kind} {name!r} violates its contract: {exc}") from exc
-    if name not in _reported:
-        _reported.add(name)
-        logger.warning("%s %r violates its wire contract: %s", kind, name, exc)
+    logger.error("%s %r violates its wire contract: %s", kind, name, exc)
 
 
 def validate_params(contract: MethodContract | ServerRequestContract, params: dict) -> tuple[dict | None, str | None]:
@@ -109,14 +114,31 @@ def validate_params(contract: MethodContract | ServerRequestContract, params: di
         for err in exc.errors():
             if err.get("type") == "extra_forbidden":
                 loc = ".".join(str(p) for p in err.get("loc", ())) or "params"
-                return None, f"invalid params for {contract.name}: {loc}: {err.get('msg')}"
+                return None, (f"invalid params for {contract.name}: {loc}: {err.get('msg')} — the client and "
+                              "the Hermes backend are out of sync (different versions); run `hermes update` "
+                              "and restart both")
     return params, None
+
+
+def canonical_param_problems(contract: MethodContract, params: dict) -> list[str]:
+    """Key paths the canonical dispatcher refuses (``4001 invalid_params``): unknown and missing
+    keys — the closed set its handlers enforced by hand. Value/type checks stay in the handlers,
+    which own their domain reasons (``stale_generation``, ``not_found``, …)."""
+    try:
+        contract.params.model_validate(params)
+    except ValidationError as exc:
+        # Shared methods preserve handler-owned missing-field/permission refusals,
+        # while refusing malformed values before the handler indexes them.
+        return [".".join(str(p) for p in err.get("loc", ())) or "params" for err in exc.errors()
+                if (err.get("type") != "missing" if contract.name in METHODS
+                    else err.get("type") in ("extra_forbidden", "missing"))]
+    return []
 
 
 def check_params_accepted(contract: MethodContract | ServerRequestContract, params: dict) -> None:
     """The handler answered with a result: the params it accepted must be valid under the
     contract, else the contract is narrower than the wire (a required field that is optional in
-    practice, a type the handler coerces). Same strict/log policy as results."""
+    practice, a type the handler coerces). Same strict/error-log policy as results."""
     try:
         contract.params.model_validate(params)
     except ValidationError as exc:

@@ -8,7 +8,7 @@ MRO unchanged.
 import logging
 import uuid
 from contextlib import suppress
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
@@ -20,15 +20,17 @@ class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
     def run_conversation(
-        self, user_message: Any, system_message: str=None,
-        conversation_history: List[Dict[str, Any]]=None, task_id: str=None,
+        self, user_message: Any, system_message: str | None=None,
+        conversation_history: list[dict[str, Any]] | None=None, task_id: str | None=None,
         stream_callback: Optional[callable]=None, persist_user_message: Optional[Any]=None,
         persist_user_timestamp: Optional[float]=None, persist_user_display_kind: Optional[str]=None,
-        persist_user_display_metadata: Optional[Dict[str, Any]]=None,
+        persist_user_display_metadata: Optional[dict[str, Any]]=None,
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
-        turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        turn_author: Optional[dict[str, Any]] = None,
+        relay_metadata: Optional[dict[str, Any]] = None,
+        title_user_message: Optional[str]=None,
+        prelude: Optional[Generator]=None,
+    ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
@@ -47,10 +49,11 @@ class TurnFacadeMixin:
             set_conversation_context,
         )
         from agent.prompt_cache_scope import declared_conversation_scope_safe
+        from agent.relay_cwd import resolve_relay_scope_cwds
         from agent.review_idle_queue import QUEUE as _review_queue
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
-        from agent.turn_facade_lease import admit_durable_turn_lease
+        from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -82,6 +85,11 @@ class TurnFacadeMixin:
                 conversation_history=conversation_history,
             )
             if admission.early_result is not None:
+                carry_unadmitted_user_message(
+                    admission.early_result, user_message, persist_user_message,
+                    timestamp=persist_user_timestamp, display_kind=persist_user_display_kind,
+                    display_metadata=persist_user_display_metadata, platform_id=persist_user_platform_id,
+                )
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )
@@ -89,13 +97,21 @@ class TurnFacadeMixin:
             lease = admission.lease
             conversation_history = admission.conversation_history
 
+            relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
+                self,
+                effective_task_id,
+                task_context["session_id"],
+                task_context["platform"],
+            )
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
                 session_id=task_context["session_id"], platform=task_context["platform"],
                 parent_session_id=relay_parent_session_id,
                 model=str(getattr(self, "model", None) or ""),
+                session_cwd=relay_session_cwd,
+                turn_cwd=relay_turn_cwd,
             )
-            relay_turn_kwargs: Dict[str, Any] = {
+            relay_turn_kwargs: dict[str, Any] = {
                 "turn_id": relay_turn_id,
                 "task_id": effective_task_id,
             }
@@ -137,6 +153,8 @@ class TurnFacadeMixin:
                         persist_user_display_metadata=persist_user_display_metadata,
                         persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
                         turn_author=turn_author,
+                        title_user_message=title_user_message,
+                        prelude=prelude,
                     )
                 finally:
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;

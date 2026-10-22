@@ -1,0 +1,20 @@
+name: typesafe-skill-router
+repo: https://github.com/DECRUX9812/typesafe-skill-router
+sha: e6cdac26f9ed588b4a94b8a2f7f9f026e1b9faf3
+description: >-
+  TypeSafe (Jev) skill routing: the request is routed before the model call and the one skill
+  from the live roster that fits it is named in a single <skill_relevance> line on the user
+  message — nothing is injected when nothing fits.
+maintainer: DECRUX9812
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+docs_url: https://github.com/DECRUX9812/typesafe-skill-router#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - TYPESAFE_API_KEY

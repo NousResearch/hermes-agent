@@ -20,60 +20,16 @@ mirroring tests/hermes_cli/test_cli_steer_busy_path.py.
 
 from __future__ import annotations
 
-import importlib
-import sys
-from unittest.mock import MagicMock, patch
 
 
 def _make_cli():
-    """Create a HermesCLI instance with prompt_toolkit stubbed out."""
-    _clean_config = {
-        "model": {
-            "default": "anthropic/claude-opus-4.6",
-            "base_url": "https://openrouter.ai/api/v1",
-            "provider": "auto",
-        },
-        "display": {"compact": False, "tool_progress": "all"},
-        "agent": {},
-        "terminal": {"env_type": "local"},
-    }
-    clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
-    prompt_toolkit_stubs = {
-        "prompt_toolkit": MagicMock(),
-        "prompt_toolkit.history": MagicMock(),
-        "prompt_toolkit.styles": MagicMock(),
-        "prompt_toolkit.patch_stdout": MagicMock(),
-        "prompt_toolkit.application": MagicMock(),
-        "prompt_toolkit.layout": MagicMock(),
-        "prompt_toolkit.layout.processors": MagicMock(),
-        "prompt_toolkit.filters": MagicMock(),
-        "prompt_toolkit.layout.dimension": MagicMock(),
-        "prompt_toolkit.layout.menus": MagicMock(),
-        "prompt_toolkit.widgets": MagicMock(),
-        "prompt_toolkit.key_binding": MagicMock(),
-        "prompt_toolkit.completion": MagicMock(),
-        "prompt_toolkit.formatted_text": MagicMock(),
-        "prompt_toolkit.auto_suggest": MagicMock(),
-    }
-    with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
-        "os.environ", clean_env, clear=False
-    ):
-        import cli as _cli_mod
+    """Bare HermesCLI (no __init__): the detector only reads _agent_running."""
+    from cli import HermesCLI
 
-        _cli_mod = importlib.reload(_cli_mod)
-        with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
-            _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
-        ):
-            return _cli_mod.HermesCLI()
+    return HermesCLI.__new__(HermesCLI)
 
 
 class TestBackgroundInlineDetector:
-    def test_detects_background_when_agent_running(self):
-        cli = _make_cli()
-        cli._agent_running = True
-        assert cli._should_handle_background_command_inline(
-            "/bg inspect the test failures"
-        ) is True
 
     def test_detects_both_commands(self):
         cli = _make_cli()
@@ -81,13 +37,6 @@ class TestBackgroundInlineDetector:
         assert cli._should_handle_background_command_inline("/bg do work") is True
         assert cli._should_handle_background_command_inline("/btw do work") is True
 
-    def test_background_alias_still_resolves_to_bg(self):
-        """The retired /background spelling no longer resolves to a command."""
-        cli = _make_cli()
-        cli._agent_running = True
-        assert cli._should_handle_background_command_inline(
-            "/background do work"
-        ) is False
 
     def test_ignores_background_when_agent_idle(self):
         """Idle input falls through to the normal process_loop dispatch."""

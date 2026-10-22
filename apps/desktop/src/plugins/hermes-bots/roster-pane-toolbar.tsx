@@ -11,6 +11,7 @@ import {
   Tip
 } from '@hermes/plugin-sdk'
 
+import { seatableGroupBots, useGroupCapability } from './canonical-group-capabilities'
 import { botSourceStatus } from './data'
 import type { useBots } from './i18n'
 import { setActivityToasts } from './roster-actions'
@@ -18,10 +19,32 @@ import { GatewayKindGlyph } from './roster-sections'
 import type { rosterGatewayOptions } from './roster-sections'
 import type { RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 
+interface NewGroupChatItemProps {
+  label: string
+  onSelect: () => void
+  roster: RosterRow[]
+}
+
+/** Mounted only while the menu is open, so the capability read happens on
+ *  demand. Offered only when the dialog it opens can seat two bots: the same
+ *  predicate the dialog's picker uses, or it opened to a dead Create button. */
+function NewGroupChatItem({ label, onSelect, roster }: NewGroupChatItemProps) {
+  const { connectionId, mode, seatable } = useGroupCapability(true)
+
+  return (
+    <DropdownMenuItem disabled={seatableGroupBots(roster, { connectionId, mode, seatable }).length < 2} onSelect={onSelect}>
+      <Codicon className="mr-1.5" name="organization" />
+      {label}
+    </DropdownMenuItem>
+  )
+}
+
 interface renderRosterToolbarProps {
   b: ReturnType<typeof useBots>
   activityToasts: boolean
   activeSourceRoster: RosterRow[]
+  /** Full roster; New Group Chat seats only `seatableGroupBots` of it. */
+  roster: RosterRow[]
   setCreateOpen: (value: boolean) => void
   setGroupCreateOpen: (value: boolean) => void
   setSectionDialog: (
@@ -46,6 +69,7 @@ export function renderRosterToolbar({
   b,
   activityToasts,
   activeSourceRoster,
+  roster,
   setCreateOpen,
   setGroupCreateOpen,
   setSectionDialog,
@@ -100,10 +124,7 @@ export function renderRosterToolbar({
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={activeSourceRoster.length < 2} onSelect={() => setGroupCreateOpen(true)}>
-                <Codicon className="mr-1.5" name="organization" />
-                {b.group.newTitle}
-              </DropdownMenuItem>
+              <NewGroupChatItem label={b.group.newTitle} onSelect={() => setGroupCreateOpen(true)} roster={roster} />
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setSectionDialog({ mode: 'create' })}>
                 <Codicon className="mr-1.5" name="new-folder" />

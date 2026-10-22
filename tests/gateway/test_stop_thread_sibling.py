@@ -43,7 +43,9 @@ def _per_user_key(uid, thread_id="thr1", chat_id="chan1"):
 
 
 def test_sibling_returns_empty_for_non_thread_source():
-    # Non-thread group/channel must NOT trigger the cross-user fallback.
+    # The sibling TIER is thread-scoped: a non-thread group/channel source has no thread slot to
+    # match. The room-wide fallback for that shape is the chat tier's job — see
+    # tests/gateway/test_stop_chat_scope.py::test_stop_reaches_peer_run_in_per_sender_group.
     runner = object.__new__(GatewayRunner)
     nonthread = SessionSource(
         platform=Platform.DISCORD, chat_type="group", chat_id="chan1", user_id="userA"
@@ -54,12 +56,15 @@ def test_sibling_returns_empty_for_non_thread_source():
         )
     )
     runner._running_agents = {grp_b: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(nonthread, "agent:main:discord:group:chan1:userA") == []
+    own_key = "agent:main:discord:group:chan1:userA"
+    assert runner._sibling_thread_run_keys(
+        nonthread, runner._same_chat_runs(nonthread, own_key)
+    ) == []
 
 
 def test_sibling_matches_named_profile_runs():
-    # Under multiplexing the sibling prefix must follow the source's profile namespace,
-    # so /stop finds another participant's run under the SAME named profile...
+    # A named-profile stop must match another participant's run under the SAME profile, taken from
+    # the caller's own key (the session store's answer)...
     runner = object.__new__(GatewayRunner)
     source = _thread_source("userA")
     source.profile = "work"
@@ -67,9 +72,8 @@ def test_sibling_matches_named_profile_runs():
         _thread_source("userB"), thread_sessions_per_user=True, profile="work"
     )
     runner._running_agents = {key_b: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(
-        source, "agent:work:discord:forum:chan1:thr1:userA"
-    ) == [key_b]
+    own_key = "agent:work:discord:forum:chan1:thr1:userA"
+    assert runner._sibling_thread_run_keys(source, runner._same_chat_runs(source, own_key)) == [key_b]
 
 
 def test_sibling_does_not_cross_profiles():
@@ -79,12 +83,8 @@ def test_sibling_does_not_cross_profiles():
     source.profile = "work"
     main_key = build_session_key(_thread_source("userB"), thread_sessions_per_user=True)
     runner._running_agents = {main_key: _FakeAgent()}
-    assert (
-        runner._sibling_thread_run_keys(
-            source, "agent:work:discord:forum:chan1:thr1:userA"
-        )
-        == []
-    )
+    own_key = "agent:work:discord:forum:chan1:thr1:userA"
+    assert runner._sibling_thread_run_keys(source, runner._same_chat_runs(source, own_key)) == []
 
 
 # ---------------------------------------------------------------------------

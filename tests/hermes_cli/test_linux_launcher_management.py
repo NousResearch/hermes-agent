@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.linux_desktop_entry import install_desktop_entry
+from hermes_cli.linux_desktop_entry import DESKTOP_ENTRY_NAME, install_desktop_entry
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_launcher_optout_preserves_custom_entry_but_creates_missing(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
@@ -19,7 +19,7 @@ def test_launcher_optout_preserves_custom_entry_but_creates_missing(tmp_path, mo
     config.write_text("desktop:\n  manage_launcher_entry: false\n", encoding="utf-8")
     root = tmp_path / "checkout"
     root.mkdir()
-    entry = tmp_path / "xdg/applications/hermes.desktop"
+    entry = tmp_path / "xdg" / "applications" / DESKTOP_ENTRY_NAME
     entry.parent.mkdir(parents=True)
     custom = b"[Desktop Entry]\nType=Application\nName=Custom Hermes\nExec=/opt/custom-hermes desktop\n"
     for setting in ("false", '"false"'):

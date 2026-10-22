@@ -551,6 +551,35 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
 
 
+_ENTRA_TENANT_SEGMENT = "{tenantid}"
+
+
+def entra_tenant_issuer_template_matches(expected: str, issuer: str) -> bool:
+    """Whether *issuer*, the multi-tenant identifier template Entra publishes — a literal
+    ``{tenantid}`` placeholder where a concrete tenant GUID or ``organizations`` would stand — may
+    stand in for the advertised authorization-server identifier *expected* in the RFC 8414 §3.3
+    check (Fabric and the other Entra-only MCP endpoints advertise e.g.
+    ``https://login.microsoftonline.com/organizations/v2.0`` while their authorization-server
+    document's ``issuer`` is ``https://login.microsoftonline.com/{tenantid}/v2.0``; #136978).
+
+    ``issuer`` arrives as ``str(AnyHttpUrl)``, so the placeholder is percent-encoded
+    (``%7Btenantid%7D``). The narrow shape keeps the exact-string check's boundary: scheme, host,
+    query and fragment must match exactly and every path segment except the placeholder segment
+    must be identical, so the document's endpoints still live on the advertised origin and only
+    Entra's own tenant segment is treated as a wildcard."""
+    from urllib.parse import unquote, urlsplit
+    exp, adv = urlsplit(expected), urlsplit(issuer)
+    if ((exp.scheme, exp.netloc) != (adv.scheme, adv.netloc)
+            or exp.query or adv.query or exp.fragment or adv.fragment):
+        return False
+    exp_segs = [s for s in exp.path.split("/") if s]
+    adv_segs = [s for s in adv.path.split("/") if s]
+    if len(exp_segs) != len(adv_segs):
+        return False
+    return all(unquote(seg).lower() == _ENTRA_TENANT_SEGMENT or seg == expected_seg
+               for seg, expected_seg in zip(adv_segs, exp_segs))
+
+
 def google_offline_access_params(context: Any) -> dict[str, str]:
     """Parameters that ask the authorization server for a refresh token Google-style: Google issues
     one only when the authorization request carries ``access_type=offline`` — its idiom where OIDC

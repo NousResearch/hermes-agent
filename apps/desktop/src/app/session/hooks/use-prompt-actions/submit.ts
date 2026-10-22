@@ -434,6 +434,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         seedOptimistic(sessionId)
       }
 
+      let acknowledged = false
+
       try {
         const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
@@ -499,6 +501,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           throw submitErr
         }
 
+        acknowledged = true
+
         if (usingComposerAttachments) {
           scope.clearAttachments()
         }
@@ -545,26 +549,21 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (targetIsCurrentView() && isProviderSetupError(err)) {
           requestDesktopOnboarding(copy.providerCredentialRequired)
 
-          // Same as the generic error case below — prompt.submit already
-          // persisted the user turn.  Never restore the draft (#68927).
-          // Clear the draft so the user can see their bubble + the provider
-          // onboarding prompt without confusing draft restoration.
-          return true
+          // If prompt.submit was acknowledged, user turn is already persisted.
+          // Never restore the draft (#68927). For pre-ack failures (e.g. attachment
+          // staging or RPC rejection), return false to preserve the user's draft.
+          return acknowledged
         }
 
         if (targetIsCurrentView()) {
           notifyError(err, copy.promptFailed)
         }
 
-        // The outer catch block is reached after prompt.submit was sent and
-        // optimistically seeded — the user turn was already persisted on the
-        // backend.  Return true so that dispatchSubmit in the composer clears
-        // the draft instead of restoring the text into the input.  Restoring
-        // the draft here would make the user's Enter appear to do nothing
-        // (text stays in composer, no visible user bubble), even though the
-        // backend accepted the turn and an assistant error bubble is already
-        // part of the session state (#68927).
-        return true
+        // Return true only when prompt.submit succeeded / was acknowledged so
+        // the composer clears the draft instead of restoring text. For pre-ack
+        // failures (such as attachment sync failure or RPC rejection), return false
+        // so the draft is safely preserved in the composer (#68927, #68954).
+        return acknowledged
       }
     },
     [

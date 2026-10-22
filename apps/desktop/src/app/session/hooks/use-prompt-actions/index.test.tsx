@@ -1342,9 +1342,9 @@ describe('usePromptActions sleep/wake session recovery', () => {
       />
     )
 
-    // submitText swallows the error into an inline bubble and returns true
-    // (#68927: after prompt.submit was sent, the draft must not be restored).
-    expect(await handle!.submitText('message')).toBe(true)
+    // submitText swallows the error into an inline bubble and returns false
+    // because prompt.submit failed before acknowledgement (draft restored) (#68927, #68954).
+    expect(await handle!.submitText('message')).toBe(false)
     // No resume attempt for a non-recoverable error.
     expect(calls).not.toContain('session.resume')
   })
@@ -1374,11 +1374,34 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     // With a null stored ref, the `&& selectedStoredSessionIdRef.current` guard
     // short-circuits — no resume is attempted and the error surfaces normally.
-    // Returns true because the optimistic user message stays in the session
-    // state with an inline error bubble — the draft must not be restored
-    // after prompt.submit was acknowledged (#68927).
-    expect(await handle!.submitText('message')).toBe(true)
+    // Returns false because prompt.submit failed pre-ack (draft restored) (#68927, #68954).
+    expect(await handle!.submitText('message')).toBe(false)
     expect(calls).not.toContain('session.resume')
+  })
+
+  it('returns true when prompt.submit acknowledges successfully without restoring draft (#68927, #68954)', async () => {
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+      if (method === 'prompt.submit') {
+        return { status: 'streaming' } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message')).toBe(true)
+    expect(calls).toContain('prompt.submit')
   })
 
   it('recovers via session.resume when prompt.submit TIMES OUT and a stored session is selected (#55578)', async () => {

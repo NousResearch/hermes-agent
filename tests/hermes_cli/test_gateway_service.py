@@ -2925,3 +2925,85 @@ class TestUnitAnchoredServiceIdentity:
 
         assert os.environ["HERMES_HOME"] == str(alice_home)  # the sync really ran
         assert gateway_cli.get_service_name() == pre_sync_name
+
+
+class TestLaunchdPlistStalenessWithBinaryPlists:
+    """#90606: launchctl may rewrite an installed plist into Apple's binary format, whose
+    ``bplist00`` magic is not valid UTF-8. Decoding it strictly raised ``UnicodeDecodeError``
+    out of every path gated on the staleness check."""
+
+    GENERATED = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0"><dict>'
+        "<key>Label</key><string>ai.hermes.gateway</string>"
+        "<key>EnvironmentVariables</key><dict>"
+        "<key>HERMES_HOME</key><string>/Users/alice/.hermes</string>"
+        "<key>PATH</key><string>/usr/bin:/bin</string>"
+        "</dict></dict></plist>"
+    )
+
+    def _install(self, tmp_path, monkeypatch, raw: bytes, generated: str | None = None):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_bytes(raw)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli, "generate_launchd_plist", lambda: generated or self.GENERATED
+        )
+        return plist_path
+
+    def _binary(self, generated: str | None = None) -> bytes:
+        parsed = plistlib.loads((generated or self.GENERATED).encode("utf-8"))
+        return plistlib.dumps(parsed, fmt=plistlib.FMT_BINARY)
+
+    def test_matching_binary_plist_reads_as_current(self, tmp_path, monkeypatch):
+        """The crash itself. Before the fix this raised rather than returning a verdict."""
+        raw = self._binary()
+        assert raw.startswith(b"bplist00")
+        self._install(tmp_path, monkeypatch, raw)
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_matching_binary_plist_is_not_reported_stale_on_formatting(
+        self, tmp_path, monkeypatch
+    ):
+        """Comparing re-rendered XML against the generated text would differ on whitespace
+        alone, report stale on every call, and rewrite the plist -- which launchctl may
+        re-binarize, an endless refresh loop. Both sides take the same round-trip."""
+        self._install(tmp_path, monkeypatch, self._binary())
+        assert all(gateway_cli.launchd_plist_is_current() for _ in range(3))
+
+    def test_differing_binary_plist_reads_as_stale(self, tmp_path, monkeypatch):
+        other = self.GENERATED.replace("/Users/alice/.hermes", "/Users/bob/.hermes")
+        self._install(tmp_path, monkeypatch, self._binary(other))
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_path_payload_is_still_ignored_through_the_round_trip(self, tmp_path, monkeypatch):
+        """The PATH normalization has to survive canonicalization: the generated PATH is
+        captured from the invoking shell and varies between them."""
+        other_path = self.GENERATED.replace("/usr/bin:/bin", "/opt/homebrew/bin:/usr/bin")
+        self._install(tmp_path, monkeypatch, self._binary(other_path))
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_xml_plist_behaviour_is_unchanged(self, tmp_path, monkeypatch):
+        self._install(tmp_path, monkeypatch, self.GENERATED.encode("utf-8"))
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_corrupt_plist_reads_as_stale_rather_than_raising(self, tmp_path, monkeypatch):
+        """Fail closed: an unreadable plist is stale so the caller reinstalls it."""
+        self._install(tmp_path, monkeypatch, b"bplist00\xd5 not actually a plist")
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_unparseable_generated_plist_is_reported_once(self, tmp_path, monkeypatch, caplog):
+        """An unreadable installed file and an unparseable generated plist both collapse into
+        "stale", so a template regression would otherwise surface only as plists being
+        rewritten more often than expected, with nothing naming the cause."""
+        import hermes_cli.gateway_launchd as gateway_launchd
+
+        monkeypatch.setattr(gateway_launchd, "_WARNED_GENERATED_PLIST_UNPARSEABLE", False)
+        self._install(tmp_path, monkeypatch, self._binary(), generated="not a plist at all")
+        with caplog.at_level("WARNING"):
+            assert gateway_cli.launchd_plist_is_current() is False
+            assert gateway_cli.launchd_plist_is_current() is False
+        matching = [r for r in caplog.records if "Generated launchd plist is not parseable" in r.message]
+        assert len(matching) == 1

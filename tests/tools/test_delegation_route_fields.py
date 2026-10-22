@@ -99,6 +99,22 @@ def test_ultrafast_follows_the_codex_account_like_the_fast_command(account_offer
         assert built[0]["request_overrides"]["service_tier"] == expected
 
 
+def test_ultrafast_is_checked_against_the_routes_own_account():
+    """A backend's Codex route may carry another account's key: the ultrafast entitlement is read for that key,
+    never the profile's stored login."""
+    seen = []
+
+    def offers(model, tier, *, base_url=None, access_token=None):
+        seen.append(access_token)
+        return access_token == "routed-account-key"
+
+    with patch("agent.codex_service_tiers.codex_account_offers_tier", side_effect=offers):
+        result, built, _ = _spawn([{**CODEX, "api_key": "routed-account-key", "model": "gpt-6.1-sol",
+                                    "service_tier": "ultrafast"}])
+    assert seen == ["routed-account-key"]
+    assert result == {"status": "built"} and built[0]["request_overrides"]["service_tier"] == "ultrafast"
+
+
 def test_route_tier_survives_a_provider_extra_body_merged_at_construction():
     """Child setup can merge a custom provider's extra_body (carrying its own tier) after the route's overrides."""
     def construct(**kwargs):

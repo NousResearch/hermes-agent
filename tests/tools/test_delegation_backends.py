@@ -501,3 +501,37 @@ def test_a_replacement_default_strategy_gets_the_full_route_contract(monkeypatch
     (route,), error = resolve_task_routes([{"goal": "one plain delegated task"}], {}, _parent())
     assert error is None and route.label == "codex-fast"
     assert route.creds["service_tier"] == "priority" and route.creds["request_overrides"]["service_tier"] == "priority"
+
+
+def test_an_unavailable_replacement_default_falls_back_to_the_bundled_strategy(monkeypatch):
+    """A provider registered as ``default`` that reports unavailable never takes delegation down: the enabled
+    bundled default strategy serves the task instead."""
+    from agent import delegation_registry
+    from agent.delegation_provider import DelegationProvider
+    from agent.delegation_registry import _registry, get_active_provider
+
+    class Unavailable(DelegationProvider):
+        @property
+        def name(self):
+            return "default"
+
+        def is_available(self):
+            return False
+
+        def route_task(self, task, config):
+            raise AssertionError("an unavailable provider is never asked for a route")
+
+    monkeypatch.setattr(delegation_registry, "_first_use", {})
+    previous = _registry.snapshot_registration("default")
+    if previous is not None:
+        _registry.restore_registration("default", previous, None)
+    _registry.register(Unavailable())
+    try:
+        provider = get_active_provider({})
+        assert provider is not None and provider.is_available()
+        assert provider.route_task({"goal": "g", "index": 0}, {"model": "m"}) == {"model": "m"}
+    finally:
+        current = _registry.snapshot_registration("default")
+        if current is not None:
+            _registry.restore_registration("default", current, previous)
+

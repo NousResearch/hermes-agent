@@ -82,17 +82,28 @@ def _load_bundled(name: str) -> Optional[DelegationProvider]:
     return _first_use.get(name)
 
 
+def _available(provider: Optional[DelegationProvider]) -> bool:
+    return provider is not None and is_available_safe(
+        provider, logger, "delegation provider %s.is_available() raised %s")
+
+
 def _usable(name: str) -> Optional[DelegationProvider]:
-    """The registered, available provider for ``name``: registry, else a bundled strategy of that
-    name, else one plugin discovery sweep (a caller that never imported ``model_tools``)."""
-    provider = _registry.get_provider(name) or _load_bundled(name)
-    if provider is None:
+    """The available provider for ``name``: the registered one, else a bundled strategy of that name
+    (also when the registered one reports unavailable), else one plugin discovery sweep (a caller
+    that never imported ``model_tools``)."""
+    registered = _registry.get_provider(name)
+    if _available(registered):
+        return registered
+    bundled = _load_bundled(name)
+    if _available(bundled):
+        return bundled
+    if registered is None and bundled is None:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
-        provider = _registry.get_provider(name)
-    if provider is None or not is_available_safe(provider, logger, "delegation provider %s.is_available() raised %s"):
-        return None
-    return provider
+        registered = _registry.get_provider(name)
+        if _available(registered):
+            return registered
+    return None
 
 
 def backend_status(name: str) -> tuple[Optional[DelegationProvider], str]:

@@ -843,6 +843,8 @@ export function skinIsLight(colors: SkinColors, env: NodeJS.ProcessEnv = process
   return authored === null ? detectLightMode(env) : authored >= LUMA_LIGHT_THRESHOLD
 }
 
+const resolveUserRule = (colors: SkinColors, border: string): string => colors['user_rule'] ?? border
+
 export function fromSkin(
   colors: SkinColors,
   branding: SkinBranding,
@@ -924,7 +926,7 @@ export function fromSkin(
     // banner_border #2563EB; sisyphus #656565 vs #B7B7B7; mono #606060 vs
     // #5E5E5E), so borrowing it would silently repaint those skins rather
     // than leave every existing look untouched.
-    userRule: c('user_rule') ?? derived.userRule,
+    userRule: resolveUserRule(colors, derived.userRule),
     sessionLabel: c('session_label') ?? c('banner_dim') ?? derived.sessionLabel,
     sessionBorder: c('session_border') ?? c('banner_dim') ?? derived.sessionBorder,
     statusBg: c('status_bar_bg') ?? surface,

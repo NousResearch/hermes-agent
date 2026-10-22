@@ -96,6 +96,7 @@ import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { $projectTree } from '@/store/project-tree'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
@@ -539,6 +540,7 @@ $sessions.listen(syncWorkspaceTitle)
 // whatever it resolved at register time — "New session" for a gateway chat.
 $cronSessions.listen(syncWorkspaceTitle)
 $messagingSessions.listen(syncWorkspaceTitle)
+$projectTree.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)

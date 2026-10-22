@@ -51,6 +51,7 @@ import {
   knownSessionProfile,
   lineageAliases,
   mergeSessionPage,
+  ownerLookupSessionRows,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   rotateFreshDraftKey,
@@ -76,6 +77,7 @@ import {
   touchSessionActivity,
   workspaceCwdForNewSession
 } from './session'
+import { $projectTree } from './project-tree'
 import { tombstoneSessions, untombstoneSessions } from './session-removal'
 import {
   $attentionSessionIds,
@@ -85,6 +87,32 @@ import {
 } from './session-states'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
+
+describe('owner lookup session rows', () => {
+  beforeEach(() => {
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $projectTree.set([])
+  })
+
+  afterEach(() => {
+    $projectTree.set([])
+  })
+
+  it('includes an ACP row loaded only through the project tree', async () => {
+    $projectTree.set([
+      {
+        id: 'project',
+        label: 'Project',
+        path: '/repo',
+        repos: [{ groups: [{ sessions: [session({ id: 'acp-session', source: 'acp', title: 'Stored ACP title' })] }] }]
+      } as never
+    ])
+
+    expect(ownerLookupSessionRows()).toContainEqual(expect.objectContaining({ id: 'acp-session', title: 'Stored ACP title' }))
+  })
+})
 
 describe('composer model persistence scope', () => {
   const local = { baseUrl: '', connectionId: 'local', mode: 'local' } as never

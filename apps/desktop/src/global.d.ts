@@ -979,6 +979,9 @@ export interface DesktopPluginProfileRoute {
   mode: 'local' | 'remote'
   // Electron's authoritative registry primary. Absent on older shells.
   primary?: true
+  // Present only on a local route whose profile carries a Bot Mode title —
+  // lets the relay keep a bot-hosting non-primary local in its peer set.
+  bot?: true
   profile: string
   targetProfile: string
 }

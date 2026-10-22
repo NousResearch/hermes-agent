@@ -111,3 +111,28 @@ def test_dispatch_connector_batch_guard_echoes_first_entry(monkeypatch):
         middleware_trace=[], enabled_toolsets=None, disabled_toolsets=None))
     assert 'Retry with only: {"calls":[{"name":"session_search","arguments":{"query":"alpha"}}]}' in result["error"]
     assert invoked == []
+
+
+def test_connector_batch_assigns_entry_ids_without_a_parent_id(monkeypatch):
+    """Connector entries still need separate observer identities for direct dispatches."""
+    import model_tools
+    from tools.connectors.dispatch import dispatch_connector_batch
+
+    seen = []
+    monkeypatch.setattr("tools.connectors.dispatch.secrets.token_hex", lambda _size: "fallback")
+    monkeypatch.setattr(
+        model_tools,
+        "handle_function_call",
+        lambda _name, _args, **kwargs: seen.append(kwargs["tool_call_id"]) or '{}',
+    )
+    calls = [
+        {"name": "connectors__gmail__SEND_EMAIL", "arguments": {"to": "one@example.test"}},
+        {"name": "connectors__gmail__SEND_EMAIL", "arguments": {"to": "two@example.test"}},
+    ]
+
+    dispatch_connector_batch(
+        calls, model_tools._CallIds(), user_task=None, enabled_tools=None,
+        middleware_trace=[], enabled_toolsets=None, disabled_toolsets=None,
+    )
+
+    assert seen == ["connector_batch_fallback#0", "connector_batch_fallback#1"]

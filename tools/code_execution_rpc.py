@@ -27,7 +27,14 @@ _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete",
 
 def _default_dispatch(task_id):
     from model_tools import handle_function_call
-    return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, task_id=task_id)
+
+    def dispatch(tool_name, tool_args):
+        return handle_function_call(
+            tool_name, tool_args, task_id=task_id,
+            tool_call_id=f"execute_code_{secrets.token_hex(12)}",
+        )
+
+    return dispatch
 
 
 def _private_dirs_cmd(root: str, *subdirs: str) -> str:

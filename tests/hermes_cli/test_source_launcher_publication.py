@@ -2,10 +2,12 @@
 import json
 import os
 from pathlib import Path
+import queue
 import shlex
 import shutil
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -390,30 +392,39 @@ def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypat
     local = repo / ".hermes/bin"
     original = Path(_launchers.ensure_install_launchers(repo, local)[0])
     assert original.suffix == ".exe"
-    process = None
-    if running:
-        # The launcher a repin retires is the one running `hermes update`.
-        process = subprocess.Popen([str(original)], cwd=tmp_path, stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE, text=True, encoding="utf-8")
-        assert any(line.strip() == "ready" for line in iter(process.stdout.readline, ""))
     new_python = home / "tools" / "repinned" / "python.exe"
     new_python.parent.mkdir()
     new_python.touch()
     (home / "tools/facts.json").write_text(
         json.dumps({"packages": {"python": {"entry": "repinned"}}}), encoding="utf-8")
+    real_maker = _launchers._load_script_maker
     monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    process = None
     try:
+        if running:
+            # The launcher a repin retires is the one running `hermes update`.
+            process = subprocess.Popen([str(original)], cwd=tmp_path, stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, text=True, encoding="utf-8")
+            first = queue.Queue()
+            threading.Thread(target=lambda: first.put(process.stdout.readline()), daemon=True).start()
+            assert first.get(timeout=60).strip() == "ready"
         result = _launchers.stage_launcher("hermes", repo, local)
     finally:
         if process is not None:
-            process.communicate("", timeout=30)
+            try:
+                process.communicate("", timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
     assert result == local / "hermes.cmd"
     assert not original.exists()  # cmd.exe must not run the old exe first
     assert result is not None and str(new_python) in result.read_text(encoding="utf-8-sig")
     if process is not None:
         assert process.returncode == 0  # the retired launcher finished its own run
-        assert _launchers.stage_launcher("hermes", repo, local) == local / "hermes.cmd"
-        assert not list(local.glob("hermes.exe*"))  # the aside copy is collected once it exits
+        # distlib is back for the next publication: the aside copy still goes.
+        monkeypatch.setattr(_launchers, "_load_script_maker", real_maker)
+        assert _launchers.stage_launcher("hermes", repo, local) == local / "hermes.exe"
+        assert not list(local.glob("hermes.exe.*.deleteme"))
 
 
 @pytest.mark.platforms("windows")

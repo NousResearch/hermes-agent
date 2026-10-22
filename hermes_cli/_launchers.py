@@ -557,13 +557,25 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     store_python = resolve_store_python(repo_root, publication=True)
     if store_python is not None:
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
-        if path is not None and path.suffix == ".cmd":
+        if path is None:
+            return None
+        # Any publication collects copies retired by an earlier one, whatever
+        # launcher form it writes now (distlib may be back since).
+        _collect_retired(Path(out_dir) / f"{name}.exe")
+        if path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
             # newly published command when distlib is unavailable.
             if not _retire_exe(Path(out_dir) / f"{name}.exe"):
                 return None
         return path
     return None
+
+
+def _collect_retired(exe: Path) -> None:
+    """Delete aside copies of ``exe`` whose process has since exited."""
+    for leftover in exe.parent.glob(f"{exe.name}.*.deleteme"):
+        with suppress(OSError):
+            leftover.unlink()
 
 
 def _retire_exe(exe: Path) -> bool:
@@ -575,9 +587,6 @@ def _retire_exe(exe: Path) -> bool:
     plain unlink left every repinned update owing launchers -- and the install
     stamp -- forever. The aside copy goes on the next publication once its
     process has exited."""
-    for leftover in exe.parent.glob(f"{exe.name}.*.deleteme"):
-        with suppress(OSError):
-            leftover.unlink()
     try:
         exe.unlink(missing_ok=True)
         return True

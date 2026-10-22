@@ -886,6 +886,24 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _ack = t("gateway.learn.ack_described") if req else t("gateway.learn.ack_conversation")
         return await self._hm_rewrite_turn_to_prompt(event, source, "learn", _ack, lambda: build_learn_prompt(req))
 
+    async def _hm_cmd_correct(self, event, source, _quick_key):
+        from agent.correct_prompt import (build_correct_prompt, no_hits_message, parse_correction,
+                                          search_terms, usage_message)
+        from agent.learning_mutations import search_learned_text
+
+        request = event.get_command_args().strip()
+        wrong, _right = parse_correction(request)
+        terms = search_terms(wrong)
+        if not terms:
+            return True, usage_message()
+        found = search_learned_text(terms)
+        if not found["hits"]:
+            # No hits means no turn: answering costs a model call and changes nothing.
+            return True, no_hits_message(found["terms"] or terms)
+        _ack = t("gateway.correct.ack", count=len(found["hits"]))
+        return await self._hm_rewrite_turn_to_prompt(
+            event, source, "correct", _ack, lambda: build_correct_prompt(request, found))
+
     async def _hm_cmd_plan(self, event, source, _quick_key):
         from agent.plan_prompt import build_plan_prompt
 
@@ -995,7 +1013,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "start", "egress", "learn", "correct", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
     })
 
     async def _hm_dispatch_canonical_command(

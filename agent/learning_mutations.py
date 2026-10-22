@@ -205,3 +205,163 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
     return _mutate_memory(node_id, body)
+
+
+# ── Search (which stored claims mention this text) ──────────────────────────
+#
+# A wrong fact is usually saved in more than one place: an entry in MEMORY.md or
+# USER.md, a line in a learned skill, often both. The agent cannot find those
+# itself — the model tools expose no full-text search over skills (``skills_list``
+# returns names and descriptions) and on a remote terminal backend the skills
+# directory is not visible to ``search_files`` at all. So the host does the
+# literal search here and hands the caller the hits to act on.
+
+MAX_SEARCH_TERMS = 10
+MAX_SEARCH_HITS = 50
+_SNIPPET_CHARS = 160
+
+
+def _normalize_terms(terms) -> list[str]:
+    """Stripped, de-duplicated (case-insensitively), ordered search terms, capped."""
+    seen: set[str] = set()
+    wanted: list[str] = []
+    for raw in terms or ():
+        term = " ".join(str(raw).split())
+        if not term or term.casefold() in seen:
+            continue
+        seen.add(term.casefold())
+        wanted.append(term)
+        if len(wanted) >= MAX_SEARCH_TERMS:
+            break
+    return wanted
+
+
+def _snippet(line: str) -> str:
+    text = " ".join(line.split())
+    return text if len(text) <= _SNIPPET_CHARS else text[: _SNIPPET_CHARS - 1] + "…"
+
+
+def _entry_start_lines(raw: str, entries: list[str]) -> list[int]:
+    """1-based file line where each parsed entry starts (0 when it cannot be located).
+
+    Memory entries are ``§``-delimited and each is stripped on read, so an entry's
+    first non-blank line is what the file shows; entries appear in file order.
+    """
+    lines = raw.splitlines()
+    starts: list[int] = []
+    cursor = 0
+    for entry in entries:
+        first = next((line for line in entry.splitlines() if line.strip()), "")
+        located = 0
+        for index in range(cursor, len(lines)):
+            if lines[index].strip() == first.strip():
+                located = index + 1
+                cursor = index + 1
+                break
+        starts.append(located)
+    return starts
+
+
+def _memory_hits(terms: list[str]):
+    """Yield one hit per memory entry that mentions any term."""
+    from hermes_constants import get_hermes_home
+    from tools.memory_tool_store import MemoryStore
+
+    for source, filename in _MEMORY_FILES.items():
+        path = get_hermes_home() / "memories" / filename
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        entries = MemoryStore._parse_entries(raw)
+        starts = _entry_start_lines(raw, entries)
+        for index, entry in enumerate(entries):
+            folded = entry.casefold()
+            term = next((t for t in terms if t.casefold() in folded), None)
+            if term is None:
+                continue
+            offset = next((i for i, line in enumerate(entry.splitlines())
+                           if term.casefold() in line.casefold()), 0)
+            yield {
+                "kind": "memory",
+                "label": f"{filename} entry {index + 1}",
+                "file": str(path),
+                "line": starts[index] + offset if starts[index] else 0,
+                "term": term,
+                "snippet": _snippet(entry),
+                # Fingerprint-bearing id: it resolves by the entry's text even if the
+                # list shifted, which is what agent.learning_mutations keys on.
+                "memory_id": f"memory:{source}:{index}:{_fingerprint(entry)}",
+            }
+
+
+def _fingerprint(entry: str) -> str:
+    from agent.learning_graph import memory_fingerprint
+
+    return memory_fingerprint(entry)
+
+
+def _skill_hits(terms: list[str]):
+    """Yield one hit per line of a learned/agent-created skill's SKILL.md or references."""
+    from agent.skill_utils import get_skills_dir, iter_skill_index_files
+    from tools import skill_usage
+
+    root = get_skills_dir()
+    if not root.is_dir():
+        return
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
+        skill_dir = skill_md.parent
+        name = skill_usage.read_skill_name(skill_md, fallback=skill_dir.name)
+        # Bundled and hub-installed skills belong to someone else; protected built-ins
+        # must never be edited by an agent-initiated correction (issue #25839 reasoning).
+        if not skill_usage.is_agent_created(name) or skill_usage.is_protected_builtin(name):
+            continue
+        files = [skill_md]
+        references = skill_dir / "references"
+        if references.is_dir():
+            files.extend(sorted(references.rglob("*.md")))
+        for path in files:
+            try:
+                text = path.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                continue
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                folded = line.casefold()
+                term = next((t for t in terms if t.casefold() in folded), None)
+                if term is None:
+                    continue
+                yield {
+                    "kind": "skill",
+                    "label": name,
+                    "skill": name,
+                    "file": str(path),
+                    "relative_path": path.relative_to(skill_dir).as_posix(),
+                    "line": line_no,
+                    "term": term,
+                    "snippet": _snippet(line),
+                }
+
+
+def search_learned_text(terms, *, max_hits: int = MAX_SEARCH_HITS) -> dict[str, Any]:
+    """Literal, case-insensitive search for the user's terms over everything the agent learned.
+
+    Covers ``MEMORY.md``, ``USER.md`` and the ``SKILL.md`` plus ``references/*.md`` of
+    agent-created skills (bundled, hub-installed and protected skills are excluded).
+    Returns ``{"terms", "hits", "truncated"}``; each hit carries the file, the memory id
+    or skill name, the line and a short snippet. Memory hits come first. An empty or
+    unusable term list returns no hits rather than the whole store.
+    """
+    wanted = _normalize_terms(terms)
+    hits: list[dict[str, Any]] = []
+    truncated = False
+    if wanted:
+        import itertools
+
+        for hit in itertools.chain(_memory_hits(wanted), _skill_hits(wanted)):
+            if len(hits) >= max_hits:
+                truncated = True
+                break
+            hits.append(hit)
+    return {"terms": wanted, "hits": hits, "truncated": truncated}

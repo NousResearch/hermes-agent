@@ -1334,6 +1334,24 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         user_request = _command_arg(cmd)
         self._queue_prompt_turn(build_learn_prompt(user_request), "/learn", _t("learn.from_description" if user_request else "learn.from_conversation"))
 
+    def _handle_correct_command(self, cmd: str):
+        """Handle /correct — fix one wrong fact everywhere it was stored. The host runs the
+        literal search first: with no hits the command says so and starts no agent turn."""
+        from agent.correct_prompt import (build_correct_prompt, no_hits_message, parse_correction,
+                                          search_terms, usage_message)
+        from agent.learning_mutations import search_learned_text
+
+        user_request = _command_arg(cmd)
+        wrong, _right = parse_correction(user_request)
+        terms = search_terms(wrong)
+        if not terms:
+            return _cp(usage_message())
+        found = search_learned_text(terms)
+        if not found["hits"]:
+            return _cp(no_hits_message(found["terms"] or terms))
+        self._queue_prompt_turn(build_correct_prompt(user_request, found), "/correct",
+                                _t("correct.searching", count=len(found["hits"])))
+
     def _handle_plan_command(self, cmd: str):
         """Handle /plan — write a markdown implementation plan, no execution. The live agent
         inspects the workspace read-only and saves the plan under ``.hermes/plans/``."""

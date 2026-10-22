@@ -8,6 +8,8 @@ Covers:
 - Guard: string-typed enum keys (approvals.mode) are NOT coerced.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from hermes_cli import config as cfg
@@ -78,3 +80,22 @@ class TestStringTypedGuardPreserved:
         cfg.set_config_value("approvals.mode", "off")
         v = _read(tmp_path, "approvals", "mode")
         assert v == "off" and isinstance(v, str)  # not bool False
+
+
+class TestLegacyBooleanConfigValues:
+    @pytest.mark.parametrize(
+        ("token", "expected", "mode"),
+        [("true", True, "full"), ("false", False, "off")],
+    )
+    def test_pre_update_backup_legacy_booleans_are_saved_as_booleans(
+        self, tmp_path, monkeypatch, token, expected, mode
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg.set_config_value("updates.pre_update_backup", token)
+
+        saved = _read(tmp_path, "updates", "pre_update_backup")
+        assert saved is expected
+
+        from hermes_cli.update_cmd_maint import _resolve_pre_update_backup_mode
+        assert _resolve_pre_update_backup_mode(SimpleNamespace(backup=False, no_backup=False)) == mode

@@ -47,11 +47,37 @@ def _preflight_request_tokens(
     agent: Any, messages: list[dict[str, Any]], system_prompt: str
 ) -> int:
     """Token estimate for automatic preflight compression: a valid provider usage anchor,
-    else the checkpoint-pruned native wire payload, else the generic estimator."""
+    else the checkpoint-pruned native wire payload, else the generic estimator.
+
+    An anchor above the model window while the local estimate fits is implausible (the provider
+    accepted that request, so it fit): one over-reported ``usage.prompt_tokens`` must not fail the
+    session closed forever (#142355). It is logged with both numbers and dropped, and the local
+    estimate stands. When both agree the request is over the window, the anchor stands as before."""
     anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
     agent._request_pressure_anchored = anchored is not None
-    if anchored is not None:
+    if anchored is None:
+        return _estimated_request_tokens(agent, messages, system_prompt)
+    from agent.conversation_compression import request_exceeds_model_window
+
+    if request_exceeds_model_window(agent, anchored) is not True:
         return anchored
+    local = _estimated_request_tokens(agent, messages, system_prompt)
+    if request_exceeds_model_window(agent, local) is not False:
+        return anchored
+    logger.warning(
+        "Provider-reported usage anchor (~%s tokens) exceeds the model window (%s) while the local "
+        "estimate (~%s) fits; discarding the implausible anchor",
+        f"{anchored:,}", f"{agent.context_compressor.context_length:,}", f"{local:,}",
+    )
+    from agent.usage_anchor import set_usage_anchor
+
+    set_usage_anchor(agent, None)
+    agent._request_pressure_anchored = False
+    return local
+
+
+def _estimated_request_tokens(agent: Any, messages: list[dict[str, Any]], system_prompt: str) -> int:
+    """The checkpoint-pruned native wire payload estimate, else the generic estimator."""
     tools = getattr(agent, "tools", None) or None
     try:
         from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens

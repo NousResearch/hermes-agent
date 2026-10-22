@@ -2147,6 +2147,8 @@ def test_dump_api_request_debug_reads_the_anthropic_client_and_messages_url(monk
     the dump must show the masked key and /messages, not 'Bearer None' + /chat/completions (#24293)."""
     import json
     from types import SimpleNamespace
+    # The writer is gated on HERMES_DUMP_REQUESTS; this test is about what a dump contains.
+    monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1")
     agent = _build_agent(monkeypatch)
     agent.api_mode = "anthropic_messages"
     agent.base_url = "https://relay.example.com/anthropic"

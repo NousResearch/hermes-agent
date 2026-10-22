@@ -35,6 +35,12 @@ from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from agent.request_dump import (
+    CONTENT_FULL as _DUMP_CONTENT_FULL,
+    redact_request_body as _redact_request_body,
+    request_dump_content_mode as _request_dump_content_mode,
+    request_dump_enabled as _request_dump_enabled,
+)
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -1558,9 +1564,19 @@ def _api_error_debug_info(error: Exception) -> dict[str, Any]:
 def dump_api_request_debug(
     agent, api_kwargs: dict[str, Any], *, reason: str, error: Optional[Exception] = None
 ) -> Optional[Path]:
-    """Dump the request body from api_kwargs (minus transport keys) for debugging provider 4xx failures."""
+    """Dump the request body from api_kwargs (minus transport keys) for debugging provider 4xx failures.
+
+    Gated here rather than at the call sites: three paths write a dump (preflight, non-retryable
+    4xx, retries exhausted) and the two error paths used to write unconditionally. One gate on
+    the writer cannot drift. ``HERMES_DUMP_REQUESTS_CONTENT`` picks the body: ``redacted`` (the
+    default) keeps roles, tool names and sizes; ``full`` keeps the body as sent.
+    """
+    if not _request_dump_enabled():
+        return None
     try:
         body = {k: v for k, v in copy.deepcopy(api_kwargs).items() if v is not None and k != "timeout"}
+        if _request_dump_content_mode() != _DUMP_CONTENT_FULL:
+            body = _redact_request_body(body)
         api_key = None
         # anthropic_messages keeps its SDK client on ``_anthropic_client`` (``client`` is None):
         # read the key from there so the dump does not say "Bearer None" (#24293).

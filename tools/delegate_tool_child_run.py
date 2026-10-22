@@ -33,12 +33,31 @@ def _num(value: Any, default: int = 0) -> int:
 def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
+def _route_report(child: Any) -> Optional[dict[str, Any]]:
+    """What a backend-routed child ran on: the backend's label plus the resolved provider, model, reasoning
+    effort (None = the provider's default) and speed tier, read off the built child. None for default routes."""
+    route = getattr(child, "_delegate_route", None)
+    if not isinstance(route, dict):
+        return None
+    from agent.fast_mode import service_tier_word
+    reasoning = getattr(child, "reasoning_config", None)
+    effort = None
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort") if reasoning.get("enabled", True) else "none"
+    return {**route, "provider": _str_or_none(getattr(child, "provider", None)),
+            "model": _str_or_none(getattr(child, "model", None)), "reasoning_effort": _str_or_none(effort),
+            "service_tier": service_tier_word(getattr(child, "service_tier", None))}
+
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""
-    return {
+    entry = {
         "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
         "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
     }
+    route = _route_report(child)
+    if route is not None:
+        entry["route"] = route
+    return entry
 
 def _append_missed_steer(entry: dict[str, Any], late_steer: Optional[str]) -> None:
     """Record steer text that won the race with the child's failure/timeout."""
@@ -619,9 +638,9 @@ def _build_result_entry(
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
-    _route_label = getattr(child, "_delegate_route_label", None)
-    if isinstance(_route_label, str) and _route_label:
-        entry["route"] = _route_label  # the delegation provider's label (profile name, model-map option)
+    _route = _route_report(child)
+    if _route is not None:
+        entry["route"] = _route
     if status == "failed":
         entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")

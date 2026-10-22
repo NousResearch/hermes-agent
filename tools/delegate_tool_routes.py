@@ -36,6 +36,7 @@ class TaskRoute:
     reasoning_effort: Any = None
     profile_home: Optional[Path] = None
     label: Optional[str] = None
+    reported: bool = False  # a plugin backend chose it: the result reports what the child ran on
 
 
 def _active_provider(config: Mapping[str, Any]) -> DelegationProvider:
@@ -272,7 +273,8 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
                 _check_backend_effort(i, route, config)
             else:
                 route.pop("service_tier", None)  # not a delegation-section key: the default route stays today's
-            routes.append(_route_to_task_route(route, parent_agent, cache))
+            resolved = _route_to_task_route(route, parent_agent, cache)
+            routes.append(replace(resolved, reported=True) if from_backend else resolved)
     except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
         return [], str(exc)
     return routes, None

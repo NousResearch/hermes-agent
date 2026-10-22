@@ -39,6 +39,8 @@ export interface CanonicalGroupMessages {
   sendStopped: string
   sendMaybe: string
   sendSettledElsewhere: string
+  journalLoadFailed: string
+  journalReload: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -82,7 +84,9 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: 'The gateway refused this message. Edit it and send again.',
     sendStopped: 'Stopped before sending. Your message is still here.',
     sendMaybe: 'This message may already have been sent. Retry sends the same message; it will not be posted twice.',
-    sendSettledElsewhere: 'Another Desktop window already finished with this message. Check the conversation before sending it again.'
+    sendSettledElsewhere: 'Another Desktop window already finished with this message. Check the conversation before sending it again.',
+    journalLoadFailed: 'Saved messages couldn’t be loaded. Sending is paused so that a saved message is never sent twice.',
+    journalReload: 'Try loading again'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -124,7 +128,9 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: 'ゲートウェイがこのメッセージを拒否しました。編集してからもう一度送信してください。',
     sendStopped: '送信前に停止しました。メッセージはそのまま残っています。',
     sendMaybe: 'このメッセージは既に送信された可能性があります。再試行しても同じメッセージが二重に投稿されることはありません。',
-    sendSettledElsewhere: 'このメッセージは別の Desktop ウィンドウで処理済みです。もう一度送信する前に会話を確認してください。'
+    sendSettledElsewhere: 'このメッセージは別の Desktop ウィンドウで処理済みです。もう一度送信する前に会話を確認してください。',
+    journalLoadFailed: '保存済みメッセージを読み込めませんでした。保存済みメッセージを重複して送信しないよう、送信を一時停止しています。',
+    journalReload: 'もう一度読み込む'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -166,7 +172,9 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: '网关拒绝了这条消息。请编辑后重新发送。',
     sendStopped: '已在发送前停止。你的消息仍保留在这里。',
     sendMaybe: '这条消息可能已经发送。重试会发送同一条消息，不会重复发布。',
-    sendSettledElsewhere: '另一个 Desktop 窗口已处理完这条消息。再次发送前请先查看对话。'
+    sendSettledElsewhere: '另一个 Desktop 窗口已处理完这条消息。再次发送前请先查看对话。',
+    journalLoadFailed: '无法加载已保存的消息。发送已暂停，以免重复发送已保存的消息。',
+    journalReload: '重新加载'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -208,7 +216,9 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: '閘道拒絕了這則訊息。請編輯後再傳送。',
     sendStopped: '已在傳送前停止。你的訊息仍保留在這裡。',
     sendMaybe: '這則訊息可能已經傳送。重試會傳送同一則訊息，不會重複張貼。',
-    sendSettledElsewhere: '另一個 Desktop 視窗已處理完這則訊息。再次傳送前請先查看對話。'
+    sendSettledElsewhere: '另一個 Desktop 視窗已處理完這則訊息。再次傳送前請先查看對話。',
+    journalLoadFailed: '無法載入已儲存的訊息。傳送已暫停，以免重複傳送已儲存的訊息。',
+    journalReload: '重新載入'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -250,7 +260,9 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: 'رفضت البوابة هذه الرسالة. عدّلها ثم أرسلها مرة أخرى.',
     sendStopped: 'توقّف قبل الإرسال. رسالتك ما زالت هنا.',
     sendMaybe: 'ربما أُرسلت هذه الرسالة بالفعل. تعيد إعادة المحاولة إرسال الرسالة نفسها دون نشرها مرتين.',
-    sendSettledElsewhere: 'انتهت نافذة Desktop أخرى من هذه الرسالة بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.'
+    sendSettledElsewhere: 'انتهت نافذة Desktop أخرى من هذه الرسالة بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.',
+    journalLoadFailed: 'تعذّر تحميل الرسائل المحفوظة. توقف الإرسال مؤقتًا لمنع إرسال رسالة محفوظة مرتين.',
+    journalReload: 'إعادة التحميل'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -295,7 +307,9 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: 'Шлюз отклонил это сообщение. Измените его и отправьте снова.',
     sendStopped: 'Остановлено до отправки. Ваше сообщение сохранено.',
     sendMaybe: 'Сообщение, возможно, уже отправлено. Повтор отправит то же сообщение, дважды оно не появится.',
-    sendSettledElsewhere: 'Другое окно Desktop уже завершило работу с этим сообщением. Проверьте беседу, прежде чем отправлять его снова.'
+    sendSettledElsewhere: 'Другое окно Desktop уже завершило работу с этим сообщением. Проверьте беседу, прежде чем отправлять его снова.',
+    journalLoadFailed: 'Не удалось загрузить сохранённые сообщения. Отправка приостановлена, чтобы не отправить сохранённое сообщение дважды.',
+    journalReload: 'Загрузить ещё раз'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -339,7 +353,9 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: 'La passerelle a refusé ce message. Modifiez-le puis renvoyez-le.',
     sendStopped: 'Arrêté avant l’envoi. Votre message est toujours là.',
     sendMaybe: 'Ce message a peut-être déjà été envoyé. Réessayer renvoie le même message, sans le publier deux fois.',
-    sendSettledElsewhere: 'Une autre fenêtre Desktop a déjà traité ce message. Vérifiez la conversation avant de le renvoyer.'
+    sendSettledElsewhere: 'Une autre fenêtre Desktop a déjà traité ce message. Vérifiez la conversation avant de le renvoyer.',
+    journalLoadFailed: 'Impossible de charger les messages enregistrés. L’envoi est suspendu pour éviter d’envoyer deux fois un message enregistré.',
+    journalReload: 'Réessayer le chargement'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -384,7 +400,9 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: 'Das Gateway hat diese Nachricht abgelehnt. Bearbeiten Sie sie und senden Sie sie erneut.',
     sendStopped: 'Vor dem Senden gestoppt. Ihre Nachricht ist noch da.',
     sendMaybe: 'Diese Nachricht wurde möglicherweise schon gesendet. Erneut versuchen sendet dieselbe Nachricht, ohne sie doppelt zu posten.',
-    sendSettledElsewhere: 'Ein anderes Desktop-Fenster hat diese Nachricht bereits abgeschlossen. Prüfen Sie die Unterhaltung, bevor Sie sie erneut senden.'
+    sendSettledElsewhere: 'Ein anderes Desktop-Fenster hat diese Nachricht bereits abgeschlossen. Prüfen Sie die Unterhaltung, bevor Sie sie erneut senden.',
+    journalLoadFailed: 'Gespeicherte Nachrichten konnten nicht geladen werden. Das Senden ist pausiert, damit eine gespeicherte Nachricht nicht doppelt gesendet wird.',
+    journalReload: 'Erneut laden'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -428,6 +446,8 @@ export const CANONICAL_GROUP_LOCALES = {
     sendRefused: 'La pasarela rechazó este mensaje. Edítalo y envíalo de nuevo.',
     sendStopped: 'Se detuvo antes de enviar. Tu mensaje sigue aquí.',
     sendMaybe: 'Es posible que este mensaje ya se haya enviado. Reintentar envía el mismo mensaje sin publicarlo dos veces.',
-    sendSettledElsewhere: 'Otra ventana de Desktop ya terminó con este mensaje. Revisa la conversación antes de volver a enviarlo.'
+    sendSettledElsewhere: 'Otra ventana de Desktop ya terminó con este mensaje. Revisa la conversación antes de volver a enviarlo.',
+    journalLoadFailed: 'No se pudieron cargar los mensajes guardados. El envío está en pausa para evitar enviar un mensaje guardado dos veces.',
+    journalReload: 'Volver a cargar'
   }
 } satisfies Record<string, CanonicalGroupMessages>

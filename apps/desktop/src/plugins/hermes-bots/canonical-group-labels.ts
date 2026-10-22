@@ -16,6 +16,7 @@ export function useCanonicalGroupLabels() {
     send: t.common.send,
     stop: t.composer.stop,
     discard: t.composer.queueLostDiscard,
+    details: t.notifications.details,
     download: t.fileMenu.download,
     rename: t.fileMenu.renameTitle,
     renameLabel: t.fileMenu.renameLabel,

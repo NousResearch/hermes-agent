@@ -236,6 +236,21 @@ def warm_environment_probe_async() -> None:
     _ensure_probe_started()
 
 
+def warm_environment_probe_at_boot() -> None:
+    """Background-start the probe when a long-lived backend boots (gateway, TUI, desktop/dashboard),
+    so the first chat's prompt build finds it cached instead of waiting on it. Honours
+    ``agent.environment_probe: false``. Never raises: the first prompt build still probes lazily."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        agent_cfg = load_config_readonly().get("agent")
+        if isinstance(agent_cfg, dict) and not agent_cfg.get("environment_probe", True):
+            return
+        warm_environment_probe_async()
+    except Exception:  # health: allow BLE001 -- a boot warm-up that fails leaves the lazy first-prompt probe
+        logger.debug("early environment probe did not start", exc_info=True)
+
+
 def _reset_cache_for_tests() -> None:
     """Test helper — clear the cache between probe scenarios."""
     global _CACHED_LINE, _PROBE_THREAD, _PROBE_GEN, _WAIT_ALREADY_TIMED_OUT

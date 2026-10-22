@@ -102,6 +102,35 @@ def test_an_expired_code_yields_timed_out_and_keeps_the_enriched_detail(portal):
     assert _auth_bytes() == before
 
 
+def test_an_expired_token_answer_yields_timed_out(portal):
+    _seed_free_tier()
+    portal.token_error = "expired_token"
+
+    state = _drain()[-1]
+
+    assert state.kind == "timed_out" and state.copy == anon_auth.UPGRADE_TIMED_OUT
+    assert portal.token_grants == 0
+
+
+def test_the_portal_override_is_read_inside_the_profile_scope(portal, free_account, monkeypatch):
+    in_scope = []
+
+    @contextlib.contextmanager
+    def _scope():
+        in_scope.append(True)
+        try:
+            yield None
+        finally:
+            in_scope.pop()
+
+    reads = []
+    real_portal = anon_auth._portal_base_url
+    monkeypatch.setattr(anon_auth, "_portal_base_url", lambda: (reads.append(bool(in_scope)), real_portal())[1])
+
+    assert _drain(scope=_scope)[-1].kind == "completed"
+    assert reads == [True]
+
+
 def test_a_transport_error_yields_failed_without_leaking_the_detail_into_chat_copy(portal, monkeypatch):
     _seed_free_tier()
     before = _auth_bytes()

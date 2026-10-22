@@ -45,6 +45,7 @@ class FakePortal:
         self.user_code = "ABCD-EFGH"
         self.expires_in = 600
         self.token_pending = False        # answer authorization_pending until flipped
+        self.token_error = ""             # an RFC 8628 error code the token endpoint answers with
         self.on_token = None              # called when the token grant is issued
         self.token_grants = 0
         self.token_polls = 0
@@ -80,6 +81,8 @@ class FakePortal:
             if form.get("device_code") != self.device_code:
                 return httpx.Response(400, json={"error": "invalid_grant"})
             self.token_polls += 1
+            if self.token_error:
+                return httpx.Response(400, json={"error": self.token_error})
             if self.token_pending:
                 return httpx.Response(400, json={"error": "authorization_pending"})
             self.token_grants += 1

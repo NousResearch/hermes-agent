@@ -354,20 +354,117 @@ def _is_hermes_profiles_root(profiles_dir: Path) -> bool:
         return False
 
 
+# Entries of the real root's ``profiles/`` that resolve outside that root (a symlink or Windows junction,
+# or ``profiles/`` itself linked into another tree), memoized as (``<root>/profiles`` as configured, its
+# mtime_ns, the root normcased as configured and resolved, {normcased target: entry under the resolved
+# root, or None for a target two entries share}, the entries whose target was offline). A rename, delete
+# or new link changes that mtime; an offline target is re-checked on every use and remapped once it is
+# back, wherever it then resolves.
+_PROFILE_LINKS: tuple[str, int, tuple[str, str], dict[str, Path | None], tuple[str, ...]] | None = None
+
+
+def _path_holds(parent: str, child: str) -> bool:
+    return child == parent or child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def _profile_links(*, refresh: bool = False) -> dict[str, Path | None]:
+    global _PROFILE_LINKS
+    root = get_default_hermes_root()
+    profiles = root / "profiles"
+    memo = _PROFILE_LINKS
+    try:
+        stamp = os.stat(profiles).st_mtime_ns
+        if (not refresh and memo is not None and memo[:2] == (str(profiles), stamp)
+                and not any(os.path.exists(entry) for entry in memo[4])):
+            return memo[3]
+        names = os.listdir(profiles)
+    except OSError:
+        return {}
+    real_root = os.path.realpath(root)
+    roots = (os.path.normcase(str(root)), os.path.normcase(real_root))
+    links: dict[str, Path | None] = {}
+    offline: list[str] = []
+    for name in names:
+        entry = os.path.join(real_root, "profiles", name)
+        if name.startswith(".") or os.path.isfile(entry):
+            continue
+        target = os.path.normcase(os.path.realpath(entry))
+        # Inside the root (a plain profile, a link to another profile's folder) or around it: the path
+        # shape already places it, so it is never an alias.
+        if _path_holds(roots[1], target) or _path_holds(target, roots[1]):
+            continue
+        if not os.path.exists(entry):
+            offline.append(entry)
+        # Two entries for one folder stay as a blocker: neither, nor a link enclosing it, names it.
+        links[target] = None if target in links else Path(entry)
+    _PROFILE_LINKS = (str(profiles), stamp, roots, links, tuple(offline))
+    return links
+
+
+def _memo_roots() -> tuple[str, ...]:
+    """The real root (normcased, as configured and resolved) as last memoized, not revalidated: callers
+    only use it to answer as the path shape alone would, so a stale memo costs a lookup, never a name."""
+    return _PROFILE_LINKS[2] if _PROFILE_LINKS is not None else ()
+
+
+def _is_real_profiles_dir(profiles_dir: Path) -> bool:
+    """Whether *profiles_dir* is the real root's own ``profiles/``, either spelling (a plain profile: no stat)."""
+    key = os.path.normcase(str(profiles_dir))
+    for refresh in (False, True):
+        if refresh:
+            _profile_links()
+        if any(key == os.path.join(root, "profiles") for root in _memo_roots()):
+            return True
+    return False
+
+
+def _linked_profile_home(path: Path) -> Path | None:
+    """The real root's linked ``profiles/<name>`` entry whose target holds *path* (spelled under the
+    resolved root), or None when no entry holds it or more than one does (nested targets, or one folder
+    two entries link)."""
+    spelled = os.path.normcase(str(path))
+
+    def in_root() -> bool:  # link targets lie outside the root, so its own tree needs no resolve
+        return any(_path_holds(root, spelled) for root in _memo_roots())
+    if in_root():
+        return None
+    links = _profile_links()
+    if not links or in_root():
+        return None
+    # A served home or a client's canonical home is already resolved; resolve any other spelling.
+    key = spelled if any(_path_holds(t, spelled) for t in links) else os.path.normcase(os.path.realpath(path))
+    for _ in range(2):
+        owners = [(target, entry) for target, entry in links.items() if _path_holds(target, key)]
+        if len(owners) != 1 or owners[0][1] is None:
+            return None
+        target, entry = owners[0]
+        if os.path.normcase(os.path.realpath(entry)) == target:
+            return entry
+        links = _profile_links(refresh=True)  # renamed or deleted within one mtime tick
+    return None
+
+
 def named_profile_home(path: str | Path) -> Path | None:
     """Return ``<root>/profiles/<name>`` when *path* is that home or under it.
 
     Requires ``<name>`` not to start with ``.`` and the ``profiles`` parent to be a real Hermes home;
     a default home whose path merely contains a ``profiles`` segment is not a named profile.
+
+    A linked profile (its ``profiles/<name>`` entry a symlink or Windows junction, or ``profiles/``
+    itself a link) resolves outside the root: a path reached through the link answers with that
+    entry, never with the target folder's own name or parent.
     """
     current = Path(path)
     for candidate in (current, *current.parents):
         if (candidate.parent.name == "profiles" and not candidate.name.startswith(".")
                 and _is_hermes_profiles_root(candidate.parent)):
-            return candidate
-        if candidate.name == ".hermes":  # default home: a coincidental profiles/ ancestor is not a root
-            return None
-    return None
+            if _is_real_profiles_dir(candidate.parent):
+                return candidate
+            return _linked_profile_home(current) or candidate
+        if candidate.name == ".hermes":  # a home: a coincidental profiles/ ancestor above it is not a root
+            break
+    # Only a link places it now; the real root's own tree is answered from the memo, with no stat.
+    return _linked_profile_home(current)
 
 
 def profile_name_for_home(path: str | Path | None) -> str | None:

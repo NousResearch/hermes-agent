@@ -12,10 +12,11 @@ tool calls or reasoning.
 """
 
 import logging
+import json
 import time
 import weakref
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value
@@ -48,7 +49,8 @@ from tools.delegate_tool_registry import (
     steer_subagent,
 )
 from tools.delegate_tool_tasks import (
-    _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
+    _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _coerce_task_skills,
+    _normalize_skills_argument, _normalize_task_images, _normalize_task_list,
 )
 from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
@@ -118,6 +120,172 @@ _STALE_RESULT_GRACE_SECONDS = 2.0
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+def _merge_skills(
+    top_level: Optional[list[str]],
+    per_task: Optional[list[str]],
+) -> Optional[list[str]]:
+    """Merge top-level and per-task skills lists.
+
+    Per-task skills are placed first (preserving order), followed by any
+    top-level skills not already present.  This lets a batch task extend
+    the parent's skill set.  Returns None when both inputs are empty/None,
+    so _load_delegate_skills can skip work entirely.
+    """
+    if not per_task and not top_level:
+        return None
+    seen: set[str] = set()
+    merged: list[str] = []
+    for name in (per_task or []):
+        if name not in seen:
+            seen.add(name)
+            merged.append(name)
+    for name in (top_level or []):
+        if name not in seen:
+            seen.add(name)
+            merged.append(name)
+    return merged or None
+
+
+def _load_delegate_skills(skills: Optional[list[str]]) -> str:
+    """Load skill content for injection into a child agent's system prompt.
+
+    Reuses the **identical** cron resolution pipeline (``_load_cron_skill_parts``
+    in cron/scheduler_prompt.py) so delegate_task subagents get the same safety
+    guarantees as cron jobs:
+
+    * Bundle resolution (``resolve_bundle_command_key``) — slash-command
+      bundles expand their members and shadow same-slug skills.
+    * Name normalization (``normalize_skill_lookup_name``) — handles
+      ``plugin:skill`` qualified names and trusted absolute paths.
+    * ``skill_view`` + ``bump_use`` — content loading and usage tracking.
+    * Ambiguity + skill-config handling (``ambiguous_skill_label``,
+      ``_inject_skill_config``) — same-name collisions and resolved
+      ``metadata.hermes.config`` values behave exactly as in cron.
+    * Runtime security scan (``_scan_cron_skill_assembled``) — sanitizes
+      invisible unicode and blocks injection directives (closes the
+      #3968 gap for subagent prompts).
+
+    Returns the assembled (and scanned) skill content string, or an
+    empty string if no skills were provided or all failed to load.
+    """
+    if not skills:
+        return ""
+
+    from tools.skills_tool import skill_view
+    from tools.skill_usage import bump_use
+    from agent.skill_bundles import (
+        build_bundle_invocation_message,
+        resolve_bundle_command_key,
+    )
+    from agent.skill_commands import _inject_skill_config, ambiguous_skill_label
+    from agent.skill_utils import normalize_skill_lookup_name
+    from tools.cronjob_prompt_scan import _scan_cron_skill_assembled
+
+    parts: list[str] = []
+    skipped: list[str] = []
+
+    for skill_name in skills:
+        # Mirror cron's bundle resolution so `skills: ["my-bundle"]`
+        # expands bundle members instead of being treated as a missing skill.
+        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+        if bundle_key:
+            bundle_payload = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction="",
+                task_id=None,
+            )
+            if bundle_payload:
+                if parts:
+                    parts.append("")
+                parts.append(bundle_payload[0])
+            else:
+                logger.warning(
+                    "delegate_task: bundle '%s' could not load any skills, skipping",
+                    skill_name,
+                )
+                skipped.append(skill_name)
+            continue
+
+        try:
+            loaded = json.loads(
+                skill_view(normalize_skill_lookup_name(skill_name))
+            )
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                "delegate_task: skill '%s' returned invalid JSON, skipping",
+                skill_name,
+            )
+            skipped.append(skill_name)
+            continue
+
+        if ambiguous := ambiguous_skill_label(skill_name, loaded):
+            logger.warning("delegate_task: %s — skipping", ambiguous)
+            skipped.append(ambiguous)
+            continue
+
+        if not loaded.get("success"):
+            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
+            logger.warning(
+                "delegate_task: skill '%s' not found, skipping — %s",
+                skill_name,
+                error,
+            )
+            skipped.append(skill_name)
+            continue
+
+        # Bump usage so the curator sees this skill as actively used.
+        try:
+            bump_use(skill_name)
+        except Exception:
+            logger.debug(
+                "delegate_task: failed to bump skill usage for '%s'",
+                skill_name,
+                exc_info=True,
+            )
+
+        content = str(loaded.get("content") or "").strip()
+        if parts:
+            parts.append("")
+        parts.extend([
+            f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+            "",
+            content,
+        ])
+        _inject_skill_config(loaded, parts)
+
+    if skipped:
+        notice = (
+            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
+            f"and were skipped: {', '.join(skipped)}. "
+            f"Start your response with a brief notice so the user is aware, e.g.: "
+            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
+        )
+        parts.insert(0, notice)
+
+    assembled = "\n".join(parts)
+
+    # Runtime security scan — same as cron's _scan_assembled_cron_prompt.
+    # Sanitizes invisible unicode and blocks injection directives in
+    # vetted skill content (closes #3968 for subagent prompts).
+    cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+    if scan_error:
+        logger.warning(
+            "delegate_task: assembled skill content blocked by injection scanner — %s",
+            scan_error,
+        )
+        # Return a notice so the child agent can surface the block to the
+        # user, rather than silently degrading.  Matches the skipped-skill
+        # notice pattern above for consistent UX.
+        blocked_names = ", ".join(skills)
+        return (
+            f"[IMPORTANT: Skill content for '{blocked_names}' was blocked by "
+            f"the security scanner and omitted. Start your response with a "
+            f"brief notice so the user is aware, e.g.: "
+            f"'⚠️ Skill content blocked by security scanner: {blocked_names}']"
+        )
+    return cleaned
 
 
 def _open_child_session_db(parent_agent) -> Any:
@@ -224,6 +392,10 @@ def _build_child_agent(
     routing_cfg: Optional[dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    # Skill names to auto-load into the child's system prompt before execution
+    # (delegate_task `skills` parameter, merged per-task with top-level). Each
+    # skill's content is resolved via the cron pipeline and injected verbatim.
+    skills: Optional[list[str]] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -246,9 +418,10 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    skills_content = _load_delegate_skills(skills)
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+        max_spawn_depth=max_spawn, child_depth=child_depth, skills_content=skills_content,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -425,6 +598,7 @@ def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
+    task_skills: Optional[list[Optional[list[str]]]] = None,
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -442,7 +616,10 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                # Merged per-task + top-level skills (merge happened in delegate_task).
+                skills=(task_skills[i] if task_skills and i < len(task_skills) else None),
+                **overrides,
             )
         except ValueError as exc:
             # An owner refusal can land mid-batch: the siblings built so far hold reservations.
@@ -498,12 +675,18 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[dict[str, Any]] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, skills: Optional[list[str]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
     (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
-    dispatch handle when running in the background."""
+    dispatch handle when running in the background.
+
+    The ``skills`` parameter auto-loads named skills into each child's system
+    prompt before execution, mirroring the cron job skills parameter; content is
+    resolved through the same pipeline (bundle resolution, name normalization,
+    runtime security scan). Per-task ``skills`` are merged with (and take
+    precedence over) the top-level list."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -559,8 +742,17 @@ def delegate_task(
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
+    top_skills: Optional[list[str]] = None
+    per_task_skills: list[Optional[list[str]]] = []
+    if not err:
+        top_skills, err = _normalize_skills_argument(skills, "skills")
+    if not err and task_list:
+        per_task_skills, err = _coerce_task_skills(task_list)
     if err:
         return tool_error(err)
+    # Per-task skills first, then top-level ones not already present (dedup,
+    # order preserved); None entries mean "no skills for this child".
+    task_skills = [_merge_skills(top_skills, ts) for ts in per_task_skills]
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
@@ -591,13 +783,14 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        task_skills=task_skills,
     )
     if err:
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
-        live_home=_live_home,
+        live_home=_live_home, task_skills=task_skills,
     )
     return _run_batch(batch, background)
 
@@ -755,6 +948,13 @@ DELEGATE_TASK_SCHEMA = {
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
+                        "skills": _p(
+                            "array",
+                            "Per-task skills to load into this child's prompt before execution. Merged with top-level "
+                            "'skills' (per-task takes precedence; duplicates removed). Each skill's content is loaded "
+                            "via the same resolution pipeline as cron jobs.",
+                            items={"type": "string"},
+                        ),
                     },
                     "required": ["goal"],
                 },
@@ -777,6 +977,15 @@ DELEGATE_TASK_SCHEMA = {
                 "string",
                 "For action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
+            ),
+            "skills": _p(
+                "array",
+                "Optional ordered list of skill names to load into each child agent's prompt before execution, "
+                "mirroring the cron job 'skills' parameter. The child receives each skill's full content as part "
+                "of its system prompt via the same resolution pipeline (bundle resolution, name normalization, "
+                "runtime security scan). Per-task 'skills' in the tasks array are merged with this list (per-task "
+                "takes precedence, duplicates removed). Pass an empty array to explicitly opt out of skill loading.",
+                items={"type": "string"},
             ),
         },
         "required": [],
@@ -813,7 +1022,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
+        parent_agent=kw.get("parent_agent"), skills=args.get("skills"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

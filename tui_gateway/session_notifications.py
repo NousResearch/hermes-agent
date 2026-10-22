@@ -292,6 +292,42 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+def _goal_is_parked(state) -> bool:
+    """An active /goal holding a wait barrier (pid, process session or deadline). Read-only: unlike
+    ``GoalManager.is_waiting`` it never clears a satisfied barrier."""
+    return bool(state is not None and state.status == "active" and (
+        state.waiting_on_pid is not None or state.waiting_on_session is not None or state.waiting_until))
+
+
+def _maybe_resume_tui_parked_goal(sid: str, session: dict) -> None:
+    """Resume a parked /goal in an idle TUI/Desktop/dashboard session once its wait barrier lifts.
+
+    The barrier is otherwise re-checked only after a turn (``evaluate_after_turn``): with nothing else
+    arriving the session stayed parked indefinitely, the goal still shown active. Mirrors the classic
+    CLI's ``_maybe_resume_parked_goal`` idle hook. Barrier first, claim second: a turn that wins the
+    claim re-judges the goal in its own post-turn hook, so nothing is lost when the claim fails.
+    """
+    from hermes_cli.goals import GoalManager
+    if not (sid_key := session.get("session_key") or ""):
+        return
+    mgr = GoalManager(session_id=sid_key)
+    if not _goal_is_parked(mgr.state) or _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # not parked, or the gateway owns the routed conversation
+    if mgr.is_waiting():
+        return  # barrier still holds (is_waiting also applies the pid/session age cap)
+    if not (prompt := mgr.next_continuation_prompt()) or not _notif_claim_turn(session):
+        return  # busy: the live turn's post-turn judge picks the goal up
+    started = False
+    try:
+        _emit("status.update", sid, {"kind": "goal", "text": "▶ Goal barrier lifted — resuming."})
+        _emit("message.start", sid)
+        started = bool(_run_prompt_submit(f"__goal__{int(time.time() * 1000)}", sid, session, prompt))
+    except Exception:  # health: allow BLE001 -- dispatch boundary: release the claim, keep the poller alive
+        logger.warning("parked goal resume failed for %s", sid_key, exc_info=True)
+    if not started:
+        _notif_release_turn(session)
+
+
 def _loop_route_is_gateway_chat(state) -> bool:
     """A /loop set from a messaging chat carries the gateway's ``route`` (platform + chat_id); its wakeup scanner
     (``gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
@@ -309,9 +345,14 @@ def _session_owns_live_wakeup_schedule(session: dict) -> bool:
     if not (sid_key := session.get("session_key") or ""):
         return False
     try:
+        from hermes_cli.goals import GoalManager
         from hermes_cli.heartbeat import HeartbeatManager
         from hermes_cli.loops import LoopManager
         with _session_profile_runtime_scope(session, hydrate_secrets=False):
+            # A parked /goal resumes only through this poller; a deadline is finite and pid/session
+            # barriers age out (_MAX_BARRIER_WAIT_S), so the pin is bounded like the others.
+            if _goal_is_parked(GoalManager(session_id=sid_key).state) and not _notif_gateway_owns_heartbeat(session, sid_key):
+                return True
             loop = LoopManager(session_id=sid_key)
             if loop.is_active() and not _loop_route_is_gateway_chat(loop.state):
                 return True
@@ -745,11 +786,12 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         now = time.monotonic()
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
         async_delegation.maybe_sweep_orphaned_completions(queue)
-        # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
+        # Parked /goal, /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
-            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+            for what, fire in (("goal resume", _maybe_resume_tui_parked_goal), ("loop wakeup", _maybe_fire_tui_loop_tick),
+                               ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
                 try:
                     fire(sid, session)
                 except Exception as tick_exc:

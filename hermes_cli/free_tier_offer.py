@@ -59,13 +59,13 @@ def _transaction(kind: str) -> Iterator[tuple[dict[str, Any], Any]]:
 
 
 def _eligible(kind: str) -> bool:
-    """``trial``: the welcome trial carries inference. ``connector``: a guest that connected an app
-    and has no trial, which would make its own offer."""
+    """``trial``: the welcome trial carries inference. ``connector``: a guest that connected an app,
+    guests are still allowed (``nous.guest``), and no trial makes its own offer."""
     from hermes_cli import anon_auth
     if kind == TRIAL:
         return anon_auth.free_inference_active()
     state = anon_auth.current_nous_state()
-    return (anon_auth.is_guest_state(state) and state.get(CONNECTED_APP_FLAG) is True
+    return (anon_auth.is_guest_state(state) and state.get(CONNECTED_APP_FLAG) is True and anon_auth.guest_allowed()
             and not anon_auth.free_inference_active(state))
 
 
@@ -105,6 +105,15 @@ def note_app_connected() -> None:
             record_task_done(CONNECTOR)
     except Exception:
         logger.debug("connector sign-in offer record failed", exc_info=True)
+
+
+def note_connected_apps_seen() -> None:
+    """A status read found a connected app. A connect by link (messaging, one-shot runs) never passes
+    the operation watcher, so its first sighting on a guest counts as the connect."""
+    from hermes_cli import anon_auth
+    state = anon_auth.current_nous_state()
+    if anon_auth.is_guest_state(state) and not state.get(CONNECTED_APP_FLAG):
+        note_app_connected()
 
 
 def offer_due_in(kind: str = TRIAL) -> Optional[int]:

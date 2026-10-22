@@ -110,6 +110,22 @@ describe('sign-in offer after a finished task', () => {
     expect($freeTierSignIn.get()).toEqual({ kind: 'trial', status: 'offer' })
   })
 
+  it('an older backend that rejects unknown params still serves the trial offer', async () => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (params !== undefined) {
+        throw new Error('unknown param')
+      }
+
+      return method === 'free_tier.claim_nudge' ? { claimed: true } : status(null)
+      // SAFETY: the code under test asks only these two methods and reads exactly these shapes back.
+    }) as ReturnType<typeof vi.fn> & FreeTierRequester
+
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect($freeTierSignIn.get()).toEqual({ kind: 'trial', status: 'offer' })
+  })
+
   it('a claim another window won leaves the dialog closed', async () => {
     const requestGateway = gateway({ claimed: false, statuses: [status(null)] })
 

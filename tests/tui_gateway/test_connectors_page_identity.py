@@ -7,7 +7,7 @@ Contracts, for a user with no Nous identity (the fake account service in
 - ``hermes connectors list`` and the agent's ``manage_connections`` status each create exactly one
   identity and make the gateway list call, as before
 - the first connect creates one identity, arms the connector sign-in offer, and the page then reads
-  the signed-in routes
+  the signed-in routes; a connect by link that a later status read sees connected arms it too
 """
 
 from __future__ import annotations
@@ -59,10 +59,14 @@ def connector_portal(monkeypatch):
     return requests
 
 
+class _Lists(list):
+    connected = False
+
+
 @pytest.fixture
 def gateway(monkeypatch):
-    """The connector gateway: every list call, and an instant connect."""
-    lists = []
+    """The connector gateway: every list call, and an instant connect. ``connected`` is what it lists."""
+    lists = _Lists()
 
     class Gateway:
         def __init__(self, **_):
@@ -70,7 +74,7 @@ def gateway(monkeypatch):
 
         def list_connectors(self, *, timeout=None):
             lists.append(1)
-            return [{"connector": "notion", "enabled": True, "connected": False}]
+            return [{"connector": "notion", "enabled": True, "connected": lists.connected}]
 
         def connections(self, names, **_):
             return {"results": [{"connector": name, "status": "active", "connection_id": "c1"} for name in names]}
@@ -128,4 +132,19 @@ def test_first_connect_creates_one_identity_then_the_page_reads_signed_in(
     assert _result("connectors.list", ACCOUNT)["connectors"][0]["connector"] == "notion"
     _result("connectors.catalog")
     assert connector_portal == [("/api/v1/connectors/catalog", True)]
+    assert portal.creates() == 1
+
+
+def test_a_connect_by_link_seen_by_a_status_read_arms_the_connector_offer(portal, gateway, monkeypatch):
+    """Messaging and one-shot runs connect by link and check with status; no operation watcher runs."""
+    from tools.connectors.gateway.config import connectors_available
+    from tools.connectors.tool import manage_connections
+
+    monkeypatch.setattr(free_tier_offer, "_clock", lambda: 1_000_000.0)
+    gateway.connected = True
+
+    for _ in range(2):
+        manage_connections({"action": "status"}, connectors_available=connectors_available)
+
+    assert free_tier_offer.offer_due_in(free_tier_offer.CONNECTOR) == free_tier_offer.OFFER_DELAY_S
     assert portal.creates() == 1

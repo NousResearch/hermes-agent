@@ -2,6 +2,7 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+import copy
 import hashlib
 import logging
 import os
@@ -64,6 +65,27 @@ def yaml_load(content: str):
     return _yaml_load_fn(content)
 
 
+# Skill discovery and the slash-command scan each parse every SKILL.md frontmatter, again after
+# each cache expiry, and the pure-Python parser (the only one on 3.14 without ruamel.yaml.clib)
+# takes milliseconds per document. Keyed by the YAML text itself, an entry can never be stale.
+_FRONTMATTER_CACHE: dict[str, Any] = {}
+_FRONTMATTER_CACHE_MAX = 4096
+_frontmatter_cache_lock = threading.Lock()
+
+
+def _cached_frontmatter_yaml(yaml_content: str) -> Any:
+    """``yaml_load(yaml_content)``, reusing an earlier parse of the same text; returns a fresh copy."""
+    with _frontmatter_cache_lock:
+        cached = _FRONTMATTER_CACHE.get(yaml_content, _FRONTMATTER_CACHE)
+    if cached is _FRONTMATTER_CACHE:
+        cached = yaml_load(yaml_content)
+        with _frontmatter_cache_lock:
+            if len(_FRONTMATTER_CACHE) >= _FRONTMATTER_CACHE_MAX:
+                _FRONTMATTER_CACHE.pop(next(iter(_FRONTMATTER_CACHE)))
+            _FRONTMATTER_CACHE[yaml_content] = cached
+    return copy.deepcopy(cached)
+
+
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from markdown; returns (frontmatter_dict, body).
     Malformed YAML falls back to key:value line splitting. A leading UTF-8 BOM
@@ -76,7 +98,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     body = content[end_match.end() + 3 :]
     frontmatter: dict[str, Any] = {}
     try:
-        parsed = yaml_load(yaml_content)
+        parsed = _cached_frontmatter_yaml(yaml_content)
         if isinstance(parsed, dict):
             frontmatter = parsed
     except Exception:

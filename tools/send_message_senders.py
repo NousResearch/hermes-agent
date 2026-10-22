@@ -256,6 +256,20 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
+def _telegram_notifications_kwargs():
+    """``{"disable_notification": True}`` under the default "important" notifications mode —
+    the standalone-sender mirror of the gateway adapter's ``_notification_kwargs`` so
+    ``hermes send`` / the ``send_message`` tool honour ``display.platforms.telegram.notifications``
+    instead of always buzzing (#131924). Mode resolution is the adapter's own (env then
+    config.yaml); an unreadable mode fails over to "important", matching the adapter."""
+    try:
+        from plugins.platforms.telegram.adapter import _resolve_notifications_mode
+        mode = _resolve_notifications_mode()
+    except Exception:
+        mode = "important"
+    return {} if mode == "all" else {"disable_notification": True}
+
+
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
     try:
@@ -268,8 +282,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
+        notify_kwargs = _telegram_notifications_kwargs()
         # disable_web_page_preview is only valid for send_message, not media sends.
-        text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
+        text_kwargs = {**thread_kwargs, **notify_kwargs,
+                       **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
@@ -296,7 +312,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 last_msg = await _telegram_send_one_media(
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
-                    has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
+                    has_html=_has_html, thread_kwargs={**thread_kwargs, **notify_kwargs}, force_document=force_document)
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
                 logger.error(warnings[-1])

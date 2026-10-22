@@ -1,0 +1,18 @@
+name: unicode-ref
+repo: https://github.com/olric3015/hermes-plugins
+sha: d33c8c9379ee8d90ef4276ddc61073b28fa32abe
+subdir: unicode-ref
+description: "@unicode: context references that spell text out character by character for the model: @unicode:\"text\" attaches a table of every character of the quoted text (code point, Unicode name, category) with notes on what does not show on screen: invisible characters and their positions, text-direction controls, spaces other than the ordinary one, Unicode tag characters (decoded), words that mix Latin letters with lookalike Cyrillic, Greek or fullwidth ones, and private-use or unassigned code points; @unicode:U+200B describes up to 20 code points (name, category, UTF-8 bytes, decomposition); the TUI and Desktop composer suggest characters by name. Disclosure — reads only the text of the reference itself, using Python's unicodedata; no network, no files read or written, no subprocess, no credentials; register() only adds the @unicode: reference provider"
+maintainer: olric3015
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/olric3015/hermes-plugins/tree/main/unicode-ref
+version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/d33c8c9379ee8d90ef4276ddc61073b28fa32abe/docs/unicode-ref-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

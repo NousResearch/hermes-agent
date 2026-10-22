@@ -24,7 +24,14 @@ FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers
 # A Bot Chat an earlier build committed frozen follows its profile once a client opens it (``follow_bot_chat``).
 # The marker sits in the policy's own config, so no other receipt changes shape (an older owner restores
 # them all, and reads this chat as frozen), and the creation request, the exact-retry identity, stays as sent.
+# A chat created on the welcome trial's model carries it too (``stage_local_session``), so a provider the user
+# connects later replaces that model.
 FOLLOW_ADOPTED = 'follow_adopted'
+# A Desktop chat its creator's connection declared local (``process_identity.local_desktop_client``): its
+# turns run as work for the local Desktop (``local_desktop_turn``). Owner-set in the policy's own config, so
+# an exact create retry from a socket whose declaration has not landed carries the same creation request,
+# and ``launch_request`` never echoes it.
+LOCAL_DESKTOP_CHAT = 'desktop_local'
 # A launch field's state as a committed session edit left it, in the policy's own config: ``True`` the
 # session chose it (``/reasoning <level>``, a model pick carrying one), ``False`` a reset gave it back to
 # the profile. Either wins over the creation request (the launch identity, never rewritten) and the older
@@ -76,6 +83,31 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
 # pickers hide them (INTERNAL_LISTING_SOURCES).
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
+# ``tool`` and ``oneshot`` stay stored under their own labels so pickers can hide them.
+# Every other creation label is rewritten to ``source='local'`` on peer refresh.
+_KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
+STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
+# Routing labels and the accounting placeholder: never a creating surface.
+_NOT_A_SURFACE = frozenset({None, '', 'local', 'unknown'})
+
+
+def created_surface(label):
+    """``created_source`` for a policy or live label.
+
+    ``local`` and ``unknown`` are not surfaces. A label stored as ``local`` maps
+    through ``SURFACES`` (``gui`` is ``desktop``). Any other label, including
+    ``tool`` and ``oneshot``, is kept as itself: created_source is provenance.
+    """
+    if label in _NOT_A_SURFACE:
+        return None
+    return SURFACES[label] if label in STORED_AS_LOCAL else label
+
+
+# Policy label and agent surface for one conversation, keyed by either name: ``--source gui``
+# and ``--source desktop`` are the same rows. ``tool`` and ``oneshot`` are not aliases of
+# ``cli`` here: they keep their own stored label.
+SURFACE_GROUPS = {name: group for group in (frozenset({label, SURFACES[label]}) for label in STORED_AS_LOCAL)
+                  for name in group}
 
 
 def _refuse(field, detail=None):
@@ -966,6 +998,36 @@ def _valid_client_env(value, kind: type = str):
         kind is str or all(isinstance(item, str) for item in v)) for k, v in env.items())
 
 
+def policy_turn_toolsets(authority, policy, config, session_id):
+    """A local turn's toolsets: the policy's current set, plus ``onboarding`` for an onboarding chat
+    (``agent.onboarding_session.onboarding_chat_toolsets``)."""
+    from agent.onboarding_session import onboarding_chat_toolsets
+    return onboarding_chat_toolsets(list(policy.current_toolsets(config)), getattr(authority, 'db', None), session_id)
+
+
+def local_desktop_turn(runner, source, scope):
+    """*scope* (the profile scope a turn enters), also marked as work for the local Desktop when the
+    turn belongs to a Desktop chat its creator's connection declared local (``stage_local_session``);
+    any other turn gets *scope* untouched. Read from the live policy without raising: a cold policy
+    is restored, or refused, by the turn."""
+    from gateway.config import Platform
+    policy = None
+    if getattr(source, 'platform', None) == Platform.LOCAL:
+        policy = getattr(runner._adapter_for_source(source), 'policies', {}).get(source.chat_id)
+    # The request_json mark: a chat an earlier build created, which stamped it into the creation request.
+    if policy is None or policy.source != 'gui' or not any(
+            json.loads(raw).get(LOCAL_DESKTOP_CHAT) is True for raw in (policy.config_json, policy.request_json)):
+        return scope
+    return _serving_local_desktop_within(scope)
+
+
+@contextmanager
+def _serving_local_desktop_within(scope):
+    from hermes_cli.process_identity import serving_local_desktop
+    with scope, serving_local_desktop(True):
+        yield
+
+
 def policy_for_source(runner, source):
     from gateway.session_local import LocalSessionAdapter
     from gateway.config import Platform
@@ -982,15 +1044,31 @@ def policy_for_source(runner, source):
     return None
 
 
+def workspace_ready(policy) -> bool:
+    """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
+    turn runs in a missing directory."""
+    return Path(policy.cwd).is_dir()
+
+
+def workspace_unavailable_result(policy) -> dict:
+    """A failed, never-run turn for a session whose frozen working directory is gone. Nothing ran
+    and an unchanged resend fails the same way, so the reply names the folder and the way out
+    instead of the generic "something went wrong" apology."""
+    from agent.i18n import t
+    from agent.turn_failure_copy import stamp_failure
+    text = t("gateway.errors.workspace_unavailable", path=policy.cwd)
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": text},
+                         "workspace_unavailable", False)
+
+
 @contextmanager
 def policy_scope(policy, *, authority=None):
     if policy is None:
         yield
         return
-    # Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
-    # turn runs in a missing directory.
-    if not Path(policy.cwd).is_dir():
-        raise RuntimeStoreError('workspace_unavailable')
+    if not workspace_ready(policy):
+        raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)

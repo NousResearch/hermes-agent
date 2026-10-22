@@ -503,9 +503,10 @@ terminal:
 #   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
-# OPTION 4: Singularity/Apptainer container
+# OPTION 4: Singularity/Apptainer container (the official `singularity` plugin)
 # Commands run in a Singularity container (common in HPC environments)
 # Great for: HPC clusters, shared compute environments
+# Install it first: hermes plugins install singularity
 # -----------------------------------------------------------------------------
 # terminal:
 #   backend: "singularity"
@@ -541,7 +542,7 @@ terminal:
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, modal, daytona, container plugin backends -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores
@@ -1497,6 +1498,9 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#       # Public HTTPS origin in front of this listener; MCP servers with
+#       # `events: true` POST event deliveries to <public_url>/webhooks/<route>.
+#       public_url: "https://hermes.example.com"
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
@@ -1632,6 +1636,13 @@ platform_toolsets:
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       expose_client_tools: false # advertise extended sampling.tools capability
 #       log_level: "info"       # audit verbosity
+#
+# MCP events (experimental, webhook delivery) — opt-in per server. Adds the
+# list_event_types / subscribe_event / unsubscribe_event tools; needs
+# platforms.webhook.extra.public_url and a running gateway:
+#   feeds:
+#     url: https://feeds.example.com/mcp
+#     events: true
 
 # =============================================================================
 # Text-to-Speech

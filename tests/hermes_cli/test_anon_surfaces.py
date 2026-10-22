@@ -28,7 +28,7 @@ from hermes_cli import (
 )
 from hermes_cli.auth import _load_auth_store
 from hermes_constants import get_hermes_home
-from tests.hermes_cli.anon_portal import as_local_desktop_backend
+from tests.hermes_cli.anon_portal import as_local_desktop_backend, off_local_desktop
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
 # Words that must never appear on a user-facing free-tier surface.
@@ -212,12 +212,11 @@ def test_the_paid_tool_notice_switches_wording_inside_a_chat():
     ) == nous_account.FREE_TIER_NEEDS_ACCOUNT
 
 
-def test_a_claimed_guest_off_the_desktop_backend_is_not_the_free_tier(isolated_store, monkeypatch, capsys):
-    """On the CLI surface the trial carries no inference: the guest reads as not signed in."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+def test_a_claimed_guest_reads_as_the_free_tier_on_the_cli_too(isolated_store, monkeypatch, capsys):
+    """Once the Desktop claimed the trial, the CLI runs on it as well."""
+    off_local_desktop(monkeypatch)
     _write_auth(_guest_state())
 
     auth_commands.auth_status_command(SimpleNamespace(provider="nous"))
     text = capsys.readouterr().out
-    assert "free tier" not in text.lower() and anon_auth.GUEST_MODEL not in text
+    assert "free tier" in text.lower()

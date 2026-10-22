@@ -108,7 +108,10 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
     runtime = dict(runtime_kwargs)
     current_provider = runtime_kwargs.get('provider') or ''
     same_provider = (result.target_provider or '').strip().lower() == current_provider.strip().lower()
-    if same_provider and not result.resolved_via_alias:
+    # Only a ``model_aliases`` entry with its own ``base_url`` routes away from the session, as switch_model
+    # applied it to this result (``_apply_direct_alias_endpoint``); a built-in shortcut, an endpointless entry
+    # or a process provider's declared id names a model like a plain pick.
+    if same_provider and not result.alias_endpoint_applied:
         # A plain model pick on the session's provider: the explicit provider re-resolved that provider's
         # default endpoint and key, and the session already has both (a mirror, a proxy, a pool), so keep
         # them. The wire follows the target only where the provider picks it per model (Copilot, Nous

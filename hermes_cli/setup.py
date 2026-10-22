@@ -511,7 +511,7 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 _SEND_CONSENT_EXPLAINER = (
-    "", "Sending uploads each daily package to the Nous telemetry",
+    "", "Sharing uploads each daily package to the Nous telemetry",
     "service. Packages carry your profile-scoped install ID, a",
     "stable random UUID that identifies this profile across days",
     "(it contains no personal information and is reset by deleting",
@@ -519,13 +519,13 @@ _SEND_CONSENT_EXPLAINER = (
     "collection period falls inside a recorded consent window are",
     "ever sent. Apart from the fresh-install note (noted on this",
     "machine and counted only once you opt in), data from before",
-    "you opt in, or from any gap while sending was off, stays on",
-    "this machine. Sending can be turned off again at any time.",
+    "you opt in is never sent. Sharing can be turned off again at",
+    "any time.",
 )
 
 
 def setup_telemetry(config: dict):
-    """Configure the local shared-metrics subscriber and optional sending."""
+    """Turn shared metrics on (collect and send to Nous) or off: one answer sets both keys."""
     print_header("Shared Metrics")
     _info("Shared metrics contain only bounded counters: activity, session length,",
           "outcomes, error classes (with a fixed-list reason when a memory write or",
@@ -539,27 +539,21 @@ def setup_telemetry(config: dict):
           "settings are used or switched off, provider setup outcomes), and coarse",
           "machine facts (RAM range, GPU type, version age and channel, updates behind,",
           "local model server yes/no). Never prompts, files, paths, setting values or",
-          "error text.",
-          "Collection is local. Sending them to Nous is a separate opt-in.")
+          "error text.")
+    _info(*_SEND_CONSENT_EXPLAINER)
     # The answer is written to config.yaml here, not by the caller's later save: that save strips
     # values equal to the defaults, so a "no" would vanish and every surface would ask again.
     from hermes_cli.observability.shared_metrics_consent import save_consent
 
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
-    if not prompt_yes_no("Enable local shared metrics?", default=shared_metrics.get("enabled") is True):
-        print_info("Local shared metrics disabled.")
-        # Sending cannot outlive collection; turning collection off withdraws send consent too.
-        if shared_metrics.get("send") is True:
-            print_info("Sending shared metrics disabled as well.")
-        save_consent(False, False, config)
-        return
-    print_success("Local shared metrics enabled.")
-    _info(*_SEND_CONSENT_EXPLAINER)
-    save_consent(True, prompt_yes_no("Send shared metrics to Nous?", default=shared_metrics.get("send") is True), config)
-    if shared_metrics["send"]:
-        print_success("Sending shared metrics enabled.")
+    sharing = shared_metrics.get("enabled") is True and shared_metrics.get("send") is True
+    # One answer for both keys: off also withdraws send consent and stops collection.
+    share = prompt_yes_no("Send shared metrics to Nous?", default=sharing)
+    save_consent(share, share, config)
+    if share:
+        print_success("Shared metrics sent to Nous once a day.")
     else:
-        print_info("Sending shared metrics disabled (collection stays local).")
+        print_info("Shared metrics off.")
 
 
 def _record_send_consent_change(*, enabled: bool) -> None:

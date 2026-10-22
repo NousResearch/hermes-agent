@@ -1,7 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure } from './local-gateway'
+import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 import { createPluginWsUrlHandler } from './plugin-ws-url'
 const localGatewayDials = createLocalGatewayDials()
@@ -66,16 +66,11 @@ import { runAppInstallerChecker } from './appinstaller-checker'
 import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
 import { stopBackendChild as stopBackendChildImpl, waitForBackendExit } from './backend-child'
 import {
-  type BackendOutputTail,
-  claimDecision,
   execText,
   isPidOnlyStartMarker,
-  pidOnlyStartMarker,
-  probeStartMarker,
   processStartMarker,
   REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
-import { dashboardFallbackArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { assertDescriptorStillOwned, forgetFailedDescriptor } from './backend-descriptor-cache'
 import { BackendDialClaims } from './backend-dial-claim'
@@ -83,7 +78,6 @@ import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   backendCommandMatches,
-  type BackendOwnershipEntry,
   createBackendOwnership,
   createBackendShutdownCoordinator
 } from './backend-ownership'
@@ -91,7 +85,6 @@ import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verify
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createInstalledRuntimeGate } from './backend-resolution'
-import { createBackendServeSupportResolver } from './backend-serve-support'
 import { desktopBackendSpawnEnv } from './backend-spawn-env'
 import {
   isHostKeyChangedBootFailure,
@@ -416,8 +409,14 @@ import {
 } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
-import { createParentStartMarkerResolver } from './parent-process-identity'
-import { bundledPayload, installIdForRoot, type PayloadInfo, payloadPythonPath } from './payload-backend'
+import {
+  bundledPayload,
+  installIdForRoot,
+  type PayloadInfo,
+  payloadPythonPath,
+  payloadTicketRuntime,
+  requireBundledPayload
+} from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -538,6 +537,7 @@ import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
+import { registerSaveDialogIpc } from './save-text-file'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -571,7 +571,7 @@ import { installSystemCaTrust } from './system-ca'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
-  backgroundMaterialFor,
+  applyWindowsBackdrop,
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
@@ -1574,21 +1574,16 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
     // Backing swap + material are scoped to registered chat windows (see
     // translucencyBackedWindows above).
     if (translucencyBackedWindows.has(win)) {
-      if (changed.backing && typeof win.setBackgroundColor === 'function') {
-        win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
-      }
-
-      if (changed.material) {
-        // Glass frost level = the platform material. Animate the macOS hop so
-        // a deliberate frost switch feels continuous — which only works if we
-        // don't re-issue it on unrelated updates. Windows has no equivalent
-        // animation option; setBackgroundMaterial is instantaneous.
-        if (IS_MAC && typeof win.setVibrancy === 'function') {
-          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
+      if (IS_WINDOWS && GLASS_SUPPORTED) {
+        applyWindowsBackdrop(win, translucencyState, changed, getWindowBackgroundColor())
+      } else {
+        if (changed.backing && typeof win.setBackgroundColor === 'function') {
+          win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
         }
 
-        if (IS_WINDOWS && GLASS_SUPPORTED && typeof win.setBackgroundMaterial === 'function') {
-          win.setBackgroundMaterial(backgroundMaterialFor(translucencyState))
+        // Animate deliberate macOS frost changes, not unrelated tint updates.
+        if (changed.material && IS_MAC && typeof win.setVibrancy === 'function') {
+          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
         }
       }
     }
@@ -1928,18 +1923,6 @@ const localBackendLifecycle = createLocalBackendLifecycle<ChildProcess>({
     bootstrapAbortController?.abort()
   }
 })
-
-function spawnOwnedBackend(...args: Parameters<typeof spawn>): ChildProcess {
-  const child = localBackendLifecycle.spawn((): ChildProcess => spawn(...args))
-  child.once('exit', (): boolean => localBackendLifecycle.release(child))
-  child.once('error', (): void => {
-    if (!child.pid) {
-      localBackendLifecycle.release(child)
-    }
-  })
-
-  return child
-}
 
 const remoteLiveness = new RemoteLivenessTracker()
 
@@ -3005,21 +2988,6 @@ async function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   })
 }
 
-// Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
-// detect support so getBackendArgsForRuntime() can route old runtimes through
-// the legacy `dashboard --no-open` form instead of crashing on an unknown
-// subcommand (would brick every user mid-upgrade — #54568 follow-up).
-// Fast-path / probe / cache strategy: see backend-serve-support.ts header.
-const backendSupportsServe = createBackendServeSupportResolver(HERMES_HOME, rememberLog)
-
-// Given a resolved backend whose args target `serve`, return the args the
-// runtime actually understands: unchanged when `serve` is supported, or
-// rewritten to `dashboard --no-open` for older runtimes.
-async function getBackendArgsForRuntime(backend) {
-  return (await backendSupportsServe(backend)) ? backend.args : dashboardFallbackArgs(backend.args)
-}
-
 function normalizeExecutablePathForCompare(commandPath) {
   if (!commandPath) {
     return null
@@ -3674,21 +3642,6 @@ function createNativePackagedStrategy(
 }
 
 /**
- * The bundled Python payload for a strategy whose update check runs inside
- * it. A stamp that names such a mechanism without a payload is a broken
- * install; say so instead of failing on `payload.storePython`.
- */
-function requireBundledPayload(mechanism: UpdaterStrategy['mechanism']): PayloadInfo {
-  const payload: PayloadInfo | null = bundledPayload(process.resourcesPath)
-
-  if (!payload) {
-    throw new Error(`${mechanism} updates require the bundled application payload, which this install has none of`)
-  }
-
-  return payload
-}
-
-/**
  * The checkout updater strategy (windows-handoff / posix-handoff). The flow
  * lives in updater/checkout.ts; this is the composition root that hands it
  * the app shell's impure edges. The public checkUpdates/applyUpdates
@@ -4139,10 +4092,6 @@ function writeBackendOwnership(contents) {
   }
 }
 
-// execText and processStartMarker moved to backend-claim.ts (#93608) so the
-// claim/probe policy is testable — including on Windows CI with real
-// PowerShell — without booting Electron. main.ts calls through the module.
-
 async function backendCommandForPid(pid) {
   try {
     const command = IS_WINDOWS ? 'powershell.exe' : 'ps'
@@ -4309,76 +4258,6 @@ const backendOwnership = createBackendOwnership({
     }
   }
 })
-
-const desktopParentStartMarker = createParentStartMarkerResolver({
-  load: () => processStartMarker(process.pid),
-  onError: error => {
-    const detail = error instanceof Error ? error.message : String(error)
-
-    rememberLog(
-      `Could not resolve the Desktop process start marker; starting the backend with PID-only parent tracking: ${detail}`
-    )
-  }
-})
-
-async function claimBackendChild(
-  child: ChildProcess & { hermesBackendIdentity?: BackendOwnershipEntry },
-  command: string,
-  profile: string,
-  nonce: string,
-  outputTail: BackendOutputTail | null = null
-): Promise<BackendOwnershipEntry> {
-  // Probe/claim policy lives in backend-claim.ts (#93608): a marker probe
-  // that fails against a LIVE child degrades to PID-only identity — matching
-  // createParentStartMarkerResolver — instead of killing a healthy backend
-  // over a flaky Get-Process (PS 5.1 cold starts, #87169). Only a child that
-  // actually died keeps the fail-closed throw, now carrying its stderr tail.
-  const probe = await probeStartMarker(child.pid)
-  const decision = claimDecision(child.exitCode === null && !child.killed, probe)
-
-  if (decision.action === 'fail') {
-    await localBackendLifecycle.stop(child)
-    throw new Error(
-      `Hermes backend (PID ${child.pid}) died before its identity could be recorded: ${decision.reason}${outputTail?.describe() ?? ''}`
-    )
-  }
-
-  let startMarker
-
-  if (decision.action === 'degrade') {
-    startMarker = pidOnlyStartMarker(child.pid)
-    rememberLog(
-      `WARNING: process start marker probe failed for live Hermes backend PID ${child.pid}; ` +
-        `claiming with PID-only identity instead of stopping it: ${decision.reason}`
-    )
-  } else {
-    startMarker = decision.startMarker
-  }
-
-  try {
-    const identity = await backendOwnership.claim({
-      command,
-      nonce,
-      pid: child.pid,
-      profile,
-      startMarker,
-      // Record the spawning Electron so reapOrphans can tell an orphaned
-      // backend (parent gone) from one owned by a live instance — a live
-      // parent's backend is never reaped (#87295).
-      parentPid: process.pid,
-      parentStartMarker: await desktopParentStartMarker()
-    })
-
-    child.hermesBackendIdentity = identity
-
-    return identity
-  } catch (error) {
-    await localBackendLifecycle.stop(child)
-    throw new Error(
-      `Could not persist ownership for the Hermes backend: ${error.message}${outputTail?.describe() ?? ''}`
-    )
-  }
-}
 
 function reapOrphanedBackendsOnce() {
   if (!backendOrphanReapPromise) {
@@ -5025,6 +4904,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
       command: payload.shim,
       args: [...backendArgs],
       env: { ...buildDesktopBackendEnv(), HERMES_RUNTIME_DIR: payload.toolsDir },
+      ...payloadTicketRuntime(payload),
       root: payload.repoDir,
       bootstrap: false,
       shell: false,
@@ -5208,6 +5088,8 @@ interface ResolvedHermesBackend {
   shell: boolean
   local?: string
   root?: string
+  ticketCommand?: string
+  ticketEnv?: NodeJS.ProcessEnv
   installStamp?: Readonly<InstallStamp> | null
   activeRoot?: string
   isPackaged?: boolean
@@ -11689,23 +11571,22 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
 // bounded so a wedged drain cannot hang Restart. The gateway's own drain is unaffected by the kill.
 const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
 
-// Supervised restart of the per-host gateway Desktop attaches to (it never owns that process):
-// the same resolver, spawn helper and Windows quoting as `gateway ensure`, against the profile
-// that owns the gateway process. A non-zero exit is logged, not thrown: the re-ensure that
-// follows reports what actually answers.
+// Supervised restart of the per-host gateway Desktop attaches to (it never owns that process): the
+// `gateway ensure` resolver, spawn helper and quoting, against the profile owning the process, with
+// `--detach` (runGatewayOwnerRestart). A non-zero exit is logged, not thrown: the re-ensure reports
+// what answers.
 async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
-  const backend = await ensureRuntime(
-    await resolveHermesBackend(['--profile', ownerProfile, 'gateway', 'restart']),
-    () => undefined
-  )
+  const result = await runGatewayOwnerRestart(async args => {
+    const backend = await ensureRuntime(await resolveHermesBackend(args), () => undefined)
 
-  const result = await runGatewayEnsure(
-    { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
-    resolveHermesCwd(),
-    HERMES_HOME,
-    profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: ownerProfile }),
-    { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' }
-  )
+    return runGatewayEnsure(
+      { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
+      resolveHermesCwd(),
+      HERMES_HOME,
+      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: ownerProfile }),
+      { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' }
+    )
+  }, ownerProfile)
 
   const reason = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/).filter(Boolean).pop()
   rememberLog(`[gateway] hermes --profile ${ownerProfile} gateway restart exited ${result.code}${reason ? `: ${reason}` : ''}`)
@@ -16635,20 +16516,10 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
-// Native save-location picker (profile export etc.) — the write itself happens
-// elsewhere (the backend, for profile archives); this only picks the path.
-ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: options?.title || 'Save',
-    defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
-    filters: Array.isArray(options?.filters) ? options.filters : undefined
-  })
-
-  if (result.canceled || !result.filePath) {
-    return null
-  }
-
-  return result.filePath
+// Save dialogs: the path picker (profile export) and /save's main-process write (save-text-file.ts).
+registerSaveDialogIpc(ipcMain, {
+  defaultDir: () => app.getPath('documents'),
+  showSaveDialog: options => dialog.showSaveDialog(mainWindow, options)
 })
 
 // Paired reader for the GUI terminal's paste chord: the renderer's

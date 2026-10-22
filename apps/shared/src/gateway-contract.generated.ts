@@ -1466,6 +1466,7 @@ export interface GroupsCapabilitiesResult {
   features: string[]
   methods: string[]
   max_log_limit: number
+  seatable_profiles?: string[] | null
 }
 /** ``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``. */
 export interface RoomLinkStatus {
@@ -1584,14 +1585,20 @@ export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
 }
-/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). */
+/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
 export interface RoomDriverStatus {
   running: boolean
   working: boolean
   blocked: boolean
   counts: Record<string, number>
   pending_actions: Record<string, unknown>[]
+  member_activity?: RoomMemberActivity[]
   peer_routes: PeerRouteStatus[]
+}
+/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. */
+export interface RoomMemberActivity {
+  member_id: string
+  status: string
 }
 export interface PeerRouteStatus {
   room_id: string
@@ -1913,6 +1920,7 @@ export interface GatewayCapabilitiesResult {
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
+  desktop_local?: boolean
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
@@ -3280,6 +3288,7 @@ export interface SessionActiveItem {
   model: string
   preview: string
   session_key: string
+  source?: string | null
   started_at: number
   status: LiveSessionStatus
   title: string
@@ -4360,7 +4369,7 @@ export interface PluginToolsetRow {
   label: string
   description: string
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -4377,7 +4386,7 @@ export interface PluginsManageParams {
   names?: string[] | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` / ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -4401,6 +4410,9 @@ export interface PluginsManageResult {
   consent_required?: boolean | null
   delta?: Record<string, string[]> | null
   delta_lines?: string[] | null
+  scan_blocked?: boolean | null
+  scan_verdict?: string | null
+  scan_findings?: PluginScanFinding[] | null
   error?: string | null
   written?: string[] | null
   onboarding?: OnboardingCatalogPlugin[] | null
@@ -4424,6 +4436,7 @@ export interface AgentPluginRow {
   catalog_sha?: string | null
   catalog_version?: string | null
   update_available?: boolean | null
+  update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
 }
@@ -4471,6 +4484,15 @@ export interface PluginLiveSkill {
   name: string
   description?: string
 }
+/** One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked. */
+export interface PluginScanFinding {
+  pattern_id: string
+  severity: string
+  category: string
+  file: string
+  line: number
+  description: string
+}
 /** A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs. ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what is missing (empty when present or unknown). */
 export interface OnboardingCatalogPlugin {
   name: string
@@ -4505,6 +4527,7 @@ export interface PluginCatalogLookupEntry {
   repo: string
   sha: string
   subdir: string
+  tier?: string
 }
 export interface CanonicalShellExecParams {
   session_id: string
@@ -4948,6 +4971,7 @@ export interface CanonicalSnapshot {
   prompts: CanonicalPendingPrompt[]
   info: CanonicalSnapshotInfo
   pending_connection?: ConnectionRequestPayload | null
+  todo_state?: TodoState | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -5070,11 +5094,18 @@ export interface CanonicalCorrectionParams {
   execution_generation: number
   text: string
 }
-export interface CanonicalCorrectionResult {
+/** ``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}`` when the busy-time text was a bare stop phrase that ended the LOCAL voice chat. */
+export type CanonicalCorrectionResult = CanonicalCorrectionAck | CanonicalVoiceStopped
+export interface CanonicalCorrectionAck {
   status: 'queued' | 'redirected' | 'rejected'
   text: string
   execution_generation: number
   authority_epoch: number
+  delivered?: false | null
+}
+/** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
+export interface CanonicalVoiceStopped {
+  voice_stopped: true
 }
 export interface CanonicalEventsParams {
   profile?: string | null
@@ -5139,6 +5170,8 @@ export interface CanonicalModelOverride {
   provider?: string | null
   reasoning?: string | null
 }
+/** ``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``. */
+export type CanonicalSubmitResult = AdmissionStatus | CanonicalVoiceStopped
 export interface CanonicalApprovalParams {
   profile?: string | null
   session_id: string
@@ -5723,6 +5756,15 @@ export interface ToolOutputRiskPayload {
   risk: string
   findings: string[]
   redacted: boolean
+}
+/** ``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's ``notifications/progress`` for a running call, throttled to one per 500 ms per call. */
+export interface ToolProgressPayload {
+  tool_id: string
+  name: string
+  progress: number
+  total?: number | null
+  percent?: number | null
+  message?: string | null
 }
 /** ``tool_progress._normalize_todo_state`` — full task snapshot. */
 export interface TodoUpdatedPayload {
@@ -6767,7 +6809,7 @@ export interface CanonicalRpcMethods {
   'prompt.resolve_unknown': { params: PromptResolveUnknownParams; result: AdmissionStatus }
   /** Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found. */
   'prompt.steer_queued': { params: CanonicalSteerQueuedParams; result: AdmissionStatus }
-  'prompt.submit': { params: CanonicalSubmitParams; result: AdmissionStatus }
+  'prompt.submit': { params: CanonicalSubmitParams; result: CanonicalSubmitResult }
   /** The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer. */
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
@@ -7057,6 +7099,8 @@ export interface BackendGatewayEventMap {
   'tool.generating': ToolGeneratingPayload
   /** Tool output was classified as risky (prompt-injection / secret findings). */
   'tool.output_risk': ToolOutputRiskPayload
+  /** Live progress of a running tool call (MCP notifications/progress). */
+  'tool.progress': ToolProgressPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
@@ -7145,6 +7189,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.complete',
   'tool.generating',
   'tool.output_risk',
+  'tool.progress',
   'tool.start',
   'voice.interrupted',
   'voice.partial',

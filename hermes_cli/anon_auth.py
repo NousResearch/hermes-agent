@@ -5,9 +5,9 @@ trial (``hermes_cli.welcome_trial``), and on the first hosted connector action f
 Nous identity (``tools.connectors.gateway.config.ensure_guest_identity``, gated by ``guest_allowed``).
 Either mints an anonymous Nous account (``POST /api/anonymous/create``); its ``anon_`` credential is
 later exchanged for short-lived JWTs (``POST /api/anonymous/token``). The result is persisted as the
-singleton ``providers.nous``. Only a guest stamped with the trial claim carries inference, and only on
-the backend the desktop spawned on this machine (:func:`free_inference_active`); every other guest
-serves connectors and managed tools. In the resolver ladder (``resolve_provider``) a guest that
+singleton ``providers.nous``. Only a guest stamped with the trial claim carries inference
+(:func:`free_inference_active`), on every surface of the install once the desktop claimed it: chats,
+cron, side agents, workers, the CLI. Every other guest serves connectors and managed tools. In the resolver ladder (``resolve_provider``) a guest that
 carries inference sits directly above the implicit AWS Bedrock chain (NS-829): any explicit provider
 (env key, ``model.provider``, OpenRouter pool, a logged-in ``active_provider``) beats it, and the
 ladder never creates one.
@@ -200,19 +200,26 @@ def has_guest() -> bool:
 
 
 def on_local_desktop_backend() -> bool:
-    """This process is the backend the desktop app spawned on this machine: never an SSH, URL or
-    cloud backend, and never a gateway or shell the desktop merely launched."""
-    from hermes_cli.anon_challenge import client_surface
-    from hermes_cli.process_identity import is_local_desktop_backend
-    return client_surface() == "desktop" and is_local_desktop_backend()
+    """This activity is work for the Desktop app on this machine: a request from, or a turn of a chat
+    created by, a connection ``process_identity.local_desktop_client`` accepted. Never an SSH, URL or
+    cloud backend, a shell the desktop launched, or the gateway's other clients."""
+    from hermes_cli.process_identity import serves_local_desktop_now
+    return serves_local_desktop_now()
 
 
 def free_inference_active(state: Any = None) -> bool:
-    """The welcome trial carries inference here: a guest that claimed it (or was grandfathered),
-    guests still allowed, and this is the desktop's local backend. *state* defaults to the profile's."""
+    """The welcome trial carries inference: a guest that claimed it and guests
+    still allowed. Only the claim is the local Desktop's (``welcome_trial``); once claimed, every
+    surface of the install runs on it. *state* defaults to the profile's."""
     state = current_nous_state() if state is None else state
-    return (is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
-            and on_local_desktop_backend())
+    return is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
+
+
+def trial_model() -> str:
+    """The last rung of model resolution, below every model the user named (``model.default``, a cron
+    or task pin): ``nous/welcome`` while the welcome trial carries inference, else ''. Never written to
+    config.yaml, so it stops applying the moment the user configures a real model."""
+    return GUEST_MODEL if free_inference_active() else ""
 
 
 def has_free_tier_account() -> bool:
@@ -501,7 +508,6 @@ def _mint_locked(client: httpx.Client, portal: str, auth_store: dict[str, Any], 
         "portal_base_url": portal.rstrip("/"),
         "user_id": minted.get("user_id"), "org_id": minted.get("org_id"),
         "idle_ttl_days": minted.get("idle_ttl_days"),
-        # Always present: an absent key marks a guest minted before the claim existed (grandfathering).
         WELCOME_CLAIM_FLAG: welcome_claim,
     }
     _store_provider_state(auth_store, "nous", state, set_active=False)
@@ -989,25 +995,6 @@ def set_guest_flag(flag: str) -> Optional[dict[str, Any]]:
             return state
         state = {**state, flag: True}
         _save_guest_state(auth_store, state, source_path)
-    return state
-
-
-def stamp_legacy_guest_claim() -> Optional[dict[str, Any]]:
-    """Grandfathering's write (``welcome_trial.grandfather_existing_guest``): stamp the welcome claim on
-    a guest minted before the key existed and publish it to the shared store, in one transaction under
-    the auth-then-shared locks. Nothing is written (None) unless, inside the locks, the guest still has
-    no key and the shared store is empty or holds that same guest: a sign-in another profile made is
-    never overwritten, whenever it landed."""
-    from hermes_cli.auth import _provider_state_transaction
-    from hermes_cli.auth_nous import _nous_shared_store_lock, _read_shared_nous_state, _write_shared_nous_state
-    with _provider_state_transaction("nous") as (auth_store, state, source_path), _nous_shared_store_lock():
-        shared = _read_shared_nous_state()
-        if (not is_guest_state(state) or source_path is None or WELCOME_CLAIM_FLAG in state
-                or (shared and _shared_identity_key(shared) != _shared_identity_key(state))):
-            return None
-        state = {**state, WELCOME_CLAIM_FLAG: True}
-        _save_guest_state(auth_store, state, source_path)
-        _write_shared_nous_state(state)
     return state
 
 

@@ -89,11 +89,9 @@ def _row_entry(row, platform, route, profile):
                         transport_profile=row.get('transport_profile'))
 
 
-def restore_routed_session(authority, sid):
-    """Publish *sid* as its lane would after a restart; None when this row is not one a route or a
-    messaging-platform row can stand for."""
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import SessionRef
+def _mount_plan(authority, sid):
+    """``(route, entry, routed)`` for a row a route or a messaging-platform row can stand for, else
+    None. Reads only: ``restore_routed_session`` mounts it, the stored picker lists it."""
     row = authority.db.get_session(sid)
     route = row.get('session_key') if row is not None else None
     platform = _messaging_platform(row['source']) if route else None
@@ -106,8 +104,18 @@ def restore_routed_session(authority, sid):
         return None
     routed = _routed_entry(authority, sid, route)
     entry = routed or _row_entry(row, platform, route, profile)
-    if entry is None:
+    return None if entry is None else (route, entry, routed)
+
+
+def restore_routed_session(authority, sid):
+    """Publish *sid* as its lane would after a restart; None when this row is not one a route or a
+    messaging-platform row can stand for."""
+    from gateway.session_authority import LiveSession
+    from gateway.session_contract import SessionRef
+    plan = _mount_plan(authority, sid)
+    if plan is None:
         return None
+    route, entry, routed = plan
     superseded = routed is None and _names_another_conversation(authority, sid, route)
     authority._require_admission_open()
     # Re-pin the persisted receiving bot so delivery after a restart goes through it or nowhere,
@@ -115,6 +123,11 @@ def restore_routed_session(authority, sid):
     source = authority.runner._restored_source(entry)
     authority.sessions.setdefault(sid, LiveSession(source, route, superseded=superseded, history_mount=True))
     return SessionRef(authority.profile_id, sid)
+
+
+def mountable(authority, sid):
+    """``restore_routed_session`` would mount *sid* (this profile's messaging lineage root)."""
+    return _mount_plan(authority, sid) is not None
 
 
 def messaging_owner_ref(authority, ref):

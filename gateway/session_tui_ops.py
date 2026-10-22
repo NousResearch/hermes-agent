@@ -11,6 +11,7 @@ them. ``dispatch`` already runs every handler under the owning profile's scope (
 import asyncio
 from datetime import datetime
 import json
+import re
 import uuid
 from functools import partial
 from pathlib import Path
@@ -29,7 +30,8 @@ def handlers(connection):
             'rollback.diff': partial(rollback, connection, kind='diff'),
             'rollback.restore': partial(rollback, connection, kind='restore'),
             'rollback.session_diff': partial(rollback, connection, kind='session_diff'),
-            'session.context_breakdown': partial(context_breakdown, connection)}
+            'session.context_breakdown': partial(context_breakdown, connection),
+            'session.history': partial(session_history, connection)}
 
 
 def _profile_home(authority):
@@ -116,6 +118,21 @@ async def export_session(connection, ref, params):
     return {'format': fmt, 'filename': default_save_filename(target, fmt), 'content': content}
 
 
+async def session_history(connection, ref, params):
+    """Main's ``session.history``: the display transcript of the conversation's current physical row (compression tip or local receipt entry), ancestors included, each row with its durable ``row_id``; Desktop's edit resolves its turn by it."""
+    _live_ref(connection, ref, params, {'session_id', 'profile'}, 'session:read')
+    authority = connection.authority
+    from gateway.session_local_recovery import transcript_target
+    # On the loop, as ``attach`` resolves it: a local restore publishes the live entry.
+    target = transcript_target(authority, ref)
+
+    def read():
+        from gateway.session_controls import display_projection
+        rows = authority.db.get_messages_as_conversation(target, include_ancestors=True, include_row_ids=True)
+        return {'count': len(rows), 'messages': display_projection(rows, authority.profile_id)}
+    return await asyncio.to_thread(read)
+
+
 async def reload_env(connection, ref, params):
     """``/reload``: re-read the profile's ``.env`` (main's ``reload.env`` / CLI ``/reload``).
 
@@ -179,8 +196,10 @@ async def pause_delegation(connection, ref, params):
 _ROLLBACK_FIELDS = {'list': {'session_id', 'profile'}, 'diff': {'session_id', 'profile', 'hash'},
                     'restore': {'session_id', 'profile', 'hash', 'file_path', 'all'},
                     'session_diff': {'session_id', 'profile'}}
-# ``rollback.session_diff`` body bound: well inside one 8 MiB frame (the classic CLI shows 400 lines).
-_SESSION_DIFF_CHARS = 2 * 1024 * 1024
+# ``rollback.session_diff`` stat + body bound, in bytes on the wire: half the 8 MiB frame every client
+# accepts (``hermes_cli/gateway_client.py``). Counted JSON-escaped, since a control character is one
+# character but six bytes (``\u0001``); the classic CLI shows 400 lines either way.
+_SESSION_DIFF_BYTES = 4 * 1024 * 1024
 
 
 async def rollback(connection, ref, params, *, kind):
@@ -272,9 +291,30 @@ def _session_diff(mgr, cwd, refusal):
     if not result.get('success'):
         return {'enabled': True, 'success': False, 'error': str(result.get('error') or '')}
     diff = result.get('diff', '')
-    body = diff if len(diff) <= _SESSION_DIFF_CHARS else diff[:_SESSION_DIFF_CHARS].rpartition('\n')[0]
-    return {'enabled': True, 'success': True, 'stat': result.get('stat', ''), 'diff': body,
+    stat = _fit_frame(result.get('stat', ''), _SESSION_DIFF_BYTES)
+    body = _fit_frame(diff, _SESSION_DIFF_BYTES - _wire_bytes(stat))
+    return {'enabled': True, 'success': True, 'stat': stat, 'diff': body,
             'diff_lines': len(diff.splitlines()), 'empty': bool(result.get('empty'))}
+
+
+def _wire_bytes(text):
+    """Bytes ``text`` takes inside a frame: JSON-escaped as ``serialize_frame`` writes it, then UTF-8."""
+    return len(json.dumps(text, ensure_ascii=False).encode('utf-8', 'surrogatepass')) - 2
+
+
+def _fit_frame(text, budget):
+    """The longest whole-line prefix of ``text`` whose wire size fits ``budget`` bytes. The caller
+    reports the uncut line count, so the client names the cut instead of the frame dropping the socket."""
+    if len(text) * 6 <= budget or (len(text) <= budget and _wire_bytes(text) <= budget):
+        return text
+    kept, used = [], 0
+    # Lines end at ``\n`` only (``splitlines`` would also cut at ``\r``, ``\f``, U+2028 inside a diff line).
+    for line in re.split(r'(?<=\n)', text[:budget + 1]):  # chars cost >= 1 byte; +1 keeps a cut line over
+        used += _wire_bytes(line)
+        if used > budget:
+            break
+        kept.append(line)
+    return ''.join(kept).removesuffix('\n')
 
 
 async def _rewind_last_turn(connection, ref):

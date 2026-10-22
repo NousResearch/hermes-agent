@@ -1,0 +1,46 @@
+manifest_version: 1
+
+name: adwhispr
+description: >-
+  See what is working in any ad market and act on it. Find the brands
+  advertising in a niche right now and their longest-running Meta and TikTok
+  ads, clone a proven ad into your own image or video, and launch paused
+  campaigns on Meta, Google, TikTok, X, and ChatGPT Ads with AdWhispr.
+source: https://adwhispr.com/docs/guides/using-adwhispr-in-hermes-agent?utm_source=hermes&utm_medium=mcp_catalog&utm_campaign=hermes_optional_mcp
+
+# Vendor-hosted Streamable HTTP with native MCP OAuth 2.1 (PKCE, dynamic
+# client registration, RFC 8414 and RFC 9728 metadata). No local bridge,
+# API key, or bootstrap process is required.
+transport:
+  type: http
+  url: https://adwhispr.com/api/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - adwhispr
+  hosts:
+    - adwhispr.com
+
+post_install: |
+  Sign in on first connection (a free AdWhispr account works), or run
+  `hermes mcp login adwhispr`. Competitor research needs no ad account.
+  To launch or manage campaigns, ask Hermes to connect your Meta, Google,
+  TikTok, X, or ChatGPT Ads account; each connects through a sign-in link.
+
+  Tool usage is subject to your AdWhispr plan. Ad spend is billed by the
+  advertising platforms, and finished video clones use AdWhispr video
+  credits. Tools can create and edit real campaigns and budgets. AdWhispr
+  creates every campaign paused, and launch, budget, targeting, and resume
+  calls return a preview and need a second call with a single-use confirm
+  token before anything changes; video renders start only after an explicit
+  approval. Review proposed changes before confirming. This MCP entry does
+  not install the separate AdWhispr plugin's workflow skills.
+
+  Review tool access with `hermes mcp configure adwhispr`, then start a new
+  session or run /reload-mcp. A good first request: "Who is advertising in
+  my space right now?" Guide:
+  https://adwhispr.com/docs/guides/using-adwhispr-in-hermes-agent
+  Support: basil@adwhispr.com

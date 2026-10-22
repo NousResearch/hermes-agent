@@ -537,6 +537,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         field("started", _fmt_ts(task.started_at))
     if task.completed_at:
         field("completed", _fmt_ts(task.completed_at))
+    if task.integration_ref:
+        field("integration", task.integration_ref)
     if parents:
         field("parents", ", ".join(parents))
     if children:

@@ -103,10 +103,20 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
         history = _branch_source_history(db, session, old_key)
+        # The cut: the durable row boundary WINS over the visible-message count.
+        # A message-level branch names the exact row the user clicked (the bubble's last
+        # durable row). The count the client derives from its LOCAL message list is only a
+        # legacy fallback: when the local list is a compacted model projection it is
+        # SHORTER than the authoritative display projection, so ``history[:count]`` lands
+        # on an earlier message than the one clicked.
+        if isinstance(through := params.get("through_message_id"), int) and not isinstance(through, bool) and through > 0 \
+                and any(isinstance(message.get("_row_id"), int) for message in history):
+            history = [message for message in history
+                       if isinstance(message.get("_row_id"), int) and message["_row_id"] <= through]
+        elif isinstance(count := params.get("count"), int) and count > 0:
+            history = history[:count]
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
-        if isinstance(count := params.get("count"), int) and count > 0:
-            history = history[:count]
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
         try:
             title = params.get("name", "") or _branch_title(db, old_key)

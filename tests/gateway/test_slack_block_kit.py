@@ -1,5 +1,7 @@
 """Unit tests for the Slack Block Kit renderer (pure function, no adapter)."""
 
+import pytest
+
 from plugins.platforms.slack.block_kit import (
     MAX_BLOCKS,
     MAX_SECTION_TEXT,
@@ -58,14 +60,37 @@ class TestInlineFormatting:
         assert not any("<https://" in (e.get("text") or "") for e in els)
         assert any(e.get("style", {}).get("code") for e in els)
 
-    def test_slack_mentions_in_bullet_are_not_links(self):
-        blocks = render_blocks("- ping <@U123> in <#C456>")
-        assert blocks is not None
-        els = blocks[0]["elements"][0]["elements"][0]["elements"]
-        assert all(e.get("type") != "link" for e in els)
-        blob = "".join(e.get("text") or "" for e in els)
-        assert "<@U123>" in blob
-        assert "<#C456>" in blob
+    @pytest.mark.parametrize(
+        "md, path",
+        [
+            ("- ping **<@U123>** in <#C456|my_channel>", lambda b: b[0]["elements"][0]["elements"][0]),
+            ("> ping **<@U123>** in <#C456|my_channel>", lambda b: b[0]["elements"][0]),
+            (
+                "| who | n |\n|---|---|\n| ping **<@U123>** in <#C456> | 1 |",
+                lambda b: b[0]["rows"][1][0]["elements"][0],
+            ),
+        ],
+        ids=["list", "quote", "table_cell"],
+    )
+    def test_slack_mentions_become_mention_elements(self, md, path):
+        """rich_text does not interpret mrkdwn: <@U…> / <#C…> must become user / channel
+        elements, or Slack shows the raw token instead of a mention (paragraphs already
+        render them via section/mrkdwn)."""
+        els = path(render_blocks(md))["elements"]
+        users = [e for e in els if e.get("type") == "user"]
+        channels = [e for e in els if e.get("type") == "channel"]
+        assert users == [{"type": "user", "user_id": "U123", "style": {"bold": True}}]
+        assert channels == [{"type": "channel", "channel_id": "C456"}]
+        assert not any("<" in (e.get("text") or "") for e in els)
+
+    def test_broadcasts_and_code_spans_stay_text(self):
+        """<!here>/<!channel> must never become a pinging broadcast element, and a mention
+        inside a code span stays literal."""
+        els = render_blocks("- heads up <!here> <!channel> and `<@U123>`")[0]["elements"][0][
+            "elements"][0]["elements"]
+        assert {e["type"] for e in els} == {"text"}
+        blob = "".join(e["text"] for e in els)
+        assert "<!here>" in blob and "<!channel>" in blob and "<@U123>" in blob
 
 
     def test_blank_line_separated_ordered_items_stay_in_one_list(self):

@@ -76,10 +76,14 @@ def _indent_level(spaces: str) -> int:
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^()\s]+(?:\([^()]*\)[^()\s]*)*)\)")
 # Slack mrkdwn autolink: <scheme:target> or <scheme:target|label>.
-# Mentions (<@U…>, <#C…>, <!here>) have no scheme: and stay as text.
+# Mentions (<@U…>, <#C…>, <!here>) have no scheme: and are handled by _SLACK_MENTION_RE.
 _SLACK_LINK_RE = re.compile(
     r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>|]+)(?:\|([^>]+))?>"
 )
+# User / channel mentions with an optional |label. Broadcasts (<!here>, <!channel>, <!everyone>)
+# deliberately do not match: they stay text so agent output can never ping a whole channel.
+_SLACK_MENTION_RE = re.compile(r"<([@#])([A-Z0-9]+)(?:\|[^>\n]*)?>")
+_MENTION_ELEMENT = {"@": ("user", "user_id"), "#": ("channel", "channel_id")}
 _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
 _ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
@@ -116,7 +120,23 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
             link_el["style"] = dict(style)
         elements.append(link_el)
 
+    def _emit_mentions(s: str, style: Optional[dict[str, bool]]) -> None:
+        # rich_text shows a raw <@U…> token as literal text; a mention needs a user/channel element.
+        pos = 0
+        for m in _SLACK_MENTION_RE.finditer(s):
+            emit_text(s[pos : m.start()], style)
+            kind, key = _MENTION_ELEMENT[m.group(1)]
+            mention_el: dict[str, Any] = {"type": kind, key: m.group(2)}
+            if style:
+                mention_el["style"] = dict(style)
+            elements.append(mention_el)
+            pos = m.end()
+        emit_text(s[pos:], style)
+
     def _walk_links(s: str, style: dict[str, bool]) -> None:
+        # Slack renders the live name, so a mention's |label is dropped; a label like
+        # ``my_channel`` would otherwise be split by the emphasis pass.
+        s = _SLACK_MENTION_RE.sub(lambda m: f"<{m.group(1)}{m.group(2)}>", s)
         pos = 0
         for m in _LINK_RE.finditer(s):
             _walk_slack_links(s[pos : m.start()], style)
@@ -147,7 +167,7 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
                 _walk_emphasis(m.group(1), inner_style)
                 _walk_emphasis(s[m.end() :], style)
                 return
-        emit_text(s, dict(style) if style else None)
+        _emit_mentions(s, dict(style) if style else None)
     walk(text, {})
     return elements or [{"type": "text", "text": text}]
 

@@ -131,6 +131,33 @@ def test_allowed_call_routes_through_existing_handler(monkeypatch):
     assert result == {"ok": True, "result": "issue #7 created"}
 
 
+def test_allowed_call_runs_policy_pipeline(monkeypatch):
+    """Regression for #138864: direct MCP calls cannot bypass plugin policy."""
+    _patch_config(monkeypatch, {"my-plugin": {"mcp_allowlist": ["github"]}})
+    _patch_handler(monkeypatch, json.dumps({"result": "created"}))
+    ctx = _make_ctx()
+    seen = {}
+
+    def _pre(name, args, **kwargs):
+        seen["pre"] = (name, args, kwargs)
+        return None, {**args, "policy": "checked"}
+
+    def _execution(name, args, next_call, **kwargs):
+        seen["execution"] = (name, args, kwargs)
+        return next_call(args)
+
+    monkeypatch.setattr("hermes_cli.plugins._dispatch_pre_tool_call_hooks", _pre)
+    monkeypatch.setattr("hermes_cli.middleware.run_tool_execution_middleware", _execution)
+
+    assert ctx.call_mcp("github", "create_issue", {"title": "bug"}, task_id="task-1", session_id="session-1") == {
+        "ok": True, "result": "created"
+    }
+    assert seen["pre"][0] == "mcp__github__create_issue"
+    assert seen["pre"][2]["task_id"] == "task-1"
+    assert seen["pre"][2]["tool_call_id"]
+    assert seen["execution"][1] == {"title": "bug", "policy": "checked"}
+
+
 def test_error_result_maps_to_ok_false(monkeypatch):
     _patch_config(monkeypatch, {"my-plugin": {"mcp_allowlist": ["github"]}})
     _patch_handler(monkeypatch, json.dumps({"error": "MCP server 'github' is not connected"}))

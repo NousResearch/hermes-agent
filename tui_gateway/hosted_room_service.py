@@ -546,12 +546,21 @@ class HostedRoomService:
         return room
 
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
-        normalized = discussion.validate_user_payload(payload)
-        gateway_id, epoch = self._owned_authority(room_id)
         from gateway.session_hosted_attachments import append_user_event
-        event = append_user_event(
-            self, room_id=room_id, event_id=event_id, payload=normalized,
-            gateway_id=gateway_id, epoch=epoch)
+        try:
+            normalized = discussion.validate_user_payload(payload)
+            gateway_id, epoch = self._owned_authority(room_id)
+            event = append_user_event(
+                self, room_id=room_id, event_id=event_id, payload=normalized,
+                gateway_id=gateway_id, epoch=epoch)
+        except hosted_rooms.EventConflictError:
+            raise  # this event id is already in the room
+        except ValueError as exc:
+            # Refused before the user event committed: nothing of this request is in the room.
+            # Both groups.send dispatchers say so (``admitted: false``), so a client may hand the
+            # words back; any later failure leaves the message posted and stays unmarked.
+            exc.admitted = False
+            raise
         # The committed event is the Send's result: a failure from here on is the room driver's,
         # which runs the same preparation on its next passes and, if it keeps failing, says so in
         # the room once. Raising would tell the client a message it can already see in the room was

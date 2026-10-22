@@ -246,7 +246,12 @@ def test_terminating_an_absent_pid_reports_terminated(board):
     assert info["host_local"] is True
     assert info["termination_attempted"] is True
     assert info["terminated"] is True
-    assert info["already_gone"] is True
+    if os.name == "nt":
+        # Only Windows reports an absent pid as a bare OSError, so only there does the kill
+        # step take the re-ask branch that marks this verdict; POSIX reaches the same
+        # ``terminated`` through ProcessLookupError (pinned on every platform by
+        # test_a_signalled_absent_pid_is_terminated_not_unproven).
+        assert info["already_gone"] is True
 
 
 def test_a_signalled_absent_pid_is_terminated_not_unproven(board):

@@ -63,7 +63,13 @@ import { useProfilePrewarm } from './use-profile-prewarm'
  * plain-dropdown door for people who run profiles as bots and don't want a
  * strip of them.
  */
-export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
+interface ProfileSwitcherProps {
+  compact?: boolean
+  /** Bot chat is the one surface that deliberately spans every registered gateway. */
+  showFleetProfiles?: boolean
+}
+
+export function ProfileSwitcher({ compact = false, showFleetProfiles = false }: ProfileSwitcherProps) {
   const { t } = useI18n()
   const p = t.profiles
   const navigate = useNavigate()
@@ -101,8 +107,10 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
 
   const restGroups = useMemo(
     () =>
-      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], order, roster }) : [],
-    [activeConnectionId, connections, multipleConnections, order, roster]
+      showFleetProfiles && multipleConnections
+        ? buildRestGroups({ activeConnectionId, connections: connections ?? [], order, roster })
+        : [],
+    [activeConnectionId, connections, multipleConnections, order, roster, showFleetProfiles]
   )
 
   const activeKey = normalizeProfileKey(gatewayProfile)

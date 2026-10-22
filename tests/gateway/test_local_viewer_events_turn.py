@@ -584,7 +584,8 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
         evicted = []
         for route_key, parent_obj in (('route-a', original), ('route-a', wrong_db_parent), ('route-b', wrong_route_parent)):
             GatewayTurnMixin._run_agent_evict_on_fallback(
-                SimpleNamespace(_evict_cached_agent=evicted.append),
+                SimpleNamespace(_evict_cached_agent=evicted.append,
+                                _heal_model_pin_on_not_found_fallback=lambda ctx: False),
                 SimpleNamespace(session_key=route_key, agent_holder=[parent_obj], result_holder=[{'failed': False}]),
             )
         assert evicted == ['route-a', 'route-a', 'route-b']

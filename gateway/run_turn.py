@@ -1651,13 +1651,16 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             await self._run_agent_backup_interrupt_check(turn_ctx, _interrupt_detected, interrupt_monitor)
         return self._run_agent_timeout_result(worker, turn_ctx)
 
-    def _run_agent_evict_on_fallback(self, turn_ctx: TurnContext) -> None:
+    def _run_agent_evict_on_fallback(self, turn_ctx: TurnContext) -> bool:
         """Evict the cached agent when a fallback model activated on a SUCCESSFUL run (so /model shows
         the active model and the next message retries the primary). Skip failed runs: evicting
-        would loop bad model → fallback → evict → recreate."""
+        would loop bad model → fallback → evict → recreate. Returns True when the run also healed a
+        dead session /model pin (see ``_heal_model_pin_on_not_found_fallback``) so the caller can
+        tell the user."""
         session_key, _agent, _result_for_fb = turn_ctx.session_key, turn_ctx.agent_holder[0], turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
-            return
+            return False
+        healed = False
         # A provider fallback is drift even when it serves the configured model name on another endpoint.
         if getattr(_agent, "_provider_fallback_active", False) is not True:
             # A LOCAL session runs its frozen launch policy's model, not the gateway's configured one.
@@ -1667,9 +1670,59 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             _cfg_model = self._fallback_baseline_model(
                 session_key, turn_ctx.source, _agent, policy_model=policy.current_model(active_authority(self)) if policy and policy.model else None)
             if _agent.model == _cfg_model or self._is_intentional_model_switch(session_key, _agent, _cfg_model):
-                return
+                return False
+        else:
+            healed = self._heal_model_pin_on_not_found_fallback(turn_ctx)
         _agent._evicted_on_fallback = session_key or True
         self._evict_cached_agent(session_key)
+        return healed
+
+    def _heal_model_pin_on_not_found_fallback(self, turn_ctx: TurnContext) -> bool:
+        """forge #142709: a session pin on a dead model re-arms its own failure every turn — the
+        fallback rescues delivery but the pin survives the evict, so the next turn rehydrates the
+        same broken agent. When the successful fallback was triggered by model_not_found and the
+        abandoned model IS this session's pin, the pin is the disease: clear it so the next turn
+        falls back to the configured default. Store first, then the in-memory view, matching the
+        store's publish-after-persist order. Fail-open: any failure keeps the status quo (evict
+        only) — the heal must never turn a rescued turn into a broken one."""
+        try:
+            session_key, agent = turn_ctx.session_key, turn_ctx.agent_holder[0]
+            abandoned = getattr(agent, "_fallback_abandoned_model", None)
+            state = self._peek_session_state(session_key)
+            store = getattr(self, "session_store", None)
+            pin = (state.conversation.model_override if state else None) or (
+                store.get_model_override(session_key) if store is not None else None)
+            if not abandoned or not pin or pin.get("model") != abandoned:
+                return False
+            if store is not None:
+                store.set_model_override(session_key, None)
+            if state is not None:
+                state.conversation.model_override = None
+            logger.info("Dropped dead /model pin %r for session %s after model_not_found fallback", abandoned, session_key)
+            return True
+        except Exception as heal_err:
+            logger.debug("Model-pin self-heal skipped: %s", heal_err)
+            return False
+
+    async def _emit_model_pin_dropped_notice(self, turn_ctx: TurnContext) -> None:
+        """Tell the user their /model pin was dropped after a model_not_found fallback (forge
+        #142709). Same fail-open delivery as the inactivity warning: no adapter or a send error is
+        a log-debug, never a turn failure."""
+        from gateway.run import _interim_metadata
+        _notice = (
+            f"⚠️ Model '{turn_ctx.agent_holder[0]._fallback_abandoned_model}' isn't available "
+            "(model not found) — dropped the /model pin for this session; "
+            "future messages use the default model.")
+        _heal_adapter = self._delivery_adapter_for(turn_ctx.source)
+        if not _heal_adapter:
+            return
+        try:
+            await _heal_adapter.emit_warning(
+                turn_ctx.source.chat_id, _notice,
+                metadata=_interim_metadata(turn_ctx._status_thread_metadata), logical_platform=turn_ctx.source.platform,
+            )
+        except Exception as _notice_err:
+            logger.debug("Model-pin drop notice send error: %s", _notice_err)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
         """Finalize the streaming-TTS consumer on the outer event-loop thread (covers early returns
@@ -2381,7 +2434,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
             if isinstance(response, dict):
                 response["_notification_reply_muted"] = turn_ctx.mute_notification_reply
-            self._run_agent_evict_on_fallback(turn_ctx)
+            if self._run_agent_evict_on_fallback(turn_ctx):
+                # forge #142709: the dead /model pin was dropped this run — tell the user.
+                self._retain_background_task(asyncio.create_task(self._emit_model_pin_dropped_notice(turn_ctx)))
 
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]

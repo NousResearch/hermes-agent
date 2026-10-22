@@ -53,6 +53,26 @@ class TestSendRequiresCollection:
         # send must never imply enabled
         assert resolved.enabled is False
 
+    def test_managed_scope_can_force_sending_off(self, monkeypatch):
+        """Regression for #138804: an administrator may prohibit outbound metrics."""
+        monkeypatch.setattr(
+            "hermes_cli.managed_scope.load_managed_config",
+            lambda: {"telemetry": {"shared_metrics": {"send": False}}},
+        )
+
+        resolved = resolve_send_config(_config(enabled=True, send=True))
+
+        assert resolved.enabled is True
+        assert resolved.send is False
+
+    def test_managed_scope_cannot_opt_a_profile_into_sending(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.managed_scope.load_managed_config",
+            lambda: {"telemetry": {"shared_metrics": {"send": True}}},
+        )
+
+        assert resolve_send_config(_config(enabled=True, send=False)).send is False
+
 
 
 

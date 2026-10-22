@@ -1,6 +1,6 @@
 name: codex-theme
 repo: https://github.com/ethanz-code/hermes-codex-theme
-sha: 2d222612e89c51e6363aa1a54cdc4058a52ac595
+sha: 4f5c37ce1863b0e0a0d649f864eaef69198dfbb2
 description: >-
   Codex × ChatGPT inspired theme for the Hermes Desktop chat: dual light/dark
   palettes that follow the system appearance, graphite-on-paper typography
@@ -19,10 +19,10 @@ category: desktop
 requires_hermes: ">=0.22.0"
 version: "1.0.0"
 title: "Codex Theme"
-image: https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/2d222612e89c51e6363aa1a54cdc4058a52ac595/assets/cover.png
+image: https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/4f5c37ce1863b0e0a0d649f864eaef69198dfbb2/assets/cover.png
 screenshots:
-  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/2d222612e89c51e6363aa1a54cdc4058a52ac595/assets/theme-light.png
-  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/2d222612e89c51e6363aa1a54cdc4058a52ac595/assets/theme-dark.png
+  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/4f5c37ce1863b0e0a0d649f864eaef69198dfbb2/assets/theme-light.png
+  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/4f5c37ce1863b0e0a0d649f864eaef69198dfbb2/assets/theme-dark.png
 readme: true
 capabilities:
   provides_tools: []

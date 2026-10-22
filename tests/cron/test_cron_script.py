@@ -388,6 +388,35 @@ class TestRunJobScript:
         assert pickled == "pickled True"  # __main__ outlives the body, as in a plain run
 
     @pytest.mark.platforms("posix")
+    def test_posix_managed_store_shell_script_prefers_dependency_venv_python(
+        self, cron_env, tmp_path, monkeypatch
+    ):
+        """Regression for #138863: shell scripts inherit store-first PATH after startup,
+        but their bare ``python`` must resolve to the dependency environment, like .py scripts."""
+        from cron.scheduler_script import _run_job_script
+
+        bare_bin = tmp_path / "store" / "bin"
+        venv_bin = tmp_path / "selected-venv" / "bin"
+        bare_bin.mkdir(parents=True)
+        venv_bin.mkdir(parents=True)
+        for directory, value in ((bare_bin, "bare-store"), (venv_bin, "dependency-venv")):
+            python = directory / "python"
+            python.write_text(f"#!/bin/sh\necho {value}\n", encoding="utf-8")
+            python.chmod(0o755)
+
+        monkeypatch.setenv("PATH", str(bare_bin))
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python", lambda repo: bare_bin / "python"
+        )
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: venv_bin.parent)
+        (cron_env / "scripts" / "probe.sh").write_text("#!/bin/sh\npython\n", encoding="utf-8")
+
+        success, output = _run_job_script("probe.sh")
+
+        assert success is True
+        assert output == "dependency-venv"
+
+    @pytest.mark.platforms("posix")
     @pytest.mark.parametrize("broken", ["selection_raises", "interpreter_missing"])
     def test_posix_unusable_store_selection_fails_the_run_not_the_tick(
         self, cron_env, tmp_path, monkeypatch, broken

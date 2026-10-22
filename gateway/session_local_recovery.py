@@ -295,8 +295,11 @@ def local_history(authority, ref, prepared=None):
     compaction since then re-reads the lineage here. When the byte budget left older archived rows out
     (``display_rows``), the first row carries ``archived_truncated: true``.
     """
-    db = authority.db
-    target = transcript_target(authority, ref)
+    return stored_history(authority.db, transcript_target(authority, ref), prepared)
+
+
+def stored_history(db, target, prepared=None):
+    """``local_history``'s rows of physical *target* (``subagent.transcript`` reads a child's)."""
     read_live, display, truncated = (prepared[1] if prepared is not None and prepared[0] == target
                                      else display_rows(db, target))
     live = db.get_messages_as_conversation(target, include_row_ids=True)

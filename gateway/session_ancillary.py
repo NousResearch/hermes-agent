@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 
 from gateway.session_busy_controls import authorize
+from gateway.session_subagent_transcript import subagent_transcript
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -31,6 +32,7 @@ def handlers(connection):
         'process.kill': partial(kill_process, connection), 'reload.mcp': partial(reload_mcp, connection),
         'file.attach': partial(attach_file, connection), 'tools.show': partial(show_tools, connection),
         'skills.reload': partial(reload_skills, connection),
+        'subagent.transcript': partial(subagent_transcript, connection),
         **{name: partial(subagent_control, connection, steer=name == 'subagent.steer')
            for name in ('subagent.steer', 'subagent.interrupt')}}
 
@@ -210,8 +212,7 @@ async def read(connection, ref, params, *, kind):
         _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
         if kind == 'subagents':
-            return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
-                                  for record in records], 'delegations': []}
+            return {'subagents': [subagent_row(record) for record in records], 'delegations': []}
         if kind == 'tail':
             return subagent_tail(records, params['subagent_id'])
         return {'processes': process_snapshot(authority, ref, agent, records)}
@@ -518,6 +519,14 @@ def _compression_lineage(db, session_id):
     lineage = getattr(db, 'get_compression_lineage', None)
     found = lineage(session_id) if callable(lineage) else None
     return frozenset(found if isinstance(found, (list, tuple)) else ()) | ids
+
+
+def subagent_row(record):
+    """One ``subagent.list`` row; ``child_session_id`` is the child's own stored session, the one
+    ``subagent.transcript`` reads."""
+    child = getattr(record.get('agent'), 'session_id', None)
+    return {**{key: record.get(key) for key in _SUBAGENT_FIELDS},
+            'child_session_id': child if isinstance(child, str) and child else None}
 
 
 def subagent_tail(records, subagent_id):

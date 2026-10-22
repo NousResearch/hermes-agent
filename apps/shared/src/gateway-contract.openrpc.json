@@ -42346,6 +42346,18 @@
             ],
             "default": null,
             "title": "Accepting Steer"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Child Session Id"
           }
         },
         "required": [
@@ -42456,6 +42468,111 @@
           "subagent_id"
         ],
         "title": "SubagentTailResult",
+        "type": "object"
+      },
+      "SubagentTranscriptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "subagent_id"
+        ],
+        "title": "SubagentTranscriptParams",
+        "type": "object"
+      },
+      "SubagentTranscriptResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_subagent_transcript.py``: one child of the session's conversation (live\nthrough the roster, finished through its stored row). ``messages`` are ``session.resume`` rows;\n``available`` is false for an unknown or foreign child. With ``reset`` they are the whole\ntranscript and replace what the caller holds (the first read, and after the child compacted,\nrotated, rewound or rewrote a row); otherwise they are only the rows appended after ``after``.",
+        "properties": {
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Session Id"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor"
+          },
+          "reset": {
+            "title": "Reset",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "available",
+          "child_session_id",
+          "running",
+          "messages",
+          "cursor",
+          "reset"
+        ],
+        "title": "SubagentTranscriptResult",
         "type": "object"
       },
       "SubscriptionChangeEffect": {
@@ -48065,6 +48182,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ShellExecResult"
+        }
+      }
+    },
+    {
+      "name": "subagent.transcript",
+      "summary": "A delegated child's stored transcript, live or finished, for a viewer of its parent session; poll with the returned cursor.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SubagentTranscriptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SubagentTranscriptResult"
         }
       }
     },

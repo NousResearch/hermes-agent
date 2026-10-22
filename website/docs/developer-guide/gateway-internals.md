@@ -57,6 +57,45 @@ Subagent reads require the current parent's live object ancestry, not merely equ
 session IDs; tails are bounded to 16 KiB. Missing or retired children return
 `available: false`. These are reads, not child steering or stop controls.
 
+`subagent.list` rows also carry `child_session_id`: the child's own stored session
+(`null` until it has one).
+
+`subagent.transcript({session_id, subagent_id, after?})` returns a delegated child's
+stored transcript, live or finished, for a viewer of its parent session:
+
+```json
+{"subagent_id": "sa-0-1a2b3c4d", "available": true, "child_session_id": "20261017_104110_e10994",
+ "running": true, "reset": true, "cursor": "42.2.0.0.20261017_104110_e10994",
+ "messages": [{"role": "user", "content": "…", "row_id": 40, "timestamp": 1760697670.1},
+              {"role": "assistant", "content": "…", "row_id": 42, "timestamp": 1760697674.8}]}
+```
+
+`messages` are the same rows `session.resume` returns (`stored_history`), oldest first;
+rows the child's compression summarized away carry `archived: true`. `cursor` is opaque:
+pass it back as `after` to receive only the rows written since (`reset: false`, often
+none). When `reset` is true the messages are the whole transcript and replace what the
+caller holds: on the first read (no `after`), and whenever anything but an append
+changed the child (it compacted in place, rotated to a new `child_session_id`, rewound or
+rewrote a row), including rows written and compacted between two polls. A cursored poll costs a count and a keyset read of the new rows
+(`transcript_cursor_state`, `conversation_tail`), not a transcript
+rebuild. A running child is
+the one the parent's roster names (the `subagent.list` rule, nested children included).
+A finished child is found through the `_subagent_id` stamped on its row at spawn, and
+only when its `parent_session_id` chain reaches this conversation through delegation and
+compression hops alone; a branch of the conversation does not lend its children. An
+unknown or foreign child answers `available: false` with no messages and `cursor: null`; an unknown session
+is `not_found`. Runtimes that serve it advertise `subagent-transcript-v1` in
+`runtime.describe.capabilities`.
+
+Live progress needs no file read. The owner publishes `subagent.spawn_requested`, `start`,
+`thinking`, `tool`, `progress` and `complete` to every viewer of the parent session (local
+routes only); a nested child's lifecycle frames reach it too, but its `tool` and `thinking`
+frames do not. The child persists each tool-call turn before the tool runs, so while
+`running` is true a running tool is the trailing assistant `tool_calls` entry with no `tool`
+row for its id yet; the `tool` row (the result, with any `error` in its content) follows when
+the call ends. A finished child's `status`, `exit_reason` and `duration_seconds` are in its
+delegator's `delegate_task` result.
+
 Managed-worker policies return `unsupported_projection` for process/subagent reads:
 the owner's process-local registry cannot truthfully describe another interpreter.
 Control mutations (`session.control`), process mutations and subagent steering are

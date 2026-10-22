@@ -319,9 +319,13 @@ def _build_child_agent(
     except TypeError:
         child._delegate_parent_ref = None  # non-weakref-able test doubles
     # Sidebar marker: subagent sessions stay out of session pickers even when a
-    # parent delete orphans them (mirrors /branch's ``_branched_from``).
+    # parent delete orphans them (mirrors /branch's ``_branched_from``). The
+    # subagent_id lets a viewer find the stored transcript once the live registry
+    # has forgotten the child (``delegate_tool_sessions``).
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
+        from tools.delegate_tool_sessions import SUBAGENT_ID_KEY
         child._session_init_model_config["_delegate_from"] = parent_sid
+        child._session_init_model_config[SUBAGENT_ID_KEY] = subagent_id
     # Shared pool lets children rotate credentials on rate limits.
     child_pool = _resolve_child_credential_pool(
         rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),

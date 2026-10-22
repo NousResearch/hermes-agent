@@ -1465,15 +1465,18 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             return best if best is not None else session_id
 
     def _fetch_conversation_rows(self, session_ids: list[str], active_clause: str, *, with_session_id: bool,
-                                 with_compacted: bool = False):
+                                 with_compacted: bool = False, after_id: Optional[int] = None):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
         and would break tool-call adjacency). ``with_compacted``: the display set (``active_clause`` is
-        ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``."""
+        ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``.
+        ``after_id``: only rows with a greater id (keyset paging)."""
         rows = self._read_all(
             f"SELECT {'session_id, ' if with_session_id else ''}{'compacted, ' if with_compacted else ''}"
             f"{self._CONVERSATION_ROW_COLUMNS} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
-            f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause} ORDER BY id", tuple(session_ids))
+            f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause}"
+            f"{'' if after_id is None else ' AND id > ?'} ORDER BY id",
+            (*session_ids, *(() if after_id is None else (int(after_id),))))
         return self._with_removed_identities(rows, session_ids) if with_compacted else rows
 
     def _with_removed_identities(self, rows, session_ids: list[str]) -> list[Any]:
@@ -1519,6 +1522,26 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             f"SELECT COUNT(*), COALESCE(MAX(id), 0), (SELECT COALESCE(SUM(transcript_revision), 0) FROM sessions"
             f" WHERE id IN ({marks})) FROM messages WHERE session_id IN ({marks}) AND active = 1", (*ids, *ids))
         return (tuple(ids), int(row[0]), int(row[1]), int(row[2]))
+
+    def transcript_cursor_state(self, session_id: str, through_id: int) -> tuple[int, int, int]:
+        """``(live rows with id <= through_id, inactive rows, transcript_revision)`` of one session. An
+        append moves none of them. A compaction or rewind (anywhere, including rows appended after
+        *through_id*) moves the inactive count, deleting the rows held moves the first, an in-place
+        rewrite the last; while all three hold, the rows after *through_id* are all that changed."""
+        row = self._read_one(
+            "SELECT (SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1 AND id <= ?),"
+            " (SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0),"
+            " (SELECT COALESCE(MAX(transcript_revision), 0) FROM sessions WHERE id = ?)",
+            (session_id, int(through_id), session_id, session_id))
+        return int(row[0]), int(row[1]), int(row[2])
+
+    def conversation_tail(self, session_id: str, after_id: int) -> list[dict[str, Any]]:
+        """``get_messages_as_conversation(include_row_ids=True)``'s live rows of one session with an id
+        greater than *after_id*: the keyset read a ``transcript_cursor_state`` holder polls."""
+        rows = self._fetch_conversation_rows([session_id], self._active_clause(False, False), with_session_id=False,
+                                             after_id=after_id)
+        return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=False,
+                                          repair_alternation=False, include_row_ids=True)
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation

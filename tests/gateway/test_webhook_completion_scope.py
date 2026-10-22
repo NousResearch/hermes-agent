@@ -1,5 +1,6 @@
 """Completion scripts retain the admitted profile and dispatch-time environment expansion."""
 import asyncio
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -7,6 +8,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.webhook_filters import WebhookRouteProcessor
 from gateway.profile_routing import ProfileRoute
 from gateway.run import GatewayRunner
@@ -80,6 +82,41 @@ async def test_bare_route_completion_uses_admitted_profile(tmp_path, monkeypatch
             authority.db.close()
         for profile_home in (home, secondary):
             process_ownership.release(profile_home)
+
+
+@pytest.mark.asyncio
+async def test_completion_secret_loading_does_not_block_event_loop(tmp_path, monkeypatch):
+    from gateway import run
+
+    loop = asyncio.get_running_loop()
+    loading = asyncio.Event()
+    release = threading.Event()
+    responsive = []
+
+    def load_secrets(home):
+        loop.call_soon_threadsafe(loading.set)
+        responsive.append(release.wait(timeout=5))
+        return {}
+
+    async def other_request():
+        await loading.wait()
+        release.set()
+
+    monkeypatch.setattr(run, '_load_profile_secret_scope', load_secrets)
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={}))
+    monkeypatch.setattr(adapter._route_processor, 'run_completion_script', lambda *_: True)
+    event = MessageEvent(text='fixture', message_id='completion-offloop', raw_message={})
+    request = asyncio.create_task(other_request())
+    try:
+        await adapter._run_completion_script(event, 'alerts', tmp_path, 'complete.py',
+                                             ProcessingOutcome.SUCCESS)
+        await request
+    finally:
+        release.set()
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+    assert responsive == [True], 'Secret loading blocked the unrelated request'
 
 
 @pytest.mark.parametrize('setting', ['${LATE_SCRIPT}', '~/.hermes/scripts/${LATE_SCRIPT}', '${SCRIPT_NAME}'])

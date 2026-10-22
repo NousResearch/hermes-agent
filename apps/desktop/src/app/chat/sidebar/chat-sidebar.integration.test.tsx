@@ -8,7 +8,14 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
+import {
+  $sidebarCardRows,
+  $sidebarFiltersActive,
+  $sidebarMessagingOpenIds,
+  resetSidebarView,
+  setSidebarAgentsGrouped,
+  setSidebarGrouping
+} from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
@@ -499,5 +506,56 @@ describe('ChatSidebar messaging owners', () => {
     expect(telegramGroups()).toHaveLength(0)
     expect(screen.queryByText('work-1')).toBeNull()
     expect(within(row('default-1')).queryByRole('img', { name: /^Profile:/ })).toBeNull()
+  })
+})
+
+// Inbox style changes presentation; its visible control must stay engaged after
+// the menu closes without claiming that the session list is narrowed.
+describe('ChatSidebar Inbox-style indicator', () => {
+  beforeEach(() => {
+    resetSidebarView()
+    $selectedStoredSessionId.set('tile-one')
+    $sessions.set(sessionRows)
+    $sessionsLoading.set(false)
+    $removedSessionIds.set(new Set())
+  })
+
+  afterEach(() => {
+    cleanup()
+    resetSidebarView()
+    $sessions.set([])
+    $selectedStoredSessionId.set(null)
+    $removedSessionIds.set(new Set())
+  })
+
+  it('leaves Filters inactive when Inbox style is off', () => {
+    renderSidebar('/', 'chat')
+    expect(screen.getByRole('button', { name: 'Filters' }).classList).not.toContain(
+      'bg-(--ui-control-active-background)'
+    )
+  })
+
+  it('keeps Filters engaged after Inbox style is enabled and clears it when disabled', () => {
+    renderSidebar('/', 'chat')
+    const trigger = screen.getByRole('button', { name: 'Filters' })
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Inbox style' }))
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+
+    expect($sidebarCardRows.get()).toBe(true)
+    expect($sidebarFiltersActive.get()).toBe(false)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(trigger.classList).toContain('bg-(--ui-control-active-background)')
+    expect(screen.getByText('Tile one')).toBeTruthy()
+    expect(screen.getByText('Tile two')).toBeTruthy()
+
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Inbox style' }))
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    expect($sidebarCardRows.get()).toBe(false)
+    expect($sidebarFiltersActive.get()).toBe(false)
+    expect(trigger.classList).not.toContain('bg-(--ui-control-active-background)')
+    expect(screen.getByText('Tile one')).toBeTruthy()
+    expect(screen.getByText('Tile two')).toBeTruthy()
   })
 })

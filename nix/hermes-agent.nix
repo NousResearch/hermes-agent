@@ -110,12 +110,6 @@ let
     inherit npm-lockfile-fix pmPackages;
   };
 
-  # npm 12.0.2 from the lock, wrapped onto the pm-pinned node so the dev
-  # shell's `npm` and `node` are the same generation.
-  npmPinned = callPackage ./npm-pinned.nix {
-    nodejs = pmPackages.node;
-  };
-
   hermesTui = callPackage ./tui.nix {
     inherit hermesNpmLib;
   };
@@ -383,12 +377,10 @@ stdenv.mkDerivation (finalAttrs: {
         # same uv, node, npm, ripgrep and ffmpeg `hermes pm install` provisions
         # on a non-Nix host. nixpkgs still supplies what pm ships no Linux
         # artifact for — git and openssh are win32-only pins — plus the
-        # platform tools Nix owns. package order matters: makeBinPath keeps
-        # the list order, and the pinned npm must win over the npm bundled
-        # inside the node artifact.
+        # platform tools Nix owns. hermesNpmLib.nodejs is the pinned node with
+        # the pinned npm already in its bin/, the same tree the builds use.
         [
-          npmPinned
-          pmPackages.node
+          hermesNpmLib.nodejs
           pmPackages.uv
           pmPackages.ripgrep
           pmPackages.ffmpeg

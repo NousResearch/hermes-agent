@@ -1961,6 +1961,11 @@ display:
   # edit-in-place heartbeat); false on Slack and on platforms that cannot edit.
   # long_running_notifications: true
 
+  # Add a CLI/TUI usage tip to the gateway's /new and /reset replies. Set this
+  # false for a shared bot when those hints are not relevant to chat members.
+  # Per-platform overrides are supported under display.platforms.<platform>.tips.
+  # tips: true
+
   # Include detailed iteration/tool/status context in busy acknowledgments
   # and long-running heartbeats. When true, busy acks show "iteration 21/60,
   # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,

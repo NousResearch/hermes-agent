@@ -1,4 +1,5 @@
 from unittest.mock import Mock, patch
+import pytest
 from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_cdp as bt_cdp
 from tools import browser_tool_session as bt_session
@@ -382,3 +383,52 @@ class TestCdpSessionCommandArgs:
 
         assert argv[argv.index("--session") + 1] == "local_test_456"
         assert "--cdp" not in argv
+
+    @pytest.mark.parametrize("launcher", ["/usr/bin/agent-browser", "/managed path/bin/agent-browser"])
+    def test_managed_local_profile_keeps_launcher_and_session(self, monkeypatch, tmp_path, launcher):
+        """Retain PR-specific argv invariants from the deleted Homebrew test file."""
+        from tools import browser_tool as bt, browser_tool_session as session
+
+        monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+        monkeypatch.setattr(bt, "_build_browser_env", dict)
+        monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(session, "_browser_in_sandbox", lambda: False)
+        monkeypatch.setattr(session, "_bot_desktop_attach_port", lambda _info: None)
+
+        captured = []
+        monkeypatch.setattr(session, "_spawn_and_collect",
+                            lambda _task, _info, argv, *args: captured.extend(argv) or {"success": True})
+        session._dispatch_browser_command("task", {"session_name": "h_profile"}, launcher,
+                                          "navigate", ["https://example.com"], 30, "auto")
+        prefix = session._agent_browser_argv(launcher)
+        assert captured[:len(prefix)] == prefix
+        assert captured[len(prefix):len(prefix) + 4] == [
+            "--session", "h_profile", "--profile",
+            str(tmp_path / "agent-browser-h_profile" / "agent-browser-chrome-h_profile"),
+        ]
+        assert captured[-3:] == ["--json", "navigate", "https://example.com"]
+
+    @pytest.mark.parametrize("backend", ["cdp", "desktop", "custom_profile", "sandbox", "lightpanda", "camofox"])
+    def test_managed_profile_does_not_override_existing_backend(self, monkeypatch, backend):
+        from tools import browser_tool as bt, browser_tool_session as session
+
+        monkeypatch.setattr(bt, "_build_browser_env",
+                            lambda: {"AGENT_BROWSER_PROFILE": "/custom"} if backend == "custom_profile" else {})
+        monkeypatch.setattr(bt, "_is_camofox_mode", lambda: backend == "camofox")
+        monkeypatch.setattr(session, "_browser_in_sandbox", lambda: backend == "sandbox")
+        monkeypatch.setattr(session, "_bot_desktop_attach_port", lambda _info: 9223 if backend == "desktop" else None)
+        monkeypatch.setattr(session, "_prepare_session_socket_dir",
+                            lambda *_args: pytest.fail("must not publish managed host profile"))
+        monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda _task: None)
+        captured = []
+        monkeypatch.setattr(session, "_spawn_and_collect",
+                            lambda _task, _info, argv, *args: captured.extend(argv) or {"success": True})
+        info = {"session_name": "h_existing"}
+        if backend == "cdp":
+            info["cdp_url"] = "ws://localhost:9222/test"
+        session._dispatch_browser_command("task", info, "/usr/bin/agent-browser", "snapshot", [],
+                                          30, "lightpanda" if backend == "lightpanda" else "auto")
+        assert "--profile" not in captured
+        assert captured[captured.index("--session") + 1] == "h_existing"
+        if backend in {"cdp", "desktop"}:
+            assert captured[captured.index("--cdp") + 1] == (info["cdp_url"] if backend == "cdp" else "9223")

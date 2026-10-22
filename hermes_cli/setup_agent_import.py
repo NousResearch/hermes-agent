@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -58,12 +59,15 @@ def offer_agent_import(hermes_home: Path) -> str:
         return ""
     user_home = str(Path.home())
     print_header("Coming from another agent?", gap=True)
-    _info("Found on this computer: " + ", ".join(
+    context = ("Found on this computer: " + ", ".join(
         f"{s.label} ({str(p).replace(user_home, '~', 1)})" for s, p in found) + ".",
         "Hermes can bring over its settings, memories, skills and MCP servers.",
         "You'll see a preview and confirm before anything changes.")
+    _info(*context)
     names = " or ".join(s.label for s, _ in found) if len(found) <= 2 else "any of them"
-    if not prompt_yes_no(f"Import your setup from {names}?", default=True):
+    # The menu clears the screen, so the question carries what it refers to ("any of them").
+    if not prompt_yes_no(f"Import your setup from {names}?", default=True,
+                         description="\n".join(f"  {w}" for line in context for w in textwrap.wrap(line, 76))):
         print_info(f"Skipped. Import later with: hermes plugins install {PLUGIN}, then hermes import-agent")
         return ""
     picked = _pick_sources(found)
@@ -100,7 +104,7 @@ def _ensure_plugin(hermes_home: Path) -> bool:
         if present:
             cmd_enable(PLUGIN)
         else:
-            cmd_install(PLUGIN, enable=True)
+            cmd_install(PLUGIN, enable=True, brief=True)  # the line above already said what and why
     # Both print their own error first: a refusal exits, an enable whose dependencies PM cannot
     # admit raises. Either way the import is skipped and the rest of setup goes on.
     except (SystemExit, AdmissionRefused):
@@ -130,13 +134,16 @@ def _run_import(source: ImportSource, hermes_home: Path) -> bool:
     # A home that is not <root>/profiles/<name> is the root: without a selector the child's
     # _apply_profile_override would follow the sticky active_profile into another profile.
     selector = [] if hermes_home.resolve().parent.name == "profiles" else ["--profile", "default"]
-    argv = [sys.executable, "-m", "hermes_cli.main", *selector, "import-agent", source.name, *source.extra_args]
+    # --from-setup: the plugin's import speaks as a step of this setup (no "run hermes setup" pointers,
+    # OpenClaw's skipped items folded into one line).
+    argv = [sys.executable, "-m", "hermes_cli.main", *selector, "import-agent", source.name, *source.extra_args,
+            "--from-setup"]
     env = served_profile_child_env(target_home=hermes_home)
     if os.environ.get("PYTHONPATH"):  # this same interpreter running Hermes: keep the source tree
         env["PYTHONPATH"] = os.environ["PYTHONPATH"]  # a checkout launched by path, which it strips
     # health: allow HX006 -- interactive child: the user reads its preview and answers its prompts
     if subprocess.run(argv, env=env, check=False).returncode:
-        # An install from before the plugin gained this importer refuses the name (argparse, exit 2).
-        print_warning(f"The {source.label} import did not run. If the error names an invalid choice, "
-                      f"update the plugin first: hermes plugins update {PLUGIN}")
+        # An install from before the plugin gained this importer, or --from-setup, refuses it (argparse, exit 2).
+        print_warning(f"The {source.label} import did not run. If the error names an invalid choice or "
+                      f"unrecognized arguments, update the plugin first: hermes plugins update {PLUGIN}")
     return _snapshot(hermes_home) != before

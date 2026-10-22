@@ -1,7 +1,7 @@
 # Catalog submission; Nous review is required before inclusion.
 manifest_version: 1
 name: cardzmc
-description: Pokemon and One Piece PSA 10 reference prices, populations, history, and market rankings.
+description: CARDZ public Pokemon and One Piece PSA 10 prices, populations, daily history, and market rankings.
 source: https://mcp.cardz.game/
 transport:
   type: http
@@ -15,12 +15,14 @@ tools:
     - get_market
 suggest:
   keywords:
+    - cardz
     - cardzmc
     - cardz marketcap
   hosts:
     - cardzmarketcap.com
     - mcp.cardz.game
 post_install: |
+  CARDZ provides public Pokemon and One Piece PSA 10 market data.
   No account, API key, or credentials are required. Start a new session to use
   search_cards, get_card, and get_market. Results include source dates and USD
   reference prices. This connection only reads public card and market data.

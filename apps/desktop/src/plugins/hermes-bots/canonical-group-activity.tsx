@@ -1,3 +1,4 @@
+import { Button } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
 import type { CanonicalGroupEvent } from './canonical-group-history'
@@ -152,4 +153,21 @@ export function CanonicalGroupAttention({ driver, labels }: { driver?: Canonical
   const parts = canonicalRoomAttention(driver, labels)
 
   return parts.length ? <p aria-live="polite" className="text-xs text-(--ui-text-secondary)">{parts.join(' · ')}</p> : null
+}
+
+/** The room's read, action and driver notices, above its log. */
+export function CanonicalGroupNotices({ readError, error, notice, unavailable, labels, onRefresh }: {
+  readError: string
+  error: string
+  notice: string
+  unavailable: boolean
+  labels: { refresh: string; driverUnavailable: string }
+  onRefresh: () => void
+}) {
+  return <>
+    {readError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{readError}<Button onClick={onRefresh}>{labels.refresh}</Button></div>}
+    {error && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{error}</div>}
+    {notice && <p aria-live="polite" className="px-3 py-1.5 text-xs text-(--ui-text-secondary)">{notice}</p>}
+    {unavailable && <p className="px-3 py-1.5 text-xs text-(--ui-text-tertiary)">{labels.driverUnavailable}</p>}
+  </>
 }

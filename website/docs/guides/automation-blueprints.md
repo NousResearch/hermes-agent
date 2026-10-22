@@ -22,6 +22,17 @@ For parameterized blueprints with forms instead of cron syntax, see the [Automat
 All three support delivery to Telegram, Discord, Slack, SMS, email, GitHub comments, or local files.
 :::
 
+:::warning Safety before copy-paste
+Automation blueprints can read local repositories, call external URLs, post GitHub comments, write files, or deliver private summaries to team channels. Before deploying any blueprint:
+
+- start with the narrowest delivery target (`--deliver local` or a private test channel);
+- keep API keys and webhook secrets in environment/config storage, never inside prompts;
+- use least-privilege GitHub/Stripe/CI tokens scoped to the repo or test account;
+- validate payload-derived URLs before asking the agent to fetch them;
+- add `[SILENT]` for quiet success paths so monitoring jobs do not spam channels;
+- run a simulated payload or one local script smoke before enabling recurring or write-capable automations.
+:::
+
 ---
 
 ## Development Workflow
@@ -134,6 +145,10 @@ Report any gaps where code changed but docs didn't. If everything is in sync, re
 
 ### Dependency Security Audit
 
+:::warning Registry disclosure
+`pip-audit` and `npm audit` may contact public package registries and can disclose dependency names/versions from the project being scanned. For private/client repositories, run this first in a controlled environment and confirm the registry disclosure boundary is acceptable.
+:::
+
 Daily scan for known vulnerabilities in project dependencies.
 
 **Trigger:** Schedule (daily)
@@ -162,6 +177,10 @@ If no vulnerabilities, respond with [SILENT]." \
 ## DevOps & Monitoring
 
 ### Deploy Verification
+
+:::warning Payload-derived URLs
+Do not blindly fetch `health_url` or other URLs supplied by webhook payloads. Restrict allowed hosts/environments in the prompt or script, and prefer staging/test payloads before production deploy verification.
+:::
 
 Trigger smoke tests after every deployment. Your CI/CD pipeline POSTs to the webhook when a deploy completes.
 
@@ -196,6 +215,10 @@ curl -X POST http://your-server:8644/webhooks/deploy-verify \
 ```
 
 ### Alert Triage
+
+:::warning Alert payload privacy and cost
+Alert payloads often include hostnames, IPs, customer IDs, stack traces, and internal service names. Redact or filter sensitive fields before delivery to shared channels, and set a tool/cost budget if the prompt uses web search.
+:::
 
 Correlate monitoring alerts with recent changes to draft a response. Works with Datadog, PagerDuty, Grafana, or any alerting system that can POST JSON.
 
@@ -375,6 +398,10 @@ If this is a label or assignment change, respond with [SILENT]." \
 
 ### CI Failure Analysis
 
+:::warning CI log fetching
+CI URLs and logs may contain temporary tokens, internal service names, or private artifact links. Restrict fetches to trusted CI domains and avoid posting raw logs back to public PRs.
+:::
+
 Analyze CI failures and post diagnostics on the PR.
 
 **Trigger:** GitHub webhook
@@ -410,6 +437,10 @@ platforms:
 
 ### Auto-Port Changes Across Repos
 
+:::danger Cross-repo write side effect
+This blueprint can create branches and PRs in other repositories. Use a least-privilege token, start with a fork/sandbox target, require human review before merge, and do not enable on production repos until a manual dry run passes.
+:::
+
 When a PR merges in one repo, automatically port the equivalent change to another.
 
 **Trigger:** GitHub webhook
@@ -441,6 +472,10 @@ If action is not 'closed' or not merged, respond with [SILENT]." \
 ## Business Operations
 
 ### Stripe Payment Monitoring
+
+:::warning Payment data privacy
+Stripe webhook events can contain customer/payment metadata. Test with Stripe test-mode events first, minimize fields included in the prompt, and deliver summaries only to approved private channels.
+:::
 
 Track payment events and get summaries of failures.
 
@@ -544,6 +579,16 @@ Keep the outline to ~300 words. This is a starting point, not a finished post." 
   --name "Blog outline" \
   --deliver local
 ```
+
+---
+
+## Before You Deploy a Blueprint
+
+1. **Classify side effects:** read-only, local write, external HTTP, or external write (GitHub comment/PR/channel delivery).
+2. **Smoke locally first:** run scripts directly, send synthetic webhook payloads, or use `--deliver local` before team-channel delivery.
+3. **Scope secrets:** use environment variables/config files and least-privilege tokens; never paste secrets into prompts.
+4. **Bound costs:** scheduled jobs that use web/search tools should include limits and quiet `[SILENT]` paths.
+5. **Record rollback:** know the cron job ID or webhook subscription name before enabling it so you can pause/remove it quickly.
 
 ---
 

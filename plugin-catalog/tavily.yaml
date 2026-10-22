@@ -2,7 +2,7 @@ name: tavily
 title: Tavily
 repo: https://github.com/tavily-ai/tavily-hermes-plugin
 sha: 057bf3c69b93051176e695490278ccd8de4726af
-description: 'Search, extract, map, crawl, and research through Tavily hosted MCP, with six Tavily skills. The default connection requires TAVILY_API_KEY; supports Hermes-managed OAuth through a native MCP override.'
+description: 'Search, extract, map, crawl, and research through Tavily hosted MCP, with Tavily skills. The default connection requires TAVILY_API_KEY; supports Hermes-managed OAuth through a native MCP override.'
 maintainer: tavily-ai
 tier: community
 category: web

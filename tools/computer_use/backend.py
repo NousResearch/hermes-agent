@@ -25,6 +25,9 @@ class UIElement:
     pid: int = 0                     # owning process PID
     window_id: int = 0               # SkyLight / CG window ID
     attributes: dict[str, Any] = field(default_factory=dict)
+    # Parent index from structured AX trees.  Older drivers omit it; ``None`` means the
+    # relationship is unknown, not that this is necessarily a root element.
+    parent_index: Optional[int] = None
     # Opaque per-snapshot handle from cua-driver, passed alongside `index` for explicit stale-detection: a
     # stale token errors instead of silently re-resolving to a different element. None on older drivers.
     # None for pre-#1961 drivers that didn't carry the field.

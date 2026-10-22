@@ -1002,6 +1002,43 @@ class TestGetActiveProfileName:
         # custom deployment.
         assert get_active_profile_name() == "default"
 
+    def test_profile_name_resolution_is_cached_per_home(self, profile_env, monkeypatch):
+        """Repeated redraws must not resolve the same profile paths again."""
+        import hermes_cli.profiles as profiles_mod
+
+        root = profile_env / ".hermes"
+        home = root / "profiles" / "coder"
+        home.mkdir(parents=True)
+        profiles_mod._active_profile_name_for.cache_clear()
+        original_resolve = profiles_mod.Path.resolve
+        calls = 0
+
+        def counting_resolve(path, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(profiles_mod.Path, "resolve", counting_resolve)
+
+        assert profiles_mod._active_profile_name_for(str(home), str(root)) == "coder"
+        first_call_count = calls
+        assert profiles_mod._active_profile_name_for(str(home), str(root)) == "coder"
+        assert calls == first_call_count
+
+    def test_profile_name_cache_keeps_profiles_separate(self, profile_env):
+        """A profile switch uses its distinct home key rather than stale identity."""
+        import hermes_cli.profiles as profiles_mod
+
+        root = profile_env / ".hermes"
+        coder = root / "profiles" / "coder"
+        reviewer = root / "profiles" / "reviewer"
+        coder.mkdir(parents=True)
+        reviewer.mkdir(parents=True)
+        profiles_mod._active_profile_name_for.cache_clear()
+
+        assert profiles_mod._active_profile_name_for(str(coder), str(root)) == "coder"
+        assert profiles_mod._active_profile_name_for(str(reviewer), str(root)) == "reviewer"
+
 
 # ===================================================================
 # TestResolveProfileEnv

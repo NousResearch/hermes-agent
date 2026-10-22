@@ -366,3 +366,23 @@ def test_profile_child_uses_the_target_profiles_persistent_container(two_profile
     finally:
         clear_session_vars(tokens)
 
+
+def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_container(two_profiles):
+    """A ``coder`` chat on a default-launched gateway (its turn bound to coder, HERMES_SESSION_PROFILE=coder) routing
+    a child to ``default`` runs that child in default's persistent container, not the parent chat's."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import terminal_tool
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    launch, coder = two_profiles
+    for home in (launch, coder):
+        _set_config(home, terminal={"backend": "docker", "container_persistent": True})
+    tokens = set_session_vars(session_key="agent:coder:telegram:dm:1", profile="coder")
+    try:
+        with delegated_profile_scope(coder):
+            assert terminal_tool._resolve_container_task_id("parent-task") == "profile:coder"
+            with delegated_profile_scope(launch):
+                assert terminal_tool._resolve_container_task_id("child-task") == "default"
+            assert terminal_tool._resolve_container_task_id("parent-task") == "profile:coder"
+    finally:
+        clear_session_vars(tokens)

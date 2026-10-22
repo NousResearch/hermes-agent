@@ -41,6 +41,7 @@ from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
 from hermes_cli.cli_browser_gateway import _normalize_cdp_url
+from hermes_cli.cli_command_args import _take_flag
 
 
 # Output helpers. Slash-command text is user-visible: every literal below is load-bearing.
@@ -56,17 +57,6 @@ def _attempt(label: str, errors, fn, *args, **kwargs):
     except errors as exc:
         _cp(f"  {label}: {exc}")
         return _FAILED
-
-
-def _take_flag(parts: list, flag: str):
-    """Pop ``flag VALUE`` out of ``parts``: ``(rest, value, ok)``; ok=False when the value is
-    missing (caller prints usage)."""
-    if flag not in parts:
-        return parts, None, True
-    idx = parts.index(flag)
-    if idx + 1 >= len(parts):
-        return parts, None, False
-    return parts[:idx] + parts[idx + 2:], parts[idx + 1], True
 
 
 def _summarize_paths(paths, limit: int = 5) -> str:

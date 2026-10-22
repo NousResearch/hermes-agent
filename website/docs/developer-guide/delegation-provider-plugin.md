@@ -19,7 +19,7 @@ The active provider is `delegation.backend` in `config.yaml`; a provider's own s
 `delegation.model`, `delegation.base_url`, ...), or inherits the parent's route when those are empty.
 A configured backend that is not installed or reports unavailable **fails closed**: `delegate_task`
 returns a tool error naming the backend and the fix, no child starts, and its schema parameters are
-absent.
+absent. A session can override the backend (`agent.delegation_backends`, below).
 
 ## Skeleton
 
@@ -147,6 +147,24 @@ Every result entry of a task routed by a non-default backend carries `route`: th
 
 `reasoning_effort` is `null` when the provider's default applies; `fallback_activated: true` is added
 when a fallback provider took over. The `default` backend's children leave the result entry unchanged.
+
+## Picker metadata and session switching
+
+`display_name` and `summary` (one user-facing line; never shown to the model) label your backend in
+pickers such as `/delegation`. `agent.delegation_backends` is the public API a picker or slash command
+uses:
+
+| Call | Does |
+|---|---|
+| `list_backends() -> list[BackendInfo]` | `default` first, then every registered backend: `name`, `label`, `description`, `available`, `reason` (the fix, when unavailable). |
+| `get_session_backend(session_key) -> str \| None` | The session's override, `None` when it follows `config.yaml`. |
+| `set_session_backend(session_key, name \| None)` | Switch one session (`None` clears). Raises `ValueError` with the reason for a backend that cannot run. |
+| `set_global_backend(name, *, session_key="")` | Write `delegation.backend` to the active profile's `config.yaml` and drop that session's override. |
+
+`session_key` is the `session_key` a plugin command handler receives. A session switch decides routing
+from that session's next `delegate_task` call; the `delegate_task` schema (your parameters) follows
+`config.yaml`, because it is part of the cached prompt, so a session switched to a backend whose
+parameters it lacks routes every task to that backend's default.
 
 ## Prompt caching
 

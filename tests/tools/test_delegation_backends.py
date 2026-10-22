@@ -201,6 +201,32 @@ def test_a_backend_route_without_its_own_chain_inherits_delegation_fallback_prov
         manager.unload()
 
 
+def test_a_session_backend_switch_routes_that_session_only_and_global_persists(tmp_path, monkeypatch, recorded):
+    """``/delegation`` seam: a session override decides that session's routing; ``--global`` writes config.yaml
+    and drops the override; a backend that cannot run is refused up front."""
+    home, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options",
+                                                  "backends": {"probe-options": {"options": OPTIONS}}})
+    try:
+        from agent.delegation_backends import (
+            get_session_backend, list_backends, set_global_backend, set_session_backend,
+        )
+        from tools.delegate_tool import delegate_task
+
+        assert [(b.name, b.available) for b in list_backends()] == [("default", True), ("probe-options", True)]
+        set_session_backend("chat-a", "default")
+        for sid in ("chat-a", "chat-b"):
+            delegate_task(tasks=[{"goal": "route me", "option": "fast"}], parent_agent=_parent(sid))
+        assert [b["model"] for b in recorded] == [None, "fast-model"]
+        with pytest.raises(ValueError, match="'nope' is not installed"):
+            set_session_backend("chat-a", "nope")
+
+        set_global_backend("default", session_key="chat-a")
+        assert yaml.safe_load((home / "config.yaml").read_text())["delegation"]["backend"] == "default"
+        assert get_session_backend("chat-a") is None
+    finally:
+        manager.unload()
+
+
 def test_plugin_parameters_never_redefine_core_or_route_fields(tmp_path, monkeypatch):
     from agent.delegation_provider import DelegationProvider
     from tools.delegate_tool_routes import schema_extension

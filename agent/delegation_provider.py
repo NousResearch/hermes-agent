@@ -73,6 +73,11 @@ class DelegationProvider(ProviderBase):
         own = backends.get(self.name) if isinstance(backends, Mapping) else None
         return own if isinstance(own, Mapping) else {}
 
+    @property
+    def summary(self) -> str:
+        """One user-facing line for backend pickers (``/delegation``); never shown to the model."""
+        return ""
+
     def is_available(self) -> bool:
         """Whether this provider can run here. MUST NOT make network calls. False fails delegation closed: a
         ``delegate_task`` call under this backend is a tool error naming it, never a run on another route."""

@@ -287,9 +287,12 @@ def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]]
 
 def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, Any], parent_agent: Any,
                         ) -> tuple[list[TaskRoute], Optional[str]]:
-    """One :class:`TaskRoute` per task from the configured backend (``delegation.backend``), or ``([], error)`` when that backend cannot run (fails closed, never another
+    """One :class:`TaskRoute` per task from the session's backend (its ``/delegation`` override, else
+    ``delegation.backend``), or ``([], error)`` when that backend cannot run (fails closed, never another
     backend). A task the backend cannot route gets a route with ``error`` set; its siblings are unaffected.
     Identical routes resolve credentials once per call (the default backend resolves exactly once)."""
+    from agent.delegation_backends import session_delegation_config
+    config = session_delegation_config(config, parent_agent)
     try:
         provider = _active_provider(config)
     except DelegationRouteError as exc:

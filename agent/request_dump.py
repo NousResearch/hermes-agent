@@ -9,21 +9,22 @@ Two properties keep that from coming back:
 
 * the gate lives on the writer (``dump_api_request_debug``), so a call site cannot write an
   ungated dump however it is reached;
-* ``HERMES_DUMP_REQUESTS_CONTENT`` decides how much of the body is kept. The default,
-  ``redacted``, keeps the shape — roles, tool names, sizes, error type — because the shape is
-  what diagnoses a rejected request, and the conversation in it is the user's data.
+* ``diagnostics.request_dump.content`` in ``config.yaml`` decides how much of the body is
+  kept. The default, ``redacted``, keeps the shape — roles, tool names, sizes, error type —
+  because the shape is what diagnoses a rejected request, and the conversation in it is the
+  user's data. Behaviour belongs in config, not in a second ``HERMES_*`` env var.
 """
 
 from __future__ import annotations
 
+import copy
 import json
-import os
 from typing import Any, Mapping, Optional
 
 from utils import env_var_enabled
 
 DUMP_ENV = "HERMES_DUMP_REQUESTS"
-CONTENT_ENV = "HERMES_DUMP_REQUESTS_CONTENT"
+CONTENT_KEY = "diagnostics.request_dump.content"
 
 CONTENT_REDACTED = "redacted"
 CONTENT_FULL = "full"
@@ -47,13 +48,34 @@ def request_dump_enabled() -> bool:
     return env_var_enabled(DUMP_ENV)
 
 
-def request_dump_content_mode() -> str:
-    """``full`` or ``redacted``. Anything unrecognized falls back to ``redacted``.
+def request_dump_content_mode(config: Optional[Mapping[str, Any]] = None) -> str:
+    """``full`` or ``redacted``, read from ``diagnostics.request_dump.content``.
 
-    A typo must not silently turn on full-body dumps; only the exact word ``full`` does that.
+    Anything unrecognized falls back to ``redacted``: a typo must not silently turn on
+    full-body dumps, so only the exact word ``full`` does that. ``config`` is injectable for
+    tests; production reads the live ``config.yaml``.
     """
-    raw = (os.environ.get(CONTENT_ENV) or "").strip().lower()
-    return CONTENT_FULL if raw == CONTENT_FULL else CONTENT_REDACTED
+    if config is None:
+        from hermes_cli.config import load_config
+        config = load_config() or {}
+    section = config.get("diagnostics")
+    entry = section.get("request_dump") if isinstance(section, Mapping) else None
+    raw = str((entry or {}).get("content") or "") if isinstance(entry, Mapping) else ""
+    return CONTENT_FULL if raw.strip().lower() == CONTENT_FULL else CONTENT_REDACTED
+
+
+def dump_body_for_debug(api_kwargs: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """The body to write for one dump, or ``None`` when dumps are off.
+
+    One function decides both questions — whether a dump happens and how much of the body
+    survives — so a call site cannot answer either one differently.
+    """
+    if not request_dump_enabled():
+        return None
+    body = {k: v for k, v in copy.deepcopy(dict(api_kwargs)).items() if v is not None and k != "timeout"}
+    if request_dump_content_mode() != CONTENT_FULL:
+        body = redact_request_body(body)
+    return body
 
 
 def _size_of(value: Any) -> str:

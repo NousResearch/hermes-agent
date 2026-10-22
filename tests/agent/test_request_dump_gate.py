@@ -2,8 +2,9 @@
 
 Both error paths (non-retryable 4xx, retries exhausted) wrote a full request body — system
 prompt, conversation, every tool schema — on every failure, with only the preflight path gated.
-The gate now lives on the writer, and ``HERMES_DUMP_REQUESTS_CONTENT`` decides how much of the
-body survives: ``redacted`` (default) keeps the shape, ``full`` keeps the body as sent.
+The gate now lives on the writer, and ``diagnostics.request_dump.content`` decides how much of
+the body survives: ``redacted`` (default) keeps the shape, ``full`` keeps the body as sent. The
+on/off switch stays on ``HERMES_DUMP_REQUESTS``, which predates the config section.
 """
 
 import json
@@ -11,7 +12,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import agent_runtime_helpers
 from agent.agent_runtime_helpers import dump_api_request_debug
 from agent.error_classifier import classify_api_error
 from agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
@@ -129,7 +129,10 @@ def test_enabled_writes_one_redacted_dump_per_failure(tmp_path, monkeypatch):
 
 def test_full_content_mode_keeps_the_body_when_asked(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1")
-    monkeypatch.setenv("HERMES_DUMP_REQUESTS_CONTENT", "full")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"diagnostics": {"request_dump": {"content": "full"}}},
+    )
 
     _drive_exhausted(_agent(tmp_path))
 
@@ -142,13 +145,37 @@ def test_full_content_mode_keeps_the_body_when_asked(tmp_path, monkeypatch):
 def test_unrecognized_content_value_stays_redacted(tmp_path, monkeypatch, value):
     """A typo must not silently turn on full-body dumps."""
     monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1")
-    monkeypatch.setenv("HERMES_DUMP_REQUESTS_CONTENT", value)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"diagnostics": {"request_dump": {"content": value}}},
+    )
 
     _drive_nonretryable(_agent(tmp_path))
 
     dumps = _dumps(tmp_path)
     assert len(dumps) == 1
     assert "4417" not in dumps[0].read_text(encoding="utf-8")
+
+
+def test_the_body_mode_is_not_reachable_from_an_env_var(tmp_path, monkeypatch):
+    """Behaviour belongs in config.yaml: the old env var is gone and cannot re-enable a full body."""
+    monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1")
+    monkeypatch.setenv("HERMES_DUMP_REQUESTS_CONTENT", "full")
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
+
+    _drive_exhausted(_agent(tmp_path))
+
+    dumps = _dumps(tmp_path)
+    assert len(dumps) == 1
+    assert "4417" not in dumps[0].read_text(encoding="utf-8")
+
+
+def test_a_config_without_the_key_still_redacts():
+    """An install that never set diagnostics.request_dump.content gets the documented default."""
+    from agent.request_dump import request_dump_content_mode
+
+    assert request_dump_content_mode({}) == "redacted"
+    assert request_dump_content_mode({"diagnostics": {}}) == "redacted"
 
 
 def test_both_error_paths_consult_the_one_shared_predicate(tmp_path, monkeypatch):
@@ -159,7 +186,9 @@ def test_both_error_paths_consult_the_one_shared_predicate(tmp_path, monkeypatch
         calls.append("asked")
         return False
 
-    monkeypatch.setattr(agent_runtime_helpers, "_request_dump_enabled", _spy)
+    from agent import request_dump
+
+    monkeypatch.setattr(request_dump, "request_dump_enabled", _spy)
 
     _drive_nonretryable(_agent(tmp_path))
     _drive_exhausted(_agent(tmp_path))

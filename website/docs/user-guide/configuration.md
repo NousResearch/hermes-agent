@@ -91,6 +91,27 @@ sandboxes
 where the limit cannot be changed, startup continues without changing the
 limit.
 
+## Diagnostic request dumps
+
+When a provider rejects a request, Hermes can write the request body to
+`~/.hermes/logs/request_dump_<session>_<time>.json` for post-mortems. That body carries the whole
+conversation, so it is off by default and controlled separately from the content:
+
+```bash
+hermes config set diagnostics.request_dump.content redacted   # default
+```
+
+`HERMES_DUMP_REQUESTS=true` turns the dump on (the environment variable predates the config key
+and stays the on/off switch). `diagnostics.request_dump.content` then decides how much survives:
+
+| Value | What lands in the file |
+|---|---|
+| `redacted` (default) | Roles, tool names, sizes, model parameters and the error type. Conversation text is replaced by its size, e.g. `<text 1843 chars>`. |
+| `full` | The body exactly as sent, including the conversation. Only choose this when you are about to read the file yourself. |
+
+Any other value falls back to `redacted`, so a typo cannot silently start writing conversations to
+disk.
+
 ## Database Settings
 
 The `database:` section controls how Hermes opens its SQLite state database

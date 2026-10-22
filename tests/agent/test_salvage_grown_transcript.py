@@ -176,3 +176,29 @@ def test_salvage_never_caps_unmarked_summary_shaped_live_user_text():
 
     assert out is not None
     assert out[0]["content"] == live_user_text
+
+
+def test_salvage_never_strips_reasoning_from_retained_turns():
+    """The salvaged list is committed as canonical history and replayed by default, so older assistant
+    turns must keep every reasoning carrier; only tool output and summaries are shrink targets."""
+    reasoning = {
+        "reasoning": "r" * 300,
+        "reasoning_content": "rc" * 150,
+        "reasoning_details": [{"type": "reasoning.text", "text": "d" * 300, "signature": "s", "index": 0}],
+    }
+    original = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "a"}], **reasoning},
+        {"role": "tool", "tool_call_id": "a", "content": "A" * 6000},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "b"}], **reasoning},
+        {"role": "tool", "tool_call_id": "b", "content": "B" * 6000},
+        {"role": "tool", "tool_call_id": "c", "content": "C" * 6000},
+        {"role": "tool", "tool_call_id": "d", "content": "keep-latest"},
+    ]
+    grown = original + [{"role": "user", "content": "Current todos:\n- [ ] x", "_todo_snapshot_synthetic": True}]
+
+    out = salvage_grown_transcript(original, grown)
+
+    assert out is not None
+    for msg in (m for m in out if m.get("role") == "assistant"):
+        assert {k: msg[k] for k in reasoning} == reasoning

@@ -11,6 +11,7 @@ import {
   desktopSlashDescription,
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestionWithOptions,
   rankSkillCommands,
@@ -20,6 +21,7 @@ import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
 
+import { completionOwner, completionOwnerKey, requestCompletion } from './completion-route'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
@@ -82,8 +84,15 @@ export function useSlashCompletions(options: {
     [sessionId, profile]
   )
 
-  const scopeKey = sessionId ?? (profile ? `profile:${profile}` : '')
-  const catalogKey = scopeKey ? `catalog:${scopeKey}` : 'catalog'
+  // Session-scoped lookups go to the session's owner (#141583); the owner is
+  // resolved per call and folded into every cache key, so an answer from one
+  // backend is never replayed for another.
+  const keysFor = useCallback(() => {
+    const owner = completionOwner(sessionId)
+    const scopeKey = sessionId ? `${completionOwnerKey(owner)}:${sessionId}` : profile ? `profile:${profile}` : ''
+
+    return { catalogKey: scopeKey ? `catalog:${scopeKey}` : 'catalog', owner, scopeKey }
+  }, [sessionId, profile])
 
   // Warm argument_mode before the first `/` so Space treats /review as text.
   useEffect(() => {
@@ -91,8 +100,10 @@ export function useSlashCompletions(options: {
       return
     }
 
+    const { catalogKey, owner } = keysFor()
+
     void cachedSlashCompletion(catalogKey, () =>
-      gateway.request<CommandsCatalogLike>('commands.catalog', sessionParams)
+      requestCompletion<CommandsCatalogLike>(gateway, owner, 'commands.catalog', sessionParams)
     )
       .then(catalog => {
         filterDesktopCommandsCatalog(catalog)
@@ -100,7 +111,7 @@ export function useSlashCompletions(options: {
       .catch(() => {
         // Next keystroke retries; don't block the composer on a warm-up miss.
       })
-  }, [gateway, epoch, catalogKey, sessionParams])
+  }, [gateway, epoch, keysFor, sessionParams])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -169,11 +180,13 @@ export function useSlashCompletions(options: {
         return { items, query }
       }
 
+      const { catalogKey, owner, scopeKey } = keysFor()
+
       try {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
             await cachedSlashCompletion(catalogKey, () =>
-              gateway.request<CommandsCatalogLike>('commands.catalog', sessionParams)
+              requestCompletion<CommandsCatalogLike>(gateway, owner, 'commands.catalog', sessionParams)
             )
           )
 
@@ -215,7 +228,7 @@ export function useSlashCompletions(options: {
         }
 
         const result = await cachedSlashCompletion(`slash:${scopeKey}:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+          requestCompletion<{ items?: CompletionEntry[]; replace_from?: number }>(gateway, owner, 'complete.slash', {
             text,
             ...sessionParams
           })
@@ -229,13 +242,19 @@ export function useSlashCompletions(options: {
         const isArgCompletion = replaceFrom > 1
         const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
 
+        // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
+        // only its review slice here) must not suggest the subcommands the
+        // exec gate would refuse — filter before the arg-stub rewrite so the
+        // token under test is the bare subcommand word.
+        const scopedItems = filterDesktopSubcommandCompletions(text, result.items ?? [], { isArgCompletion })
+
         // An alias the user typed to completion (`/reset`) must surface even
         // though aliases are hidden while browsing — otherwise the popover
         // says "no matches" for a command Enter happily executes (#57641).
         // Only an EXACT match unlocks it; a partial prefix keeps hiding.
         const exactAliasQuery = isArgCompletion ? undefined : commandText(query).toLowerCase()
 
-        const decorated = (result.items ?? [])
+        const decorated = scopedItems
           .map(item => {
             if (!isArgCompletion) {
               return item
@@ -282,7 +301,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin, scopeKey, catalogKey, sessionParams]
+    [gateway, skinThemes, activeSkin, keysFor, sessionParams]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -324,9 +343,11 @@ export function useSlashCompletions(options: {
         return true
       }
 
+      const { catalogKey, scopeKey } = keysFor()
+
       return hasCachedSlashCompletion(query ? `slash:${scopeKey}:${text.toLowerCase()}` : catalogKey)
     },
-    [skinThemes, scopeKey, catalogKey]
+    [skinThemes, keysFor]
   )
 
   return useLiveCompletionAdapter({ enabled, epoch: `${epoch}:${locale}`, fetcher, isCached, toItem })

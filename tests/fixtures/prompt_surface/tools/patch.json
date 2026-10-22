@@ -1,0 +1,31 @@
+{
+  "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing. Finds a unique string and replaces it.",
+  "name": "patch",
+  "parameters": {
+    "properties": {
+      "new_string": {
+        "description": "Changed replacement text; it must differ from old_string. Pass empty string '' to delete the matched text.",
+        "type": "string"
+      },
+      "old_string": {
+        "description": "Exact text to find and replace. Must be unique in the file unless replace_all=true. Include surrounding context lines to ensure uniqueness.",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path to edit.",
+        "type": "string"
+      },
+      "replace_all": {
+        "default": false,
+        "description": "Replace all occurrences instead of requiring a unique match (default: false)",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "path",
+      "old_string",
+      "new_string"
+    ],
+    "type": "object"
+  }
+}

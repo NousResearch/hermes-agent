@@ -24,7 +24,7 @@ def zai_profile():
     """Resolve the registered Z.AI profile through the real discovery path."""
     # ``model_tools`` triggers plugin discovery on import, which is what
     # registers the Z.AI profile in the global provider registry.
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("zai")
@@ -48,7 +48,7 @@ class TestZaiThinkingWireShape:
         extra_body, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "medium"}, model="glm-5"
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {}
 
     def test_explicitly_disabled_sends_disabled_marker(self, zai_profile):
@@ -73,7 +73,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": "high"},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["low", "medium", "minimal"])
@@ -84,7 +84,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["xhigh", "max"])
@@ -93,7 +93,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": "max"}
 
     def test_disabled_sends_no_effort(self, zai_profile):
@@ -159,7 +159,7 @@ class TestZaiGLM53ReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.3",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": expected}
 
     @pytest.mark.parametrize(
@@ -180,6 +180,28 @@ class TestZaiGLM53ReasoningEffort:
             model="glm-5.2",
         )
         assert top_level == {"reasoning_effort": "high"}
+
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "glm-5.3",
+            "glm-5.3-flash",
+            "z-ai/glm-5.3",
+            "z-ai/glm-5.3-flash",
+            "glm-5-3",
+            "glm-5p3",
+        ],
+    )
+    def test_disabled_becomes_enabled_plus_low(self, zai_profile, model):
+        """#85890 / #96373 — 5.3 rejects thinking.type=disabled (HTTP 400 / 1210)."""
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model=model,
+        )
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
+        assert top_level == {"reasoning_effort": "low"}
+
 
 
 class TestZaiModelGating:
@@ -221,4 +243,26 @@ class TestZaiFullKwargsIntegration:
             provider_name="zai",
         )
         assert kwargs["reasoning_effort"] == "max"
-        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled", "clear_thinking": False}
+
+    @pytest.mark.parametrize("model,reasoning,thinking,effort", [
+        ("glm-5.3-flash", {"enabled": False}, "enabled", "low"),
+        ("glm-5.2", {"enabled": False}, "disabled", None),
+        ("glm-5.3", None, None, None),
+    ])
+    def test_glm_thinking_preference_reaches_transport(self, zai_profile, model, reasoning, thinking, effort):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=zai_profile,
+            reasoning_config=reasoning,
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            provider_name="zai",
+        )
+        assert kwargs.get("reasoning_effort") == effort
+        expected = None if thinking is None else (
+            {"type": thinking, "clear_thinking": False} if thinking == "enabled" else {"type": thinking})
+        assert kwargs.get("extra_body", {}).get("thinking") == expected

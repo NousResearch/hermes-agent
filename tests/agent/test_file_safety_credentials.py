@@ -78,7 +78,7 @@ def test_search_tool_blocks_direct_auth_json_path(fake_home, monkeypatch):
     import json
 
     import tools.file_tools as ft
-    import tools.terminal_tool as terminal_tool
+    from tools import terminal_tool
 
     auth = _create(fake_home, "auth.json")
     auth.write_text("SEARCH_DIRECT_AUTH_SECRET", encoding="utf-8")
@@ -108,7 +108,7 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
     from tools.file_operations import SearchResult
     from tools.file_operations_common import SearchMatch
     import tools.file_tools as ft
-    import tools.terminal_tool as terminal_tool
+    from tools import terminal_tool
 
     auth = _create(fake_home, "auth.json")
     token = _create(fake_home, Path("mcp-tokens") / "provider.json")

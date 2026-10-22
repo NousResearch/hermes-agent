@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -15,7 +15,7 @@ def _parse_ts(ts) -> Optional[datetime]:
         dt = datetime.fromisoformat(ts)
     except (TypeError, ValueError):
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 def _fmt_ts(ts: Optional[str]) -> str:
@@ -24,7 +24,7 @@ def _fmt_ts(ts: Optional[str]) -> str:
     dt = _parse_ts(ts)
     if dt is None:
         return str(ts)
-    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    secs = int((datetime.now(UTC) - dt).total_seconds())
     for unit, div, limit in (("s", 1, 60), ("m", 60, 3600), ("h", 3600, 86400)):
         if secs < limit:
             return f"{secs // div}{unit} ago"
@@ -327,7 +327,7 @@ def _idle_days(record: dict) -> Optional[int]:
     immortal; None only when both fields are missing or unparseable."""
     ts = record.get("last_activity_at") or record.get("created_at")
     dt = _parse_ts(str(ts)) if ts else None
-    return None if dt is None else max(0, (datetime.now(timezone.utc) - dt).days)
+    return None if dt is None else max(0, (datetime.now(UTC) - dt).days)
 
 
 def _cmd_prune(args) -> int:
@@ -445,7 +445,7 @@ def _cmd_purge(args) -> int:
         # archived_at survives a manual un-archive + re-archive. Never purge before either says so.
         # Key by the SKILL.md frontmatter name: older archives were flattened under the directory
         # name (`accelerate` for `huggingface-accelerate`), which is not the usage-record key.
-        rec = usage.get(skill_usage._read_skill_name(p / "SKILL.md", fallback=p.name)) or {}
+        rec = usage.get(skill_usage.read_skill_name(p / "SKILL.md", fallback=p.name)) or {}
         archived = rec.get("state") == skill_usage.STATE_ARCHIVED
         at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if archived else None
         return max(at.timestamp(), p.stat().st_mtime) if at else p.stat().st_mtime
@@ -590,10 +590,10 @@ def _cmd_usage(args) -> int:
         print("curator: no skills found")
         return 0
     provenance = [r.get("provenance", "agent") for r in rows]
-    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub")}
+    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub", "external")}
     print(
         f"skills: {len(rows)} total  "
-        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']})\n")
+        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']}  external={counts['external']})\n")
     print(
         f"  {'skill':40s}  {'origin':8s}  "
         f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity")
@@ -626,7 +626,7 @@ _SUBCOMMANDS = (
         _arg("--sort", choices=("activity", "recent", "name"), default="activity",
              help="Sort order: activity (most-used first, default), recent "
                   "(most-recently-active first), or name (alphabetical)"),
-        _arg("--provenance", choices=("agent", "bundled", "hub"), default=None,
+        _arg("--provenance", choices=("agent", "bundled", "hub", "external"), default=None,
              help="Only show skills of this origin"),
         _arg("--json", **_STORE_TRUE, help="Emit the full report as JSON instead of a table")),
     (

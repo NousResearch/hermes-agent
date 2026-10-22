@@ -625,9 +625,9 @@ def _noop_payload_error(function_name: str, function_args: dict[str, Any]) -> Op
     text = value.strip() if isinstance(value, str) else ""
     if text and text not in noops:
         return None
-    shown = "empty" if not text else f"the bare no-op {text!r}"
+    shown = f"an empty `{arg}`" if not text else f"the bare no-op {text!r} as `{arg}`"
     return tool_error(
-        f"{function_name} was called with {shown} as `{arg}`, so nothing ran. Re-emit the complete "
+        f"{function_name} was called with {shown}, so nothing ran. Re-emit the complete "
         f"{function_name} call with the actual {arg} you intend to run in the `{arg}` argument."
     )
 

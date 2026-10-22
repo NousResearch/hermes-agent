@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
@@ -7,6 +7,7 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
 import { isReadFileErrorResult, readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
+import { $inlinePreviewWide } from '@/store/inline-preview-width'
 
 /**
  * `::preview{file="…"}` — a workspace HTML file rendered LIVE inside the
@@ -50,8 +51,9 @@ import { localPreviewTarget } from '@/lib/local-preview'
 const MIN_HEIGHT = 120
 const MAX_HEIGHT = 1200
 const DEFAULT_HEIGHT = 280
-/** The transcript column cap the frame renders inside (`max-w-160` = 40rem). */
-const MAX_COLUMN_WIDTH = 640
+/** The reading-column cap a panel gets when full-width replies are off
+ *  (40rem, the width prose keeps for legibility). */
+const READING_COLUMN_WIDTH = 640
 /** Ignore sub-pixel/rounding churn so a vh-sized page can't oscillate. */
 const RESIZE_TOLERANCE = 4
 
@@ -336,6 +338,21 @@ export function frameSizeFromMessage(data: unknown, token: string): FrameSizeRep
 
 const HTML_FILE_RE = /\.(?:html?|xhtml)$/i
 
+/** Render width for the frame. Never past the live width of the column it
+ *  sits in: a fixed-size widget stays narrow, a fluid page fills the column,
+ *  and neither spills past the transcript edge when the window shrinks.
+ *  `wide` off restores the reading-column cap. Undefined means "let CSS fill
+ *  the column" (pre-measure). */
+export function frameWidth(contentWidth: number | null, available: number, wide = true): number | undefined {
+  if (contentWidth === null) {
+    return undefined
+  }
+
+  const ceiling = wide ? available : READING_COLUMN_WIDTH
+
+  return ceiling > 0 ? Math.min(contentWidth, ceiling) : contentWidth
+}
+
 export function InlinePreviewDirective({
   attrs,
   streaming
@@ -380,6 +397,12 @@ function InlineHtmlFrame({
   const [failed, setFailed] = useState(false)
   const [measured, setMeasured] = useState<number | null>(null)
   const [contentWidth, setContentWidth] = useState<number | null>(null)
+  /** Live width of the column this frame sits in. Measured on the outer
+   *  (always full-width) wrapper, never on the sized inner one, so shrinking
+   *  the frame cannot shrink its own budget and spiral. */
+  const [available, setAvailable] = useState(0)
+  const columnRef = useRef<HTMLSpanElement>(null)
+  const wide = useStore($inlinePreviewWide)
 
   // One token per mount: the message listener only trusts reports from the
   // document THIS mount injected, so two previews in one transcript (or a
@@ -489,6 +512,25 @@ function InlineHtmlFrame({
     return () => window.removeEventListener('message', onMessage)
   }, [initialHeight, token])
 
+  // Track the column width so a fluid page keeps filling it on window resize.
+  // Observed on the outer full-width span: the inner span is the one we size,
+  // so measuring that would feed the frame's own width back into its budget.
+  useEffect(() => {
+    const node = columnRef.current
+
+    if (!node) {
+      return
+    }
+
+    const report = () => setAvailable(node.clientWidth)
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(report) : null
+
+    observer?.observe(node)
+    report()
+
+    return () => observer?.disconnect()
+  }, [])
+
   const { vars, font, colorScheme } = bridge
 
   // Rebuild the srcdoc when the bridge changes (a repaint or a skin swap,
@@ -507,13 +549,14 @@ function InlineHtmlFrame({
   }
 
   const height = measured ?? initialHeight ?? DEFAULT_HEIGHT
-  // Left-aligned in the message flow, like an image: the frame is only as
-  // wide as its content (capped at the column). Fluid pages measure the
-  // full viewport and stay full-bleed.
-  const width = contentWidth !== null ? Math.min(contentWidth, MAX_COLUMN_WIDTH) : undefined
+  // The frame is only as wide as its content, never wider than the column it
+  // lives in. With full-width replies on (the default), a fluid page fills the
+  // conversation column and keeps filling it as the window resizes; off, it
+  // stops at the reading column so a dense panel can sit beside prose.
+  const width = frameWidth(contentWidth, available, wide)
 
   return (
-    <span className="my-2 block w-full max-w-160">
+    <span className="my-2 block w-full" ref={columnRef}>
       {framedDoc === null ? (
         <span
           className="block w-full animate-pulse rounded-md bg-[color-mix(in_srgb,currentColor_4%,transparent)]"

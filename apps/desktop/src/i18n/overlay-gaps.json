@@ -1080,6 +1080,8 @@
   "settings.appearance.chatFontReset": ["ar"],
   "settings.appearance.chatFontSample": ["ar"],
   "settings.appearance.chatFontTitle": ["ar"],
+  "settings.appearance.inlinePreviewWideDesc": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "settings.appearance.inlinePreviewWideTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.appearance.pet.roamDesc": ["ar"],
   "settings.appearance.pet.roamTitle": ["ar"],
   "settings.appearance.sessionDensityComfortable": ["ar"],

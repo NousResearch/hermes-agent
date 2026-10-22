@@ -76,5 +76,7 @@ describe('connector rules on the Connectors page', () => {
     noteFreeTierTurnComplete()
 
     await waitFor(() => expect(asked(request, 'connectors.policy.get')).toBe(true))
+    // The accounts read cached while there was no identity is re-read too, or the new account stays hidden.
+    expect(request.mock.calls.filter(([name]) => name === 'connectors.accounts')).toHaveLength(2)
   })
 })

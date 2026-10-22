@@ -108,9 +108,12 @@ export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
   const listed = (list.data?.connectors.length ?? 0) > 0
 
   // The identity can appear outside this page (an agent connect in a chat). Until the list has rows,
-  // every finished turn or connect re-reads the list and catalog, which then moves to the signed-in route.
+  // every finished turn or connect re-reads the list, catalog and accounts, which then move to the signed-in routes.
   useEffect(
-    () => (listed ? undefined : $freeTierTurnCompleted.listen(() => invalidateConnectors(scope, 'list', 'catalog'))),
+    () =>
+      listed
+        ? undefined
+        : $freeTierTurnCompleted.listen(() => invalidateConnectors(scope, 'list', 'catalog', 'accounts')),
     [listed, scope]
   )
 

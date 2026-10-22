@@ -164,3 +164,25 @@ def test_the_page_list_arms_the_offer_for_apps_a_guest_connected_on_an_older_her
 
     assert free_tier_offer.offer_due_in(free_tier_offer.CONNECTOR) == free_tier_offer.OFFER_DELAY_S
     assert portal.creates() == 1
+
+
+def test_a_failed_offer_write_is_retried_on_the_next_sighting(portal, gateway, monkeypatch):
+    """The flag that ends the sightings is written only once the offer's schedule is, so a failed
+    schedule write leaves the next list read to try again."""
+    from tools.connectors import ensure_guest_identity
+
+    monkeypatch.setattr(free_tier_offer, "_clock", lambda: 1_000_000.0)
+    assert ensure_guest_identity() is None
+    gateway.connected = True
+    real_record = free_tier_offer.record_task_done
+
+    def fail_once(kind=free_tier_offer.TRIAL):
+        monkeypatch.setattr(free_tier_offer, "record_task_done", real_record)
+        raise TimeoutError("offer record locked")
+
+    monkeypatch.setattr(free_tier_offer, "record_task_done", fail_once)
+    _result("connectors.list", ACCOUNT)
+    assert free_tier_offer.offer_due_in(free_tier_offer.CONNECTOR) is None
+
+    _result("connectors.list", ACCOUNT)
+    assert free_tier_offer.offer_due_in(free_tier_offer.CONNECTOR) == free_tier_offer.OFFER_DELAY_S

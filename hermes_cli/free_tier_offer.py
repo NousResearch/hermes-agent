@@ -97,12 +97,14 @@ def record_task_done(kind: str = TRIAL) -> None:
 
 
 def note_app_connected() -> None:
-    """An app finished connecting. On a guest identity, flag it on the guest (so the flag dies with
-    it) and count a finished task for the connector offer. Never fails the connection."""
+    """An app finished connecting. On a guest identity, count a finished task for the connector offer,
+    then flag the guest (so the flag dies with it). The flag ends list-read sightings, so it is set only
+    once the task is recorded. Never fails the connection."""
     from hermes_cli import anon_auth
     try:
-        if anon_auth.set_guest_flag(CONNECTED_APP_FLAG) is not None:
+        if anon_auth.is_guest_state(anon_auth.current_nous_state()):
             record_task_done(CONNECTOR)
+            anon_auth.set_guest_flag(CONNECTED_APP_FLAG)
     except Exception:
         logger.debug("connector sign-in offer record failed", exc_info=True)
 

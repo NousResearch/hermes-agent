@@ -612,16 +612,20 @@ if [ -f "$HERMES_HOME/.env" ]; then
 fi
 
 # The SQLite stores hold every session, message and context chunk — same
-# owner-only contract as .env. The image's umask is 0022, so a state.db or
-# lcm.db created at runtime is born 0644 and stays world-readable until
-# someone tightens it by hand; a host-mounted volume can arrive 0664 the same
-# way. Applied on every boot, to the data root and every profile, in the same
+# owner-only contract as .env. SQLite asks open(2) for 0644, so the image's
+# umask 0022 can only clamp that down, never up: a state.db or lcm.db the
+# runtime creates is born 0644 and stays world-readable until something
+# tightens it, and a host-mounted volume can arrive 0664 the same way.
+# Applied on every boot, to the data root and every profile, in the same
 # guard→chown→chmod shape as the .env block above (refuse_symlinked_path stops
 # a symlinked store from being chmodded through to whatever it points at).
-# SQLite's -wal and -shm siblings hold the same rows while a session is open,
-# so they get the same mode. Deliberately not a process-wide `umask 077` for
-# the s6 service: that would re-mode every socket and shared file the stack
-# creates, and anything expecting group-read would break silently.
+# The -wal and -shm siblings carry the same rows while a session is open, and
+# SQLite creates them with the database file's mode, so once the database is
+# 0600 every sibling created afterwards is 0600 without a second pass; the ones
+# already on disk at boot are in the list because they keep the mode they
+# arrived with. Deliberately not a process-wide `umask 077` for the s6
+# service: that would re-mode every socket and shared file the stack creates,
+# and anything expecting group-read would break silently.
 _STORE_FILES='state.db state.db-wal state.db-shm lcm.db lcm.db-wal lcm.db-shm'
 tighten_store() {
     [ -e "$1" ] || return 0

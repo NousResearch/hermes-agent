@@ -448,3 +448,50 @@ class TestNativeRejectClassification:
         )
         assert value is None
         assert reason == "prose"
+
+
+# --- #25482: interrupt must unwind the clarify wait -------------------------------
+
+def test_interrupt_aborts_wait_and_cancels_session():
+    """/stop sets the interrupt bit on the WAITING thread; wait_for_response must
+    return CANCELLED and cancel every pending clarify of the session (#25482)."""
+    import threading
+    from tools import interrupt as interrupt_mod
+    from tools import clarify_gateway as clarify_mod
+
+    e1 = clarify_mod.register("c-int-1", "sess-int", "q?", ["a", "b"])
+    e2 = clarify_mod.register("c-int-2", "sess-int", "q2?", ["a", "b"])
+    result = {}
+
+    def waiter():
+        result["r1"] = clarify_mod.wait_for_response("c-int-1", timeout=60)
+
+    t = threading.Thread(target=waiter)
+    t.start()
+    time.sleep(0.3)  # let the waiter enter the poll loop
+    # Simulate /stop: the agent's interrupt targets the waiting worker thread itself
+    interrupt_mod.set_interrupt(True, t.ident, reason="user_interrupt")
+    t.join(timeout=10)
+    interrupt_mod.set_interrupt(False, t.ident)
+    assert not t.is_alive(), "waiter did not unwind after interrupt"
+    assert result["r1"] == clarify_mod.CANCELLED
+    # whole session cleared: the sibling pending clarify is gone too
+    assert clarify_mod.get_pending_for_session("sess-int", include_choice_prompts=True) is None
+
+
+def test_interrupt_check_false_keeps_waiting():
+    """No interrupt set → the wait behaves exactly as before (still blocks)."""
+    import threading
+    from tools import clarify_gateway as clarify_mod
+    e = clarify_mod.register("c-noint", "sess-noint", "q?", ["a", "b"])
+    done = threading.Event()
+    def waiter():
+        clarify_mod.wait_for_response("c-noint", timeout=0.2)
+        done.set()
+    t = threading.Thread(target=waiter)
+    t.start()
+    # if the loop bailed early on a phantom interrupt, done would fire well before timeout
+    assert not done.wait(timeout=0.05), "waiter unwound without interrupt or resolution"
+    clarify_mod.resolve_gateway_clarify("c-noint", "a")
+    t.join(timeout=5)
+    assert not t.is_alive()

@@ -13,6 +13,7 @@ from tools.checkpoint_manager import (
     CheckpointManager,
     _init_store,
     _run_git,
+    _stage_args,
     _git_env,
     _project_hash,
     _store_path,
@@ -258,6 +259,41 @@ class TestRealPruning:
         names = set(files.splitlines())
         assert "small.py" in names
         assert "weights.bin" not in names  # filtered by size cap
+
+    def test_oversize_file_is_excluded_before_git_add(self, tmp_path, monkeypatch):
+        """Regression for #137220: staging must not hash oversize files first."""
+        store = tmp_path / "store"
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        calls = []
+
+        monkeypatch.setattr("tools.checkpoint_manager._store_path", lambda: store)
+        monkeypatch.setattr("tools.checkpoint_manager._init_store", lambda *_: None)
+        monkeypatch.setattr("tools.checkpoint_manager._touch_project", lambda *_: None)
+        monkeypatch.setattr("tools.checkpoint_manager._dir_file_count", lambda _: 0)
+        monkeypatch.setattr("tools.checkpoint_manager._stage_args", _stage_args)
+
+        def run_git(args, *_args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ["rev-parse", "--verify"]:
+                return False, "", "no ref"
+            if args[:2] == ["ls-files", "--cached"]:
+                return True, "small.py", ""
+            if args == ["write-tree"]:
+                return True, "tree", ""
+            if args[:2] == ["ls-tree", "-r"]:
+                return True, "", ""
+            if args[:1] == ["commit-tree"]:
+                return True, "commit", ""
+            return True, "", ""
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", run_git)
+        manager = CheckpointManager(enabled=True, max_snapshots=5, max_file_size_mb=1)
+        monkeypatch.setattr(manager, "_oversize_paths", lambda *_: ["disk.vhdx"])
+        monkeypatch.setattr(manager, "_remove_from_index", lambda *_: None)
+
+        assert manager._take(str(work_dir), "initial", prune=False) is True
+        assert ["add", "-A", "--", ".", ":(exclude,top,literal)disk.vhdx"] in calls
 
 
 # =========================================================================

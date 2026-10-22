@@ -107,6 +107,8 @@ gateway:
     exit_code: "退出码 {code}"
     last_output: "。最后输出：\n```\n{tail}\n```"
     rerun_hint: "\n可以让我重新运行它，或显示完整日志。"
+    wait_timed_out: "⏳ 监督等待已超时"
+    wait_timed_out_hint: "\n只是等待期限已到——被监视的智能体可能仍在工作。采取行动前请先检查其状态。"
     no_credentials: "❌ 后台任务无法启动：尚未配置 AI 模型登录。请使用 /login，或在主机上运行 `hermes setup`。"
     complete_header: "✅ 后台任务完成\n提示词：\"{preview}\"\n\n"
     no_response: "（未生成响应）"

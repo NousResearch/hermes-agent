@@ -107,6 +107,8 @@ gateway:
     exit_code: "exit {code}"
     last_output: ". Ultimo output:\n```\n{tail}\n```"
     rerun_hint: "\nChiedimi di rieseguirla o di mostrarti il log completo."
+    wait_timed_out: "⏳ Attesa di supervisione scaduta"
+    wait_timed_out_hint: "\nÈ scaduto solo il tempo di attesa: l'agente monitorato potrebbe essere ancora al lavoro. Controlla il suo stato prima di agire."
     no_credentials: "❌ L'attività in background non è partita perché non è configurato alcun accesso a un modello AI. Usa /login oppure esegui `hermes setup` sull'host."
     complete_header: "✅ Attività in background completata\nPrompt: \"{preview}\"\n\n"
     no_response: "(Nessuna risposta generata)"

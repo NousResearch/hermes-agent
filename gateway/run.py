@@ -2988,40 +2988,6 @@ def _shorten_command_for_display(command: str, limit: int = 80) -> str:
     return one_line
 
 
-def _format_concise_process_notification(
-    session_id: str, command: str, exit_code, output: str, duration_seconds=None) -> str:
-    """One-line completion message for ``concise`` display mode; failure appends a short output tail."""
-    ok = exit_code in {0, None}
-    parts = [t("gateway.background.task_finished") if ok else t("gateway.background.task_failed")]
-    short_cmd = _shorten_command_for_display(command)
-    if short_cmd:
-        parts.append(f"— `{short_cmd}`")
-    details = []
-    if isinstance(duration_seconds, (int, float)) and duration_seconds >= 0:
-        secs = int(duration_seconds)
-        if secs >= 3600:
-            details.append(f"{secs // 3600}h {(secs % 3600) // 60}m")
-        elif secs >= 60:
-            details.append(f"{secs // 60}m {secs % 60}s")
-        else:
-            details.append(f"{secs}s")
-    if not ok:
-        details.append(t("gateway.background.exit_code", code=exit_code))
-    if details:
-        parts.append(f"({', '.join(details)})")
-    text = " ".join(parts)
-    if not ok and output:
-        tail_lines = [ln for ln in output.strip().splitlines() if ln.strip()][-5:]
-        tail = "\n".join(tail_lines)
-        if len(tail) > 500:
-            tail = tail[-500:]
-        if tail:
-            text += t("gateway.background.last_output", tail=tail)
-    if not ok:
-        text += t("gateway.background.rerun_hint")
-    return text
-
-
 def _format_gateway_process_notification(evt: dict) -> str | None:
     """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
     evt_type = evt.get("type", "completion")

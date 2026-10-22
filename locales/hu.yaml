@@ -107,6 +107,8 @@ gateway:
     exit_code: "kilépési kód: {code}"
     last_output: ". Utolsó kimenet:\n```\n{tail}\n```"
     rerun_hint: "\nKérd, hogy futtassam újra, vagy mutassam meg a teljes naplót."
+    wait_timed_out: "⏳ A felügyeleti várakozás ideje lejárt"
+    wait_timed_out_hint: "\nCsak a várakozási határidő telt le — a figyelt ágens még dolgozhat. Ellenőrizd az állapotát, mielőtt lépsz."
     no_credentials: "❌ A háttérfeladat nem indult el, mert nincs beállítva AI-modell bejelentkezés. Használd a /login parancsot, vagy futtasd a `hermes setup`-ot a gazdagépen."
     complete_header: |+
       ✅ Háttérfeladat kész

@@ -107,6 +107,8 @@ gateway:
     exit_code: "scor {code}"
     last_output: ". Aschur is déanaí:\n```\n{tail}\n```"
     rerun_hint: "\nIarr orm é a rith arís nó an log iomlán a thaispeáint."
+    wait_timed_out: "⏳ Chuaigh am feithimh na maoirseachta in éag"
+    wait_timed_out_hint: "\nNí dheachaigh ach an spriocam feithimh thart — d'fhéadfadh an gníomhaire faoi fhaire a bheith ag obair fós. Seiceáil a stádas sula ndéanann tú aon rud."
     no_credentials: "❌ Níorbh fhéidir an tasc cúlra a thosú mar níl aon síniú isteach samhla AI cumraithe. Úsáid /login, nó rith `hermes setup` ar an óstach."
     complete_header: "✅ Tasc cúlra críochnaithe\nLeid: \"{preview}\"\n\n"
     no_response: "(Níor gineadh aon fhreagra)"

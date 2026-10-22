@@ -107,6 +107,8 @@ gateway:
     exit_code: "종료 코드 {code}"
     last_output: ". 마지막 출력:\n```\n{tail}\n```"
     rerun_hint: "\n다시 실행하거나 전체 로그를 보고 싶으면 말씀해 주세요."
+    wait_timed_out: "⏳ 감독 대기 시간이 초과되었습니다"
+    wait_timed_out_hint: "\n대기 기한만 지났을 뿐, 감시 중인 에이전트는 아직 작업 중일 수 있습니다. 조치하기 전에 상태를 확인하세요."
     no_credentials: "❌ AI 모델 로그인이 설정되어 있지 않아 백그라운드 작업을 시작할 수 없었어요. /login을 사용하거나 호스트에서 `hermes setup`을 실행하세요."
     complete_header: "✅ 백그라운드 작업 완료\n프롬프트: \"{preview}\"\n\n"
     no_response: "(생성된 응답 없음)"

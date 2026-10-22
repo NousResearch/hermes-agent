@@ -462,7 +462,7 @@ async def test_inject_watch_notification_ignores_foreground_event_source(monkeyp
 class TestConciseFormatter:
 
     def test_success_is_one_line_without_output(self):
-        from gateway.run import _format_concise_process_notification
+        from gateway.run_notifications import _format_concise_process_notification
         text = _format_concise_process_notification(
             "proc_abc", "python3 scan_fleet.py --all", 0,
             "1300\n1400\n1500\n{...huge json...}",
@@ -476,7 +476,7 @@ class TestConciseFormatter:
         assert "\n" not in text
 
     def test_failure_appends_short_tail(self):
-        from gateway.run import _format_concise_process_notification
+        from gateway.run_notifications import _format_concise_process_notification
         out = "\n".join(f"line{i}" for i in range(50)) + "\nTraceback: boom"
         text = _format_concise_process_notification(
             "proc_abc", "make build", 2, out,
@@ -488,7 +488,7 @@ class TestConciseFormatter:
         assert "line0" not in text
 
     def test_long_command_is_truncated(self):
-        from gateway.run import _format_concise_process_notification
+        from gateway.run_notifications import _format_concise_process_notification
         text = _format_concise_process_notification(
             "proc_abc", "x" * 300, 0, "",
         )

@@ -107,6 +107,8 @@ gateway:
     exit_code: "結束代碼 {code}"
     last_output: "。最後輸出：\n```\n{tail}\n```"
     rerun_hint: "\n可以請我重新執行，或顯示完整日誌。"
+    wait_timed_out: "⏳ 監督等待已逾時"
+    wait_timed_out_hint: "\n只是等待期限已到——被監視的代理可能仍在工作。採取行動前請先檢查其狀態。"
     no_credentials: "❌ 背景任務無法啟動，因為尚未設定任何 AI 模型登入。請使用 /login，或在主機上執行 `hermes setup`。"
     complete_header: "✅ 背景任務完成\n提示：\"{preview}\"\n\n"
     no_response: "（未產生回應）"

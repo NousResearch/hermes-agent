@@ -107,6 +107,8 @@ gateway:
     exit_code: "çıkış kodu {code}"
     last_output: ". Son çıktı:\n```\n{tail}\n```"
     rerun_hint: "\nYeniden çalıştırmamı veya tam günlüğü göstermemi isteyebilirsiniz."
+    wait_timed_out: "⏳ Gözetim bekleme süresi doldu"
+    wait_timed_out_hint: "\nYalnızca bekleme süresi doldu — izlenen ajan hâlâ çalışıyor olabilir. Harekete geçmeden önce durumunu kontrol edin."
     no_credentials: "❌ Yapılandırılmış bir AI model girişi olmadığı için arka plan görevi başlatılamadı. /login kullanın veya ana makinede `hermes setup` çalıştırın."
     complete_header: "✅ Arka plan görevi tamamlandı\nİstem: \"{preview}\"\n\n"
     no_response: "(Yanıt oluşturulmadı)"

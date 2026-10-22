@@ -107,6 +107,8 @@ gateway:
     exit_code: "Exit {code}"
     last_output: ". Letzte Ausgabe:\n```\n{tail}\n```"
     rerun_hint: "\nBitten Sie mich, sie erneut auszuführen oder das vollständige Log zu zeigen."
+    wait_timed_out: "⏳ Überwachungs-Wartezeit abgelaufen"
+    wait_timed_out_hint: "\nNur die Wartefrist ist abgelaufen – der überwachte Agent arbeitet womöglich noch. Prüfen Sie seinen Status, bevor Sie handeln."
     no_credentials: "❌ Die Hintergrund-Aufgabe konnte nicht starten, weil keine Anmeldung für ein KI-Modell konfiguriert ist. Verwenden Sie /login oder führen Sie `hermes setup` auf dem Host aus."
     complete_header: "✅ Hintergrund-Aufgabe abgeschlossen\nPrompt: \"{preview}\"\n\n"
     no_response: "(Keine Antwort erzeugt)"

@@ -118,6 +118,8 @@ gateway:
     rerun_hint: |2-
 
       Demandez-moi de la relancer ou d'afficher le journal complet.
+    wait_timed_out: "⏳ Délai d'attente de supervision expiré"
+    wait_timed_out_hint: "\nSeul le délai d'attente est écoulé — l'agent surveillé travaille peut-être encore. Vérifiez son état avant d'agir."
     no_credentials: "❌ La tâche d'arrière-plan n'a pas pu démarrer car aucune connexion à un modèle d'IA n'est configurée. Utilisez /login, ou lancez `hermes setup` sur l'hôte."
     complete_header: |+
       ✅ Tâche d'arrière-plan terminée

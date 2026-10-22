@@ -107,6 +107,8 @@ gateway:
     exit_code: "código de salida {code}"
     last_output: ". Última salida:\n```\n{tail}\n```"
     rerun_hint: "\nPídeme reejecutarla o mostrar el registro completo."
+    wait_timed_out: "⏳ Se agotó la espera de supervisión"
+    wait_timed_out_hint: "\nSolo venció el plazo de espera: el agente supervisado puede seguir trabajando. Comprueba su estado antes de actuar."
     no_credentials: "❌ La tarea en segundo plano no pudo iniciarse porque no hay ningún inicio de sesión de modelo de IA configurado. Usa /login o ejecuta `hermes setup` en el host."
     complete_header: "✅ Tarea en segundo plano completada\nPrompt: \"{preview}\"\n\n"
     no_response: "(No se generó respuesta)"

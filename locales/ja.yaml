@@ -107,6 +107,8 @@ gateway:
     exit_code: "終了コード {code}"
     last_output: "。最後の出力:\n```\n{tail}\n```"
     rerun_hint: "\n再実行や完全なログの表示が必要な場合はお知らせください。"
+    wait_timed_out: "⏳ 監督の待機がタイムアウトしました"
+    wait_timed_out_hint: "\n待機期限が過ぎただけで、監視中のエージェントはまだ作業中の可能性があります。対応する前に状態を確認してください。"
     no_credentials: "❌ AI モデルのサインインが設定されていないため、バックグラウンドタスクを開始できませんでした。/login を使うか、ホストで `hermes setup` を実行してください。"
     complete_header: "✅ バックグラウンドタスクが完了しました\nプロンプト: \"{preview}\"\n\n"
     no_response: "(応答は生成されませんでした)"

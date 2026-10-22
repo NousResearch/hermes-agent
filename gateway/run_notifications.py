@@ -169,6 +169,50 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     return metadata
 
 
+def _format_concise_process_notification(
+    session_id: str, command: str, exit_code, output: str, duration_seconds=None, *, waited_out=False) -> str:
+    """One-line completion message for ``concise`` display mode; failure appends a short output tail.
+    ``waited_out`` (``observer_wait_timed_out``) is no failure: a neutral line, no tail or rerun hint."""
+    from gateway.run import _shorten_command_for_display
+    ok = exit_code in {0, None} or waited_out
+    parts = [t("gateway.background.wait_timed_out") if waited_out else
+             t("gateway.background.task_finished") if ok else t("gateway.background.task_failed")]
+    short_cmd = _shorten_command_for_display(command)
+    if short_cmd:
+        parts.append(f"— `{short_cmd}`")
+    details = []
+    if isinstance(duration_seconds, (int, float)) and duration_seconds >= 0:
+        secs = int(duration_seconds)
+        if secs >= 3600:
+            details.append(f"{secs // 3600}h {(secs % 3600) // 60}m")
+        elif secs >= 60:
+            details.append(f"{secs // 60}m {secs % 60}s")
+        else:
+            details.append(f"{secs}s")
+    if not ok:
+        details.append(t("gateway.background.exit_code", code=exit_code))
+    if details:
+        parts.append(f"({', '.join(details)})")
+    text = " ".join(parts)
+    if not ok and output:
+        tail_lines = [ln for ln in output.strip().splitlines() if ln.strip()][-5:]
+        tail = "\n".join(tail_lines)
+        if len(tail) > 500:
+            tail = tail[-500:]
+        if tail:
+            text += t("gateway.background.last_output", tail=tail)
+    if not ok:
+        text += t("gateway.background.rerun_hint")
+    return text + (t("gateway.background.wait_timed_out_hint") if waited_out else "")
+
+
+def _process_failed(session) -> bool:
+    """Non-zero exit, except an observer's wait deadline passing (``observer_wait_timed_out``)."""
+    from tools.process_registry_notifications import observer_wait_timed_out
+    return session.exit_code not in {0, None} and not observer_wait_timed_out(
+        session.exit_code, session.output_buffer or "")
+
+
 class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotificationOwnershipMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
@@ -1726,15 +1770,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Human-facing completion message. Every mode shares the one-line status header; the
         raw-output modes (all/result/error) append the bounded output tail under it instead of the
         old bracketed ``[Background process proc_… finished~ …]`` debug wrapper (#54266)."""
-        from gateway.run import _format_concise_process_notification, _redact_gateway_user_facing_secrets
+        from gateway.run import _redact_gateway_user_facing_secrets
+        from tools.process_registry_notifications import observer_wait_timed_out
         new_output = self._redacted_output_tail(session, 1000)
         _started = getattr(session, "started_at", None)
         _dur = max(0.0, time.time() - _started) if isinstance(_started, (int, float)) else None
         command = _redact_gateway_user_facing_secrets(getattr(session, "command", "") or "")
+        waited_out = observer_wait_timed_out(session.exit_code, session.output_buffer or "")
         if notify_mode == "concise":
             return _format_concise_process_notification(session_id, command, session.exit_code, new_output,
-                                                        duration_seconds=_dur)
-        header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur)
+                                                        duration_seconds=_dur, waited_out=waited_out)
+        header = _format_concise_process_notification(session_id, command, session.exit_code, "",
+                                                      duration_seconds=_dur, waited_out=waited_out)
         return t("gateway.background.final_output", header=header, output=new_output.strip()) if new_output.strip() else header
 
     def _format_process_running_message(self, session) -> str:
@@ -1824,7 +1871,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         # follow-up, and the chat would stay mute for as long as that turn lasts
                         # (#112033): send the concise receipt now.
                         if turn_busy and (notify_mode in {"concise", "all", "result"} or (
-                            notify_mode == "error" and session.exit_code not in {0, None}
+                            notify_mode == "error" and _process_failed(session)
                         )):
                             message_text = self._format_process_final_message(session_id, session, "concise")
                             await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
@@ -1864,7 +1911,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     )
                     break
                 if notify_mode in {"concise", "all", "result"} or (
-                    notify_mode == "error" and session.exit_code not in {0, None}
+                    notify_mode == "error" and _process_failed(session)
                 ):
                     message_text = self._format_process_final_message(session_id, session, notify_mode)
                     from gateway.warning_notifications import present_notification
@@ -1872,7 +1919,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         # Non-zero exit is the automatic diagnostic; a clean completion is the requested result.
                         await present_notification(
                             lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher),
-                            platform=platform_name, diagnostic=session.exit_code not in {0, None})
+                            platform=platform_name, diagnostic=_process_failed(session))
                 break
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers

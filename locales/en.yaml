@@ -110,6 +110,8 @@ gateway:
     exit_code: "exit {code}"
     last_output: ". Last output:\n```\n{tail}\n```"
     rerun_hint: "\nAsk me to rerun it or show the full log."
+    wait_timed_out: "⏳ Supervisor wait timed out"
+    wait_timed_out_hint: "\nOnly the wait deadline passed — the watched agent may still be working. Check its status before acting."
     no_credentials: "❌ The background task couldn't start because no AI model sign-in is configured. Use /login, or run `hermes setup` on the host."
     complete_header: "✅ Background task complete\nPrompt: \"{preview}\"\n\n"
     no_response: "(No response generated)"

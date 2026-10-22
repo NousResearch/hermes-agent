@@ -3,6 +3,7 @@ watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
 ``[IMPORTANT: ...]`` / ``[ASYNC DELEGATION ...]`` text the CLI drain loop, gateway and
 TUI inject into the agent conversation."""
 
+import json
 import time
 from dataclasses import dataclass
 from contextlib import suppress
@@ -354,6 +355,21 @@ def _short_command(command) -> str:
     return cmd[:77] + "..." if len(cmd) > 80 else cmd
 
 
+def observer_wait_timed_out(exit_code, output) -> bool:
+    """Whether a non-zero exit is only a supervisor's wait deadline passing, not a failed task:
+    the last output line is the CLI's JSON error envelope for ``agent wait`` timing out
+    (``{"id": "cli:agent:wait", "error": {"code": "timeout"}}``). The watched agent may still be
+    working, so surfaces word it neutrally and the ``error`` notification mode skips it."""
+    if exit_code in {0, None} or not isinstance(output, str) or not output.strip():
+        return False
+    try:
+        envelope = json.loads(output.strip().rsplit("\n", 1)[-1])
+    except ValueError:
+        return False
+    error = envelope.get("error") if isinstance(envelope, dict) else None
+    return isinstance(error, dict) and envelope.get("id") == "cli:agent:wait" and error.get("code") == "timeout"
+
+
 def process_completion_display_text(events: list) -> str:
     """Compact UI title for one or more process completions; the model text keeps the full output."""
     if len(events) != 1:
@@ -364,10 +380,12 @@ def process_completion_display_text(events: list) -> str:
         outcome = "Terminated"
     elif reason in _REASON_STATUS:
         outcome = "Lost" if reason == "lost" else "Failed to Start"
+    elif observer_wait_timed_out(exit_code, evt.get("output")):
+        outcome = "Wait Timed Out"
     else:
         outcome = "Finished" if exit_code == 0 else "Failed"
     cmd = _short_command(evt.get("command"))
-    detail = f" (exit {exit_code})" if reason not in ("killed", *_REASON_STATUS) and exit_code != 0 else ""
+    detail = f" (exit {exit_code})" if outcome == "Failed" else ""
     return f"Background Process {outcome}{detail}: {cmd}" if cmd else f"Background Process {outcome}{detail}"
 
 
@@ -457,7 +475,14 @@ def _completion_status(evt: dict) -> str:
     reason = evt.get("completion_reason") or "exited"
     if reason == "killed":
         return f"terminated by {evt.get('termination_source') or 'Hermes'}"
+    if observer_wait_timed_out(evt.get("exit_code"), evt.get("output")):
+        return "stopped at its wait timeout"
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
+
+
+_OBSERVER_TIMEOUT_NOTE = (
+    "Only the observer's wait deadline passed; this is NOT a failure of the watched agent or its work. "
+    "Re-check the agent's status, pane and worktree before deciding to wait again, intervene or report.\n")
 
 
 def format_process_notification(evt: dict) -> str | None:
@@ -503,4 +528,5 @@ def format_process_notification(evt: dict) -> str | None:
                 f"session_id=\"{_sid}\") has the full output)\n{_out}")
     return (
         f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
+        f"{_OBSERVER_TIMEOUT_NOTE if observer_wait_timed_out(_exit, evt.get('output')) else ''}"
         f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")

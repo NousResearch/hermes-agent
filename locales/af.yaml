@@ -107,6 +107,8 @@ gateway:
     exit_code: "afsluitkode {code}"
     last_output: ". Laaste uitvoer:\n```\n{tail}\n```"
     rerun_hint: "\nVra my om dit weer uit te voer of die volledige log te wys."
+    wait_timed_out: "⏳ Toesighouer se wagtyd het verstryk"
+    wait_timed_out_hint: "\nNet die wagsperdatum het verstryk — die agent wat dopgehou word, kan steeds werk. Gaan sy status na voordat jy optree."
     no_credentials: "❌ Die agtergrondtaak kon nie begin nie omdat geen KI-model-aanmelding opgestel is nie. Gebruik /login, of voer `hermes setup` op die gasheer uit."
     complete_header: "✅ Agtergrondtaak voltooi\nPrompt: \"{preview}\"\n\n"
     no_response: "(Geen antwoord gegenereer nie)"

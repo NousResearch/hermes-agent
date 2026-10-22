@@ -224,6 +224,11 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         # The price above leaves these tensors on disk; llama.cpp's own default loads them on
         # integrated GPUs.
         keys["lazy-mode"] = "on"
+    split = (live.tensor_split if live is not None and live.tensor_split is not None
+             else budget.tensor_split)
+    if split:
+        # Per-model INI: a later single-GPU model must not inherit a machine-wide split.
+        keys["tensor-split"] = ",".join(f"{ratio:.4f}" for ratio in split)
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).

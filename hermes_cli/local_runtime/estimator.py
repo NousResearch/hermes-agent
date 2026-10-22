@@ -125,6 +125,12 @@ class HardwareBudget:
     # their prompt caches. Windows charges every GPU allocation to commit (RAM it can see plus
     # the page file), so this is the real ceiling there. None everywhere else.
     commit_room_bytes: int | None = None
+    # Per-card usable / sum(usable) for llama.cpp --tensor-split. None when
+    # there is not more than one discrete card with positive usable VRAM.
+    tensor_split: tuple[float, ...] | None = None
+    # Usable capacity per discrete card. Retained so a launch-time free-memory
+    # probe can reweight tensor-split without treating several cards as one.
+    gpu_usable_bytes: tuple[int, ...] | None = None
 
 
 def as_loaded(profile: ModelProfile, budget: HardwareBudget) -> ModelProfile:

@@ -397,6 +397,26 @@ class TestLegacyCloudMigration:
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "autospawn:[]" in result["output"]
 
+    def test_browser_use_on_direct_api_config_keeps_bu_autospawn(self, tmp_path, monkeypatch):
+        """``/browser use`` on a direct-API config persists ``backend: browser-use`` next to
+        ``cloud_provider: browser-use``; the cloud browser must still autospawn, not leave the
+        harness hunting an installed Chrome."""
+        cfg = {"browser": {"cloud_provider": "browser-use"}}
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: cfg)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda c: None)
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
+        monkeypatch.setattr(
+            bt_session, "_get_session_info",
+            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
+        )
+        bu_cli.set_browser_use_mode(True)
+        assert cfg["browser"]["backend"] == "browser-use"
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:[$BU_AUTOSPAWN]"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+        assert "autospawn:[1]" in result["output"]
+
     def test_picker_highlights_cli_row_for_migrated_config(self, monkeypatch):
         from hermes_cli.tools_config import TOOL_CATEGORIES, _is_provider_active
 

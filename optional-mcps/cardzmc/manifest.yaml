@@ -1,0 +1,26 @@
+# Catalog submission; Nous review is required before inclusion.
+manifest_version: 1
+name: cardzmc
+description: Pokemon and One Piece PSA 10 reference prices, populations, history, and market rankings.
+source: https://cardzmc-public-mcp.icy-mouse-e484.workers.dev/
+transport:
+  type: http
+  url: https://cardzmc-public-mcp.icy-mouse-e484.workers.dev/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - search_cards
+    - get_card
+    - get_market
+suggest:
+  keywords:
+    - cardzmc
+    - cardz marketcap
+  hosts:
+    - cardzmarketcap.com
+    - cardzmc-public-mcp.icy-mouse-e484.workers.dev
+post_install: |
+  No account, API key, or credentials are required. Start a new session to use
+  search_cards, get_card, and get_market. Results include source dates and USD
+  reference prices. This connection only reads public card and market data.

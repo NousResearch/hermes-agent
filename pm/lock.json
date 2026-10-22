@@ -3,11 +3,11 @@
     "agent-browser": {
       "artifacts": {
         "any": {
-          "sha256": "8a48cf4110d7dc2c12c1c4d6d25e0babdfa31604b537f05df0dc835fe2f854bf",
-          "url": "https://registry.npmjs.org/agent-browser/-/agent-browser-0.26.0.tgz"
+          "sha256": "a4744fb189e598467abcfb3acdde07118d9e5cb43dc3b31727f869af4eb9d598",
+          "url": "https://registry.npmjs.org/agent-browser/-/agent-browser-0.34.0.tgz"
         }
       },
-      "version": "0.26.0"
+      "version": "0.34.0"
     },
     "bws": {
       "artifacts": {

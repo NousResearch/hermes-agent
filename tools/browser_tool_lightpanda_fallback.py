@@ -8,7 +8,7 @@ import json
 import os
 import shutil
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -108,6 +108,12 @@ def _annotate_lightpanda_fallback(result: dict[str, Any], reason: str) -> dict[s
 
 def _copy_fallback_warning(target: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     """Copy browser fallback metadata from an internal result into a tool response."""
+    # Preserve exact terminal ownership failures through high-level response
+    # shaping; never replace them by opening/adopting another tab.
+    if result.get("code") in {"tab_gone", "browser_session_retired"}:
+        target["code"] = result["code"]
+        if "data" in result:
+            target["data"] = result["data"]
     if result.get("fallback_warning"):
         target["fallback_warning"] = result["fallback_warning"]
         target["browser_engine"] = result.get("browser_engine")

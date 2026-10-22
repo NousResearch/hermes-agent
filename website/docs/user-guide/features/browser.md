@@ -529,6 +529,25 @@ In the CLI, use:
 
 If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Brave Origin/Nightly, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths and binary names such as `brave-origin`, `brave-origin-nightly`, `/opt/brave.com/brave-origin/brave-origin`, `/opt/brave.com/brave-origin-nightly/brave-origin`, `/opt/brave-bin/brave`, and `/snap/bin/brave`.
 
+:::caution Shared-CDP runtime requirement
+Page-isolated `/browser connect` sessions require **agent-browser 0.34.0 or newer**
+with `--pin-tab` support. Hermes's package manager selects a hash-pinned native
+CLI and daemon, so this path has no Node.js requirement. Install or repair it
+with `hermes pm install agent-browser`; `/browser connect` remains the normal
+entry point for selecting your external browser.
+
+A compatible external `agent-browser` on PATH is also supported. If you install
+its npm wrapper yourself, follow that package's Node.js engine requirements
+(Node.js 24 or newer for 0.34.0). Hermes checks the selected command's version
+and `--pin-tab` capability before dispatch. With terminal sandbox placement,
+it checks the executable inside that sandbox; a compatible host executable
+does not authorize a different remote runtime. An older or incompatible command
+returns `pin_tab_unavailable` without starting a browser action. The native
+runtime is provisioned only through Hermes's package manager, with its existing
+lazy-install consent and checksum verification; there is no npx acquisition or
+release-age exception.
+:::
+
 :::tip
 To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:
 
@@ -571,7 +590,16 @@ Then launch the Hermes CLI and run `/browser connect`.
 A dedicated profile starts out signed out of everything. If you want the agent to browse with your existing logins *and* no approval dialog, use [`browser.use_real_profile`](#real-profile-browsing-use-your-own-logins) instead: it snapshots your active profile into a copy and drives that, which is a non-default user-data-dir and so never triggers either mechanism.
 :::
 
-When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session.
+When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session. Each Hermes task pins the page target it creates and does not adopt another task's existing tab. Cookies, storage, and signed-in account state still belong to the shared browser profile and are intentionally shared.
+
+A shared external-CDP target is not closed merely because no browser command was
+issued during `browser.inactivity_timeout`; model reasoning or another long tool
+call can legitimately exceed that interval. Hermes closes its owned target at
+terminal task cleanup instead. After that cleanup, non-navigation tools fail
+with `browser_session_retired` rather than creating or adopting a replacement
+page. A new lifecycle begins only with an explicit, policy-checked
+`browser_navigate`; if that navigation fails, Hermes cleans the partial
+replacement and keeps the task retired.
 
 ### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
 

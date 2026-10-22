@@ -132,7 +132,7 @@ exception: it becomes `Failed`. It works with or without a free tier on disk. `C
 comes from the access token's `email` claim; `Completed.handoff` carries the guest handoff's result
 lines (what moved, what to reconnect). Every state carries its own `.copy` (the chat form, which
 never contains a raw exception, a URL or a `hermes` verb) and `.copy_terminal`, so no caller maps a
-reason to a string. `cancelled()` is checked on a <= 1 s tick inside the token poll and once more
+reason to a string. `cancelled()` is checked at least once a second inside the token poll and once more
 before the save; a cancel always wins and nothing is saved. TLS verification comes from
 `_resolve_verify`, so `HERMES_CA_BUNDLE` and friends apply. `scope` is entered only around the
 precondition and persist blocks, never across a `yield` or a network wait, because

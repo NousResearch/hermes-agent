@@ -57,20 +57,17 @@ def test_backlog_larger_than_the_client_queue_reaches_the_cli_intact():
 
 
 @pytest.mark.asyncio
-async def test_a_consumer_that_stops_draining_is_still_failed_with_the_queue_bounded(monkeypatch):
-    """An awaited answer lets the reader read past a full queue, but only into a bounded overflow."""
+async def test_a_consumer_that_stops_draining_with_no_answer_pending_is_failed_and_bounded(monkeypatch):
+    """Nothing awaits an answer, so the reader parks as soon as the queue fills, spends its stall
+    budget and fails the consumer: the backlog is dropped rather than accumulated. An awaited answer
+    is the other case — see ``test_gateway_client_frame_cap``."""
     monkeypatch.setattr(gateway_client, "EVENT_STALL_TIMEOUT", 0.05, raising=False)
-    monkeypatch.setattr(gateway_client, "EVENT_OVERFLOW_FRAMES", 100)
     client = GatewayClient(Backlog([_frame("message.delta", str(i)) for i in range(6000)]))
-    pending = asyncio.get_running_loop().create_future()
-    client.pending[1] = pending
     await asyncio.wait_for(client._read(), 5)
-    with pytest.raises(GatewayClientError, match="outcome is unknown"):
-        await pending
-    assert client.events.full() and len(client.events.overflow) == 101  # 100 frames + the failure
-    queued = [client.events.get_nowait() for _ in range(client.events.maxsize + 101)]
+    assert client.events.full() and len(client.events.overflow) == 2  # the frame read past the queue + the failure
+    queued = [client.events.get_nowait() for _ in range(client.events.maxsize + 2)]
     assert client.events.empty() and isinstance(queued[-1], GatewayClientError)
-    assert [frame["params"]["payload"]["text"] for frame in queued[:-1]] == [str(i) for i in range(4196)]
+    assert [frame["params"]["payload"]["text"] for frame in queued[:-1]] == [str(i) for i in range(4097)]
 
 
 class CardOwner:

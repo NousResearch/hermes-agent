@@ -250,3 +250,20 @@ class TestParseOpenAiCompletionSplit:
                "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
         assert parse_available_output_tokens_from_error(msg) is None
         assert not is_output_cap_error(msg)
+
+
+class TestParseAnthropicContextSum:
+    """Anthropic states input + max_tokens against the window ("A + B > W"); when the input fits,
+    the fix is a smaller max_tokens, not a smaller window."""
+
+    MSG = ("input length and `max_tokens` exceed context limit: {inp} + 21333 > 200000, "
+           "decrease input length or `max_tokens` and try again")
+
+    def test_room_left_is_window_minus_input(self):
+        msg = self.MSG.format(inp=188240)
+        assert parse_available_output_tokens_from_error(msg) == 200000 - 188240
+
+    def test_input_alone_over_the_window_is_not_an_output_cap(self):
+        msg = self.MSG.format(inp=210000)
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert not is_output_cap_error(msg)

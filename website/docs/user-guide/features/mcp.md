@@ -503,6 +503,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -1023,104 +1024,82 @@ mcp_servers:
 
 The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
 
-## Running Hermes as an MCP server
+## MCP Events (experimental)
 
-In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.
+Some MCP servers can notify an agent when something happens upstream (a new email, an incident, a
+new item in a feed) through the `events/*` methods of the
+[MCP events design sketch](https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md).
+The proposal is still a working-group draft. Hermes implements its **webhook** delivery mode: the
+server POSTs each event to the gateway's [webhook listener](../messaging/webhooks.md), and every
+event starts an agent run like any other webhook route.
 
-### When to use this
+Turn it on per server, and tell Hermes the public HTTPS address of the webhook listener (servers
+reject plain-HTTP callbacks, so put a TLS-terminating reverse proxy or tunnel in front of port 8644):
 
-- You want Claude Code, Cursor, or another coding agent to send and read Telegram/Discord/Slack messages through Hermes
-- You want a single MCP server that bridges to all of Hermes's connected messaging platforms at once
-- You already have a running Hermes gateway with connected platforms
+```yaml
+mcp_servers:
+  ambush:
+    url: "https://example.com/mcp"
+    events: true          # registers the event utility tools for this server
 
-### Quick start
-
-```bash
-hermes mcp serve
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      public_url: "https://hermes.example.com"
 ```
 
-This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle.
+The server then gets three more utility tools:
 
-### MCP client configuration
+- `list_event_types`: the event types the server offers, and your current subscriptions to them
+- `subscribe_event`: subscribe with the event's arguments, what to do when it arrives
+  (`instructions`, up to 2000 characters) and where each run's result goes (`deliver`,
+  `deliver_chat_id`). You are asked to approve every subscription, since it starts unattended agent
+  runs; the approval shows the instructions and the destination in full.
+- `unsubscribe_event`: cancel a subscription
 
-Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:
+Each subscription is stored as a dynamic webhook route (`hermes webhook list` shows it) with its own
+`whsec_` signing secret; the grant and the replay cursor are kept beside it in
+`mcp_event_subscriptions.json`, so the route itself only changes when you resubscribe with different
+instructions or a different destination. Hermes answers the server's signed verification challenge, deduplicates
+events by `eventId`, and refreshes the subscription before the lifetime the server granted runs out
+while the MCP connection is up (and again whenever it reconnects). With `lazy: true` or
+`idle_timeout_seconds` the connection is not always up, so a subscription can lapse until the next
+connection resubscribes it. A refresh the server refuses
+for good (access revoked, event type removed, arguments no longer valid) removes the route; other
+failures are retried with back-off. Turning the route off in the webhook dashboard lets the
+subscription lapse, and turning it back on resubscribes it. If the server ends a subscription,
+Hermes removes the route and tells the `deliver` target. Events only arrive while
+`hermes gateway run` is running. The event payload reaches the run whole, up to 32,000 characters
+of JSON, with a note when it is cut. Event payloads are external data: event runs use the same
+constrained webhook toolset as other webhook routes.
+The listener's per-route rate limit (`platforms.webhook.extra.rate_limit`, 30 a minute by default)
+applies to event deliveries too; raise it for a busy event type, since a server may not retry a
+rejected delivery.
+
+Not supported yet: the `poll` and `push` delivery modes, and subscriptions made from a secondary
+profile under `gateway.multiplex_profiles`.
+
+## Running Hermes as an MCP server
+
+Hermes can also **be** an MCP server, so Claude Code, Claude Desktop, Cursor, Codex or any MCP client can list and read your messaging conversations, wait for new messages and send messages across every platform Hermes is connected to, and optionally call Hermes' own web, browser, vision, image generation, skills and TTS tools. This ships as the official **mcp-serve** plugin:
+
+```bash
+hermes plugins install mcp-serve
+```
 
 ```json
 {
   "mcpServers": {
     "hermes": {
       "command": "hermes",
-      "args": ["mcp", "serve"]
+      "args": ["mcp-serve"]
     }
   }
 }
 ```
 
-Or if you installed Hermes in a specific location:
-
-```json
-{
-  "mcpServers": {
-    "hermes": {
-      "command": "/home/user/.hermes/hermes-agent/venv/bin/hermes",
-      "args": ["mcp", "serve"]
-    }
-  }
-}
-```
-
-### Available tools
-
-The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus a Hermes-specific channel browser:
-
-| Tool | Description |
-|------|-------------|
-| `conversations_list` | List active messaging conversations. Filter by platform or search by name. |
-| `conversation_get` | Get detailed info about one conversation by session key. |
-| `messages_read` | Read recent message history for a conversation. |
-| `attachments_fetch` | Extract non-text attachments (images, media) from a specific message. |
-| `events_poll` | Poll for new conversation events since a cursor position. |
-| `events_wait` | Long-poll / block until the next event arrives (near-real-time). |
-| `messages_send` | Send a message through a platform (e.g. `telegram:123456`, `discord:#general`). |
-| `channels_list` | List available messaging targets across all platforms. |
-| `permissions_list_open` | List pending approval requests observed during this bridge session. |
-| `permissions_respond` | Allow or deny a pending approval request. |
-
-### Event system
-
-The MCP server includes a live event bridge that polls Hermes's session database for new messages. This gives MCP clients near-real-time awareness of incoming conversations:
-
-```
-# Poll for new events (non-blocking)
-events_poll(after_cursor=0)
-
-# Wait for next event (blocks up to timeout)
-events_wait(after_cursor=42, timeout_ms=30000)
-```
-
-Event types: `message`, `approval_requested`, `approval_resolved`
-
-The event queue is in-memory and starts when the bridge connects. Older messages are available through `messages_read`.
-
-### Options
-
-```bash
-hermes mcp serve              # Normal mode
-hermes mcp serve --verbose    # Debug logging on stderr
-```
-
-### How it works
-
-The MCP server reads conversation data directly from Hermes's session store — `~/.hermes/state.db` is the primary source, with `sessions.json` kept only as a legacy fallback. A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `hermes send` CLI.
-
-The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
-
-### Current limits
-
-- The embedded `hermes mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Hermes, which already speaks both stdio and HTTP (`url` + `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP servers](#http-servers) above).
-- Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
-- No `claude/channel` push notification protocol yet
-- Text-only sends (no media/attachment sending through `messages_send`)
+It used to be built in as `hermes mcp serve`. An MCP client configured with `"args": ["mcp", "serve"]` changes them to `["mcp-serve"]`; the tool names and parameters are unchanged, and `hermes mcp serve` now prints the new spelling and the install line. Tools, the `--tools` mode and its safety limits are documented in the [plugin's README](https://github.com/NousResearch/hermes-official-plugins/tree/main/mcp-serve).
 
 ## Related docs
 

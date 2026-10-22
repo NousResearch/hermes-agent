@@ -17,6 +17,7 @@ from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
+from tools import mcp_tool_events as _events
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
 
@@ -279,7 +280,12 @@ class MCPServerTransportMixin:
         # recovery isn't gated on a stale consecutive-failure count (#16788).
         # Unproven until keepalive/tool-call success (#62212).
         self._session_proven = False
-        reason = await self._wait_for_lifecycle_event()
+        events_task = _events.start_refresh_task(self)
+        try:
+            reason = await self._wait_for_lifecycle_event()
+        finally:
+            if events_task is not None:
+                events_task.cancel()
         if label and reason == "reconnect":
             logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
         return reason

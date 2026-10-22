@@ -86,7 +86,18 @@ class DiscordMediaMixin:
 
         See #66797.
         """
-        from plugins.platforms.discord.adapter import _prompt_target_id, discord
+        from plugins.platforms.discord.adapter import _prompt_target_id
+        # LOI DA SUA: truyen qua `from ...adapter import discord`.
+        # `discord` o adapter duoc gan = None khi import module-level that bai
+        # (gateway chay python khac venv chua discord.py), va ban copy do bi
+        # cache vinh vien trong sys.modules — nen `discord.File(...)` nem
+        # "'NoneType' object has no attribute 'File'". File .pptx/.pdf rớt het,
+        # trong khi ANH van gui duoc vi nhanh anh `import discord` truc tiep.
+        # => Lay module truc tiep nhu nhanh anh; fail-closed voi loi ro rang.
+        try:
+            import discord
+        except ImportError as _imp:
+            return SendResult(success=False, error=f"discord.py not importable: {_imp}")
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -279,7 +290,16 @@ class DiscordMediaMixin:
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, discord
+        from plugins.platforms.discord.adapter import _prompt_target_id
+        # LOI DA SUA (cung mot goc voi _send_file_attachment): `discord` lay tu
+        # adapter co the la None (module-level import that bai luc khoi dong) va
+        # ban copy bi cache trong sys.modules -> `discord.File(...)` nem
+        # "'NoneType' object has no attribute 'File'". Nhanh ANH khong bi vi no
+        # `import discord` truc tiep; day cung vay.
+        try:
+            import discord
+        except ImportError as _imp:
+            return SendResult(success=False, error=f"discord.py not importable: {_imp}")
 
         try:
             import io
@@ -374,7 +394,15 @@ class DiscordMediaMixin:
     ) -> SendResult:
         """Download ``url`` and post it as a native attachment (Discord renders those inline).
         ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure)."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, discord, is_safe_url
+        from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, is_safe_url
+        # LOI DA SUA (cung mot goc): khong lay `discord` tu adapter vi no co the la
+        # None bi cache; import truc tiep nhu nhanh anh dang hoat dong.
+        # Dat NGOAI khoi try ben duoi de ImportError cua aiohttp (co nhanh fallback
+        # rieng) khong bi nham voi loi thieu discord.py.
+        try:
+            import discord
+        except ImportError as _imp:
+            return SendResult(success=False, error=f"discord.py not importable: {_imp}")
 
         if not self._client:
             return SendResult(success=False, error="Not connected")

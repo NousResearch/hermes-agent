@@ -1,0 +1,25 @@
+name: severian
+repo: https://github.com/Sahil-SS9/Severian
+sha: 08766aff76166339ec562447aca752fa6f1d9225
+subdir: "plugins/hermes/severian"
+version: "0.3.10"
+description: >-
+  Local-first long-term memory for Hermes agents: a canonical append-only store (SQLite or
+  PostgreSQL+pgvector) with five-dimensional tenant/profile/collection/agent/session scope, hybrid
+  BM25+vector retrieval with a re-ranker, memories that cite the observations they came from, per-turn user
+  facts, real dates next to relative times, truth resolution when a newer fact replaces an older one, and a
+  conflict note when two returned memories disagree. Fully offline by default; Qwen3-Embedding-0.6B
+  semantic embeddings opt-in, locally or in a user-owned sidecar. First overall on LoCoMo, BEAM and
+  LongMemEval in an October 2026 head-to-head round under one common rule, and the repo ships the harness,
+  method and footnotes.
+maintainer: Sahil-SS9
+tier: community
+category: memory
+docs_url: https://github.com/Sahil-SS9/Severian#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

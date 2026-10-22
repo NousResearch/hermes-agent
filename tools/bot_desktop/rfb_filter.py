@@ -9,8 +9,12 @@ Extended KeyEvent 255 is keyboard input — noVNC switches to it as soon as Xvnc
 pseudo-encoding — so it is gated like KeyEvent; SetDesktopSize resizes the bot's framebuffer under the
 agent (Xvnc runs -AcceptSetDesktopSize), so it is gated like input: only the lease holder may send it).
 
-Xvnc runs ``-SecurityTypes None``, so the handshake is fixed-size: 12-byte version, 1-byte security
-choice, then ``ClientInit`` (1 byte). ``ServerInit`` is server→client and never crosses this filter.
+Xvnc runs ``-SecurityTypes None``, so the handshake is short: 12-byte version, then a tail that
+depends on the negotiated minor (clients <3.7 leave the security choice to the server and send
+``ClientInit`` right away, 13 bytes total, while 3.7+ add their security pick, 14). Reading the
+declared minor matters: consuming 14 bytes against a 13-byte handshake eats the first message byte
+and desyncs every message after it, which is exactly the desync this filter exists to prevent.
+``ServerInit`` is server→client and never crosses this filter.
 """
 
 from __future__ import annotations
@@ -26,17 +30,38 @@ _FIXED = {
     4: 8,    # KeyEvent
     5: 6,    # PointerEvent
     150: 10, # EnableContinuousUpdates
-    255: 12, # QEMU client message; sub-type 0 = Extended KeyEvent (the only one noVNC sends)
 }
 _SET_ENCODINGS = 2
 _CLIENT_CUT_TEXT = 6
 _FENCE = 248
 _SET_DESKTOP_SIZE = 251  # u8 type, pad, u16 width, u16 height, u8 nScreens, pad, then 16 bytes per screen
+_QEMU = 255  # u8 type, u8 sub-type; sub-type 0 = Extended KeyEvent (12 bytes), the only one Xvnc accepts
 
 # TigerVNC's default MaxCutText, and the value launcher.sh passes as ``-MaxCutText`` so Xvnc and
 # the bridge agree (keep the two in sync). The length is client-declared (int32); without a cap a
 # watcher with a ticket but no lease could make the bridge buffer ~2 GiB waiting for a payload.
 _MAX_CUT_TEXT = 256 * 1024
+
+
+def _handshake_tail(version: bytes) -> int:
+    """Client bytes that follow the 12-byte version reply (RFC 6143 §7.1).
+
+    ``ClientInit`` is always the last handshake byte. Clients negotiating <3.7
+    leave the security choice to the server (TigerVNC clamps them to 3.3) and
+    send it right after the version, 1 byte; 3.7+ pick from the server's
+    security list first, 2 bytes.
+    """
+    if (
+        not version.startswith(b"RFB ")
+        or version[7] != ord(".")
+        or version[11] != 0x0A
+        or not version[4:7].isdigit()
+        or not version[8:11].isdigit()
+    ):
+        raise ValueError(f"malformed RFB version {version!r}")
+    if int(version[4:7]) != 3:
+        raise ValueError(f"unsupported RFB major version {version!r}")
+    return 1 if int(version[8:11]) < 7 else 2
 
 
 class RfbClientFilter:
@@ -49,12 +74,18 @@ class RfbClientFilter:
     def __init__(self, allow_input: Callable[[], bool]) -> None:
         self._allow_input = allow_input
         self._buf = bytearray()
-        self._handshake_left = 12 + 1 + 1  # version + security type + ClientInit(shared flag)
+        self._version_parsed = False
+        self._handshake_left = 12 + 1 + 1  # >=3.7 worst case; shrunk once the version lands
 
     def feed(self, chunk: bytes) -> bytes:
         self._buf += chunk
         out = bytearray()
         if self._handshake_left:
+            if not self._version_parsed:
+                if len(self._buf) < 12:
+                    return bytes(out)
+                self._handshake_left = 12 + _handshake_tail(self._buf[:12])
+                self._version_parsed = True
             take = min(self._handshake_left, len(self._buf))
             if take:
                 head = bytes(self._buf[:take])
@@ -98,11 +129,20 @@ class RfbClientFilter:
         if t == _FENCE:
             if len(self._buf) < 9:
                 return None
-            return 9 + self._buf[8]
+            return 9 + self._buf[8]  # payload length byte; flags live at 4-7
         if t == _SET_DESKTOP_SIZE:
             if len(self._buf) < 8:
                 return None
             return 8 + 16 * self._buf[6]
+        if t == _QEMU:
+            if len(self._buf) < 2:
+                return None
+            # Only sub-type 0 (Extended KeyEvent, 12 bytes) has a known length; other QEMU
+            # sub-messages (audio, op-keyed, variable) cannot be framed here, and Xvnc does
+            # not support them anyway, so the stream drops rather than risk a misframe.
+            if self._buf[1] != 0:
+                raise ValueError(f"unframeable QEMU client message sub-type {self._buf[1]}")
+            return 12
         # Unknown client message: we cannot frame it, and forwarding blind would let an input message
         # hide behind it. Drop the rest of the stream; the viewer reconnects.
         raise ValueError(f"unknown RFB client message type {t}")

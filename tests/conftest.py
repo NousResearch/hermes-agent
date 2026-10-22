@@ -1472,12 +1472,15 @@ def _restore_aux_runtime_main():
     compared by identity, so a test that mutates a wider fixture's runtime dict
     in place (``rotate_runtime_main_api_key``) must restore it itself.
     """
-    aux = sys.modules.get("agent.auxiliary_client")
-    before = aux._RUNTIME_MAIN_CONTEXT.get() if aux is not None else None
+    # Hold the real variable: a test may swap a stub into sys.modules for the
+    # module, and that swap is undone only after this teardown runs.
+    var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    before = var.get() if var is not None else None
     yield
-    aux = sys.modules.get("agent.auxiliary_client")
-    if aux is not None and aux._RUNTIME_MAIN_CONTEXT.get() is not before:
-        aux._RUNTIME_MAIN_CONTEXT.set(before)
+    if var is None:
+        var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    if var is not None and var.get() is not before:
+        var.set(before)
 
 
 @pytest.fixture(autouse=True)

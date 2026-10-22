@@ -244,7 +244,12 @@ ddgs = ["ddgs==9.16.0"]
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
-edge-tts = ["edge-tts==7.2.7"]
+# 7.3.1 sends the v2 Sec-MS-GEC token (CS64+SHA256). 7.2.7 still sent the
+# v1 SHA256-only token, which the service now rejects: the websocket
+# handshake fails with 403 "Invalid response status" and every synthesis
+# raises. 7.3.1 also switched the token's Sec-MS-GEC-Version prefix from
+# "1-" to "2-".
+edge-tts = ["edge-tts==7.3.1"]
 # NeuTTS's upstream Python ceiling excludes the managed interpreter.
 # Keep dependency markers and PM gates together: bundles omit them, explicit
 # setup requests report unavailable rather than succeeding with an empty set.

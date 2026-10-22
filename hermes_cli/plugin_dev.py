@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 import shutil
 import socket
@@ -79,6 +80,11 @@ def _doctor_runtime(plugin_path: Path):
                 yield SimpleNamespace(manifest=manifest, manager=manager, registered_tools=(),
                                       registered_hooks=(), registered_providers=registered)
             return
+        if manifest.kind == "exclusive" and _is_cron_provider(copied):
+            _load_cron_provider(copied, manifest)
+            yield SimpleNamespace(manifest=manifest, manager=manager, registered_tools=(),
+                                  registered_hooks=(), registered_providers=())
+            return
         manager._load_plugin(manifest)
         loaded = manager._plugins.get(manifest.key or manifest.name)
         if loaded is None:
@@ -127,7 +133,8 @@ def _doctor_runtime(plugin_path: Path):
 
 
 def _is_plugin_module(name: str) -> bool:
-    return name == "hermes_plugins" or name.startswith("hermes_plugins.")
+    return (name == "hermes_plugins" or name.startswith("hermes_plugins.")
+            or name == "hermes_plugin_doctor_cron" or name.startswith("hermes_plugin_doctor_cron."))
 
 
 @contextmanager
@@ -162,6 +169,28 @@ def _load_model_provider(copied: Path, manifest):
         sys.modules.pop(module_name, None)
         if prior_module is not None:
             sys.modules[module_name] = prior_module
+
+
+def _is_cron_provider(path: Path) -> bool:
+    from plugins.cron_providers import _is_cron_provider_dir
+    return _is_cron_provider_dir(path)
+
+
+def _load_cron_provider(copied: Path, manifest) -> None:
+    """Validate an exclusive cron provider with its runtime registration contract."""
+    from cron.scheduler_provider import CronScheduler
+    from plugins import plugin_loader
+    from plugins.cron_providers import _ProviderCollector
+
+    module_name = f"hermes_plugin_doctor_cron.{manifest.key or manifest.name}"
+    module = plugin_loader.load_plugin_module(
+        module_name, copied, parents=("plugins",), logger=logging.getLogger(__name__),
+        synthetic_namespace="hermes_plugin_doctor_cron")
+    provider = module and plugin_loader.instance_from_module(
+        module, collector=_ProviderCollector(), collected_attr="provider", base_cls=CronScheduler,
+        name=manifest.name, logger=logging.getLogger(__name__))
+    if provider is None:
+        raise _DoctorLoadError("cron-provider plugin registered no CronScheduler")
 
 
 @dataclass(frozen=True)

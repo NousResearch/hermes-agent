@@ -219,10 +219,17 @@ Needs the PID and debugpy preinstalled in the target's environment:
 # debugpy injects itself into the process. Then attach a client as below.
 ```
 
-Some kernels/security configs block the ptrace-based injection (`/proc/sys/kernel/yama/ptrace_scope`). Fix with:
-```bash
-echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
-```
+Some Linux security configurations block this ptrace-based injection through
+`kernel.yama.ptrace_scope`. Prefer Pattern B whenever the process can be
+restarted. Setting the scope to `0` weakens ptrace isolation for every process
+owned by the same user. Do not lower this host-wide policy to `0` as a debugging
+workaround: concurrent processes, crashes, or interrupted cleanup can leave the
+weaker policy active after the debugging session.
+
+If the process cannot be restarted under Pattern B, stop and report that PID
+attachment is blocked by the host policy. Ask the user to choose a controlled
+restart, a disposable debugging host, or a different debugging method rather
+than changing the global ptrace policy.
 
 ### Connecting a client from the terminal
 
@@ -352,7 +359,9 @@ Long-lived. Use `remote-pdb` at a handler, or `debugpy` with `--wait-for-client`
 
 4. **`debugpy.listen` blocks only if you also call `wait_for_client()`.** Without it, execution continues and your first breakpoint may fire before the client is attached.
 
-5. **Attach to PID fails on hardened kernels.** `ptrace_scope=1` (Ubuntu default) allows only same-user ptrace of child processes. Workaround: `echo 0 > /proc/sys/kernel/yama/ptrace_scope` (needs root) or launch under `debugpy` from the start.
+5. **Attach to PID fails on hardened kernels.** `ptrace_scope=1` commonly blocks
+   injection into an unrelated process. Prefer Pattern B; do not lower the
+   host-wide policy to `0` as a debugging workaround.
 
 6. **Threads.** `pdb` only debugs the current thread. For multithreaded code, use `debugpy` (thread-aware DAP) or set `threading.settrace()` per thread.
 

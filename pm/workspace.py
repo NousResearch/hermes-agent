@@ -7,6 +7,7 @@ failure propagates without changing plugin configuration or the live venv.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from collections.abc import Mapping
@@ -88,9 +89,33 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # A root dist/ is build output, but below a package root it is shipped: the managed
     # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
     nested_excluded = excluded - {"dist"}
+    store = paths.store_root().resolve()
+    try:
+        facts = json.loads((store / "facts.json").read_text(encoding="utf-8-sig"))
+        packages = facts.get("packages", {}) if isinstance(facts, dict) else {}
+        if not isinstance(packages, dict):
+            packages = {}
+        store_entries = {
+            entry for record in packages.values()
+            if isinstance(record, dict) and isinstance((entry := record.get("entry")), str)
+            and Path(entry).name == entry
+        }
+    except (OSError, ValueError):
+        store_entries = set()
+
+    def is_store_content(path: Path) -> bool:
+        try:
+            relative = path.resolve().relative_to(store)
+        except (OSError, ValueError):
+            return False
+        return bool(relative.parts) and (
+            relative.parts[0] == "facts.json" or relative.parts[0] in store_entries
+        )
+
     def ignore(directory, names):
         return [name for name in names if name in nested_excluded or name.startswith(".")
-                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()
+                or is_store_content(Path(directory) / name)]
 
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded

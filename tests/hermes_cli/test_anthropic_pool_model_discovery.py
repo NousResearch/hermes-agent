@@ -56,7 +56,7 @@ def test_anthropic_picker_discovers_models_with_pool_api_key(monkeypatch):
     result = models.provider_model_ids("anthropic")
 
     assert "claude-opus-5" in result
-    assert captured["url"] == "https://api.anthropic.com/v1/models"
+    assert captured["url"] == "https://api.anthropic.com/v1/models?limit=1000"
     assert captured["headers"]["x-api-key"] == "sk-ant-api03-pool-key"
     assert "authorization" not in captured["headers"]
 
@@ -103,7 +103,7 @@ def test_anthropic_pool_api_key_overrides_conflicting_active_endpoint(monkeypatc
     assert models.provider_model_ids("anthropic") == ["claude-proxy-model"]
     assert requests == [
         (
-            f"{pool_endpoint}/models",
+            f"{pool_endpoint}/models?limit=1000",
             {
                 "anthropic-version": "2023-06-01",
                 "x-api-key": "proxy-key",

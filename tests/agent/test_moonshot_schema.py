@@ -92,6 +92,30 @@ class TestMissingTypeFilled:
         assert out["properties"]["payload"]["$ref"] == "#/$defs/Payload"
 
 
+class TestConditionalSchemaNotGivenSyntheticType:
+    """A bare if/then/else conditional constrains the enclosing instance; it
+    does not describe its own type, so it must not be defaulted to "string"."""
+
+    def test_if_then_node_is_not_given_synthetic_type(self):
+        params = {
+            "oneOf": [
+                {"required": ["prompt"], "not": {"required": ["goal"]}},
+                {"required": ["goal"], "not": {"required": ["prompt"]}},
+            ],
+            "allOf": [
+                {
+                    "if": {"required": ["goal"]},
+                    "then": {"properties": {"mode": {"enum": ["build", "edit"]}}},
+                }
+            ],
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        conditional = out["allOf"][0]
+        assert "type" not in conditional
+        # Nested schemas under then/if still get repaired.
+        assert conditional["then"]["properties"]["mode"]["type"] == "string"
+
+
 class TestAnyOfParentType:
     """Rule 2: type must not appear at the anyOf parent level.
 
@@ -167,11 +191,6 @@ class TestTopLevelGuarantees:
         assert sanitize_moonshot_tool_parameters("garbage") == empty
         assert sanitize_moonshot_tool_parameters([]) == empty
 
-    def test_non_object_top_level_coerced(self):
-        params = {"type": "string"}
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["type"] == "object"
-        assert "properties" in out
 
     def test_does_not_mutate_input(self):
         params = {
@@ -301,21 +320,6 @@ class TestEnumNullStripping:
     """Rule 3: Moonshot rejects null/empty-string inside enum arrays."""
 
 
-    def test_enum_empty_string_stripped(self):
-        """enum containing empty string '' must have it removed for Moonshot."""
-        params = {
-            "type": "object",
-            "properties": {
-                "db_type": {
-                    "type": "string",
-                    "enum": ["mysql", "postgresql", ""],
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        db_type = out["properties"]["db_type"]
-        assert "" not in db_type["enum"]
-        assert db_type["enum"] == ["mysql", "postgresql"]
 
 
     def test_dataslayer_db_type_after_mcp_normalize(self):

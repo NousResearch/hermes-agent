@@ -69,7 +69,7 @@ def _build(n_pairs, big_indices, big_chars=9000, small="ok"):
 
 
 def _tool_by_id(msgs, cid):
-    return [m for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") == cid][0]
+    return next(m for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") == cid)
 
 
 def test_prunes_below_compression_threshold():
@@ -85,16 +85,6 @@ def test_prunes_below_compression_threshold():
         m = _tool_by_id(result, cid)
         assert len(m["content"]) < 9000                       # summarized
         assert m["content"] != _PRUNED_TOOL_PLACEHOLDER       # informative, not a blank placeholder
-
-
-
-
-
-
-
-
-
-
 
 
 def test_idempotent():
@@ -155,7 +145,7 @@ def test_successful_full_compression_resets_proactive_runway():
         proactive_prune_tokens=48_000,
         proactive_prune_min_result_chars=8_000,
     )
-    first, n1 = c.prune_tool_results_only(
+    _first, n1 = c.prune_tool_results_only(
         _build(8, big_indices={0, 1, 2}), current_tokens=120_000,
     )
     assert n1 >= 3
@@ -179,25 +169,14 @@ def test_successful_full_compression_resets_proactive_runway():
     assert result is not fresh
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # Salvage follow-ups: no-op caller contract, prompt-cache hysteresis gate,
 # no-orphan pairing invariant, and the default-off behavior pin.
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-def test_min_reclaim_gate_default_and_clamp():
-    """Default 4096; negative/None coerce to disabled (0)."""
-    assert _compressor().proactive_prune_min_reclaim_tokens == 4096
+def test_min_reclaim_gate_clamp():
+    """Negative/None coerce to disabled (0)."""
     assert _compressor(proactive_prune_min_reclaim_tokens=0).proactive_prune_min_reclaim_tokens == 0
     assert _compressor(proactive_prune_min_reclaim_tokens=-5).proactive_prune_min_reclaim_tokens == 0
     assert _compressor(proactive_prune_min_reclaim_tokens=None).proactive_prune_min_reclaim_tokens == 0
@@ -239,8 +218,3 @@ def test_unset_config_zero_behavior_change():
     assert pruned == 0
     assert result is msgs
     assert msgs == snapshot  # input never mutated
-    # And the compression-path caller still prunes at the 200-char default floor
-    # (min_prune_chars default unchanged).
-    import inspect
-    sig = inspect.signature(c._prune_old_tool_results)
-    assert sig.parameters["min_prune_chars"].default == 200

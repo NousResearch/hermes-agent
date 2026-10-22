@@ -5,7 +5,8 @@ frozen :class:`RuntimeMode` built from a :class:`ContextProfile` (pure data). Th
 system prompt reads ``system_prompt_parts()``; the toolset collapses ONLY under opt-in
 ``focus`` (never strips a user-enabled toolset). ``agent.coding_context``: ``auto``
 (default, prompt-only) / ``focus`` / ``on`` / ``off``. Resolved once, immutable; the
-workspace snapshot is never re-probed per turn (cache safety).
+workspace snapshot is probed once per session and replayed through
+``system_prompt_parts(workspace_block=...)`` on every later build (cache safety).
 """
 
 from __future__ import annotations
@@ -277,17 +278,26 @@ def _detect_profile(mode: str, platform: str, cwd: Path) -> ContextProfile:
 
 
 def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
-    """Names of MCP servers the user has enabled — kept in the coding posture."""
+    """Names of MCP servers the user has enabled — kept in the coding posture. The profile default's
+    resolver, so plugin-provided servers stay too; *config* None reads the user's config."""
     try:
         from hermes_cli.config import read_raw_config
-        from hermes_cli.tools_config import _parse_enabled_flag
-        servers = read_raw_config().get("mcp_servers") or {}
-        return [
-            str(name) for name, cfg in servers.items()
-            if isinstance(cfg, dict) and _parse_enabled_flag(cfg.get("enabled", True), default=True)
-        ]
+        from hermes_cli.tools_config import enabled_mcp_server_names
+        return sorted(enabled_mcp_server_names(read_raw_config() if config is None else config))
     except Exception:
+        logger.debug("Could not list enabled MCP servers for the coding posture", exc_info=True)
         return []
+
+
+def _posture_toolsets(config: Optional[dict[str, Any]]) -> list[str]:
+    """The coding posture's toolset list; callers own the ``focus`` check."""
+    return [CODING_TOOLSET, *_enabled_mcp_servers(config)]
+
+
+def focus_toolsets(config: Optional[dict[str, Any]]) -> Optional[list[str]]:
+    """The coding posture's toolsets when ``agent.coding_context`` is ``focus``, else None, for a
+    session whose workspace decision is already made (no cwd probe)."""
+    return _posture_toolsets(config) if _coding_mode(config) == "focus" else None
 
 
 # ── RuntimeMode (the seam) ──────────────────────────────────────────────────
@@ -317,18 +327,21 @@ class RuntimeMode:
 
     def toolset_selection(self, config: Optional[dict[str, Any]] = None) -> Optional[list[str]]:
         """Toolset list (only under ``focus``), or ``None`` to keep the platform default. Callers
-        apply it only when the user hasn't pinned a selection (``--toolsets``, ``HERMES_TUI_TOOLSETS``)."""
+        apply it only when the user hasn't pinned a selection (``--toolsets``, ``HERMES_TUI_TOOLSETS``).
+        *config* None lists MCP servers from the user's config."""
         if self.config_mode != "focus" or self.profile.toolset is None:
             return None
-        return [self.profile.toolset, *_enabled_mcp_servers(config)]
+        return _posture_toolsets(config)  # the focus decision is this mode's own config_mode
 
-    def system_prompt_parts(self, valid_tool_names=None) -> tuple[list[str], list[str], list[str]]:
+    def system_prompt_parts(self, valid_tool_names=None, workspace_block: Optional[str] = None) -> tuple[list[str], list[str], list[str]]:
         """Return (prefix, workspace, trailing) posture blocks in the historical flat order —
         brief, snapshot, operator instructions — so prompt assembly can put a cache boundary
         before the snapshot without changing persisted bytes. The brief carries the model-family
         edit-format nudge (one cached string); ``valid_tool_names`` drops the ``todo_list``
         sentence when that tool isn't loaded; operator instructions ride their own block so
-        the brief stays byte-stable."""
+        the brief stays byte-stable. ``workspace_block`` replays a snapshot the caller already
+        pinned at session start (``""`` = no workspace) instead of re-running the git probe;
+        ``None`` probes."""
         if not self.is_coding:
             return [], [], []
         prefix: list[str] = []
@@ -340,7 +353,7 @@ class RuntimeMode:
             if family is not None:
                 brief = f"{brief}\n{_EDIT_FORMAT_GUIDANCE[family][1]}"
             prefix.append(brief)
-        workspace = build_coding_workspace_block(self.cwd)
+        workspace = build_coding_workspace_block(self.cwd) if workspace_block is None else workspace_block
         trailing = [f"Operator instructions (from config):\n{self.instructions}"] if self.instructions else []
         return prefix, [workspace] if workspace else [], trailing
 
@@ -388,18 +401,27 @@ def is_coding_context(*, platform: Optional[str] = None, cwd: Optional[str | Pat
     return resolve_runtime_mode(platform=platform, cwd=cwd, config=config).is_coding
 
 
+def in_focus_workspace(*, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None) -> bool:
+    """Whether *cwd* selects the coding posture's toolsets (``focus`` and a code workspace), without
+    building them; ``focus_toolsets`` builds them once the decision is made."""
+    return _coding_mode(config) == "focus" and is_coding_context(platform=platform, cwd=cwd, config=config)
+
+
 def coding_selection(*, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None) -> Optional[list[str]]:
     """Toolset selection for the coding posture (``None`` unless ``focus`` and active)."""
+    if _coding_mode(config) != "focus":  # only focus swaps toolsets: skip the workspace probe
+        return None
     return resolve_runtime_mode(platform=platform, cwd=cwd, config=config).toolset_selection(config)
 
 
 def coding_system_prompt_parts(
     *, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None,
-    model: Optional[str] = None, valid_tool_names=None,
+    model: Optional[str] = None, valid_tool_names=None, workspace_block: Optional[str] = None,
 ) -> tuple[list[str], list[str], list[str]]:
-    """Return coding prefix, workspace snapshot, and trailing guidance."""
+    """Return coding prefix, workspace snapshot, and trailing guidance.  ``workspace_block``
+    replays the caller's pinned session-start snapshot instead of probing git again."""
     mode = resolve_runtime_mode(platform=platform, cwd=cwd, config=config, model=model)
-    return mode.system_prompt_parts(valid_tool_names=valid_tool_names)
+    return mode.system_prompt_parts(valid_tool_names=valid_tool_names, workspace_block=workspace_block)
 
 
 def coding_compact_skill_categories(*, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None) -> frozenset[str]:
@@ -444,7 +466,7 @@ def _read_small(path: Path) -> str:
     try:
         if not path.is_file() or path.stat().st_size > _MAX_FACT_FILE_BYTES:
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return ""
 
@@ -510,6 +532,9 @@ def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, An
     }
 
 
+WORKSPACE_BLOCK_HEADER = "Workspace (snapshot at session start — re-check with `git` before acting on it):"
+
+
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     """Workspace snapshot for the system prompt (empty outside a workspace): git state when
     in a repo, plus project facts — so marker-only (non-git) projects still get one."""
@@ -517,11 +542,17 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     if root is None:
         return ""
     lines = [
-        "Workspace (snapshot at session start — re-check with `git` before acting on it):",
+        WORKSPACE_BLOCK_HEADER,
         f"- Root: {root}",
     ]
     if git_root is not None:
-        branch, counts = _parse_status(_git(root, "status", "--porcelain=2", "--branch"))
+        # ``status`` hashes re-timestamped files through the repo-named clean filter; skip it when
+        # the filter overrides cannot be discovered rather than run it half-hardened.
+        from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+        status_env = noninteractive_repo_git_env(root)
+        status = "" if status_env is None else bounded_git_probe(
+            ["git", "-C", str(root), "status", "--porcelain=2", "--branch"], timeout=_GIT_TIMEOUT, env=status_env)
+        branch, counts = _parse_status(status)
         head = branch.get("head", "")
         if head == "(detached)":
             lines.append("- Branch: (detached HEAD)")
@@ -533,10 +564,15 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
 
         # Linked worktree: say so (branches/stashes are shared state) but do NOT expose
         # the primary tree path — a second absolute path makes the model run commands
-        # in the wrong directory.
+        # in the wrong directory. Derived from the session's own cwd, so every surface
+        # opened in a worktree (``hermes -w``, Ink, Desktop, ACP) gets the same guidance.
         git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
         if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
-            lines.append("- Worktree: linked (git state shared with primary tree)")
+            on_branch = f" on branch {head}" if head and head != "(detached)" else ""
+            lines.append(
+                f"- Worktree: linked, isolated{on_branch} (git state shared with primary tree). Changes here do"
+                " not affect the main working tree or other agents; commit and push your changes, and open a"
+                " PR if appropriate.")
 
         dirty = [f"{n} {label}" for label, n in counts.items() if n]
         lines.append(f"- Status: {', '.join(dirty) if dirty else 'clean'}")
@@ -554,34 +590,3 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     if f.context_files:
         lines.append(f"- Context files: {', '.join(f.context_files)}")
     return "\n".join(lines)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def coding_system_blocks(
-    *,
-    platform: Optional[str] = None,
-    cwd: Optional[str | Path] = None,
-    config: Optional[dict[str, Any]] = None,
-    model: Optional[str] = None,
-) -> list[str]:
-    """Stable system-prompt blocks for the current posture (empty when general).
-
-    ``model`` steers the brief's edit-format nudge toward the model's family.
-    """
-    return resolve_runtime_mode(
-        platform=platform, cwd=cwd, config=config, model=model
-    ).system_blocks()
-
-_PROFILES: dict[str, ContextProfile] = {
-    GENERAL_PROFILE.name: GENERAL_PROFILE,
-    CODING_PROFILE.name: CODING_PROFILE,
-}
-
-def get_profile(name: str) -> ContextProfile:
-    """Return a registered profile, falling back to ``general``."""
-    return _PROFILES.get(name, GENERAL_PROFILE)
-# ---- END PLUGIN-COMPAT ----

@@ -15,13 +15,13 @@ Delegate coding tasks to the Blackbox AI multi-model CLI.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/blackbox` |
-| Path | `optional-skills/autonomous-ai-agents\blackbox` |
+| Path | `optional-skills/autonomous-ai-agents/blackbox` |
 | Version | `1.0.1` |
 | Author | Hermes Agent (Nous Research) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Blackbox`, `Multi-Agent`, `Judge`, `Multi-Model` |
-| Related skills | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| Related skills | [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 
@@ -108,8 +108,8 @@ terminal(command="REVIEW=$(mktemp -d) && git clone https://github.com/user/repo.
 Spawn multiple Blackbox instances for independent tasks:
 
 ```
-terminal(command="blackbox --prompt 'Fix the login bug'", workdir="/tmp/issue-1", background=true, pty=true)
-terminal(command="blackbox --prompt 'Add unit tests for auth'", workdir="/tmp/issue-2", background=true, pty=true)
+terminal(command="blackbox --prompt 'Fix the login bug'", workdir="~/.hermes/cache/scratch/issue-1", background=true, pty=true)
+terminal(command="blackbox --prompt 'Add unit tests for auth'", workdir="~/.hermes/cache/scratch/issue-2", background=true, pty=true)
 
 # Monitor all
 process(action="list")

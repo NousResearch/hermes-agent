@@ -30,7 +30,7 @@ class ProviderBase(abc.ABC):
         """Human-readable label shown in ``hermes tools``. Defaults to ``name``."""
         return self.name
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         """Provider row for the ``hermes tools`` picker.
 
         Shape: ``{"name", "badge", "tag", "env_vars": [{"key", "prompt", "url"}, ...]}``
@@ -56,7 +56,7 @@ class CatalogProviderBase(ProviderBase):
         """
         return True
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         """Model catalog entries (``{"id": ..., "display": ...}`` + provider-specific keys)."""
         return []
 

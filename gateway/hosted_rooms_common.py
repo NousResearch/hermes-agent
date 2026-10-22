@@ -12,9 +12,9 @@ import json
 import re
 import sqlite3
 import time
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
+
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 DbPath = Path | str
@@ -95,11 +95,11 @@ def clock(now: float | None) -> float:
 
 
 def open_sqlite(path: DbPath, *, timeout: float = 10) -> sqlite3.Connection:
-    """Row-factory connection with foreign keys on; no journal or schema work."""
-    conn = sqlite3.connect(path, timeout=timeout)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    """Row-factory connection with foreign keys on; no journal or schema work (steady-state readers)."""
+    from hermes_cli.sqlite_util import open_db
+
+    return open_db(path, db_label="shared-state.db", busy_timeout_ms=int(timeout * 1000), wal=False,
+                   foreign_keys=True)
 
 
 def connect(
@@ -109,34 +109,22 @@ def connect(
 
     Multiple profile gateways share this database, so every draft-schema transition
     is serialized in SQLite itself: a crash rolls back the whole DDL/data migration and
-    another process can safely retry it. Only the transient "database is locked" class
-    from the journal-mode pragma is retried (it may ignore the busy timeout while another
-    first opener initializes the DB, especially on Windows).
+    another process can safely retry it.
     """
-    from hermes_state_wal import apply_wal_with_fallback
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    try:
-        for attempt in range(lock_retries):
-            try:
-                apply_wal_with_fallback(conn, db_label=db_label)
-                break
-            except sqlite3.OperationalError as exc:
-                if str(exc).lower() != "database is locked" or attempt + 1 == lock_retries:
-                    raise
-                time.sleep(0.01 * (2**attempt))
-        conn.execute("PRAGMA foreign_keys=ON")
+    def _initialize(conn: sqlite3.Connection) -> None:
         if not ready(conn):
-            conn.execute("BEGIN IMMEDIATE")
-            initialize(conn)
-            conn.commit()
-    except Exception:
-        conn.rollback()
-        conn.close()
-        raise
-    return conn
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                initialize(conn)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
+    from hermes_cli.sqlite_util import open_db
+
+    return open_db(db_path, db_label=db_label, busy_timeout_ms=10_000, foreign_keys=True,
+                   wal_lock_retries=lock_retries, initialize=_initialize)
 
 
 def fenced_update(conn: sqlite3.Connection, sql: str, params: tuple, error: Exception) -> None:
@@ -154,19 +142,10 @@ def table_columns(conn: sqlite3.Connection, table: str) -> frozenset[str]:
     return frozenset(row[1] for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
-@contextmanager
 def transaction(
     connect: Callable[[DbPath], sqlite3.Connection], db_path: DbPath, *, immediate: bool
 ) -> Iterator[sqlite3.Connection]:
     """Open via ``connect``, optionally ``BEGIN IMMEDIATE``, commit on success, always close."""
-    conn = connect(db_path)
-    try:
-        if immediate:
-            conn.execute("BEGIN IMMEDIATE")
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    from hermes_cli.sqlite_util import transaction as _transaction
+
+    return _transaction(connect(db_path), immediate=immediate)

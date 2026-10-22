@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, write_txn
+from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, open_db, write_txn
 from hermes_constants import get_hermes_home
 
 
@@ -118,26 +118,19 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     idempotent (``CREATE TABLE IF NOT EXISTS`` + additive migrations) and cached per-path per-process.
     """
     path = db_path if db_path is not None else projects_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path))
-    try:
-        conn.row_factory = sqlite3.Row
-        from hermes_state_wal import apply_wal_with_fallback
 
-        apply_wal_with_fallback(conn, db_label="projects.db")
-        conn.execute("PRAGMA foreign_keys=ON")
-        if resolved not in _INITIALIZED_PATHS:
-            conn.executescript(SCHEMA_SQL)
-            cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
-            for col in _OPTIONAL_PROJECT_COLUMNS:
-                if col not in cols:
-                    _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
-            _INITIALIZED_PATHS.add(resolved)
-    except Exception:
-        conn.close()
-        raise
-    return conn
+    def _initialize(conn: sqlite3.Connection) -> None:
+        if resolved in _INITIALIZED_PATHS:
+            return
+        conn.executescript(SCHEMA_SQL)
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+        for col in _OPTIONAL_PROJECT_COLUMNS:
+            if col not in cols:
+                _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
+        _INITIALIZED_PATHS.add(resolved)
+
+    return open_db(path, db_label="projects.db", foreign_keys=True, initialize=_initialize)
 
 
 @contextlib.contextmanager
@@ -175,7 +168,7 @@ class Project:
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
     archived: bool = False
-    folders: List[ProjectFolder] = field(default_factory=list)
+    folders: list[ProjectFolder] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in ("id", "slug", "name", *_OPTIONAL_ROW_FIELDS)}
@@ -263,7 +256,7 @@ def create_project(
     return pid
 
 
-def list_projects(conn: sqlite3.Connection, *, include_archived: bool = False) -> List[Project]:
+def list_projects(conn: sqlite3.Connection, *, include_archived: bool = False) -> list[Project]:
     sql = "SELECT * FROM projects" + ("" if include_archived else " WHERE archived = 0") + " ORDER BY created_at ASC"
     return [_load_project(conn, r) for r in conn.execute(sql).fetchall()]
 
@@ -461,7 +454,7 @@ def record_discovered_repos(
     return len(rows)
 
 
-def list_discovered_repos(conn: sqlite3.Connection) -> List[dict]:
+def list_discovered_repos(conn: sqlite3.Connection) -> list[dict]:
     """All cached discovered repo roots, most-recently-seen first."""
     return [dict(r) for r in conn.execute("SELECT root, label, last_seen FROM discovered_repos ORDER BY last_seen DESC").fetchall()]
 

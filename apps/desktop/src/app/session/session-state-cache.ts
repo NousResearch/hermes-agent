@@ -45,6 +45,7 @@ export class SessionStateCache extends Map<string, ClientSessionState> {
   readonly #maxBytes: number
   readonly #maxCount: number
   readonly #recency = new Map<string, number>()
+  readonly #transcriptWeights = new WeakMap<ClientSessionState['messages'], number>()
   #clock = 0
 
   constructor(callbacks: SessionStateCacheCallbacks, limits: SessionStateCacheLimits = {}) {
@@ -91,7 +92,7 @@ export class SessionStateCache extends Map<string, ClientSessionState> {
         continue
       }
 
-      const weight = transcriptBytes(state)
+      const weight = this.#weight(state)
       candidates.push({ bytes: weight, runtimeId, state, touched: this.#recency.get(runtimeId) ?? 0 })
       bytes += weight
     }
@@ -143,6 +144,19 @@ export class SessionStateCache extends Map<string, ClientSessionState> {
       !hasDraftOrInFlightMessage(state) &&
       !this.#callbacks.isReferenced(runtimeId, state)
     )
+  }
+
+  #weight(state: ClientSessionState): number {
+    const cached = this.#transcriptWeights.get(state.messages)
+
+    if (cached !== undefined) {
+      return cached
+    }
+
+    const weight = transcriptBytes(state)
+    this.#transcriptWeights.set(state.messages, weight)
+
+    return weight
   }
 
   #touch(runtimeId: string): void {

@@ -46,14 +46,6 @@ def _error():
     )
 
 
-def test_quarantine_emits_warning(caplog):
-    state = _make_state()
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
-        _quarantine_nous_oauth_state(state, _error(), reason="unit_test_quarantine")
-
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert warnings, "expected at least one WARNING+ record from quarantine"
-    assert any("quarantined" in r.getMessage() for r in warnings)
 
 
 

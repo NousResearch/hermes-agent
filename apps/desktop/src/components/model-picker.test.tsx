@@ -1,17 +1,24 @@
+import type { ModelOptionsResult } from '@hermes/shared'
+import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { $localModelsEnabled } from '@/store/local-models-flag'
-import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
-import type { LocalRuntimeJob, ModelOptionsResponse } from '@/types/hermes'
+import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelPickerDialog } from './model-picker'
 
+// The jobs query refetches on mount and would replace a seeded cache entry with
+// whatever the backend answers; answering with the seeded jobs keeps the two equal.
+const seededJobs: { current: readonly LocalRuntimeJob[] } = vi.hoisted(() => ({ current: [] }))
+
 vi.mock('@/hermes', () => ({
+  getLocalModelsJobs: vi.fn(async () => ({ jobs: [...seededJobs.current] })),
   getLocalModelsStatus: vi.fn().mockResolvedValue({ loading: {} })
 }))
 vi.mock('@/lib/model-options', async importOriginal => ({
@@ -24,7 +31,7 @@ import { requestModelOptions } from '@/lib/model-options'
 stubResizeObserver()
 stubMenuDomApis()
 
-const OPTIONS: ModelOptionsResponse = {
+const OPTIONS: ModelOptionsResult = {
   model: 'Qwen3.6-27B-UD-Q4_K_XL',
   provider: 'llamacpp',
   providers: [
@@ -58,9 +65,18 @@ const DOWNLOAD_JOB: LocalRuntimeJob = {
   error: null
 }
 
-function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+// One client per test, created in beforeEach: the tests seed jobs BEFORE
+// rendering, so the picker must mount against the client that was seeded.
+let client: QueryClient = new QueryClient()
 
+function setRuntimeJobs(jobs: readonly LocalRuntimeJob[]): void {
+  // The jobs store keeps jobs in react-query, not an atom: seed the cache
+  // directly the way production populates it (localModelsKey(owner, 'jobs')).
+  seededJobs.current = jobs
+  client.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), jobs)
+}
+
+function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
   const element: ReactElement = (
     <QueryClientProvider client={client}>
       <I18nProvider>
@@ -80,8 +96,9 @@ function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
 }
 
 beforeEach(() => {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(requestModelOptions).mockResolvedValue(OPTIONS)
-  $localRuntimeJobs.set([])
+  setRuntimeJobs([])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
 })
@@ -93,7 +110,7 @@ afterEach(() => {
 
 describe('ModelPickerDialog download rows', () => {
   it('shows an in-flight download as a disabled progress row in the Local group', async () => {
-    $localRuntimeJobs.set([DOWNLOAD_JOB])
+    setRuntimeJobs([DOWNLOAD_JOB])
     renderPicker()
 
     expect(await screen.findByText('Qwen3.6-27B-UD-Q4_K_XL')).toBeTruthy()
@@ -110,7 +127,7 @@ describe('ModelPickerDialog download rows', () => {
   })
 
   it('shows a first-ever download under its own Local group when no local provider exists yet', async () => {
-    $localRuntimeJobs.set([DOWNLOAD_JOB])
+    setRuntimeJobs([DOWNLOAD_JOB])
     vi.mocked(requestModelOptions).mockResolvedValue({
       providers: [OPTIONS.providers![1]]
     })
@@ -124,28 +141,81 @@ describe('ModelPickerDialog download rows', () => {
   it('quickstart shows while downloading but not during later phases', async () => {
     const quickstart: LocalRuntimeJob = { ...DOWNLOAD_JOB, job_id: 'q1', kind: 'quickstart', phase: 'downloading' }
 
-    $localRuntimeJobs.set([quickstart])
+    setRuntimeJobs([quickstart])
     renderPicker()
     expect(await screen.findByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeTruthy()
 
     // The model is staged once quickstart moves on to activating it — the
     // placeholder row must leave rather than sit beside the real model.
-    $localRuntimeJobs.set([{ ...quickstart, phase: 'starting-server' }])
+    setRuntimeJobs([{ ...quickstart, phase: 'starting-server' }])
     await waitFor(() => {
       expect(screen.queryByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeNull()
     })
   })
 
   it('refetches the model options when a download it saw running completes', async () => {
-    $localRuntimeJobs.set([DOWNLOAD_JOB])
+    setRuntimeJobs([DOWNLOAD_JOB])
     renderPicker()
     await screen.findByText('Qwen3.6-27B-UD-Q4_K_XL')
 
     expect(vi.mocked(requestModelOptions).mock.calls.length).toBe(1)
 
-    $localRuntimeJobs.set([{ ...DOWNLOAD_JOB, status: 'done', phase: 'done' }])
+    setRuntimeJobs([{ ...DOWNLOAD_JOB, status: 'done', phase: 'done' }])
     await waitFor(() => {
       expect(vi.mocked(requestModelOptions).mock.calls.length).toBe(2)
+    })
+  })
+})
+
+describe('ModelPickerDialog search ranking', () => {
+  // Rows must come out in the order the shared fuzzyRank produces — the same
+  // helper the web and TUI pickers use — so a query ranks identically on
+  // every surface. Curated order puts the scattered match first; the ranked
+  // order does not, which is what proves the picker is not substring-filtering.
+  const MODELS = ['glm-4.6-omni', 'claude-sonnet-4', 'gpt-4o']
+
+  it('orders model rows exactly as the shared fuzzyRank does', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [{ slug: 'nous', name: 'Nous', models: MODELS, authenticated: true }]
+    })
+    renderPicker({ currentModel: 'gpt-4o', currentProvider: 'nous' })
+    await screen.findByText('gpt-4o')
+
+    const query = 'g4o'
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: query } })
+
+    const expected = fuzzyRank(MODELS, query, modelSearchText).map(r => r.item)
+
+    expect(expected).not.toEqual(MODELS.filter(m => expected.includes(m)))
+    await waitFor(() => {
+      const rows = screen.getAllByRole('option').map(el => el.textContent?.trim())
+
+      expect(rows).toEqual(expected)
+    })
+  })
+
+  // Regression guard: main folded `[-_.]` on both sides (foldIncludes); the
+  // shared ranker must too, or a query typed with the "wrong" separator
+  // drops every row while the highlighter (which still folds) disagrees.
+  it.each([
+    ['gpt.4o', 'gpt-4o'],
+    ['claude_3', 'claude-3-opus'],
+    ['qwen3-8', 'qwen3.8-flash']
+  ])('separator variant %s still lists %s', async (query, expected) => {
+    const catalog = ['gpt-4o', 'claude-3-opus', 'qwen3.8-flash']
+
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [{ slug: 'nous', name: 'Nous', models: catalog, authenticated: true }]
+    })
+    renderPicker({ currentModel: 'gpt-4o', currentProvider: 'nous' })
+    await screen.findByText('gpt-4o')
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: query } })
+
+    await waitFor(() => {
+      const rows = screen.getAllByRole('option').map(el => el.textContent?.trim())
+
+      expect(rows).toContain(expected)
     })
   })
 })

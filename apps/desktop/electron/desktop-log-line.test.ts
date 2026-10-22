@@ -1,22 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatDesktopLogLine } from './desktop-log-line'
+import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 
 describe('formatDesktopLogLine', () => {
-  it('prefixes each line with an ISO-8601 timestamp and the hermes tag', () => {
-    const line = formatDesktopLogLine('[boot] Resolving Hermes backend')
+  it('stamps lines with the local wall-clock time, in the shape Python logs use', () => {
+    // Built from local components, so the assertion holds in every time zone:
+    // the stamp must name the same local moment agent.log would print for it.
+    const moment = new Date(2026, 8, 3, 7, 5, 9, 42)
+    const line = formatDesktopLogLine('[boot] Resolving Hermes backend', formatLogStamp(moment))
 
-    // Shape contract (not a snapshot): every desktop log line starts with
-    // an ISO timestamp so multi-surface logs are chronologically readable.
-    // See #84405.
-    expect(line).toMatch(
-      /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[hermes\] \[boot\] Resolving Hermes backend$/
-    )
-  })
+    const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}),(\d{3}) \[hermes\] (.*)$/.exec(line)
 
-  it('keeps the message verbatim after the prefix', () => {
-    const line = formatDesktopLogLine('Hermes backend exited (0)')
-
-    expect(line).toMatch(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[hermes\] Hermes backend exited \(0\)$/)
+    expect(match).not.toBeNull()
+    const [, y, mo, d, h, mi, s, ms, text] = match!
+    expect(new Date(+y, +mo - 1, +d, +h, +mi, +s, +ms).getTime()).toBe(moment.getTime())
+    expect(text).toBe('[boot] Resolving Hermes backend')
   })
 })

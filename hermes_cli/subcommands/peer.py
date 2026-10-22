@@ -298,6 +298,17 @@ def _peer_run_ctl(args, action: str, peer_name: str, profile: str | None, base: 
     return 0
 
 
+def _turn_body(message: str, *, message_key: str, **extra) -> dict:
+    """Request body for one turn. ``author`` is added only when a dispatcher set HERMES_TURN_AUTHOR."""
+    from agent.turn_author import turn_author_from_env
+
+    body = {message_key: message, **extra}
+    author = turn_author_from_env()
+    if author is not None:
+        body["author"] = author
+    return body
+
+
 def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str, key: str) -> int:
     idempotency_key = (getattr(args, "idempotency_key", None) or f"peer-{uuid.uuid4().hex}").strip()
     if (not idempotency_key or len(idempotency_key) > 255
@@ -313,7 +324,7 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
         session_id = _ensure_bot_chat(base, key)
         result = _request(
             f"{base}/v1/runs", key, method="POST",
-            body={"input": message, "session_id": session_id},
+            body=_turn_body(message, message_key="input", session_id=session_id),
             headers={"Idempotency-Key": idempotency_key})
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         return _peer_failure(peer_name, exc)
@@ -332,18 +343,47 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
 
 
 def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str, key: str) -> int:
+    session_id = ""
     try:
         session_id = _ensure_bot_chat(base, key)
         result = _request(
             f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
-            method="POST", body={"message": message}, timeout=DM_TIMEOUT_S)
+            method="POST", body=_turn_body(message, message_key="message"), timeout=DM_TIMEOUT_S)
     except RuntimeError as exc:
         print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
         return 1
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        # A timeout while awaiting the response, once the Bot Chat is known, means the peer took
+        # this turn: the message is already in its Bot Chat and the gateway runs the turn to
+        # completion regardless of this client, so reporting it unreachable makes the sender resend
+        # and deliver it twice. urllib raises that timeout bare; one it wraps in URLError hit while
+        # connecting or sending, so the request never arrived and "could not reach" is the truth.
+        if session_id and isinstance(exc, TimeoutError):
+            print(f"Peer '{peer_name}' accepted the message but its turn is still running after "
+                  f"{DM_TIMEOUT_S}s: the message is already in its Bot Chat (session {session_id}) "
+                  "and will be answered there. The reply cannot come back on this call. Do NOT resend.",
+                  file=sys.stderr)
+            return 1
         return _peer_failure(peer_name, exc)
+    if result.get("object") == "hermes.session.chat.queued":
+        # The peer's Bot Chat is open in its Desktop and that turn outlasted the peer's wait: the
+        # message is in the open chat and is answered there, so a resend would run it twice.
+        queued_in = result.get("session_id") or session_id
+        return _emit(args, {"peer": peer_name, "profile": profile, "session_id": queued_in,
+                            "status": result.get("status") or "queued", "delivery_id": result.get("delivery_id")},
+                     [f"Peer '{peer_name}' has its Bot Chat open, so the message went into that chat (session "
+                      f"{queued_in}) and is answered there. The reply cannot come back on this call. Do NOT resend."])
     msg = result.get("message")
     reply = str(msg.get("content") or "") if isinstance(msg, dict) else ""
+    # A successful bare silence marker is a delivery decision, not a message:
+    # the turn stays in the peer's own transcript, the sending agent never
+    # sees NO_REPLY/[SILENT] as a real reply. Same rule as the gateway's live
+    # Bot Chat completion, the Desktop bot_relay.deliver RPC and the one-shot
+    # local `hermes chat -Q` transport (tools/bot_mode_dm.py) — this is the
+    # 4th Bot Mode delivery door and was missing the same check.
+    from gateway.response_filters import is_intentional_silence_response
+    if is_intentional_silence_response(reply):
+        reply = ""
     payload = {"peer": peer_name, "profile": profile,
                "session_id": result.get("session_id") or session_id, "reply": reply}
     return _emit(args, payload, [reply or "(no reply)"])

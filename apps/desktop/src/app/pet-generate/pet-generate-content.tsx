@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Egg, ImageIcon } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import {
   $petGenAvailable,
@@ -223,7 +224,7 @@ export function PetGenerateContent() {
                 className="pr-9"
                 onChange={event => $petGenInput.set(event.target.value)}
                 onKeyDown={event => {
-                  if (event.key === 'Enter') {
+                  if (isSubmitEnter(event)) {
                     event.preventDefault()
                     generate()
                   }

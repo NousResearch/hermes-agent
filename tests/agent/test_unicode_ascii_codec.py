@@ -1,0 +1,313 @@
+"""Tests for UnicodeEncodeError recovery with ASCII codec.
+
+Covers the fix for issue #6843 — systems with ASCII locale (LANG=C)
+that can't encode non-ASCII characters in API request payloads.
+"""
+
+
+from agent.message_sanitization import _strip_non_ascii, _sanitize_messages_non_ascii, _sanitize_structure_non_ascii, _sanitize_tools_non_ascii, _sanitize_messages_surrogates, sanitize_outbound_kwargs
+
+
+class TestStripNonAscii:
+    """Tests for _strip_non_ascii helper."""
+
+    def test_ascii_only(self):
+        assert _strip_non_ascii("hello world") == "hello world"
+
+
+
+
+
+
+
+class TestSanitizeMessagesNonAscii:
+    """Tests for _sanitize_messages_non_ascii."""
+
+    def test_no_change_ascii_only(self):
+        messages = [{"role": "user", "content": "hello"}]
+        assert _sanitize_messages_non_ascii(messages) is False
+        assert messages[0]["content"] == "hello"
+
+
+
+
+
+
+    def test_empty_messages(self):
+        assert _sanitize_messages_non_ascii([]) is False
+
+
+
+class TestSurrogateVsAsciiSanitization:
+    """Test that surrogate and ASCII sanitization work independently."""
+
+    def test_surrogates_still_handled(self):
+        """Surrogates are caught by _sanitize_messages_surrogates, not _non_ascii."""
+        msg_with_surrogate = "test \ud800 end"
+        messages = [{"role": "user", "content": msg_with_surrogate}]
+        assert _sanitize_messages_surrogates(messages) is True
+        assert "\ud800" not in messages[0]["content"]
+        assert "\ufffd" in messages[0]["content"]
+
+    def test_surrogates_in_name_and_tool_calls_are_sanitized(self):
+        messages = [{
+            "role": "assistant",
+            "name": "bad\ud800name",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_\ud800",
+                "type": "function",
+                "function": {
+                    "name": "read\ud800_file",
+                    "arguments": '{"path": "bad\ud800.txt"}'
+                }
+            }],
+        }]
+        assert _sanitize_messages_surrogates(messages) is True
+        assert "\ud800" not in messages[0]["name"]
+        assert "\ud800" not in messages[0]["tool_calls"][0]["id"]
+        assert "\ud800" not in messages[0]["tool_calls"][0]["function"]["name"]
+        assert "\ud800" not in messages[0]["tool_calls"][0]["function"]["arguments"]
+
+    def test_ascii_codec_strips_all_non_ascii(self):
+        """ASCII codec case: all non-ASCII is stripped, not replaced."""
+        messages = [{"role": "user", "content": "test ☤🤖你好 end"}]
+        assert _sanitize_messages_non_ascii(messages) is True
+        # All non-ASCII chars removed; spaces around them collapse
+        assert messages[0]["content"] == "test  end"
+
+    def test_no_surrogates_returns_false(self):
+        """When no surrogates present, _sanitize_messages_surrogates returns False."""
+        messages = [{"role": "user", "content": "hello ☤ world"}]
+        assert _sanitize_messages_surrogates(messages) is False
+
+
+class TestApiKeyNonAsciiSanitization:
+    """Tests for API key sanitization in the UnicodeEncodeError recovery.
+
+    Covers the root cause of issue #6843: a non-ASCII character (ʋ U+028B)
+    in the API key causes httpx to fail when encoding the Authorization
+    header as ASCII.  The recovery block must strip non-ASCII from the key.
+    """
+
+    def test_strip_non_ascii_from_api_key(self):
+        """_strip_non_ascii removes ʋ from an API key string."""
+        key = "sk-proj-abc" + "ʋ" + "def"
+        assert _strip_non_ascii(key) == "sk-proj-abcdef"
+
+
+
+class TestSanitizeToolsNonAscii:
+    """Tests for _sanitize_tools_non_ascii."""
+
+    def test_sanitizes_tool_description_and_parameter_descriptions(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Print structured output │ with emoji 🤖",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "File path │ with unicode",
+                            }
+                        },
+                    },
+                },
+            }
+        ]
+
+        assert _sanitize_tools_non_ascii(tools) is True
+        assert tools[0]["function"]["description"] == "Print structured output  with emoji "
+        assert tools[0]["function"]["parameters"]["properties"]["path"]["description"] == "File path  with unicode"
+
+
+
+class TestSanitizeStructureNonAscii:
+    def test_sanitizes_nested_dict_structure(self):
+        payload = {
+            "default_headers": {
+                "X-Title": "Hermes │ Agent",
+                "User-Agent": "Hermes/1.0 🤖",
+            }
+        }
+        assert _sanitize_structure_non_ascii(payload) is True
+        assert payload["default_headers"]["X-Title"] == "Hermes  Agent"
+        assert payload["default_headers"]["User-Agent"] == "Hermes/1.0 "
+
+
+
+
+class TestApiMessagesAndApiKwargsSanitized:
+    """Regression tests for #6843 follow-up: api_messages and api_kwargs must
+    be sanitized alongside messages during ASCII-codec recovery.
+
+    The original fix only sanitized the canonical `messages` list.
+    api_messages is a separate API-copy built before the retry loop; it may
+    carry extra fields (reasoning_content, extra_body) with non-ASCII chars
+    that are not present in `messages`.  Without sanitizing api_messages and
+    api_kwargs, the retry still raises UnicodeEncodeError even after the
+    'System encoding is ASCII — stripped...' log line appears.
+    """
+
+    def test_api_messages_with_reasoning_content_is_sanitized(self):
+        """api_messages may contain reasoning_content not in messages."""
+        api_messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "Sure!",
+                # reasoning_content is injected by the API-copy builder and
+                # is NOT present in the canonical messages list
+                "reasoning_content": "Let me think \xab step by step \xbb",
+            },
+        ]
+        found = _sanitize_messages_non_ascii(api_messages)
+        assert found is True
+        assert "\xab" not in api_messages[2]["reasoning_content"]
+        assert "\xbb" not in api_messages[2]["reasoning_content"]
+
+    def test_api_kwargs_with_non_ascii_extra_body_is_sanitized(self):
+        """api_kwargs may contain non-ASCII in extra_body or other fields."""
+        api_kwargs = {
+            "model": "glm-5.1",
+            "messages": [{"role": "user", "content": "ok"}],
+            "extra_body": {
+                "system": "Think carefully \u2192 answer",
+            },
+        }
+        found = _sanitize_structure_non_ascii(api_kwargs)
+        assert found is True
+        assert "\u2192" not in api_kwargs["extra_body"]["system"]
+
+
+    def test_reasoning_field_in_canonical_messages_is_sanitized(self):
+        """The canonical messages list stores reasoning as 'reasoning', not
+        'reasoning_content'.  The extra-fields loop must catch it."""
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning": "Let me think \xab carefully \xbb",
+            },
+        ]
+        assert _sanitize_messages_non_ascii(messages) is True
+        assert "\xab" not in messages[1]["reasoning"]
+        assert "\xbb" not in messages[1]["reasoning"]
+
+
+class TestSanitizeMessagesPersistMarker:
+    """In-place surrogate/non-ASCII repair of a stamped live dict must pop
+    _DB_PERSISTED_MARKER, or the flush scan skips it and session.db keeps the
+    corrupt bytes while the live transcript holds the repaired ones."""
+
+    def test_surrogate_repair_pops_marker(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        msg = {"role": "user", "content": "test \ud800 end", _DB_PERSISTED_MARKER: True}
+        assert _sanitize_messages_surrogates([msg]) is True
+        assert "\ud800" not in msg["content"]
+        assert _DB_PERSISTED_MARKER not in msg
+
+
+    def test_unchanged_dict_keeps_marker(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        msg = {"role": "user", "content": "clean ascii", _DB_PERSISTED_MARKER: True}
+        assert _sanitize_messages_non_ascii([msg]) is False
+        assert msg[_DB_PERSISTED_MARKER] is True
+
+    def test_ascii_recovery_sanitizes_detached_request_not_canonical_history(self, monkeypatch):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from agent.turn_recovery import _recover_unicode_encode_error
+
+        monkeypatch.setattr("agent.turn_recovery._runtime_uses_ascii_encoding", lambda: True)
+
+        canonical = [{"role": "user", "content": "olá ☕", _DB_PERSISTED_MARKER: True}]
+        api_messages = [{"role": "user", "content": "olá ☕"}]
+        prefill = [{"role": "assistant", "content": "prefill ☕"}]
+        tools = [{"type": "function", "function": {"name": "read", "description": "desc ☕"}}]
+        agent = type("Agent", (), {
+            "_unicode_sanitization_passes": 0,
+            "_force_ascii_payload": False,
+            "api_key": "ascii-key",
+            "_client_kwargs": {},
+            "client": None,
+            "prefill_messages": prefill,
+            "tools": tools,
+            "_cached_system_prompt": "cached ☕",
+            "ephemeral_system_prompt": "ephemeral ☕",
+            "log_prefix": "",
+            "_buffer_vprint": lambda self, *args, **kwargs: None,
+            "_vprint": lambda self, *args, **kwargs: None,
+        })()
+        api_kwargs = {"tools": agent.tools, "extra_body": {"note": "request ☕"}}
+
+        canonical_before = repr(canonical)
+        prefill_before = repr(prefill)
+        tools_before = repr(tools)
+
+        recovered, sanitized_prompt = _recover_unicode_encode_error(
+            agent, UnicodeEncodeError("ascii", "☕", 0, 1, "ordinal not in range"),
+            canonical, api_messages, api_kwargs, "active ☕",
+        )
+
+        assert recovered is True
+        assert sanitized_prompt == "active "
+        assert repr(canonical) == canonical_before
+        assert repr(prefill) == prefill_before
+        assert repr(tools) == tools_before
+        assert agent._cached_system_prompt == "cached ☕"
+        assert agent.ephemeral_system_prompt == "ephemeral ☕"
+        assert canonical[0][_DB_PERSISTED_MARKER] is True
+        assert api_messages[0] is not canonical[0]
+        api_messages[0]["content"].encode("ascii")
+        # Recovery no longer touches the failed attempt's api_kwargs (the retry rebuilds
+        # them); the outbound chokepoint detaches the aliased canonical tools before
+        # stripping, so agent.tools stays byte-stable.
+        assert agent._force_ascii_payload is True
+        retry_kwargs = {"tools": agent.tools, "extra_body": {"note": "retry ☕"}}
+        sanitize_outbound_kwargs(agent, retry_kwargs)
+        assert retry_kwargs["tools"] is not agent.tools
+        assert repr(tools) == tools_before
+        retry_kwargs["tools"][0]["function"]["description"].encode("ascii")
+        retry_kwargs["extra_body"]["note"].encode("ascii")
+
+    def test_ascii_word_in_error_does_not_strip_utf8_request_copy(self, monkeypatch):
+        from agent.turn_recovery import _recover_unicode_encode_error
+
+        monkeypatch.setattr("agent.turn_recovery._runtime_uses_ascii_encoding", lambda: False)
+        canonical = [{"role": "user", "content": "olá ☕"}]
+        api_messages = [{"role": "user", "content": "olá ☕"}]
+        agent = type("Agent", (), {
+            "_unicode_sanitization_passes": 0,
+            "_force_ascii_payload": False,
+            "api_key": "ascii-key",
+            "_client_kwargs": {},
+            "client": None,
+            "prefill_messages": None,
+            "tools": [],
+            "_cached_system_prompt": "system ☕",
+            "ephemeral_system_prompt": None,
+            "log_prefix": "",
+            "_buffer_vprint": lambda self, *args, **kwargs: None,
+            "_vprint": lambda self, *args, **kwargs: None,
+        })()
+
+        recovered, _ = _recover_unicode_encode_error(
+            agent, UnicodeEncodeError("ascii", "☕", 0, 1, "ordinal not in range"),
+            canonical, api_messages, {}, "system ☕",
+        )
+
+        # Nothing was repaired, so an identical retry cannot help: the error must
+        # surface through the normal path rather than consume a sanitization pass.
+        assert recovered is False
+        assert agent._unicode_sanitization_passes == 0
+        assert canonical[0]["content"] == "olá ☕"
+        assert api_messages[0]["content"] == "olá ☕"
+        assert agent._cached_system_prompt == "system ☕"

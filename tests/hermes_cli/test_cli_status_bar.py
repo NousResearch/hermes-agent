@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import cli as cli_mod
 from cli import HermesCLI
 
@@ -93,22 +95,51 @@ class TestCLIStatusBar:
         assert cli_obj._status_bar_visible is False
 
 
-    def test_build_status_bar_text_for_wide_terminal(self):
+    @pytest.mark.parametrize(
+        "provider,model,reasoning_echo,expected_tokens,expected_percent",
+        [
+            ("custom", "mtplx-flash-next-optimized-speed", True, 900_050, 90),
+            ("custom", "mtplx-flash-next-optimized-speed", False, 400_200, 40),
+            ("deepseek", "deepseek-chat", False, 900_050, 90),
+        ],
+    )
+    def test_build_status_bar_text_for_wide_terminal(
+        self, provider, model, reasoning_echo, expected_tokens, expected_percent,
+    ):
+        from agent.reasoning_params import ReasoningParamsMixin
+        from agent.turn_context import _preflight_request_tokens
+        from agent.usage_anchor import capture_usage_anchor
+
         cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
+            _make_cli(model),
+            prompt_tokens=900_000,
+            completion_tokens=50,
+            total_tokens=900_050,
             api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
+            context_tokens=900_000,
+            context_length=1_000_000,
         )
+        agent = ReasoningParamsMixin()
+        vars(agent).update(vars(cli_obj.agent))
+        cli_obj.agent = agent
+        agent.provider = provider
+        agent._reasoning_echo_flag = reasoning_echo
+        agent.reasoning_config = {"enabled": not reasoning_echo, "effort": "high"}
+        messages = cli_obj.conversation_history
+        agent._turn_base_usage_anchor = capture_usage_anchor(400_000, 200, messages)
+        messages.append({"role": "assistant", "content": "first reply"})
+        agent._usage_anchor = capture_usage_anchor(900_000, 50, messages)
+        agent._session_messages = messages
 
         text = cli_obj._build_status_bar_text(width=120)
+        snapshot = cli_obj._get_status_bar_snapshot()
+        pressure = _preflight_request_tokens(agent, messages, "")
 
-        assert "claude-sonnet-4-20250514" in text
-        assert "12.4K/200K" in text
-        assert "6%" in text
+        assert pressure == 900_050
+        assert snapshot["context_tokens"] == expected_tokens
+        assert snapshot["context_percent"] == expected_percent
+        assert model[:12] in text
+        assert f"{expected_percent}%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 

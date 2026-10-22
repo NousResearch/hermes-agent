@@ -1247,7 +1247,7 @@ hermes update [--check] [--backup] [--restart-gateway]
 
 附加行为：
 
-- **配对数据快照。** 即使 `--backup` 关闭，`hermes update` 也会在 `git pull` 前对 `~/.hermes/pairing/` 和 Feishu 评论规则进行轻量快照。如果拉取覆盖了你正在编辑的文件，可以用 `hermes backup restore --state pre-update` 回滚。
+- **更新前状态快照。** 即使 `--backup` 关闭，`hermes update` 也会在 `git pull` 前创建一个标记为 `pre-update` 的快速状态快照（配置、`.env`、cron 任务、配对数据及其他关键状态）。如需回滚，启动 `hermes` 后运行 `/snapshot list`，再运行 `/snapshot restore <id>`。
 - **旧版 `hermes.service` 警告。** 如果 Hermes 检测到预重命名的 `hermes.service` systemd 单元（而非当前的 `hermes-gateway.service`），会打印一次性迁移提示，帮助你避免循环重启问题。
 - **退出码。** 成功时为 `0`，拉取/安装/安装后错误时为 `1`，阻止 `git pull` 的意外工作树变更时为 `2`。
 

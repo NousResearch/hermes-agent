@@ -1,7 +1,7 @@
 import { Button, host, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
@@ -70,6 +70,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const busyRef = useRef(false)
   const alive = useRef(true)
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
+  const [stopping, setStopping] = useState(false)
+  const stopPending = useRef(false)
+  // One cancellation intent survives uncertain replies until new work starts or Stop is confirmed.
+  const stopIntent = useRef<string | null>(null)
+  const [notice, setNotice] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
   const heldDraft = useRef<{ text: string; attachments: Attachment[]; reply: RoomReply | null } | null>(null)
@@ -169,6 +174,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   const send = () => {
     if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    stopIntent.current = null
     void mutate(async () => {
       const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments, ...(reply?.thread ? { thread_id: reply.thread } : {}) })
 
@@ -197,8 +203,41 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     })
   }
 
+  // Stop has its own busy state: it stays available while a Send is in flight.
+  const stop = async () => {
+    if (stopPending.current) {return}
+    stopPending.current = true
+    stopIntent.current ??= randomUuid()
+    setStopping(true)
+    setNotice('')
+    setError('')
+
+    try {
+      const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: stopIntent.current })
+      const cancelled = result?.cancelled
+
+      if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
+      stopIntent.current = null
+
+      if (alive.current) {
+        setNotice(cancelled ? labels.stopped : labels.nothingRunning)
+        await refresh()
+      }
+    } catch (e) {
+      if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
+    } finally {
+      stopPending.current = false
+
+      if (alive.current) {setStopping(false)}
+    }
+  }
+
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
-    mutate(() => actCanonicalGroup(binding, action, choice))
+    mutate(() => {
+      if (action.kind === 'retry') {stopIntent.current = null}
+
+      return actCanonicalGroup(binding, action, choice)
+    })
 
   const rename = (name: string) =>
     void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name }))
@@ -257,12 +296,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
         canStop={!!driver && offersGroupMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
-        onDisband={end} onRename={rename} onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))}
-        room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} working={working} />
-      {readError && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-destructive" role="alert">{readError}
-        <Button onClick={() => void refresh().catch(e => setReadError(String(e)))} size="xs" variant="ghost">{labels.refresh}</Button></div>}
-      {error && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{error}</div>}
-      {state && !driver && <p className="px-3 py-1.5 text-xs text-(--ui-text-tertiary)">{labels.driverUnavailable}</p>}
+        onDisband={end} onRename={rename} onStop={() => void stop()}
+        room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || busy || stopping} />
+      <CanonicalGroupNotices error={error} labels={labels} notice={notice} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
+        readError={readError} unavailable={Boolean(state && !driver)} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4" ref={scroller} role="log">
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">

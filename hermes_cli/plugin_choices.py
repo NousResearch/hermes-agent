@@ -55,17 +55,18 @@ def clarify_asker(callback: Callable[[list], dict]) -> Asker:
     return ask
 
 
-def _options(choices: list[Choice]) -> list[tuple[str, str]]:
-    """``[(value, label shown)]``: a string is both; a dict's description rides on its label."""
+def _options(choices: list[Choice]) -> list[tuple[str, str, str]]:
+    """``[(value, plain label, label shown)]``: a string is all three; a dict's description rides on the shown
+    label only, so a typed plain label still picks it."""
     options = []
     for choice in choices:
         if isinstance(choice, str):
-            options.append((choice, choice))
+            options.append((choice, choice, choice))
             continue
         value = str(choice["value"])
         label = str(choice.get("label") or value)
         description = str(choice.get("description") or "").strip()
-        options.append((value, f"{label} — {description}" if description else label))
+        options.append((value, label, f"{label} — {description}" if description else label))
     return options
 
 
@@ -89,7 +90,7 @@ def ask_choice(question: str, choices: list[Choice]) -> Optional[str]:
         logger.warning("ask_choice needs a sync slash-command handler: an async one would block the "
                        "event loop that delivers the answer; returning None")
         return None
-    picked = asker(str(question), [label for _value, label in options])
+    picked = asker(str(question), [shown for _value, _label, shown in options])
     typed = (picked or "").strip().casefold()
-    return next((value for value, label in options if typed and typed in (label.casefold(), value.casefold())),
-                None)
+    return next((value for value, label, shown in options
+                 if typed and typed in (shown.casefold(), label.casefold(), value.casefold())), None)

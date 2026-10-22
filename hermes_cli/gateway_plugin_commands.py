@@ -222,7 +222,8 @@ def call_unbounded(cli, connection, name, command):
     from hermes_cli.gateway_connection import CallStopped
     wake = cli._gateway_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
     from agent.memory_provider import spawn_context_thread
-    spawn_context_thread(_answer_choices, args=(cli, connection, wake), name="hermes-command-choices").start()
+    answering: list = []  # the clarify request id the panel is answering, while it is open
+    spawn_context_thread(_answer_choices, args=(cli, connection, wake, answering), name="hermes-command-choices").start()
     try:
         return connection.call_until("slash.exec", wake, session_id=cli.session_id, command=command)
     except (CallStopped, KeyboardInterrupt) as exc:
@@ -232,23 +233,41 @@ def call_unbounded(cli, connection, name, command):
         return STOPPED
     finally:
         cli._gateway_command_wait = None
+        if answering:  # the command is over: its picker must not keep the input
+            cli._withdraw_gateway_modal("clarify")
 
 
-def _answer_choices(cli, connection, wake):
+def _answer_choices(cli, connection, wake, answering):
     """While the command runs, answer the ``clarify`` server requests its handler sends to this session
     (``ctx.ask_choice``, ``gateway/plugin_command_choice.py``) with the CLI's clarify panel. No turn
     pump reads the session's frames between turns, so they are taken here; every other frame stays
     queued, in order, for the turn that owns it."""
     from hermes_cli.gateway_agent import clarify_reply
-    events = connection.events
-    while not wake.wait(_CHOICE_POLL_S):
-        with events.mutex:
-            asks = [frame for frame in events.queue if isinstance(frame, dict) and frame.get("method") == "clarify"
-                    and "id" in frame and (frame.get("params") or {}).get("session_id") == cli.session_id]
+    events, state = connection.events, connection.state(cli.session_id)
+
+    def withdrawn(payload):
+        # ``request.cancel`` for the request the panel is answering (another viewer picked, or the gateway's
+        # wait ended): close the panel, as GatewayAgent does for a turn's modal.
+        if answering and payload.get("id") == answering[0]:
+            cli._withdraw_gateway_modal("clarify")
+
+    state.request_listeners.append(withdrawn)
+    try:
+        while not wake.wait(_CHOICE_POLL_S):
+            with events.mutex:
+                asks = [frame for frame in events.queue if isinstance(frame, dict) and frame.get("method") == "clarify"
+                        and "id" in frame and (frame.get("params") or {}).get("session_id") == cli.session_id]
+                for frame in asks:
+                    events.queue.remove(frame)
             for frame in asks:
-                events.queue.remove(frame)
-        for frame in asks:
-            connection.reply(frame["id"], clarify_reply(cli._clarify_callback, frame["params"]))
+                answering[:] = [frame["id"]]
+                try:
+                    reply = clarify_reply(cli._clarify_callback, frame["params"])
+                finally:
+                    answering.clear()
+                connection.reply(frame["id"], reply)
+    finally:
+        state.request_listeners.remove(withdrawn)
 
 
 def run(cli, name, arg):

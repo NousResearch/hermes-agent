@@ -546,7 +546,7 @@ async def test_a_local_session_gets_the_sign_in_code_on_its_event_stream(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_the_final_cancel_check_and_the_save_share_the_login_lock(monkeypatch):
+async def test_a_replacing_login_never_lands_between_the_final_check_and_the_save(monkeypatch):
     runner = _runner(monkeypatch)
     seen = []
 
@@ -558,12 +558,31 @@ async def test_the_final_cancel_check_and_the_save_share_the_login_lock(monkeypa
     await runner._handle_login_command(_event())
     attempt = runner._login_attempts["login"]
     await _finish_tasks(runner)
-
-    lock, _attempts = runner._login_registry()
+    lock, attempts = runner._login_registry()
+    with lock:
+        attempts["login"] = attempt   # the attempt is still live while its save runs
     guard = seen[0]["persist_guard"]
     with guard() as may_persist:
-        assert may_persist is True and lock.locked()
-    attempt.cancelled = True
-    with guard() as may_persist:
-        assert may_persist is False
+        # The save runs without the registry lock (the event loop takes it), and a replacing
+        # /login while it runs is told a sign-in is finishing instead of cancelling a done deal.
+        assert may_persist is True and not lock.locked()
+        assert await runner._handle_login_command(_event()) == anon_auth.LOGIN_BUSY_ELSEWHERE
+        assert attempt.cancelled is False
 
+
+@pytest.mark.asyncio
+async def test_a_cancelled_attempt_never_claims_the_save(monkeypatch):
+    runner = _runner(monkeypatch)
+    seen = []
+
+    def flow(**kwargs):
+        seen.append(kwargs)
+        yield anon_auth.TimedOut()
+
+    monkeypatch.setattr(anon_auth, "run_sign_in", flow)
+    await runner._handle_login_command(_event())
+    attempt = runner._login_attempts["login"]
+    await _finish_tasks(runner)
+    attempt.cancelled = True
+    with seen[0]["persist_guard"]() as may_persist:
+        assert may_persist is False

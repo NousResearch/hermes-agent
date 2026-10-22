@@ -345,7 +345,7 @@ def _native_screenshot_result(result: dict[str, Any], path: str) -> Optional[dic
             return None
         # History-reuse cap: this data URL bakes into the tool result and is re-sent every later turn —
         # same policy as the vision_analyze / browser_vision native embeds.
-        data_url = _resize_image_for_vision(Path(path), mime_type="image/png",
+        data_url = _resize_image_for_vision(Path(path), mime_type=None,
                                             max_base64_bytes=resolve_embed_target_bytes(),
                                             max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
         text = json.dumps(result, ensure_ascii=False)

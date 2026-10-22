@@ -562,6 +562,41 @@ class TestWriteFile:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "references" / "api.md").exists()
 
+    def test_write_empty_skill_md_rejected_and_file_intact(self, tmp_path):
+        """#142069: write_file to SKILL.md skipped frontmatter validation, so an
+        empty file_content wiped the skill (0-byte SKILL.md) during a real
+        background review. A SKILL.md write must get the full-rewrite checks."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", "")
+        assert result["success"] is False
+        assert (tmp_path / "my-skill" / "SKILL.md").read_text() == VALID_SKILL_CONTENT
+
+    def test_write_malformed_skill_md_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", "# No frontmatter\n\nBody.\n")
+        assert result["success"] is False
+        assert (tmp_path / "my-skill" / "SKILL.md").read_text() == VALID_SKILL_CONTENT
+
+    def test_write_valid_skill_md_still_allowed(self, tmp_path):
+        """The SKILL.md exception in _validate_file_path is a deliberate
+        full-rewrite path; valid content through write_file keeps working."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "SKILL.md").read_text() == VALID_SKILL_CONTENT_2
+
+    def test_write_empty_supporting_file_still_allowed(self, tmp_path):
+        """Only SKILL.md gets frontmatter validation; an empty supporting
+        file is legitimate and must not be rejected by the new gate."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "references/empty.md", "")
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "references" / "empty.md").exists()
+
     def test_write_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
@@ -590,6 +625,17 @@ class TestRemoveFile:
             result = _remove_file("my-skill", "references/api.md")
         assert result["success"] is True
         assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_remove_skill_md_rejected_points_at_delete(self, tmp_path):
+        """#142069 sibling: remove_file on SKILL.md deletes the skill in
+        effect while bypassing the pin and background-review guards that
+        only action='delete' runs. It must refuse and name the delete path."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _remove_file("my-skill", "SKILL.md")
+        assert result["success"] is False
+        assert "delete" in result["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
     def test_remove_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"

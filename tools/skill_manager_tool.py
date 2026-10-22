@@ -381,6 +381,13 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
     return (None, _err(err)) if err else (target, None)
 
 
+def _is_skill_root_md(skill_dir: Path, target: Path) -> bool:
+    """True when a write_file/remove_file target IS the skill's own SKILL.md
+    (the root-file exception in ``_validate_file_path``), as opposed to a
+    supporting file under an allowed subdir."""
+    return target == skill_dir / "SKILL.md"
+
+
 def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
     """Find the skill; a delete also runs the background-review delete guard -> ``(skill_dir, None)``
     | ``(None, error_dict)``."""
@@ -616,7 +623,15 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     if guard:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)
-    if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
+    if err:
+        return err
+    # A write landing on the skill-root SKILL.md is a full rewrite: it must pass
+    # the same frontmatter validation as create/edit, or an empty/malformed
+    # file_content silently wipes the skill (#142069). Supporting files are
+    # unaffected — an empty references/ file stays legitimate.
+    if _is_skill_root_md(skill_dir, target) and (verr := _validate_frontmatter(file_content)):
+        return _err(verr)
+    if guard := _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
     result = {"success": True, "message": f"File '{file_path}' written to skill '{name}'.", "path": str(target)}
     # references/ is where per-session hoarding shows up; surface the sprawl finding on the write
@@ -636,6 +651,11 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if err:
         return err
+    # Removing SKILL.md deletes the skill in effect while bypassing the pin and
+    # background-review guards only action='delete' runs (#142069 sibling hole).
+    if _is_skill_root_md(skill_dir, target):
+        return _err("SKILL.md cannot be removed with remove_file. "
+                    "Use action='delete' to delete the whole skill.")
     if not target.exists():  # list what IS there so the model can pick the right path
         available = [str(f.relative_to(skill_dir)) for subdir in ALLOWED_SUBDIRS
                      if (skill_dir / subdir).exists() for f in (skill_dir / subdir).rglob("*") if f.is_file()]

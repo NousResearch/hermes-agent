@@ -15,6 +15,7 @@ from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
 from hermes_state_errors import SessionActiveWriteGuardError
+from hermes_state_session_clauses import _cwd_prefix_clause, _where_sql, _workspace_key_clause
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
@@ -80,33 +81,6 @@ def _parse_model_config(raw: Any) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             return {}
     return dict(raw) if isinstance(raw, dict) else {}
-
-
-def _cwd_prefix_clause(cwd_prefix: str) -> tuple[str, list[str]]:
-    prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
-    # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
-    # prefix also matches sibling directories. The ``=`` arm keeps the raw prefix.
-    esc = _escape_like(prefix)
-    return (
-        "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
-        [prefix, f"{esc}/%", f"{esc}\\\\%"],
-    )
-
-
-def _workspace_key_clause(key: str) -> tuple[str, list[str]]:
-    """WHERE for ``workspace_key(row) == key``: git_repo_root equals ``key``, or (rows predating
-    per-session git metadata) cwd is at/under ``key``."""
-    prefix = key.rstrip("/\\") or key
-    cwd_clause, cwd_params = _cwd_prefix_clause(prefix)
-    return (
-        f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
-        [prefix, *cwd_params],
-    )
-
-
-def _where_sql(clauses: list[str], lead: str = "") -> str:
-    """``WHERE a AND b`` (with *lead* prefix) or "" when there are no clauses."""
-    return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
 
 
 def _session_filter_where(

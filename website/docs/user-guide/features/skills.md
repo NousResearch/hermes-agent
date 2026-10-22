@@ -937,6 +937,10 @@ hermes skills update react --force   # Overwrite a skill you've edited locally
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
 
+The same command also covers skills that record their own provenance: a skill authored by `/learn` (or written by hand) with a `metadata.hermes.sources` block in its `SKILL.md` appears in a **Learned skill sources** table, one row per recorded source, with a status of `unchanged`, `changed`, `unreachable`, `baseline_recorded` (the first check, which stores the baseline the next check compares against) or `skipped` (blocked by the URL safety policy, or a form that cannot be checked automatically — an `ssh://` remote, a repository with no recorded revision, a relative path). Baselines live in `<skills dir>/.source_state.json`, never in `SKILL.md`.
+
+When a recorded source has changed, re-run `/learn` on that skill to refresh it — `/learn` folds into the existing skill instead of duplicating it. Checking is manual: nothing fetches sources in the background.
+
 Checks skip network requests for missing or non-directory installs (`orphaned`) and unsafe or unresolvable recorded paths (`invalid_install`). Missing-directory entries can be removed with `hermes skills uninstall <name>`; invalid paths require inspecting and repairing the active profile's `skills/.hub/lock.json` before retrying. No entries are removed automatically.
 
 Valid installs continue to use their source adapter’s existing synchronous fetch and transport timeouts. There is no strict total deadline for an update check: an unreachable or slow source for an existing install can still delay later entries.

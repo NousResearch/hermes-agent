@@ -1,10 +1,11 @@
 """A dead-stalled network fetch ends `hermes update` with an error, never a hang (#93759, #95777).
 
-`_git_run(network=True)` bounds the wait; a `TimeoutExpired` becomes a failed
-CompletedProcess whose stderr names the stall, so every caller's existing
-fetch-failure path prints one clear line. Local git (network=False) is unbounded.
+`_git_run(network=True)` bounds the wait using `updates.fetch_timeout`; a `TimeoutExpired`
+becomes a failed `CompletedProcess` whose stderr names the stall, so every caller's existing
+fetch-failure path prints one clear line. Local git (`network=False`) is unbounded.
 """
 
+import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -41,3 +42,33 @@ def test_local_git_stays_unbounded_and_check_true_raises(monkeypatch):
             assert exc.returncode == 124
         else:
             raise AssertionError("check=True must raise on a timed-out fetch")
+
+
+def test_network_fetch_timeout_uses_updates_config(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        json.dumps({"updates": {"fetch_timeout": 1200}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(update_cmd, "_m", lambda: MagicMock(PROJECT_ROOT="/repo"))
+
+    with patch.object(update_cmd.subprocess, "run", side_effect=_timeout) as run:
+        result = update_cmd._git_run(["git"], ["fetch", "origin", "main"], network=True)
+
+    assert run.call_args.kwargs["timeout"] == 1200
+    assert "timed out after 1200s" in result.stderr
+
+
+def test_invalid_network_fetch_timeout_uses_default(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        json.dumps({"updates": {"fetch_timeout": 0}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(update_cmd, "_m", lambda: MagicMock(PROJECT_ROOT="/repo"))
+
+    with patch.object(update_cmd.subprocess, "run", side_effect=_timeout) as run:
+        result = update_cmd._git_run(["git"], ["fetch", "origin", "main"], network=True)
+
+    assert run.call_args.kwargs["timeout"] == update_cmd.NETWORK_GIT_TIMEOUT_SECONDS
+    assert f"timed out after {update_cmd.NETWORK_GIT_TIMEOUT_SECONDS}s" in result.stderr

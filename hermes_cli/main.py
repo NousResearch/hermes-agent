@@ -662,6 +662,10 @@ def _apply_profile_override() -> None:
         sys.argv = sys.argv[:start] + sys.argv[start + consume :]
 
 
+if __name__ == "__main__" and getattr(sys.modules.get("__main__"), "__file__", None) == __file__:
+    # `python -m`: a later `import hermes_cli.main` reuses THIS module; a second copy would re-run the
+    # override on the stripped argv, and `--profile default` would fall to the sticky profile.
+    sys.modules.setdefault("hermes_cli.main", sys.modules["__main__"])
 _apply_profile_override()
 # ``-p``/active_profile re-homed the process after hermes_bootstrap ran: re-point the temp vars
 # at THIS home's scratch dir (a user-set TMPDIR is still left alone).

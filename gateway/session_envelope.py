@@ -303,6 +303,10 @@ def restore_native(payload, runner=None):
 async def check_native_route(runner, payload, session_id, available_source, adapter):
     """Read-only preflight: route/auth rejection must never consume a queued row."""
     if 'automation' in payload['native_text_v1']:
+        envelope = payload['native_text_v1']
+        if envelope['automation'].get('delegation_provenance') is True:
+            from gateway.delegation_origin import reauthorize_sender
+            await reauthorize_sender(runner, envelope)
         from gateway.session_automation import check_automation_route
         return check_automation_route(runner, payload, session_id, available_source, adapter)
     event = restore_native(payload, runner)

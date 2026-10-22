@@ -709,6 +709,18 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
+Async delegation completions in native messaging sessions resume as the initiating sender,
+not the room's first or most recent speaker. The gateway-owned dispatch ledger selects the
+sender; a non-cancelled, pre-dispatch native admission supplies connector proof. New dispatches
+also pin the initiating message; legacy and chained dispatches without that pin require a prior
+admission from the same sender. The room/thread/scope/profile and live connector remain pinned,
+and current sender authorization (including fresh role membership) is checked at admission and
+again before execution. Each batch must share one sender; equivalent proofs share an admission-time
+check, not an execution-time grant. Compression preserves ownership, while resets do not transfer
+old results. Missing ledger/parent proof or an unsettled final-result row fails closed; existing
+senderless legacy records retain the previous admission policy. Interim batch-failure notices
+may use proof from a still-running batch. Other process/watch notification producers are unchanged.
+
 Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

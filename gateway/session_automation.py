@@ -342,7 +342,7 @@ def committed_route_envelope(authority, entry):
     return envelope if envelope is not None and 'provenance' in envelope else None
 
 
-def snapshot_automation(authority, adapter, event, identity):
+async def snapshot_automation(authority, adapter, event, identity):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
             or not isinstance(event.text, str) or not identity
@@ -356,7 +356,20 @@ def snapshot_automation(authority, adapter, event, identity):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     from gateway.session_envelope import restore_native
     owner = authority.logical_owner(entry.session_id)
-    envelope = committed_route_envelope(authority, entry)
+    from gateway.delegation_origin import delegation_route_envelope, TRANSPORT_FIELDS
+    authorized = set()
+    delegation_envelope = await delegation_route_envelope(authority, entry, identity, authorized=authorized)
+    # The watcher groups by sender; reject mixed principals even for direct callers.
+    for sibling_identity in event.metadata.get('automation_identities', []):
+        if sibling_identity != identity:
+            sibling = await delegation_route_envelope(authority, entry, sibling_identity, authorized=authorized)
+            if (delegation_envelope is not None and (sibling is None
+                    or sibling['source']['user_id'] != delegation_envelope['source']['user_id'])):
+                raise RuntimeStoreError('admission_conflict')
+    # Re-read ownership after asynchronous authorization in case a reset intervened.
+    if authority.logical_owner(_owner(runner, event, authority).session_id) != owner:
+        raise RuntimeStoreError('admission_conflict')
+    envelope = delegation_envelope or committed_route_envelope(authority, entry)
     if envelope is None:
         raise RuntimeStoreError('not_found')
     # Persisted origins deliberately omit relay trust. Borrow only an exact
@@ -366,6 +379,13 @@ def snapshot_automation(authority, adapter, event, identity):
         key: value for key, value in envelope.items() if key != 'media'}}, runner)
     # Synthetic wakes clear ``message_id`` (#52694, #123097) while the committed human source keeps
     # it, so compare the routing/provenance identity, never the platform reply anchor.
+    if delegation_envelope is not None:
+        # The ledger and admitted request establish the sender, not a room's
+        # saved origin. Keep every transport/tenant boundary and revalidate the
+        # original sender's live authorization through delegation_route_envelope above.
+        if any(getattr(restored.source, key) != getattr(event.source, key) for key in TRANSPORT_FIELDS):
+            raise RuntimeStoreError('admission_conflict')
+        event.source = restored.source
     if (_route_identity(restored.source) != _route_identity(event.source)
             or runner._adapter_for_source(restored.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
@@ -379,6 +399,10 @@ def snapshot_automation(authority, adapter, event, identity):
         'timestamp': datetime.fromtimestamp(0, UTC).isoformat(),
         'event': {'message_id': identity}, 'provenance': provenance,
         'automation': {'identity': identity, 'owner': owner}}
+    if delegation_envelope is not None:
+        envelope['automation']['delegation_provenance'] = True
+        if delegation_envelope.get('reauthorize') == 'roles':
+            envelope['reauthorize'] = 'roles'
     envelope['automation'].update(notification)
     if getattr(event, '_heartbeat_session_id', None):
         envelope['automation']['heartbeat'] = event._heartbeat_session_id
@@ -467,7 +491,7 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other."""
     authority._require_admission_open()
-    payload, entry = snapshot_automation(authority, adapter, event, identity)
+    payload, entry = await snapshot_automation(authority, adapter, event, identity)
     from gateway.session_authority import LiveSession
     sid = (payload.get('local_automation_v1') or payload['native_text_v1']['automation'])['owner']
     ref = SessionRef(authority.profile_id, sid)

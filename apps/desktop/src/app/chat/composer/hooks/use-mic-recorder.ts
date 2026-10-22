@@ -68,6 +68,10 @@ export function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
     return new Error(copy.microphoneConstraintsUnsupported)
   }
 
+  if (name === 'NotSupportedError') {
+    return new Error(copy.microphoneUnsupported)
+  }
+
   if (error instanceof DOMException) {
     return new Error(copy.microphoneStartFailed)
   }

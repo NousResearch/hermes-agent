@@ -789,17 +789,21 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""
         from gateway.run import _load_gateway_config, _platform_config_key
         _scfg = getattr(getattr(self, "config", None), "streaming", None)
+        _user_config = _load_gateway_config()
+        _profile_streaming = _user_config.get("streaming") if isinstance(_user_config, dict) else None
         # #60671 — streaming TTS consumer is created on the outer event-loop thread before run_sync
         # launches.  run_sync only reads it via ``streaming_tts_consumer_holder[0]`` for delta callback
         # wiring.
-        if _scfg is None:
+        if isinstance(_profile_streaming, dict) and _profile_streaming:
+            from gateway.config import StreamingConfig
+            _scfg = StreamingConfig.from_dict(_profile_streaming)
+        elif _scfg is None:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
-        # Global master switch first: skips the config.yaml re-read on the default (off) path.
         if not _scfg.globally_enabled:
             return None
         from gateway.display_config import resolve_display_setting
-        _plat_streaming = resolve_display_setting(_load_gateway_config(), _platform_config_key(source.platform), "streaming")
+        _plat_streaming = resolve_display_setting(_user_config, _platform_config_key(source.platform), "streaming")
         if not _scfg.enabled_for(_plat_streaming):
             return None
         try:

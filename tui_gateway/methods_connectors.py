@@ -195,10 +195,12 @@ _ACCOUNT_CREATES_GUEST = {"status": False, "connect": True}
 
 
 def _account_connector_list(rid):
+    from hermes_cli.free_tier_offer import note_connected_apps_seen
     from tools.connectors.managed import managed_client
     from tools.managed_tool_gateway import read_nous_access_token
 
     rows = managed_client(creates_guest=False).list_connectors() if read_nous_access_token() else []
+    note_connected_apps_seen(rows)
     return _ok(rid, {"available": True, "connectors": _connector_rows(rows)})
 
 

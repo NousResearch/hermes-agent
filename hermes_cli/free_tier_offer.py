@@ -107,10 +107,13 @@ def note_app_connected() -> None:
         logger.debug("connector sign-in offer record failed", exc_info=True)
 
 
-def note_connected_apps_seen() -> None:
-    """A status read found a connected app. A connect by link (messaging, one-shot runs) never passes
-    the operation watcher, so its first sighting on a guest counts as the connect."""
+def note_connected_apps_seen(rows: list[Any]) -> None:
+    """A connector list read (agent status, the Connectors page). The first one that shows a guest an
+    app connected counts as the connect: a connect by link (messaging, one-shot runs) never passes the
+    operation watcher, and an older Hermes connected apps without setting the flag."""
     from hermes_cli import anon_auth
+    if not any(isinstance(row, dict) and row.get("connected") for row in rows):
+        return
     state = anon_auth.current_nous_state()
     if anon_auth.is_guest_state(state) and not state.get(CONNECTED_APP_FLAG):
         note_app_connected()

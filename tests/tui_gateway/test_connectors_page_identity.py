@@ -7,7 +7,8 @@ Contracts, for a user with no Nous identity (the fake account service in
 - ``hermes connectors list`` and the agent's ``manage_connections`` status each create exactly one
   identity and make the gateway list call, as before
 - the first connect creates one identity, arms the connector sign-in offer, and the page then reads
-  the signed-in routes; a connect by link that a later status read sees connected arms it too
+  the signed-in routes; a connect by link that a later status read sees connected arms it too, and
+  so does a page list that shows a guest's app connected on an older Hermes
 """
 
 from __future__ import annotations
@@ -145,6 +146,21 @@ def test_a_connect_by_link_seen_by_a_status_read_arms_the_connector_offer(portal
 
     for _ in range(2):
         manage_connections({"action": "status"}, connectors_available=connectors_available)
+
+    assert free_tier_offer.offer_due_in(free_tier_offer.CONNECTOR) == free_tier_offer.OFFER_DELAY_S
+    assert portal.creates() == 1
+
+
+def test_the_page_list_arms_the_offer_for_apps_a_guest_connected_on_an_older_hermes(portal, gateway, monkeypatch):
+    """The guest exists without the connected-app flag (an older Hermes connected its apps); the
+    first page read that lists one connected must still arm the connector offer."""
+    from tools.connectors import ensure_guest_identity
+
+    monkeypatch.setattr(free_tier_offer, "_clock", lambda: 1_000_000.0)
+    assert ensure_guest_identity() is None
+    gateway.connected = True
+
+    assert _result("connectors.list", ACCOUNT)["connectors"][0]["connected"] is True
 
     assert free_tier_offer.offer_due_in(free_tier_offer.CONNECTOR) == free_tier_offer.OFFER_DELAY_S
     assert portal.creates() == 1

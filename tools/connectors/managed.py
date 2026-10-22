@@ -356,10 +356,9 @@ def _no_card_result(client: Any, action: str, targets: list[HostedTarget], force
 
 def _status_result(client: Any, connectors: list[str]) -> str:
     items = client.list_connectors()
-    if any(i.get("connected") for i in items if isinstance(i, dict)):
-        from hermes_cli.free_tier_offer import note_connected_apps_seen
+    from hermes_cli.free_tier_offer import note_connected_apps_seen
 
-        note_connected_apps_seen()
+    note_connected_apps_seen(items)
     known = {str(i.get("connector", "")).lower() for i in items}
     unknown = {name: _unknown_slug(name, known) for name in connectors if name not in known}
     if connectors:

@@ -3592,6 +3592,18 @@ class GatewayTurnMixin:
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
+    def _record_streamed_post_delivery_receipt(self, source, session_key, stream_consumer) -> None:
+        """Record a confirmed streamed final for this processing task's observer."""
+        receipt_adapter = self._adapter_for_source(source)
+        if receipt_adapter is not None and session_key:
+            message_id = (
+                stream_consumer.message_id
+                if stream_consumer.message_id and stream_consumer.message_id != "__no_edit__"
+                else None
+            )
+            receipt_adapter.record_post_delivery_receipt(
+                session_key, SendResult(success=True, message_id=message_id))
+
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, session_key, _sk, ok, fail_result, fail_exc,
     ) -> None:
@@ -3609,11 +3621,7 @@ class GatewayTurnMixin:
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
-        receipt_adapter = getattr(self, "_adapter_for_source")(source)
-        if receipt_adapter is not None and session_key:
-            message_id = _sc.message_id if _sc.message_id and _sc.message_id != "__no_edit__" else None
-            receipt_adapter.record_post_delivery_receipt(
-                session_key, SendResult(success=True, message_id=message_id))
+        self._record_streamed_post_delivery_receipt(source, session_key, _sc)
         logger.info(*ok)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
@@ -3661,11 +3669,7 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
-            receipt_adapter = getattr(self, "_adapter_for_source")(source)
-            if receipt_adapter is not None and session_key:
-                message_id = _sc.message_id if _sc.message_id and _sc.message_id != "__no_edit__" else None
-                receipt_adapter.record_post_delivery_receipt(
-                    session_key, SendResult(success=True, message_id=message_id))
+            self._record_streamed_post_delivery_receipt(source, session_key, _sc)
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.

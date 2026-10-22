@@ -40,14 +40,23 @@ def _hook_context():
 
 
 @pytest.mark.asyncio
-async def test_nonstream_observer_follows_real_final_send_and_generation():
-    """The processing task records the final send before releasing its generation-owned hook."""
+@pytest.mark.parametrize(
+    ("send_result", "expected_events"),
+    [
+        (SendResult(success=True, message_id="out-9"), ["agent:end", "agent:post_delivery"]),
+        (SendResult(success=False, error="offline"), ["agent:end"]),
+    ],
+)
+async def test_nonstream_observer_follows_real_final_send_and_generation(
+    send_result, expected_events,
+):
+    """Only a confirmed real-path final releases the generation-owned observer."""
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner(GatewayConfig())
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
-    adapter = _Adapter(SendResult(success=True, message_id="out-9"))
+    adapter = _Adapter(send_result)
     source = adapter.build_source("chat-1", user_id="user-1", thread_id="thread-1")
     event = MessageEvent(text="inbound", source=source, message_id="in-4")
     session_key, run_generation = "session-key", 7
@@ -65,17 +74,16 @@ async def test_nonstream_observer_follows_real_final_send_and_generation():
     adapter.set_message_handler(handler)
     await adapter._process_message_background(event, session_key)
 
-    assert adapter.sent == ["final"]
-    assert [call.args[0] for call in runner.hooks.emit.await_args_list] == [
-        "agent:end", "agent:post_delivery",
-    ]
-    assert runner.hooks.emit.await_args_list[-1].args[1]["message_id"] == "out-9"
+    assert adapter.sent[0] == "final"
+    assert [call.args[0] for call in runner.hooks.emit.await_args_list] == expected_events
+    if send_result.success:
+        assert runner.hooks.emit.await_args_list[-1].args[1]["message_id"] == "out-9"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("confirmed", [False, True])
 async def test_stream_observer_requires_confirmed_receipt_and_uses_outbound_id(confirmed):
-    """A streamed response emits only after confirmation, with no inbound-id fallback."""
+    """Only this task's confirmed stream emits, never a stale success from an earlier lane."""
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner(GatewayConfig())
@@ -96,15 +104,24 @@ async def test_stream_observer_requires_confirmed_receipt_and_uses_outbound_id(c
         source=source, session_key=session_key, run_generation=run_generation,
         stream_consumer_holder=[consumer],
     )
+    interrupt_event = asyncio.Event()
+    setattr(interrupt_event, "_hermes_run_generation", run_generation)
+    adapter._active_sessions[session_key] = interrupt_event
+    if not confirmed:
+        adapter.record_post_delivery_receipt(
+            session_key, SendResult(success=True, message_id="stale-queued-final"))
 
-    await runner._run_agent_mark_streamed_delivery(result, turn_ctx)
-    await runner._hmwa_post_turn_hooks(
-        _hook_context(), result, "final", adapter=adapter, session_key=session_key,
-        run_generation=run_generation,
-    )
-    callback = adapter.pop_post_delivery_callback(session_key, generation=run_generation)
-    assert callback is not None
-    await callback()
+    async def handler(_event):
+        await runner._run_agent_mark_streamed_delivery(result, turn_ctx)
+        await runner._hmwa_post_turn_hooks(
+            _hook_context(), result, "final", adapter=adapter, session_key=session_key,
+            run_generation=run_generation,
+        )
+        return None
+
+    adapter.set_message_handler(handler)
+    await adapter._process_message_background(
+        MessageEvent(text="inbound", source=source, message_id="in-4"), session_key)
 
     events = [call.args[0] for call in runner.hooks.emit.await_args_list]
     assert events == (["agent:end", "agent:post_delivery"] if confirmed else ["agent:end"])

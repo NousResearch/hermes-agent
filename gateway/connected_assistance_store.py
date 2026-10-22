@@ -56,6 +56,9 @@ def _canonical_finding(finding, records):
     citations = []
     for citation in finding["evidence"]:
         canonical = canonical_citation(citation, observed)
+        if canonical is not None:
+            canonical["data_use"] = sorted(set(canonical["data_use"]) |
+                                           set(citation.get("data_use") or ()) | set(finding.get("data_use") or ()))
         # Hashes in a judgment alone are not observed provenance. Legacy fixtures remain usable.
         citations.append(canonical if canonical is not None else
                          {k: v for k, v in citation.items() if k != "content_digest"})

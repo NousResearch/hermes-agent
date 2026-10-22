@@ -1795,10 +1795,10 @@ class _AnthropicCompletionsAdapter:
         response = create_anthropic_message(
             budgeted_messages_client(self._client),
             anthropic_kwargs,
-            # Record provider-response timing every event, but tick forward progress only for
-            # substantive payloads so keepalives can't hold a stalled summary open. None keeps
-            # the fast get_final_message path.
-            on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
+            # A caller deadline needs event checks even without a progress observer.
+            # Keep the fast path only for unbounded, unobserved native calls.
+            on_stream_event=(_anthropic_aux_stream_event_hook() if
+                             _aux_progress_active() or _current_aux_stream_deadline() is not None else None),
         )
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None

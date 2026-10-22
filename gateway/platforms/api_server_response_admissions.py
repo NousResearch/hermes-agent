@@ -195,6 +195,12 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         ephemeral_system_prompt=instructions, session_id=session_id,
         gateway_session_key=gateway_session_key, bind_declared_conversation=declared_selected,
         **overrides, route=route, relay_metadata=_request_relay_metadata(body))
+    if route or overrides:
+        run_kwargs['requested_runtime'] = {
+            'provider': overrides.get('requested_provider', ''),
+            'model': overrides.get('requested_model', ''),
+        }
+        run_kwargs['route_source'] = 'model_routes' if route else 'raw_request'
     if stored_session_id and stored_session_id != chain_root:
         run_kwargs['walked_from'] = chain_root  # the chain moved past its swept stored session
     if durable_key:

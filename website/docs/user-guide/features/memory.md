@@ -278,7 +278,9 @@ What happens next:
 
 1. The hits are listed for the agent — file, line and the text as it stands.
 2. The agent shows a **numbered preview** of every proposed change (before and after) and waits. Nothing is edited before you answer yes or list the numbers you want.
-3. Skill edits go through `skill_manage` only, so each one lands in the skill ledger and can be undone with `hermes curator rollback` (`hermes curator status` lists the entries). Memory edits go through the `memory` tool and have **no undo** — which is why the preview comes first.
+3. Skill edits go through `skill_manage` only, so each one lands in the skill ledger. To undo one, find its id with `hermes curator ledger` and run `hermes curator rollback <entry_id>` — that restores just that change. Do **not** run bare `hermes curator rollback`: with no entry id it replaces the whole skills directory from a snapshot and undoes unrelated work. This undo needs the skill ledger, which is on by default (`skills.ledger` in `config.yaml`). Memory edits have **no undo**, which is why the preview comes first.
+
+The listed text is quoted from your own store, and a learned skill can carry text from an untrusted page, so the agent is told to treat every snippet as data rather than instructions. Memory edits also obey your existing `memory.write_approval` setting: when it is on, `/correct`'s memory changes are staged for approval like any other memory write.
 
 If the search finds nothing, the command says so and suggests other wording; it does **no** model turn and changes nothing.
 

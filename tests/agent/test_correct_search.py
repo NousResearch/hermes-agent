@@ -166,6 +166,31 @@ class TestWhatItRefuses:
         assert search_learned_text(["anything at all"])["hits"] == []
 
 
+class TestExistingWriteGates:
+    """The gateway already limits stored writes through the write-approval gates. /correct
+    applies its edits through the same tools, so it inherits them — nothing new is wired.
+    """
+
+    def test_memory_edits_honour_the_existing_write_approval_gate(self):
+        from hermes_constants import get_hermes_home
+        from tools.memory_tool import _memory_tool, load_on_disk_store
+
+        write_memory("MEMORY.md", [WRONG])
+        (get_hermes_home() / "config.yaml").write_text(
+            "memory:\n  write_approval: true\n", encoding="utf-8")
+
+        outcome, payload = _memory_tool("patch", "memory", "the deploy port is 9090", WRONG,
+                                        None, None, load_on_disk_store())
+
+        # Staged is also reported as a non-applied outcome — the payload is what says why.
+        assert outcome != "ok", payload
+        assert '"staged": true' in payload, payload
+        assert "write_approval" in payload
+        # Staged means not applied: a group-chat user proposing an edit cannot silently
+        # change the owner's memory while the gate is on.
+        assert WRONG in (memories_dir() / "MEMORY.md").read_text(encoding="utf-8")
+
+
 class TestEndToEndWithTheToolPaths:
     def test_search_then_edit_records_a_ledger_entry_and_rollback_restores(self):
         """The full correction journey: seed, find, edit through the tools' own code paths,

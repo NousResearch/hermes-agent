@@ -23,6 +23,11 @@ afterEach(() => {
   }
 })
 
+it('titles the Scheduled jobs tile like its sidebar row, not the humanized path', () => {
+  openRouteTile('/cron')
+  expect(paneTitle('/cron')).toBe('Scheduled jobs')
+})
+
 it('refreshes the tile title when its route registers after the tile opened', () => {
   openRouteTile('/late-atlas')
   expect(paneTitle('/late-atlas')).toBe('Late Atlas')

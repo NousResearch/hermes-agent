@@ -10,5 +10,6 @@ describe('hidesFixedTitlebarClusters', () => {
 
   it('keeps clusters on chat and first-party workspace pages', () => {
     expect(hidesFixedTitlebarClusters('chat')).toBe(false)
+    expect(hidesFixedTitlebarClusters('cron')).toBe(false)
   })
 })

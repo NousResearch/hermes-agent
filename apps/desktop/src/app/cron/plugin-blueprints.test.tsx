@@ -66,7 +66,7 @@ function renderView() {
 
   return render(
     <QueryClientProvider client={client}>
-      <CronView onClose={() => {}} />
+      <CronView />
     </QueryClientProvider>
   )
 }

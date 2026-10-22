@@ -39,6 +39,7 @@ import type { SidebarActions, WiringActions } from './types'
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
 const CapabilitiesView = lazy(async () => ({ default: (await import('../capabilities')).CapabilitiesView }))
+const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
 
 export function LegacySessionRedirect() {
   const { sessionId } = useParams()
@@ -191,9 +192,19 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="capabilities" />
       <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
       <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
+      <Route
+        element={page(
+          // Run rows open through the controller's owner-aware stored-session
+          // door; dereferenced at call time (see latest-actions).
+          <CronView
+            onOpenSession={(sessionId, session) => actions.onResumeSession(sessionId, session)}
+            setStatusbarItemGroup={setStatusbarItemGroup}
+          />
+        )}
+        path="cron"
+      />
       <Route element={null} path="agents" />
       <Route element={null} path="command-center" />
-      <Route element={null} path="cron" />
       <Route element={null} path="profiles" />
       <Route element={null} path="settings" />
       <Route element={null} path="starmap" />

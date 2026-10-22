@@ -75,6 +75,71 @@ export function tokensPerSecondLabel(usage: UsageStats): string {
   return typeof tps === 'number' && Number.isFinite(tps) && tps > 0 ? `${Math.round(tps)} t/s` : ''
 }
 
+/**
+ * Session spend: `$4.27` when the provider reported it, `~$4.27` when it is our
+ * estimate, `$0.00` for a subscription session (its calls cost nothing extra),
+ * '' while the backend has no figure — a missing value means "not measured",
+ * and painting `$0.00` there is the exact dishonesty that withdrew cost
+ * readouts from every surface in `fd2a35b169`.
+ *
+ * Mirrors `agent/usage_pricing.py::format_cost_label` so the desktop chip and
+ * the CLI/insights cost rows read the same at sub-cent amounts: 4dp below a
+ * cent, and `<$0.0001` rather than a zero-looking `$0.0000`.
+ */
+export function sessionCostLabel(usage: UsageStats): string {
+  const cost = usage.cost_usd
+
+  if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) {
+    return ''
+  }
+
+  // `actual` is provider-reported and `included` is a definitive $0, so
+  // neither is an approximation and neither takes the `~`.
+  const exact = usage.cost_status === 'actual' || usage.cost_status === 'included'
+
+  if (cost === 0) {
+    return exact ? '$0.00' : ''
+  }
+
+  if (cost < 0.01) {
+    const sub = cost.toFixed(4)
+
+    return `${exact ? '' : '~'}$${sub === '0.0000' ? '<0.0001' : sub}`
+  }
+
+  return `${exact ? '' : '~'}$${cost.toFixed(2)}`
+}
+
+/**
+ * Fold an incoming tick's spend into what is already shown, never downwards.
+ *
+ * A session's spend only grows, so a smaller incoming figure is a MEASUREMENT
+ * boundary, not a correction: the gateway rebuilds every counter at 0 on resume,
+ * so the first turn after one reports only its own post-resume cost. Letting
+ * that through would drop a $5.00 session to $0.02. Returns the value to keep —
+ * the current one when the tick does not beat it — because the caller spreads
+ * the result AFTER the raw tick, so an empty object would leave the smaller
+ * figure in place.
+ */
+export function costMerge(
+  current: UsageStats,
+  incoming: Pick<UsageStats, 'cost_status' | 'cost_usd'>
+): Pick<UsageStats, 'cost_status' | 'cost_usd'> {
+  const next = incoming.cost_usd
+
+  if (typeof next !== 'number' || !Number.isFinite(next)) {
+    return {}
+  }
+
+  const shown = current.cost_usd
+
+  if (typeof shown === 'number' && Number.isFinite(shown) && shown >= next) {
+    return { cost_status: current.cost_status, cost_usd: shown }
+  }
+
+  return { cost_status: incoming.cost_status ?? 'unknown', cost_usd: next }
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

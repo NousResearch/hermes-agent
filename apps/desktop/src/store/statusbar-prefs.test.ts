@@ -45,7 +45,7 @@ describe('statusbar hidden items', () => {
 
     const { $statusbarHiddenIds } = await loadStore()
 
-    expect($statusbarHiddenIds.get()).toEqual(['cron', 'gateway-health'])
+    expect($statusbarHiddenIds.get()).toEqual(['cron', 'gateway-health', 'session-cost'])
   })
 
   it('still honours hiding the approval pill after the update', async () => {
@@ -57,5 +57,26 @@ describe('statusbar hidden items', () => {
     const reloaded = await loadStore()
 
     expect(reloaded.$statusbarHiddenIds.get()).toContain('approval-mode')
+  })
+
+  it('seeds the spend chip hidden for a v2 store, which never had a chance to choose it', async () => {
+    window.localStorage.setItem('hermes.desktop.statusbarHidden.v2', JSON.stringify(['cron', 'gateway-health']))
+
+    const { $statusbarHiddenIds } = await loadStore()
+
+    // The user's own choices survive; the chip they never saw is hidden rather
+    // than arriving as a cost readout on update.
+    expect($statusbarHiddenIds.get()).toEqual(['cron', 'gateway-health', 'session-cost'])
+  })
+
+  it('keeps a v3 store choice to show the spend chip', async () => {
+    const first = await loadStore()
+
+    first.setStatusbarItemVisible('session-cost', true)
+
+    vi.resetModules()
+    const reloaded = await loadStore()
+
+    expect(reloaded.$statusbarHiddenIds.get()).not.toContain('session-cost')
   })
 })

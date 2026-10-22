@@ -56,6 +56,34 @@ def format_cost_label(amount: Decimal) -> str:
     return f"~${amount:.2f}"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
+
+#: Statuses whose amount needs no approximation marker: a provider-reported
+#: charge and a subscription's definitive $0.
+EXACT_COST_STATUSES = frozenset({"actual", "included"})
+
+
+def fold_session_cost_status(agent, call_status: str) -> str:
+    """Fold one call's cost status into the status of the session TOTAL.
+
+    ``agent.session_cost_status`` labels the accumulated figure, not the last
+    call, and a session that mixed provider-reported and estimated calls must not
+    read as provider-reported — that unlabeled total is what withdrew cost
+    readouts from every surface in ``fd2a35b169``. One inexact call makes the
+    whole sum an estimate.
+
+    The two history flags live on the agent and default to "all exact" so an
+    agent built before this function existed behaves like an exact-only session.
+    """
+    all_exact = call_status in EXACT_COST_STATUSES and getattr(agent, "_session_cost_all_exact", True)
+    any_actual = call_status == "actual" or getattr(agent, "_session_cost_any_actual", False)
+    agent._session_cost_all_exact = all_exact
+    agent._session_cost_any_actual = any_actual
+    if not all_exact:
+        return "estimated"
+
+    return "actual" if any_actual else call_status
+
+
 CostSource = Literal[
     "provider_cost_api", "provider_generation_api", "provider_models_api", "official_docs_snapshot",
     "user_override", "custom_contract", "none",

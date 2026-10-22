@@ -80,6 +80,12 @@ def usage_stats(agent) -> dict:
                  model=str(getattr(agent, "model", "") or ""), provider=str(getattr(agent, "provider", "") or ""),
                  fallback_model=(str(getattr(agent, "model", "") or "") or None)
                  if getattr(agent, "_fallback_activated", False) is True else None)
+    # Session spend. Gated on a call having happened (see ``tui_usage``): a freshly built agent zeroes
+    # every counter, and reporting that zero as spend would read as "free" instead of "not measured yet".
+    if stats["api_calls"] > 0:
+        with contextlib.suppress(Exception):
+            stats["estimated_cost_usd"] = round(float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0), 6)
+            stats["cost_status"] = str(getattr(agent, "session_cost_status", "unknown") or "unknown")
     return stats
 
 
@@ -134,6 +140,10 @@ def tui_usage(stats: dict) -> dict:
             usage[key] = round(float(stats[source_key]), 1)
     if isinstance(stats.get("active_subagents"), int):
         usage["active_subagents"] = stats["active_subagents"]
+    # Session spend, only when ``usage_stats`` measured it (it omits the key until the first API call).
+    if isinstance(stats.get("estimated_cost_usd"), (int, float)):
+        usage["cost_usd"] = round(float(stats["estimated_cost_usd"]), 6)
+        usage["cost_status"] = stats.get("cost_status") or "unknown"
     return usage
 
 

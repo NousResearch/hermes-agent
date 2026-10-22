@@ -304,6 +304,10 @@ class SessionUsagePayload(Payload):
     model: str | None = None
     provider: str | None = None
     fallback_model: str | None = None
+    # Session spend (see ``SessionStats``): carried on the flat counters so a viewer reading only them
+    # can paint the same cost readout the nested ``usage`` view carries.
+    estimated_cost_usd: float | None = None
+    cost_status: str | None = None
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")

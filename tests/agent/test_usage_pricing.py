@@ -6,6 +6,7 @@ import pytest
 from agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
     CanonicalUsage,
+    fold_session_cost_status,
     format_cost_label,
     estimate_usage_cost,
     get_pricing_entry,
@@ -924,3 +925,24 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_fold_session_cost_status_downgrades_a_mixed_session_to_estimated():
+    """`session_cost_status` labels the accumulated total, not the last call: one estimated call
+    makes the whole sum an estimate, so a mixed-route session never reads as provider-reported."""
+    agent = SimpleNamespace()
+
+    assert fold_session_cost_status(agent, "actual") == "actual"
+    assert fold_session_cost_status(agent, "estimated") == "estimated"
+    # A later `actual` call must not launder the earlier estimate.
+    assert fold_session_cost_status(agent, "actual") == "estimated"
+
+
+def test_fold_session_cost_status_keeps_included_and_actual_exact():
+    included = SimpleNamespace()
+    assert fold_session_cost_status(included, "included") == "included"
+    # Nothing extra was charged, so both statuses are still exact.
+    assert fold_session_cost_status(included, "actual") == "actual"
+
+    unknown = SimpleNamespace()
+    assert fold_session_cost_status(unknown, "unknown") == "estimated"

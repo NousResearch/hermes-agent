@@ -17,6 +17,9 @@ export interface TickUsage {
   context_percent?: number
   context_source?: string
   context_used?: number
+  /** Session spend so far, in USD (`gateway/session_usage.py::usage_stats`). */
+  cost_status?: string
+  cost_usd?: number
   input: number
   model?: string
   output: number
@@ -103,6 +106,14 @@ function rateFields(p: UsageTickPayload): Partial<TickUsage> {
   return fields
 }
 
+/** Session spend, mapped only when the payload carries it — a tick before the first API call has no
+ *  cost, and zeroing a figure we did not measure would read as "free". */
+function costFields(p: UsageTickPayload): Partial<TickUsage> {
+  const cost = num(p.estimated_cost_usd)
+
+  return cost === undefined ? {} : { cost_status: p.cost_status ?? 'unknown', cost_usd: cost }
+}
+
 /** A canonical local viewer's `session.usage` tick carries the owner's session-cumulative counters at the top level; the classic sidecar ticker's nested `usage` passes through unchanged. Each figure maps only when its source is present, so a partial tick never zeroes a counter it did not carry (`session_usage.tui_usage` is the Python twin used for `message.complete.usage`). */
 export function usageFromTick<Nested = Usage>(
   payload: null | undefined | (UsageTickPayload & { usage?: Nested | null })
@@ -126,7 +137,7 @@ export function usageFromTick<Nested = Usage>(
     }
   }
 
-  const derived = { ...usage, ...contextFields(payload), ...rateFields(payload) }
+  const derived = { ...usage, ...contextFields(payload), ...rateFields(payload), ...costFields(payload) }
 
   if (Object.keys(derived).length === 0) {
     return undefined

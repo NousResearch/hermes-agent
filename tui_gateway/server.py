@@ -1412,6 +1412,15 @@ def _get_usage(agent) -> dict:
         _cache_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
         if _prompt_total > 0 and _cache_read > 0:
             usage["cache_hit_pct"] = max(0, min(100, round(_cache_read / _prompt_total * 100)))
+    # Session spend, same omit-don't-fabricate rule: gated on at least one API call because a freshly
+    # constructed agent starts every counter at 0, and a resume would then overwrite the renderer's
+    # persisted-row seed with a zero that looks like "free" rather than "not measured yet".
+    # ``cost_status`` rides along so the renderer can label an estimate as one: `fd2a35b169` removed the
+    # unlabeled dollar figure across every surface because provider cost data is not always trustworthy.
+    if int(getattr(agent, "session_api_calls", 0) or 0) > 0:
+        with contextlib.suppress(Exception):
+            usage["cost_usd"] = round(float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0), 6)
+            usage["cost_status"] = str(getattr(agent, "session_cost_status", "unknown") or "unknown")
     with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting
         _lhist = list(getattr(agent, "_api_latency_history", []) or [])
         _ohist = list(getattr(agent, "_api_output_history", []) or [])

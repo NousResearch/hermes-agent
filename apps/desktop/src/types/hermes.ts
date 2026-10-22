@@ -883,6 +883,10 @@ export interface UsageStats {
   context_estimated?: boolean
   context_source?: string
   context_used?: number
+  /** Session spend in USD, and how much to trust it: `actual` is provider-reported, `included` is a
+   *  subscription's $0, anything else is our estimate from published pricing. Both are absent until
+   *  the session's first API call — a missing value means "not measured", never "$0". */
+  cost_status?: string
   cost_usd?: number
   input: number
   output: number

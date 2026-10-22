@@ -25,6 +25,7 @@ import {
   AlertCircle,
   Clock,
   Command,
+  CreditCard,
   FolderOpen,
   Globe,
   Hash,
@@ -35,7 +36,7 @@ import {
 } from '@/lib/icons'
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { cacheHitLabel, contextBarLabel, LiveDuration, sessionCostLabel, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { rollbackSentence } from '@/lib/update-copy'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -119,6 +120,24 @@ function versionItem(
     title: status.tooltip,
     toggleLabel,
     variant: 'action'
+  }
+}
+
+/** The session-spend chip. It never self-hides: the user opted this item in, so
+ *  an unmeasured figure reads as a placeholder rather than as a vanished slot —
+ *  or, worse, a fabricated $0.00 (see `sessionCostLabel`). Extracted from
+ *  `useStatusbarItems`, which is over the code-health function-line cap. */
+function sessionCostItem(
+  label: string,
+  copy: { sessionCostTitle: string; toggleSessionCost: string }
+): StatusbarItem {
+  return {
+    icon: <CreditCard className="size-3" />,
+    id: 'session-cost',
+    label: label || '—',
+    title: copy.sessionCostTitle,
+    toggleLabel: copy.toggleSessionCost,
+    variant: 'text'
   }
 }
 
@@ -689,6 +708,7 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
       },
+      sessionCostItem(sessionCostLabel(currentUsage), copy),
       {
         icon: <Layers3 className="size-3" />,
         id: 'cache-hit-rate',
@@ -748,7 +768,7 @@ export function useStatusbarItems({
       contextBreakdownLoading,
       contextUsage,
       copy,
-      currentUsage.compressions,
+      currentUsage,
       gaugeUsage,
       sessionStartedAt,
       gatewayState,

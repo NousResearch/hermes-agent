@@ -6,8 +6,18 @@ import { modeBound } from '@/store/interface-mode'
 // hidden, so every existing store carries an `approval-mode` the user never
 // chose. v2 seeds from v1 minus that id: other customizations survive, the
 // pill appears once on update, and hiding it again persists here.
-const STATUSBAR_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden.v2'
-const LEGACY_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden'
+// v3 adds `session-cost` to the shipped-hidden set, so it seeds from v2 and
+// hides that one id on update: an install that predates the chip never chose
+// it, and a spend readout must appear because the user asked for it, not
+// because they updated.
+const STATUSBAR_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden.v3'
+
+// Newest first: a store still on v1 (never opened a v2 build) keeps its layout.
+const LEGACY_HIDDEN_STORAGE_KEYS: readonly { key: string; staleIds: readonly string[] }[] = [
+  { key: 'hermes.desktop.statusbarHidden.v2', staleIds: [] },
+  { key: 'hermes.desktop.statusbarHidden', staleIds: ['approval-mode'] }
+]
+
 // v1 (`hermes.desktop.statusbarVisible`) shipped a stretch where the bar was
 // opt-in, so many stores hold a `false` the user never chose. v2 is read fresh
 // and the v1 key is deliberately NOT seeded from: every existing install comes
@@ -35,14 +45,17 @@ export function toggleStatusbarVisible() {
 // (the yolo zap) stays: whether dangerous commands run unasked is state the
 // user should see at a glance. The per-turn
 // session readouts (running/session timers, context meter, cache hit rate,
-// tokens/sec) are diagnostics most users don't watch, so they start hidden too
-// and the bar stays quiet mid-turn.
+// tokens/sec, spend) are diagnostics most users don't watch, so they start
+// hidden too and the bar stays quiet mid-turn. Spend is also policy: cost
+// estimates are only as good as the provider's usage data (fd2a35b169), so the
+// figure is something a user opts into rather than something that arrives.
 export const STATUSBAR_HIDDEN_BY_DEFAULT: readonly string[] = [
   'agents',
   'cache-hit-rate',
   'context-usage',
   'cron',
   'running-timer',
+  'session-cost',
   'session-timer',
   'system-resources',
   'terminal',
@@ -59,17 +72,25 @@ const sanitizeHiddenIds = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && id.length > 0) : []
 
 function legacyHiddenSeed(): string[] {
-  const raw = readKey(LEGACY_HIDDEN_STORAGE_KEY)
+  for (const { key, staleIds } of LEGACY_HIDDEN_STORAGE_KEYS) {
+    const raw = readKey(key)
 
-  if (raw === null) {
-    return [...STATUSBAR_HIDDEN_BY_DEFAULT]
+    if (raw === null) {
+      continue
+    }
+
+    try {
+      const ids = sanitizeHiddenIds(JSON.parse(raw)).filter(id => !staleIds.includes(id))
+
+      // No pre-v3 store had a chance to choose `session-cost` — it did not ship
+      // yet — so hide it here. From v3 on its absence is a real choice.
+      return ids.includes('session-cost') ? ids : [...ids, 'session-cost']
+    } catch {
+      return [...STATUSBAR_HIDDEN_BY_DEFAULT]
+    }
   }
 
-  try {
-    return sanitizeHiddenIds(JSON.parse(raw)).filter(id => id !== 'approval-mode')
-  } catch {
-    return [...STATUSBAR_HIDDEN_BY_DEFAULT]
-  }
+  return [...STATUSBAR_HIDDEN_BY_DEFAULT]
 }
 
 export const $statusbarHiddenIds = persistentAtom<string[]>(

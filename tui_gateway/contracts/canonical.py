@@ -237,6 +237,10 @@ class SessionStats(Result):
     model: str
     provider: str
     fallback_model: str | None = None
+    # Session spend and how much to trust it. Absent until the session has made an API call (a fresh
+    # agent has no cost data), never fabricated as 0.
+    estimated_cost_usd: float | None = None
+    cost_status: str | None = None
 
 
 canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,

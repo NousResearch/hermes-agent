@@ -206,6 +206,58 @@ describe('useMessageStream status-bar usage scoping', () => {
     expect($currentUsage.get()).toMatchObject({ ...BASELINE, calls: 3, context_percent: 42, context_used: 4_200 })
   })
 
+  it('carries session spend from the canonical tick, and never reads its absence as $0', () => {
+    $currentUsage.set({ calls: 0, input: 0, output: 0, total: 0 })
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { api_calls: 2, cost_status: 'estimated', estimated_cost_usd: 1.234568, total_tokens: 10 },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toMatchObject({ cost_status: 'estimated', cost_usd: 1.234568 })
+
+    // A tick from a session that has not called yet omits spend entirely
+    // (`session_usage.usage_stats` gates it on api_calls). Merging must leave the
+    // figure alone: on resume the value comes from the persisted row, and
+    // reading the absence as $0 would erase it.
+    act(() => stream.handleEvent({ payload: { api_calls: 2 }, session_id: SID, type: 'session.usage' }))
+
+    expect($currentUsage.get()).toMatchObject({ cost_status: 'estimated', cost_usd: 1.234568 })
+  })
+
+  it('never drops the spend a resumed session was seeded with', () => {
+    // `applyStoredUsage` seeds $5.00 from the persisted row; the resumed agent's
+    // own counter starts at 0, so its first turn reports $0.02. The readout must
+    // hold the larger figure rather than run backwards.
+    $currentUsage.set({ ...BASELINE, cost_status: 'estimated', cost_usd: 5 })
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { api_calls: 1, cost_status: 'estimated', estimated_cost_usd: 0.02 },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toMatchObject({ cost_usd: 5 })
+
+    // Once the live total passes the seed it takes over, status included.
+    act(() =>
+      stream.handleEvent({
+        payload: { api_calls: 2, cost_status: 'actual', estimated_cost_usd: 5.05 },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toMatchObject({ cost_status: 'actual', cost_usd: 5.05 })
+  })
+
   it('falls back to prompt_tokens and completion_tokens when input_tokens and output_tokens are zero', () => {
     mountStream()
 

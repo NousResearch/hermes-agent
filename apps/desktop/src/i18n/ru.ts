@@ -13,6 +13,7 @@ import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
+import { ruStatusbarReadouts } from './ru_statusbar_readouts'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
 
@@ -3195,7 +3196,7 @@ export const ruOverrides = {
       off: 'Выкл',
       offDescription: 'Выполнять без запросов подтверждения'
     },
-    statusbar: {
+    statusbar: { ...ruStatusbarReadouts,
       unknown: 'неизвестно',
       restart: 'перезапуск',
       update: 'обновление',
@@ -3233,17 +3234,13 @@ export const ruOverrides = {
       resetStatusbar: 'Сбросить к значениям по умолчанию',
       toggleApprovalMode: 'Подтверждения',
       toggleBackendVersion: 'Версия бэкенда',
-      toggleCacheHitRate: 'Попадания в кэш',
       toggleCommandCenter: 'Командный центр',
       toggleContextUsage: 'Шкала контекста',
       toggleRunningTimer: 'Таймер хода',
       toggleSessionTimer: 'Таймер сеанса',
       toggleTerminal: 'Терминал',
-      toggleTokensPerSecond: 'Токенов в секунду',
       toggleVersion: 'Версия и обновления',
       toggleWorkspace: 'Рабочее пространство',
-      cacheHitRateTitle: 'Доля попаданий в кэш промпта за сеанс — кэшированные токены дешевле, чем выше, тем дешевле',
-      tokensPerSecondTitle: 'Выходных токенов в секунду, среднее за последние 10 вызовов модели',
       agents: 'Агенты',
       closeAgents: 'Закрыть агентов',
       openAgents: 'Открыть агентов',

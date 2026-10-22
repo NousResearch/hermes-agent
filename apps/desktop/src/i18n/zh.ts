@@ -13,6 +13,7 @@ import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhStatusbarReadouts } from './zh_statusbar_readouts'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
@@ -3920,7 +3921,7 @@ export const zhOverrides = {
       off: '关闭',
       offDescription: '不显示审批提示，直接运行'
     },
-    statusbar: {
+    statusbar: { ...zhStatusbarReadouts,
       unknown: '未知',
       restart: '重启',
       update: '更新',
@@ -3960,18 +3961,14 @@ export const zhOverrides = {
       resetStatusbar: '恢复默认设置',
       toggleApprovalMode: '审批',
       toggleBackendVersion: '后端版本',
-      toggleCacheHitRate: '缓存命中率',
       toggleCommandCenter: '命令中心',
       toggleContextUsage: '上下文用量',
       toggleRunningTimer: '回合计时',
       toggleSessionTimer: '会话计时',
       toggleTerminal: '终端',
-      toggleTokensPerSecond: '每秒 token 数',
       toggleVersion: '版本与更新',
       toggleFreeTier: 'Free tier',
       toggleWorkspace: '工作区',
-      cacheHitRateTitle: '本会话的提示缓存命中率 — 缓存 token 更便宜，越高越省',
-      tokensPerSecondTitle: '每秒输出 token 数，取最近 10 次模型调用的平均值',
       agents: '代理',
       closeAgents: '关闭代理',
       openAgents: '打开代理',

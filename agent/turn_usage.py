@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
-from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
+from agent.usage_pricing import estimate_usage_cost, fold_session_cost_status, normalize_usage, with_served_service_tier
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -248,7 +248,7 @@ def record_response_usage(
         if _moa_cost is not None:
             agent.session_estimated_cost_usd += _moa_cost
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
-    agent.session_cost_status = cost_result.status
+    agent.session_cost_status = fold_session_cost_status(agent, cost_result.status)
     agent.session_cost_source = cost_result.source
 
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose

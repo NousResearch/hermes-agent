@@ -19,7 +19,8 @@ import {
   $sessions,
   $sessionStartedAt,
   $tileSessionFocusStartedAt,
-  setActiveSessionId
+  setActiveSessionId,
+  setCurrentUsage
 } from '@/store/session'
 import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
@@ -283,6 +284,34 @@ function sessionTimerItem() {
 function timerSince(item: ReturnType<typeof sessionTimerItem>): number | null {
   return isValidElement<{ since: number | null }>(item?.detail) ? item.detail.props.since : null
 }
+
+function sessionCostItem() {
+  const { result } = renderHook(() => useStatusbarItems(statusbarOptions), { wrapper })
+
+  return result.current.statusbarItems.find(item => item.id === 'session-cost')
+}
+
+describe('statusbar session cost chip', () => {
+  afterEach(() => setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 }))
+
+  it('marks an estimated figure and leaves a provider-reported one unmarked', () => {
+    act(() => setCurrentUsage({ calls: 2, cost_status: 'estimated', cost_usd: 1.2345, input: 0, output: 0, total: 0 }))
+    expect(sessionCostItem()?.label).toBe('~$1.23')
+
+    act(() => setCurrentUsage({ calls: 2, cost_status: 'actual', cost_usd: 4.271, input: 0, output: 0, total: 0 }))
+    expect(sessionCostItem()?.label).toBe('$4.27')
+  })
+
+  it('waits in the bar instead of vanishing until the backend reports a figure', () => {
+    // The chip ships hidden, so a user who turned it on chose this slot: an
+    // absent measurement is a placeholder, never a self-hiding item.
+    const item = sessionCostItem()
+
+    expect(item?.label).toBe('—')
+    expect(item?.hidden).toBeFalsy()
+    expect(item?.title).toMatch(/~ prefix is our estimate/)
+  })
+})
 
 describe('statusbar session timer — focused since (#103123)', () => {
   const dayOldRowSeconds = 1_700_000_000

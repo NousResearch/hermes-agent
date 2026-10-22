@@ -25,6 +25,7 @@ import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { StatusbarReadoutTranslations } from './types_statusbar_readouts'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
@@ -3511,7 +3512,7 @@ catalog: CatalogTranslations
       off: string
       offDescription: string
     }
-    statusbar: {
+    statusbar: StatusbarReadoutTranslations & {
       unknown: string
       restart: string
       update: string
@@ -3551,18 +3552,14 @@ catalog: CatalogTranslations
       resetStatusbar: string
       toggleApprovalMode: string
       toggleBackendVersion: string
-      toggleCacheHitRate: string
       toggleCommandCenter: string
       toggleContextUsage: string
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string
-      toggleTokensPerSecond: string
       toggleVersion: string
       toggleFreeTier: string
       toggleWorkspace: string
-      cacheHitRateTitle: string
-      tokensPerSecondTitle: string
       agents: string
       closeAgents: string
       openAgents: string

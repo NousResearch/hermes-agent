@@ -13,7 +13,7 @@ FIELDS = {'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tok
           'completion_tokens', 'total_tokens', 'reasoning_tokens', 'api_calls', 'last_prompt_tokens',
           'context_tokens', 'context_length', 'config_context_length', 'context_source', 'compression_count',
           'avg_latency_s', 'tokens_per_s', 'last_turn_tokens', 'rate_limit', 'active_subagents', 'model',
-          'provider', 'fallback_model'}
+          'provider', 'fallback_model', 'estimated_cost_usd', 'cost_status'}
 
 
 def _agent():
@@ -24,6 +24,7 @@ def _agent():
         session_input_tokens=100, session_output_tokens=40, session_cache_read_tokens=10,
         session_cache_write_tokens=5, session_prompt_tokens=115, session_completion_tokens=40,
         session_total_tokens=155, session_reasoning_tokens=3, session_api_calls=2,
+        session_estimated_cost_usd=0.42, session_cost_status='estimated',
         context_compressor=compressor, _api_latency_history=deque([1.0, 3.0]),
         _api_output_history=deque([10, 30]), get_rate_limit_state=lambda: None,
         _session_messages=[], _turn_base_usage_anchor=None)
@@ -148,6 +149,25 @@ def test_usage_frame_carries_the_tui_view_the_desktop_status_bar_reads():
     usage = frame['usage']
     assert usage['context_used'] == 900 and usage['context_max'] == 128000 and usage['context_percent'] == 1
     assert usage['avg_tps'] == 10.0 and usage['cache_hit_pct'] == 9 and usage['compressions'] == 1
+
+
+def test_usage_frame_carries_spend_and_its_status_on_both_views():
+    """Cost has to reach the nested view the Desktop chip reads AND the flat counters an older bundle
+    maps itself, or a viewer paints a different figure depending on which half it reads."""
+    from gateway.session_usage import usage_frame, usage_stats
+    frame = usage_frame(usage_stats(_agent()))
+    assert frame['estimated_cost_usd'] == 0.42 and frame['cost_status'] == 'estimated'
+    assert frame['usage']['cost_usd'] == 0.42 and frame['usage']['cost_status'] == 'estimated'
+
+
+def test_usage_stats_omits_spend_before_the_first_call():
+    """Nothing measured yet: no spend keys at all, never a fabricated $0 — the embedded ticker's
+    ``_get_usage`` applies the same gate, so a resumed session cannot zero the displayed figure."""
+    from gateway.session_usage import usage_stats
+    fresh = SimpleNamespace(model='fake-model', session_api_calls=0, context_compressor=None,
+                            get_rate_limit_state=lambda: None)
+    stats = usage_stats(fresh)
+    assert 'estimated_cost_usd' not in stats and 'cost_status' not in stats
 
 
 def _parity_agents():

@@ -3,6 +3,7 @@ import { usageFromTick } from '@hermes/shared'
 import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
+import { costMerge } from '@/lib/statusbar'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
@@ -512,6 +513,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       setCurrentUsage(current => ({
         ...current,
         ...usage,
+        ...costMerge(current, usage),
         compressions: usage.compressions
       }))
     }
@@ -551,7 +553,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       }))
 
       if (isActiveEvent) {
-        setCurrentUsage(current => ({ ...current, ...usage }))
+        setCurrentUsage(current => ({ ...current, ...usage, ...costMerge(current, usage) }))
       }
     }
 

@@ -27,10 +27,14 @@ function kindFor(file: File): string {
   return 'file'
 }
 
-export function CanonicalGroupAttachments({ binding, attachments, onChange, onUploadingChange, disabled, readOnly = false, ref }: {
+export function CanonicalGroupAttachments({ binding, attachments, onChange, onUploadingChange, disabled, readOnly = false,
+  uploads = true, downloads = true, ref }: {
   binding: CanonicalGroupBinding
   attachments: Attachment[]
   disabled: boolean
+  /** Whether the room's gateway lists groups.attachment.upload / groups.attachment.download. */
+  uploads?: boolean
+  downloads?: boolean
   // C21: the form holds Send while a selected file's manifest is not committed yet.
   onUploadingChange?: (uploading: boolean) => void
   // Paste and drop in the composer reuse this upload path.
@@ -111,7 +115,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
       <Codicon className="shrink-0 text-(--ui-text-tertiary)" name={a.kind === 'image' ? 'file-media' : a.kind === 'pdf' ? 'file-pdf' : 'file'} />
       <span className="max-w-48 truncate">{a.name}</span>
       <Tip label={labels.download}>
-        <Button aria-label={labels.download} disabled={disabled || busy} onClick={() => void download(a)} size="icon-xs" type="button" variant="ghost"><Codicon name="cloud-download" /></Button>
+        <Button aria-label={labels.download} disabled={disabled || busy || !downloads} onClick={() => void download(a)} size="icon-xs" type="button" variant="ghost"><Codicon name="cloud-download" /></Button>
       </Tip>
       {!readOnly && <Tip label={labels.removeAttachment}>
         <Button aria-label={labels.removeAttachment} disabled={disabled || busy} onClick={() => onChange?.(attachments.filter(item => item !== a))} size="icon-xs" type="button" variant="ghost"><Codicon name="close" /></Button>
@@ -123,7 +127,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
   if (readOnly) {return chips || null}
 
   return <>
-    <input hidden onChange={e => { const file = e.target.files?.[0]
+    {uploads && <><input hidden onChange={e => { const file = e.target.files?.[0]
 
       if (file) {void upload([file])}
       e.currentTarget.value = '' }} ref={input} type="file" />
@@ -131,7 +135,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
       <Button aria-label={labels.attachFiles} className={cn(GHOST_ICON_BTN, ROOM_COMPOSER_AREAS.button)} disabled={disabled || busy} onClick={() => input.current?.click()} size="icon" type="button" variant="ghost">
         <Codicon name="add" size="0.875rem" />
       </Button>
-    </Tip>
+    </Tip></>}
     {chips}
   </>
 }

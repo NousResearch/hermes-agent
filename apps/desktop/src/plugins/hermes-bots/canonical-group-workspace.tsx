@@ -3,6 +3,7 @@ import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from
 
 import { type CanonicalDriverActivity, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
+import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
@@ -48,6 +49,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
+  const methods = useGroupMethods(binding, visible)
   const [state, setState] = useState<RoomState | null>(null)
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
@@ -231,14 +233,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     if (!files.length) {return}
     event.preventDefault()
 
-    if (!composerLocked) {uploader.current?.upload(files)}
+    if (!composerLocked && offersGroupMethod(methods, 'groups.attachment.upload')) {uploader.current?.upload(files)}
   }
 
   const canSend = canSendNow({ restored, busy, uploading, pending: !!pending, draft, attachments: attachments.length, driver: !!driver })
 
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <CanonicalGroupHeader busy={busy} canStop={!!driver} detailsOpen={detailsOpen} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
+      <CanonicalGroupHeader busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
+        canStop={!!driver && offersGroupMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
         onDisband={end} onRename={rename} onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} working={working} />
       {readError && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-destructive" role="alert">{readError}
@@ -248,14 +251,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4" ref={scroller} role="log">
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
-          <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} events={events} members={members} onReply={replyTo} />
+          <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events} members={members} onReply={replyTo} />
           <CanonicalGroupTyping labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
             const member = memberById.get(action.member_id)
             const name = member ? canonicalMemberName(member) : action.member_id
 
             return <CanonicalPendingCard action={action} avatar={avatarFor(member?.profile || action.member_id, 24)} busy={busy}
-              key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} name={name}
+              key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} methods={methods} name={name}
               onAct={act} onDiscard={() => setDiscard({ ...action })} />
           })}
           {discard && <div aria-label={labels.discardUnknown} className="mx-3 grid gap-2 rounded-xl bg-(--chrome-action-hover) px-3 py-2 text-xs" role="alertdialog">
@@ -272,7 +275,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <RoomComposer
         above={reply && <RoomReplyChip cancelLabel={labels.cancelReply} label={fill(labels.replyingTo, { name: reply.name })}
           onCancel={() => setReply(null)} quote={reply.quote} />}
-        attach={<CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} ref={uploader} />}
+        attach={<CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} downloads={offersGroupMethod(methods, 'groups.attachment.download')} onChange={setAttachments} onUploadingChange={setUploading} ref={uploader} uploads={offersGroupMethod(methods, 'groups.attachment.upload')} />}
         canSend={canSend}
         className="mx-auto w-full max-w-3xl"
         onDragOver={event => { if (event.dataTransfer.types.includes('Files')) {event.preventDefault()} }}

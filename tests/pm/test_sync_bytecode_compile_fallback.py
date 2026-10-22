@@ -31,7 +31,10 @@ def _env(tmp_path: Path, output=None) -> PythonEnvironment:
     )
 
 
-def test_streamed_sync_retries_without_bytecode_compile_and_reports_no_failure(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hashed_install", [False, True])
+def test_streamed_sync_retries_without_bytecode_compile_and_reports_no_failure(
+    tmp_path, monkeypatch, hashed_install,
+):
     """Repair streams uv through LiveTail, and verbose output after the compile error can
     evict it from the 2000-character tail. The marker must survive, the retry must drop only
     --compile-bytecode, and the recovered sync must not paint a failure banner."""
@@ -54,11 +57,18 @@ def test_streamed_sync_retries_without_bytecode_compile_and_reports_no_failure(t
     monkeypatch.setattr(environment, "_run_streaming", spawn_fake_uv)
     monkeypatch.setattr(environment, "verbose_output", lambda: False)
     notes = io.StringIO()
-    _env(tmp_path, output=notes).sync(tmp_path, extras=("web",))
+    engine = _env(tmp_path, output=notes)
+    if hashed_install:
+        engine._install_requirements_file(
+            tmp_path / "requirements.txt", require_hashes=True, compile_bytecode=True,
+        )
+    else:
+        engine.sync(tmp_path, extras=("web",))
 
     assert len(calls) == 2
     assert "--compile-bytecode" in calls[0]
     assert calls[1] == [arg for arg in calls[0] if arg != "--compile-bytecode"]
+    assert ("--require-hashes" in calls[1]) == hashed_install
     assert "✗" not in notes.getvalue()
 
 

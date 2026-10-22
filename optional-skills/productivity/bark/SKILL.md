@@ -1,93 +1,126 @@
 ---
 name: bark
-description: Push notifications to iOS devices via Bark.
+description: Send free push notifications to an iPhone.
 version: 1.0.0
-author: Randool
+author: Randool, iam1maker
 license: MIT
 platforms: [macos, linux, windows]
 required_environment_variables:
   - name: BARK_TOKEN
-    prompt: Bark device token
-    help: Open Bark app on iPhone; the token is the last segment of the URL shown on the home page (e.g. https://api.day.app/XXXX → XXXX)
-    required_for: all functionality
+    prompt: Bark device key
+    help: Open Bark on the iPhone and copy the key from the test URL on its home page (https://api.day.app/<key>).
+    required_for: sending pushes
 metadata:
   hermes:
-    tags: [notification, ios, apple, push]
+    tags: [notifications, ios, push, apple, alerts]
+    category: productivity
+    config:
+      - key: bark.server
+        description: Bark server base URL; keep the default for the public api.day.app.
+        default: "https://api.day.app"
+        prompt: Bark server URL (https://api.day.app for the public server)
 ---
 
 # Bark Skill
 
-Send free push notifications to iOS devices via [Bark](https://github.com/finb/bark). Supports title/subtitle/body, custom sounds, notification levels (including critical alerts), and end-to-end encryption.
+Send push notifications to an iPhone through a Bark server, either the public
+`https://api.day.app` or a self-hosted instance. The device key from the Bark
+app identifies the phone, so no account or bot token is involved.
 
-Does not support Android — use ntfy, Gotify, or Telegram Bot for cross-platform needs.
+It does not target Android or desktop clients, and it does not implement
+Bark's encrypted-push payloads: those need a key configured in the app plus
+client-side AES encryption, which this skill leaves to the official Bark
+documentation.
 
 ## When to Use
 
-- Notify the user after long-running tasks (builds, training, report generation)
-- Push cron job execution results
-- Monitoring alerts (threshold triggers, anomaly detection)
-- Any "let me know when it's done" scenario
+- A long task finished (build, training run, report generation) and the user is away from the machine
+- Delivering cron job results or monitoring alerts to a phone
+- Any "tell me when it is done" request where the user prefers a phone notification over chat
 
 ## Prerequisites
 
-1. Install **Bark** from the iOS App Store (by Finb) and allow push notifications
-2. Copy the device token from the Bark app home page (the last segment of the URL, e.g. `https://api.day.app/XXXX`)
-3. Set the `BARK_TOKEN` environment variable — the skill will prompt for it on first load if not configured
+1. Install **Bark** from the App Store (`id1403753865`) and allow notifications for it.
+2. Open the app and copy the key from the test URL on its home page (`https://api.day.app/<key>`).
+3. Store the key as a secret in `~/.hermes/.env`:
+
+   ```
+   BARK_TOKEN=<key>
+   ```
+
+   Hermes loads that file at startup; the skill prompts for the key on first load when it is missing.
+   Exporting `BARK_TOKEN` in the shell works too, but does not survive a restart.
+4. Optional, for a self-hosted server: set the skill config and point the app at the same address.
+
+   ```bash
+   hermes config set skills.config.bark.server https://bark.example.com
+   ```
 
 ## How to Run
 
-All pushes are executed through the `terminal` tool using `curl`.
+Invoke the helper through the `terminal` tool from this skill's directory. It handles UTF-8
+bodies, JSON escaping and response codes, which URL-path pushes get wrong as soon as the
+message contains non-ASCII text, a slash or an ampersand.
 
-**Simple push (GET):**
 ```bash
-curl "https://api.day.app/$BARK_TOKEN/Hello%20from%20Hermes"
+python3 scripts/bark_push.py --title "Hermes" --body "Build finished: 3 tests failed"
 ```
 
-**Title + body (GET):**
-```bash
-curl "https://api.day.app/$BARK_TOKEN/Task%20Complete/Report%20generated"
-```
-
-**Full-featured push (POST JSON):**
-```bash
-curl -X POST "https://api.day.app/$BARK_TOKEN" \
-  -H "Content-Type: application/json; charset=utf-8" \
-  -d '{"title":"Task Complete","body":"Report generated","sound":"minuet"}'
-```
+The helper prints the server response and exits non-zero when the push was rejected.
+When the skill config sets a non-default server, pass it through: `--server https://bark.example.com`.
 
 ## Quick Reference
 
-| Goal | Method |
-|------|--------|
-| Simple push | `GET /$TOKEN/body` |
-| Title + body | `GET /$TOKEN/title/body` |
-| Full features | `POST /$TOKEN` with JSON body |
-| Batch push | `POST /push` with `device_keys` array |
-| Critical alert | `"level":"critical"` in POST body |
-| Withdraw notification | `POST` with `{"id":"...","delete":"1"}` |
+| Goal | Command |
+|------|---------|
+| Title, subtitle, body | `python3 scripts/bark_push.py --title T --subtitle S --body B` |
+| Time-sensitive push | add `--level timeSensitive` |
+| Critical alert | add `--level critical` (needs the app permission) |
+| Markdown body | add `--markdown "**done** in 42s"` instead of `--body` |
+| Repeat ringtone for 30s | add `--call` |
+| Group notifications | add `--group hermes` |
+| Open a URL on tap | add `--url https://example.com` |
+| Badge number | add `--badge 1` |
+| Withdraw a push | `--id <id> --delete` (same id as the original push) |
+| Self-hosted server | add `--server https://bark.example.com` |
+| Preview only | add `--dry-run` |
 
 ## Procedure
 
-1. Ensure `BARK_TOKEN` is set (the skill prompts on first use if missing)
-2. Choose GET (simple) or POST (full-featured) based on your needs
-3. For GET: URL-encode the message and call the endpoint via `terminal`
-4. For POST: build a JSON body with desired parameters and call via `terminal`
-5. Check the response — `{"code":200,"message":"success"}` means delivered
+1. Confirm `BARK_TOKEN` is set; the helper exits with the exact fix when it is missing.
+2. Build the push with `scripts/bark_push.py`: `--title` for the first line, `--body` for the
+   message, `--level` for interruption behaviour.
+3. Run it through the `terminal` tool and read the printed JSON.
+4. Use `--id` with a stable value for progress notifications: Bark replaces the previous push
+   with the same id instead of stacking a new one.
+5. Send `--id <id> --delete` to withdraw a notification once the task no longer needs attention.
 
 ## Pitfalls
 
-- **GET URL length limits**: Use POST JSON for content longer than ~200 characters
-- **URL encoding**: GET requests require URL-encoding of spaces, non-ASCII, and special characters (`&`, `?`, etc.)
-- **Delivery not guaranteed**: iOS may throttle or drop notifications under heavy load
-- **Critical alerts**: Require iOS to grant critical alert permission to Bark in Settings
-- **Self-hosted Bark**: Replace `api.day.app` with your server address in all commands
+- **The URL-path form cannot carry arbitrary text.** Spaces, Chinese characters, `/` and `&`
+  break the path or arrive as mojibake; the helper posts JSON instead.
+- **`--level critical` is silent without permission.** iOS downgrades the push to a normal
+  notification unless Bark was granted Critical Alerts in iOS Settings; the request still returns
+  `code: 200`.
+- **Focus mode swallows `active` pushes.** Use `timeSensitive` or `critical` for alerts that must
+  interrupt.
+- **Withdraw needs Background App Refresh.** `--delete` is delivered as a silent push, so it does
+  nothing when Background App Refresh is off for Bark.
+- **Batch `device_keys` is inconsistent across Bark's docs.** The parameters page documents up to
+  10 keys on the public server while the batch page says the public server does not support it at
+  all (it needs bark-server 2.1.9+). Test before relying on it; self-host for volume.
+- **The key sits in the URL path.** It ends up in proxy and server logs; treat it as a secret and
+  never paste a real key into a shared transcript.
+- **Self-hosted servers need HTTPS.** The iOS app rejects a plain-HTTP address, and the server
+  address configured in the app must match `skills.config.bark.server`.
 
 ## Verification
 
-Send a test notification:
+Send a test push and check both the response and the phone:
 
 ```bash
-curl "https://api.day.app/$BARK_TOKEN/Bark%20configured%20successfully"
+python3 scripts/bark_push.py --title "Hermes" --body "Bark is configured"
 ```
 
-Expected response: `{"code":200,"message":"success"}`. Confirm the notification appears on the iOS device.
+A successful push returns `{"code":200,"message":"success"}` and the notification appears on the
+device. `{"code":400,...}` means the key is wrong or the device never registered with that server.

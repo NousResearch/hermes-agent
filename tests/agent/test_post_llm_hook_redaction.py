@@ -52,6 +52,33 @@ def test_hook_history_is_masked_and_leaves_the_live_list_alone(hook_on):
     assert messages[1]["content"][0]["text"] == f"using {FAKE_GITHUB}"
 
 
+def test_the_api_content_sidecar_is_masked_too(hook_on):
+    """The sidecar is the wire copy: injected context rides in it, not in ``content``.
+
+    A reviewer probe against this branch found ``content`` masked while ``api_content``
+    still carried the credential — the exact bytes sent to the model, memory injection and
+    all. Both leaves are masked now, on both row types that carry the sidecar (user rows
+    with injected context, promoted assistant rows).
+    """
+    injected = f"<memory>\nCI token: {FAKE_GITHUB}\n</memory>\n\nsummarize the deploy"
+    messages = [
+        {"role": "user", "content": "summarize the deploy", "api_content": injected, "timestamp": 1.0},
+        {
+            "role": "assistant", "content": "", "display_kind": "hidden",
+            "api_content": f"the token is {FAKE_GITHUB}", "timestamp": 2.0,
+        },
+    ]
+    history = turn_finalizer._hook_history(messages)
+
+    assert "api_content" in history[0], "the sidecar was dropped instead of masked"
+    assert FAKE_GITHUB not in history[0]["api_content"]
+    assert history[0]["api_content"].startswith("<memory>")
+    assert FAKE_GITHUB not in history[1]["api_content"]
+    # The live dicts keep the bytes the wire sent, or the next API call misses the cache.
+    assert messages[0]["api_content"] == injected
+    assert FAKE_GITHUB in messages[1]["api_content"]
+
+
 def test_no_hook_means_no_masking_work(hook_off):
     messages = [{"role": "user", "content": f"deploy with {FAKE_GITHUB}"}]
     history = turn_finalizer._hook_history(messages)

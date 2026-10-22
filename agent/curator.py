@@ -191,6 +191,17 @@ def _cron_referenced_skills() -> set[str]:
         return set()
 
 
+def _related_skill_dependencies() -> set[str]:
+    """Skill names a live skill declares in ``related_skills`` or names as a skill token (see ``agent.curator_dependents``).
+    Best-effort like the cron lookup: any failure yields an empty set, never a crash."""
+    try:
+        from agent.curator_dependents import related_skill_dependencies
+        return related_skill_dependencies()
+    except Exception as e:
+        logger.debug("Curator could not read related_skills dependencies: %s", e, exc_info=True)
+        return set()
+
+
 def _archive_as_curator(_u, name: str) -> bool:
     """Archive via skill_usage with the ledger actor tagged 'curator', so the ledger entry reads as an autonomous transition, not a foreground call."""
     try:
@@ -216,8 +227,9 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
     # Cron-referenced skills are in use by definition (usage only bumps when a
-    # job fires, so paused/rare jobs would age them out). Treat as pinned.
-    protected = _cron_referenced_skills()
+    # job fires, so paused/rare jobs would age them out). Treat as pinned. The same holds for a skill a live
+    # skill names (related_skills or a skill token): archiving it would leave the dependent with a dangling link.
+    protected = _cron_referenced_skills() | _related_skill_dependencies()
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     def _set(name: str, state: str, key: str) -> None:

@@ -165,14 +165,17 @@ def test_keepalive_does_not_start_for_free_tier(isolated_store, monkeypatch):
             pass
     monkeypatch.setattr(nous_auth_keepalive.threading, "Thread", _Thread)
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
+    from hermes_cli import guest_handoff
+    monkeypatch.setattr(guest_handoff, "_worker_thread", None)
 
     _write_auth(_guest_state())
     assert nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900) is None
-    assert started == []
+    # The free-tier handoff retry worker runs in a guest process too; the token keepalive does not.
+    assert started == ["nous-guest-handoff"]
 
     _write_auth(_account_state())
     thread = nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900)
-    assert thread is not None and started == ["nous-auth-keepalive"]
+    assert thread is not None and started == ["nous-guest-handoff", "nous-auth-keepalive"]
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
 
 

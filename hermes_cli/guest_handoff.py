@@ -253,6 +253,91 @@ def _remaining(deadline: float) -> float:
     return deadline - time.monotonic()
 
 
+# --- The worker: retries in a long-lived process, for every profile -------------------------------
+#
+# A move queued by a short process (a CLI sign-in during an outage) is finished by whichever long-lived
+# Nous process runs next (Desktop backend, gateway, CLI agent), whatever its own profile or identity.
+_WORKER_FIRST_TICK_SECONDS = 15.0
+_WORKER_INTERVAL_SECONDS = 60.0
+_worker_lock = threading.Lock()
+_worker_stop = threading.Event()
+_worker_thread: Optional[threading.Thread] = None
+
+
+def start_worker() -> threading.Thread:
+    """Start the process-wide retry worker (idempotent)."""
+    global _worker_thread
+    with _worker_lock:
+        if _worker_thread is not None and _worker_thread.is_alive():
+            return _worker_thread
+        _worker_stop.clear()
+        # health: allow HX012 -- process-wide worker that binds each record's own profile scope per run; it must not inherit the starter's
+        _worker_thread = threading.Thread(target=_worker_loop, daemon=True, name="nous-guest-handoff")
+        _worker_thread.start()
+        return _worker_thread
+
+
+def stop_worker(timeout: float = 5.0) -> None:
+    global _worker_thread
+    with _worker_lock:
+        thread = _worker_thread
+        _worker_stop.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout)
+    with _worker_lock:
+        if _worker_thread is thread:
+            _worker_thread = None
+
+
+def _worker_loop() -> None:
+    wait = _WORKER_FIRST_TICK_SECONDS
+    while not _worker_stop.wait(wait):
+        try:
+            retry_all_profiles()
+        except Exception:
+            logger.warning("Free-tier handoff retry tick failed; the records stay for the next one", exc_info=True)
+        wait = _WORKER_INTERVAL_SECONDS
+
+
+def retry_all_profiles() -> list[dict[str, Any]]:
+    """Run every due record under its owning profile's scope (home + secrets), so a named profile's
+    move retries from a process launched as another profile. The bound-account check and the Bearer
+    proof in ``_reserve`` still decide whether anything is sent."""
+    try:
+        records = _load(_records_path())["records"].values()
+    except RuntimeError:
+        return []
+    now = _now()
+    homes = sorted({home for record in records if record.get("state") in _ACTIVE
+                    and float(record.get("next_attempt_at") or 0) <= now
+                    for home in record.get("profiles", ())})
+    results: list[dict[str, Any]] = []
+    for home in homes:
+        if not Path(home).is_dir():
+            continue  # a deleted profile: nothing there holds the destination account
+        with _profile_scope(home):
+            batch = drain()
+        results.extend(batch.results if batch else [])
+    return results
+
+
+@contextmanager
+def _profile_scope(home: str) -> Iterator[None]:
+    """The owning profile's home and secrets for one drain (the cron ticker binds a profile the same
+    way); no terminal scope: nothing here runs a command."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    foreign = hermes_home_key(get_routing_process_hermes_home()) != home
+    home_token = set_hermes_home_override(home)
+    secret_token = set_secret_scope(build_profile_secret_scope(Path(home)), profile_home=home if foreign else None)
+    try:
+        yield
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+
+
 def run_due(*, budget_seconds: float = SYNC_BUDGET_SECONDS) -> list[dict[str, Any]]:
     """Attempt every active, due record of this profile within *budget_seconds*. Returns their public
     views; a record the budget did not reach stays as it is for a later run."""
@@ -337,6 +422,8 @@ def _claim_locked(path: Path, key: str, deadline: float) -> Optional[dict[str, A
         except AuthError as exc:
             logger.info("Free-tier handoff (%s): account token unavailable (%s)", key[:8], exc.code)
             return public_view(current)
+        if _remaining(deadline) <= 0:
+            return public_view(current)
         reservation = _reserve(path, key, _subject(bearer))
         if reservation is None:
             return public_view(_load(path)["records"].get(key) or current)
@@ -361,11 +448,17 @@ def _claim_locked(path: Path, key: str, deadline: float) -> Optional[dict[str, A
 
 def _bearer(*, force: bool, timeout: float) -> str:
     from hermes_cli import auth
-    if force:
-        with auth._RESOLVE_TOKEN_CACHE_LOCK:
-            auth._RESOLVE_TOKEN_CACHE.pop(_home_key(), None)
-        return auth.resolve_nous_access_token(timeout_seconds=timeout, refresh_skew_seconds=_FORCE_REFRESH_SKEW)
-    return auth.resolve_nous_access_token(timeout_seconds=timeout)
+    from hermes_cli.auth_nous import _nous_shared_store_lock
+    # The resolver's 5 s memo can still hold the guest's token from just before the save.
+    with auth._RESOLVE_TOKEN_CACHE_LOCK:
+        auth._RESOLVE_TOKEN_CACHE.pop(_home_key(), None)
+    # The resolver waits its own, longer floors for these locks. Taking them first within the
+    # budget (same order: auth, then shared) makes its acquisitions reentrant, so a held lock costs
+    # the budget, not 15 s; a timeout leaves the record for a later run.
+    with auth._auth_store_lock(timeout), _nous_shared_store_lock(timeout_seconds=timeout):
+        if force:
+            return auth.resolve_nous_access_token(timeout_seconds=timeout, refresh_skew_seconds=_FORCE_REFRESH_SKEW)
+        return auth.resolve_nous_access_token(timeout_seconds=timeout)
 
 
 def _refresh_account_token(*, timeout: float) -> None:

@@ -289,7 +289,7 @@ def test_two_profiles_sharing_one_guest_claim_once(portal, monkeypatch, tmp_path
 
 
 def test_a_crash_between_save_and_claim_is_claimed_on_next_boot(portal, monkeypatch):
-    from hermes_cli import auth_nous, guest_handoff, nous_auth_keepalive
+    from hermes_cli import auth_nous, guest_handoff
     anon = _mint_guest()
     monkeypatch.setattr(auth_nous, "drain", lambda: None)     # the process dies before the claim
     _persist(_account())
@@ -297,8 +297,7 @@ def test_a_crash_between_save_and_claim_is_claimed_on_next_boot(portal, monkeypa
 
     monkeypatch.setattr(auth_nous, "drain", guest_handoff.drain)
     monkeypatch.setattr(guest_handoff, "_local", threading.local())   # a fresh process
-    monkeypatch.setattr(nous_auth_keepalive, "_refresh_selected_pool_entry", lambda **_kw: True)
-    nous_auth_keepalive.refresh_nous_auth_keepalive_once()
+    guest_handoff.retry_all_profiles()                                 # its retry worker's first tick
 
     assert [c["body"] for c in portal.claims] == [{"token": anon}]
     assert _only_record()["state"] == "claimed"
@@ -328,8 +327,12 @@ def test_a_surface_lock_defers_the_claim_until_it_is_released(portal):
 
 def _pending_for(monkeypatch, account) -> None:
     """A saved account and its pending record, the claim not yet run."""
-    from hermes_cli import auth_nous, guest_handoff
     _mint_guest()
+    _pending_for_current_guest(monkeypatch, account)
+
+
+def _pending_for_current_guest(monkeypatch, account) -> None:
+    from hermes_cli import auth_nous, guest_handoff
     monkeypatch.setattr(auth_nous, "drain", lambda: None)
     _persist(account)
     monkeypatch.setattr(auth_nous, "drain", guest_handoff.drain)
@@ -392,15 +395,12 @@ def test_a_slow_refusal_at_the_budget_edge_starts_no_refresh_or_second_claim(por
     assert _only_record()["state"] == "pending" and _only_record()["attempts"] == 0
 
 
-def test_corrupt_records_neither_block_a_sign_in_nor_stop_token_renewal(portal, monkeypatch):
-    from hermes_cli import guest_handoff, nous_auth_keepalive
+def test_corrupt_records_neither_block_a_sign_in_nor_stop_the_retry_worker(portal, monkeypatch):
+    from hermes_cli import guest_handoff
     path = guest_handoff._records_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json", encoding="utf-8")
-    renewed = []
-    monkeypatch.setattr(nous_auth_keepalive, "_refresh_selected_pool_entry", lambda **_kw: renewed.append(1) or True)
-    nous_auth_keepalive.refresh_nous_auth_keepalive_once()
-    assert renewed == [1]
+    assert guest_handoff.retry_all_profiles() == []
 
     _mint_guest()
     _persist(_account())
@@ -419,6 +419,68 @@ def test_a_move_bound_to_another_account_reads_as_paused(portal, monkeypatch):
     status = guest_handoff.handoff_status()
     assert status["state"] == "paused"
     assert "another Nous account" in guest_handoff.status_lines(status)[0]
+
+
+# --- Review round 2: retries reach every profile; the first attempt is not lost -------------------
+
+def test_a_long_lived_process_with_a_guest_still_runs_the_handoff_worker(portal, monkeypatch):
+    from hermes_cli import guest_handoff, nous_auth_keepalive
+    monkeypatch.setattr(nous_auth_keepalive, "get_provider_auth_state",
+                        lambda _p: {"auth_method": "anonymous", "anon_token": "anon_x"})
+    try:
+        nous_auth_keepalive.start_nous_auth_keepalive()
+        assert guest_handoff._worker_thread is not None and guest_handoff._worker_thread.is_alive()
+    finally:
+        nous_auth_keepalive.stop_nous_auth_keepalive()
+    assert guest_handoff._worker_thread is None
+
+
+def test_the_worker_retries_a_named_profiles_move_from_the_launch_profile(portal, monkeypatch, tmp_path):
+    import os
+    from hermes_cli import guest_handoff
+    anon = _mint_guest()
+    _pending_for_current_guest(monkeypatch, _account())
+    launch = tmp_path / "launch-profile"
+    launch.mkdir()
+    named_home = os.environ["HERMES_HOME"]
+    monkeypatch.setenv("HERMES_HOME", str(launch))      # the long-lived process runs as another profile
+    guest_handoff.retry_all_profiles()
+    assert [c["body"] for c in portal.claims] == [{"token": anon}]
+    monkeypatch.setenv("HERMES_HOME", named_home)
+    assert _only_record()["state"] == "claimed"
+
+
+def test_a_guest_token_still_cached_from_a_connector_call_does_not_skip_the_move(portal):
+    from hermes_cli import auth
+    from hermes_constants import hermes_home_key
+    _mint_guest()
+    auth._RESOLVE_TOKEN_CACHE[hermes_home_key()] = (time.monotonic(), make_jwt())   # the guest's own token
+    _persist(_account())
+    assert len(portal.claims) == 1 and _only_record()["state"] == "claimed"
+
+
+def test_a_held_auth_lock_cannot_stretch_the_sync_budget(portal, monkeypatch):
+    from hermes_cli import auth, guest_handoff
+    _pending_for(monkeypatch, _account())
+    monkeypatch.setattr(guest_handoff, "SYNC_BUDGET_SECONDS", 1.0)
+    held, release = threading.Event(), threading.Event()
+
+    def hold_auth_lock():
+        with auth._auth_store_lock():
+            held.set()
+            release.wait(30)
+
+    holder = threading.Thread(target=hold_auth_lock, daemon=True)
+    holder.start()
+    held.wait(5)
+    started = time.monotonic()
+    try:
+        guest_handoff.drain()
+    finally:
+        release.set()
+        holder.join(5)
+    assert time.monotonic() - started < 6
+    assert portal.claims == [] and _only_record()["state"] == "pending" and _only_record()["attempts"] == 0
 
 
 def test_auth_status_shows_what_moved(portal, capsys):

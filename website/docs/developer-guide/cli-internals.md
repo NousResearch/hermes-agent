@@ -154,12 +154,15 @@ call it:
   record. Records live in `guest_handoff.json` beside the shared Nous store, keyed by a hash of the
   `anon_` credential and bound to the destination account, so profiles sharing one free-tier
   identity share one record and one claim.
-- `drain` runs the claim outside every lock, bounded to about 10 s (each record, refresh and request
-  checks the remaining budget): after a shared-store write, when a `guest_handoff.deferred()` block
-  exits (a surface that saves under its own lock, such as the desktop poller, wraps the save in it),
-  after a free-tier reconcile, and on every Nous keepalive tick, which resumes a retry an earlier
-  process left. It only moves apps; config completion (`settle_after_upgrade`) stays with the
-  sign-in that saved the account.
+- `drain` runs the claim outside every lock, bounded to about 10 s (each record, lock wait, token
+  read and request counts against the budget): after a shared-store write, when a
+  `guest_handoff.deferred()` block exits (a surface that saves under its own lock, such as the desktop
+  poller, wraps the save in it), and after a free-tier reconcile. It only moves apps; config
+  completion (`settle_after_upgrade`) stays with the sign-in that saved the account.
+- Retries left by any process are finished by a retry worker that every long-lived Nous process
+  starts (`start_nous_auth_keepalive` starts it, guest or not). Each tick runs every due record
+  under its owning profile's home and secrets, so a named profile's move retries from a process
+  launched as another profile.
 - Every attempt is reserved in one locked read-modify-write that checks the record is still due,
   under the attempt cap, and bound to the account whose Bearer is about to be sent (the token's
   `sub` must equal the record's destination). Apps never go to any other account.

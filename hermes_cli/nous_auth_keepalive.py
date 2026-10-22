@@ -157,13 +157,6 @@ def refresh_nous_auth_keepalive_once(
     from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
     with launch_profile_scope_if_multiplexed():
-        # A free-tier handoff an earlier run left retrying resumes here (next boot, then each tick).
-        # Its failure must not stop the token renewal below; the record stays for the next tick.
-        from hermes_cli.guest_handoff import drain
-        try:
-            drain()
-        except Exception:
-            logger.warning("Nous auth keepalive: free-tier handoff check failed", exc_info=True)
         pool_result = _refresh_selected_pool_entry(
             min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
         )
@@ -217,6 +210,10 @@ def start_nous_auth_keepalive(
     min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS, timeout_seconds: Optional[float] = None,
 ) -> Optional[threading.Thread]:
     """Start the process-wide Nous auth keepalive thread (idempotent; None when disabled)."""
+    # Free-tier handoff retries run in every long-lived Nous process, guest or not and keepalive or
+    # not: a CLI sign-in in another process may have left a move this one has to finish.
+    from hermes_cli.guest_handoff import start_worker
+    start_worker()
     interval_seconds = _interval_seconds(interval_seconds)
     if interval_seconds <= 0:
         return None
@@ -250,6 +247,8 @@ def start_nous_auth_keepalive(
 
 def stop_nous_auth_keepalive(timeout: float = 5.0) -> None:
     """Stop the keepalive thread. Intended for graceful shutdown/tests."""
+    from hermes_cli.guest_handoff import stop_worker
+    stop_worker(timeout)
     global _keepalive_thread
     with _keepalive_lock:
         thread = _keepalive_thread

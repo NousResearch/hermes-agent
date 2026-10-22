@@ -68,12 +68,14 @@ def build_requirements_environment(
     requirements: Sequence[str], *, out: Path, python: Path | None = None,
     cache: Path | None = None, env: Mapping[str, str] | None = None,
     wheelhouse: Path | None = None, offline: bool = False, sealed: bool = False,
-    explicit: bool = False,
+    explicit: bool = False, lock: Path | None = None,
 ) -> Path:
     """Create and check a fresh environment. Never mutate an existing destination.
 
     Wheelhouse builds disable indexes and source builds. Failure removes only
-    this invocation's exclusively claimed output, not prior builds.
+    this invocation's exclusively claimed output, not prior builds. *lock* is the
+    uv.lock the requirements were exported from: its overrides apply to the
+    install and the closing check.
     """
     from pm.environment import _fresh_build, managed_environment
     from pm.operations import _require_install_allowed, _requirements
@@ -81,6 +83,7 @@ def build_requirements_environment(
     _require_install_allowed(explicit)
     requirements = _requirements(requirements) if requirements or isinstance(requirements, str) else []
     out = Path(out).absolute()
+    lock = Path(lock).absolute() if lock is not None else None
     wheelhouse = Path(wheelhouse).absolute() if wheelhouse is not None else None
     if wheelhouse is not None and not wheelhouse.is_dir():
         raise InstallError("venv", f"wheelhouse directory is missing: {wheelhouse}")
@@ -91,8 +94,8 @@ def build_requirements_environment(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
-    with _fresh_build(environment, sealed=sealed):
-        environment.install_requirements(requirements, wheelhouse=wheelhouse)
+    with _fresh_build(environment, sealed=sealed, lock=lock):
+        environment.install_requirements(requirements, wheelhouse=wheelhouse, lock=lock)
     return environment.executable
 
 

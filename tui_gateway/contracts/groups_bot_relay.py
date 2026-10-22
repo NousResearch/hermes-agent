@@ -9,6 +9,8 @@ Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py`
 
 from __future__ import annotations
 
+from pydantic import Field
+
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
 from .registry import method
@@ -208,15 +210,24 @@ class PeerRouteStatus(Result):
     status: str
 
 
+class RoomMemberActivity(Result):
+    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``."""
+
+    member_id: str
+    status: str
+
+
 class RoomDriverStatus(Result):
     """``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``
-    or the driver's approval action (``kind: approval`` + run/session/approval context)."""
+    or the driver's approval action (``kind: approval`` + run/session/approval context).
+    ``member_activity`` lists live tasks in admission order (absent from older gateways)."""
 
     running: bool
     working: bool
     blocked: bool
     counts: dict[str, int]
     pending_actions: list[dict[str, JsonValue]]
+    member_activity: list[RoomMemberActivity] = Field(default_factory=list)
     peer_routes: list[PeerRouteStatus]
 
 

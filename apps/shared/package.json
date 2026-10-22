@@ -16,6 +16,7 @@
     "./i18n": "./src/i18n.ts",
     "./json-rpc-channel": "./src/json-rpc-channel.ts",
     "./model-search-text": "./src/model-search-text.ts",
+    "./plan-usage": "./src/plan-usage.ts",
     "./reasoning-effort": "./src/reasoning-effort.ts",
     "./reconnect-backoff": "./src/reconnect-backoff.ts",
     "./skin": "./src/skin.ts",

@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- the copy contract for the usage-window plan keys every locale adds (allowance gauges, Large/Free tags, the limit card)
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
@@ -22,6 +23,7 @@ import type { LocalModelsTranslations } from './types_local_models'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
+import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
@@ -757,25 +759,7 @@ catalog: CatalogTranslations
         masterPasswordPlaceholder: string
       }
     }
-    notifications: {
-      title: string
-      intro: string
-      enableAll: string
-      enableAllDesc: string
-      focusedHint: string
-      kinds: Record<
-        'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
-        { label: string; description: string }
-      >
-      test: string
-      testTitle: string
-      testBody: string
-      testSent: string
-      testUnsupported: string
-      completionSoundTitle: string
-      completionSoundDesc: string
-      completionSoundPreview: string
-    }
+    notifications: NotificationSettingsTranslations
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
@@ -1430,6 +1414,17 @@ catalog: CatalogTranslations
         cancel: string
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta: string) => string
       }
+      keepGoingOnCredits: {
+        title: string
+        description: string
+        /** Shown under the switch while the Remote Spending approval is open in the browser. */
+        approveInBrowser: string
+        openAgain: string
+        cancel: string
+        /** Approved, but the change was still refused: shown with a Try again button. */
+        approvedRetry: string
+        tryAgain: string
+      }
       autoReload: {
         threshold: string
         thresholdAria: string
@@ -1497,6 +1492,20 @@ catalog: CatalogTranslations
             captionDefault: string
             captionSpending: string
             valueUsed: (spent: string, limit: string) => string
+          }
+          window: {
+            today: string
+            week: string
+            month: string
+            topTier: string
+            barLabel: (title: string) => string
+            captionPaused: string
+            captionPausedOther: string
+            captionTopTierUsedUp: string
+            captionTopTierUsedUpKeepGoingOff: string
+            captionResetsIn: (duration: string) => string
+            captionIncluded: string
+            valueUsed: (percent: string) => string
           }
         }
         planCard: {
@@ -3330,6 +3339,29 @@ catalog: CatalogTranslations
     customModel: string
     addCustomModelAction: string
     customModelPlaceholder: string
+    today: string
+    week: string
+    month: string
+    topTier: string
+    included: string
+    pausedRenewal: string
+    pausedOther: string
+    includedUsedUp: string
+    /** Row note: past its included usage, this model bills top-up credits (pay as you go). */
+    /** "Weekly limit reached" from a limit name ("weekly"). */
+    limitReached: (name: string) => string
+    limitNames: { day: string; month: string; top_tier: string; week: string }
+    limitThenCredits: string
+    limitThenCreditsLarge: string
+    limitThenWait: string
+    limitThenWaitLarge: string
+    percentUsed: (percent: string) => string
+    resetsIn: (duration: string) => string
+    /** Window plans: the gateway's per-model word (free / low / medium / top_tier). */
+    usageLevels: { free: string; top_tier: string }
+    sectionRecommended: string
+    sectionOther: string
+    largeFootnote: string
   }
 
   modelVisibility: {
@@ -3448,6 +3480,8 @@ catalog: CatalogTranslations
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
+      togglePlanUsage: string
+      planUsageTitle: (used: string, resetsIn: string) => string
       agents: string
       closeAgents: string
       openAgents: string
@@ -3816,6 +3850,17 @@ catalog: CatalogTranslations
       errorStartNewSession: string
       errorSwitchProvider: string
       errorChooseModel: string
+      /** usage_window: one click to the plan's recommended model; `note` is "free" / "included". */
+      errorSwitchToModel: (model: string, note: string) => string
+      errorSwitchModelFailed: string
+      /** usage_window: turn on Keep going on credits, then re-run the turn. */
+      errorUseCredits: string
+      errorUseCreditsFailed: string
+      /** usage_window with no balance: opens Settings → Billing to add credits. */
+      errorAddCredits: string
+      /** Error card button: opens Settings → Billing in-app (Keep going, buy credits). */
+      errorOpenBillingSettings: string
+      /** Error card body when a Nous account is out of credits (its button opens Settings → Billing). */
       errorCompressConversation: string
       errorCompressFailed: string
       errorOpenHermesFolder: string

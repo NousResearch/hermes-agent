@@ -177,7 +177,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.3.0; python_version >= '3.14'",
+  "Pillow==13.0.0; python_version >= '3.14'",
   # HEIF/HEIC/AVIF decode for the vision tools. iPhone photos and screenshots
   # are HEIC (frequently mislabeled .jpg by upload pipelines); Pillow has no
   # built-in HEIF codec, so without this the vision resolver rejects them as
@@ -244,7 +244,7 @@ ddgs = ["ddgs==9.16.0"]
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
-edge-tts = ["edge-tts==7.2.7"]
+edge-tts = ["edge-tts==7.3.1"]
 # NeuTTS's upstream Python ceiling excludes the managed interpreter.
 # Keep dependency markers and PM gates together: bundles omit them, explicit
 # setup requests report unavailable rather than succeeding with an empty set.
@@ -622,6 +622,18 @@ override-dependencies = [
   # replace that requirement too, not only the vendor's upper bound.
   # Remove this line when alibabacloud-tea-openapi lifts the cap.
   "cryptography==50.0.1",
+  # browser-harness 0.1.13 (core dependency, latest release) pins
+  # pillow==12.3.0 exactly, which holds Pillow below 13.0.0, the first
+  # release fixing GHSA-8g5g-8vmr-9782, GHSA-w889-685w-c8fh and the rest of
+  # the 13.0.0 advisory set. browser-harness only opens, converts, composes
+  # and draws images (Image.open/new/convert, ImageDraw, ImageFont,
+  # ImageOps.contain), none of which changed in 13. Keep this exact version
+  # equal to the direct dependency (uv overrides replace that requirement
+  # too). PM's install-time `uv pip check` accepts the resulting mismatch
+  # because uv.lock records this override (pm/pip_check.py).
+  # Remove this line when browser-harness allows Pillow 13. Plugin workspaces
+  # inherit [tool.uv], so a plugin requiring pillow<13 also gets 13.0.0.
+  "Pillow==13.0.0",
   # misaki[en] (pulled by [kittentts]) lists spacy-curated-transformers.
   # The newest release that fits spacy 3.8 (2.x needs thinc 9), 0.3.1, caps
   # Python below 3.14, so PM's `uv pip check` rejects the venv. Nothing

@@ -1,0 +1,31 @@
+name: advanced-delegation
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: bd4d5f04b3da38a1a40721014f1507a196173b00
+subdir: advanced-delegation
+title: Advanced Delegation
+description: 'Two extra delegation modes for `delegate_task`, next to the built-in default. Model routes
+  (`delegation.backend: model_map`): the agent picks a named model route per subagent from a list you
+  define (e.g. fast, deep, local). Profile routes (`delegation.backend: profile_routes`): the agent runs a
+  subagent as one of your Hermes profiles, with that profile''s own model, credentials, skills and SOUL.md.
+  Only route names and their one-line descriptions reach the model. Adds `hermes delegation config` (pick
+  the mode and edit its routes; `--show` prints the setup) and the `/delegation` slash command (switch modes
+  for this session, or `--global` to save it). Needs a Hermes core with pluggable delegation providers
+  (0.22.5 or newer); on an older core it installs, logs one warning and does nothing. Disclosure — no
+  Python dependencies and no network or model calls of its own; subagents run through core''s
+  `delegate_task` on the routes you configured. Writes only `delegation.backend` and
+  `delegation.backends.*` (model_map / profile_routes) in the active profile''s config.yaml, through
+  core''s config writer. A model route''s optional `api_key` is stored in config.yaml in plain text
+  (`provider:` keeps keys in .env / auth.json). Listing a profile under profile routes lets this
+  profile''s subagents use that profile''s credentials, SOUL.md and terminal policy.'
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/advanced-delegation
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -516,7 +516,7 @@ The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `
 
 Three reasons:
 
-1. **Backend portability.** Workers whose terminal tool points at a remote backend (Docker / Modal / Singularity / SSH) would run `hermes kanban complete` *inside* the container, where `hermes` isn't installed and `~/.hermes/kanban.db` isn't mounted. The kanban tools run in the agent's own Python process and always reach `~/.hermes/kanban.db` regardless of terminal backend.
+1. **Backend portability.** Workers whose terminal tool points at a remote backend (Docker / Modal / SSH / a plugin sandbox) would run `hermes kanban complete` *inside* the container, where `hermes` isn't installed and `~/.hermes/kanban.db` isn't mounted. The kanban tools run in the agent's own Python process and always reach `~/.hermes/kanban.db` regardless of terminal backend.
 2. **No shell-quoting fragility.** Passing `--metadata '{"files": [...]}'` through shlex + argparse is a latent footgun. Structured tool args skip it entirely.
 3. **Better errors.** Tool results are structured JSON the model can reason about, not stderr strings it has to parse.
 

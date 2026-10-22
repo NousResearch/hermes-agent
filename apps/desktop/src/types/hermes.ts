@@ -886,6 +886,8 @@ export interface UsageStats {
   cost_usd?: number
   input: number
   output: number
+  /** Window plans only (tui_gateway `_get_usage`): today's allowance (else the binding one), for the status bar. */
+  plan_gauge?: { id: string; label: string; resets_at_ms?: null | number; used_bp: number }
   total: number
 }
 
@@ -1889,6 +1891,8 @@ export interface ModelAssignmentResponse {
   confirm_message?: string
   confirm_required?: boolean
   model?: string
+  /** Window plans, Large model: a warning to show (never a confirm). */
+  notice?: string
   ok: boolean
   provider?: string
   reset?: boolean

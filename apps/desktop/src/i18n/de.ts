@@ -1,14 +1,17 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
+import { deNotifications } from './de_notifications'
 import { deOnboarding } from './de_onboarding'
 import { dePluginUpdate } from './de_plugin_update'
 import { deProjects } from './de_projects'
@@ -921,53 +924,7 @@ export const deOverrides = {
         masterPasswordPlaceholder: 'Master-Passwort'
       }
     },
-    notifications: {
-      title: 'Benachrichtigungen',
-      intro: 'OS-Benachrichtigungen (keine In-App-Toasts). Pro Gerät.',
-      enableAll: 'Benachrichtigungen aktivieren',
-      enableAllDesc: 'Aus schaltet jede Benachrichtigung unten stumm.',
-      focusedHint: 'Abschluss-Alerts feuern nur, während Hermes im Hintergrund ist.',
-      kinds: {
-        approval: {
-          label: 'Genehmigung nötig',
-          description: 'Ein Befehl wartet darauf, dass Sie ihn genehmigen oder ablehnen.'
-        },
-        input: {
-          label: 'Eingabe nötig',
-          description: 'Hermes hat eine Frage gestellt oder braucht ein Passwort oder Geheimnis.'
-        },
-        turnDone: {
-          label: 'Antwort bereit',
-          description: 'Ein Turn wurde beendet, während Hermes im Hintergrund war.'
-        },
-        turnError: {
-          label: 'Turn fehlgeschlagen',
-          description: 'Fehler bei Background-Turns.'
-        },
-        backgroundDone: {
-          label: 'Hintergrund-Task fertig',
-          description: 'Ein Terminal-Befehl im Hintergrund wurde abgeschlossen.'
-        },
-        credits: {
-          label: 'Credit-Alerts',
-          description: 'Der Credit-Zugriff wird pausiert oder wiederhergestellt.'
-        },
-        plugin: {
-          label: 'Plugin-Benachrichtigungen',
-          description: 'Ein Desktop-Plugin hat eine Benachrichtigung gesendet, während Hermes im Hintergrund war.'
-        }
-      },
-      test: 'Testbenachrichtigung senden',
-      testTitle: 'Hermes',
-      testBody: 'Benachrichtigungen funktionieren.',
-      testSent:
-        'Test gesendet. Wenn nichts erscheint, überprüfen Sie die Benachrichtigungsberechtigungen Ihres Betriebssystems und Fokus/Nicht stören.',
-      testUnsupported: 'Dieses System unterstützt keine nativen Benachrichtigungen.',
-      completionSoundTitle: 'Abschluss-Sound',
-      completionSoundDesc:
-        'Wird abgespielt, wenn ein Agent-Turn endet. Wählen Sie eine Vorlage aus und hören Sie sie hier an.',
-      completionSoundPreview: 'Vorschau'
-    },
+    notifications: deNotifications,
     sections: {
       model: 'Modell',
       chat: 'Chat',
@@ -2039,6 +1996,17 @@ export const deOverrides = {
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta?: string) =>
           `Wechsel zu ${targetName} – wirksam ${effectiveAt}. Jetzt keine Abbuchung; bis dahin behalten Sie Ihren aktuellen Tarif.${creditsDelta ? ` Änderung der monatlichen Credits: ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Mit Credits weitermachen',
+        description:
+          'Nutzt Ihre Credits, wenn die enthaltene Nutzung aufgebraucht ist. Aus: Hermes wartet auf das Zurücksetzen.',
+        approveInBrowser:
+          'Bestätige Remote Spending im Browser, um das zu ändern. Es wird übernommen, sobald du bestätigst.',
+        openAgain: 'Erneut öffnen',
+        cancel: 'Abbrechen',
+        approvedRetry: 'Remote Spending ist bestätigt, aber die Änderung wurde nicht gespeichert.',
+        tryAgain: 'Erneut versuchen'
+      },
       autoReload: {
         threshold: 'Schwellenwert',
         thresholdAria: 'Schwellenwert für automatisches Aufladen',
@@ -2118,6 +2086,21 @@ export const deOverrides = {
             captionDefault: 'Standardobergrenze',
             captionSpending: 'Monatliche Remote-Ausgaben',
             valueUsed: (spent: string, limit: string) => `${spent} von ${limit} genutzt`
+          },
+          window: {
+            today: 'Heute',
+            week: 'Diese Woche',
+            month: 'Dieser Monat',
+            topTier: 'Große Modelle (monatlich)',
+            barLabel: (title: string) => `${title}: genutztes Inklusivvolumen`,
+            captionPaused: 'Pausiert: Abo-Zahlung fehlgeschlagen',
+            captionPausedOther: 'Pausiert: siehe Abrechnung im Portal',
+            captionTopTierUsedUp: 'Monatskontingent aufgebraucht, Credits decken den Rest',
+            captionTopTierUsedUpKeepGoingOff:
+              'Monatskontingent aufgebraucht, andere enthaltene Modelle funktionieren weiter',
+            captionResetsIn: (duration: string) => `Wird in ${duration} zurückgesetzt`,
+            captionIncluded: 'Inklusivvolumen',
+            valueUsed: (percent: string) => `${percent} genutzt`
           }
         },
         planCard: {
@@ -4438,7 +4421,32 @@ export const deOverrides = {
     wasPrice: 'war',
     customModel: 'Eigenes Modell',
     addCustomModelAction: 'Eigenes Modell hinzufügen…',
-    customModelPlaceholder: 'Modell-ID eingeben, z. B. openai/gpt-5'
+    customModelPlaceholder: 'Modell-ID eingeben, z. B. openai/gpt-5',
+    today: 'Heute',
+    week: 'Woche',
+    month: 'Monat',
+    topTier: 'Große Modelle (monatlich)',
+    included: 'Alle Modelle unten sind enthalten',
+    pausedRenewal: 'pausiert: Verlängerung unbezahlt',
+    pausedOther: 'pausiert',
+    includedUsedUp: 'Inklusivvolumen aufgebraucht',
+    limitReached: (name: string) => `${name} erreicht`,
+    limitNames: {
+      day: 'Tageslimit',
+      month: 'Monatslimit',
+      top_tier: 'Monatslimit für große Modelle',
+      week: 'Wochenlimit'
+    },
+    limitThenCredits: 'kostenpflichtige Modelle nutzen jetzt dein Guthaben (Pay-as-you-go)',
+    limitThenCreditsLarge: 'Große Modelle nutzen jetzt dein Guthaben (Pay-as-you-go)',
+    limitThenWait: 'bis dahin nur kostenlose Modelle',
+    limitThenWaitLarge: 'Große Modelle bis dahin pausiert',
+    percentUsed: (percent: string) => `${percent} genutzt`,
+    resetsIn: (duration: string) => `Zurücksetzung in ${duration}`,
+    usageLevels: { free: 'Kostenlos', top_tier: 'Groß' },
+    sectionRecommended: 'Empfohlen',
+    sectionOther: 'Weitere Modelle',
+    largeFootnote: 'Große Modelle zählen auch zu deinem Monatslimit für große Modelle.'
   },
   modelVisibility: {
     title: 'Modelle',
@@ -4875,35 +4883,7 @@ export const deOverrides = {
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
       responseStopped: 'Antwort gestoppt',
-      errorLayers: {
-        auth: 'Authentifizierungsfehler',
-        billing: 'Keine Credits mehr',
-        disk: 'Festplatte voll',
-        endpoint: 'Benutzerdefinierter Endpunktfehler',
-        gateway: 'Gateway-Fehler',
-        generic: 'Turn fehlgeschlagen',
-        provider: 'Anbieterfehler',
-        runtime: 'Lokaler Laufzeitfehler',
-        streaming: 'Streaming-Verbindungsfehler'
-      },
-      errorLayerBodies: {
-        auth: 'Der KI-Dienst hat Ihre Anmeldung abgelehnt. Prüfen Sie die Zugangsdaten für diesen Anbieter und senden Sie Ihre Nachricht erneut.',
-        billing:
-          'Ihr Konto hat bei diesem Anbieter kein Guthaben mehr. Laden Sie Guthaben auf oder wechseln Sie den Anbieter und senden Sie erneut.',
-        disk: 'Ihre Festplatte ist voll, daher konnte Hermes dieses Gespräch nicht speichern. Geben Sie Speicherplatz frei und versuchen Sie es erneut.',
-        endpoint:
-          'Hermes erreicht Ihren eigenen Modellserver nicht. Prüfen Sie, ob er läuft, und senden Sie Ihre Nachricht erneut.',
-        gateway:
-          'Beim Starten dieser Antwort ist in Hermes ein internes Problem aufgetreten. Senden Sie Ihre Nachricht erneut; wenn es bestehen bleibt, senden Sie Diagnosedaten.',
-        generic:
-          'Beim Antworten ist etwas schiefgelaufen. Versuchen Sie es erneut oder kopieren Sie die Details, wenn es bestehen bleibt.',
-        provider:
-          'Der KI-Dienst konnte diese Anfrage nicht abschließen. Versuchen Sie es gleich erneut oder wechseln Sie den Anbieter.',
-        runtime:
-          'Beim Starten dieser Antwort ist in Hermes ein internes Problem aufgetreten. Senden Sie Ihre Nachricht erneut; wenn es bestehen bleibt, senden Sie Diagnosedaten.',
-        streaming:
-          'Die Verbindung ist abgebrochen, bevor die Antwort fertig war. Versuchen Sie es erneut, um sie noch einmal zu senden.'
-      },
+      ...deErrorLayers,
       errorCodes: {
         auth: {
           title: provider => `${provider} hat Ihre Anmeldung abgelehnt`,
@@ -5012,6 +4992,10 @@ export const deOverrides = {
           title: 'Dieser Chat gehört zu einer geplanten Aufgabe',
           body: 'Er führt nur diese Aufgabe aus, daher wurde Ihre Nachricht nicht ausgeführt. Starten Sie einen neuen Chat, um sie zu senden.'
         },
+        workspace_unavailable: {
+          title: 'Der Ordner dieses Chats fehlt',
+          body: 'Der Ordner, in dem dieser Chat arbeitet, wurde verschoben oder gelöscht, daher wurde Ihre Nachricht nicht ausgeführt. Legen Sie den Ordner neu an oder geben Sie dem Chat mit „In Projekt verschieben“ einen anderen, und versuchen Sie es dann erneut.'
+        },
         SESSION_NOT_OWNED: {
           title: 'Dieser Chat ist woanders offen',
           body: 'Dieser Chat ist gerade in einem anderen Hermes-Fenster oder Terminal geöffnet. Schließen Sie ihn dort und senden Sie Ihre Nachricht erneut, oder starten Sie hier einen neuen Chat.'
@@ -5047,6 +5031,10 @@ export const deOverrides = {
         free_tier_refused: {
           title: 'Hermes konnte das ohne Anmeldung nicht senden',
           body: 'Eine Anmeldung mit einem Nous-Konto ist kostenlos.'
+        },
+        usage_window: {
+          title: 'Enthaltene Nutzung aufgebraucht',
+          body: 'Die enthaltene Nutzung Ihres Plans ist bis zum Zurücksetzen aufgebraucht. Laden Sie in /topup Credits auf, um weiterzumachen.'
         }
       },
       errorAuthKinds: {
@@ -5063,6 +5051,12 @@ export const deOverrides = {
       errorGenericProvider: 'Der KI-Dienst',
       errorToastTitle: 'Hermes konnte die Antwort nicht fertigstellen',
       errorRetry: 'Erneut versuchen',
+      errorSwitchToModel: (model, note) => (note ? `Zu ${model} wechseln (${note})` : `Zu ${model} wechseln`),
+      errorSwitchModelFailed: 'Modell konnte nicht gewechselt werden',
+      errorUseCredits: 'Mit Guthaben weitermachen aktivieren',
+      errorUseCreditsFailed: 'Mit Guthaben weitermachen konnte nicht aktiviert werden',
+      errorAddCredits: 'Guthaben aufladen',
+      errorOpenBillingSettings: 'Abrechnungseinstellungen öffnen',
       errorLimitResets: (time: string) => `Limit wird um ${time} zurückgesetzt`,
       errorRetryAtReset: (time: string) => `Erneut versuchen, wenn das Limit zurückgesetzt wird (${time})`,
       errorRetryScheduled: (time: string, wait: string) => `Neuer Versuch um ${time} – in ${wait}`,

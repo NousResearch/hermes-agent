@@ -1490,6 +1490,13 @@ def step_up_nous_billing_scope(
         open_browser=open_browser, timeout_seconds=timeout_seconds, on_verification=on_verification)
     _save_active_provider_state("nous", auth_state)
     _mirror_nous_state_best_effort(auth_state)
+    # Every caller replays the refused billing action next: drop the billing client's 30s token cache
+    # here (not per caller) so that replay sends the new token, not the pre-approval one (403 again).
+    try:
+        from hermes_cli.nous_billing import invalidate_cached_token
+        invalidate_cached_token()
+    except Exception:
+        logger.debug("Billing token cache invalidation failed", exc_info=True)
     granted = auth_state.get("scope")
     return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()
 
@@ -1553,13 +1560,19 @@ def _pick_nous_model_after_login(
         _policy_notice = nous_policy_notice(removed=_policy_narrowed)
         if _policy_notice:
             print(_policy_notice)
+        from hermes_cli.model_picker_usage import featured_first, nous_picker_usage
+        _usage = nous_picker_usage(warm=True)
+        # Window plans: every model is usable; the plan's featured picks lead the list.
+        if _usage is not None:
+            model_ids = featured_first(model_ids, _usage.featured_model_ids)
         print(
             f"Showing {len(model_ids)} curated models — "
             "use \"Enter custom model name\" for others.")
         return _prompt_model_selection(
             model_ids, pricing=pricing, unavailable_models=unavailable_models, portal_url=_portal,
             unavailable_message=unavailable_message, confirm_provider="nous",
-            confirm_base_url=inference_base_url, confirm_api_key=runtime_key)
+            confirm_base_url=inference_base_url, confirm_api_key=runtime_key,
+            usage=_usage)
     if unavailable_models:
         _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         print("No free models currently available.")
@@ -1663,6 +1676,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             "nous", inference_base_url, default_model=selected_model)
         _save_model_choice(selected_model)
         print(f"Default model set to: {selected_model}")
+        from hermes_cli.model_picker_usage import large_model_notice
+        if _notice := large_model_notice(selected_model, "nous"):
+            print(f"  ⚠ {_notice}")  # window plans only (a Large mark exists only on their catalog)
         print(f"  Config updated: {config_path} (model.provider=nous)")
     except KeyboardInterrupt:
         print("\nLogin cancelled.")

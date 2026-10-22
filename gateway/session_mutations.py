@@ -256,8 +256,12 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
         else:
             # The receipt transaction is synchronous SQLite: run it off the event loop so a large
             # state.db or a contended writer lock never stalls other clients (main 1769024ca3b).
-            result = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields,
-                                             _prepared=prepared, _authorize_write=authorize_write)
+            commit = partial(mutate_runtime_session, authority.db, **fields,
+                             _prepared=prepared, _authorize_write=authorize_write)
+            if operation == 'delete':
+                from gateway.session_onboarding import ending_run_on_delete
+                commit = partial(ending_run_on_delete, authority.db, ref.session_id, commit)
+            result = await asyncio.to_thread(commit)
         try:
             await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
         finally:

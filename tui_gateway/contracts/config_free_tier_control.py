@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OkResult, OpenModel, ProfileParams, SessionLiveInfo
+from .common import OkResult, OpenModel, PlanUsage, ProfileParams, SessionLiveInfo
 from .registry import method
 
 # ── config.get ────────────────────────────────────────────────────────────────────────────────
@@ -552,6 +552,9 @@ class ModelOptionProvider(OpenModel):
     free_tier_pending: bool | None = None
     free_tier_row: bool | None = None
     unavailable_models: list[str] | None = None
+    plan_usage: PlanUsage | None = None
+    # Usage-window plans only: the gateway's per-plan word per model (free / low / medium / top_tier).
+    usage_levels: dict[str, str] | None = None
     limit: ProviderLimit | None = None
     usage: ProviderUsage | None = None
 

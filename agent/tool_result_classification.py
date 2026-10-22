@@ -60,6 +60,28 @@ def has_failure_marker(result: str) -> bool:
 # ``timeout`` is deliberately absent: process(wait) returns it for a still-running job.
 _FAILED_STATUSES = frozenset({"failed", "error"})
 
+_RATE_LIMIT_RE = re.compile(r"rate[\s_-]?limit|too many requests|\b429\b", re.IGNORECASE)
+_RETRY_AFTER_KEYS = ("retry_after", "retryAfter", "retry_after_seconds", "retry_after_ms")
+
+
+def is_rate_limited(result: Any) -> bool:
+    """True when a FAILED result says the backend throttled the call (a ``retry_after`` field, a 429
+    status, or rate-limit wording in its error). Only meaningful for results already judged failed:
+    a successful page can mention rate limits in its content."""
+    data = result
+    if isinstance(result, str):
+        try:
+            data = json.loads(result.strip())
+        except ValueError:
+            return bool(_RATE_LIMIT_RE.search(result[:500]))
+    if not isinstance(data, dict):
+        return False
+    if any(data.get(k) for k in _RETRY_AFTER_KEYS) or 429 in (data.get("status"), data.get("status_code"), data.get("code")):
+        return True
+    error = data.get("error")
+    text = error.get("message") or error.get("code") if isinstance(error, dict) else error
+    return isinstance(text, str) and bool(_RATE_LIMIT_RE.search(text))
+
 
 def shape_failure_error(data: dict) -> str | None:
     """Error text when a JSON-object result failed by SHAPE rather than by its top-level

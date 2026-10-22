@@ -39,6 +39,11 @@ from hermes_cli.memory_provider_migration import (
 
 logger = logging.getLogger(__name__)
 
+# ``terminal.*`` keys ``hermes config set`` also wrote to ``.env`` while core shipped their backend. The
+# plugin still reads that copy as a fallback, so ``hermes config unset`` keeps removing it: otherwise the
+# old value returns instead of the default.
+RETIRED_TERMINAL_ENV_COPIES = {"terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE"}
+
 
 def _read_config(home: Path) -> dict:
     import utils

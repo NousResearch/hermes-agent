@@ -135,3 +135,16 @@ def test_without_the_plugin_the_backend_error_names_the_install_command(tmp_path
     with pytest.raises(ValueError, match="hermes plugins install singularity"):
         backends._create_environment("singularity", image="", cwd="/root", timeout=10)
     assert lcm.terminal_backend_install_hint("acmebox") == ""
+
+
+def test_config_unset_removes_the_env_copy_core_used_to_write(tmp_path, monkeypatch):
+    # While core shipped the backend, `hermes config set terminal.singularity_image` also wrote
+    # TERMINAL_SINGULARITY_IMAGE to .env, and the plugin still falls back to it: unset must remove both,
+    # or the old image comes back instead of the default.
+    home = _home(tmp_path, env="TERMINAL_SINGULARITY_IMAGE=docker://old:1\n",
+                 config="terminal:\n  backend: singularity\n  singularity_image: docker://old:1\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_cli.config import unset_config_value
+    unset_config_value("terminal.singularity_image")
+    assert "singularity_image" not in (home / "config.yaml").read_text(encoding="utf-8")
+    assert "TERMINAL_SINGULARITY_IMAGE" not in (home / ".env").read_text(encoding="utf-8")

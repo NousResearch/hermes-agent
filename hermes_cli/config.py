@@ -3602,8 +3602,7 @@ def unset_config_value(key: str):
 
     if _is_env_config_key(key):
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so
-        # the provider is fully removed instead of left resurrectable.
-        # See #51071.
+        # the provider is fully removed instead of left resurrectable (#51071).
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         try:
@@ -3639,7 +3638,8 @@ def unset_config_value(key: str):
     if legacy_key:
         removed = _unset_nested(user_config, legacy_key) or removed
 
-    env_var = terminal_config_env_var_for_key(key)
+    from hermes_cli.left_core_migration import RETIRED_TERMINAL_ENV_COPIES
+    env_var = terminal_config_env_var_for_key(key) or RETIRED_TERMINAL_ENV_COPIES.get(key)
     if env_var and key != "terminal.cwd":
         removed = remove_env_value(env_var) or removed
 

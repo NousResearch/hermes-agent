@@ -377,7 +377,11 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     )
 
     assert ctx.messages[-1] is staged
-    assert ctx.messages[-1]["content"] == "[MODEL NOTE]\n\nclean prompt"
+    # The noted bytes are API-call local: they ride the api_content sidecar while the durable
+    # content keeps the clean staged text, so a compaction copy cannot persist the note as a
+    # second user turn.
+    assert ctx.messages[-1]["content"] == "clean prompt"
+    assert ctx.messages[-1]["api_content"] == "[MODEL NOTE]\n\nclean prompt"
     assert ctx.messages[-1]["_db_persisted"] is True
     assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert agent._pending_cli_user_message is None

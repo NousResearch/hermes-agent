@@ -496,7 +496,10 @@ class SessionMaintenanceMixin:
         scheduler). See #54189.
         When *sessions_dir* is provided, on-disk transcript files (``.json`` / ``.jsonl`` /
         ``request_dump_*``) for pruned sessions are removed as part of the same sweep (issue #3015).
-        Messaging and UI sources are never touched here. See #54189.
+        Pinned sessions are already excluded by the bulk-prune default; archived sessions are
+        excluded here because this unattended path must preserve both explicit keep boundaries.
+        Explicit manual prune can still opt into either set. Messaging and UI sources are never
+        touched here. See #54189.
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
@@ -526,7 +529,8 @@ class SessionMaintenanceMixin:
             # once at entry. No-op when the watchdog is not armed; never raises.
             report_startup_progress(900.0, phase="state_db_auto_prune")
             result["pruned"] = pruned = self.prune_sessions(
-                older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+                older_than_days=retention_days, sessions_dir=sessions_dir,
+                exclude_active_write_guards=True, archived=False)
             report_startup_progress(900.0, phase="state_db_auto_sweep")
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,

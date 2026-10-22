@@ -1,11 +1,11 @@
-"""A named profile whose ``profiles/<name>`` folder is a link (a symlink, or a Windows junction) chats under its
-own name. Regression for #142944.
+"""A named profile whose ``profiles/<name>`` folder is a link (a symlink, or a Windows junction) chats and is
+listed under its own name. Regression for #142944.
 
 The multiplexer serves a linked profile at its resolved home, outside ``profiles/``. That path no longer read as
-``profiles/<name>``, so the gateway named the home ``default``, and the session snapshot Desktop routes by sent
-every prompt to the default profile's authority (``permission_denied``). Driven through Desktop's host-scoped
-socket against a real in-process multiplexer (``test_hosted_group_members._gateway``); only the turn executor is
-stubbed.
+``profiles/<name>``, so the gateway named the home ``default``: the session snapshot Desktop routes by sent every
+prompt to the default profile's authority (``permission_denied``), and the Bots roster listed the profile as a
+second ``default``. Driven through Desktop's host-scoped socket against a real in-process multiplexer
+(``test_hosted_group_members._gateway``); only the turn executor is stubbed.
 """
 from contextlib import contextmanager
 
@@ -47,3 +47,9 @@ def test_a_linked_profile_chats_under_the_name_it_is_served_under(tmp_path, monk
         assert submitted.get('result', {}).get('status') == 'queued', submitted
         wait_until(lambda: ran, what="the linked profile's turn ran")
         assert ran == [str(homes['linked'].resolve())]
+
+
+def test_the_bots_roster_lists_a_linked_profile_once_under_its_name(tmp_path, monkeypatch):
+    with _desktop(tmp_path, monkeypatch) as (request, _homes):
+        roster = request('default', 'profiles.list', include_sessions=False)
+        assert sorted(row['name'] for row in roster['result']['profiles']) == ['alpha', 'default', 'linked']

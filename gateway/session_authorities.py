@@ -155,28 +155,29 @@ def local_bots(runner) -> list[LocalBot]:
     """The local bots this gateway serves, one per built authority, by the name the registry
     reserved each under (the launch profile keeps ``served_profile_name``). The one answer to
     "which bots are local here" for both the Bots roster (``profiles.list``) and group seating
-    (``session_hosted_members``). A name two homes answer to, or one that is not its home's own
-    name (a linked ``profiles/<name>`` resolves outside ``profiles/`` and reads as ``default``), is
-    flagged rather than bound: a client routes, and the member transport names, a bot by name."""
+    (``session_hosted_members``). A name two homes answer to, or a served secondary whose home is not
+    ``profiles/<that name>`` (a linked ``profiles/<name>`` is served at its target, which groups do not
+    support yet), is flagged rather than bound: a client routes, and the member transport names, a bot
+    by name."""
     from collections import Counter
     registry = getattr(runner, 'session_authorities', None)
     if registry is None:
         authority = getattr(runner, 'session_authority', None)
-        pairs = [(served_profile_name(authority.profile_id), authority)] if authority is not None else []
+        pairs = [(None, authority)] if authority is not None else []
     else:
         # A snapshot: hosted-room coordinator threads read the served set while the loop hot-serves.
-        pairs = [(registry.profile_name(a) or served_profile_name(a.profile_id), a)
-                 for a in list(registry._by_key.values()) if a is not None]
-    counts = Counter(name for name, _ in pairs)
+        pairs = [(registry.profile_name(a), a) for a in list(registry._by_key.values()) if a is not None]
+    named = [(reserved or served_profile_name(a.profile_id), reserved, a) for reserved, a in pairs]
+    counts = Counter(name for name, _, _ in named)
     bots = []
-    for name, authority in pairs:
+    for name, reserved, authority in named:
+        home = Path(authority.profile_id)
         problem = None
         if counts[name] > 1:
             problem = 'two served homes answer to that name'
-        elif name != served_profile_name(authority.profile_id):
+        elif reserved is not None and (home.parent.name, home.name) != ('profiles', reserved):
             problem = 'a linked profile home is not supported yet'
-        bots.append(LocalBot(name, Path(authority.profile_id), authority, problem,
-                             bool(getattr(authority, 'retiring', False))))
+        bots.append(LocalBot(name, home, authority, problem, bool(getattr(authority, 'retiring', False))))
     return bots
 
 

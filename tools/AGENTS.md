@@ -142,7 +142,8 @@ delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_pr
 `delegation.backends.<name>`) that answers each task's route (`tools/delegate_tool_routes.py`: model/provider fields
 resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →
 the child is built, leases and converses inside that profile's scope) and may add enum-checked per-task schema params; it
-never owns lifecycle. Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background
+never owns lifecycle. Fails closed: an unusable backend is a tool error naming it (never a silent `default`), an
+unroutable task is refused alone (`TaskRoute.error`). Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on

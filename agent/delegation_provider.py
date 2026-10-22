@@ -74,7 +74,8 @@ class DelegationProvider(ProviderBase):
         return own if isinstance(own, Mapping) else {}
 
     def is_available(self) -> bool:
-        """Whether this provider can run here. MUST NOT make network calls; False -> ``default``."""
+        """Whether this provider can run here. MUST NOT make network calls. False fails delegation closed: a
+        ``delegate_task`` call under this backend is a tool error naming it, never a run on another route."""
         return True
 
     def task_parameters(self, config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:

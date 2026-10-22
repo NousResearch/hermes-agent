@@ -287,8 +287,8 @@ def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_pro
     monkeypatch.setattr(safe_worker_policy, "_policy", safe_worker_policy._SafeWorkerPolicy(
         os.getpid(), False, False, json.dumps(frozen)))
 
-    routes, error = _resolve_coder_task()
-    assert routes == [] and "managed worker" in (error or "")
+    (route,), error = _resolve_coder_task()
+    assert error is None and "managed worker" in (route.error or "")
     with pytest.raises(DelegationRouteError):
         _route_to_task_route({"profile": "coder"}, _parent(), {})
 
@@ -303,9 +303,9 @@ def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profi
     monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "hermes-test-missing-acp-binary")
     monkeypatch.setenv("COPILOT_ACP_BASE_URL", "acp+tcp://127.0.0.1:9")
 
-    routes, error = _resolve_coder_task()
-    assert routes == []
-    assert "hermes-test-missing-acp-binary" in (error or "") and "coder" in error
+    (route,), error = _resolve_coder_task()
+    assert error is None and route.creds == {}
+    assert "hermes-test-missing-acp-binary" in (route.error or "") and "coder" in route.error
 
 
 def test_one_profile_under_two_labels_resolves_once_and_keeps_each_label(two_profiles):

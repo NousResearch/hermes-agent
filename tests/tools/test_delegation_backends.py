@@ -35,7 +35,8 @@ class Options(DelegationProvider):
         for o in self.settings(config).get("options") or []:
             if o["name"] == task.get("option"):
                 return {"base_url": o["base_url"], "api_key": "k-" + o["name"], "model": o["model"],
-                        "reasoning_effort": o.get("reasoning_effort"), "label": o["name"]}
+                        "reasoning_effort": o.get("reasoning_effort"), "label": o["name"],
+                        "fallback_providers": o.get("fallback_providers")}
         return dict(config)
 
 def register(ctx):
@@ -93,8 +94,8 @@ def recorded(monkeypatch):
     return built
 
 
-def _parent():
-    return types.SimpleNamespace(session_id="root", model="parent-model", provider="openrouter",
+def _parent(session_id="root"):
+    return types.SimpleNamespace(session_id=session_id, model="parent-model", provider="openrouter",
                                  tool_progress_callback=None, _delegate_spinner=None, request_overrides={},
                                  _safe_print=lambda line: None)
 
@@ -131,36 +132,73 @@ def test_selected_plugin_backend_extends_schema_and_routes_each_task(tmp_path, m
         manager.unload()
 
 
-def test_model_supplied_parameters_are_enforced_before_any_child_is_built(tmp_path, monkeypatch, recorded):
+def test_an_unroutable_task_is_refused_alone_and_its_siblings_run(tmp_path, monkeypatch, recorded):
+    """Fail closed per task: a bad parameter or a backend refusal refuses that task only, its result entry says why
+    and which backend refused it; the call is a tool error only when no task can run."""
     _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "backends": {"probe-options": {"options": OPTIONS}}})
     try:
         from tools.delegate_tool import delegate_task
 
-        bad = json.loads(delegate_task(tasks=[{"goal": "a task with a typo in it", "option": "fsat"}],
+        out = json.loads(delegate_task(tasks=[
+            {"goal": "a task with a typo in it", "option": "fsat"},
+            {"goal": "summarize the quick thing", "option": "fast"},
+            {"goal": "a task the backend refuses", "option": "refused"},
+        ], parent_agent=_parent()))
+        typo, fast, refused = out["results"]
+        assert [r["task_index"] for r in out["results"]] == [0, 1, 2]
+        assert typo["status"] == "error" and "must be one of fast, deep, refused" in typo["error"]
+        assert refused["status"] == "error" and "reserved for humans" in refused["error"]
+        assert typo["route"] == {"backend": "probe-options", "refused": True}
+        assert fast["status"] == "completed" and [b["model"] for b in recorded] == ["fast-model"]
+
+        bad = json.loads(delegate_task(tasks=[{"goal": "only a refused task", "option": "refused"}],
                                        parent_agent=_parent()))
-        assert "must be one of fast, deep, refused" in bad["error"] and not recorded
-        refused = json.loads(delegate_task(tasks=[{"goal": "a task the backend refuses", "option": "refused"}],
-                                           parent_agent=_parent()))
-        assert "reserved for humans" in refused["error"] and not recorded
+        assert "reserved for humans" in bad["error"] and len(recorded) == 1
     finally:
         manager.unload()
 
 
-def test_default_and_unavailable_backends_keep_todays_schema_and_route(tmp_path, monkeypatch, recorded):
-    """Unset, ``default`` and a backend nobody registered all mean today's behaviour."""
+def test_a_missing_backend_fails_closed_and_default_keeps_todays_route(tmp_path, monkeypatch, recorded):
+    """Unset and ``default`` are today's behaviour; a backend nobody provides is a tool error naming it and the fix,
+    never a quiet run on the default route."""
     from tools.delegate_tool import delegate_task
 
-    definitions = []
+    pinned = {"model": "pinned-model", "base_url": "http://127.0.0.1:9/v1", "api_key": "k"}
+    definitions, outcomes = [], []
     for delegation in ({}, {"backend": "default"}, {"backend": "not-installed"}):
-        delegation = {**delegation, "model": "pinned-model", "base_url": "http://127.0.0.1:9/v1", "api_key": "k"}
-        _, manager = _home(tmp_path / str(len(definitions)), monkeypatch, delegation, plugins=())
+        _, manager = _home(tmp_path / str(len(definitions)), monkeypatch, {**delegation, **pinned}, plugins=())
         try:
             definitions.append(json.dumps(_definition()))
-            delegate_task(tasks=[{"goal": "one plain delegated task"}], parent_agent=_parent())
+            outcomes.append(json.loads(delegate_task(tasks=[{"goal": "one plain delegated task"}],
+                                                     parent_agent=_parent())))
         finally:
             manager.unload()
     assert len(set(definitions)) == 1 and '"option"' not in definitions[0]
-    assert [(b["model"], b["override_base_url"]) for b in recorded] == [("pinned-model", "http://127.0.0.1:9/v1")] * 3
+    assert [(b["model"], b["override_base_url"]) for b in recorded] == [("pinned-model", "http://127.0.0.1:9/v1")] * 2
+    error = outcomes[2]["error"]
+    assert "'not-installed' is not installed" in error and "hermes config set delegation.backend default" in error
+
+
+def test_a_backend_route_without_its_own_chain_inherits_delegation_fallback_providers(tmp_path, monkeypatch):
+    from tools.delegate_tool_config import _resolve_child_fallback_chain
+    from tools.delegate_tool_routes import resolve_task_routes
+
+    chain = [{"provider": "openrouter", "model": "backup-model"}]
+    options = [{**OPTIONS[0]}, {**OPTIONS[1], "fallback_providers": []}]
+    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "fallback_providers": chain,
+                                               "backends": {"probe-options": {"options": options}}})
+    try:
+        from tools.delegate_tool_config import _load_config
+
+        routes, err = resolve_task_routes([{"goal": "inherits", "option": "fast"}, {"goal": "own empty chain",
+                                                                                     "option": "deep"}],
+                                          _load_config(), _parent())
+        assert err is None
+        inherited, disabled = (_resolve_child_fallback_chain(_parent(), r.routing_cfg, pinned=True) for r in routes)
+        assert [(e["provider"], e["model"]) for e in inherited] == [("openrouter", "backup-model")]
+        assert disabled is None
+    finally:
+        manager.unload()
 
 
 def test_plugin_parameters_never_redefine_core_or_route_fields(tmp_path, monkeypatch):

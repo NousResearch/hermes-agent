@@ -1,5 +1,5 @@
 """Route fields a delegation backend returns: ``service_tier`` is checked like ``/fast`` and survives child
-construction, an unknown ``reasoning_effort`` is a tool error, and a labelled route's result reports what the
+construction, an unknown ``reasoning_effort`` refuses that task, and a backend-routed result reports what the
 child actually ran on. Real ``delegate_task``, real credential resolution and tier gates; only the child's
 construction and run are stubbed where a test reads what they were handed.
 
@@ -62,7 +62,8 @@ def _spawn(routes, *, cfg=None, parent=None, construct=_construct, provider=None
         patch("tools.delegate_tool_routes._active_provider", return_value=provider or _Backend(routes)),
         patch("run_agent.AIAgent", side_effect=construct) as agent,
         patch("tools.delegate_tool._run_batch",
-              side_effect=lambda batch, background: batches.append(batch) or '{"status": "built"}'),
+              side_effect=lambda batch, background: batches.append(batch) or json.dumps(
+                  {"status": "built", **({"refused": batch.refused} if batch.refused else {})})),
     ):
         from tools.delegate_tool import delegate_task
         result = json.loads(delegate_task(tasks=[{"goal": f"task number {i}"} for i in range(len(routes))],
@@ -83,9 +84,10 @@ def test_route_tier_reaches_the_child_and_its_sibling_keeps_the_default():
     ({**CODEX, "service_tier": "turbo"}, "turbo"),
     ({**CODEX, "service_tier": "auto"}, "auto"),  # bounded windows are per user turn, meaningless for a child
 ])
-def test_a_tier_the_route_does_not_offer_fails_before_any_child_is_built(route, needle):
+def test_a_tier_the_route_does_not_offer_refuses_that_task_and_its_sibling_runs(route, needle):
     result, built, _ = _spawn([route, None])
-    assert needle in result["error"] and built == []
+    (refused,) = result["refused"]
+    assert refused["task_index"] == 0 and needle in refused["error"] and len(built) == 1
 
 
 @pytest.mark.parametrize("account_offers, expected", [(False, None), (True, "ultrafast"), (None, "ultrafast")])
@@ -136,9 +138,10 @@ def test_default_backend_never_reads_a_tier_from_the_delegation_section():
     assert child.get("service_tier") is None and "service_tier" not in child["request_overrides"]
 
 
-def test_unknown_route_reasoning_effort_is_a_tool_error_not_the_parents_level():
+def test_unknown_route_reasoning_effort_refuses_the_task_never_the_parents_level():
     result, built, _ = _spawn([{**LOCAL, "reasoning_effort": "hgih"}, None])
-    assert "hgih" in result["error"] and "xhigh" in result["error"] and built == []
+    (refused,) = result["refused"]
+    assert "hgih" in refused["error"] and "xhigh" in refused["error"] and len(built) == 1
 
 
 def test_the_delegation_sections_own_effort_keeps_its_warn_and_inherit_rule():
@@ -154,19 +157,25 @@ def test_labelled_route_result_reports_what_the_child_ran_on():
                                   {**LOCAL, "reasoning_effort": "none", "label": "local"}])
     entry = _build_result_entry(deep, {"final_response": "ok", "completed": True}, 0, 1.0,
                                 _SchemaOutcome(None, None, [], 0))
-    assert entry["route"] == {"label": "deep", "provider": "openai-codex", "model": "gpt-6-astra",
-                              "reasoning_effort": "high", "service_tier": "fast"}
+    assert entry["route"] == {"backend": "route-fields", "label": "deep", "provider": "openai-codex",
+                              "model": "gpt-6-astra", "reasoning_effort": "high", "service_tier": "fast"}
     assert _fabricated_entry(1, "error", "boom", local)["route"] == {
-        "label": "local", "provider": "custom", "model": "qwen3-local", "reasoning_effort": "none",
-        "service_tier": "normal"}
+        "backend": "route-fields", "label": "local", "provider": "custom", "model": "qwen3-local",
+        "reasoning_effort": "none", "service_tier": "normal"}
 
 
-def test_unlabelled_route_result_keeps_its_shape():
-    """The report sits next to a route's label; a route without one (the default strategy, a backend's fallback
-    to the delegation section) leaves the result entry exactly as before."""
+def test_every_backend_routed_result_names_its_backend_and_the_default_keeps_its_shape():
+    """An unlabelled backend route still reports its backend and what ran; the default backend's children leave the
+    result entry exactly as before."""
+    from agent.delegation_registry import get_active_provider
     from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
 
-    _, _, (child,) = _spawn([{**LOCAL, "reasoning_effort": "high"}])
-    entry = _build_result_entry(child, {"final_response": "ok", "completed": True}, 0, 1.0,
-                                _SchemaOutcome(None, None, [], 0))
-    assert "route" not in entry
+    def entry_of(child):
+        return _build_result_entry(child, {"final_response": "ok", "completed": True}, 0, 1.0,
+                                   _SchemaOutcome(None, None, [], 0))
+
+    _, _, (routed,) = _spawn([{**LOCAL, "reasoning_effort": "high"}])
+    assert entry_of(routed)["route"] == {"backend": "route-fields", "provider": "custom", "model": "qwen3-local",
+                                         "reasoning_effort": "high", "service_tier": "normal"}
+    _, _, (plain,) = _spawn([None], cfg=LOCAL, provider=get_active_provider({}))
+    assert "route" not in entry_of(plain)

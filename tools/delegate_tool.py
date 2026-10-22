@@ -458,6 +458,8 @@ def _build_children(
     children = []
     for i, t in enumerate(task_list):
         route = routes[i]
+        if route.error:
+            continue  # refused by its backend: no child; its result entry is the refusal
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -490,8 +492,8 @@ def _build_children(
         if _writer is not None:
             child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
             child._live_transcript_path = str(_writer.path)
-        if route.label:
-            child._delegate_route = {"label": route.label}
+        if route.report() is not None:
+            child._delegate_route = route.report()
         if live_deleg_id:
             child._delegation_id = live_deleg_id
             _ident_ref = getattr(child, "_progress_identity_ref", None)
@@ -599,10 +601,16 @@ def delegate_task(
         routes, err = _routes_for(task_list, cfg, credentials_cfg, parent_agent)
     if err:
         return tool_error(err)
+    # Fail closed per task: a task its backend cannot route is refused alone (its entry carries the error); the call
+    # is a tool error only when no task can run.
+    runnable = [r for r in routes if not r.error]
+    if not runnable:
+        return tool_error(" ".join(dict.fromkeys(r.error for r in routes)))
+    refused = [r.refused_entry(i) for i, r in enumerate(routes) if r.error]
     # Batch-level model/provider labels (transcript headers, completion block): blank when tasks took different
     # routes, so each child reports what it actually runs on.
-    creds = routes[0].creds if all(r.creds == routes[0].creds for r in routes) else dict.fromkeys(routes[0].creds)
-    err = _oneshot_spawn_budget(parent_agent, len(task_list))
+    creds = runnable[0].creds if all(r.creds == runnable[0].creds for r in runnable) else dict.fromkeys(runnable[0].creds)
+    err = _oneshot_spawn_budget(parent_agent, len(runnable))
     if err:
         return tool_error(err)
 
@@ -626,6 +634,11 @@ def delegate_task(
         task_list, context, model=creds.get("model"), provider=creds.get("provider"),
         home=_live_home,
     )
+    for entry in refused:  # done before anything runs: their transcripts end with the refusal
+        _writer = live_writers[entry["task_index"]] if entry["task_index"] < len(live_writers) else None
+        if _writer is not None:
+            with _quiet("Live transcript finalize failed", exc_info=True):
+                _writer.finalize(entry)
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
@@ -638,7 +651,7 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
-        live_home=_live_home,
+        live_home=_live_home, refused=refused,
     )
     return _run_batch(batch, background)
 

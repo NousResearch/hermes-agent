@@ -29,13 +29,27 @@ _PARAM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 @dataclass
 class TaskRoute:
     """How core builds one child: the credential bundle (with a route's speed tier applied), the config block
-    owning its fallback policy, an optional reasoning override, and the profile home it runs as (None = this one)."""
+    owning its fallback policy, an optional reasoning override, and the profile home it runs as (None = this one).
+    ``error`` set = the backend could not route this task: it is refused alone and its siblings still run."""
 
     creds: dict[str, Any]
     routing_cfg: dict[str, Any]
     reasoning_effort: Any = None
     profile_home: Optional[Path] = None
     label: Optional[str] = None
+    backend: str = "default"
+    error: Optional[str] = None
+
+    def report(self) -> Optional[dict[str, Any]]:
+        """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
+        if self.backend == "default" and not self.label:
+            return None
+        return {"backend": self.backend, **({"label": self.label} if self.label else {})}
+
+    def refused_entry(self, index: int) -> dict[str, Any]:
+        """Result entry for a task this route refused: no child was built for it."""
+        return {"task_index": index, "status": "error", "summary": None, "error": self.error, "api_calls": 0,
+                "duration_seconds": 0, "route": {**(self.report() or {"backend": self.backend}), "refused": True}}
 
 
 def _active_provider(config: Mapping[str, Any]) -> DelegationProvider:
@@ -68,7 +82,10 @@ def schema_extension(config: Mapping[str, Any]) -> tuple[dict[str, dict[str, Any
     """``(extra task properties, description addendum)`` for the active provider; empty for the
     built-in default so its schema stays byte-identical."""
     from agent.delegation_registry import DEFAULT_BACKEND
-    provider = _active_provider(config)
+    try:
+        provider = _active_provider(config)
+    except DelegationRouteError:
+        return {}, ""  # fails closed at spawn time, with the fix; the schema just stays the base one
     if provider.name == DEFAULT_BACKEND:
         return {}, ""
     try:
@@ -207,20 +224,34 @@ def _profile_route(home: Path) -> TaskRoute:
                      ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home)
 
 
-def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute]) -> TaskRoute:
+def _with_inherited_fallback(route: dict[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    """A route without a fallback chain of its own takes ``delegation.fallback_providers`` (an explicit ``[]`` on the
+    route still disables fallback). A profile route keeps its profile's own chain."""
+    if route.get("profile") or route.get("fallback_providers") is not None:
+        return route
+    inherited = config.get("fallback_providers")
+    return route if inherited is None else {**route, "fallback_providers": inherited}
+
+
+def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> TaskRoute:
+    if route.get("profile"):
+        return replace(_profile_route(_profile_home(route["profile"])), backend=backend)
+    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
+    creds = _resolve_delegation_credentials(route, parent_agent)
+    if route.get("service_tier") not in (None, ""):
+        from tools.delegate_tool_tuning import task_service_tier
+        creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
+    return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend)
+
+
+def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute],
+                         config: Optional[Mapping[str, Any]] = None, backend: str = "default") -> TaskRoute:
     label = route.get("label") if isinstance(route.get("label"), str) else None
+    route = _with_inherited_fallback(route, config or {})
     # The label is display-only: two labels on one route (or one profile) resolve once.
     key = json.dumps({k: v for k, v in route.items() if k != "label"}, sort_keys=True, default=str)
     if key not in cache:
-        if route.get("profile"):
-            cache[key] = _profile_route(_profile_home(route["profile"]))
-        else:
-            from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
-            creds = _resolve_delegation_credentials(route, parent_agent)
-            if route.get("service_tier") not in (None, ""):
-                from tools.delegate_tool_tuning import task_service_tier
-                creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
-            cache[key] = TaskRoute(creds, route, route.get("reasoning_effort"), None, None)
+        cache[key] = _resolve_route(route, parent_agent, backend)
     return replace(cache[key], label=label)
 
 
@@ -256,20 +287,23 @@ def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]]
 
 def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, Any], parent_agent: Any,
                         ) -> tuple[list[TaskRoute], Optional[str]]:
-    """One :class:`TaskRoute` per task from the active provider, or ``([], error)``. Identical
-    routes resolve credentials once per call (the default provider resolves exactly once, as
-    before the seam)."""
-    provider = _active_provider(config)
+    """One :class:`TaskRoute` per task from the configured backend (``delegation.backend``), or ``([], error)`` when that backend cannot run (fails closed, never another
+    backend). A task the backend cannot route gets a route with ``error`` set; its siblings are unaffected.
+    Identical routes resolve credentials once per call (the default backend resolves exactly once)."""
+    try:
+        provider = _active_provider(config)
+    except DelegationRouteError as exc:
+        return [], str(exc)
     declared = _declared_parameters(provider, config)
     cache: dict[str, TaskRoute] = {}
     routes: list[TaskRoute] = []
-    try:
-        for i, task in enumerate(task_list):
+    for i, task in enumerate(task_list):
+        try:
             route = _route_one(provider, declared, i, task, config)
             _check_backend_effort(i, route, config)
-            routes.append(_route_to_task_route(route, parent_agent, cache))
-    except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
-        return [], str(exc)
+            routes.append(_route_to_task_route(route, parent_agent, cache, config, provider.name))
+        except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
+            routes.append(TaskRoute({}, {}, backend=provider.name, error=str(exc)))
     return routes, None
 
 

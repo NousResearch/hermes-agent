@@ -17,8 +17,9 @@ validation and progress. A provider only answers "which route does this task tak
 The active provider is `delegation.backend` in `config.yaml`; a provider's own settings live under
 `delegation.backends.<backend name>`. The built-in `default` strategy is today's behaviour: every child follows the `delegation` section (`delegation.provider`,
 `delegation.model`, `delegation.base_url`, ...), or inherits the parent's route when those are empty.
-A configured backend that is not installed or reports unavailable falls back to `default` with one
-warning, and its schema parameters disappear with it.
+A configured backend that is not installed or reports unavailable **fails closed**: `delegate_task`
+returns a tool error naming the backend and the fix, no child starts, and its schema parameters are
+absent.
 
 ## Skeleton
 
@@ -122,16 +123,30 @@ A route is a dict with any of:
 
 Unknown keys are dropped. On a profile route, `service_tier` and `reasoning_effort` are ignored too.
 
-Every result entry of a task whose route has a `label` carries `route`: the label plus what the child
-actually ran on, read off the built child:
+A non-profile route without `fallback_providers` of its own gets `delegation.fallback_providers`; return
+`"fallback_providers": []` to disable fallback for a route. A profile route keeps its profile's chain.
+
+### Refusals are per task
+
+A `DelegationRouteError` from `route_task`, a value outside your parameter's `enum`, an unknown
+`reasoning_effort`, a tier the route does not offer, or a credential the route cannot resolve refuses
+**that task only**: no child is built for it, its result entry is
+`{"status": "error", "error": "<your message>", "route": {"backend": "<name>", "refused": true}}`, and
+the other tasks run. A background call lists refused entries under `refused` in its dispatch payload.
+The call is a tool error only when every task is refused.
+
+### Result `route`
+
+Every result entry of a task routed by a non-default backend carries `route`: the backend, the label
+(when set), and what the child actually ran on, read off the child when its result is assembled:
 
 ```json
-"route": {"label": "deep", "provider": "openai-codex", "model": "gpt-6-astra",
+"route": {"backend": "model_map", "label": "deep", "provider": "openai-codex", "model": "gpt-6-astra",
           "reasoning_effort": "high", "service_tier": "fast"}
 ```
 
-`reasoning_effort` is `null` when the provider's default applies. A route without a label (the
-`default` strategy, your fallback to `dict(config)`) leaves the result entry unchanged.
+`reasoning_effort` is `null` when the provider's default applies; `fallback_activated: true` is added
+when a fallback provider took over. The `default` backend's children leave the result entry unchanged.
 
 ## Prompt caching
 

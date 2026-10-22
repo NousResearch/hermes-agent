@@ -66,8 +66,8 @@ def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_
         routes, err = resolve_task_routes([{"goal": "route me through the host", "option": "a"}], config, None)
         assert err is None
         assert (routes[0].creds["model"], routes[0].label) == (f"model-a-{host_pid}", "a")
-        _, err = resolve_task_routes([{"goal": "refused by the hosted plugin", "option": "b"}], config, None)
-        assert "b is closed" in err
+        refused, err = resolve_task_routes([{"goal": "refused by the hosted plugin", "option": "b"}], config, None)
+        assert err is None and "b is closed" in refused[0].error
         assert json.dumps(params) == json.dumps(schema_extension(config)[0])
     finally:
         manager.unload()

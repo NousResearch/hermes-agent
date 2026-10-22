@@ -2,12 +2,13 @@
 
 Populated by plugins via :meth:`PluginContext.register_delegation_provider`; ``delegate_task``
 asks :func:`get_active_provider` which strategy turns each task into a child run. Selection is
-``delegation.backend`` in config.yaml. Unset (or ``default``) is the built-in strategy, today's
-behaviour: every child follows the ``delegation`` section (``delegation.provider`` /
-``delegation.model`` / ``delegation.base_url`` ..., else the parent's route). A configured backend
-that is not registered or reports unavailable falls back to ``default`` with one warning, so a
-disabled plugin never takes delegation down; its schema parameters are absent too, since the
-schema is built from the same resolution.
+``delegation.backend`` in config.yaml.
+Unset (or ``default``) is the built-in strategy, today's behaviour: every child follows the
+``delegation`` section (``delegation.provider`` / ``delegation.model`` / ``delegation.base_url`` ...,
+else the parent's route). A configured backend that is not registered or reports unavailable fails
+closed: ``delegate_task`` returns a tool error naming the backend and the fix, and never quietly runs
+the children on another route. Its schema parameters are absent, since the schema is built from the
+same resolution.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping, Optional
 
-from agent.delegation_provider import DelegationProvider
+from agent.delegation_provider import DelegationProvider, DelegationRouteError
 from agent.provider_registry import ProviderRegistry, is_available_safe, lower_key
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,6 @@ _registry: ProviderRegistry[DelegationProvider] = ProviderRegistry(
 _registry.export(globals())
 
 _BUILTIN_DEFAULT = DefaultDelegationProvider()
-_warned_fallbacks: set[str] = set()
 
 
 def configured_backend(config: Mapping[str, Any]) -> str:
@@ -55,21 +55,29 @@ def configured_backend(config: Mapping[str, Any]) -> str:
     return lower_key(raw) if isinstance(raw, str) and raw.strip() else DEFAULT_BACKEND
 
 
-def get_active_provider(config: Mapping[str, Any]) -> DelegationProvider:
-    """The provider ``config`` (the ``delegation`` section) selects; ``default`` when unset,
-    unregistered or unavailable."""
-    name = configured_backend(config)
+def backend_status(name: str) -> tuple[Optional[DelegationProvider], str]:
+    """``(provider, "")`` when backend ``name`` can run here, else ``(provider or None, reason)``; the reason is
+    the user-facing fix (it becomes the ``delegate_task`` tool error)."""
     if name == DEFAULT_BACKEND:
-        return _BUILTIN_DEFAULT
+        return _BUILTIN_DEFAULT, ""
     provider: Optional[DelegationProvider] = _registry.get_provider(name)
-    if provider is not None and is_available_safe(
-            provider, logger, "delegation provider %s.is_available() raised %s"):
-        return provider
-    if name not in _warned_fallbacks:
-        _warned_fallbacks.add(name)
-        logger.warning(
-            "delegation.backend '%s' is %s; subagents use the default strategy. Install/enable the "
-            "plugin that provides it (`hermes plugins list`).", name,
-            "not registered" if provider is None else "unavailable",
-        )
-    return _BUILTIN_DEFAULT
+    if provider is None:
+        return None, (
+            f"Delegation backend '{name}' is not installed: no enabled plugin provides it. Install or enable the "
+            f"plugin that does (`hermes plugins list`), or switch back to the default backend "
+            f"(`hermes config set delegation.backend default`).")
+    if not is_available_safe(provider, logger, "delegation provider %s.is_available() raised %s"):
+        return provider, (
+            f"Delegation backend '{name}' is unavailable here (its plugin reports it cannot run). Fix its setup, or "
+            f"switch back to the default backend: `/delegation default` for this session, or "
+            f"`hermes config set delegation.backend default`.")
+    return provider, ""
+
+
+def get_active_provider(config: Mapping[str, Any]) -> DelegationProvider:
+    """The provider ``config`` (the ``delegation`` section) selects; ``default`` when unset. Raises
+    :class:`DelegationRouteError` naming the backend and the fix when it is not registered or unavailable."""
+    provider, reason = backend_status(configured_backend(config))
+    if reason or provider is None:
+        raise DelegationRouteError(f"{reason} No subagent was started.")
+    return provider

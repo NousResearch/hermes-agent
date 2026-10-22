@@ -34,8 +34,9 @@ def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 def _route_report(child: Any) -> Optional[dict[str, Any]]:
-    """What a labelled route's child ran on: the backend's label plus the resolved provider, model, reasoning
-    effort (None = the provider's default) and speed tier, read off the built child. None for unlabelled routes."""
+    """What a backend-routed child actually ran on: its backend and label plus the provider, model, reasoning effort
+    (None = the provider's default) and speed tier read off the child when its result is assembled, so a fallback
+    provider that took over shows (``fallback_activated``). None for the default backend's unlabelled route."""
     route = getattr(child, "_delegate_route", None)
     if not isinstance(route, dict):
         return None
@@ -46,7 +47,8 @@ def _route_report(child: Any) -> Optional[dict[str, Any]]:
         effort = reasoning.get("effort") if reasoning.get("enabled", True) else "none"
     return {**route, "provider": _str_or_none(getattr(child, "provider", None)),
             "model": _str_or_none(getattr(child, "model", None)), "reasoning_effort": _str_or_none(effort),
-            "service_tier": service_tier_word(getattr(child, "service_tier", None))}
+            "service_tier": service_tier_word(getattr(child, "service_tier", None)),
+            **({"fallback_activated": True} if getattr(child, "_fallback_activated", False) is True else {})}
 
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""

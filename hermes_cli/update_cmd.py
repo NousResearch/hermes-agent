@@ -1182,7 +1182,7 @@ def _pull_updates(
             git_cmd, pre_sync_sha or pre_pull_sha, rollback_branch=rollback_branch,
             _windows_gateway_resume=_windows_gateway_resume)
         if refusal := _plugin_guards.check_pulled_plugin_compatibility(
-                Path(_m().PROJECT_ROOT), plugin_update_guards):
+                Path(_m().PROJECT_ROOT), plugin_update_guards, phase="source"):
             _roll_back_broken_update(
                 git_cmd, pre_sync_sha or pre_pull_sha, "plugin compatibility check", refusal,
                 rollback_branch=rollback_branch, _windows_gateway_resume=_windows_gateway_resume,
@@ -1764,7 +1764,7 @@ def _finish_already_up_to_date(
             print(f"  ✓ Checkout was parked on '{current_branch}' (fully merged) — switched back to {branch}.")
 
     if refusal := _plugin_guards.check_pulled_plugin_compatibility(
-            Path(_m().PROJECT_ROOT), plugin_update_guards):
+            Path(_m().PROJECT_ROOT), plugin_update_guards, phase="source"):
         print(f"✗ Required plugin update check failed on the current checkout: {refusal}")
         print("  No dependency sync or gateway restart was attempted.")
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

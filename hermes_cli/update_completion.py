@@ -380,7 +380,7 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
                 checks = guards_from_records(request["plugin_update_guards"])
                 refusal = check_pulled_plugin_compatibility(
-                    root, checks, python_executable=project_python(root))
+                    root, checks, python_executable=project_python(root), phase="runtime")
                 if refusal:
                     raise RuntimeError(f"required plugin failed under the selected runtime: {refusal}")
             collect_superseded_generations(root)
@@ -535,9 +535,10 @@ def _finish(request: dict, result_path: Path) -> int:
     if request.get("plugin_update_guards"):
         # The selected interpreter activated successfully; only now may a paused
         # gateway resume on the admitted code and dependencies.
-        from hermes_cli.update_plugin_guards import clear_pending
+        from hermes_cli.update_plugin_guards import clear_after_selected_runtime, guards_from_records
 
-        clear_pending(Path(request["source"]))
+        clear_after_selected_runtime(Path(request["source"]),
+                                     guards_from_records(request["plugin_update_guards"]))
     code, reason = 0, "source update completion"
     try:
         if not _complete_selected(request):

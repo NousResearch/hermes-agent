@@ -236,7 +236,13 @@ name: my-plugin
 post_update_check: checks/source_compat.py
 ```
 
-Hermes runs a declared check when the plugin is installed and enabled. For a
+Hermes runs a declared check when the plugin is installed and enabled. The
+script receives `--hermes-root PATH --profile NAME --phase source|runtime`.
+The `source` phase runs after the checkout move under the old interpreter,
+before dependency sync; keep it compatible with the old runtime and do not
+require live credentials. The `runtime` phase runs under the newly selected
+interpreter after dependency sync and can exercise an isolated behavioral
+fixture. Both phases must exit zero within 30 seconds. For a
 profile that must keep the plugin available, also list it under
 `plugins.update_guards` in that profile's `config.yaml`. The profile-owned
 list survives an updated checkout and makes a missing, disabled, or damaged
@@ -245,6 +251,9 @@ shared source update examines the default and every installed named profile,
 including standalone and parked profiles.
 
 A same-revision `hermes update` runs the check again before dependency repair.
+If an earlier update left admission pending, a retry may add guards but cannot
+remove or replace any guard recorded by that pending update. It must verify
+all earlier and new guards before clearing the startup hold.
 During dependency preparation, a plugin named in `plugins.update_guards` cannot
 be automatically disabled or left out because its Python, manifest, Hermes
 version, build, or dependency requirements no longer fit. PM records a failed

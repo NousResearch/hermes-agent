@@ -623,9 +623,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
     from hermes_cli.update_cmd import _m, _complete_source_update
     # ZIP replacement has no post-swap source rollback at the plugin admission point.
     # Refuse guarded installs before download until that path can provide equivalent recovery.
-    from hermes_cli.update_plugin_guards import prepare_update_guards
+    from hermes_cli.update_plugin_guards import prepare_update_guards, require_prior_guards
     try:
         guarded = prepare_update_guards()
+        require_prior_guards(Path(_m().PROJECT_ROOT), guarded)
     except (OSError, ValueError) as exc:
         print(f"✗ Required plugin update check cannot be prepared: {exc}")
         _record_stop("plugin_update_guard_invalid")

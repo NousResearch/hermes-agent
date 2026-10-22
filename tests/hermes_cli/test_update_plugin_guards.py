@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 import venv
@@ -43,6 +44,7 @@ from pathlib import Path
 p = argparse.ArgumentParser()
 p.add_argument('--hermes-root', required=True)
 p.add_argument('--profile', required=True)
+p.add_argument('--phase', choices=('source', 'runtime'), required=True)
 a = p.parse_args()
 assert a.profile == 'sample'
 assert 'HERMES_TEST_SECRET' not in os.environ
@@ -62,6 +64,100 @@ def test_guard_checks_exact_pulled_tree_without_ambient_credentials(
     assert update_plugin_guards.check_pulled_plugin_compatibility(source, checks) is None
     (source / "compatible.txt").write_text("broken", encoding="utf-8")
     assert "exited" in update_plugin_guards.check_pulled_plugin_compatibility(source, checks)
+
+
+def test_guard_distinguishes_source_from_selected_runtime(guarded_profile, tmp_path):
+    _, _, plugin = guarded_profile
+    script = plugin / "check.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n"
+                      "if a.phase == 'runtime':\n"
+                      "    assert Path(a.hermes_root, 'runtime.txt').read_text() == 'ready'\n",
+                      encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "compatible.txt").write_text("ready", encoding="utf-8")
+    checks = update_plugin_guards.prepare_update_guards()
+    assert update_plugin_guards.check_pulled_plugin_compatibility(
+        source, checks, phase="source") is None
+    assert "exited" in update_plugin_guards.check_pulled_plugin_compatibility(
+        source, checks, phase="runtime")
+    (source / "runtime.txt").write_text("ready", encoding="utf-8")
+    assert update_plugin_guards.check_pulled_plugin_compatibility(
+        source, checks, phase="runtime") is None
+
+
+def test_pending_guard_set_can_grow_but_cannot_shrink_or_change(
+        guarded_profile, tmp_path):
+    _, profile, plugin = guarded_profile
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "compatible.txt").write_text("ready", encoding="utf-8")
+    original = update_plugin_guards.prepare_update_guards()
+    update_plugin_guards.arm_pending(source, original, pre_sha="original")
+    marker = update_plugin_guards.pending_path(source)
+    original_marker = marker.read_bytes()
+
+    with pytest.raises(ValueError, match="earlier plugin update guard"):
+        update_plugin_guards.arm_pending(source, ())
+    with pytest.raises(ValueError, match="earlier plugin update guard"):
+        update_plugin_guards.clear_after_selected_runtime(source, ())
+    assert marker.read_bytes() == original_marker
+
+    profile.joinpath("config.yaml").write_text(
+        "plugins:\n  enabled: []\n  update_guards: []\n", encoding="utf-8")
+    update_plugin_guards.clear_after_verified_rollback(source, "original")
+    assert marker.read_bytes() == original_marker
+    profile.joinpath("config.yaml").write_text(
+        "plugins:\n  enabled: [context-check]\n  update_guards: []\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="earlier plugin update guard"):
+        update_plugin_guards.require_prior_guards(
+            source, update_plugin_guards.prepare_update_guards())
+    update_plugin_guards.clear_after_verified_rollback(source, "original")
+    assert marker.read_bytes() == original_marker
+    profile.joinpath("config.yaml").write_text(
+        "plugins:\n  enabled: [context-check]\n  update_guards: [context-check]\n",
+        encoding="utf-8")
+
+    script = plugin / "check.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# changed checker\n",
+                      encoding="utf-8")
+    changed = update_plugin_guards.prepare_update_guards()
+    with pytest.raises(ValueError, match="earlier plugin update guard"):
+        update_plugin_guards.require_prior_guards(source, changed)
+    assert marker.read_bytes() == original_marker
+    # Restore the exact original checker bytes, then add a second required plugin.
+    script.write_text(script.read_text(encoding="utf-8").removesuffix("\n# changed checker\n"),
+                      encoding="utf-8")
+    second = profile / "plugins" / "other-check"
+    second.mkdir()
+    second.joinpath("plugin.yaml").write_text(
+        "name: other-check\npost_update_check: check.py\n", encoding="utf-8")
+    second.joinpath("check.py").write_bytes(script.read_bytes())
+    profile.joinpath("config.yaml").write_text(
+        "plugins:\n  enabled: [context-check, other-check]\n"
+        "  update_guards: [context-check, other-check]\n", encoding="utf-8")
+    expanded = update_plugin_guards.prepare_update_guards()
+    assert len(expanded) == 2
+    update_plugin_guards.arm_pending(source, expanded)
+    expanded_record = json.loads(marker.read_text(encoding="utf-8"))
+    assert len(expanded_record["guards"]) == 2
+    assert expanded_record["pre_sha"] == "original" and expanded_record["expanded"] is True
+    update_plugin_guards.clear_after_verified_rollback(source, "original")
+    assert marker.exists()  # B was added after the original admitted baseline.
+    profile.joinpath("config.yaml").write_text(
+        "plugins:\n  enabled: [context-check]\n  update_guards: [context-check]\n",
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="earlier plugin update guard"):
+        update_plugin_guards.require_prior_guards(
+            source, update_plugin_guards.prepare_update_guards())
+    profile.joinpath("config.yaml").write_text(
+        "plugins:\n  enabled: [context-check, other-check]\n"
+        "  update_guards: [context-check, other-check]\n", encoding="utf-8")
+    update_plugin_guards.require_prior_guards(source, expanded)
+    assert update_plugin_guards.check_pulled_plugin_compatibility(
+        source, expanded, phase="runtime") is None
+    update_plugin_guards.clear_after_selected_runtime(source, expanded)
+    assert not marker.exists()
 
 
 def test_guard_checks_selected_python_and_holds_paused_gateway_until_pass(

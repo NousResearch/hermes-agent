@@ -517,6 +517,17 @@ def _routes_for(task_list: list[dict[str, Any]], cfg: dict[str, Any], credential
     return [route] * len(task_list), None
 
 
+def _settle_refused_transcripts(refused: list[dict[str, Any]], live_deleg_id: Optional[str], live_writers: list,
+                                live_home: Any) -> None:
+    from tools.delegation_live_log import update_manifest_statuses
+    for entry in refused:
+        _writer = live_writers[entry["task_index"]] if entry["task_index"] < len(live_writers) else None
+        if _writer is not None:
+            with _quiet("Live transcript finalize failed", exc_info=True):
+                _writer.finalize(entry)
+    update_manifest_statuses(live_deleg_id, refused, home=live_home, completed=False)
+
+
 def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
     """Charge *requested* children against the finite one-shot session's total (delegation.oneshot_max_children);
     the error text tells the model to do the work inline. Interactive and gateway sessions are never charged."""
@@ -634,11 +645,8 @@ def delegate_task(
         task_list, context, model=creds.get("model"), provider=creds.get("provider"),
         home=_live_home,
     )
-    for entry in refused:  # done before anything runs: their transcripts end with the refusal
-        _writer = live_writers[entry["task_index"]] if entry["task_index"] < len(live_writers) else None
-        if _writer is not None:
-            with _quiet("Live transcript finalize failed", exc_info=True):
-                _writer.finalize(entry)
+    if refused:  # settled before anything runs: transcripts and manifest show the refusal (async units skip them)
+        _settle_refused_transcripts(refused, live_deleg_id, live_writers, _live_home)
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 

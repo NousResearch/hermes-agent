@@ -33,6 +33,22 @@ def _num(value: Any, default: int = 0) -> int:
 def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
+def _tier_in_effect(child: Any) -> Any:
+    """The child's speed tier: its own (a route's tier), else the one its request settings carry (an inherited
+    ``service_tier: priority`` or ``speed: fast``, top level or in ``extra_body``)."""
+    if getattr(child, "service_tier", None):
+        return child.service_tier
+    overrides = getattr(child, "request_overrides", None)
+    overrides = overrides if isinstance(overrides, dict) else {}
+    extra = overrides.get("extra_body") if isinstance(overrides.get("extra_body"), dict) else {}
+    for scope in (overrides, extra):
+        if scope.get("service_tier"):
+            return scope["service_tier"]
+        if scope.get("speed") == "fast":
+            return "priority"
+    return None
+
+
 def _route_report(child: Any) -> Optional[dict[str, Any]]:
     """What a backend-routed child actually ran on: its backend and label plus the provider, model, reasoning effort
     (None = the provider's default) and speed tier read off the child when its result is assembled, so a fallback
@@ -47,7 +63,7 @@ def _route_report(child: Any) -> Optional[dict[str, Any]]:
         effort = reasoning.get("effort") if reasoning.get("enabled", True) else "none"
     return {**route, "provider": _str_or_none(getattr(child, "provider", None)),
             "model": _str_or_none(getattr(child, "model", None)), "reasoning_effort": _str_or_none(effort),
-            "service_tier": service_tier_word(getattr(child, "service_tier", None)),
+            "service_tier": service_tier_word(_tier_in_effect(child)),
             **({"fallback_activated": True} if getattr(child, "_fallback_activated", False) is True else {})}
 
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> dict[str, Any]:

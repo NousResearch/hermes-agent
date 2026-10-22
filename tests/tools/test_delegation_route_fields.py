@@ -85,9 +85,14 @@ def test_route_tier_reaches_the_child_and_its_sibling_keeps_the_default():
     ({**CODEX, "service_tier": "auto"}, "auto"),  # bounded windows are per user turn, meaningless for a child
 ])
 def test_a_tier_the_route_does_not_offer_refuses_that_task_and_its_sibling_runs(route, needle):
-    result, built, _ = _spawn([route, None])
+    from tools.delegation_live_log import _manifest_path
+
+    result, built, (sibling,) = _spawn([route, None])
     (refused,) = result["refused"]
     assert refused["task_index"] == 0 and needle in refused["error"] and len(built) == 1
+    # Before the sibling runs (async units never carry it), the batch manifest already shows the refusal.
+    manifest = json.loads(_manifest_path(sibling._delegation_id, None).read_text(encoding="utf-8"))
+    assert [t["status"] for t in manifest["tasks"]] == ["error", "running"] and "completed" not in manifest
 
 
 @pytest.mark.parametrize("account_offers, expected", [(False, None), (True, "ultrafast"), (None, "ultrafast")])
@@ -179,3 +184,13 @@ def test_every_backend_routed_result_names_its_backend_and_the_default_keeps_its
                                          "reasoning_effort": "high", "service_tier": "normal"}
     _, _, (plain,) = _spawn([None], cfg=LOCAL, provider=get_active_provider({}))
     assert "route" not in entry_of(plain)
+
+
+def test_an_inherited_fast_tier_is_reported_as_what_ran():
+    """An empty backend route inherits the parent's request settings, fast tier included: the report says fast."""
+    from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
+
+    _, _, (child,) = _spawn([{"label": "inherit"}], parent=_parent(request_overrides={"service_tier": "priority"}))
+    entry = _build_result_entry(child, {"final_response": "ok", "completed": True}, 0, 1.0,
+                                _SchemaOutcome(None, None, [], 0))
+    assert entry["route"]["service_tier"] == "fast"

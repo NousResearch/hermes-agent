@@ -92,25 +92,27 @@ Record the sources you actually read in the skill's frontmatter, under
 
   sources:
     - url: https://example.com/docs/guide      # a web page or document
-      retrieved: 2026-10-22                    # the date you read it
+      retrieved: YYYY-MM-DD                    # today's date
     - repo: https://github.com/owner/project   # a git repository
       revision: 0123456789abcdef0123456789abcdef01234567
-      retrieved: 2026-10-22
+      retrieved: YYYY-MM-DD
     - path: ~/projects/app/docs/setup.md       # a local file
-      retrieved: 2026-10-22
+      retrieved: YYYY-MM-DD
 
 - Each entry has exactly one of `url`, `repo` or `path`; `revision` only goes
-  with `repo`. Record the commit you actually read (`git rev-parse HEAD` through
-  the `terminal` tool, or the revision the host showed you) — a branch name is
-  not a revision.
+  with `repo`. `retrieved` is the date you read the source — today's date, not
+  the date in this example.
+- Record the commit you actually read (`git rev-parse HEAD` through the
+  `terminal` tool, or the revision the host showed you). A branch name is not a
+  revision, and an invented SHA is worse than a missing one: if you did not
+  check the repository out yourself — you read it through web pages, or the host
+  only showed you a file — leave `revision` out and record the `repo` on its own.
 - Write a local path under the home directory as `~/...`, never the expanded
   path: skills get shared, so a learned skill must not carry your home layout.
 - "This conversation" and pasted text record NO source entry — there is nothing
   to cite. Never invent a source you did not read.
 - Updating an existing skill: merge the new entries into its existing `sources`
-  list rather than replacing it.
-- The block is optional. Readers skip entries they cannot parse, so a missing or
-  partial `sources` list never breaks the skill."""
+  list rather than replacing it."""
 
 
 # book-to-skill layout (MIT): lean always-loaded index + per-chapter files on

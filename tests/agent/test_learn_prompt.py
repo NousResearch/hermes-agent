@@ -28,6 +28,17 @@ class TestSourceRecording:
         for key in ("url:", "repo:", "revision:", "path:", "retrieved:"):
             assert key in prompt, f"schema key {key} missing from the /learn prompt"
 
+    def test_prompt_carries_no_real_date(self):
+        # A literal date in the example gets copied into authored skills, where it
+        # claims a source was read on a day it was not.
+        import re
+
+        prompt = build_learn_prompt("https://example.com/docs/guide")
+
+        assert "YYYY-MM-DD" in prompt
+        assert "today's date" in prompt.lower()
+        assert not re.search(r"\b20\d\d-\d\d-\d\d\b", prompt), "the /learn prompt carries a real date"
+
     def test_home_paths_are_recorded_with_a_tilde(self):
         # Skills get shared: an expanded home path leaks the user's layout.
         prompt = build_learn_prompt("~/projects/app")
@@ -41,10 +52,25 @@ class TestSourceRecording:
         assert any("conversation" in line.lower() and "pasted" in line.lower()
                    for line in sources_rule)
 
-    def test_revision_belongs_only_to_a_repo_source(self):
-        prompt = build_learn_prompt("https://github.com/owner/project")
+    def test_prompt_says_to_omit_revision_when_the_repo_was_not_checked_out(self):
+        # The failure this prevents: reading a repo through web pages and then
+        # inventing a plausible-looking SHA for a commit that was never read.
+        prompt = " ".join(build_learn_prompt("https://github.com/owner/project").split()).lower()
+
         assert "revision" in prompt
-        assert "only goes" in prompt.lower() or "only valid" in prompt.lower() or "only with" in prompt.lower()
+        assert "did not check the repository out" in prompt
+        assert "leave `revision` out" in prompt
+        assert "invented sha" in prompt
+
+    def test_revision_is_only_attached_to_a_repo_source(self):
+        """The revision rule, asserted from the example's shape rather than its wording."""
+        lines = build_learn_prompt("https://github.com/owner/project").splitlines()
+        revision_lines = [line for line in lines if line.strip().startswith("revision:")]
+
+        assert len(revision_lines) == 1
+        index = lines.index(revision_lines[0])
+        owner = next(line for line in reversed(lines[:index]) if line.strip().startswith("- "))
+        assert owner.strip().startswith("- repo:"), f"revision hangs off {owner.strip()!r}"
 
 
 class TestSourcesBlockIsAcceptedByTheExistingReaders:

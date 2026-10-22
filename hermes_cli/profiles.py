@@ -1161,15 +1161,15 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
 _CLONE_MATERIALIZE = (".env", "config.yaml", "auth.json", "SOUL.md")
 
 
-def _materialize_symlinked_files(profile_dir: Path) -> list[str]:
-    """Replace symlinked root files the clone will edit with private copies of their targets (a
-    dangling link is dropped). Returns the relative names materialized."""
+def _materialize_symlinked_files(source_dir: Path, profile_dir: Path) -> list[str]:
+    """Replace symlinked root files the clone will edit with private copies of their targets, resolved in
+    the source (a relative link names a path from there; a dangling one is dropped). Returns the names."""
     done: list[str] = []
     for name in _CLONE_MATERIALIZE:
         path = profile_dir / name
         if not path.is_symlink():
             continue
-        target = Path(os.path.realpath(path))
+        target = Path(os.path.realpath(source_dir / name))
         path.unlink()
         if target.is_file():
             shutil.copy2(target, path)
@@ -1224,7 +1224,7 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
-    materialized = _materialize_symlinked_files(profile_dir)
+    materialized = _materialize_symlinked_files(source_dir, profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
                     canon, materialized, source_dir)

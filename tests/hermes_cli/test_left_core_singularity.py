@@ -48,11 +48,28 @@ def test_singularity_in_use_is_the_configured_backend(tmp_path, env, config, in_
     assert lcm.singularity_in_use(_home(tmp_path, env=env, config=config)) is in_use
 
 
-def test_process_env_backend_counts_only_for_the_active_home(tmp_path, monkeypatch):
-    home = _home(tmp_path)
-    monkeypatch.setenv("TERMINAL_ENV", "singularity")
-    assert lcm.singularity_in_use(home) is False
-    assert lcm.singularity_in_use(home, process_env=True) is True
+@pytest.mark.parametrize(("home_env", "managed_env", "in_use"), [
+    ("TERMINAL_ENV=local\n", "TERMINAL_ENV=singularity\n", True),
+    ("TERMINAL_ENV=singularity\n", "TERMINAL_ENV=local\n", False),
+    ("", "TERMINAL_ENV=singularity\n", True),
+])
+def test_the_managed_env_beats_the_homes_env_as_in_load_hermes_dotenv(tmp_path, home_env, managed_env, in_use):
+    # load_hermes_dotenv applies the administrator-managed .env last, with override.
+    (tmp_path / "managed" / ".env").write_text(managed_env, encoding="utf-8")
+    assert lcm.singularity_in_use(_home(tmp_path, env=home_env)) is in_use
+
+
+def test_process_env_backend_counts_only_for_the_launch_home(tmp_path, monkeypatch):
+    launch = _home(tmp_path)
+    secondary = tmp_path / "profiles" / "work"
+    secondary.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("TERMINAL_ENV", "singularity")  # the launch process's backend (systemd unit, export)
+    assert lcm.singularity_in_use(launch) is False
+    assert lcm.singularity_in_use(launch, process_env=True) is True
+    # Gateway start runs the startup migration for every served home: a secondary with no backend of its
+    # own runs `local`, whatever the launch process exported.
+    assert lcm.singularity_in_use(secondary, process_env=True) is False
 
 
 def test_a_singularity_home_gets_the_plugin_once(tmp_path):

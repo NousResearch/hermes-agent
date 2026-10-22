@@ -27,6 +27,7 @@ to deliver it.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -150,9 +151,12 @@ def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
 def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
     """What made core run its Singularity backend for *home*: ``terminal.backend`` (or the legacy
     ``terminal.env_type``) set to ``singularity`` in its config (managed overlay applied, as the bridge
-    reads it), else ``TERMINAL_ENV=singularity`` in its ``.env``. config.yaml wins over ``.env``, as in
-    the bridge. *process_env* (the active home at startup only) also counts a ``TERMINAL_ENV`` the
-    process received from its environment (systemd unit, Docker, shell export)."""
+    reads it), else ``TERMINAL_ENV=singularity`` from its dotenv layers in ``load_hermes_dotenv``'s order
+    (the home's ``.env``, then the administrator-managed ``.env`` with override). config.yaml wins over
+    both, as in the bridge. *process_env* (startup) also counts a ``TERMINAL_ENV`` the process received
+    from its environment (systemd unit, Docker, shell export), for the launch home only: ``TERMINAL_*``
+    is process-global (``get_secret`` never scopes it), so for any other served home it is the launch
+    profile's backend, not this one's."""
     from gateway import config_loader
     try:
         terminal = config_loader.read_yaml_layers(home).get("terminal")
@@ -163,13 +167,13 @@ def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
     configured = str(terminal.get("backend") or terminal.get("env_type") or "").strip()
     if not configured:
         from agent.secret_scope import load_env_file
-        configured = str(load_env_file(home / ".env").get("TERMINAL_ENV") or "").strip()
+        from hermes_cli.managed_scope import load_managed_env
+        dotenv = {**load_env_file(home / ".env"), **load_managed_env()}
+        configured = str(dotenv.get("TERMINAL_ENV") or "").strip()
     if not configured and process_env:
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        try:
-            configured = str(get_secret("TERMINAL_ENV", "") or "").strip()
-        except UnscopedSecretError:  # multiplexed with no profile scope bound: no process value is this home's
-            configured = ""
+        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        if hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home()):
+            configured = os.environ.get("TERMINAL_ENV", "").strip()
     return configured.lower() == "singularity"
 
 

@@ -1,7 +1,7 @@
 ---
 sidebar_position: 15
 title: "MiniMax OAuth"
-description: "Log into MiniMax via browser OAuth and use MiniMax-M2.7 models in Hermes Agent — no API key required"
+description: "Log into MiniMax via browser OAuth and use MiniMax-M3.1-Flash and MiniMax-M3 models in Hermes Agent — no API key required"
 ---
 
 # MiniMax OAuth
@@ -18,7 +18,7 @@ The transport reuses the `anthropic_messages` adapter (MiniMax exposes an Anthro
 | Display name | MiniMax (OAuth) |
 | Auth type | Browser OAuth (PKCE redirect flow) |
 | Transport | Anthropic Messages-compatible (`anthropic_messages`) |
-| Models | `MiniMax-M2.7`, `MiniMax-M2.7-highspeed` |
+| Models | `MiniMax-M3.1-Flash`, `MiniMax-M3`, `MiniMax-M2.7`, `MiniMax-M2.7-highspeed` |
 | Global endpoint | `https://api.minimax.io/anthropic` |
 | China endpoint | `https://api.minimaxi.com/anthropic` |
 | Requires env var | No (`MINIMAX_API_KEY` is **not** used for this provider) |
@@ -38,7 +38,7 @@ hermes model
 # → Select "MiniMax (OAuth)" from the provider list
 # → Hermes opens your browser to the MiniMax authorization page
 # → Approve access in the browser
-# → Select a model (MiniMax-M2.7 or MiniMax-M2.7-highspeed)
+# → Select a model (MiniMax-M3.1-Flash, MiniMax-M3, MiniMax-M2.7 or MiniMax-M2.7-highspeed)
 # → Start chatting
 
 hermes
@@ -113,7 +113,7 @@ hermes model
 Or set the model directly:
 
 ```bash
-hermes config set model.default MiniMax-M2.7
+hermes config set model.default MiniMax-M3.1-Flash
 hermes config set model.provider minimax-oauth
 ```
 
@@ -123,7 +123,7 @@ After login, `~/.hermes/config.yaml` will contain entries similar to:
 
 ```yaml
 model:
-  default: MiniMax-M2.7
+  default: MiniMax-M3.1-Flash
   provider: minimax-oauth
   base_url: https://api.minimax.io/anthropic
 ```
@@ -165,10 +165,12 @@ hermes --provider minimax-oauth
 
 | Model | Best for |
 |-------|----------|
-| `MiniMax-M2.7` | Long-context reasoning, complex tool-calling |
-| `MiniMax-M2.7-highspeed` | Lower latency, lighter tasks, auxiliary calls |
+| `MiniMax-M3.1-Flash` | Fast reasoning with 1M context, complex tool-calling |
+| `MiniMax-M3` | Long-context reasoning, complex tool-calling |
+| `MiniMax-M2.7` | Previous generation, long-context reasoning |
+| `MiniMax-M2.7-highspeed` | Lower latency, lighter tasks |
 
-Both models support up to 200,000 tokens of context.
+`MiniMax-M3.1-Flash` and `MiniMax-M3` support up to 1,000,000 tokens of context; the M2.7 models support up to 200,000.
 
 `MiniMax-M2.7` is also used automatically as the auxiliary model for vision and delegation tasks when `minimax-oauth` is the primary provider.
 

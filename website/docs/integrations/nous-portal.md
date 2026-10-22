@@ -33,7 +33,7 @@ The Portal proxies a curated catalog of agentic models from across the ecosystem
 | **Qwen** | Qwen3.7-Max, Qwen3.6-35B-A3B |
 | **Kimi / Moonshot** | Kimi K2.6 |
 | **GLM / Zhipu** | GLM-5.1 |
-| **MiniMax** | MiniMax M2.7 |
+| **MiniMax** | MiniMax M3.1 Flash, MiniMax M3, MiniMax M2.7 |
 | **xAI** | Grok 4.3 |
 | **NVIDIA** | Nemotron-3 Super 120B-A12B |
 | **Tencent** | Hunyuan 3 Preview |

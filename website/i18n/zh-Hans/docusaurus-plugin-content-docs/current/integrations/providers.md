@@ -413,7 +413,7 @@ hermes chat --provider alibaba_coding --model qwen3-coder-plus
 
 ### MiniMax（OAuth）
 
-通过浏览器 OAuth 登录使用 MiniMax-M2.7——无需 API key。在 `hermes model` 中选择 **MiniMax (OAuth)**，通过浏览器登录，Hermes 会持久化访问 token 和刷新 token。底层使用 Anthropic Messages 兼容端点（`/anthropic`）。
+通过浏览器 OAuth 登录使用 MiniMax-M3.1-Flash / MiniMax-M3——无需 API key。在 `hermes model` 中选择 **MiniMax (OAuth)**，通过浏览器登录，Hermes 会持久化访问 token 和刷新 token。底层使用 Anthropic Messages 兼容端点（`/anthropic`）。
 
 ```bash
 hermes model
@@ -431,7 +431,7 @@ model:
   default: "MiniMax-M2.7"
 ```
 
-支持的模型：`MiniMax-M2.7`（主模型）和 `MiniMax-M2.7-highspeed`（默认辅助模型）。OAuth 路径忽略 `MINIMAX_API_KEY` / `MINIMAX_BASE_URL`。
+支持的模型：`MiniMax-M3.1-Flash` 和 `MiniMax-M3`（主模型）、`MiniMax-M2.7` 和 `MiniMax-M2.7-highspeed`。`MiniMax-M2.7` 为默认辅助模型。OAuth 路径忽略 `MINIMAX_API_KEY` / `MINIMAX_BASE_URL`。
 
 :::tip MiniMax OAuth 与 API key
 `minimax-oauth` 使用 MiniMax 面向消费者的 portal，通过 OAuth 登录——无需设置计费。`minimax` 和 `minimax-cn` 提供商使用 `MINIMAX_API_KEY` / `MINIMAX_CN_API_KEY`——用于程序化访问。完整流程参见 [MiniMax OAuth 指南](../guides/minimax-oauth.md)。

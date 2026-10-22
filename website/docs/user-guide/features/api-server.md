@@ -444,6 +444,42 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 
 Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
 
+#### Per-run primary and fallback models
+
+Use the existing top-level `model` and optional `provider` fields to select the
+primary model. An optional top-level `fallback_model` object selects exactly one
+fallback for this run:
+
+```json
+{
+  "input": "Summarize today's notes",
+  "model": "primary-model",
+  "provider": "primary-provider",
+  "fallback_model": {
+    "model": "backup-model",
+    "provider": "backup-provider"
+  }
+}
+```
+
+- Omit `fallback_model` to inherit the server's configured fallback chain.
+- An object **replaces** that entire chain with one fallback; it does not append
+  to it or change global configuration or later runs.
+- `model` is required and must be a nonblank string. `provider` is optional, but
+  when present must also be a nonblank string. Surrounding whitespace is trimmed.
+- Omitting the fallback `provider` inherits the **effective selected primary
+  provider**, including a model-route or session `/model` override, rather than
+  necessarily the global provider.
+- Only `model` and `provider` are accepted inside `fallback_model`. Unknown fields
+  (including `api_key` and `base_url`), `null`, non-objects, missing models, and
+  blank or non-string values return HTTP 400 with code `invalid_fallback_model`
+  before run creation or idempotency lookup/reservation.
+
+This is a top-level Runs API field, **not** a `model_options` setting. Credentials
+and endpoints remain server-managed. It configures the agent's runtime fallback
+chain; it does not change provider-initialization failure handling. A confirmed
+runtime lock still disables all fallback, including a per-run override.
+
 For safely retryable creation, send an `Idempotency-Key` header (1–255 visible ASCII characters). Hermes durably reserves the key before starting work. An identical retry returns the original `run_id` with HTTP 202 and `Idempotency-Replayed: true`, including after a gateway restart and after the run has completed, failed, or been cancelled. Reusing the same key with a different JSON payload returns HTTP 409 with code `idempotency_key_conflict`. Keys are isolated by authenticated API profile/credential and retained for 24 hours after their last status update; clients should use unique, unguessable keys and must not reuse them for unrelated operations. Requests without the header retain the legacy behavior and always create a new run.
 
 When `session_id` identifies an existing Hermes session and no explicit

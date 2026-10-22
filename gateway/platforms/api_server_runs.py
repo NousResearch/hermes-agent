@@ -351,6 +351,23 @@ def _drop_run_transport(self, run_id: str) -> None:
     _forget_run(self, run_id, self._run_streams, self._run_streams_created)
 
 
+def _request_fallback_model(body: dict) -> Optional[Dict[str, str]]:
+    """Only model/provider selection is public; transport credentials stay server-owned."""
+    if "fallback_model" not in body:
+        return None
+    value = body["fallback_model"]
+    if not isinstance(value, dict):
+        raise ValueError("'fallback_model' must be an object")
+    if set(value) - {"model", "provider"}:
+        raise ValueError("'fallback_model' accepts only 'model' and 'provider'")
+    for field in ("model", "provider"):
+        if field == "provider" and field not in value:
+            continue
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            raise ValueError(f"'fallback_model.{field}' must be a nonblank string")
+    return {key: value[key].strip() for key in value}
+
+
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
@@ -362,6 +379,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         body = await request.json()
     except Exception:
         return _json_error(_openai_error, "Invalid JSON", status=400)
+    if not isinstance(body, dict):
+        return _json_error(_openai_error, "Request body must be a JSON object", status=400)
+    try:
+        fallback_model = _request_fallback_model(body)
+    except ValueError as exc:
+        return _json_error(_openai_error, str(exc), code="invalid_fallback_model", status=400)
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
@@ -447,6 +470,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
+            fallback_model_override=fallback_model,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),

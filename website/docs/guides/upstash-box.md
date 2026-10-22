@@ -17,7 +17,7 @@ Your install, config, sessions and memory stay in the Box's `~/.hermes` between 
 
 ## 1. Create a keep-alive Box
 
-In the [Upstash Console](https://console.upstash.com), open **Box** and create a Box with the **Fixed (keep-alive)** plan and the **Medium** size. Note the Box ID, for example `right-flamingo-14486`.
+In the [Upstash Console](https://console.upstash.com), open **Box** and create a Box with the **Fixed (keep-alive)** plan and the **Small** size. Note the Box ID, for example `right-flamingo-14486`.
 
 ## 2. Add an SSH key
 

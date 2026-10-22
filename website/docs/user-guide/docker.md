@@ -230,6 +230,16 @@ Detection reads `/proc/self/mountinfo` inside the container, so it works regardl
 
 In hosted and published Docker images, `/opt/hermes` is the installed application tree. It is root-owned and read-only to the runtime `hermes` user, so agent turns, gateway sessions, dashboard actions, and normal `docker exec hermes hermes ...` commands cannot edit the core source, bundled `.venv`, `node_modules`, or TUI bundle in place.
 
+:::danger Do not mount a volume at `/opt/hermes`
+Never add a bind or named-volume mount such as `hermes-agent-src:/opt/hermes`.
+Docker mounts hide the image files at their target path, so that volume can keep
+an older Hermes install running even after the `latest` image has been pulled
+and the container has been recreated. Persist only `/opt/data` (or the custom
+path configured by `HERMES_HOME`). To upgrade a deployment that mounted
+`/opt/hermes`, remove that install-tree mount, keep the data-volume mount, then
+pull and recreate the container.
+:::
+
 All mutable Hermes state belongs under `/opt/data`: config, `.env`, profiles, skills, memories, sessions, logs, dashboard uploads, plugins, and other user-managed files. The image also disables runtime `.pyc` writes and Hermes lazy dependency installs into `/opt/hermes`; optional platform dependencies needed by the published image should be baked into the image or installed through a new image build.
 
 On hosted/published images, agent self-improvement is scoped to skills, memory, plugins, and config under `/opt/data`. The installed core source under `/opt/hermes` is immutable; core changes are made via PRs to the repo and shipped by updating the image, not by live-editing the running install.

@@ -91,6 +91,25 @@ def test_bulk_fields_ride_in_extra_body_and_the_wire_bytes_are_identical():
     assert recorder.send(moved) == recorder.send(dict(body))
 
 
+def test_enable_thinking_is_preserved_in_extra_body_for_the_openai_sdk():
+    """The SDK rejects unknown method kwargs; extra_body preserves the wire field and its value."""
+    import json
+
+    recorder = _Recorder()
+    body = {
+        "model": "local-model", "messages": [{"role": "user", "content": "think"}],
+        "enable_thinking": True, "extra_body": {"reasoning": {"effort": "xhigh"}},
+        "stream": True,
+    }
+    moved = bypass_chat_sdk_request_transform(body, recorder.client)
+
+    assert "enable_thinking" not in moved
+    assert moved["extra_body"]["reasoning"] == {"effort": "xhigh"}
+    assert moved["extra_body"]["enable_thinking"] is True
+    assert body["enable_thinking"] is True
+    assert json.loads(recorder.send(moved))["enable_thinking"] is True
+
+
 def test_escape_hatch_and_non_sdk_facades_keep_the_typed_path(monkeypatch):
     """Both rails hand the kwargs back untouched: the env hatch, and a chat-shaped facade
     that is not the SDK (MoA aggregator, test stand-ins) — it never merges ``extra_body``."""
@@ -99,6 +118,8 @@ def test_escape_hatch_and_non_sdk_facades_keep_the_typed_path(monkeypatch):
 
     facade = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **kw: kw)))
     assert bypass_chat_sdk_request_transform(kwargs, facade) is kwargs
+    thinking_kwargs = {**kwargs, "enable_thinking": True}
+    assert bypass_chat_sdk_request_transform(thinking_kwargs, facade) is thinking_kwargs
 
     monkeypatch.setenv(ESCAPE_HATCH_ENV, "1")
     assert bypass_chat_sdk_request_transform(kwargs, recorder.client) is kwargs

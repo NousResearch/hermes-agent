@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
+from agent.completion_status import resolve_completion_status
 from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
@@ -29,8 +30,69 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_completion_status_retry",
 )
+
+
+def _should_promote_reasoning_only_response(agent: Any, assistant_message: Any, finish_reason: Any,
+                                            content: Any) -> bool:
+    """Only promote plain, unsigned reasoning on a trusted route after a clean stop."""
+    reasoning_details = getattr(assistant_message, "reasoning_details", None) or ()
+    has_signed_thinking = any(
+        isinstance(detail, dict) and (
+            (detail.get("type") in ("thinking", "redacted_thinking")
+             and (detail.get("signature") or detail.get("data")))
+            or str(detail.get("type") or "").endswith(".native_assistant")
+        )
+        for detail in reasoning_details
+    )
+    return (
+        finish_reason == "stop"
+        and not assistant_message.tool_calls
+        and (content is None or (isinstance(content, str) and not content.strip()))
+        and not has_signed_thinking
+        and answer_in_reasoning_capability(agent)
+    )
+
+
+def _build_interim_assistant_message(agent: Any, assistant_message: Any, final_response: Any,
+                                     promoted: bool) -> dict[str, Any]:
+    """Build a continuation row with a replay sidecar when its answer came from reasoning."""
+    interim = agent._build_assistant_message(assistant_message, "incomplete")
+    if promoted:
+        interim["api_content"] = final_response
+    return interim
+
+
+def _retry_missing_tool_call(
+    agent: Any, *, finish_reason: Any, assistant_message: Any, final_msg: dict[str, Any],
+    messages: list[dict[str, Any]], nudge_content: str,
+) -> bool:
+    """Re-prompt when a provider says it called a tool but returns no calls."""
+    if (
+        finish_reason == "tool_calls"
+        and not assistant_message.tool_calls
+        and getattr(agent, "_dropped_toolcall_retries", 0) < 3
+    ):
+        agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
+        logger.warning(
+            "finish_reason=tool_calls with empty tool_calls array "
+            "(narration only) — re-prompting to emit the call "
+            "(retry %d/3, model=%s provider=%s)",
+            agent._dropped_toolcall_retries, agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status(
+            "↻ Model signaled a tool call but sent none — "
+            f"re-prompting ({agent._dropped_toolcall_retries}/3)"
+        )
+        final_msg["_dropped_toolcall_nudge"] = True
+        append_message(messages, final_msg)
+        append_message(messages, {
+            "role": "user", "content": nudge_content, "_dropped_toolcall_nudge": True,
+        })
+        agent._session_messages = messages
+        return True
+    return False
 
 
 @dataclass
@@ -99,19 +161,7 @@ def finish_text_response(
     # takes the empty-response continuation below instead.
     _content = assistant_message.content
     _promoted = None
-    if (
-        finish_reason == "stop"
-        and not assistant_message.tool_calls
-        and (_content is None or (isinstance(_content, str) and not _content.strip()))
-        and not any(
-            isinstance(d, dict) and (
-                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
-                or str(d.get("type") or "").endswith(".native_assistant")
-            )
-            for d in getattr(assistant_message, "reasoning_details", None) or ()
-        )
-        and answer_in_reasoning_capability(agent)
-    ):
+    if _should_promote_reasoning_only_response(agent, assistant_message, finish_reason, _content):
         _promoted = agent._extract_reasoning(assistant_message) or None
         if _promoted:
             # WARNING, not INFO: a model that keeps ending turns this way is stalled
@@ -146,6 +196,16 @@ def finish_text_response(
         if _ev.action == "break":
             return _verdict("break")
         return _verdict("continue")
+
+    _status, _status_verdict = resolve_completion_status(
+        agent, assistant_message=assistant_message, final_response=final_response,
+        system_prompt=active_system_prompt, messages=messages, conversation_history=conversation_history,
+        api_call_count=api_call_count, retry_count=codex_ack_continuations,
+        task_id=effective_task_id, promoted=bool(_promoted), verdict_factory=_verdict,
+    )
+    if _status_verdict is not None:
+        return _status_verdict
+    final_response = _status.final_response
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0
@@ -228,11 +288,9 @@ def finish_text_response(
                 codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
-        interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
-        if _promoted:
-            # Same sidecar as the final row: the wire copy must carry the promoted text, not only
-            # ``reasoning_content``, or the continuation replays an empty assistant turn.
-            interim_msg["api_content"] = final_response
+        interim_msg = _build_interim_assistant_message(
+            agent, assistant_message, final_response, bool(_promoted),
+        )
         append_message(messages, interim_msg)
         agent._emit_interim_assistant_message(interim_msg)
         append_message(messages, {
@@ -288,32 +346,10 @@ def finish_text_response(
 
     # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
-    if (
-        finish_reason == "tool_calls"
-        and not assistant_message.tool_calls
-        and getattr(agent, "_dropped_toolcall_retries", 0) < 3
+    if _retry_missing_tool_call(
+        agent, finish_reason=finish_reason, assistant_message=assistant_message,
+        final_msg=final_msg, messages=messages, nudge_content=_DROPPED_TOOLCALL_NUDGE_CONTENT,
     ):
-        agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
-        logger.warning(
-            "finish_reason=tool_calls with empty tool_calls array "
-            "(narration only) — re-prompting to emit the call "
-            "(retry %d/3, model=%s provider=%s)",
-            agent._dropped_toolcall_retries, agent.model, agent.provider,
-        )
-        agent._emit_diagnostic_status(
-            "↻ Model signaled a tool call but sent none — "
-            f"re-prompting ({agent._dropped_toolcall_retries}/3)"
-        )
-        # Both halves of the re-prompt pair are ephemeral scaffolding: never persisted,
-        # and the finalization pop strips an unanswered tail pair.
-        final_msg["_dropped_toolcall_nudge"] = True
-        append_message(messages, final_msg)
-        append_message(messages, {
-            "role": "user",
-            "content": _DROPPED_TOOLCALL_NUDGE_CONTENT,
-            "_dropped_toolcall_nudge": True,
-        })
-        agent._session_messages = messages
         final_response = None
         return _verdict("continue")
 

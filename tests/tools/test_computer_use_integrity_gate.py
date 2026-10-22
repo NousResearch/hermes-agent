@@ -13,6 +13,8 @@ Stdlib + pytest + unittest.mock only. No live cua-driver, no network.
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import Any, Optional
 from unittest.mock import patch
 
@@ -205,3 +207,42 @@ def test_no_active_target_skips_gate():
     # The pre-existing no-target refusal wins; the probe is never reached.
     assert res.ok is False
     assert res.code is None and "capture()" in res.message
+
+
+# ---------------------------------------------------------------------------
+# The probe has to actually parse a RID (regression: a dead probe is invisible
+# to the wiring tests above, because they stub this level)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="live integrity probe is Windows-only")
+def test_live_probe_parses_a_rid_for_its_own_process():
+    """``GetTokenInformation``'s sizing call always returns 0 (ERROR_INSUFFICIENT_BUFFER) while writing
+    the required length into ``needed``. A probe that returns early on that return value answers
+    ``None`` for every process, and the gate silently never fires — which no stubbed test can see.
+    Our own pid must therefore come back with two readable, equal RIDs."""
+    from tools.computer_use.cua_backend_input import _win_integrity_rids, _win_input_blocked_by_integrity
+
+    rids = _win_integrity_rids(os.getpid())
+    assert rids.probed is True
+    assert rids.own is not None, "our own token must be readable"
+    assert rids.target is not None, "our own process must be probeable"
+    assert rids.own == rids.target
+    assert rids.own in {0x1000, 0x2000, 0x3000, 0x4000, 0x5000}
+    # Same level: the gate must not fire for ourselves.
+    assert _win_input_blocked_by_integrity(os.getpid()) is None
+
+
+def test_rids_tuple_is_fail_open_off_windows():
+    """Force the flag rather than relying on the host, so this holds on Windows CI too."""
+    from tools.computer_use import cua_backend_input
+
+    original = cua_backend_input._WINDOWS
+    try:
+        cua_backend_input._WINDOWS = False
+        rids = cua_backend_input._win_integrity_rids(1234)
+    finally:
+        cua_backend_input._WINDOWS = original
+    assert rids.probed is False
+    assert rids.own is None and rids.target is None
+    assert cua_backend_input._win_input_blocked_by_integrity(1234) is None

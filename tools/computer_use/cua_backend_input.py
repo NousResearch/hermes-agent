@@ -4,14 +4,15 @@ value-setter methods (mixed into ``CuaDriverBackend``)."""
 from __future__ import annotations
 
 import sys
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from tools.computer_use.backend import ActionResult
 from tools.computer_use.cua_backend_parse import _parse_key_combo
 
 _NO_TARGET_MSG = "No active window — call capture() first."
 _WINDOWS = sys.platform == "win32"
-_IL_NAMES = {0x1000: "Low", 0x2000: "Medium", 0x3000: "High", 0x4000: "System"}
+_IL_NAMES = {0x0000: "Untrusted", 0x1000: "Low", 0x2000: "Medium", 0x3000: "High", 0x4000: "System",
+             0x5000: "Protected"}
 _IL_BLOCKED_PREFIX = "Target window's process is unreachable by synthetic input on Windows: "
 _IL_BLOCKED_SUFFIX = (" Windows UIPI would silently discard the input while the driver still reports an "
                       "unverifiable success. No input was sent; capture still works, but input cannot "
@@ -26,6 +27,13 @@ _Variant = tuple[str, None | dict[str, Any] | Callable[[], dict[str, Any]]]
 
 def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
     return ActionResult(ok=False, action=action, message=message, **fields)
+
+
+class _IntegrityRids(NamedTuple):
+    """Outcome of the read-only integrity probe, with the ambiguity made explicit."""
+    own: Optional[int]      # mandatory label of this process, None when unreadable
+    target: Optional[int]   # mandatory label of the target, None when unreadable
+    probed: bool            # False when the target process could not be opened at all
 
 
 def _il_name(rid: int) -> str:
@@ -50,15 +58,15 @@ def _il_decision(own_rid: int | None, target_rid: int | None) -> str | None:
     return None
 
 
-def _win_input_blocked_by_integrity(pid: int) -> str | None:
-    """Refusal reason when *pid* is provably unreachable by synthetic input on Windows, else ``None``.
-    Compares ``TokenIntegrityLevel`` RIDs of the target process and this process (determinate even
-    under ``SeDebugPrivilege``, where token readability stops discriminating); a target token that
-    cannot be opened while ours can stays a conservative block. Read-only probes; never raises. On
-    any ctypes failure or non-Windows host returns ``None`` so callers keep today's ``unverifiable``
-    behavior (NousResearch/hermes-agent#142661)."""
+def _win_integrity_rids(pid: int) -> "_IntegrityRids":
+    """Read ``(own RID, target RID)`` for the integrity comparison. Read-only; never raises.
+
+    Split out from :func:`_win_input_blocked_by_integrity` so a test can assert the probe really parses
+    a RID. A probe that silently answers ``None`` for both sides makes every verdict "not blocked", and
+    the wiring tests — which stub this level — cannot see that.
+    """
     if not _WINDOWS:
-        return None
+        return _IntegrityRids(None, None, False)
     try:
         import ctypes
         from ctypes import wintypes
@@ -79,7 +87,7 @@ def _win_input_blocked_by_integrity(pid: int) -> str | None:
         advapi32.GetTokenInformation.restype = wintypes.BOOL
         advapi32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_uint, ctypes.c_void_p,
                                                  wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
-        advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(wintypes.UCHAR)
+        advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
         advapi32.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
         advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
         advapi32.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wintypes.DWORD]
@@ -96,8 +104,11 @@ def _win_input_blocked_by_integrity(pid: int) -> str | None:
                 return None  # ACCESS_DENIED here is the higher-integrity / protected signal
             try:
                 needed = wintypes.DWORD()
-                if not advapi32.GetTokenInformation(token, TokenIntegrityLevel, None, 0,
-                                                    ctypes.byref(needed)):
+                # The sizing call always fails with ERROR_INSUFFICIENT_BUFFER and puts the required length
+                # in `needed` — checking its return value here makes the probe answer None for every
+                # caller, which silently disables the gate.
+                advapi32.GetTokenInformation(token, TokenIntegrityLevel, None, 0, ctypes.byref(needed))
+                if not needed.value:
                     return None
                 buf = ctypes.create_string_buffer(needed.value)
                 if not advapi32.GetTokenInformation(token, TokenIntegrityLevel, buf, needed.value,
@@ -114,17 +125,32 @@ def _win_input_blocked_by_integrity(pid: int) -> str | None:
                 kernel32.CloseHandle(token)
 
         own = _il_rid(kernel32.GetCurrentProcess())
-        if own is None:
-            return None
         proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not proc:
-            return None  # process gone or otherwise unprobeable: not determinate, let the driver try
+            # ERROR_INVALID_PARAMETER means the pid is gone: nothing to compare, let the driver report it.
+            # Access denied means the process is unreachable even for a query handle, which is as
+            # determinate as an unreadable token.
+            denied = ctypes.get_last_error() == 5
+            return _IntegrityRids(own, None, denied)
         try:
-            return _il_decision(own, _il_rid(proc))
+            return _IntegrityRids(own, _il_rid(proc), True)
         finally:
             kernel32.CloseHandle(proc)
     except Exception:
-        return None
+        return _IntegrityRids(None, None, False)
+
+
+def _win_input_blocked_by_integrity(pid: int) -> str | None:
+    """Refusal reason when *pid* is provably unreachable by synthetic input on Windows, else ``None``.
+    Compares ``TokenIntegrityLevel`` RIDs of the target process and this process (determinate even
+    under ``SeDebugPrivilege``, where token readability stops discriminating); a target token that
+    cannot be opened while ours can stays a conservative block. Read-only probes; never raises. On
+    any ctypes failure or non-Windows host returns ``None`` so callers keep today's ``unverifiable``
+    behavior (NousResearch/hermes-agent#142661)."""
+    rids = _win_integrity_rids(pid)
+    if not rids.probed:
+        return None  # process gone or unopenable for an unrelated reason: not determinate
+    return _il_decision(rids.own, rids.target)
 
 
 class _InputMixin:

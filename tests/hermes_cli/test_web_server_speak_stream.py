@@ -93,6 +93,20 @@ def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
     assert streamer.requests == ["Hello there."]
 
 
+def test_rejects_stream_when_text_ingress_exceeds_byte_limit(stream_client, monkeypatch):
+    streamer = _FakeStreamer([b"\x00\x00"])
+    _patch_provider(monkeypatch, streamer)
+    monkeypatch.setattr("hermes_cli.web_routers.audio._SPEAK_STREAM_MAX_INPUT_BYTES", 8)
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "nine bytes"}))
+        with pytest.raises(WebSocketDisconnect) as exc:
+            conn.receive_json()
+
+    assert exc.value.code == 1009
+    assert streamer.requests == []
+
+
 def test_short_cjk_opener_is_synthesized_alone_with_configured_min_len(stream_client, monkeypatch):
     """speak_stream_ws cuts with the requesting profile's tts.streaming.min_len (#96927): a 7-char
     CJK opener gets its own provider request instead of riding behind the second sentence."""

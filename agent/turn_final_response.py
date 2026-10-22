@@ -1,6 +1,6 @@
-"""No-tool-call (final text) branch of the conversation turn loop: empty/think-only recovery,
-intent-ack / stall-guard continuation, length-continuation joining, dropped-tool-call
-re-prompt, scaffolding pop, stop gates, then the durable final flush. Extracted from
+"""No-tool-call (final text) branch of the conversation turn loop: unclosed-tool-call re-prompt,
+empty/think-only recovery, intent-ack / stall-guard continuation, length-continuation joining,
+dropped-tool-call re-prompt, scaffolding pop, stop gates, then the durable final flush. Extracted from
 ``run_conversation``; nothing here imports ``agent.conversation_loop`` at module level
 (cycle) — loop-internal nudge constants resolve lazily.
 """
@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
 from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from agent.think_scrubber import THINK_TAG_NAMES
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
@@ -31,6 +33,79 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
     "_dropped_toolcall_nudge",
 )
+
+# Unclosed text tool call (GLM ``<tool_call>name<arg_key>..`` or JSON ``<tool_call>{"name": ..``)
+# that a server returned as content because it could not parse it. Code (fenced or inline) and
+# closed reasoning blocks are ignored: a tag there is an example or a thought, not a call.
+_TOOL_CALL_OPEN_RE = re.compile(r"<(?:[\w.-]+:)?tool_call\b[^>]*>", re.IGNORECASE)
+_TOOL_CALL_CLOSE_RE = re.compile(r"</(?:[\w.-]+:)?tool_call\s*>", re.IGNORECASE)
+_FENCED_CODE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,}).*?(?:^[ \t]*\1[ \t]*$|\Z)", re.DOTALL | re.MULTILINE)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_CLOSED_REASONING_RE = re.compile(
+    rf"<({'|'.join(THINK_TAG_NAMES)})\b[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE,
+)
+_ARG_TAG_RE = re.compile(r"</?arg_(?:key|value)>", re.IGNORECASE)
+_JSON_CALL_BODY_RE = re.compile(r"""\A\s*\{\s*["']name["']\s*:""")
+_BARE_NAME_RE = re.compile(r"\A\s*([A-Za-z_][\w.:-]*)\s*\Z")
+
+
+def ends_in_unclosed_tool_call(text: Any, tool_names: Any) -> bool:
+    """True when ``text`` ends inside a ``<tool_call>`` block that was never closed and that
+    carries call markup: GLM argument tags, a JSON ``{"name": ...`` body, or nothing but the name
+    of one of ``tool_names`` (any other lone word after the tag is prose)."""
+    if not isinstance(text, str) or "tool_call" not in text.lower():
+        return False
+    for pattern in (_FENCED_CODE_RE, _INLINE_CODE_RE, _CLOSED_REASONING_RE):
+        text = pattern.sub("", text)
+    opens = list(_TOOL_CALL_OPEN_RE.finditer(text))
+    if not opens:
+        return False
+    tail = text[opens[-1].end():]
+    if _TOOL_CALL_CLOSE_RE.search(tail):
+        return False
+    if _ARG_TAG_RE.search(tail) or _JSON_CALL_BODY_RE.match(tail):
+        return True
+    bare = _BARE_NAME_RE.match(tail)
+    return bool(bare) and bare.group(1) in (tool_names or ())
+
+
+def _reprompt_unclosed_tool_call(agent: Any, assistant_message: Any, finish_reason: Any, messages: Any) -> bool:
+    """Clean stop whose content ends inside an unparsed tool call: the call never ran, and
+    ``strip_think_blocks`` would drop the cut block (#101899), so the turn would end on the prose
+    before it or deliver the raw markup. Re-prompt with the dropped-tool-call nudge's flag and its
+    3-consecutive budget; after that the response takes the normal final-text path. Runs before
+    the empty-content check, where a fragment stripped to nothing would get a blind retry instead
+    of being told its call was not run."""
+    from agent.conversation_loop import _UNCLOSED_TOOLCALL_NUDGE_CONTENT
+
+    if (
+        finish_reason != "stop"
+        or assistant_message.tool_calls
+        or getattr(agent, "_dropped_toolcall_retries", 0) >= 3
+        or not ends_in_unclosed_tool_call(assistant_message.content, agent.valid_tool_names)
+    ):
+        return False
+    agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
+    logger.warning(
+        "finish_reason=stop with an unclosed text tool call in content (the server could not "
+        "parse it) — re-prompting for a complete call (retry %d/3, model=%s provider=%s)",
+        agent._dropped_toolcall_retries, agent.model, agent.provider,
+    )
+    agent._emit_diagnostic_status(
+        "↻ Model sent an incomplete tool call — "
+        f"re-prompting ({agent._dropped_toolcall_retries}/3)"
+    )
+    # Ephemeral like the dropped-tool-call pair: never persisted, popped when the turn ends.
+    interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    interim_msg["_dropped_toolcall_nudge"] = True
+    append_message(messages, interim_msg)
+    append_message(messages, {
+        "role": "user",
+        "content": _UNCLOSED_TOOLCALL_NUDGE_CONTENT,
+        "_dropped_toolcall_nudge": True,
+    })
+    agent._session_messages = messages
+    return True
 
 
 @dataclass
@@ -127,6 +202,10 @@ def finish_text_response(
     # empty-response warnings on the final response path.
     agent._mute_post_response = False
 
+    if _reprompt_unclosed_tool_call(agent, assistant_message, finish_reason, messages):
+        final_response = None
+        return _verdict("continue")
+
     # Think-block-only / empty content: recovery path.
     if not agent._has_content_after_think_block(final_response):
         _ev = recover_empty_response(
@@ -141,11 +220,7 @@ def finish_text_response(
         active_system_prompt = _ev.active_system_prompt
         _preflight_compression_blocked = _ev.preflight_compression_blocked
         api_call_count = _ev.api_call_count
-        if _ev.action == "return":
-            return _verdict("return", _ev.result)
-        if _ev.action == "break":
-            return _verdict("break")
-        return _verdict("continue")
+        return _verdict(_ev.action, _ev.result)
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0

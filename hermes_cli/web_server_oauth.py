@@ -235,6 +235,8 @@ def _record_sign_in_state(sess: dict[str, Any], state: Any) -> None:
             sess["model"] = state.model if state.model_changed else None
             # What the free tier's handoff did (moved apps, apps to reconnect); empty without one.
             sess["handoff"] = list(state.handoff)
+            # The same result as fields, so the desktop can name the apps and follow a retry.
+            sess["handoff_status"] = state.handoff_status
             return
         if kind == "cancelled":
             sess["status"] = "cancelled"

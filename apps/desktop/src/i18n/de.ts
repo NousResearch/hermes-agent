@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
+import { deCloudSignIn } from './de_cloud_sign_in'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
 import { deErrorLayers } from './de_error_layers'
@@ -1704,10 +1705,8 @@ export const deOverrides = {
       cloudSignedInDesc:
         'Sie sind angemeldet. Wählen Sie unten einen Agent; die Session wird automatisch aktualisiert.',
       cloudAgentsTitle: 'Ihre Agents',
-      cloudOrgPickerTitle: 'Organisation auswählen',
-      cloudOrgSelect: 'Auswählen',
       cloudOrgChange: 'Organisation ändern',
-      cloudOrgRole: role => `Rolle: ${role}`,
+      ...deCloudSignIn,
       cloudLoadingAgents: 'Ihre Agents werden geladen…',
       cloudNoAgents: {
         before: 'Keine Agents in diesem Konto gefunden. Legen Sie einen im ',

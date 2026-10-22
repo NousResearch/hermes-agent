@@ -1102,10 +1102,7 @@ export const ruOverrides = {
       cloudNeedsSignIn: 'Войдите в Hermes Cloud, чтобы обнаружить агентов в вашем аккаунте.',
       cloudSignedInDesc: 'Вы вошли. Выберите агента ниже; сессия обновляется автоматически.',
       cloudAgentsTitle: 'Ваши агенты',
-      cloudOrgPickerTitle: 'Выберите организацию',
-      cloudOrgSelect: 'Выбрать',
       cloudOrgChange: 'Сменить организацию',
-      cloudOrgRole: role => `Роль: ${role}`,
       cloudLoadingAgents: 'Загрузка ваших агентов…',
       cloudNoAgents: {
         before: 'Агенты на этом аккаунте не найдены. Создайте агента в',

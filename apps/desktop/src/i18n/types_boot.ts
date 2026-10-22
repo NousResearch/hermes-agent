@@ -63,6 +63,7 @@ export interface BootTranslations {
     signedInMessage: string
     signInIncompleteTitle: string
     signInIncompleteMessage: string
+    browserSignInIncompleteMessage: string
     signInFailed: string
     signInToRemoteGateway: string
     signInWithProvider: (provider: string) => string

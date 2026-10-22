@@ -98,6 +98,42 @@ tool blocks the loopback listener, or you close the browser tab — the app
 - **Sign out**: clears both the stored native tokens and any legacy session
   cookie for that gateway.
 
+## Hermes Cloud
+
+Signing in to **Hermes Cloud** (Settings → Gateway → Hermes Cloud) uses the
+same native pattern, but talks to the Nous Portal directly instead of going
+through a gateway:
+
+- **Sign-in opens your default browser.** You log in to the portal there (or
+  reuse the session you already have), then see a consent screen — _Allow
+  Hermes Desktop to access your Hermes Cloud agents in &lt;organization&gt;?_ —
+  with **Allow** / **Deny**. **Deny** changes nothing: a first sign-in stays
+  signed out, and during **Change org** your existing session stays signed in.
+- **While the browser is open**, Settings shows **Cancel sign-in** (stops
+  waiting and closes the pending sign-in — closing the browser tab alone does
+  not) and **Copy sign-in link**, for when the browser didn't open: paste the
+  copied link into any browser on this machine to continue. The same two
+  controls appear on the startup recovery screen when it re-signs you in.
+- **Team choice happens in the browser.** If your account belongs to several
+  organizations, the portal asks which one before the consent screen. The
+  desktop session is tied to that one organization; the agent list shows its
+  agents.
+- **Switching team = sign in again.** **Change org** in Settings re-opens the
+  browser sign-in so you can pick the other organization. Your current session
+  stays in place until the new sign-in completes. Signing in to a different
+  organization drops the previous organization's per-agent tokens and its
+  remembered agents (also when you signed out in between); saved Cloud
+  gateways from that organization reconnect once you are back in it.
+- **Connecting to an agent needs no second sign-in.** The app trades its
+  Hermes Cloud session for a short-lived token scoped to that one agent and
+  renews it in the background, so the agent never shows its own login page.
+- **Sign out** clears the Hermes Cloud session and every per-agent token
+  derived from it.
+
+If you were signed in to Hermes Cloud with an older desktop build (which used
+an in-app sign-in window), the app shows you as signed out once after the
+update — sign in again and your saved Cloud gateways keep working.
+
 ## For gateway operators
 
 Native sign-in is available automatically on any gated gateway with an
@@ -123,3 +159,5 @@ The relevant endpoints (all public, pre-auth bootstrap, same as the existing
 - [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — the loopback-callback
   pattern for provider/MCP OAuth on remote machines.
 - [Run Hermes with Nous Portal](./run-hermes-with-nous-portal.md)
+- [Hermes Desktop](../user-guide/desktop.md) — connection modes, including
+  Hermes Cloud.

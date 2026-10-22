@@ -7,6 +7,7 @@ import { enBoot } from './en_boot'
 import { enCatalog } from './en_catalog'
 import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
+import { enCloudSignIn } from './en_cloud_sign_in'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
@@ -1363,10 +1364,8 @@ export const en: Translations = {
       cloudNeedsSignIn: 'Sign in to Hermes Cloud to discover the agents on your account.',
       cloudSignedInDesc: 'You are signed in. Pick an agent below; the session refreshes automatically.',
       cloudAgentsTitle: 'Your agents',
-      cloudOrgPickerTitle: 'Choose an organization',
-      cloudOrgSelect: 'Select',
       cloudOrgChange: 'Change org',
-      cloudOrgRole: role => `Role: ${role}`,
+      ...enCloudSignIn,
       cloudLoadingAgents: 'Loading your agents…',
       cloudNoAgents: {
         before: 'No agents found on this account. Create one in the ',

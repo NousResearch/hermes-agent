@@ -76,6 +76,7 @@ export const enBoot = {
       signedInMessage: 'Reconnecting to the remote gateway…',
       signInIncompleteTitle: 'Sign-in incomplete',
       signInIncompleteMessage: 'The login window closed before authentication finished.',
+      browserSignInIncompleteMessage: 'Sign-in was not completed in the browser.',
       signInFailed: 'Sign-in failed',
       signInToRemoteGateway: 'Sign in to remote gateway',
       signInWithProvider: provider => `Sign in with ${provider}`,

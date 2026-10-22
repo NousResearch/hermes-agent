@@ -71,6 +71,7 @@ export const esBoot = {
       signedInMessage: 'Reconectando con el gateway remoto…',
       signInIncompleteTitle: 'Inicio de sesión incompleto',
       signInIncompleteMessage: 'La ventana de inicio de sesión se cerró antes de que terminara la autenticación.',
+      browserSignInIncompleteMessage: 'El inicio de sesión no se completó en el navegador.',
       signInFailed: 'No se pudo iniciar sesión',
       signInToRemoteGateway: 'Iniciar sesión en el gateway remoto',
       signInWithProvider: provider => `Iniciar sesión con ${provider}`,

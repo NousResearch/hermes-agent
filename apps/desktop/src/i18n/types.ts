@@ -15,6 +15,7 @@ import type { BootTranslations } from './types_boot'
 import type { CatalogTranslations } from './types_catalog'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
+import type { CloudBrowserSignInCopy } from './types_cloud_sign_in'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
@@ -1128,7 +1129,7 @@ catalog: CatalogTranslations
       scopesRestored: (profiles: string) => string
       scopeNotRestored: (profile: string, error: string) => string
     }
-    gateway: {
+    gateway: CloudBrowserSignInCopy & {
       loading: string
       unavailableTitle: string
       unavailableDesc: string
@@ -1151,10 +1152,7 @@ catalog: CatalogTranslations
       cloudNeedsSignIn: string
       cloudSignedInDesc: string
       cloudAgentsTitle: string
-      cloudOrgPickerTitle: string
-      cloudOrgSelect: string
       cloudOrgChange: string
-      cloudOrgRole: (role: string) => string
       cloudLoadingAgents: string
       cloudNoAgents: { before: string; linkText: string; after: string }
       cloudRefresh: string

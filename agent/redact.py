@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import threading
+from typing import Any
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -1968,6 +1969,34 @@ _EXC_UNSAFE_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f\x85\u2028\u2029]")
 # hermes_cli/logs.py _TS_RE (searched anywhere in a line) makes any stamped line a record.
 # Zero-width context so overlapping stamps ("12:00:2026-07-09 12:00:00") are all broken.
 _LOG_LINE_STAMP = re.compile(r"(?<=\d{4}-\d{2}-\d{2})[T ](?=\d{2}:\d{2}:\d{2})")
+def redact_message_text(text: str, *, force: bool = True) -> str:
+    """``text`` masked for a boundary that must never persist or replay a raw credential.
+
+    The same redactor every other boundary uses. ``force`` is on by default here because
+    these callers hand text to something that outlives the process that received it — a
+    stored transcript, or a plugin's own store — so a user's ``security.redact_secrets``
+    preference must not quietly reopen the hole.
+    """
+    return redact_sensitive_text(text, force=force)
+
+
+def redact_message_content(content: Any, *, force: bool = True) -> Any:
+    """Redact the string leaves of a message ``content`` payload, structure intact.
+
+    Accepts plain text or a list of multimodal parts: only ``text`` values are rewritten,
+    so an image part, a ``type`` discriminator and every other payload key survive a
+    round-trip. A false positive here corrupts a transcript silently, which is why the
+    masking is this module's — a caller's own pattern list would drift from it.
+    """
+    if isinstance(content, str):
+        return redact_message_text(content, force=force)
+    if isinstance(content, list):
+        return [
+            {**part, "text": redact_message_text(part["text"], force=force)}
+            if isinstance(part, dict) and isinstance(part.get("text"), str) else part
+            for part in content
+        ]
+    return content
 
 
 class RedactingFormatter(logging.Formatter):

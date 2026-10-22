@@ -72,3 +72,21 @@ def test_compressor_updated_on_fallback(mock_ctx_len, mock_resolve):
     assert c.threshold_tokens == int(128_000 * c.threshold_percent)
 
 
+def test_builtin_fallback_reserve_round_trip_uses_current_route():
+    from agent.chat_completion_helpers import _update_fallback_context_compressor
+    agent = _make_agent_with_compressor()
+    agent.max_tokens = None
+    c = agent.context_compressor
+    with patch("agent.model_metadata.get_model_context_length", return_value=1_000_000):
+        for provider, reserve in (("gemini", 65_535), ("openai", None), ("gemini", 65_535)):
+            agent.provider = provider
+            agent.base_url = "https://offline.invalid/v1"
+            _update_fallback_context_compressor(agent)
+            assert c.max_tokens == reserve
+            assert c.threshold_tokens == int((1_000_000 - (reserve or 0)) * 0.50)
+        agent.max_tokens = 123_456
+        _update_fallback_context_compressor(agent)
+        assert c.max_tokens == 123_456
+        assert c.threshold_tokens == 438_272
+
+

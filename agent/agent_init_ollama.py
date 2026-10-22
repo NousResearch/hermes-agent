@@ -61,7 +61,8 @@ def _clamp_compressor_to_ollama_num_ctx(agent):
             "Compressor window clamped to Ollama num_ctx: %d -> %d",
             _cc_window, agent._ollama_num_ctx,
         )
-        agent.context_compressor.update_model(
-            model=agent.model, context_length=agent._ollama_num_ctx, base_url=agent.base_url,
+        from agent.context_engine_budget import update_runtime_context_compressor
+        update_runtime_context_compressor(
+            agent, agent._ollama_num_ctx, reason="ollama_num_ctx", model=agent.model, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
         )

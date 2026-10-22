@@ -2662,12 +2662,12 @@ class ContextCompressor(
         trigger math lives, shared by ``update_model`` and the switch guard's preview so the number the
         guard quotes is the number the compressor installs (#83450). Excludes the auxiliary-summariser
         ceiling, which the feasibility probe re-derives per runtime."""
-        base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
-        effective_percent = self._effective_threshold_percent(context_length, base_percent)
-        threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
-        cap = self._effective_threshold_cap(context_length)
-        if cap is not None:
-            threshold = min(threshold, cap)
+        from agent.context_engine_budget import configured_compression_budget
+        _, base_percent, effective_percent, threshold = configured_compression_budget(
+            model, context_length, provider=provider, threshold_percent=self._config_threshold_percent,
+            model_thresholds=self.model_thresholds, max_tokens=self.max_tokens,
+            threshold_tokens_cap=self.threshold_tokens_cap,
+        )
         return base_percent, effective_percent, threshold
 
     def _effective_threshold_cap(self, context_length: int) -> int | None:

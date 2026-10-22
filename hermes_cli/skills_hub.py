@@ -990,6 +990,7 @@ def _resolve_session_capabilities() -> "tuple[set | None, set | None]":
         }
         return available_tools, available_toolsets
     except Exception:
+        logging.getLogger(__name__).debug("Could not resolve session capabilities", exc_info=True)
         return None, None
 
 

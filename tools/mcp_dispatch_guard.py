@@ -136,9 +136,14 @@ def admit_mcp_dispatch(server: str, tool_name: str, args: dict,
         # A registered *required* guard with a missing profile policy is
         # configuration drift, not an opt-out. This also protects a running
         # gateway if config.yaml is edited after plugin discovery.
-        from hermes_cli.plugins import get_plugin_manager
-        if server in get_plugin_manager()._required_mcp_dispatch_guards:
-            return None, "Required MCP dispatch policy is missing; no call was sent."
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            if server in get_plugin_manager()._required_mcp_dispatch_guards:
+                return None, "Required MCP dispatch policy is missing; no call was sent."
+        except Exception:
+            logger.warning("Required MCP dispatch registry unavailable for %s/%s", profile, server,
+                           exc_info=True)
+            return None, "Required MCP dispatch registry is unavailable; no call was sent."
         return args, None
     try:
         canonical = _json_object(args)

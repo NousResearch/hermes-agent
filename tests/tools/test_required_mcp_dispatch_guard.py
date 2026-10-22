@@ -65,6 +65,15 @@ def test_registered_required_guard_denies_if_profile_policy_row_disappears(confi
     assert guard.admit_mcp_dispatch("other", "search", {}) == ({}, None)
 
 
+def test_unavailable_registry_denies_without_raising_when_policy_row_is_missing(configured, monkeypatch):
+    from hermes_cli import config, plugins
+
+    monkeypatch.setattr(config, "load_config_readonly", lambda: {"mcp": {"required_dispatch_guards": []}})
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    args, denial = guard.admit_mcp_dispatch("knowledge", "search", {})
+    assert args is None and "registry is unavailable" in denial
+
+
 def test_missing_origin_and_missing_plugin_fail_closed(configured):
     args, denial = guard.admit_mcp_dispatch("knowledge", "search", {"query": "x"})
     assert args is None and "no call was sent" in denial

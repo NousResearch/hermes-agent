@@ -198,12 +198,16 @@ VALID_HOOKS: set[str] = {
     # Observer-first (#64204, #64182 rule 3); a directive-shaped return gets a debug log so future
     # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
+    # pre_profile_create: after a named profile's layout is complete but before its staging directory
+    # is atomically renamed into profiles/. A plugin may seed the isolated tree; errors abort publish.
+    # Kwargs: staging_dir (str), name (canonical profile id), options (creation options mapping).
+    "pre_profile_create",
     "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification", "pre_profile_create"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

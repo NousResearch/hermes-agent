@@ -1017,6 +1017,9 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
     for entry in results:
         table.add_row(entry.get("name", ""), entry.get("source", ""), entry.get("status", ""))
     c.print(table)
+    for entry in results:
+        for line in _registry_advisory_lines(entry, entry.get("source", "")):
+            c.print(f"[dim]{entry.get('name', '')}: {line}[/]")
     update_count = sum(1 for entry in results if entry.get("status") == "update_available")
     c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
     orphaned = [entry.get("name", "") for entry in results if entry.get("status") == "orphaned"]
@@ -1024,6 +1027,28 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
         c.print(f"[yellow]Orphaned:[/] {', '.join(orphaned)} — lock-file entries whose local "
                 "directory is missing or replaced by a non-directory. For missing directories, "
                 "remove the stale entry with: hermes skills uninstall <name>\n")
+
+
+def _registry_advisory_lines(metadata: dict, source: str) -> list[str]:
+    """Render registry claims as information, never as a local scan verdict."""
+    security = metadata.get("registry_security") if isinstance(metadata, dict) else None
+    version = metadata.get("registry_version") if isinstance(metadata, dict) else None
+    if source != "clawhub" or not isinstance(security, dict):
+        return []
+    details = []
+    if isinstance(version, str) and version:
+        details.append(f"v{version}")
+    for key in ("decision", "status", "checked_at"):
+        value = security.get(key)
+        if isinstance(value, str) and value:
+            details.append(f"{key.removesuffix('_at')}={value}" if key != "checked_at" else f"checked={value}")
+    if not details:
+        return []
+    lines = ["ClawHub registry (advisory): " + "; ".join(details)]
+    audit_url = security.get("audit_url")
+    if isinstance(audit_url, str) and audit_url:
+        lines.append(f"ClawHub audit link (registry claim): {audit_url}")
+    return lines
 
 
 def _has_local_edits(installed: dict) -> bool:
@@ -1118,6 +1143,8 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
         c.print(format_scan_report(scan_skill(skill_path, source=entry.get("identifier", entry["source"]))))
+        for line in _registry_advisory_lines(entry.get("metadata", {}), entry.get("source", "")):
+            c.print(f"[dim]{line}[/]")
         if deep:
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
         c.print()

@@ -1,0 +1,28 @@
+name: profile-switcher
+repo: https://github.com/okyssta/hermes-profile-switcher
+sha: 9cab5b3ef6d978806c6e8b0d733f5b0ef271502d
+subdir: profile-switcher
+title: Profile Switcher
+description: 'A macOS-style quick switcher for Hermes profiles in the desktop app. One chord (⌥⌘P by
+  default, rebindable in the app''s own keybind panel) opens a panel of every profile with its model and
+  most recent conversation; ↑ ↓ move the highlight and Enter lands you in the profile you pick. A status-bar
+  chip names the active profile and opens the same panel on click. The switch goes through the Desktop''s own
+  profile path, so the target profile''s backend is activated and its chrome is scoped onto it. Desktop-only
+  (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware, env vars, network
+  calls, or stored credentials.'
+maintainer: okyssta
+tier: community
+category: desktop
+version: "1.0.0"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/okyssta/hermes-profile-switcher#readme
+image: https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/9cab5b3ef6d978806c6e8b0d733f5b0ef271502d/assets/profile-switcher.png
+screenshots:
+  - https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/9cab5b3ef6d978806c6e8b0d733f5b0ef271502d/assets/profile-switcher.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

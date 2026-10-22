@@ -217,16 +217,16 @@ class LeftCoreFeature:
     # prefixes it shared with the feature's tools (stripped only when the source runs the adapter).
     enable_env: tuple[str, ...] = ()
     channel_env_prefixes: tuple[str, ...] = ()
-    # Top-level command the plugin registers: in place of core's ``hermes auth <cli>`` login
-    # (``hermes <cli> login|status|logout``), or core's own top-level command kept under the same name
-    # (``hermes import-agent``). :func:`moved_command_hint` points the old spelling at the plugin.
+    # Top-level command the plugin registers in place of core's ``hermes auth <cli>`` login
+    # (``hermes <cli> login|status|logout``); :func:`moved_command_hint` points the old spelling at it.
     cli: str = ""
-    # Top-level command the plugin registers in place of core's nested ``old_command``
-    # (``hermes mcp serve`` -> ``hermes mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
+    # Top-level command the plugin registers: core's own command kept under its name (``hermes
+    # import-agent``), or in place of core's nested ``old_command`` (``hermes mcp serve`` -> ``hermes
+    # mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
     command: str = ""
     old_command: str = ""
     # Other top-level commands core shipped that the same plugin now registers (``hermes claw``, the
-    # OpenClaw migration's spelling before ``hermes import-agent openclaw``); hinted like *cli*.
+    # OpenClaw migration's spelling before ``hermes import-agent openclaw``); hinted like *command*.
     old_cli: tuple[str, ...] = ()
     # Key of the bundled plugin core shipped (``observability/langfuse``). It stays an alias of the
     # catalog plugin in ``plugins.enabled`` / ``plugins.disabled`` (the loader's gate, an
@@ -274,7 +274,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
     LeftCoreFeature(
         plugin="agent-importers", label="`hermes import-agent`", in_use=agent_imports_in_use,
         unchanged="`hermes import-agent`, its flags and your import-sync.json sync sources are unchanged",
-        cli="import-agent", old_cli=("claw",),
+        command="import-agent", old_cli=("claw",),
     ),
 )
 

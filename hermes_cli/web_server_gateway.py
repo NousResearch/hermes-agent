@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
+from hermes_cli._subprocess_compat import detached_popen
 from hermes_cli.config import get_hermes_home
 
 # Same logger the code used before extraction (record parity).
@@ -517,29 +517,16 @@ def _spawn_hermes_action(
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)
 
-    def _popen(**detach: Any) -> subprocess.Popen:
-        return subprocess.Popen(
-            cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-            env=action_env, **detach,
+    def _record_breakaway_denial(exc: OSError) -> None:
+        log_file.write(
+            f"{name}: breakaway spawn refused ({exc}); retrying without CREATE_BREAKAWAY_FROM_JOB\n".encode()
         )
 
     try:
-        if sys.platform == "win32":
-            try:
-                proc = _popen(creationflags=windows_detach_flags())
-            except OSError as exc:
-                # CREATE_BREAKAWAY_FROM_JOB is refused ("Access is denied") when the parent's job
-                # object forbids breakaway — an Electron/Tauri-launched dashboard, some Windows
-                # Terminal configs. The flag is best-effort by contract (windows_detach_flags);
-                # retry without it so the action still spawns, and record why for the status route.
-                if getattr(exc, "winerror", None) != 5:
-                    raise
-                log_file.write(
-                    f"{name}: breakaway spawn refused ({exc}); retrying without CREATE_BREAKAWAY_FROM_JOB\n".encode()
-                )
-                proc = _popen(creationflags=windows_detach_flags_without_breakaway())
-        else:
-            proc = _popen(start_new_session=True)
+        proc = detached_popen(
+            cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            env=action_env, on_breakaway_denied=_record_breakaway_denial,
+        )
     except OSError as exc:
         # Without this the action log would hold only the started-header for a spawn that never
         # happened; close the handle the child would have owned and let the endpoint report it.

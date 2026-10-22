@@ -24,8 +24,10 @@ def rich_trigger_text(adapter, message):
     def inline(value):
         if isinstance(value, str):
             # Entity-less rich prose can contain literal URLs or backtick code too.
+            # URI schemes need only ":", not "://" (e.g. tg: or custom:).
+            # Mask each occurrence so identical words in visible prose survive.
             yield re.sub(
-                r"(?is)`+.*?`+|\b[a-z][a-z0-9+.-]*://\S+|\b(?:www\.|mailto:)\S+",
+                r"(?is)`+.*?`+|\b[a-z][a-z0-9+.-]*:\S+|\bwww\.\S+",
                 " ", value,
             )
         elif isinstance(value, (list, tuple)):

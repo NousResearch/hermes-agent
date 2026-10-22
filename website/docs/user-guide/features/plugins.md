@@ -887,7 +887,8 @@ What changes in `host` mode:
   flight returns a tool error and Hermes restarts the host and reloads its plugins (bounded retries).
 - **A few surfaces need in-process code** and fail that plugin with a clear reason instead of loading:
   gateway platform adapters (`register_platform`), approval transports, Telegram/platform handlers,
-  model-provider profiles that build their own SDK client (`create_client`), streaming and websocket
+  model-provider profiles that build their own SDK client (`create_client`), terminal backends (the
+  backend's commands fail with this reason; the `singularity` plugin is one), streaming and websocket
   dashboard endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
 
 **Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can

@@ -1,7 +1,6 @@
 import type { ReloadMcpResult } from '@hermes/shared'
 
 import { translateNow } from '@/i18n'
-import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { ambientRequestFor } from '@/store/session-gone-latch'
 import { requestForOwnedSession } from '@/store/session-states'
@@ -19,9 +18,6 @@ export interface McpReloadOutcome {
   /** The MCP servers the chat's committed policy runs; null from a gateway that does not report them. */
   sessionServers: null | string[]
 }
-
-/** The change has not reached the chat yet; the user already has the deferral notice. */
-export class McpReloadDeferred extends Error {}
 
 export async function reloadMcp(
   gateway: Parameters<typeof ambientRequestFor>[0],
@@ -57,31 +53,5 @@ export function announceMcpReload(outcome: McpReloadOutcome, skip: readonly stri
       message: translateNow('promptNotices.mcpReloadUnavailable', unavailable.join(', ')),
       title: translateNow('settings.mcp.reloadFailed')
     })
-  }
-}
-
-/** For a flow that claims `server` is live in the chat (connect, reconnect): resolves only once it is;
- *  rejects with {@link McpReloadDeferred} while a turn defers it, or an error when it did not connect. */
-export async function reloadMcpFor(server: string, sessionId: null | string | undefined): Promise<void> {
-  const gateway = $gateway.get()
-
-  if (!gateway) {
-    throw new Error(translateNow('settings.mcp.reloadFailed'))
-  }
-
-  const outcome = await reloadMcp(gateway, sessionId)
-  announceMcpReload(outcome, [server])
-
-  if (outcome.unavailable.includes(server)) {
-    throw new Error(translateNow('promptNotices.mcpReloadUnavailable', server))
-  }
-
-  if (outcome.deferred) {
-    throw new McpReloadDeferred(translateNow('promptNotices.mcpReloadDeferred'))
-  }
-
-  // Connected for the profile is not enabled in this chat (no_mcp, an explicit pick, a platform allowlist).
-  if (outcome.sessionServers && !outcome.sessionServers.includes(server)) {
-    throw new Error(translateNow('promptNotices.mcpReloadNotInChat', server))
   }
 }

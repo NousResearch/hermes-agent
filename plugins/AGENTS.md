@@ -26,7 +26,8 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **Other features that leave core** (Home Assistant platform + toolset, Oct 2026 →
-  `plugin-catalog/homeassistant.yaml`; Spotify toolset → `plugin-catalog/spotify.yaml`) keep their
+  `plugin-catalog/homeassistant.yaml`; Spotify toolset → `plugin-catalog/spotify.yaml`; Singularity
+  terminal backend → `plugin-catalog/singularity.yaml`) keep their
   names/config/env and get a row in
   `hermes_cli/left_core_migration.py::LEFT_CORE` (catalog plugin + read-only "this home uses it"
   predicate); `hermes update` and agent/gateway start install the plugin for homes that used it.
@@ -36,7 +37,12 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   once the plugin dir exists): a later `hermes plugins remove` sticks, a failed install retries.
   Core special cases become `PlatformEntry` seams the plugin sets (`trusted_inbound`,
   `display_tier`, `shared_env_prefixes`), never a name check. A core `hermes auth <name>` login
-  becomes the plugin's own `hermes <name>` command (row field `cli`; the old spelling prints the new one).
+  becomes the plugin's own `hermes <name>` command (row field `cli`; the old spelling prints the new one),
+  and a nested core command becomes a top-level plugin command (`command` + `old_command`:
+  `hermes mcp serve` → `hermes mcp-serve`). A feature with no in-home signal (MCP clients live
+  outside Hermes) gets an `in_use` that is always False: hint only, never an automatic install.
+  A built-in terminal backend leaves its name off `BUILTIN_BACKEND_NAMES` so the plugin can register it
+  (row field `terminal_backend`: unknown-backend errors name the install command).
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
   connectors, analytics dashboards, paid-service tie-ins ship as standalone plugin repos
   (`~/.hermes/plugins/` or pip entry point) promoted in Discord `#plugins-skills-and-skins`. Reason:

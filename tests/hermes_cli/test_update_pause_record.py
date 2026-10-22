@@ -132,6 +132,26 @@ def test_resume_waits_for_a_whole_tree(tmp_path):
     assert pause_record.tree_is_whole(token, root) == (True, "")
 
 
+def test_a_set_paused_on_an_already_unreadable_head_resumes_until_a_move_is_bound(tmp_path):
+    """A .git git rejects (HEAD lost) before the pause: the gateways were serving this exact tree
+    and nothing the update did could write it, so the set resumes instead of waiting for a repair
+    no update can make. A bound move, or a HEAD that was readable at the pause, still holds it."""
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "a.py").write_text("v1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "v1")
+    readable_at_pause = pause_record.stamp_tree({"resume_needed": True}, root)
+    (root / ".git" / "HEAD").unlink()
+
+    token = pause_record.stamp_tree({"resume_needed": True}, root)
+    assert pause_record.tree_is_whole(token, root) == (True, "")
+    token["baselines"][0]["move_targets"] = ["0" * 40]
+    assert pause_record.tree_is_whole(token, root) == (False, "the checkout HEAD is unreadable")
+    assert pause_record.tree_is_whole(readable_at_pause, root) == (False, "the checkout HEAD is unreadable")
+
+
 def test_an_update_adopting_an_orphan_never_certifies_the_tree_it_left_torn(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
     root.mkdir()

@@ -76,6 +76,7 @@ class WhatsAppOnboardingStart(BaseModel):
     mode: Optional[str] = "bot"
     allowed_users: Optional[str] = ""
     profile: Optional[str] = None
+    reset_session: bool = False
 
 class WhatsAppOnboardingApply(BaseModel):
     mode: Optional[str] = None

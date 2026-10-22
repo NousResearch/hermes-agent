@@ -349,10 +349,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         (``multiplex_profiles`` off) still binds once a hosted room has flipped the process-wide
         credential guard — see ``_standalone_launch_scope``."""
         from gateway.run import _profile_runtime_scope
+        from gateway.session_policy import local_desktop_turn
         home = self._profile_scope_key_for_source(source)
-        if home is not None:
-            return _profile_runtime_scope(home)
-        return self._standalone_launch_scope()
+        return local_desktop_turn(self, source, _profile_runtime_scope(home) if home is not None
+                                  else self._standalone_launch_scope())
 
     def _profile_scope_key_for_source(self, source: SessionSource) -> Optional[Path]:
         """Profile home ``_profile_scope_for_source`` binds for ``source``, or ``None`` when it falls
@@ -1009,14 +1009,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         from agent.secret_scope import get_secret
         from gateway.display_config import resolve_display_setting, resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
-        from gateway.session_policy import policy_for_source
+        from gateway.session_policy import policy_for_source, policy_turn_toolsets
         policy = policy_for_source(self, source)
         from gateway.session_authorities import active_authority
         user_config = policy.config(active_authority(self), secrets=False) if policy else _load_gateway_config()
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         if policy:
-            enabled_toolsets = list(policy.current_toolsets(user_config))
+            enabled_toolsets = policy_turn_toolsets(active_authority(self), policy, user_config, source.chat_id)
         adapter = self._delivery_adapter_for(source)
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (

@@ -711,12 +711,14 @@ stage_repository() {
     local pinned=false channel="" release="" origin
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the
-    # initial commit yet", #40998). Move it aside -- never delete it, it may
-    # hold something the user wants -- and clone fresh below.
-    if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    # initial commit yet", #40998); a killed update or a sync tool can leave
+    # one git rejects outright (empty HEAD, a gitdir: file pointing nowhere),
+    # where `hermes update` cannot fetch. Move it aside -- never delete it, it
+    # may hold something the user wants -- and clone fresh below.
+    if [ -e "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
         local broken
         broken="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
-        log_warn "$INSTALL_DIR has no commits (interrupted clone); moving it aside to $broken"
+        log_warn "$INSTALL_DIR is not a usable git checkout (interrupted clone or damaged .git); moving it aside to $broken"
         mv "$INSTALL_DIR" "$broken" || fail "cannot move $INSTALL_DIR aside" filesystem_error
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then

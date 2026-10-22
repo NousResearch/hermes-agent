@@ -5,6 +5,7 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+import functools
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -58,8 +59,26 @@ def _int_param(params: dict, key: str, default: int) -> int:
     """``int(params[key])`` with ``default`` for missing / unparsable values."""
     try:
         return int(params.get(key, default))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _valid_integer_param(key: str):
+    """Reject malformed numeric input before the handler mutates state or starts work."""
+    from pydantic import TypeAdapter, ValidationError
+
+    adapter = TypeAdapter(int | None)
+
+    def decorate(fn):
+        @functools.wraps(fn)  # keeps markers like _hermes_profile_scoped visible to install()
+        def handler(rid, params: dict, *args):
+            try:
+                adapter.validate_python(params.get(key))
+            except ValidationError:
+                return _err(rid, 4000, f"{key} must be an integer")
+            return fn(rid, params, *args)
+        return handler
+    return decorate
 
 
 def _new_runtime_ids(params: dict) -> tuple[str, str]:
@@ -416,7 +435,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
-            "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
+            "cols": _int_param(params, "cols", 80), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
@@ -482,11 +501,13 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
 
 
 @method("session.create")
+@_valid_integer_param("cols")
 def _(rid, params: dict) -> dict:
     return _create_session(rid, params)
 
 
 @method("session.branch_stored")
+@_valid_integer_param("cols")
 def _(rid, params: dict) -> dict:
     """Whole-session branch of a stored parent without routing its transcript through the client
     (a distinct method so an older gateway answers "unknown method" instead of an empty branch)."""
@@ -539,12 +560,13 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
 
 
 @method("session.list")
+@_valid_integer_param("limit")
 @_with_db(5006, session_scoped=False)
 def _(rid, params: dict, db) -> dict:
     try:
         if title_lookup := _str_param(params, "title"):
             return _session_list_by_title(rid, db, title_lookup)
-        limit = int(params.get("limit", 200) or 200)
+        limit = _int_param(params, "limit", 200) or 200
         # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
         # surfaces that OWN hidden sessions (Bots pane, pickers).
         from pathlib import Path
@@ -1342,6 +1364,7 @@ def _(rid, params: dict, session: dict) -> dict:
 
 
 @method("llm.oneshot")
+@_valid_integer_param("max_tokens")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Stateless one-shot LLM request; a live ``session_id`` lends its model, else the ``task`` backend.
@@ -1541,6 +1564,7 @@ def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | Non
 
 
 @_pet_method("pet.cells", fail_open=_PET_OFF)
+@_valid_integer_param("cols")
 def _(rid, params: dict) -> dict:
     """Half-block cell frames (``[tr,tg,tb,ta, br,bg,bb,ba]``) for one pet ``state``; ``cols``, ``graphics``."""
     from agent.pet import constants, store
@@ -1553,7 +1577,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"enabled": False})
     state = str(params.get("state") or constants.PetState.IDLE.value)
     scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
-    cols = int(params.get("cols") or 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
+    cols = _int_param(params, "cols", 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
     base = {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "state": state}
     if params.get("graphics") and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale)):
         return _ok(rid, {**base, **kitty})
@@ -1712,6 +1736,7 @@ def _pet_pick_provider(params: dict, *, require_references: bool):
 
 
 @_pet_method("pet.generate", scoped=False)
+@_valid_integer_param("count")
 def _(rid, params: dict) -> dict:
     """Candidate base looks for a new pet (draft step; worker pool): ``prompt`` (or a ``referenceImage``
     data URL), ``count`` (≤4), ``style``, ``provider`` → ``{ok, token, drafts:[{index, dataUri}]}``."""
@@ -1810,126 +1835,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"ok": True, "slug": result.slug, "displayName": result.display_name,
                      "warnings": result.validation.get("warnings", []),
                      "pet": _pet_sprite_payload(pet, scale=_pet_config_scale()) if pet else {}})
-
-
-# ── billing / subscription ───────────────────────────────────────────
-# All fail-open: a logged-out / unreachable portal yields an ``ok`` envelope with a typed
-# ``error`` (not a JSON-RPC error) so the TUI maps it to copy. ``billing:manage`` routes
-# return error=insufficient_scope on 403, which drives the ``billing.step_up`` device flow.
-def _billing_view(name: str, module: str, builder: str, serializer: str, fallback: dict) -> None:
-    """Read-only view RPC (no scope required): ``serializer(module.builder())``, ``fallback`` on any error.
-    The view module stays a lazy import (startup budget); the serializer is a server global."""
-    @method(name)
-    def _(rid, params: dict) -> dict:
-        try:
-            from importlib import import_module
-            return _ok(rid, globals()[serializer](getattr(import_module(module), builder)()))
-        except Exception:
-            return _ok(rid, dict(fallback))
-
-
-@method("billing.state")
-def _(rid, params: dict) -> dict:
-    """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
-    bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal
-    round-trip that could only fail."""
-    try:
-        from agent.billing_view import BillingState, build_billing_state
-        from hermes_cli.anon_auth import has_free_tier_account
-        if has_free_tier_account():
-            return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier_account=True))
-        return _ok(rid, _serialize_billing_state(build_billing_state()))
-    except Exception:
-        return _ok(rid, {"ok": True, "logged_in": False, "free_tier_account": False, "error": "could not load billing state"})
-
-
-_billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
-              {"ok": True, "available": False})
-_billing_view("subscription.state", "agent.subscription_view", "build_subscription_state",
-              "_serialize_subscription_state",
-              {"ok": True, "logged_in": False, "error": "could not load subscription state"})
-
-
-@method("subscription.preview")
-def _(rid, params: dict) -> dict:
-    """POST /api/billing/subscription/preview → chargeless effect quote. billing:manage."""
-    from agent.subscription_view import subscription_change_preview_from_payload
-    from hermes_cli.nous_billing import post_subscription_preview
-    if not (tier_id := params.get("subscription_type_id")):
-        return _billing_invalid(rid, "subscription_type_id is required")
-    return _billing_call(rid, lambda: _serialize_subscription_preview(
-        subscription_change_preview_from_payload(post_subscription_preview(subscription_type_id=tier_id))))
-
-
-def _billing_route(name: str, call, *, invalid=None, message: str = "", error: str = "invalid_request",
-                   idempotent: bool = False):
-    """Portal write route on ``hermes_cli.nous_billing`` (lazy; tests patch its functions): ``invalid(params)``
-    → ``_billing_invalid(message, error)``; ``call(nb, params, key)`` performs the request. ``idempotent``
-    mints ``idempotency_key`` if absent and echoes it (also on error) so the TUI retries the SAME operation."""
-    @method(name)
-    def _(rid, params: dict) -> dict:
-        import hermes_cli.nous_billing as nb
-        if invalid is not None and invalid(params):
-            return _billing_invalid(rid, message, error=error)
-        key = extra = None
-        if idempotent:
-            from agent.billing_view import new_idempotency_key
-            key = params.get("idempotency_key") or new_idempotency_key()
-            extra = {"idempotency_key": key}
-        return _billing_call(rid, lambda: call(nb, params, key) | (extra or {}), extra=extra)
-
-
-# PUT pending-change: schedule a downgrade / same-price change OR a period-end cancellation.
-_billing_route("subscription.change", lambda nb, p, _k: _billing_pending_change(nb.put_subscription_pending_change(
-    subscription_type_id=p.get("subscription_type_id"), cancel=bool(p.get("cancel")))),
-    invalid=lambda p: not p.get("cancel") and not p.get("subscription_type_id"),
-    message="subscription_type_id or cancel is required")
-# DELETE pending-change: clear a scheduled downgrade / cancellation (re-enables recurring spend).
-_billing_route("subscription.resume",
-               lambda nb, p, _k: _billing_pending_change(nb.delete_subscription_pending_change()))
-# The money route (prorate + charge + flip plan). SCA / decline → status requires_action / payment_failed +
-# recovery_url.
-_billing_route("subscription.upgrade", lambda nb, p, key: _billing_pick(
-    nb.post_subscription_upgrade(subscription_type_id=p.get("subscription_type_id"), idempotency_key=key),
-    status="status", target_tier_name="targetTierName", recovery_url="recoveryUrl", reason="reason"),
-    invalid=lambda p: not p.get("subscription_type_id"), message="subscription_type_id is required", idempotent=True)
-# POST /api/billing/charge → {ok, charge_id, idempotency_key}.
-_billing_route("billing.charge", lambda nb, p, key: _billing_pick(
-    nb.post_charge(amount_usd=p.get("amount_usd"), idempotency_key=key), charge_id="chargeId"),
-    invalid=lambda p: p.get("amount_usd") is None, message="amount_usd is required", idempotent=True)
-# GET /api/billing/charge/{id} — a single status read; the caller drives the poll cadence.
-_billing_route("billing.charge_status", lambda nb, p, _k: _billing_pick(
-    nb.get_charge_status(p.get("charge_id")), status="status", amount_usd="amountUsd", settled_at="settledAt",
-    reason="reason"), invalid=lambda p: not p.get("charge_id"), message="charge_id is required",
-    error="invalid_charge_id")
-
-
-def _auto_reload(nb, p: dict, _key) -> dict:
-    """PATCH /api/billing/auto-top-up. params: {enabled, threshold, top_up_amount}."""
-    nb.patch_auto_top_up(enabled=bool(p.get("enabled")), threshold=p.get("threshold"),
-                         top_up_amount=p.get("top_up_amount"))
-    return {"ok": True}
-
-
-_billing_route("billing.auto_reload", _auto_reload, message="threshold and top_up_amount are required",
-               invalid=lambda p: p.get("threshold") is None or p.get("top_up_amount") is None)
-
-
-@method("billing.step_up")
-def _(rid, params: dict) -> dict:
-    """billing:manage step-up device flow → {ok, granted} (false when the server downscopes). Pooled (blocks
-    for minutes); URL/code reach the TUI via ``billing.step_up.verification`` (stdout is the RPC pipe) and the
-    browser opens TUI-side, never via the gateway's headless webbrowser.open."""
-    sid = params.get("session_id") or ""
-
-    def call():
-        from hermes_cli.auth import step_up_nous_billing_scope
-        granted = step_up_nous_billing_scope(
-            open_browser=False,
-            on_verification=lambda url, code: _emit(
-                "billing.step_up.verification", sid, {"verification_url": url, "user_code": code}))
-        return {"ok": True, "granted": bool(granted)}
-    return _billing_call(rid, call, extra={"granted": False})
 
 
 # ── session status / history / undo / compress / save / close ────────
@@ -2263,6 +2168,7 @@ def _legacy_spawn_tree_entry(p, session_dir_name: str) -> dict | None:
 
 
 @method("spawn_tree.list")
+@_valid_integer_param("limit")
 def _(rid, params: dict) -> dict:
     session_id = _str_param(params, "session_id")
     if bool(params.get("cross_session")):
@@ -2279,7 +2185,7 @@ def _(rid, params: dict) -> dict:
                 entry for p in d.glob("*.json")
                 if p.name != _SPAWN_TREE_INDEX and (entry := _legacy_spawn_tree_entry(p, d.name)) is not None)
     entries.sort(key=lambda e: e.get("finished_at") or 0, reverse=True)
-    return _ok(rid, {"entries": entries[:int(params.get("limit") or 50)]})
+    return _ok(rid, {"entries": entries[:(_int_param(params, "limit", 50) or 50)]})
 
 
 @method("spawn_tree.load")
@@ -2301,8 +2207,13 @@ def _(rid, params: dict) -> dict:
 
 # ── terminal / event replay ──────────────────────────────────────────
 @_session_method("terminal.resize")
+@_valid_integer_param("cols")
 def _(rid, params: dict, session: dict) -> dict:
-    session["cols"] = cols = int(params.get("cols", 80))
+    try:
+        cols = int(params.get("cols", 80))
+    except (TypeError, ValueError, OverflowError):
+        return _err(rid, 4000, "cols must be an integer")
+    session["cols"] = cols
     return _ok(rid, {"cols": cols})
 
 
@@ -2312,7 +2223,7 @@ def _(rid, params: dict) -> dict:
     sid = str(params.get("session_id") or "")
     try:
         last_seen = int(params.get("last_seen", 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _err(rid, -32602, "invalid params: last_seen must be an integer")
     from tui_gateway import event_replay as er
     frames = er.events_since(sid, last_seen)
@@ -2337,3 +2248,5 @@ def register(server) -> None:
     methods_session_branch.register(server)
     from . import methods_session_interrupt
     methods_session_interrupt.register(server)
+    from . import methods_session_billing
+    methods_session_billing.register(server)

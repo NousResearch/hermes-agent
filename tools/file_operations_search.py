@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from tools import interrupt as tool_interrupt
@@ -116,6 +116,18 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     if result.exit_code == 124:
         return _SEARCH_TIMEOUT_MARKER_RE.sub("", result.stdout), "search_timeout"
     return result.stdout, None
+
+
+def _search_fetched_row_count(result: ExecuteResult) -> int:
+    """Rows the bounded fetch actually produced — the pipeline's ceiling probe.
+
+    The parse counts *matches*, which cannot distinguish a complete small result
+    from one cut off at ``fetch_limit`` (context rows/separators are dropped, so
+    the match count is only a floor). The raw payload rows can tell the two apart.
+    """
+    stdout, _ = _search_stdout_and_limit(result)
+    _, payload = _split_tool_diagnostics(stdout)
+    return len([line for line in payload.strip().split("\n") if line])
 
 
 def _bundled_rg() -> Optional[str]:
@@ -571,6 +583,7 @@ class SearchMixin:
             merged = self._search_files(pattern, existing, limit, offset, order)
         else:
             merged = SearchResult()
+            exact_parts = []
             for root in existing:
                 sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context)
                 if sub.error:
@@ -580,6 +593,9 @@ class SearchMixin:
                 merged.counts.update(sub.counts)
                 merged.total_count += sub.total_count
                 merged.truncated = merged.truncated or sub.truncated
+                exact_parts.append(sub._total_is_exact)
+            # The sum is exact only when every part was re-counted exactly.
+            merged._total_is_exact = all(exact_parts)
             merged.matches = merged.matches[:limit]
             merged.files = merged.files[:limit]
         note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
@@ -1022,14 +1038,27 @@ class SearchMixin:
 
     def _run_search_pipeline(self, cmd_parts: list[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
-                             line_cap: bool = False) -> SearchResult:
-        """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
-        rows report the true total (context mode also emits "--" separators, so
-        grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
+                             line_cap: bool = False,
+                             exact_total_fn: Optional[Callable[[], Optional[int]]] = None) -> SearchResult:
+        """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. The
+        window holds more rows than the page (context mode also emits "--"
+        separators, so grab 200 more), so a cut search still knows more than its
+        page. pipefail keeps the engine's exit 2 alive across ``| head``
         (a truncating head makes rg exit 0 / grep 141, which the ==2 guard ignores).
         ``line_cap`` appends ``| cut -c1-2000`` for engines without --max-columns
         (grep): bounds giant single-line matches at the pipe layer; skipped for
-        files_only/count where lines are paths/counts."""
+        files_only/count where lines are paths/counts.
+
+        ``exact_total_fn`` is the engine's untruncated-count hook. A fetch that
+        filled its window is provably possibly incomplete, so the page is marked
+        truncated on every engine; the hook's exact total (when it returns a
+        consistent one) then replaces the fetched floor in ``total_count`` and
+        clears the lower-bound reading (#79530). ``None`` - or a ``None`` return -
+        keeps the fetched estimate, still marked truncated. Context searches skip
+        the hook: their ``total_count`` counts context rows, so a line count is not
+        the same unit. The rg caller also skips it for multiline patterns, whose
+        matches span rows.
+        """
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         if line_cap:  # grep/find pipelines: shell only, with the column cap
             parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
@@ -1039,7 +1068,61 @@ class SearchMixin:
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
                                           shell_prefix="set -o pipefail; ")
-        return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
+        parsed = _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
+        if (parsed.error is None and parsed.limit_reason is None and result.exit_code != 130
+                and _search_fetched_row_count(result) >= fetch_limit):
+            parsed.truncated = True  # the fetch filled its window: completeness is unproven
+            if exact_total_fn is not None and context == 0:
+                try:
+                    exact_total = exact_total_fn()
+                except Exception:  # health: allow BLE001 -- a failed re-count must not break a usable page
+                    exact_total = None
+                # Never report less than the page already returned: a smaller count
+                # means the tree changed or the parse dropped rows, not a truth.
+                if exact_total is not None and exact_total >= parsed.total_count:
+                    parsed.total_count = exact_total
+                    parsed.truncated = exact_total > offset + limit
+                    parsed._total_is_exact = True
+        return parsed
+
+    def _count_rg_exact_total(self, pattern: str, path: str, file_glob: Optional[str],
+                              output_mode: str) -> Optional[int]:
+        """Exact total for a search whose fetch filled its window (#79530).
+
+        Runs rg's counting mode over the SAME root, pattern, glob and exclusions
+        with no ``| head``, and sums at the pipe layer so the count never buffers
+        one line per matching file: ``-l | wc -l`` counts matching files
+        (files_only), ``-c | awk`` sums matching lines per file - the unit a
+        content row reports for a line-oriented pattern. ``-c`` rather than
+        ``--count-matches`` keeps that unit: a line with two hits is one row.
+
+        ``--no-messages`` keeps per-file diagnostics out of the machine-parsed
+        stream; correctness rides on the exit code instead (0/1 only). Returns
+        ``None`` when the count cannot be trusted (rg gone, hard error, timeout),
+        so the caller keeps the fetched estimate.
+        """
+        rg_executable = self._resolve_command("rg")
+        if not rg_executable:
+            return None
+        parts = [self._quote_executable(rg_executable), "--no-messages"]
+        parts.extend(self._rg_exclusion_globs(path))
+        if file_glob:
+            parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+        parts.append(_OUTPUT_MODE_FLAGS.get(output_mode, "-c"))
+        parts.append(self._escape_shell_arg(pattern, translate_path=False))
+        parts.append(self._escape_native_tool_arg(path))
+        pipeline = " ".join(parts)
+        if output_mode == "files_only":
+            command = "set -o pipefail; " + pipeline + " | wc -l"
+        else:
+            command = "set -o pipefail; " + pipeline + " | awk -F: '{sum += $NF} END {print sum + 0}'"
+        result = self._exec(command, timeout=60)
+        if result.exit_code not in (0, 1):
+            return None
+        try:
+            return int(result.stdout.strip().split("\n")[-1].strip())
+        except ValueError:
+            return None
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int,
@@ -1074,7 +1157,14 @@ class SearchMixin:
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+
+        def _exact_total() -> Optional[int]:
+            return self._count_rg_exact_total(pattern, path, file_glob, output_mode)
+
+        # A multiline match spans rows, so `-c` lines are not content rows either.
+        return self._run_search_pipeline(
+            cmd_parts, output_mode, limit, offset, context, warning=ml_note,
+            exact_total_fn=None if multiline else _exact_total)
 
     def _grep_cmd(self, head: list[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> list[str]:

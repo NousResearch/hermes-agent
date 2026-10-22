@@ -611,6 +611,34 @@ if [ -f "$HERMES_HOME/.env" ]; then
     fi
 fi
 
+# The SQLite stores hold every session, message and context chunk — same
+# owner-only contract as .env. The image's umask is 0022, so a state.db or
+# lcm.db created at runtime is born 0644 and stays world-readable until
+# someone tightens it by hand; a host-mounted volume can arrive 0664 the same
+# way. Applied on every boot, to the data root and every profile, in the same
+# guard→chown→chmod shape as the .env block above (refuse_symlinked_path stops
+# a symlinked store from being chmodded through to whatever it points at).
+# SQLite's -wal and -shm siblings hold the same rows while a session is open,
+# so they get the same mode. Deliberately not a process-wide `umask 077` for
+# the s6 service: that would re-mode every socket and shared file the stack
+# creates, and anything expecting group-read would break silently.
+_STORE_FILES='state.db state.db-wal state.db-shm lcm.db lcm.db-wal lcm.db-shm'
+tighten_store() {
+    [ -e "$1" ] || return 0
+    if refuse_symlinked_path "chown/chmod" "$1"; then
+        return 0
+    fi
+    chown hermes:hermes "$1" 2>/dev/null || true
+    chmod 600 "$1" 2>/dev/null || true
+}
+for _dir in "$HERMES_HOME/" "$HERMES_HOME"/profiles/*/; do
+    [ -d "$_dir" ] || continue
+    for _store in $_STORE_FILES; do
+        tighten_store "${_dir}${_store}"
+    done
+done
+unset _dir _store _STORE_FILES
+
 # --- Grant the gateway access to the Fly Machines API socket (scale-to-zero) ---
 # On Fly, flyd mounts the local Machines API ("flaps") unix socket at /.fly/api
 # owned root:root 0755. The gateway's scale-to-zero self-suspend

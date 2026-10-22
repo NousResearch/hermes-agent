@@ -563,7 +563,8 @@ class GatewaySlashCommandsMixin:
                         cached = cache.get(session_key)
                     if cached:
                         agent = cached[0]
-                except Exception:
+                except Exception as _err:
+                    logger.debug("Failed resolving active runtime route from agent cache: %s", _err)
                     agent = None
         if agent is None or agent is _AGENT_PENDING_SENTINEL:
             return "", "", False
@@ -680,9 +681,9 @@ class GatewaySlashCommandsMixin:
         if not fallback_active:
             try:
                 _mc = session_row.get("model_config")
-                if isinstance(_mc, str) and _mc:
-                    _parsed = json.loads(_mc)
-                    _gateway_runtime = (_parsed or {}).get("gateway_runtime") or {}
+                _parsed = json.loads(_mc) if isinstance(_mc, str) and _mc else (_mc if isinstance(_mc, dict) else None)
+                if isinstance(_parsed, dict):
+                    _gateway_runtime = _parsed.get("gateway_runtime") or {}
                     fallback_active = bool(_gateway_runtime.get("fallback_active"))
             except Exception:
                 pass

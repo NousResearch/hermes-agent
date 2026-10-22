@@ -978,3 +978,56 @@ it('offers a read-only retry when the Send journal cannot be read, then restores
   expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   expect(compareAndSet).not.toHaveBeenCalled()
 })
+
+it('names the Bot behind each pending action and shows what an approval would allow before offering it', async () => {
+  const members = [{ member_id: 'ops', profile: 'ops', handle: 'ops', display_name: 'Ops Bot' },
+    { member_id: 'qa', profile: 'qa', handle: 'qa', display_name: 'QA Bot' },
+    { member_id: 'guard', profile: 'guard', handle: 'guard', display_name: 'Guard Bot' }]
+
+  const actions = [
+    { kind: 'approval', member_id: 'ops', task_id: 'clean', execution_generation: 3, request_id: 'r-clean',
+      approval: { request_id: 'r-clean', command: 'rm -rf build', description: 'Clear the build folder', choices: ['once', 'deny'] } },
+    { kind: 'approval', member_id: 'qa', task_id: 'vague', execution_generation: 1, request_id: 'r-vague',
+      approval: { description: 'Use a tool', choices: ['once', 'deny'] } },
+    // A plugin `approve` rule (tools/approval.py request_tool_approval): a tool label and the plugin's words.
+    { kind: 'approval', member_id: 'guard', task_id: 'pwd', execution_generation: 4, request_id: 'r-pwd',
+      approval: { request_id: 'r-pwd', command: '<terminal> (plugin approval rule)', description: 'Approve running pwd', choices: ['once'] } },
+    { kind: 'retry', member_id: 'qa', task_id: 'late', execution_generation: 2 }
+  ]
+
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room', members }, driver_status: { pending_actions: actions } }
+    : method === 'groups.log' ? { events: [] } : { approved: true })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'approvals' }} />)
+
+  const clean = (await screen.findByText('rm -rf build')).closest('[data-task-id]') as HTMLElement
+  expect(within(clean).getByText('Ops Bot is asking for approval. You decide.')).toBeTruthy()
+  expect(within(clean).getByText('Clear the build folder')).toBeTruthy()
+  const vague = screen.getByText('QA Bot is asking for approval. You decide.').closest('[data-task-id]') as HTMLElement
+  expect(within(vague).getByText('Action details are unavailable. Check again before allowing this.')).toBeTruthy()
+  expect(within(vague).queryByRole('button', { name: 'Allow once' })).toBeNull()
+  expect(within(vague).getByRole('button', { name: 'Deny' })).toBeTruthy()
+  expect(screen.getByText('QA Bot’s turn stopped before it finished. Retry it?')).toBeTruthy()
+  expect(screen.queryByText('ops')).toBeNull()
+
+  // As in the chat approval card, the plugin's words stand in for its tool label.
+  const guarded = screen.getByText('Guard Bot is asking for approval. You decide.').closest('[data-task-id]') as HTMLElement
+  expect(within(guarded).getByText('Approve running pwd')).toBeTruthy()
+  expect(within(guarded).queryByText(/plugin approval rule/)).toBeNull()
+  expect(within(guarded).queryByText('Action details are unavailable. Check again before allowing this.')).toBeNull()
+  // Only the choices the gateway offered.
+  expect(within(guarded).queryByRole('button', { name: 'Deny' })).toBeNull()
+
+  for (const [index, card, member, task, generation, requestId] of [
+    [1, clean, 'ops', 'clean', 3, 'r-clean'],
+    [2, guarded, 'guard', 'pwd', 4, 'r-pwd']
+  ] as const) {
+    const allow = within(card).getByRole('button', { name: 'Allow once' }) as HTMLButtonElement
+    await waitFor(() => expect(allow.disabled).toBe(false))
+    fireEvent.click(allow)
+    await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.approve')).toHaveLength(index))
+    expect(request.mock.calls.filter(call => call[1] === 'groups.approve')[index - 1][2]).toEqual({
+      room_id: 'approvals', member_id: member, task_id: task, execution_generation: generation, request_id: requestId, choice: 'once', profile: 'team'
+    })
+  }
+})

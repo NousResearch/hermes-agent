@@ -64,7 +64,7 @@ class TestDreamingCallback:
     @pytest.mark.asyncio
     async def test_accept_success_edits_message_and_strips_keyboard(self):
         query = _make_query("dr:accept:b7032ccd")
-        adapter, go = _run_dispatch(query)
+        _adapter, go = _run_dispatch(query)
 
         fake_proc = AsyncMock()
         fake_proc.returncode = 0
@@ -83,7 +83,7 @@ class TestDreamingCallback:
     @pytest.mark.asyncio
     async def test_script_failure_reports_error_and_leaves_keyboard(self):
         query = _make_query("dr:reject:b7032ccd")
-        adapter, go = _run_dispatch(query)
+        _adapter, go = _run_dispatch(query)
 
         fake_proc = AsyncMock()
         fake_proc.returncode = 1
@@ -100,7 +100,7 @@ class TestDreamingCallback:
     @pytest.mark.asyncio
     async def test_missing_script_answers_and_does_not_edit(self):
         query = _make_query("dr:accept:b7032ccd")
-        adapter, go = _run_dispatch(query)
+        _adapter, go = _run_dispatch(query)
 
         with patch("pathlib.Path.exists", return_value=False):
             await go()
@@ -112,7 +112,7 @@ class TestDreamingCallback:
     @pytest.mark.asyncio
     async def test_unknown_verb_rejected(self):
         query = _make_query("dr:snooze:b7032ccd")
-        adapter, go = _run_dispatch(query)
+        _adapter, go = _run_dispatch(query)
         await go()
 
         query.answer.assert_called_once()
@@ -148,7 +148,7 @@ class TestDreamingCallback:
     @pytest.mark.parametrize("bad", ["--force", "../etc/passwd", "a b", "x" * 65, "-rf"])
     async def test_malformed_rec_id_rejected_without_invoking_script(self, bad):
         query = _make_query(f"dr:accept:{bad}")
-        adapter, go = _run_dispatch(query)
+        _adapter, go = _run_dispatch(query)
 
         with patch("pathlib.Path.exists", return_value=True), \
              patch("asyncio.create_subprocess_exec", AsyncMock()) as mock_exec:

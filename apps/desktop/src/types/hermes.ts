@@ -201,6 +201,8 @@ export interface FreeTierStatus {
   challenge?: FreeTierChallengePayload | null
   /** Seconds until the one-time first-task sign-in offer is due (0 = now); null when none is owed. */
   nudge_due_in?: number | null
+  /** The same for the connector offer: no trial, and apps connected on the free tier. */
+  connector_nudge_due_in?: number | null
 }
 
 export interface MemoryProviderOAuthStatus {

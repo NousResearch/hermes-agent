@@ -218,9 +218,9 @@ describe('free-tier sign-in long-polls', () => {
     showFreeTierSignInResult({ handoff_status: null, session_id: 's', status: 'approved' })
     expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
 
-    $freeTierSignIn.set({ status: 'offer' })
+    $freeTierSignIn.set({ kind: 'trial', status: 'offer' })
     showFreeTierSignInResult({ handoff_status: claimed, session_id: 's', status: 'approved' })
-    expect($freeTierSignIn.get()).toEqual({ status: 'offer' })
+    expect($freeTierSignIn.get()).toEqual({ kind: 'trial', status: 'offer' })
 
     $freeTierSignIn.set({ status: 'closed' })
     showFreeTierSignInResult({

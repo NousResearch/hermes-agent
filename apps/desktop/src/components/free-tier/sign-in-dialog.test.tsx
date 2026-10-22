@@ -185,14 +185,14 @@ describe('FreeTierSignInDialog', () => {
         $freeTierStatus.set({ ...dueNow, nudge_due_in: 0 })
       })
 
-      expect(requestGateway).not.toHaveBeenCalledWith('free_tier.claim_nudge')
+      expect(requestGateway).not.toHaveBeenCalledWith('free_tier.claim_nudge', { kind: 'trial' })
 
       await act(async () => {
         setOnboardingSurfaceActive('onboarding', false)
       })
 
       await waitFor(() => expect(screen.getByText('Keep going with Hermes')).toBeTruthy())
-      expect(requestGateway).toHaveBeenCalledWith('free_tier.claim_nudge')
+      expect(requestGateway).toHaveBeenCalledWith('free_tier.claim_nudge', { kind: 'trial' })
     })
 
     it('a finished free-tier turn re-reads the status, and a due offer opens with no user action', async () => {
@@ -212,7 +212,7 @@ describe('FreeTierSignInDialog', () => {
 
     it('Sign in continues into the normal sign-in flow', async () => {
       await renderDialog()
-      await act(async () => $freeTierSignIn.set({ status: 'offer' }))
+      await act(async () => $freeTierSignIn.set({ kind: 'trial', status: 'offer' }))
 
       await act(async () => screen.getByRole('button', { name: 'Sign in' }).click())
 
@@ -221,11 +221,26 @@ describe('FreeTierSignInDialog', () => {
 
     it('Not now closes the offer', async () => {
       await renderDialog()
-      await act(async () => $freeTierSignIn.set({ status: 'offer' }))
+      await act(async () => $freeTierSignIn.set({ kind: 'trial', status: 'offer' }))
 
       await act(async () => screen.getByRole('button', { name: 'Not now' }).click())
 
       expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
+      expect(screen.queryByText('Keep going with Hermes')).toBeNull()
+    })
+
+    it('an app connected without the trial: claims the connector offer and shows its copy', async () => {
+      await renderDialog()
+      const ownKey = { ...dueNow, available: false, connector_nudge_due_in: null }
+      await act(async () => $freeTierStatus.set(ownKey))
+      requestGateway.mockImplementation(async (method?: string) =>
+        method === 'free_tier.claim_nudge' ? { claimed: true } : { ...ownKey, connector_nudge_due_in: 0 }
+      )
+
+      await act(async () => noteFreeTierTurnComplete())
+
+      await waitFor(() => expect(screen.getByText('Keep your connected apps')).toBeTruthy())
+      expect(requestGateway).toHaveBeenCalledWith('free_tier.claim_nudge', { kind: 'connector' })
       expect(screen.queryByText('Keep going with Hermes')).toBeNull()
     })
   })

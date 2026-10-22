@@ -145,7 +145,10 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
     <Dialog onOpenChange={open => !open && closeFreeTierSignIn()} open>
       <DialogContent onOpenAutoFocus={preventCloseButtonAutoFocus}>
         {state.status === 'offer' && (
-          <Screen body={copy.offer.body} heading={copy.offer.heading}>
+          <Screen
+            body={state.kind === 'connector' ? t.connectorOffer.body : copy.offer.body}
+            heading={state.kind === 'connector' ? t.connectorOffer.heading : copy.offer.heading}
+          >
             <Actions>
               <Button onClick={() => closeFreeTierSignIn()} size="sm" type="button" variant="text">
                 {copy.offer.notNow}

@@ -678,6 +678,7 @@ export interface FreeTierStatusResult {
   retry_after?: number | null
   challenge?: FreeTierChallengePayload | null
   nudge_due_in?: number | null
+  connector_nudge_due_in?: number | null
 }
 /** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
 export interface FreeTierChallengePayload {
@@ -708,6 +709,10 @@ export interface FreeTierProvisionResult {
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
+}
+export interface FreeTierClaimNudgeParams {
+  profile?: string | null
+  kind?: 'trial' | 'connector'
 }
 export interface FreeTierClaimNudgeResult {
   claimed: boolean
@@ -6169,7 +6174,7 @@ export interface RpcMethods {
   /** Report a browser window outcome for the matching pending attempt; mint remains authoritative. */
   'free_tier.challenge_result': { params: FreeTierChallengeResultParams; result: FreeTierChallengeResult }
   /** Claim the due sign-in offer; true for exactly one caller each time an offer comes due. */
-  'free_tier.claim_nudge': { params: ProfileParams; result: FreeTierClaimNudgeResult }
+  'free_tier.claim_nudge': { params: FreeTierClaimNudgeParams; result: FreeTierClaimNudgeResult }
   /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
   'free_tier.provision': { params: ProfileParams; result: FreeTierProvisionResult }
   /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */

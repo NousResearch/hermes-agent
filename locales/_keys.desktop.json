@@ -1089,6 +1089,8 @@
     "composer.wakeWordOff",
     "composer.wakeWordPausedVoice",
     "composer.wakingProfile",
+    "connectorOffer.body",
+    "connectorOffer.heading",
     "connectors.authorizedToolsUnavailable",
     "connectors.cancel",
     "connectors.checking",

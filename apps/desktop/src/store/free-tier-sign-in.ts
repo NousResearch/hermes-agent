@@ -14,7 +14,7 @@ import { LONG_POLL_MIN_GAP_MS, pause, restOfLongPollGap } from '@/lib/long-poll'
 import { gatewayActivationEpoch } from '@/store/gateway'
 import type { AppHandoffStatus, FreeTierStatus, OAuthPollResponse } from '@/types/hermes'
 
-import { $freeTierStatus, type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
+import { type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
 import { $localModelOfferPending } from './local-model-offer'
 import { afterOnboardingSurfaceClear, onboardingSurfaceActive } from './onboarding-presence'
 
@@ -27,6 +27,8 @@ import { afterOnboardingSurfaceClear, onboardingSurfaceActive } from './onboardi
  *  not name lands on `error`, which carries its own message. */
 export type FreeTierSignInFailure = 'busy' | 'error' | 'timed_out' | 'unavailable' | 'unreachable'
 
+export type FreeTierOfferKind = 'connector' | 'trial'
+
 export type FreeTierSignInState =
   | { status: 'already_signed_in' }
   | { status: 'closed' }
@@ -34,10 +36,10 @@ export type FreeTierSignInState =
   // A "please open the dialog" request from an entry point that has no gateway
   // requester of its own. The mounted host picks it up and drives the flow.
   | { status: 'requested' }
-  // The "keep going" offer after a finished task (backend-timed, repeating with
-  // back-off). Unlike `requested` it waits for the user's Sign in before
-  // starting the transfer.
-  | { status: 'offer' }
+  // A sign-in offer the backend timed (repeating with back-off): `trial` after a
+  // finished free-tier task, `connector` after apps connect without the trial.
+  // Unlike `requested` it waits for the user's Sign in before starting the transfer.
+  | { kind: FreeTierOfferKind; status: 'offer' }
   // `handoff`: the free tier's apps moving to this account (null when the
   // sign-in replaced no free tier). Followed while it is still retrying.
   // `scope`: the profile the sign-in ran for when it is not the active one,
@@ -138,27 +140,45 @@ function clearOfferTimer() {
   }
 }
 
-// Bumped when a turn completes on the free tier. The backend records the finished task before it
-// sends message.complete, so the dialog owner's re-read on this signal learns when the next offer is due.
+// Bumped when a turn completes or an app connects. The backend records the finished task (or the
+// connected app) before it reports either, so the dialog owner's re-read on this signal learns when
+// the next offer is due. Not gated on the cached status: a turn's own connect can create the identity
+// the cache predates, and the re-read is local and zero-network.
 export const $freeTierTurnCompleted = atom(0)
 
 export function noteFreeTierTurnComplete() {
-  if ($freeTierStatus.get()?.available) {
-    $freeTierTurnCompleted.set($freeTierTurnCompleted.get() + 1)
-  }
+  $freeTierTurnCompleted.set($freeTierTurnCompleted.get() + 1)
 }
+
+/** An app connected from the Connectors page, outside any turn. */
+export const noteFreeTierAppConnected = noteFreeTierTurnComplete
 
 /** Stop a pending offer timer (the dialog owner unmounted). */
 export function stopFreeTierOffer() {
   clearOfferTimer()
 }
 
+// The trial offer rides on the trial being live; the connector offer is for users without it, so
+// the backend owes at most one of the two.
+function dueOffer(status: FreeTierStatus | null): { dueIn: number; kind: FreeTierOfferKind } | null {
+  const trial = status?.available ? (status.nudge_due_in ?? null) : null
+
+  if (trial !== null) {
+    return { dueIn: trial, kind: 'trial' }
+  }
+
+  const connector = status?.connector_nudge_due_in ?? null
+
+  return connector === null ? null : { dueIn: connector, kind: 'connector' }
+}
+
 /**
- * Act on the backend's `nudge_due_in` (it alone decides when the next
- * offer is due). Later: one timer that re-reads the status, whose fresh answer
- * comes back through here. Due now: claim it, and only the one caller the
- * backend says `claimed` opens the offer. Called on every status read and when
- * guided onboarding leaves the screen; a guarded call simply waits for the next.
+ * Act on the backend's `nudge_due_in` / `connector_nudge_due_in` (it alone
+ * decides when the next offer is due). Later: one timer that re-reads the
+ * status, whose fresh answer comes back through here. Due now: claim it, and
+ * only the one caller the backend says `claimed` opens the offer. Called on
+ * every status read and when guided onboarding leaves the screen; a guarded
+ * call simply waits for the next.
  */
 export function syncFreeTierOffer(status: FreeTierStatus | null, requestGateway: FreeTierRequester) {
   // A re-sync on the same read (an onboarding change) keeps its running timer, so it is not pushed back.
@@ -167,11 +187,13 @@ export function syncFreeTierOffer(status: FreeTierStatus | null, requestGateway:
   }
 
   clearOfferTimer()
-  const dueIn = status?.available ? (status.nudge_due_in ?? null) : null
+  const due = dueOffer(status)
 
-  if (dueIn === null) {
+  if (due === null) {
     return
   }
+
+  const { dueIn, kind } = due
 
   if (dueIn > 0) {
     const isCurrent = sameGatewayRoute()
@@ -188,7 +210,7 @@ export function syncFreeTierOffer(status: FreeTierStatus | null, requestGateway:
     return
   }
 
-  void claimFreeTierOffer(requestGateway)
+  void claimFreeTierOffer(requestGateway, kind)
 }
 
 // The local-model offer after onboarding goes first; the sign-in offer is claimed once it is answered.
@@ -198,7 +220,7 @@ const offerBlocked = () =>
   $localModelOfferPending.get() ||
   $freeTierSignIn.get().status !== 'closed'
 
-async function claimFreeTierOffer(requestGateway: FreeTierRequester) {
+async function claimFreeTierOffer(requestGateway: FreeTierRequester, kind: FreeTierOfferKind) {
   if (offerBlocked()) {
     return
   }
@@ -208,7 +230,7 @@ async function claimFreeTierOffer(requestGateway: FreeTierRequester) {
   let claimed: boolean
 
   try {
-    claimed = (await requestGateway<FreeTierClaimNudgeResult>('free_tier.claim_nudge'))?.claimed === true
+    claimed = (await requestGateway<FreeTierClaimNudgeResult>('free_tier.claim_nudge', { kind }))?.claimed === true
   } catch {
     // Not claimed; the next status read tries again. No re-read here, or a failing call would loop.
     return
@@ -221,10 +243,10 @@ async function claimFreeTierOffer(requestGateway: FreeTierRequester) {
   }
 
   if (claimed && $freeTierSignIn.get().status === 'closed') {
-    set({ status: 'offer' })
+    set({ kind, status: 'offer' })
   }
 
-  // The claim settled the offer either way; re-read so the cached `nudge_due_in` drops.
+  // The claim settled the offer either way; re-read so the cached due time drops.
   void refreshFreeTierStatus(requestGateway, isCurrent)
 }
 

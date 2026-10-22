@@ -64,7 +64,26 @@ def managed_client(*, initiator: Optional[str] = AGENT_TOOL, call: Optional[Any]
 
 
 def managed_kind(client: Any, action: str, force: bool) -> Kind:
-    return Kind(prepare=_prepare(client, action, force), observe=lambda operation: _observe(client, operation), note=NOTE)
+    noted: set[str] = set()
+
+    def noting(step: Callable[[ConnectionOperation], None]) -> Callable[[ConnectionOperation], None]:
+        def run(operation: ConnectionOperation) -> None:
+            step(operation)
+            _note_connected(operation, noted)
+        return run
+
+    return Kind(prepare=noting(_prepare(client, action, force)),
+                observe=noting(lambda operation: _observe(client, operation)), note=NOTE)
+
+
+def _note_connected(operation: ConnectionOperation, noted: set[str]) -> None:
+    """Each app that connects counts once toward the connector sign-in offer."""
+    fresh = {t.name for t in operation.targets if t.state == TargetState.connected} - noted
+    if fresh:
+        from hermes_cli.free_tier_offer import note_app_connected
+
+        noted.update(fresh)
+        note_app_connected()
 
 
 def _status_by_slug(client: Any) -> dict[str, dict[str, Any]]:

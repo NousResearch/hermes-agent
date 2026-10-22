@@ -207,6 +207,8 @@ class FreeTierStatusResult(Result):
     # Seconds until the sign-in offer after a finished task is due (0 = due now); absent when none is
     # pending (no finished task since the last offer, or not on the free tier).
     nudge_due_in: int | None = None
+    # The same for the connector offer: a guest with no trial that has connected an app.
+    connector_nudge_due_in: int | None = None
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
@@ -248,11 +250,15 @@ method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeRes
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
 
 
+class FreeTierClaimNudgeParams(ProfileParams):
+    kind: Literal["trial", "connector"] = "trial"
+
+
 class FreeTierClaimNudgeResult(Result):
     claimed: bool
 
 
-method("free_tier.claim_nudge", params=ProfileParams, result=FreeTierClaimNudgeResult,
+method("free_tier.claim_nudge", params=FreeTierClaimNudgeParams, result=FreeTierClaimNudgeResult,
        doc="Claim the due sign-in offer; true for exactly one caller each time an offer comes due.")
 
 

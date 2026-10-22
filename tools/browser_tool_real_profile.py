@@ -142,8 +142,15 @@ def _agent_browser_close_session(session_name: str) -> None:
     _agent_browser_session_cmd(session_name, "close", log_label="session close")
 
 
+# The flags this launch owns. ``--remote-debugging-port=0`` is an ephemeral port, and an ephemeral port is
+# exactly what ``content/child/runtime_features.cc`` reads as automation: the switch that stops this browser
+# reporting ``navigator.webdriver == true`` has to ride along with the port that causes it, as it does in the
+# dock's ``dock_argv`` (#137774). That switch is appended at the launch below rather than here: this module
+# is imported from ``browser_tool_session`` while that module is still initialising, so its constant does
+# not exist yet at import time.
 _REAL_PROFILE_CHROME_FLAGS = (
-    "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check",
+    "--remote-debugging-port=0",
+    "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
     "--disable-hang-monitor", "--disable-popup-blocking", "--disable-prompt-on-repost",
     "--disable-sync", "--disable-features=Translate", "--no-startup-window",
@@ -201,7 +208,8 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> tuple[Option
         os.unlink(os.path.join(copy_dir, "DevToolsActivePort"))  # stale port confuses reuse probes
     except OSError:
         pass
-    chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS]
+    chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS,
+                   *_session.CHROMIUM_ANTI_DETECTION_ARGS]
     _session._ensure_screen_for_headed_chromium()
     browser_env = _bt._build_browser_env()  # carries the Bot Desktop DISPLAY when one is running
     _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))

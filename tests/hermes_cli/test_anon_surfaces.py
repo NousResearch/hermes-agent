@@ -202,6 +202,7 @@ def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_
         "retry_after": 0.0,
         # Every handoff result line a completed sign-in can carry.
         "handoff": tuple(line for view in _HANDOFF_VIEWS for line in guest_handoff.result_lines(view)),
+        "handoff_status": guest_handoff.wire_status(_HANDOFF_VIEWS[0]),
     }
     forbidden = re.compile(r"claim|nous portal|anonymous|guest", re.IGNORECASE)
     terminal_or_url = re.compile(r"hermes |https?://", re.IGNORECASE)

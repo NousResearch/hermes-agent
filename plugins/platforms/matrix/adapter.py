@@ -795,6 +795,7 @@ class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
     serial_receive_loop = True  # _sync_loop reads the next sync only after this sync's handlers return
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
+    supports_inchannel_continuable = True
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
     # Class-level defaults keep object.__new__-built test instances working.
@@ -865,10 +866,18 @@ class MatrixAdapter(BasePlatformAdapter):
         # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
         # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
         self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
-        self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
-        self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
         raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
+        self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
+        # Continuable in-channel cron delivery requires plain replies to resolve
+        # to the flat session seeded by the scheduler on every Matrix surface.
+        # Room auto-threading and DM auto-threading both break that contract.
+        self.supports_inchannel_continuable = (
+            (self._matrix_session_scope == "room"
+             or self._matrix_session_scope == "auto" and not self._auto_thread)
+            and not self._dm_auto_thread
+        )
+        self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
         self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}

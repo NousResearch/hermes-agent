@@ -1259,3 +1259,14 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
         "/api/plugins/kanban/events?token=secret-xyz&board=alive"
     ) as ws:
         assert ws is not None
+
+
+@pytest.mark.parametrize("result", ["GATE_FAIL", "PORTABLE_GATE_FAIL"])
+def test_patch_ready_refusal_names_failed_gate(client, result):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="failed gate")
+        assert kb.complete_task(conn, parent, result=result)
+        child = kb.create_task(conn, title="dependent", parents=[parent])
+    response = client.patch(f"/api/plugins/kanban/tasks/{child}", json={"status": "ready"})
+    assert response.status_code == 409, response.text
+    assert parent in response.text and result in response.text

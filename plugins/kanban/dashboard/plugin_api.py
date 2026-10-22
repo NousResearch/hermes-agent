@@ -725,18 +725,13 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
 
 
 def _parents_blocking_ready(conn: sqlite3.Connection, task_id: str) -> list:
-    """Parent rows (id, title, status) not ``done`` that block promotion to ``ready``.
-
-    Used to enrich the 409 response from :func:`update_task` so the dashboard can show an actionable toast
-    (#26744) instead of a silent no-op. Returns ``[]`` when nothing blocks the transition (e.g. no parents,
-    or all parents already done).
-    """
-    rows = conn.execute(
-        "SELECT t.id, t.title, t.status FROM tasks t "
-        "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ? AND t.status != 'done'",
-        (task_id,)).fetchall()
-    return [{"id": r["id"], "title": r["title"], "status": r["status"]} for r in rows]
+    """Gate-aware blocker rows for an actionable dashboard refusal."""
+    return [
+        {"id": row["id"], "title": row["title"],
+         "status": (f"{row['status']}, result={row['result']}"
+                    if kanban_db._is_gate_failure(row["result"]) else row["status"])}
+        for row in kanban_db._unsatisfied_parent_rows(conn, task_id)
+    ]
 
 
 def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) -> bool:

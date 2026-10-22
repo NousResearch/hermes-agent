@@ -230,3 +230,159 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
         assert failures == 0
         assert "descendant_invalidated" in kinds
         assert n_comments >= 1
+
+
+@pytest.mark.parametrize("gate_result", ["GATE_FAIL", "PORTABLE_GATE_FAIL"])
+@pytest.mark.parametrize("phase", ["ready", "running", "review", "running_review", "done"])
+def test_gate_edit_invalidates_descendants_and_restores_phase(
+    conn, tmp_path, monkeypatch, gate_result, phase,
+):
+    parent = kb.create_task(conn, title="gate")
+    child = kb.create_task(conn, title="dependent", assignee="builder", parents=[parent])
+    assert kb.complete_task(conn, parent, result="GATE_PASS")
+    assert kb.get_task(conn, child).status == "ready"
+    if phase in {"review", "running_review"}:
+        assert kb.request_review(conn, child, summary="implementation", reviewer="reviewer")
+    if phase in {"running", "running_review"}:
+        claim = kb.claim_review_task if phase == "running_review" else kb.claim_task
+        claimed = claim(conn, child)
+        assert claimed is not None
+        kbd._set_worker_pid(conn, child, 424242)
+    if phase == "done":
+        assert kb.complete_task(conn, child, result="child evidence", metadata={"proof": "kept"})
+    before = kb.get_task(conn, child)
+    previous_run = kb.latest_run(conn, child)
+    fingerprint = conn.execute("SELECT worker_started_at FROM tasks WHERE id = ?", (child,)).fetchone()[0]
+    conn.execute("UPDATE tasks SET consecutive_failures = 1 WHERE id = ?", (child,))
+    grandchild = kb.create_task(conn, title="transitive dependent", parents=[child])
+    kills = []
+
+    def terminate(pid, claim_lock, started_at=None):
+        assert not conn.in_transaction
+        with kbc.connect(tmp_path / "kanban.db") as side:
+            assert kb.get_task(side, parent).result == gate_result
+            assert kb.get_task(side, child).status == "todo"
+            assert any(e.kind == "descendant_invalidated" for e in kb.list_events(side, child))
+        kills.append((pid, claim_lock, started_at))
+
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", terminate)
+    assert kb.edit_task(conn, parent, result=gate_result)
+    assert kb.get_task(conn, parent).status == "done"
+    after = kb.get_task(conn, child)
+    assert after.status == "todo" and after.current_run_id is None
+    assert after.result == before.result
+    assert after.consecutive_failures == 1
+    assert kb.get_task(conn, grandchild).status == "todo"
+    invalidations = [e for e in kb.list_events(conn, child) if e.kind == "descendant_invalidated"]
+    assert len(invalidations) == 1
+    assert invalidations[0].payload["reason"] == "ancestor_gate_failed"
+    assert invalidations[0].payload["result"] == gate_result
+    assert any(parent in c.body for c in kb.list_comments(conn, child))
+    if phase in {"running", "running_review"}:
+        assert kills == [(424242, before.claim_lock, fingerprint)]
+        run = kb.latest_run(conn, child)
+        assert run.id == previous_run.id and run.outcome == "reclaimed"
+        assert run.ended_at is not None
+        assert invalidations[0].run_id == run.id
+        assert not kb.complete_task(conn, child, result="stale", expected_run_id=run.id)
+    else:
+        assert not kills
+    if phase == "done":
+        assert kb.latest_run(conn, child) == previous_run
+        assert any(e.kind == "completed" for e in kb.list_events(conn, child))
+        assert after.completed_at is None  # existing descendant-reopen protocol
+    assert kb.edit_task(conn, parent, result=gate_result)  # no repeated invalidation
+    assert len([e for e in kb.list_events(conn, child) if e.kind == "descendant_invalidated"]) == 1
+    assert kb.edit_task(conn, parent, result="PORTABLE_GATE_PASS")
+    expected_phase = "review" if phase in {"review", "running_review"} else "ready"
+    assert kb.get_task(conn, child).status == expected_phase
+    claim = kb.claim_review_task if expected_phase == "review" else kb.claim_task
+    assert claim(conn, child) is not None
+
+
+@pytest.mark.parametrize("failure", ["audit", "commit"])
+def test_gate_edit_rollback_never_terminates_worker(conn, monkeypatch, failure):
+    parent = kb.create_task(conn, title="gate")
+    assert kb.complete_task(conn, parent, result="GATE_PASS")
+    child = kb.create_task(conn, title="dependent", parents=[parent])
+    assert kb.claim_task(conn, child)
+    kbd._set_worker_pid(conn, child, 424242)
+    before = kb.get_task(conn, child)
+    run = kb.latest_run(conn, child)
+    kills = []
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", lambda *a, **kw: kills.append(a))
+    if failure == "audit":
+        conn.execute("CREATE TEMP TRIGGER reject_gate_audit BEFORE INSERT ON task_events "
+                     "WHEN NEW.kind = 'descendant_invalidated' "
+                     "BEGIN SELECT RAISE(ABORT, 'audit failed'); END")
+    else:
+        boundary = kbc._execute_boundary_with_retry
+        def reject_commit(c, statement):
+            if statement == "COMMIT":
+                raise RuntimeError("commit failed")
+            return boundary(c, statement)
+        monkeypatch.setattr(kbc, "_execute_boundary_with_retry", reject_commit)
+    with pytest.raises(Exception, match="failed"):
+        kb.edit_task(conn, parent, result="PORTABLE_GATE_FAIL")
+    assert not conn.in_transaction
+    assert kb.get_task(conn, parent).result == "GATE_PASS"
+    assert kb.get_task(conn, child) == before
+    assert kb.latest_run(conn, child) == run
+    assert not kills
+    assert not any(e.kind == "descendant_invalidated" for e in kb.list_events(conn, child))
+
+
+@pytest.mark.parametrize("result", ["ordinary result", "BUILD_FAIL", "gate_fail", "XGATE_FAIL"])
+def test_non_gate_result_edit_preserves_running_child(conn, monkeypatch, result):
+    parent = kb.create_task(conn, title="parent")
+    assert kb.complete_task(conn, parent, result="GATE_PASS")
+    child = kb.create_task(conn, title="child", parents=[parent])
+    assert kb.claim_task(conn, child)
+    before = kb.get_task(conn, child)
+    kills = []
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", lambda *a, **kw: kills.append(a))
+    assert kb.edit_task(conn, parent, result=result)
+    assert kb.get_task(conn, child) == before
+    assert not kills
+
+
+@pytest.mark.parametrize("result", ["GATE_FAIL", "PORTABLE_GATE_FAIL"])
+def test_terminal_gate_failure_parent_does_not_promote_child(conn, result):
+    parent = kb.create_task(conn, title="failed gate")
+    child = kb.create_task(conn, title="dependent", parents=[parent])
+
+    assert kb.complete_task(conn, parent, result=result)
+
+    assert kb.get_task(conn, child).status == "todo"
+    assert not kb._parents_satisfied(conn, child)
+
+
+def test_terminal_successful_parent_promotes_child(conn):
+    parent = kb.create_task(conn, title="successful parent")
+    child = kb.create_task(conn, title="dependent", parents=[parent])
+
+    assert kb.complete_task(conn, parent, result="PORTABLE_GATE_PASS")
+
+    assert kb.get_task(conn, child).status == "ready"
+    assert kb._parents_satisfied(conn, child)
+
+
+@pytest.mark.parametrize("result", ["GATE_FAIL", "PORTABLE_GATE_FAIL"])
+def test_failed_gate_rechecks_creation_unblock_and_review(conn, result):
+    parent = kb.create_task(conn, title="gate")
+    assert kb.complete_task(conn, parent, result=result)
+    child = kb.create_task(conn, title="dependent", parents=[parent])
+    assert kb.get_task(conn, child).status == "todo"
+    parked = kb.create_task(conn, title="parked", parents=[parent], initial_status="blocked")
+    assert kb.unblock_task(conn, parked)
+    assert kb.get_task(conn, parked).status == "todo"
+    assert not kb.request_review(conn, child, summary="must refuse")
+    # Legacy/external writers can still leave a ready/review card: claim fences it.
+    for phase in ("ready", "review"):
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (phase, child))
+        claim = kb.claim_task if phase == "ready" else kb.claim_review_task
+        assert claim(conn, child) is None
+        assert kb.get_task(conn, child).status == "todo"
+    assert kb.edit_task(conn, parent, result="GATE_PASS")
+    assert kb.get_task(conn, child).status == "review"
+    assert kb.get_task(conn, parked).status == "ready"

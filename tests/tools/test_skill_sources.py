@@ -440,7 +440,7 @@ class TestRedirectPolicy:
         allow_private_urls(monkeypatch)
 
         class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
+            def do_GET(self):  # the BaseHTTPRequestHandler API
                 self.send_response(302)
                 self.send_header("Location", "http://blocked.example/elsewhere")
                 self.send_header("Content-Length", "0")

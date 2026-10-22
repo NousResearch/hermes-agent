@@ -749,6 +749,14 @@ class GatewaySessionCommandsMixin:
                 return "\n".join(render_compress_result(result))
             await self._persist_manual_compression(tmp_agent, session_entry, source, result.after_messages)
             finalize_context_engine_compression_notification(tmp_agent, committed=True)
+            # The rewrite rebuilt the token prefix: warm the local provider's prefix cache
+            # while the session is idle (no-op for cloud routes).
+            with contextlib.suppress(Exception):
+                from gateway.compression_warmup import schedule_compression_warmup
+                schedule_compression_warmup(
+                    self, session_key=session_key, session_entry=session_entry, source=source,
+                    reason="manual-compress",
+                )
             compressor = tmp_agent.context_compressor
             summary = result.summary
         finally:

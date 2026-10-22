@@ -2054,16 +2054,20 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
     def _record_streamed_post_delivery_receipt(self, source, session_key, stream_consumer) -> None:
-        """Record a confirmed streamed final for this processing task's observer."""
-        receipt_adapter = self._delivery_adapter_for(source)
-        if receipt_adapter is not None and session_key:
-            message_id = (
-                stream_consumer.message_id
-                if stream_consumer.message_id and stream_consumer.message_id != "__no_edit__"
-                else None
-            )
-            receipt_adapter.record_post_delivery_receipt(
-                session_key, SendResult(success=True, message_id=message_id))
+        """Record a confirmed streamed final for this processing task's observer. Best-effort:
+        receipt bookkeeping must never break the delivery-suppression path it rides on."""
+        resolve = getattr(self, "_delivery_adapter_for", None)
+        if not session_key or not callable(resolve):
+            return
+        try:
+            record = getattr(resolve(source), "record_post_delivery_receipt", None)
+            if not callable(record):
+                return
+            message_id = getattr(stream_consumer, "message_id", None)
+            record(session_key, SendResult(
+                success=True, message_id=message_id if message_id and message_id != "__no_edit__" else None))
+        except Exception:
+            logger.debug("Recording streamed post-delivery receipt failed", exc_info=True)
 
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, session_key, _sk, ok,

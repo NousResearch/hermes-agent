@@ -920,6 +920,7 @@ def register(ctx):
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
+- `ctx.goals` reads or creates standing goals for a session without bypassing the host's `/goal` controls. A plugin-created goal is owner-scoped: it will not replace an active or paused goal by default, and only its creator can clear it.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 **`dispatch_tool` example — a slash command that runs a tool:**
@@ -963,6 +964,24 @@ than placing runtime bookkeeping in `config.yaml`:
 def register(ctx):
     cursor = ctx.state.get("cursor", default={"page": 0})
     ctx.state.set("cursor", {"page": cursor["page"] + 1})
+```
+
+### Continue an approved plan with a standing goal
+
+Use `ctx.goals` when a plugin needs the host-managed continuation loop rather
+than a private loop. The snapshot is read-only, and `set()` returns `False`
+when a user or another plugin already has an active or paused goal. `clear()`
+returns `False` unless the goal belongs to the calling plugin.
+
+```python
+def start_approved_plan(ctx, session_id, objective, contract):
+    if not ctx.goals.set(session_id, objective, contract=contract, max_turns=12):
+        return "A standing goal is already active or paused."
+    return "The approved plan will continue under /goal."
+
+
+def stop_approved_plan(ctx, session_id):
+    return ctx.goals.clear(session_id)
 ```
 
 State is profile-scoped, atomically replaced, safe across concurrent writers,

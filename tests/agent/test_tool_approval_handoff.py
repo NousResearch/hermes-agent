@@ -76,6 +76,9 @@ def register(ctx):
     agent = SimpleNamespace(
         session_id="", valid_tool_names={"approval_echo"},
         _current_turn_id="fixture-turn", _memory_manager=None,
+        # The executor binds a live-progress relay for every dispatched call and reads
+        # this attribute off the agent; a real agent always carries it (None = no relay).
+        tool_progress_callback=None,
     )
     args = {"path": "fixture-target", "revision": 0}
     original = copy.deepcopy(args)

@@ -248,6 +248,31 @@ def _file_mtime_key(host_path: str) -> tuple[int, int, int, int] | None:
         return None
 
 
+def _compute_launch_vault_exclusions_for_snapshot(
+    launch_env_keys: "Iterable[str]",
+    scope_keys: "Iterable[str]",
+) -> "tuple[str, ...]":
+    """Names from the launch profile's ``.env`` that the active profile's secret
+    scope does NOT supply — must be ``unset`` from the snapshot before ``export -p``.
+
+    A terminal's login shell re-reads ``~/.hermes/.env`` (the LAUNCH profile's
+    vault) inside ``~/.zshrc``-style rc files. The Python-side ``build_subprocess_env``
+    scope scrub cannot see those re-exports, but the snapshot's
+    ``_export_dump_excluding_session_vars`` hook CAN — by name — and that is
+    where the rc-file credential leak is closed.
+
+    Returns the case-folded (upper) sorted exclusion set. Empty when the active
+    profile's scope covers the launch vault (the launch/default profile itself;
+    nothing the rc files add is new for that profile).
+
+    Module-level so the integration test in ``tests/tools/test_local_shell_init.py``
+    can unit-check the set arithmetic independently of a real subprocess.
+    """
+    launch_upper = {str(k).upper() for k in launch_env_keys if isinstance(k, str)}
+    scope_upper = {str(k).upper() for k in scope_keys if isinstance(k, str)}
+    return tuple(sorted(launch_upper - scope_upper))
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -368,7 +393,15 @@ class BaseEnvironment(ABC):
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
         """Profile-scoped names that must not persist in the snapshot. Monotonic for the
         environment lifetime: an allowlist can be cleared after a value was captured, and
-        retaining the exclusion keeps that old value from leaking to a later profile."""
+        retaining the exclusion keeps that old value from leaking to a later profile.
+
+        Also folds in the rc-file launch-vault exclusion set computed by
+        ``_snapshot_excluded_launch_vault_names``: a routed worker's login shell
+        re-reads ``~/.hermes/.env`` from disk inside ``~/.zshrc``, so the snapshot
+        must ``unset`` any launch-vault name the bound scope does not supply
+        BEFORE ``export -p``. The launch/default profile carries everything it
+        already held (the helper returns ``()`` there), so this is no-op for it.
+        """
         if not self._profile_scoped_passthrough:
             return ()
         try:
@@ -378,9 +411,44 @@ class BaseEnvironment(ABC):
                 names = (*get_all_passthrough(), *self._additional_profile_scoped_passthrough_names())
                 self._snapshot_passthrough_names.update(
                     name for name in names if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
+            # Close the rc-file credential leak: anything ~/.zshrc re-exports
+            # out of ~/.hermes/.env that the bound scope doesn't supply.
+            self._snapshot_passthrough_names.update(
+                name for name in self._snapshot_excluded_launch_vault_names()
+                if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
         except Exception:
             logger.debug("Could not refresh profile-scoped snapshot exclusions", exc_info=True)
         return tuple(sorted(self._snapshot_passthrough_names))
+
+    def _snapshot_excluded_launch_vault_names(self) -> tuple[str, ...]:
+        """Names from the LAUNCH profile's ``.env`` absent from the active scope.
+
+        Empty unless the active ``HERMES_HOME`` override targets a routed (not
+        the launch) home: the launch profile itself is entitled to everything in
+        its own ``.env``, so there the helper returns the empty exclusion.
+
+        Fail-open: any exception here is caught upstream and logged; the snapshot
+        still produces a result (the leak survives on resolution failure). The
+        integration test in ``tests/tools/test_local_shell_init.py`` proves both
+        branches (launch-equality and routed-difference).
+        """
+        try:
+            from hermes_constants import (
+                get_hermes_home_override, get_routing_process_hermes_home,
+            )
+            from agent.secret_scope import build_profile_secret_scope, load_env_file
+            target = get_hermes_home_override()
+            launch_home = get_routing_process_hermes_home()
+            if target is None or launch_home is None:
+                return ()
+            if Path(str(target)).resolve() == Path(launch_home).resolve():
+                return ()
+            launch_keys = load_env_file(Path(launch_home) / ".env").keys()
+            scope = build_profile_secret_scope(Path(str(target)))
+            return _compute_launch_vault_exclusions_for_snapshot(
+                launch_keys, scope.keys())
+        except Exception:
+            return ()
 
     def _snapshot_script_kwargs(self, cwd: str) -> dict:
         """Quoting inputs shared by the bootstrap and per-command wrapper scripts.

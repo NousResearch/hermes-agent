@@ -227,3 +227,128 @@ class TestSnapshotEndToEnd:
         assert str(fake_n_bin) in output
         # bashrc short-circuited on the interactive guard — its export never ran
         assert "FROM_BASHRC=bashrc-should-not-appear" not in output
+
+
+class TestSnapshotExcludesLaunchVaultNamesNotInScope:
+    """Reproduce the rc-file credential leak the credential-hygiene gate raised.
+
+    A terminal whose login shell sources ``~/.zshrc`` must NOT carry launch-vault
+    names re-exported from ``~/.hermes/.env`` when the routed profile's scope
+    doesn't supply them. The Python-side ``build_subprocess_env`` scope scrub
+    cannot see those re-exports (they happen inside the bash login subprocess
+    reading the file on disk). The fix lives in the snapshot's ``export -p``
+    dump, where ``_export_dump_excluding_session_vars`` ``unset``s names BEFORE
+    the dump — the helper-under-test computes exactly that set.
+    """
+
+    def test_helper_returns_only_residue_minus_scope(self):
+        """Launch-vault names absent from scope appear in the exclusion set;
+        scope-bound names do NOT (those stay for the profile that legitimately
+        holds them)."""
+        from tools.environments.base import _compute_launch_vault_exclusions_for_snapshot
+
+        excluded = _compute_launch_vault_exclusions_for_snapshot(
+            launch_env_keys=["GITHUB_TOKEN", "FIGMA_API_KEY", "API_KEY_21ST",
+                              "MINIMAX_API_KEY", "OTHER_NON_SECRET"],
+            scope_keys=["MINIMAX_API_KEY"],
+        )
+
+        # Residue dropped (not in the routed profile's scope).
+        assert "GITHUB_TOKEN" in excluded
+        assert "FIGMA_API_KEY" in excluded
+        assert "API_KEY_21ST" in excluded
+        assert "OTHER_NON_SECRET" in excluded
+        # Scope-bound name kept -- the routed profile is allowed to see it.
+        assert "MINIMAX_API_KEY" not in excluded
+
+    def test_helper_is_case_insensitive(self):
+        """The helper folds name cases so the bash ``unset`` call sees the
+        case the rc file used to ``export`` (uppercase, by convention)."""
+        from tools.environments.base import _compute_launch_vault_exclusions_for_snapshot
+
+        excluded = _compute_launch_vault_exclusions_for_snapshot(
+            launch_env_keys=["github_token"],   # lowercase inside the launch .env
+            scope_keys=["GITHUB_TOKEN"],       # uppercase in scope
+        )
+        assert excluded == ()
+
+    def test_launch_profile_target_returns_empty_exclusion(self):
+        """When the active ``HERMES_HOME`` IS the launch home, the method must
+        return ``()`` -- the launch profile is entitled to everything in its
+        own ``.env``, so excluding anything from it would be a regression."""
+        import pathlib as _pathlib
+
+        from tools.environments.local import LocalEnvironment
+
+        launch = LocalEnvironment(cwd="/tmp", timeout=5)
+        try:
+            with patch(
+                "hermes_constants.get_hermes_home_override",
+                return_value=None,
+            ), patch(
+                "hermes_constants.get_routing_process_hermes_home",
+                return_value=_pathlib.Path("/tmp"),
+            ):
+                excluded = launch._snapshot_excluded_launch_vault_names()
+        finally:
+            launch.cleanup()
+        assert excluded == ()
+
+    def test_routed_worker_zshrc_export_excluded_from_snapshot(
+        self, tmp_path, monkeypatch,
+    ):
+        """Full-path: fake LAUNCH ``~/.hermes/.env`` + routed HOME + ``~/.zshrc``
+        that exports ``GITHUB_TOKEN`` from the launch .env, then boot
+        ``LocalEnvironment`` and verify the exclusion set includes it."""
+        import pathlib as _pathlib
+
+        # LAUNCH home: ~/.hermes with .env defining all three rc-leak names.
+        launch_home = tmp_path / "launch"
+        launch_home.mkdir()
+        (launch_home / ".env").write_text(
+            "GITHUB_TOKEN=launch-gh\n"
+            "FIGMA_API_KEY=launch-figma\n"
+            "API_KEY_21ST=launch-21st\n"
+            "MINIMAX_API_KEY=launch-minimax\n"
+        )
+        # Routed HOME: profile dir whose .env only ships the model key.
+        routed_home = tmp_path / "routed"
+        routed_home.mkdir()
+        (routed_home / ".env").write_text("MINIMAX_API_KEY=routed-minimax\n")
+        # Fake ~/.zshrc re-exporting GITHUB_TOKEN from the launch .env --
+        # the real leak vector.
+        (tmp_path / ".zshrc").write_text(
+            "export GITHUB_TOKEN=$(grep '^GITHUB_TOKEN=' "
+            '"$HOME/.hermes/.env" | head -1 | cut -d= -f2-)\n'
+        )
+        # HERMES_HOME points at the launch home -- .zshrc's $HOME/.hermes is
+        # the LAUNCH vault, not the routed override.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+        try:
+            with patch(
+                "tools.environments.local._read_terminal_shell_init_config",
+                return_value=([str(tmp_path / ".zshrc")], False),
+            ), patch(
+                "hermes_constants.get_hermes_home_override",
+                return_value=str(routed_home),
+            ), patch(
+                "hermes_constants.get_routing_process_hermes_home",
+                return_value=launch_home,
+            ), patch(
+                "agent.secret_scope.build_profile_secret_scope",
+                return_value={"MINIMAX_API_KEY": "routed-minimax"},
+            ):
+                excluded = env._snapshot_excluded_launch_vault_names()
+            # Routed scope = {MINIMAX_API_KEY}; launch .env ⊃ the three rc-leak
+            # names. Expect the latter three in the exclusion set.
+            assert "GITHUB_TOKEN" in excluded
+            assert "FIGMA_API_KEY" in excluded
+            assert "API_KEY_21ST" in excluded
+            assert "MINIMAX_API_KEY" not in excluded
+        finally:
+            env.cleanup()

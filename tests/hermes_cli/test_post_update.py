@@ -101,6 +101,24 @@ def test_migrate_config_restores_backup_when_version_does_not_advance(
     assert backups, "backup file must exist"
 
 
+def test_migrate_config_keeps_a_known_failed_step_retryable(tmp_path, monkeypatch):
+    import hermes_cli.config as cfg
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("_config_version: 20\n", encoding="utf-8")
+    monkeypatch.setattr(cfg, "check_config_version", lambda: (20, 30))
+    monkeypatch.setattr(cfg, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(cfg, "get_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(
+        cfg, "migrate_config", lambda **_kw: {"migration_failed": True, "pending_migrations": [21]},
+    )
+
+    result = step_migrate_config()
+
+    assert result == {"ok": True, "pending_migrations": [21]}
+    assert config_path.read_text(encoding="utf-8") == "_config_version: 20\n"
+
+
 # ── step_state_db_guard ──────────────────────────────────────────────
 
 

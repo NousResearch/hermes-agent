@@ -272,9 +272,8 @@ Skill 捆绑包是将多个 skills 归组在单个斜杠命令下的小型 YAML 
 ```bash
 # 为后端功能开发创建一个捆绑包
 hermes bundles create backend-dev \
-  --skill requesting-code-review \
-  --skill test-driven-development \
   --skill github \
+  --skill test-driven-development \
   -d "Backend feature work — review, test, PR workflow"
 ```
 
@@ -284,7 +283,7 @@ hermes bundles create backend-dev \
 /backend-dev refactor the auth middleware
 ```
 
-agent 接收到所有三个 skills 加载到一条用户消息中，斜杠命令后的任何文本都作为用户指令附加。
+agent 接收到所有 skills 加载到一条用户消息中，斜杠命令后的任何文本都作为用户指令附加。
 
 ### YAML 模式
 
@@ -294,9 +293,8 @@ agent 接收到所有三个 skills 加载到一条用户消息中，斜杠命令
 name: backend-dev
 description: Backend feature work — review, test, PR workflow.
 skills:
-  - requesting-code-review
-  - test-driven-development
   - github
+  - test-driven-development
 instruction: |
   Always start by writing failing tests, then implement.
   Open the PR through the standard workflow with co-author tags.

@@ -32,7 +32,7 @@ hermes chat --provider openrouter  # 强制使用 OpenRouter
 hermes chat --toolsets "web,terminal,skills"
 
 # 启动时预加载一个或多个 skill
-hermes -s hermes-agent,github
+hermes -s hermes-agent-dev,github
 hermes chat -s github -q "open a draft PR"
 
 # 恢复之前的会话
@@ -167,8 +167,8 @@ quick_commands:
 如果你已知道本次会话需要哪些 skill，可在启动时传入：
 
 ```bash
-hermes -s hermes-agent,github
-hermes chat -s github -s codebase-inspection
+hermes -s hermes-agent-dev,github
+hermes chat -s github -s test-driven-development
 ```
 
 Hermes 会在第一轮对话前将每个指定的 skill 加载到会话 prompt 中。该标志在交互模式和单次查询模式下均有效。

@@ -64,6 +64,24 @@ def test_terminal_block_shows_the_whole_command_at_zero_cap():
     assert short.splitlines()[-2].endswith("...")
 
 
+def test_multiline_command_is_shown_whole_when_it_fits_the_budget():
+    """A multi-line command inside the budget is not collapsed to its first line + " ..."."""
+    from agent.display import set_tool_preview_max_len
+    from gateway.run_turn_progress import GatewayTurnProgressMixin
+
+    class _Progress(GatewayTurnProgressMixin):
+        def __init__(self) -> None:
+            self._ctx = types.SimpleNamespace(last_was_terminal_block=[False])
+
+    adapter = types.SimpleNamespace(supports_code_blocks=True)
+    command = "cd /srv/app\ngit log --oneline -5"
+
+    set_tool_preview_max_len(200)
+    _full, short = _Progress()._progress_terminal_blocks(adapter, "terminal", {"command": command}, "💻")
+    assert command in short
+    assert "..." not in short
+
+
 def test_streamed_tool_chrome_honours_zero_cap():
     """The base adapter's structured tool chrome reads 0 as no cap too."""
     from agent.display import set_tool_preview_max_len

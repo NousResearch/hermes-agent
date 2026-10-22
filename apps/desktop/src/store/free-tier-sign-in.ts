@@ -1,26 +1,31 @@
 import type { FreeTierClaimNudgeResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { cancelOAuthSession, listOAuthProviders, pollOAuthSession, startOAuthLogin } from '@/hermes'
+import {
+  cancelOAuthSession,
+  getNousHandoffStatus,
+  listOAuthProviders,
+  OAUTH_LONG_POLL_SECONDS,
+  pollOAuthSession,
+  type ProfileScope,
+  startOAuthLogin
+} from '@/hermes'
+import { restOfLongPollGap } from '@/lib/long-poll'
 import { gatewayActivationEpoch } from '@/store/gateway'
-import type { FreeTierStatus } from '@/types/hermes'
+import type { AppHandoffStatus, FreeTierStatus, OAuthPollResponse } from '@/types/hermes'
 
 import { $freeTierStatus, type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
 import { $localModelOfferPending } from './local-model-offer'
 import { onboardingSurfaceActive } from './onboarding-presence'
-
-const POLL_MS = 2000
-const COPY_FLASH_MS = 1500
 
 /** Why a sign-in ended without tokens. Each maps to one ruled screen:
  *  `busy` (the account service asked for a short wait — a busy account, a
  *  rate limit, the ops pause), `unreachable` (the service could not be
  *  reached or errored; a sign-in cannot help until it is back), `unavailable`
  *  (a terminal refusal: this version, a proof-of-work request, a locked
- *  session), and the ruled outcomes of the transfer itself. Anything the
- *  backend does not name lands on `error`, which carries its own message. */
-export type FreeTierSignInFailure =
-  'busy' | 'error' | 'rejected' | 'retired' | 'superseded' | 'timed_out' | 'unavailable' | 'unreachable'
+ *  session), and `timed_out` (the code expired). Anything the backend does
+ *  not name lands on `error`, which carries its own message. */
+export type FreeTierSignInFailure = 'busy' | 'error' | 'timed_out' | 'unavailable' | 'unreachable'
 
 export type FreeTierSignInState =
   | { status: 'already_signed_in' }
@@ -33,7 +38,9 @@ export type FreeTierSignInState =
   // back-off). Unlike `requested` it waits for the user's Sign in before
   // starting the transfer.
   | { status: 'offer' }
-  | { email: null | string; model: null | string; status: 'completed' }
+  // `handoff`: the free tier's apps moving to this account (null when the
+  // sign-in replaced no free tier). Followed while it is still retrying.
+  | { email: null | string; handoff: AppHandoffStatus | null; model: null | string; status: 'completed' }
   // `retryAfter`: the seconds the backend asked us to wait before trying
   // again (0 when it named none); only `busy` screens read it.
   | { kind: FreeTierSignInFailure; message: null | string; retryAfter: number; status: 'failed' }
@@ -41,14 +48,8 @@ export type FreeTierSignInState =
   // identity (the first `start` does it), which is the one case where the user
   // waits on something worth naming.
   | { minting: boolean; status: 'setting_up' }
-  | {
-      code: string
-      codeCopied: boolean
-      sessionId: string
-      url: string
-      urlCopied: boolean
-      status: 'code'
-    }
+  // `code` is shown only to compare with the browser page; `url` reopens it.
+  | { code: string; sessionId: string; status: 'code'; url: string }
 
 export const $freeTierSignIn = atom<FreeTierSignInState>({ status: 'closed' })
 
@@ -73,19 +74,14 @@ export function freeTierSignInClaim() {
   return $claim
 }
 
-let pollTimer: number | null = null
 let expiryTimer: number | null = null
 // Each begin/close bumps the generation. A continuation that resumes after an await (a poll that was
 // already in flight when the dialog closed, a start call for an abandoned attempt) compares its own
-// generation and drops out, so a stale attempt never publishes over the one now on screen.
+// generation and drops out, so a stale attempt never publishes over the one now on screen. The poll
+// loops end the same way.
 let attempt = 0
 
 function clearTimers() {
-  if (pollTimer !== null) {
-    window.clearInterval(pollTimer)
-    pollTimer = null
-  }
-
   if (expiryTimer !== null) {
     window.clearTimeout(expiryTimer)
     expiryTimer = null
@@ -239,15 +235,12 @@ export function closeFreeTierSignIn() {
   set({ status: 'closed' })
 }
 
-// The reasons the backend names on a non-approved terminal poll: the transfer's
-// own outcomes, and the account service's `anon_*` verdicts when it was busy,
+// The reasons the backend names on a non-approved terminal poll: an expired
+// code, and the account service's `anon_*` verdicts when it was busy,
 // unreachable or refused mid sign-in (`hermes_cli/anon_sign_in.py`). Anything
 // else falls through to the generic error screen, which shows the backend's
 // own message.
 const FAILURE_BY_REASON: Record<string, FreeTierSignInFailure> = {
-  account_busy: 'busy',
-  account_not_anonymous: 'retired',
-  account_retired: 'retired',
   anon_account_locked: 'unavailable',
   anon_gate_closed: 'unavailable',
   anon_gate_paused: 'busy',
@@ -255,9 +248,7 @@ const FAILURE_BY_REASON: Record<string, FreeTierSignInFailure> = {
   anon_rate_limited: 'busy',
   anon_server_error: 'unreachable',
   anon_unreachable: 'unreachable',
-  superseded: 'superseded',
-  timeout: 'timed_out',
-  user_declined: 'rejected'
+  timeout: 'timed_out'
 }
 
 /** The screen a failed poll maps to, exported for the dialog's tests. */
@@ -284,9 +275,9 @@ async function openSignInUrl(url: string) {
 
 /**
  * Drive one sign-in attempt end to end: resolve what identity this Hermes is
- * on, start the transfer, open the consent page, then poll until it resolves.
- * Safe to call again from a "Try again" button — it clears any previous timers
- * first.
+ * on, start the device-code sign-in, open its page, then long-poll until it
+ * resolves. Safe to call again from a "Try again" button — it clears any
+ * previous timers first.
  */
 export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   clearTimers()
@@ -352,14 +343,7 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
       return
     }
 
-    set({
-      code: start.user_code,
-      codeCopied: false,
-      sessionId: start.session_id,
-      status: 'code',
-      url: start.verification_url,
-      urlCopied: false
-    })
+    set({ code: start.user_code, sessionId: start.session_id, status: 'code', url: start.verification_url })
 
     // Lapse locally when the code's own window closes, instead of polling a
     // dead session forever. The backend usually flips it first and its message
@@ -370,7 +354,7 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
       fail('timed_out', null)
     }, ttlMs)
 
-    pollTimer = window.setInterval(() => void pollOnce(start.session_id, requestGateway, mine), POLL_MS)
+    void pollUntilDone(start.session_id, requestGateway, mine)
   } catch (error) {
     if (!stale()) {
       fail('error', error instanceof Error ? error.message : String(error))
@@ -378,41 +362,32 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   }
 }
 
-async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mine: number) {
-  const stale = () => mine !== attempt
+// Long-poll the sign-in until it leaves `pending`, then finish it. The loop ends with its screen: a
+// close, a newer attempt or the local expiry floor.
+async function pollUntilDone(sessionId: string, requestGateway: FreeTierRequester, mine: number) {
+  const stale = () => mine !== attempt || $freeTierSignIn.get().status !== 'code'
 
   try {
-    const result = await pollOAuthSession(NOUS_PROVIDER_ID, sessionId)
+    for (;;) {
+      const askedAt = Date.now()
+      const result = await pollOAuthSession(NOUS_PROVIDER_ID, sessionId, undefined, OAUTH_LONG_POLL_SECONDS)
 
-    if (stale() || result.status === 'pending') {
-      return
+      if (stale()) {
+        return
+      }
+
+      if (result.status !== 'pending') {
+        clearTimers()
+
+        return await finishSignIn(result, requestGateway, mine)
+      }
+
+      await restOfLongPollGap(askedAt)
+
+      if (stale()) {
+        return
+      }
     }
-
-    clearTimers()
-
-    if (result.status !== 'approved') {
-      fail(signInFailureKind(result.reason), result.error_message ?? null, Number(result.retry_after) || 0)
-
-      return
-    }
-
-    set({ status: 'finishing' })
-
-    // The tokens are on disk now, so the backend's view of this identity has
-    // changed: reload its env and re-read the free-tier verdict before the
-    // completed screen claims the user is signed in.
-    await requestGateway('reload.env').catch(() => undefined)
-    await refreshFreeTierStatus(requestGateway)
-
-    if (stale()) {
-      return
-    }
-
-    set({
-      email: result.account_email ?? null,
-      model: result.model ?? null,
-      status: 'completed'
-    })
   } catch (error) {
     if (!stale()) {
       fail('error', error instanceof Error ? error.message : String(error))
@@ -420,39 +395,85 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mi
   }
 }
 
-async function copyAndFlash(text: string, field: 'codeCopied' | 'urlCopied') {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
+async function finishSignIn(result: OAuthPollResponse, requestGateway: FreeTierRequester, mine: number) {
+  if (result.status !== 'approved') {
+    fail(signInFailureKind(result.reason), result.error_message ?? null, Number(result.retry_after) || 0)
+
     return
   }
 
-  const current = $freeTierSignIn.get()
+  set({ status: 'finishing' })
 
-  if (current.status !== 'code') {
+  // The tokens are on disk now, so the backend's view of this identity has
+  // changed: reload its env and re-read the free-tier verdict before the
+  // completed screen claims the user is signed in.
+  await requestGateway('reload.env').catch(() => undefined)
+  await refreshFreeTierStatus(requestGateway)
+
+  if (mine !== attempt) {
     return
   }
 
-  const { sessionId } = current
-  set({ ...current, [field]: true })
+  const handoff = result.handoff_status ?? null
+  set({ email: result.account_email ?? null, handoff, model: result.model ?? null, status: 'completed' })
 
-  window.setTimeout(() => {
-    const later = $freeTierSignIn.get()
+  if (handoff && handoffStillMoving(handoff)) {
+    void followHandoff(handoff, mine)
+  }
+}
 
-    if (later.status === 'code' && later.sessionId === sessionId) {
-      set({ ...later, [field]: false })
+/** The move is still being retried in the background, so its result can still change. */
+export function handoffStillMoving(handoff: AppHandoffStatus): boolean {
+  return handoff.state === 'pending' || handoff.state === 'retrying'
+}
+
+/** A Nous sign-in that finished in the onboarding picker and replaced the free
+ *  tier: show the same result screen this dialog shows. Never over a sign-in
+ *  already on screen. `scope` is the profile the sign-in ran for. */
+export function showFreeTierSignInResult(result: OAuthPollResponse, scope?: ProfileScope) {
+  const handoff = result.handoff_status
+
+  if (!handoff || $freeTierSignIn.get().status !== 'closed') {
+    return
+  }
+
+  const mine = ++attempt
+  clearTimers()
+  set({ email: result.account_email ?? null, handoff, model: null, status: 'completed' })
+
+  if (handoffStillMoving(handoff)) {
+    void followHandoff(handoff, mine, scope)
+  }
+}
+
+// Keep the completed screen's handoff current while the move is retried, until it settles or the
+// dialog closes. A failed read leaves the last answer on screen: it already says the move continues.
+async function followHandoff(shown: AppHandoffStatus, mine: number, scope?: ProfileScope) {
+  let current = shown
+
+  while (mine === attempt && handoffStillMoving(current)) {
+    const askedAt = Date.now()
+
+    try {
+      current = await getNousHandoffStatus(current.updated_at ?? null, scope)
+    } catch {
+      return
     }
-  }, COPY_FLASH_MS)
+
+    const screen = $freeTierSignIn.get()
+
+    if (mine !== attempt || screen.status !== 'completed') {
+      return
+    }
+
+    set({ ...screen, handoff: current })
+    await restOfLongPollGap(askedAt)
+  }
 }
 
-export function copyFreeTierCode() {
+/** Reopen the sign-in page the code belongs to. */
+export function reopenFreeTierSignInPage() {
   const state = $freeTierSignIn.get()
 
-  return state.status === 'code' ? copyAndFlash(state.code, 'codeCopied') : Promise.resolve()
-}
-
-export function copyFreeTierUrl() {
-  const state = $freeTierSignIn.get()
-
-  return state.status === 'code' ? copyAndFlash(state.url, 'urlCopied') : Promise.resolve()
+  return state.status === 'code' ? openSignInUrl(state.url) : Promise.resolve()
 }

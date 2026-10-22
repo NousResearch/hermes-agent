@@ -569,6 +569,11 @@ def handoff_status() -> dict[str, Any]:
     return view
 
 
+def wire_status(status: dict[str, Any]) -> dict[str, Any]:
+    """A status as the desktop reads it: the fields, plus the user copy for them (:func:`result_lines`)."""
+    return {**status, "lines": result_lines(status)}
+
+
 def status_lines(status: dict[str, Any]) -> list[str]:
     """User copy for a non-idle handoff (``hermes auth status nous``)."""
     lines = result_lines(status)

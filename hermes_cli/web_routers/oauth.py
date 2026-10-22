@@ -24,7 +24,7 @@ from hermes_cli.web_server_oauth import (
     _external_process_cli_command, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token,
 )
 from hermes_cli.web_models import OAuthSubmitBody
-from hermes_cli.web_routers._common import scoped_to_thread
+from hermes_cli.web_routers._common import config_scoped_to_thread, scoped_to_thread
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -853,10 +853,27 @@ async def submit_oauth_code(
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
 
 
+# A long-poll answers as soon as what it watches changes, and otherwise after at most this long, so
+# the request stays well inside the desktop's own request timeout.
+_LONG_POLL_CAP_SECONDS = 25.0
+
+
+async def _long_poll(read: Callable[[], Any], changed: Callable[[Any], bool], wait: float, tick: float) -> Any:
+    """Re-run the async *read* every *tick* seconds until *changed* holds or *wait* (capped) runs out;
+    the last read is the answer. ``wait <= 0`` is one plain read."""
+    deadline = time.monotonic() + min(max(wait, 0.0), _LONG_POLL_CAP_SECONDS)
+    value = await read()
+    while not changed(value) and (left := deadline - time.monotonic()) > 0:
+        await asyncio.sleep(min(tick, left))
+        value = await read()
+    return value
+
+
 @router.get("/api/providers/oauth/{provider_id}/poll/{session_id}")
-async def poll_oauth_session(provider_id: str, session_id: str, profile: Optional[str] = None):
+async def poll_oauth_session(provider_id: str, session_id: str, profile: Optional[str] = None, wait: float = 0):
     """Poll a session's status (no auth — read-only state). One endpoint serves
-    every device-code flow: all report progress via the worker-updated ``status``."""
+    every device-code flow: all report progress via the worker-updated ``status``.
+    With *wait* (seconds) it is a long-poll: it answers once the session leaves ``pending``."""
     requested_profile = _validate_oauth_profile(profile)
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
@@ -866,17 +883,44 @@ async def poll_oauth_session(provider_id: str, session_id: str, profile: Optiona
         raise HTTPException(status_code=400, detail="Provider mismatch for session")
     if sess.get("profile") != requested_profile:
         raise HTTPException(status_code=400, detail="OAuth session profile mismatch")
+
+    async def _status() -> str:
+        with _oauth_sessions_lock:
+            return "cancelled" if sess.get("cancelled") else sess["status"]
+
+    # The poller thread writes the session dict, so watching it costs no network.
+    await _long_poll(_status, lambda status: status != "pending", wait, tick=0.25)
     return {
         "session_id": session_id, "status": sess["status"],
         "error_message": sess.get("error_message"), "expires_at": sess.get("expires_at"),
         # Nous: why a sign-in ended, who signed in, and the default model the completion settled on
         # (None when the config was on the user's own model).
         "reason": sess.get("reason"), "account_email": sess.get("account_email"), "model": sess.get("model"),
-        # What the replaced free tier's handoff did: one user-facing line each (moved, reconnect).
-        "handoff": sess.get("handoff"),
+        # What the replaced free tier's handoff did: one user-facing line each (moved, reconnect),
+        # and the same result as fields (``guest_handoff.wire_status``; None without a handoff).
+        "handoff": sess.get("handoff"), "handoff_status": sess.get("handoff_status"),
         # Failed Nous sign-ins: can a later attempt succeed, and after how long.
         "retryable": sess.get("retryable"), "retry_after": sess.get("retry_after"),
     }
+
+
+@router.get("/api/providers/oauth/nous/handoff")
+async def nous_handoff_status(
+    request: Request, profile: Optional[str] = None, since: Optional[str] = None, wait: float = 0,
+):
+    """The profile's latest free-tier handoff (``guest_handoff.wire_status``). Token-protected. A
+    long-poll: given *since* (the ``updated_at`` the caller already shows) and *wait*, it answers once
+    the record changes. The keepalive retries a move in the background; this only reads."""
+    _require_token(request)
+    profile_name = _validate_oauth_profile(profile)
+
+    def _read() -> dict[str, Any]:
+        from hermes_cli.guest_handoff import handoff_status, wire_status
+        return wire_status(handoff_status())
+
+    return await _long_poll(
+        lambda: config_scoped_to_thread(profile_name, _read),
+        lambda status: since is None or status.get("updated_at") != since, wait, tick=1.0)
 
 
 @router.delete("/api/providers/oauth/sessions/{session_id}")

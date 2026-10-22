@@ -6,7 +6,7 @@ import type * as HermesApi from '@/hermes'
 import { $freeTierStatus } from '@/store/free-tier'
 import { $freeTierSignIn, noteFreeTierTurnComplete, openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
-import type { FreeTierStatus } from '@/types/hermes'
+import type { AppHandoffStatus, FreeTierStatus } from '@/types/hermes'
 
 const pollOAuthSession = vi.fn()
 // The two answers the dialog reads: `free_tier.status` and `free_tier.claim_nudge`.
@@ -20,6 +20,8 @@ const requestGateway = vi.fn(async (_method?: string): Promise<GatewayAnswer> =>
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
   pollOAuthSession: (providerId: string, sessionId: string) => pollOAuthSession(providerId, sessionId),
+  getGlobalModelOptions: async () => ({ providers: [] }),
+  getNousHandoffStatus: async () => ({ lines: [], state: 'idle' }),
   startOAuthLogin: async () => ({
     expires_in: 900,
     flow: 'device_code' as const,
@@ -41,6 +43,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  window.location.hash = ''
   $freeTierSignIn.set({ status: 'closed' })
   $freeTierStatus.set(null)
   setOnboardingSurfaceActive('onboarding', false)
@@ -50,9 +53,9 @@ afterEach(() => {
 })
 
 describe('FreeTierSignInDialog', () => {
-  it('shows the transfer code, then the signed-in screen once the poll approves', async () => {
+  it('shows the code small, then the signed-in screen once the poll approves', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    pollOAuthSession.mockResolvedValue({
+    pollOAuthSession.mockResolvedValueOnce({ session_id: 'session-1', status: 'pending' }).mockResolvedValue({
       account_email: 'someone@example.com',
       model: 'Hermes-4-405B',
       reason: null,
@@ -74,15 +77,71 @@ describe('FreeTierSignInDialog', () => {
       openFreeTierSignIn()
     })
 
-    await waitFor(() => expect(screen.getByText('Do not share this code.')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Finish in your browser')).toBeTruthy())
+    expect(screen.getByText('ABCD-EFGH')).toBeTruthy()
+    expect(screen.getByText('Do not share it.')).toBeTruthy()
 
-    // The 2s poll tick is what carries the approval through to the last screen.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2100)
     })
 
-    await waitFor(() => expect(screen.getByText('Signed in as someone@example.com')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Signed in as')).toBeTruthy())
+    expect(screen.getByText('someone@example.com')).toBeTruthy()
+    expect(screen.getByText('Your account now carries inference and tools.')).toBeTruthy()
     expect(screen.getByText('Hermes-4-405B')).toBeTruthy()
+  })
+
+  describe('result screen', () => {
+    async function renderCompleted(handoff: AppHandoffStatus | null) {
+      const { FreeTierSignInDialog } = await import('./sign-in-dialog')
+
+      await act(async () => {
+        render(
+          <QueryClientProvider client={new QueryClient()}>
+            <FreeTierSignInDialog />
+          </QueryClientProvider>
+        )
+      })
+      await act(async () =>
+        $freeTierSignIn.set({ email: 'someone@example.com', handoff, model: null, status: 'completed' })
+      )
+    }
+
+    it('shows what moved in the backend lines, and Reconnect opens the app left behind', async () => {
+      await renderCompleted({
+        dropped_toolkits: ['slack'],
+        lines: ['Your apps moved to someone@example.com: gmail.', 'Reconnect in someone@example.com: slack.'],
+        moved_toolkits: ['gmail'],
+        state: 'claimed'
+      })
+
+      expect(screen.getByText('Your apps moved to someone@example.com: gmail.')).toBeTruthy()
+      expect(screen.getByText('Reconnect in someone@example.com: slack.')).toBeTruthy()
+      expect(screen.queryByText('Your account now carries inference and tools.')).toBeNull()
+
+      await act(async () => screen.getByRole('button', { name: 'Reconnect' }).click())
+
+      expect(window.location.hash).toBe('#/capabilities?tab=connectors&connector=slack')
+      expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
+    })
+
+    it('a move still retrying is a waiting note with no connectors button', async () => {
+      await renderCompleted({ lines: ['Moving your free-tier apps to this account.'], state: 'retrying' })
+
+      expect(screen.getByRole('status').textContent).toContain('Moving your free-tier apps to this account.')
+      expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull()
+    })
+
+    it('apps that probably moved already offer a look at Connectors', async () => {
+      await renderCompleted({
+        lines: ['Your free-tier apps were probably moved already.'],
+        probably_moved: true,
+        state: 'gone'
+      })
+
+      expect(screen.getByRole('button', { name: 'Open Connectors' })).toBeTruthy()
+    })
   })
 
   describe('sign-in offer', () => {
@@ -101,6 +160,7 @@ describe('FreeTierSignInDialog', () => {
     }
 
     beforeEach(() => {
+      pollOAuthSession.mockResolvedValue({ session_id: 'session-1', status: 'pending' })
       requestGateway.mockImplementation(async (method?: string) =>
         method === 'free_tier.claim_nudge' ? { claimed: true } : { ...dueNow, nudge_due_in: null }
       )
@@ -145,7 +205,7 @@ describe('FreeTierSignInDialog', () => {
 
       await act(async () => screen.getByRole('button', { name: 'Sign in' }).click())
 
-      await waitFor(() => expect(screen.getByText('Do not share this code.')).toBeTruthy())
+      await waitFor(() => expect(screen.getByText('Do not share it.')).toBeTruthy())
     })
 
     it('Not now closes the offer', async () => {

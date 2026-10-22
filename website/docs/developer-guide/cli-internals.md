@@ -130,7 +130,9 @@ code, polls the token endpoint on one deadline (an expired code is `TimedOut`), 
 runs `settle_after_upgrade` exactly once, and never lets a persist or settle failure escape as an
 exception: it becomes `Failed`. It works with or without a free tier on disk. `Completed.email`
 comes from the access token's `email` claim; `Completed.handoff` carries the guest handoff's result
-lines (what moved, what to reconnect). Every state carries its own `.copy` (the chat form, which
+lines (what moved, what to reconnect) and `Completed.handoff_status` the latest record as fields
+(`guest_handoff.wire_status`: the public view plus those `lines`), for a surface that renders the
+result itself. Every state carries its own `.copy` (the chat form, which
 never contains a raw exception, a URL or a `hermes` verb) and `.copy_terminal`, so no caller maps a
 reason to a string. `cancelled()` is checked at least once a second inside the token poll and once more
 before the save; a cancel always wins and nothing is saved. TLS verification comes from
@@ -152,7 +154,9 @@ are released; the handoff runner never settles.
 When any writer saves a Nous account over a free-tier identity, `hermes_cli/guest_handoff.py` hands
 that identity's connected apps to the account: `POST /api/anonymous/claim {"token": "<anon_...>"}`
 with the account's own Bearer token. Nothing asks the user first; the result is shown afterwards
-(`hermes auth status nous`, `guest_handoff.handoff_status()` for the desktop). Sign-in code does not
+(`hermes auth status nous`; the desktop reads it from the sign-in poll's `handoff_status` and, while a
+move is still retrying, from the `GET /api/providers/oauth/nous/handoff?since=&wait=` long-poll, which
+answers once the record's `updated_at` changes). Sign-in code does not
 call it:
 
 - `note_replacement` runs at the two lowest write seams (`auth._store_provider_state` and

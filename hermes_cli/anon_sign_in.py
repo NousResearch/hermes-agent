@@ -108,12 +108,14 @@ class Waiting(SignInState):
 @dataclass(frozen=True)
 class Completed(SignInState):
     """``handoff`` holds the guest handoff's result lines (what moved, what to reconnect), empty
-    when the sign-in replaced no free tier."""
+    when the sign-in replaced no free tier. ``handoff_status`` is the latest handoff record it ran,
+    in ``guest_handoff.wire_status`` form, for a surface that renders the result itself."""
 
     email: str = ""
     model: str = ""
     model_changed: bool = False
     handoff: tuple[str, ...] = ()
+    handoff_status: Optional[dict[str, Any]] = None
     kind: ClassVar[str] = "completed"
     ok: ClassVar[bool] = True
 
@@ -268,7 +270,7 @@ def run_sign_in(
     from hermes_cli.auth_device_flow import DeviceFlowCancelled, _request_device_code
     from hermes_cli.auth_error_copy import is_device_code_expired
     from hermes_cli.auth_nous import _nous_http_client, _nous_portal_base_url
-    from hermes_cli.guest_handoff import deferred
+    from hermes_cli.guest_handoff import deferred, wire_status
 
     is_cancelled = cancelled or (lambda: False)
     open_scope = scope or contextlib.nullcontext
@@ -350,4 +352,5 @@ def run_sign_in(
         email=_account_email(account_state, handoff.account_email),
         model=str(settled.get("model") or ""),
         model_changed=bool(settled.get("changed")),
-        handoff=_handoff_lines(handoff.results))
+        handoff=_handoff_lines(handoff.results),
+        handoff_status=wire_status(handoff.results[-1]) if handoff.results else None)

@@ -15,9 +15,12 @@ interface ServerFrame {
   params: GatewayEvent & { seq?: number }
 }
 
-
 const owner1 = (frames as { epoch1: { frames: ServerFrame[] } }).epoch1.frames
-const owner2 = (frames as { epoch2: { frames: ServerFrame[]; idle_mutation_frames: ServerFrame[]; paused_cancel_frames: ServerFrame[] } }).epoch2
+const owner2 = (
+  frames as {
+    epoch2: { frames: ServerFrame[]; idle_mutation_frames: ServerFrame[]; paused_cancel_frames: ServerFrame[] }
+  }
+).epoch2
 
 class FakeWebSocket extends EventTarget {
   static OPEN = 1
@@ -46,7 +49,9 @@ function connectedClient(): { client: JsonRpcGatewayClient; socket: FakeWebSocke
 }
 
 function deliver(socket: FakeWebSocket, frame: ServerFrame): void {
-  socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', method: 'event', ...frame }) }))
+  socket.dispatchEvent(
+    new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', method: 'event', ...frame }) })
+  )
 }
 
 function fence(authorities: Map<string, unknown>, event: GatewayEvent): boolean {
@@ -56,10 +61,14 @@ function fence(authorities: Map<string, unknown>, event: GatewayEvent): boolean 
 describe('execution authority fence over real owner frames', () => {
   it('accepts idle owner queue snapshots while rejecting retired owner snapshots', () => {
     const authorities = new Map()
-    expect(acceptExecutionEvent(authorities, 's', 'message.complete', { authority_epoch: 2, execution_generation: 4 })).toBe(true)
+    expect(
+      acceptExecutionEvent(authorities, 's', 'message.complete', { authority_epoch: 2, execution_generation: 4 })
+    ).toBe(true)
     const snapshot = { payload: { authority_epoch: 2, execution_generation: 4, running: false, pending: [] } }
     expect(acceptExecutionEvent(authorities, 's', 'session.info', snapshot)).toBe(true)
-    expect(acceptExecutionEvent(authorities, 's', 'session.info', { payload: { ...snapshot.payload, authority_epoch: 3 } })).toBe(true)
+    expect(
+      acceptExecutionEvent(authorities, 's', 'session.info', { payload: { ...snapshot.payload, authority_epoch: 3 } })
+    ).toBe(true)
     expect(acceptExecutionEvent(authorities, 's', 'session.info', snapshot)).toBe(false)
   })
 
@@ -67,9 +76,13 @@ describe('execution authority fence over real owner frames', () => {
     const authorities = new Map()
     acceptExecutionEvent(authorities, 's', 'message.start', { authority_epoch: 2, execution_generation: 4 })
     const before = authorities.get('s')
-    expect(acceptExecutionEvent(authorities, 's', 'message.complete', {
-      authority_epoch: 2, admission_id: 'queued', payload: { admission_id: 'queued', outcome: 'cancelled' }
-    })).toBe(false)
+    expect(
+      acceptExecutionEvent(authorities, 's', 'message.complete', {
+        authority_epoch: 2,
+        admission_id: 'queued',
+        payload: { admission_id: 'queued', outcome: 'cancelled' }
+      })
+    ).toBe(false)
     expect(authorities.get('s')).toBe(before)
     expect(before.terminal).toBe(false)
     expect(acceptExecutionEvent(authorities, 's', 'message.complete', {})).toBe(false)
@@ -86,12 +99,21 @@ describe('execution authority fence over real owner frames', () => {
 
     // Owner 1 starts a turn; owner 2 (a restarted gateway) takes the session over
     // before owner 1's completion reaches the viewer.
-    for (const frame of [...owner1Live, ...owner2.frames.slice(owner2Start)]) { deliver(socket, frame) }
+    for (const frame of [...owner1Live, ...owner2.frames.slice(owner2Start)]) {
+      deliver(socket, frame)
+    }
     deliver(socket, retiredCompletion)
 
-    for (const event of received) { verdicts.push([event.type, fence(authorities, event)]) }
+    for (const event of received) {
+      verdicts.push([event.type, fence(authorities, event)])
+    }
 
-    const installed = authorities.get('session') as { epoch: string; generation: number; terminal: boolean; retiredEpochs: Set<string> }
+    const installed = authorities.get('session') as {
+      epoch: string
+      generation: number
+      terminal: boolean
+      retiredEpochs: Set<string>
+    }
     expect(installed).toBeDefined()
     expect(installed.epoch).toBe(String(owner2.frames[owner2Start].params.authority_epoch))
     expect(installed.generation).toBe(owner2.frames[owner2Start].params.execution_generation)
@@ -108,7 +130,9 @@ describe('execution authority fence over real owner frames', () => {
     const { socket, received } = connectedClient()
     const authorities = new Map()
 
-    for (const frame of [...owner2.frames, ...owner2.idle_mutation_frames]) { deliver(socket, frame) }
+    for (const frame of [...owner2.frames, ...owner2.idle_mutation_frames]) {
+      deliver(socket, frame)
+    }
 
     const verdicts = received.map(event => [event.type, fence(authorities, event)])
     expect(verdicts.at(-1)).toEqual(['session.updated', true])
@@ -121,12 +145,18 @@ describe('execution authority fence over real owner frames', () => {
 
     // A viewer that watched owner 1's turn sees owner 2 admit its row (an idle snapshot), run it,
     // then cancel the head of a paused queue: owner snapshots, then the admission's own frame.
-    for (const frame of [...owner1, ...owner2.frames, ...owner2.paused_cancel_frames]) { deliver(socket, frame) }
+    for (const frame of [...owner1, ...owner2.frames, ...owner2.paused_cancel_frames]) {
+      deliver(socket, frame)
+    }
 
     const verdicts = received.map(event => [event.type, fence(authorities, event)])
     const tail = verdicts.slice(-owner2.paused_cancel_frames.length)
     expect(verdicts[owner1.length]).toEqual(['session.info', true])
-    expect(tail).toEqual([['session.info', true], ['session.info', true], ['message.complete', false]])
+    expect(tail).toEqual([
+      ['session.info', true],
+      ['session.info', true],
+      ['message.complete', false]
+    ])
     expect(authorities.get('session')).toMatchObject({ epoch: '2', generation: 2, terminal: true })
   })
 })

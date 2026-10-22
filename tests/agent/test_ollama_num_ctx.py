@@ -178,6 +178,75 @@ class TestGatewayShapedPayloadIsNotOllama:
         assert agent._ollama_num_ctx is None
 
 
+class TestRealLocalServerE2E:
+    """The real probe against a real local server - no mocked HTTP (#142239).
+
+    The contributing rubric asks a network-I/O change to exercise the real path with real
+    imports, so the local server here is a real socket: a gateway that speaks Ollama's shape
+    over the wire, and a real Ollama for the control.
+    """
+
+    @staticmethod
+    def _serve(show_payload):
+        """A local HTTP server answering ``/api/tags`` and ``/api/show``; returns its base URL."""
+        import json as _json
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class _Handler(BaseHTTPRequestHandler):
+            def _send(self, payload):
+                body = _json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path.startswith("/api/tags"):
+                    self._send({"models": [{"name": "gemini-3-pro"}]})
+                else:
+                    self.send_error(404)
+
+            def do_POST(self):
+                if self.path.startswith("/api/show"):
+                    self._send(show_payload)
+                else:
+                    self.send_error(404)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, f"http://127.0.0.1:{server.server_address[1]}/v1"
+
+    def test_a_gateway_looking_server_over_a_real_socket_yields_no_num_ctx(self):
+        from agent.model_metadata import query_ollama_num_ctx
+
+        server, base_url = self._serve(
+            {"details": {"context_length": 131072}, "model_info": {"context_length": 131072}}
+        )
+        try:
+            assert query_ollama_num_ctx("gemini-3-pro", base_url) is None
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_a_real_ollama_over_a_real_socket_still_yields_the_window(self):
+        """The control: Ollama's own payload over the wire is believed."""
+        from agent.model_metadata import query_ollama_num_ctx
+
+        server, base_url = self._serve(
+            {"parameters": "num_ctx 32768\n", "model_info": {"llama.context_length": 131072}}
+        )
+        try:
+            assert query_ollama_num_ctx("llama3.1:8b", base_url) == 32768
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Level 3: init-order — compressor window must clamp to effective num_ctx
 # (#57275 residual claim 3 / #60103 init-order half)

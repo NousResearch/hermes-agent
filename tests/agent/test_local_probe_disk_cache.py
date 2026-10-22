@@ -29,7 +29,7 @@ class TestDiskHelpers:
     def test_expired_entry_is_miss(self):
         MM._local_probe_disk_put("server_type", "http://127.0.0.1:11434", "ollama")
         path = _cache_file()
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         for entry in data.values():
             entry["ts"] = time.time() - MM._LOCAL_PROBE_DISK_TTL_SECONDS - 1
         path.write_text(json.dumps(data), encoding="utf-8")

@@ -52,3 +52,53 @@ def test_windows_restart_stamps_the_marker_before_stopping(hermes_home, monkeypa
     gw.restart()
 
     assert seen["marker_at_stop"] is True
+
+
+def test_failed_restart_still_leaves_the_marker(hermes_home, monkeypatch):
+    """A restart that never comes back must not swallow the notice.
+
+    The marker is what tells the *next* boot that a return is owed, so it has to survive a
+    ``start()`` that raises — otherwise a crash-looping gateway goes silent exactly when the user
+    most needs to know it is down.
+    """
+    from hermes_cli import gateway as gw_facade
+    from hermes_cli import gateway_windows as gw
+
+    def not_ready(timeout_s=15.0):
+        raise RuntimeError("Gateway restart did not produce a running gateway process.")
+
+    monkeypatch.setattr(gw, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gw, "stop", lambda: None)
+    monkeypatch.setattr(gw, "_wait_for_gateway_absent", lambda timeout_s=30.0: True)
+    monkeypatch.setattr(gw_facade, "_wait_for_api_server_port_free", lambda: None)
+    monkeypatch.setattr(gw, "start", lambda: None)
+    monkeypatch.setattr(gw, "_wait_for_gateway_ready", not_ready)
+
+    with pytest.raises(RuntimeError):
+        gw.restart()
+
+    assert (hermes_home / MARKER).exists()
+
+
+def test_an_unwritable_marker_does_not_block_the_restart(hermes_home, monkeypatch):
+    """Losing the notice is acceptable; losing the restart is not."""
+    from gateway import restart_notice
+    from hermes_cli import gateway as gw_facade
+    from hermes_cli import gateway_windows as gw
+
+    stopped: list[str] = []
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(restart_notice, "atomic_json_write", boom)
+    monkeypatch.setattr(gw, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gw, "stop", lambda: stopped.append("stop"))
+    monkeypatch.setattr(gw, "_wait_for_gateway_absent", lambda timeout_s=30.0: True)
+    monkeypatch.setattr(gw_facade, "_wait_for_api_server_port_free", lambda: None)
+    monkeypatch.setattr(gw, "start", lambda: stopped.append("start"))
+    monkeypatch.setattr(gw, "_wait_for_gateway_ready", lambda timeout_s=15.0: True)
+
+    gw.restart()
+
+    assert stopped == ["stop", "start"]

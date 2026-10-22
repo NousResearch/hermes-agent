@@ -4541,7 +4541,18 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
-        typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
+        typing_task = None
+
+        def _start_typing_at_agent_execution() -> None:
+            """Start the refresh only after gateway inbound work reaches the agent."""
+            nonlocal typing_task
+            if typing_task is None:
+                typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
+
+        # The gateway handler performs inbound media enrichment (including STT) before it starts
+        # the agent. Give it a per-event callback so generic adapters do not advertise typing while
+        # that preprocessing is still in progress.
+        event._gateway_start_typing_refresh = _start_typing_at_agent_execution
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
@@ -4640,6 +4651,8 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            if getattr(event, "_gateway_start_typing_refresh", None) is _start_typing_at_agent_execution:
+                delattr(event, "_gateway_start_typing_refresh")
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it

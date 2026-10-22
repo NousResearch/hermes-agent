@@ -34,7 +34,7 @@ import logging
 import re
 import shlex
 from pathlib import Path
-from typing import Any, Callable, Mapping, Tuple
+from typing import Any, Callable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def register(ctx) -> None:
         try:
             name, schema, command, timeout = _load_spec(path)
         except Exception as exc:
-            logger.warning("yaml_tools: skipping %s — %s", path, exc)
+            logger.warning("yaml_tools: skipping %s — %s", path, exc, exc_info=True)
             continue
 
         # ToolRegistry.register() deliberately rejects a cross-toolset name
@@ -102,6 +102,7 @@ def register(ctx) -> None:
                 name,
                 path,
                 exc,
+                exc_info=True,
             )
         else:
             logger.debug("yaml_tools: registered custom tool %r from %s", name, path)
@@ -130,11 +131,11 @@ def _iter_tool_files():
 # Parsing / schema construction
 # ---------------------------------------------------------------------------
 
-def _load_spec(path: Path) -> Tuple[str, dict, str, int]:
+def _load_spec(path: Path) -> tuple[str, dict, str, int]:
     """Parse one tool file as ``(name, schema, command, timeout)``."""
     from utils import fast_safe_load
 
-    raw = fast_safe_load(path.read_text(encoding="utf-8"))
+    raw = fast_safe_load(path.read_text(encoding="utf-8-sig"))
     if not isinstance(raw, dict):
         raise ValueError("top-level YAML must be a mapping")
 

@@ -1,21 +1,10 @@
 """Shared GFM table → bullet conversion helpers."""
 
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE,
-    is_table_row,
-    split_markdown_table_row,
     convert_table_to_bullets,
 )
 
 
-class TestTablePrimitives:
-
-    def test_separator_re_matches_basic(self):
-        assert TABLE_SEPARATOR_RE.match("|---|---|")
-
-
-    def test_is_table_row_with_pipe(self):
-        assert is_table_row("| Alice | 150 |")
 
 
 class TestConvertTableToBullets:

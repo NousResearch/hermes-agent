@@ -9,9 +9,7 @@ import pytest
 import hermes_cli.web_server_chat as _web_server_chat
 
 
-pytestmark = pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
-)
+pytestmark = pytest.mark.platforms("posix")  # PTY bridge is POSIX-only
 
 
 class _OneFrameBridge:
@@ -109,7 +107,7 @@ def test_active_session_fallback_sends_resume_control_message(pty_client, monkey
 
 def test_explicit_resume_sends_no_control_message(pty_client, monkeypatch):
     """An explicit `?resume=` already tells the client via the URL param."""
-    ws, client, token = pty_client
+    _ws, client, token = pty_client
     channel = "explicit-resume-chan"
 
     monkeypatch.setattr(
@@ -132,7 +130,7 @@ def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
     never be closed. The reader now closes the WebSocket on EOF so the
     handler's ``finally`` runs ``bridge.close()``.
     """
-    ws, client, token = pty_client
+    _ws, client, token = pty_client
     bridges = []
 
     class _RecordingBridge(_OneFrameBridge):
@@ -166,3 +164,55 @@ def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
     while not bridges[0].closed and time.monotonic() < deadline:
         time.sleep(0.01)
     assert bridges[0].closed is True
+
+
+def test_profile_switch_closes_previous_profile_keepalive_pty(pty_client, monkeypatch):
+    """One attach token keeps one PTY: moving the tab to another profile closes the old one.
+
+    Regression for #125287: the profile switch spawned a new keep-alive PTY under
+    ``token\\0profile`` and left the previous profile's TUI alive (detached) for the
+    registry TTL, still holding that chat's active-session lease, so returning to the
+    chat was refused with "open in another Hermes window".
+    """
+    import time
+
+    _ws, client, token = pty_client
+    bridges = []
+
+    class _IdleBridge(_OneFrameBridge):
+        @classmethod
+        def spawn(cls, *args, **kwargs):
+            b = cls()
+            bridges.append(b)
+            return b
+
+        def read(self, timeout):
+            if self.closed:
+                return None
+            if not self._sent:
+                self._sent = True
+                return b"ready"
+            time.sleep(min(timeout, 0.01))
+            return b""
+
+    monkeypatch.setattr(_web_server_chat.PtyBridge, "spawn", _IdleBridge.spawn)
+    monkeypatch.setattr(
+        _web_server_chat, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)
+    )
+    attach = "attach-125287"
+    try:
+        with client.websocket_connect(_url(token, channel="chan-a", attach=attach, profile="alpha")) as conn:
+            assert conn.receive_bytes() == b"ready"
+        assert len(bridges) == 1 and bridges[0].closed is False  # keep-alive survives the detach
+
+        with client.websocket_connect(_url(token, channel="chan-b", attach=attach, profile="beta")) as conn:
+            assert conn.receive_bytes() == b"ready"
+            assert len(bridges) == 2
+            deadline = time.monotonic() + 5.0
+            while not bridges[0].closed and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert bridges[0].closed is True
+            assert bridges[1].closed is False
+    finally:
+        for key in [k for k in _web_server_chat.PTY_REGISTRY._sessions if k.startswith(attach)]:
+            _web_server_chat.PTY_REGISTRY._sessions.pop(key).bridge.close()

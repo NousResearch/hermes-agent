@@ -535,6 +535,10 @@ function decodeModifier(modifier: number): {
  */
 function keycodeToName(keycode: number): string | undefined {
   switch (keycode) {
+    // Kitty keyboard protocol functional keys (F13 through F24) are the
+    // first function-key codepoints in the private-use range. F1 through F12
+    // use their legacy CSI/SS3 sequences below.
+
     case 9:
       return 'tab'
 
@@ -721,7 +725,7 @@ function parseKeypress(s: string = ''): ParsedKey {
     return {
       kind: 'key',
       name,
-      fn: false,
+      fn: Boolean(name?.startsWith('f')),
       ctrl: mods.ctrl,
       meta: mods.meta,
       shift: mods.shift,
@@ -848,6 +852,7 @@ function parseKeypress(s: string = ''): ParsedKey {
     key.code = code
 
     key.name = keyName[code]
+    key.fn = Boolean(key.name?.startsWith('f'))
     key.shift = isShiftKey(code) || key.shift
     key.ctrl = isCtrlKey(code) || key.ctrl
   }

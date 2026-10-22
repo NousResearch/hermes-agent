@@ -5,6 +5,7 @@ import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import type { ComposerAttachment } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
 
+import { composerPlainText } from './rich-editor'
 import type { TriggerState } from './text-utils'
 
 export const COMPOSER_STACK_BREAKPOINT_PX = 320
@@ -67,6 +68,19 @@ export function shouldDisableComposerInput(disabled: boolean, gatewayState: Conn
 
 export const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
+/**
+ * Width classes for the unstacked vs stacked composer editor.
+ *
+ * The inline (unstacked) editor lives in a CSS-grid `1fr` column — not a flex
+ * row — so `flex-1` never grows it. Pairing that with
+ * `--composer-input-inline-min-width` (8rem) pinned the field to the ~129pt
+ * sliver measured in #99728 while mid-run controls kept their intrinsic width.
+ * `w-full min-w-0` fills the grid track and lets the column shrink cleanly.
+ */
+export function composerInputWidthClass(stacked: boolean): string {
+  return stacked ? 'w-full' : 'w-full min-w-0'
+}
+
 /** Completion items can carry an `action` (set in use-slash-completions) that
  *  runs a side effect on pick instead of inserting a chip — e.g. the session
  *  picker's "Browse all…" entry opens the overlay. Table-driven so new action
@@ -117,14 +131,18 @@ export function implicitSlashAcceptIndex(
   activeIndex: number,
   activeExplicit: boolean
 ): number | null {
+  // A deliberately arrowed highlight ALWAYS wins — "Enter means I want this
+  // one", even on a bare `/` query where no command name has been typed yet.
+  // This must be checked before the `!typed` early-return so an explicit pick
+  // is never suppressed on a bare `/` (#98535).
+  if (activeExplicit && itemTexts[activeIndex] != null) {
+    return activeIndex
+  }
+
   const typed = slashCompletionToken(query)
 
   if (!typed) {
     return null
-  }
-
-  if (activeExplicit && itemTexts[activeIndex] != null) {
-    return activeIndex
   }
 
   const exact = itemTexts.findIndex(text => slashCompletionToken(text) === typed)
@@ -216,4 +234,16 @@ export function isPendingDraftPersistCurrent(
   expected: PendingDraftPersist | null
 ): boolean {
   return pending !== null && expected !== null && pending.scope === expected.scope && pending.text === expected.text
+}
+
+/**
+ * The composer text a keystroke should decide from.
+ *
+ * `mirror` (the composer's draftRef) is refreshed by a coalesced per-frame
+ * flush, so within a frame of a keystroke or paste it still holds the previous
+ * text. A decision that can act on the draft — the sent-message recall guard
+ * replaces the composer — has to read the live editor instead.
+ */
+export function liveComposerDraft(editor: HTMLElement | null | undefined, mirror: string): string {
+  return editor ? composerPlainText(editor) : mirror
 }

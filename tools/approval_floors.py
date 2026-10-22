@@ -15,7 +15,7 @@ import time
 import uuid
 from tools import approval_context as _ctx
 from tools.approval_detection import (
-    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _command_detection_variants)
+    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
 
 logger = logging.getLogger("tools.approval")
 
@@ -34,7 +34,7 @@ def _match_user_deny_rule(command: str) -> str | None:
     globs = [p.strip() for p in deny_patterns if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _command_detection_variants(command):
+    for command_variant in _deny_command_variants(command):
         candidate = command_variant.lower().strip()
         for pattern in globs:
             if fnmatch.fnmatchcase(candidate, pattern.lower()):
@@ -71,7 +71,7 @@ def _save_blocked_payload(command: str) -> str | None:
                     old.unlink()
         path = script_dir / f"blocked-{int(time.time())}-{uuid.uuid4().hex[:8]}.sh"
         path.write_text(
-            "#!/bin/bash\n"
+            "#!/usr/bin/env bash\n"
             "# Auto-saved by Hermes: this command exceeded the inline command\n"
             "# parser limit and was blocked from direct execution. Review it,\n"
             f"# then run it via: bash {path}\n" + command + ("" if command.endswith("\n") else "\n"),
@@ -195,7 +195,7 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
     if not command or _has_allowlist_shell_operator(command):
         return False
     with _a._lock:
-        patterns = tuple(_a._permanent_approved)
+        patterns = tuple(_a._permanent_set())
     for pattern in patterns:
         pattern = pattern.strip() if isinstance(pattern, str) else ""
         if pattern and (command == pattern or (any(ch in pattern for ch in "*?[")

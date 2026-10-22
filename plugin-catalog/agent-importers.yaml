@@ -1,0 +1,37 @@
+name: agent-importers
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: 6108b7b4c75a604890e40934a9305752692f6aca
+subdir: agent-importers
+description: '`hermes import-agent`: import an OpenClaw (~/.openclaw, or legacy ~/.clawdbot /
+  ~/.moltbot), Claude Code (~/.claude), Codex CLI (~/.codex) or Cursor (~/.cursor) setup into Hermes in one
+  command; always previews first and asks before applying. Claude Code / Codex / Cursor: instructions,
+  Cursor rules and memories become memory entries, Bash permission rules become command allow/deny lists,
+  MCP servers land in config.yaml, skills are copied, and `--sync` re-imports sources that changed.
+  OpenClaw (core''s former `hermes claw migrate`; the plugin keeps that spelling, `hermes claw cleanup` and
+  the openclaw-migration skill): persona, memories, skills, model and messaging settings, MCP servers and
+  agent behaviour. Formerly built into Hermes core; `hermes setup` offers to install it when it finds one
+  of these agents, and profiles with a registered sync source are migrated automatically. Disclosure — no
+  Python dependencies, no network calls and no model calls. Claude Code / Codex / Cursor: reads those
+  agents'' local config trees (never their credential files; secret-looking MCP env vars and headers are
+  stripped and listed) and writes only into the active profile (memories/MEMORY.md with a backup,
+  config.yaml, skills/ and import-sync.json). OpenClaw: reads the OpenClaw dir (openclaw.json, its .env,
+  workspace files such as SOUL.md / MEMORY.md / USER.md, skills); API keys and bot tokens come over only
+  with --migrate-secrets (allowlisted names, shown in the preview). It writes into the active profile
+  (config.yaml, .env, SOUL.md, memories/, skills/openclaw-imports/, a migration/openclaw/<time>/ report
+  with item backups, and a backups/pre-migration-*.zip restore point), plus a workspace dir only when
+  --workspace-target names one. It runs local pgrep / systemctl / tasklist checks to warn when OpenClaw or
+  a Hermes gateway is still running, and `hermes claw cleanup` renames the OpenClaw dir to
+  *.pre-migration after a confirmation.'
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.21.6"
+version: "1.1.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/6108b7b4c75a604890e40934a9305752692f6aca/assets/agent-importers.jpg
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/agent-importers
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

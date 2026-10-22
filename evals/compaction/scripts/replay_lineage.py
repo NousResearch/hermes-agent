@@ -50,7 +50,7 @@ while prefix and prefix[-1].get("tool_calls"):
 before_tokens = sum(tok(m) for m in prefix)
 print(f"[{Path(CHECKOUT).name}] {Path(LINEAGE).stem}: prefix {len(prefix)} msgs ~{before_tokens:,} tok (cap {CAP:,})")
 
-from agent.context_compressor import ContextCompressor  # noqa: E402
+from agent.context_compressor import ContextCompressor
 
 model = "anthropic/claude-fable-5"
 comp = ContextCompressor(model=model, quiet_mode=True)

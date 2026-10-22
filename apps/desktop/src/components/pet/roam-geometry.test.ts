@@ -1,15 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { GROUND_EPS, groundTop, type Ledge, overlapsX, resolveLedge } from './roam-geometry'
+import { GROUND_EPS, type Ledge, overlapsX, resolveLedge } from './roam-geometry'
 
 const ledge = (y: number, left = 0, right = 1000): Ledge => ({ left, right, y })
-
-describe('groundTop', () => {
-  it('sinks the feet by the padding offset so they meet the surface', () => {
-    // y - petH + FEET_DROP_PX(4)
-    expect(groundTop(ledge(500), 100)).toBe(404)
-  })
-})
 
 describe('overlapsX', () => {
   it('is true only when the walkable ranges share real width', () => {

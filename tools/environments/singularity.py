@@ -11,17 +11,20 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
+from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _popen_bash
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import bash_argv, run_capture
 
 logger = logging.getLogger(__name__)
 
-_SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
+def _snapshot_store() -> Path:
+    # Resolved per call: the multiplexed gateway serves every profile from one process, so an
+    # import-time path would keep every profile's snapshots in the launch profile's home.
+    return get_hermes_home() / "singularity_snapshots.json"
 
 
 def _find_singularity_executable() -> str:
@@ -50,12 +53,8 @@ def _ensure_singularity_available() -> str:
     return exe
 
 
-def _load_snapshots() -> dict:
-    return _load_json_store(_SNAPSHOT_STORE)
-
-
-def _save_snapshots(data: dict) -> None:
-    _save_json_store(_SNAPSHOT_STORE, data)
+def _update_snapshots(update: Callable[[dict], None]) -> None:
+    _update_json_store(_snapshot_store(), update)
 
 
 def _get_scratch_dir() -> Path:
@@ -138,6 +137,8 @@ class SingularityEnvironment(BaseEnvironment):
     Session snapshot preserves env vars across calls; CWD persists via in-band stdout markers.
     """
 
+    _sudo_nopasswd_probe_supported = True
+
     def __init__(self, image: str, cwd: str = "~", timeout: int = 60, cpu: float = 0,
                  memory: int = 0, disk: int = 0, persistent_filesystem: bool = False,
                  task_id: str = "default"):
@@ -210,6 +211,5 @@ class SingularityEnvironment(BaseEnvironment):
             self._instance_started = False
 
         if self._persistent and self._overlay_dir:
-            snapshots = _load_snapshots()
-            snapshots[self._task_id] = str(self._overlay_dir)
-            _save_snapshots(snapshots)
+            overlay_dir = str(self._overlay_dir)
+            _update_snapshots(lambda snapshots: snapshots.update({self._task_id: overlay_dir}))

@@ -1,0 +1,83 @@
+name: Remote terminal backends
+
+# The SSH and Docker terminal backends against a real sshd and a real Docker
+# daemon. Every other test of these backends mocks subprocess / the docker CLI;
+# the gated real-backend tests in tests/tools/test_ssh_environment.py skipped on
+# every CI run because nothing provided a host.
+#
+# This job provides one: a throwaway sshd container on 127.0.0.1 that accepts a
+# keypair generated for this run only (scripts/ci/start_test_sshd.sh), plus the
+# runner's own Docker daemon with a small public image. No secrets are involved
+# and none may be added: ci.yaml runs PR-controlled code.
+#
+# ci.yaml calls this only when a PR touches the backends (the classifier's
+# `remote_backends` lane) and on every push to main.
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remote-backends-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
+
+env:
+  # One small image for both the sshd host and the docker backend's sandbox, pinned
+  # by digest so a tag move cannot change what the lane tests.
+  HERMES_TEST_IMAGE_REF: debian:13-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+
+jobs:
+  real-backends:
+    name: SSH + Docker backends (real sshd, real daemon)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
+
+      - name: Pull the test image
+        uses: ./.github/actions/retry
+        with:
+          command: docker pull -q "$HERMES_TEST_IMAGE_REF"
+
+      - name: Start a throwaway sshd
+        # Exports HERMES_TEST_SSH_{HOST,USER,PORT,KEY} through $GITHUB_ENV.
+        env:
+          HERMES_TEST_SSHD_IMAGE: ${{ env.HERMES_TEST_IMAGE_REF }}
+        run: scripts/ci/start_test_sshd.sh "$RUNNER_TEMP/hermes-test-sshd"
+
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '[]'
+          test-environment: 'true'
+          prune-python-cache: true
+
+      - name: Run the real-backend tests
+        env:
+          HERMES_TEST_DOCKER_IMAGE: ${{ env.HERMES_TEST_IMAGE_REF }}
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        # The real tests skip when their host is missing; here that would be a green
+        # lane over zero coverage. --fail-on-skip fails the run on any skip, decided
+        # from pytest's parsed counts rather than the progress line's display format.
+        run: |
+          if ! scripts/run_tests.sh --fail-on-skip \
+              tests/tools/test_ssh_environment.py tests/tools/test_docker_backend_real.py; then
+            echo "::error::real-backend tests failed or skipped (a skip means the sshd or docker image was not wired through)"
+            exit 1
+          fi
+
+      - name: sshd log
+        if: failure()
+        run: docker logs hermes-test-sshd || true

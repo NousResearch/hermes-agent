@@ -86,6 +86,7 @@ async def test_injection_path_primes_before_handle_message():
 
         async def handle_message(self, event):
             calls.append(("handle", getattr(event.source, "chat_id", None)))
+            event._gateway_accepted = True
 
     runner = object.__new__(GatewayRunner)
     runner._running = True

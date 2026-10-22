@@ -26,13 +26,19 @@ import { hiddenWindowsChildOptions } from './windows-child-options'
 
 export function execText(command: string, args: string[], { timeout = 3000 } = {}): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
+    const child = execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
       if (error) {
         reject(error)
+      } else if (timeout > 0 && child.killed) {
+        // A SIGTERM handler can exit zero after execFile's timeout fired.
+        reject(new Error(`${command} timed out after ${timeout}ms`))
       } else {
         resolve(String(stdout || '').trim())
       }
     })
+
+    // These probes are noninteractive; do not leave readers waiting for input.
+    child.stdin?.end()
   })
 }
 
@@ -218,4 +224,21 @@ export function createBackendOutputTail(limit: number = DEFAULT_OUTPUT_TAIL_LIMI
       return text ? `\nRecent backend output:\n${text}` : ''
     }
   }
+}
+
+/**
+ * Exit line for a supervised backend child, carrying the buffered output tail
+ * so the reason the child died reaches desktop.log. Every exit surface uses
+ * this shape — including the "stale" classification, where the line is the
+ * only evidence left: the child is gone and nothing else will say why it
+ * exited. `signal` wins over `code` (null code on signal death and vice
+ * versa); an empty tail keeps the line exactly as it was before.
+ */
+export function formatBackendExitLine(
+  label: string,
+  code: number | null,
+  signal: string | null,
+  outputTail: BackendOutputTail | null
+): string {
+  return `${label} (${signal || code})${outputTail?.describe() ?? ''}`
 }

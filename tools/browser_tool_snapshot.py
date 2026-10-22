@@ -61,7 +61,7 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
         # private: cache/web is bind-mounted into remote backends' container UID.
         write_text_exclusive(path, content, private=False, overwrite=True)
         return str(path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _bt.logger.debug("Failed to store full browser snapshot: %s", exc)
         return None
 
@@ -79,6 +79,10 @@ def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> s
         return snapshot_text
 
     stored_path = _store_full_snapshot(snapshot_text)
+    if stored_path:
+        # Agent-visible path: read_file runs inside the active backend (#72389).
+        from tools.credential_files import to_agent_visible_cache_path
+        stored_path = to_agent_visible_cache_path(stored_path)
 
     lines = snapshot_text.split('\n')
     result: list[str] = []
@@ -104,18 +108,31 @@ def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> s
     return '\n'.join(result)
 
 
-def _redact_browser_output(value: Any) -> Any:
+def _redact_browser_output(value: Any, *, _depth: int = 0) -> Any:
     """Force-redact secrets in browser-originated data (snapshots, console, eval
     results can carry page-rendered keys/cookies/tokens). Tool output is a model
-    boundary, so this applies even when global log redaction is disabled."""
-    from agent.redact import redact_sensitive_text
+    boundary, so this applies even when global log redaction is disabled.
 
+    ``_depth`` stops a page-controlled tree from raising RecursionError. The
+    unread remainder is replaced, not returned raw.
+    """
+    from agent.redact import (
+        REDACT_WALK_DEPTH_MARKER,
+        REDACT_WALK_MAX_DEPTH,
+        redact_sensitive_text,
+    )
+
+    if _depth >= REDACT_WALK_MAX_DEPTH:
+        return REDACT_WALK_DEPTH_MARKER
     if isinstance(value, str):
         return redact_sensitive_text(value, force=True)
     if isinstance(value, list):
-        return [_redact_browser_output(item) for item in value]
+        return [_redact_browser_output(item, _depth=_depth + 1) for item in value]
     if isinstance(value, tuple):
-        return tuple(_redact_browser_output(item) for item in value)
+        return tuple(_redact_browser_output(item, _depth=_depth + 1) for item in value)
     if isinstance(value, dict):
-        return {key: _redact_browser_output(item) for key, item in value.items()}
+        return {
+            _redact_browser_output(key, _depth=_depth + 1): _redact_browser_output(item, _depth=_depth + 1)
+            for key, item in value.items()
+        }
     return value

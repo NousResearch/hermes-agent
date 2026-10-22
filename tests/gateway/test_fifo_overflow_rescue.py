@@ -18,11 +18,10 @@ from unittest.mock import MagicMock
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     Platform,
     PlatformConfig,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 
 

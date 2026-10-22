@@ -27,7 +27,12 @@ _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM", "TMPDIR", "
 # "PASS" is intentionally absent: it false-positives on BYPASS_CACHE /
 # COMPASS_DIR / PASSENGER_HOST while PASSWORD/PASSWD already cover credentials.
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PASSWD", "AUTH", "DSN",
-                      "WEBHOOK", "CREDS", "BEARER", "APIKEY")
+                      "WEBHOOK", "CREDS", "BEARER", "APIKEY", "COOKIE")
+
+
+def is_secret_env_name(name: str) -> bool:
+    """The credential-name policy, shared with a local session's client environment (``agent.session_client_env``)."""
+    return any(s in name.upper() for s in _SECRET_SUBSTRINGS)
 
 # Non-secret runtime-location flags that repo-root modules a sandbox script
 # imports may read at import time. HERMES_DELEGATED_CHILD_CONTEXT must ride
@@ -49,20 +54,22 @@ _WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
 })
 
 
-def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
+def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain=frozenset()):
     """Produce the scrubbed child-process env for execute_code.
 
     Rules, in order: (1) passthrough vars (skill/config-declared) resolve
     through the active profile secret scope — an absent scoped value is
-    omitted; (2) secret-substring names are blocked; (3) safe prefixes pass;
+    omitted; (2) secret-substring names are blocked; (3) safe prefixes pass,
+    as do a local session's client ``toolchain`` names (NVM_DIR, GOPATH...);
     (4) operational HERMES_* pass by exact name; (5) on Windows the
     OS-essential allowlist passes by exact name.
     """
     try:
-        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
+        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
-        is_env_passthrough = lambda _: False  # noqa: E731
-        resolve_passthrough_value = lambda _name, _fallback: None  # noqa: E731
+        is_env_passthrough = lambda _: False
+        resolve_passthrough_value = lambda _name, _fallback: None
+        scoped_passthrough_additions = lambda _present: {}
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
     if is_windows is None:
@@ -77,14 +84,17 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             if resolved is not None:
                 scrubbed[k] = resolved
             continue
-        if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
+        if is_secret_env_name(k):
             continue
-        if (any(k.startswith(p) for p in _SAFE_ENV_PREFIXES)
+        if (any(k.startswith(p) for p in _SAFE_ENV_PREFIXES) or k in toolchain
                 or k in _HERMES_CHILD_ALLOWED
                 or (is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS)):
             scrubbed[k] = v
         elif k.startswith("HERMES_"):
             _dropped_hermes.append(k)
+    # Declared names only the bound profile scope holds (a routed profile's own .env / sources
+    # never enter the process env) — the loop above sees only names ``source_env`` carries.
+    scrubbed.update((k, v) for k, v in scoped_passthrough_additions(scrubbed).items() if is_passthrough(k))
     if _dropped_hermes:
         logger.debug(
             "execute_code: dropped %d non-allowlisted HERMES_* var(s) from the "
@@ -96,20 +106,27 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     # delegate_task children are marked by a ContextVar, not os.environ, and the sandbox crosses
     # a process boundary: strip dispatcher-owned Kanban vars AFTER the scrub so an explicit
     # passthrough cannot re-grant a delegated child the parent's board mutation capability.
-    try:
-        from agent.delegation_context import is_delegated_child_process_context, scrub_kanban_env
-        if is_delegated_child_process_context():
-            scrubbed = scrub_kanban_env(scrubbed)
-    except Exception:
-        pass
-    return scrubbed
+    from agent.delegation_context import (
+        DELEGATED_CHILD_ENV_MARKER, delegated_child_subprocess_env,
+    )
+    scoped = delegated_child_subprocess_env(source_env)
+    # Preserve location only when carrying the descendant fence, not for arbitrary
+    # non-allowlisted HERMES_* values in otherwise ordinary execution environments.
+    if scoped.get(DELEGATED_CHILD_ENV_MARKER):
+        for key in (DELEGATED_CHILD_ENV_MARKER, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
+            if key in scoped:
+                scrubbed[key] = scoped[key]
+    return delegated_child_subprocess_env(scrubbed)
 
 
 def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
-                     child_python: str) -> Dict[str, str]:
+                     child_python: str) -> dict[str, str]:
     """Build the scrubbed child environment both execution paths share."""
-    from hermes_constants import apply_subprocess_home_env
-    child_env = _scrub_child_env(os.environ)
+    from hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
+    from agent.session_client_env import tool_env, toolchain_environ
+    # A local session's client toolchain replaces the daemon's PATH / venv, then the whole scrub (secret
+    # names, delegated-child restrictions) runs over the merged environment.
+    child_env = _scrub_child_env(toolchain_environ(), toolchain=frozenset(tool_env()))
     child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
     child_env["HERMES_RPC_TOKEN"] = rpc_token
     child_env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -117,24 +134,54 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     # code page (cp1252) and print("→") raises; harmless under a C/POSIX locale (containers).
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
-    # Only TZ reaches the child; HERMES_TIMEZONE is an internal setting.
-    _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
-    if _tz_name:
+    # Only TZ reaches the child; HERMES_TIMEZONE is an internal setting (and under the multiplexed
+    # gateway holds only the default profile's value — hermes_time resolves the routed profile's).
+    from hermes_time import get_timezone_name
+
+    _tz_name = get_timezone_name()
+    # Windows CPython does not support IANA names in TZ.  Leaving TZ unset
+    # preserves the OS-configured local timezone for the child process.
+    if _tz_name and not _IS_WINDOWS:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
     apply_subprocess_home_env(child_env)
+    # Multiplexed gateway/Desktop (#110303): the server process env carries the machine-default
+    # HERMES_HOME, but this turn runs under a per-profile override (ContextVar bound per turn).
+    # The scrub above passed the stale default through; rewrite it so skill scripts see the
+    # active profile's home — the same per-turn rewrite apply_subprocess_home_env does for HOME.
+    # No override (dedicated per-profile process) → leave the inherited value untouched.
+    _home_override = get_hermes_home_override()
+    if _home_override:
+        child_env["HERMES_HOME"] = _home_override
+        apply_scratch_tmp_env(child_env)  # TMPDIR follows the routed home, like HOME does
     # PYTHONPATH: the staging dir (hermes_tools.py) must always be importable even when project
     # mode changes CWD. Hermes's root is added ONLY when the child runs in Hermes's Python env —
     # exposing Hermes's site-packages to an external interpreter can mix incompatible compiled
     # extensions (3.12 NumPy under a 3.9 venv). Inherited Hermes-owned entries are stripped first.
     # Before re-injecting PYTHONPATH, strip Hermes-owned entries that leaked through _scrub_child_env
-    # (PYTHONPATH is in _SAFE_ENV_PREFIXES so it passes the scrub). They are redundant for same-Hermes-
-    # environment children and may be incompatible with external interpreters (project mode can select a
-    # different venv), so they must not shadow or poison the child's sys.path (#74817).
-    from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+    # (PYTHONPATH is in _SAFE_ENV_PREFIXES so it passes the scrub). External project interpreters
+    # must not inherit Hermes dependencies (#74817). PM's own interpreter, however, can be a
+    # bare bundled Python whose dependencies live in the selected generation, not sys.prefix.
+    from tools.environments.local_pythonpath import (
+        _strip_hermes_owned_pythonpath, _validated_runtime_venv, _same_path,
+    )
+    _runtime_path = None
+    if child_python == sys.executable:
+        runtime_venv = _validated_runtime_venv(child_env)
+        if runtime_venv is not None:
+            from pathlib import Path
+            from pm.environments import site_packages
+            candidate = site_packages(runtime_venv)
+            # Restore only a dependency path the launcher actually supplied, not a newly
+            # selected generation that this still-running interpreter has never loaded.
+            if any(_same_path(Path(entry), candidate)
+                   for entry in child_env.get("PYTHONPATH", "").split(os.pathsep) if entry):
+                _runtime_path = str(candidate)
     _strip_hermes_owned_pythonpath(child_env)
     _existing_pp = child_env.get("PYTHONPATH", "")
     _pp_parts = [tmpdir]
+    if _runtime_path is not None:
+        _pp_parts.append(_runtime_path)
     if _uses_hermes_python_environment(child_python):
         _pp_parts.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     elif child_python not in _external_env_logged:
@@ -173,6 +220,7 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
             [python_path, "-c", code], timeout=5, capture_output=True, text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL, env=delegated_child_subprocess_env(),
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
         return None
@@ -218,9 +266,11 @@ def _resolve_child_python(mode: str) -> str:
     VIRTUAL_ENV/CONDA_PREFIX python if it exists and passes the 3.8+ probe, else ``sys.executable``."""
     if mode != "project":
         return sys.executable
+    from agent.session_client_env import toolchain_environ
+    environ = toolchain_environ()  # a local session's: its client's venv/conda, not the daemon's
     subdir, exe_names = ("Scripts", ("python.exe", "python3.exe")) if _IS_WINDOWS else ("bin", ("python", "python3"))
     for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
-        root = os.environ.get(var, "").strip()
+        root = environ.get(var, "").strip()
         for exe in exe_names if root else ():
             candidate = os.path.join(root, subdir, exe)
             if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):

@@ -256,10 +256,10 @@ agent:
 
 ## 相关文档
 
-- [上下文文件](/user-guide/features/context-files)
-- [配置](/user-guide/configuration)
-- [技巧与最佳实践](/guides/tips)
-- [SOUL.md 指南](/guides/use-soul-with-hermes)
+- [上下文文件](./context-files.md)
+- [配置](../configuration.md)
+- [技巧与最佳实践](../../guides/tips.md)
+- [SOUL.md 指南](../../guides/use-soul-with-hermes.md)
 
 ## CLI 外观与对话个性
 

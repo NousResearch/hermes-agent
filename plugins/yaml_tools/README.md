@@ -70,7 +70,7 @@ command: 'curl -H "Authorization: Bearer $INTERNAL_API_KEY" \
 ## Security
 
 Parameter values are shell-quoted into environment assignments inside an
-isolated subshell. A value such as `$(touch /tmp/example)` or `"; echo bad"`
+isolated subshell. A value such as `$(touch "$TMPDIR/example")` or `"; echo bad"`
 therefore remains data instead of becoming extra shell syntax. The complete
 wrapper then runs through the normal `terminal` tool, including its configured
 local/container/SSH backend, command approval checks, bounded output capture,

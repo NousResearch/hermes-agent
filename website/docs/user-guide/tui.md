@@ -102,11 +102,17 @@ The directory must contain `dist/entry.js`.
 
 Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavioral differences:
 
+On macOS, `F7` means the physical F7 function key. MacBook keyboards may use that row for system controls instead; hold **Fn** (the **globe** key on newer keyboards) while pressing **F7**, or enable **Use F1, F2, etc. keys as standard function keys** in **System Settings → Keyboard → Keyboard Shortcuts → Function Keys**. If the terminal still does not forward it, use the equivalent **Ctrl+R** binding below.
+
+- **`Ctrl+T`** expands the automatic live-work dock (subagents, plus a **Processes** block for `terminal(background=true)` spawns) into the full-height `/agents` roster. Select a worker and press **Enter** (or **`t`**) for its live transcript, **`d`** for rich details, **`e`** to steer, or **`x`** to stop it. The dock fits its row count to terminal height and preserves your composer draft. See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents).
+- A standing **`/goal`** gets its own row above the live dock (`⊙ goal · 3/20 turns · 2 subgoals · …`, or `⏳ goal parked` / `⏸ goal paused` with the reason); it repaints as soon as anything changes the goal, a tool mid-turn included, and leaves once the goal is done or cleared. Queued follow-ups are listed above it.
+- **`Ctrl+R`** toggles the live dock between its default preview and one summary line. **`F7`** remains an optional alias where the terminal sends function keys through. This does not open the monitor or move composer focus; the choice lasts for this TUI process without changing config.
 - **Mouse drag** highlights text with a uniform selection background.
 - **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
-- **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead. **`Esc`** cancels editing and unhighlights without deleting.
+- **Typing while the agent is busy** (`display.busy_input_mode: queue`, the TUI default) submits the message to the gateway immediately. The gateway's durable session queue orders it behind the running turn, so it survives a gateway crash or restart and shows up as `[queued] …` in the `queued (N)` panel of every client attached to the session — the Desktop app sees the same list. Your message's transcript bubble appears when its turn actually starts. `steer` and `interrupt` still act on the live turn as before.
+- **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead — for a gateway-queued row this cancels it on the gateway (`prompt.cancel`), so it disappears for every viewer; picking and re-sending an edited row cancels the original and submits the edit as a new input. **`Esc`** cancels editing and unhighlights without deleting.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 
 ## Slash commands
@@ -122,6 +128,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/details` | Toggle verbose tool-call details (global or per-section) |
 | `/usage` | Rich token / cost / context panel |
 | `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
+| `/connectors` | Connector accounts list: rename, add, reconnect or remove accounts, and show retired ones. See [Slash Commands](../reference/slash-commands.md#tools--skills) for the keys |
 | `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
 | `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |
 
@@ -288,6 +295,11 @@ By default the TUI spawns its own in-process gateway, so each TUI instance is se
 You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). The `/api/ws` endpoint exists only inside the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
 
 There is no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
+
+### If the connection drops
+
+- **Spawned gateway (default):** when the gateway process dies mid-session the TUI says *Hermes stopped unexpectedly — restarting and reopening your chat*, respawns it (bounded to a few attempts per minute) and reopens the same saved session. The reply that was in flight is lost with the process.
+- **Attached gateway (dashboard chat):** when only the WebSocket drops the TUI says *Connection to Hermes lost — reconnecting and reopening your chat…*, reconnects with growing backoff and reattaches to the same session — including a reply that is still streaming on the backend. Nothing is resubmitted.
 
 If you want multiple surfaces to share one set of sessions, use the shared `~/.hermes/state.db` (see [Sessions](sessions.md)) or the web dashboard's embedded chat (see [Web Dashboard](features/web-dashboard.md#chat)) — not a hand-set gateway URL.
 

@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -20,6 +21,8 @@ from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
 
+logger = logging.getLogger(__name__)
+
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
 
@@ -30,12 +33,19 @@ _TERMINAL_TRUNCATION_NOTICE = (
 _STOP_PENDING = "stop retry remains pending: {exc}"
 
 
+class AttachmentsUnsupportedError(RuntimeError):
+    """The member's route cannot carry the turn's files; refused before submit."""
+
+
 class InternalSessionRPC(Protocol):
     """Normalized in-process session operations required by the room driver.
 
     ``submit`` durably reports one fenced turn's terminal result via ``on_terminal``;
     ``interrupt`` acts only while the current turn still matches ``expected_task_id``.
+    Only a transport with ``accepts_attachments`` is handed a turn's bound files.
     """
+
+    accepts_attachments: bool = False
 
     def resolve_exact(
         self, *, profile: str, title: str, source: str) -> Mapping[str, Any] | None: ...
@@ -43,7 +53,8 @@ class InternalSessionRPC(Protocol):
     def resume(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
+        attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]: ...
     def history(
         self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]: ...
@@ -580,10 +591,19 @@ class HostedRoomRuntime:
         self, binding: HostedRoomBinding, task: Mapping[str, Any], attempt: state.TaskAttempt
     ) -> None:
         profile, submit_attempted = task["payload"]["target_profile"], False
-        transport = self._transport_for(binding, task)
+        attachments = task["payload"].get("attachments")
         with self._status_lock:
             self._current_tasks[binding.room_id] = attempt.identity
         try:
+            # Inside the try: a member whose destination is gone (an unserved bot) fails its own
+            # turn before submit instead of leaving the task running and the room wedged.
+            transport = self._transport_for(binding, task)
+            if attachments and not getattr(transport, "accepts_attachments", False):
+                # A route that cannot carry the files would answer without them, and a
+                # retry cannot change the route: settle a proven failure before submit.
+                raise AttachmentsUnsupportedError(
+                    "attachments_unsupported_on_route: this member's route cannot carry "
+                    "attached files")
             with self.turn_lock(profile):
                 session = self._resolve_or_create(transport, profile, binding.room_id)
                 # A submit should fail before admission or return after it; an unexpected
@@ -593,6 +613,8 @@ class HostedRoomRuntime:
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
+                    attachments=attachments,
+                    member_id=_member_id(task),
                     on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
                 self._unavailable_route_retries.pop(
                     (task["identity"].room_id, _member_id(task)), None)
@@ -606,6 +628,10 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
+            # Exceptions may contain prompt text or credentials. Persist only a fixed
+            # reason, not the free-form messages retained in the in-memory status.
+            reason = 'request_too_large' if getattr(exc, 'reason', None) == 'request_too_large' else 'attempt_failed'
+            logger.warning('hosted room task %s: %s', attempt.identity.task_id, reason)
             if submit_attempted and bool(getattr(exc, "not_admitted", False)):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
@@ -968,16 +994,3 @@ def _info_is_active_for(
     info: Mapping[str, Any], identity: state.TaskIdentity, *, require_exact: bool = False) -> bool:
     accepted = (identity.task_id,) if require_exact else (None, identity.task_id)
     return _info_active(info) and info.get("task_id") in accepted
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-
-@contextlib.contextmanager
-def null_turn_lock(_profile: str) -> Any:
-    """Provide an explicit no-op lock for narrow embedding tests."""
-    yield
-# ---- END PLUGIN-COMPAT ----

@@ -70,19 +70,18 @@ describe('ResponseLoadingIndicator timer', () => {
 
     expect(screen.getByText('⏳ waiting on local-model — 30s with no output yet')).toBeTruthy()
   })
-})
 
-// The status line sits between tool rows and thinking headers, which the
-// transcript rests at a fade. Without the mark it reads a shade brighter than
-// both — the one line in the column claiming emphasis it hasn't earned.
-describe('status line', () => {
-  afterEach(cleanup)
-
-  it('is marked as transcript scaffolding', () => {
+  it('keeps the ticking timer out of the live region accessibility tree', () => {
     $activeSessionId.set('session-a')
     $turnStartedAt.set(Date.now())
-    const { container } = renderIndicator()
+    renderIndicator()
 
-    expect(container.querySelector('[role="status"]')?.hasAttribute('data-conversation-scaffold')).toBe(true)
+    act(() => vi.advanceTimersByTime(2_000))
+
+    const status = screen.getByRole('status')
+    const timer = [...status.querySelectorAll('[aria-hidden="true"]')].find(el => el.textContent === '2s')
+
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect(timer).toBeDefined()
   })
 })

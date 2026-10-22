@@ -1057,7 +1057,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
+            "$ref": "#/components/schemas/FreeTierClaimNudgeParams"
           }
         }
       ],
@@ -18560,6 +18560,34 @@
         "title": "FreeTierChallengeResultParams",
         "type": "object"
       },
+      "FreeTierClaimNudgeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "kind": {
+            "default": "trial",
+            "enum": [
+              "trial",
+              "connector"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "title": "FreeTierClaimNudgeParams",
+        "type": "object"
+      },
       "FreeTierClaimNudgeResult": {
         "additionalProperties": false,
         "properties": {
@@ -18739,6 +18767,18 @@
             ],
             "default": null,
             "title": "Nudge Due In"
+          },
+          "connector_nudge_due_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connector Nudge Due In"
           }
         },
         "required": [

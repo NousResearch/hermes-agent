@@ -90,7 +90,7 @@ describe('sign-in offer after a finished task', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(claims(requestGateway)).toBe(1)
-    expect($freeTierSignIn.get()).toEqual({ status: 'offer' })
+    expect($freeTierSignIn.get()).toEqual({ kind: 'trial', status: 'offer' })
   })
 
   it('due later: waits out nudge_due_in, re-reads the status, then claims', async () => {
@@ -107,7 +107,7 @@ describe('sign-in offer after a finished task', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('free_tier.status')
     expect(claims(requestGateway)).toBe(1)
-    expect($freeTierSignIn.get()).toEqual({ status: 'offer' })
+    expect($freeTierSignIn.get()).toEqual({ kind: 'trial', status: 'offer' })
   })
 
   it('a claim another window won leaves the dialog closed', async () => {

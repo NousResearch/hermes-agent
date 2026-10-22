@@ -382,6 +382,8 @@
   "composer.wakeWordListening": ["ar"],
   "composer.wakeWordOff": ["ar"],
   "composer.wakeWordPausedVoice": ["ar"],
+  "connectorOffer.body": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "connectorOffer.heading": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "connectors.authorizedToolsUnavailable": ["ar","ja","ru","zh-hant"],
   "connectors.cancel": ["ar","ja","ru","zh-hant"],
   "connectors.checking": ["ar","ja","ru","zh","zh-hant"],

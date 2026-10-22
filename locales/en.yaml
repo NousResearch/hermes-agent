@@ -700,6 +700,7 @@ gateway:
     history_unavailable: "⚠️ This session's history is temporarily unavailable, so this message was not processed. Ask the operator to inspect state.db, then resend after it is healthy. Use /reset only if you intentionally want to start a new conversation."
     no_credentials: "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. Use /login to sign in again, or /model to pick a different model. If it keeps failing, run `hermes doctor` on the host."
     cron_session_read_only: "⚠️ This chat belongs to a scheduled job and only runs that job, so your message was not run. Start a new chat to send it."
+    workspace_unavailable: "⚠️ This chat's working folder no longer exists ({path}), so your message was not run. Recreate the folder, or move the chat to another one (`/worktree new` in the CLI, Move to project in the desktop app), then send your message again."
 
   skills:
     disabled: "The **{name}** skill is installed but disabled.\nEnable it with: `hermes skills config`"

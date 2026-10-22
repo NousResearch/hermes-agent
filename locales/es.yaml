@@ -692,6 +692,7 @@ gateway:
     history_unavailable: "⚠️ El historial de esta sesión no está disponible temporalmente, así que este mensaje no se procesó. Pide al operador que revise state.db y reenvíalo cuando esté en buen estado. Usa /reset solo si realmente quieres empezar una conversación nueva."
     no_credentials: "⚠️ No pude conectar con el servicio del modelo de IA, así que este mensaje no se procesó. Usa /login para iniciar sesión de nuevo, o /model para elegir otro modelo. Si sigue fallando, ejecuta `hermes doctor` en el host."
     cron_session_read_only: "⚠️ Este chat pertenece a una tarea programada y solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo."
+    workspace_unavailable: "⚠️ La carpeta de trabajo de este chat ya no existe ({path}), así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o mueve el chat a otra (`/worktree new` en la CLI, «Mover a proyecto» en la app de escritorio) y vuelve a enviar tu mensaje."
   skills:
     disabled: "La skill **{name}** está instalada pero desactivada.\nActívala con: `hermes skills config`"
     not_installed: "La skill **{name}** está disponible pero no instalada.\nInstálala con: `hermes skills install {install_name}`"

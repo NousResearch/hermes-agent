@@ -171,6 +171,17 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     return t("gateway.errors.no_credentials"), auth_permanent, False
 
 
+def _workspace_unavailable_result(policy) -> dict:
+    """A failed, never-run turn for a session whose frozen working directory is gone. Nothing ran
+    and an unchanged resend fails the same way, so the reply names the folder and the way out
+    instead of the generic "something went wrong" apology."""
+    from agent.turn_failure_copy import stamp_failure
+    text = t("gateway.errors.workspace_unavailable", path=policy.cwd)
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": text},
+                         "workspace_unavailable", False)
+
+
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -1160,13 +1171,23 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
+        from contextlib import ExitStack
         from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
+        from hermes_state_runtime import RuntimeStoreError
         policy = policy_for_source(self._runner, self._ctx.source)
-        with policy_scope(policy, authority=active_authority(self._runner)), api_policy_scope():
-            bind_turn_workspace(policy, self._ctx.session_id)
-            result = self._run_sync_scoped()
+        with ExitStack() as scope:
+            try:
+                scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
+            except RuntimeStoreError as exc:
+                if exc.reason != 'workspace_unavailable':
+                    raise
+                result = _workspace_unavailable_result(policy)
+            else:
+                scope.enter_context(api_policy_scope())
+                bind_turn_workspace(policy, self._ctx.session_id)
+                result = self._run_sync_scoped()
             from gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:

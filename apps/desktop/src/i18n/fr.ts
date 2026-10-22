@@ -5,6 +5,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
@@ -4886,34 +4887,7 @@ export const frOverrides = {
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
       responseStopped: 'Réponse interrompue',
-      errorLayers: {
-        auth: "Erreur d'authentification",
-        billing: 'Crédits épuisés',
-        disk: 'Disque plein',
-        endpoint: 'Erreur du point de terminaison personnalisé',
-        gateway: 'Erreur du gateway',
-        generic: 'Échec du tour',
-        provider: 'Erreur du fournisseur',
-        runtime: "Erreur d'exécution locale",
-        streaming: 'Erreur de connexion au flux'
-      },
-      errorLayerBodies: {
-        auth: "Le service d'IA a refusé votre connexion. Vérifiez les identifiants de ce fournisseur, puis renvoyez votre message.",
-        billing:
-          "Votre compte n'a plus de crédits chez ce fournisseur. Rechargez-le ou changez de fournisseur, puis réessayez.",
-        disk: "Votre disque est plein ; Hermes n'a pas pu enregistrer cette conversation. Libérez de l'espace, puis réessayez.",
-        endpoint:
-          "Hermes ne parvient pas à joindre votre serveur de modèle personnalisé. Vérifiez qu'il fonctionne, puis renvoyez votre message.",
-        gateway:
-          'Hermes a rencontré un problème interne au démarrage de cette réponse. Renvoyez votre message ; si cela persiste, envoyez les diagnostics.',
-        generic:
-          "Une erreur s'est produite pendant la réponse de Hermes. Réessayez ou copiez les détails si cela persiste.",
-        provider:
-          "Le service d'IA n'a pas pu traiter cette demande. Réessayez dans un instant ou changez de fournisseur.",
-        runtime:
-          'Hermes a rencontré un problème interne au démarrage de cette réponse. Renvoyez votre message ; si cela persiste, envoyez les diagnostics.',
-        streaming: 'La connexion a été interrompue avant la fin de la réponse. Réessayez pour la renvoyer.'
-      },
+      ...frErrorLayers,
       errorCodes: {
         auth: {
           title: provider => `${provider} a refusé votre connexion`,
@@ -5017,6 +4991,10 @@ export const frOverrides = {
         cron_session_read_only: {
           title: 'Cette conversation appartient à une tâche planifiée',
           body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
+        },
+        workspace_unavailable: {
+          title: 'Le dossier de cette conversation a disparu',
+          body: "Le dossier dans lequel travaille cette conversation a été déplacé ou supprimé ; votre message n'a donc pas été exécuté. Recréez le dossier ou utilisez « Déplacer vers un projet » pour lui en attribuer un autre, puis réessayez."
         },
         SESSION_NOT_OWNED: {
           title: 'Cette conversation est ouverte ailleurs',

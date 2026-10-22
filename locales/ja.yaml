@@ -692,6 +692,7 @@ gateway:
     history_unavailable: "⚠️ このセッションの履歴が一時的に利用できないため、このメッセージは処理されませんでした。運用者に state.db の確認を依頼し、正常になってから再送信してください。/reset は意図的に新しい会話を始めたい場合のみ使ってください。"
     no_credentials: "⚠️ AI モデルサービスに接続できなかったため、このメッセージは処理されませんでした。/login で再度サインインするか、/model で別のモデルを選んでください。失敗が続く場合は、ホストで `hermes doctor` を実行してください。"
     cron_session_read_only: "⚠️ このチャットはスケジュールされたジョブ専用で、そのジョブしか実行しないため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。"
+    workspace_unavailable: "⚠️ このチャットの作業フォルダーが見つかりません（{path}）。そのためメッセージは実行されませんでした。フォルダーを作り直すか、チャットを別のフォルダーへ移動してから（CLI では `/worktree new`、デスクトップアプリでは「Move to project」）、もう一度送信してください。"
   skills:
     disabled: "**{name}** スキルはインストールされていますが無効です。\n有効化するには: `hermes skills config`"
     not_installed: "**{name}** スキルは利用可能ですがインストールされていません。\nインストールするには: `hermes skills install {install_name}`"

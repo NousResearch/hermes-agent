@@ -272,6 +272,8 @@
     "assistant.thread.errorCodes.upstream_blocked.title",
     "assistant.thread.errorCodes.upstream_rate_limit.body",
     "assistant.thread.errorCodes.upstream_rate_limit.title",
+    "assistant.thread.errorCodes.workspace_unavailable.body",
+    "assistant.thread.errorCodes.workspace_unavailable.title",
     "assistant.thread.errorCompressConversation",
     "assistant.thread.errorCompressFailed",
     "assistant.thread.errorCopyDiagnostics",

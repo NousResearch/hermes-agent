@@ -692,6 +692,7 @@ gateway:
     history_unavailable: "⚠️ 此会话的历史暂时不可用，因此这条消息未被处理。请让运维人员检查 state.db，恢复正常后再重新发送。只有确实想开始新对话时才使用 /reset。"
     no_credentials: "⚠️ 我无法连接 AI 模型服务，因此这条消息未被处理。请使用 /login 重新登录，或用 /model 选择其他模型。如果持续失败，请在主机上运行 `hermes doctor`。"
     cron_session_read_only: "⚠️ 此聊天属于一个定时任务，只会运行该任务，因此你的消息未被执行。请新建聊天后再发送。"
+    workspace_unavailable: "⚠️ 此聊天的工作文件夹已不存在（{path}），因此你的消息未被执行。请重新创建该文件夹，或将聊天移到其他文件夹（CLI 中使用 `/worktree new`，桌面应用中使用“移动到项目”），然后重新发送消息。"
   skills:
     disabled: "**{name}** 技能已安装但被禁用。\n启用方式：`hermes skills config`"
     not_installed: "**{name}** 技能可用但尚未安装。\n安装方式：`hermes skills install {install_name}`"

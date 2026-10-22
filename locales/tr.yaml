@@ -692,6 +692,7 @@ gateway:
     history_unavailable: "⚠️ Bu oturumun geçmişi geçici olarak kullanılamıyor; bu nedenle mesaj işlenmedi. Operatörden state.db dosyasını incelemesini isteyin, düzeldikten sonra yeniden gönderin. /reset komutunu yalnızca bilinçli olarak yeni bir konuşma başlatmak istiyorsanız kullanın."
     no_credentials: "⚠️ Yapay zekâ model servisine bağlanamadım; bu nedenle mesaj işlenmedi. Yeniden giriş yapmak için /login, farklı bir model seçmek için /model kullanın. Sorun sürerse ana makinede `hermes doctor` çalıştırın."
     cron_session_read_only: "⚠️ Bu sohbet zamanlanmış bir göreve ait ve yalnızca o görevi çalıştırıyor, bu yüzden mesajın çalıştırılmadı. Göndermek için yeni bir sohbet başlat."
+    workspace_unavailable: "⚠️ Bu sohbetin çalışma klasörü artık yok ({path}), bu yüzden mesajın çalıştırılmadı. Klasörü yeniden oluştur ya da sohbeti başka bir klasöre taşı (CLI'da `/worktree new`, masaüstü uygulamasında “Move to project”), sonra mesajını yeniden gönder."
   skills:
     disabled: "**{name}** skill'i kurulu ancak devre dışı.\nEtkinleştirmek için: `hermes skills config`"
     not_installed: "**{name}** skill'i mevcut ancak kurulu değil.\nKurmak için: `hermes skills install {install_name}`"

@@ -1052,7 +1052,7 @@ def policy_scope(policy, *, authority=None):
     # Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
     # turn runs in a missing directory.
     if not Path(policy.cwd).is_dir():
-        raise RuntimeStoreError('workspace_unavailable')
+        raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)

@@ -96,4 +96,51 @@ describe("installTerminalLongPress", () => {
     expect(onLongPress).not.toHaveBeenCalled();
     expect(menu.defaultPrevented).toBe(false);
   });
+
+  it("a contextmenu after the finger drifted does not open the overlay", () => {
+    const host = new EventTarget() as HTMLElement;
+    const onLongPress = vi.fn();
+    const cleanup = installTerminalLongPress(host, onLongPress);
+
+    host.dispatchEvent(touchEvent("touchstart", 50, 50));
+    host.dispatchEvent(touchEvent("touchmove", 50, 120));
+    const menu = new Event("contextmenu", { cancelable: true }) as MouseEvent;
+    host.dispatchEvent(menu);
+
+    expect(onLongPress).not.toHaveBeenCalled();
+    // Still swallowed so xterm doesn't treat it as a right-click.
+    expect(menu.defaultPrevented).toBe(true);
+    cleanup();
+  });
+
+  it("shouldTrigger can veto a still hold (e.g. it is part of a scroll)", () => {
+    const host = new EventTarget() as HTMLElement;
+    const onLongPress = vi.fn();
+    let scrolling = true;
+    const cleanup = installTerminalLongPress(host, onLongPress, {
+      shouldTrigger: () => !scrolling,
+    });
+
+    host.dispatchEvent(touchEvent("touchstart", 50, 50));
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(onLongPress).not.toHaveBeenCalled();
+    host.dispatchEvent(touchEvent("touchend", 50, 50));
+
+    scrolling = false;
+    host.dispatchEvent(touchEvent("touchstart", 50, 50));
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(onLongPress).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("acceptTarget ignores holds on excluded targets", () => {
+    const host = new EventTarget() as HTMLElement;
+    const onLongPress = vi.fn();
+    const cleanup = installTerminalLongPress(host, onLongPress, { acceptTarget: () => false });
+
+    host.dispatchEvent(touchEvent("touchstart", 50, 50));
+    vi.advanceTimersByTime(LONG_PRESS_MS * 2);
+    expect(onLongPress).not.toHaveBeenCalled();
+    cleanup();
+  });
 });

@@ -67,4 +67,147 @@ describe("installTerminalTouchScroll", () => {
 
     expect(terminal.scrollLines).not.toHaveBeenCalled();
   });
+
+  describe("options", () => {
+    it("uses a custom px-per-line, re-read at each touchstart", () => {
+      const host = new EventTarget() as HTMLElement;
+      const terminal = term(20, 100);
+      let cell = 10;
+      const cleanup = installTerminalTouchScroll(host, terminal, { pxPerLine: () => cell });
+
+      host.dispatchEvent(touchEvent("touchstart", 200));
+      host.dispatchEvent(touchEvent("touchmove", 170));
+      expect(terminal.scrollLines).toHaveBeenLastCalledWith(3);
+
+      cell = 15;
+      host.dispatchEvent(touchEvent("touchend", 170));
+      host.dispatchEvent(touchEvent("touchstart", 200));
+      host.dispatchEvent(touchEvent("touchmove", 170));
+      expect(terminal.scrollLines).toHaveBeenLastCalledWith(2);
+
+      cleanup();
+    });
+
+    it("containGesture blocks the page on sub-line moves and at the boundary", () => {
+      const host = new EventTarget() as HTMLElement;
+      const terminal = term(0, 100);
+      const cleanup = installTerminalTouchScroll(host, terminal, { containGesture: true });
+
+      host.dispatchEvent(touchEvent("touchstart", 100));
+      const small = touchEvent("touchmove", 95);
+      host.dispatchEvent(small);
+      const atTop = touchEvent("touchmove", 140);
+      host.dispatchEvent(atTop);
+
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+      expect(small.defaultPrevented).toBe(true);
+      expect(atTop.defaultPrevented).toBe(true);
+
+      cleanup();
+    });
+
+    it("default mode still lets sub-line moves through to the page", () => {
+      const host = new EventTarget() as HTMLElement;
+      const terminal = term(20, 100);
+      const cleanup = installTerminalTouchScroll(host, terminal);
+
+      host.dispatchEvent(touchEvent("touchstart", 100));
+      const small = touchEvent("touchmove", 95);
+      host.dispatchEvent(small);
+
+      expect(small.defaultPrevented).toBe(false);
+      cleanup();
+    });
+
+    it("containGesture counts small moves so slow drags track the finger", () => {
+      const host = new EventTarget() as HTMLElement;
+      const terminal = term(20, 100);
+      const cleanup = installTerminalTouchScroll(host, terminal, {
+        containGesture: true,
+        pxPerLine: 10,
+      });
+
+      host.dispatchEvent(touchEvent("touchstart", 200));
+      for (let y = 199; y >= 190; y -= 1) {
+        host.dispatchEvent(touchEvent("touchmove", y));
+      }
+      expect(terminal.scrollLines).toHaveBeenCalledWith(1);
+
+      cleanup();
+    });
+
+    it("default mode keeps the small-move dead zone", () => {
+      const host = new EventTarget() as HTMLElement;
+      const terminal = term(20, 100);
+      const cleanup = installTerminalTouchScroll(host, terminal, { pxPerLine: 10 });
+
+      host.dispatchEvent(touchEvent("touchstart", 200));
+      for (let y = 199; y >= 190; y -= 1) {
+        host.dispatchEvent(touchEvent("touchmove", y));
+      }
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+
+      cleanup();
+    });
+
+    it("containGesture discards travel past a boundary so reversing responds at once", () => {
+      const host = new EventTarget() as HTMLElement;
+      const terminal = term(0, 100);
+      const cleanup = installTerminalTouchScroll(host, terminal, {
+        containGesture: true,
+        pxPerLine: 10,
+      });
+
+      host.dispatchEvent(touchEvent("touchstart", 100));
+      host.dispatchEvent(touchEvent("touchmove", 300));
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+
+      host.dispatchEvent(touchEvent("touchmove", 290));
+      expect(terminal.scrollLines).toHaveBeenCalledWith(1);
+
+      cleanup();
+    });
+
+    it("acceptTarget skips gestures that start on excluded targets", () => {
+      const host = new EventTarget() as HTMLElement;
+      const terminal = term(20, 100);
+      let allow = false;
+      const cleanup = installTerminalTouchScroll(host, terminal, {
+        containGesture: true,
+        acceptTarget: () => allow,
+      });
+
+      host.dispatchEvent(touchEvent("touchstart", 200));
+      const move = touchEvent("touchmove", 150);
+      host.dispatchEvent(move);
+      expect(terminal.scrollLines).not.toHaveBeenCalled();
+      expect(move.defaultPrevented).toBe(false);
+
+      allow = true;
+      host.dispatchEvent(touchEvent("touchstart", 200));
+      host.dispatchEvent(touchEvent("touchmove", 150));
+      expect(terminal.scrollLines).toHaveBeenCalled();
+      cleanup();
+    });
+
+    it("isScrolling is true once the current gesture has scrolled", () => {
+      const host = new EventTarget() as HTMLElement;
+      const terminal = term(0, 200);
+      const handle = installTerminalTouchScroll(host, terminal, {
+        containGesture: true,
+        pxPerLine: 10,
+      });
+
+      host.dispatchEvent(touchEvent("touchstart", 300));
+      host.dispatchEvent(touchEvent("touchmove", 296));
+      expect(handle.isScrolling()).toBe(false);
+      host.dispatchEvent(touchEvent("touchmove", 280));
+      expect(handle.isScrolling()).toBe(true);
+      host.dispatchEvent(touchEvent("touchend", 280));
+
+      host.dispatchEvent(touchEvent("touchstart", 280));
+      expect(handle.isScrolling()).toBe(false);
+      handle();
+    });
+  });
 });

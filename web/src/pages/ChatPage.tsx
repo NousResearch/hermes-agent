@@ -914,7 +914,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ev.stopPropagation();
       return false;
     });
-    const cleanupTouchScroll = installTerminalTouchScroll(host, term);
+    // Touch gesture surface: the whole terminal card (host + its padding), so
+    // a drag that starts a few px off the canvas still scrolls the transcript
+    // instead of panning the page. Controls layered on the card (key bar,
+    // overlays, buttons) are excluded and keep their own touch behaviour.
+    const gestureSurface = termWrap ?? host;
+    const isTerminalTouch = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return true;
+      if (target.closest("button, a, input, textarea, select, [role=toolbar], [data-chat-overlay]")) {
+        return false;
+      }
+      return true;
+    };
+    // The chat owns the whole drag (no page pan / rubber-band / pull-to-
+    // refresh underneath) and tracks the finger 1:1 at the rendered row height.
+    const touchScroll = installTerminalTouchScroll(gestureSurface, term, {
+      containGesture: true,
+      acceptTarget: isTerminalTouch,
+      pxPerLine: () => Math.max(10, host.clientHeight / Math.max(1, term.rows)),
+    });
+    const cleanupTouchScroll = () => touchScroll();
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -932,13 +951,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.open(host);
 
     // Mobile long-press → native-selectable text overlay (xterm's canvas can't
-    // do touch selection). Drag scrolling stays owned by
-    // installTerminalTouchScroll above; this only watches for a still hold.
-    // Suppress the iOS callout so it doesn't race the overlay.
-    host.style.setProperty("-webkit-touch-callout", "none");
-    const cleanupLongPress = installTerminalLongPress(host, () => {
-      openSelectModeRef.current?.();
-    });
+    // do touch selection). Watches the same surface as touch scrolling and is
+    // vetoed when the hold is part of a scroll.
+    gestureSurface.style.setProperty("-webkit-touch-callout", "none");
+    gestureSurface.style.overscrollBehavior = "contain";
+    host.style.touchAction = "none";
+    const cleanupLongPress = installTerminalLongPress(
+      gestureSurface,
+      () => {
+        openSelectModeRef.current?.();
+      },
+      {
+        acceptTarget: isTerminalTouch,
+        shouldTrigger: () => !touchScroll.isScrolling(),
+      },
+    );
 
     // IME composition guard (fixes #52111).
     //
@@ -2062,7 +2089,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           />
 
           {pasteSheetOpen && (
-            <div className="absolute inset-0 z-50 flex flex-col gap-2 p-3" style={{ backgroundColor: terminalBg, color: terminalFg }}>
+            <div data-chat-overlay className="absolute inset-0 z-50 flex flex-col gap-2 p-3" style={{ backgroundColor: terminalBg, color: terminalFg }}>
               <div className="text-xs opacity-70">Long-press the box and choose Paste, then Send.</div>
               <textarea
                 ref={pasteSheetRef}
@@ -2091,7 +2118,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           )}
 
           {pendingCopy !== null && (
-            <div className="absolute inset-x-2 top-2 z-40 flex justify-center">
+            <div data-chat-overlay className="absolute inset-x-2 top-2 z-40 flex justify-center">
               <div
                 className="flex max-w-full items-center gap-2 rounded border border-current/40 bg-black/85 px-3 py-2 text-xs shadow-lg"
                 style={{ color: terminalFg }}
@@ -2127,7 +2154,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           )}
 
           {selectText !== null && (
-            <div className="absolute inset-0 z-40 flex flex-col" style={{ backgroundColor: terminalBg }}>
+            <div data-chat-overlay className="absolute inset-0 z-40 flex flex-col" style={{ backgroundColor: terminalBg }}>
               <div className="flex shrink-0 items-center gap-2 border-b border-current/20 px-3 py-2 text-xs" style={{ color: terminalFg }}>
                 <span className="min-w-0 flex-1 truncate opacity-70">Long-press to select text</span>
                 <Button size="sm" outlined onClick={copySelectionOrAll}>
@@ -2240,7 +2267,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           )}
 
           {showReconnectOverlay && (
-            <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
+            <div data-chat-overlay className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
               <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
                 <div className="tracking-wide">
                   {ptyState === "reconnecting"
@@ -2291,7 +2318,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               Offer an in-place restart so the user never has to refresh the
               whole page to get a working chat back. */}
           {ptyState === "ended" && (
-            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
+            <div data-chat-overlay className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="max-w-[min(32rem,calc(100vw-3rem))] text-center text-sm tracking-wide text-white/80">
                 {endedReason === "start-failed"
                   ? PTY_START_FAILED_MESSAGE

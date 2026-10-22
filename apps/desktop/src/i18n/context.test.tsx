@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HermesConfigRecord } from '@/hermes'
 
 import { TRANSLATIONS } from './catalog'
-import { type I18nConfigClient, I18nProvider, useI18n } from './context'
+import { type I18nConfigClient, I18nProvider, LOCALE_HINT_STORAGE_KEY, useI18n } from './context'
 import { registerAppLocale } from './registry'
 import { $requestedLocale } from './runtime'
 import type { Locale } from './types'
@@ -31,6 +31,7 @@ describe('I18nProvider', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    window.localStorage.removeItem(LOCALE_HINT_STORAGE_KEY)
   })
 
   it('defaults to English without a config client', () => {
@@ -404,5 +405,140 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('ja')
 
     vi.useRealTimers()
+  })
+
+  it('paints the stored locale hint before config resolves', async () => {
+    window.localStorage.setItem(LOCALE_HINT_STORAGE_KEY, 'zh')
+
+    let resolveConfig: (config: HermesConfigRecord) => void = () => {}
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockImplementation(
+        () => new Promise<HermesConfigRecord>(resolve => (resolveConfig = resolve))
+      ),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    // The config read is still in flight — the first paint is already Chinese.
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(screen.getByTestId('label').textContent).toBe('语言')
+    expect(screen.getByTestId('loading').textContent).toBe('true')
+
+    resolveConfig({ display: { language: 'en' } })
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
+  })
+
+  it('falls back to the browser language when no hint is stored', () => {
+    vi.spyOn(window.navigator, 'language', 'get').mockReturnValue('zh-CN')
+
+    render(
+      <I18nProvider configClient={null}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(screen.getByTestId('label').textContent).toBe('语言')
+  })
+
+  it('ignores a corrupt hint and falls back to the browser language', () => {
+    window.localStorage.setItem(LOCALE_HINT_STORAGE_KEY, 'not-a-locale')
+    vi.spyOn(window.navigator, 'language', 'get').mockReturnValue('de-DE')
+
+    render(
+      <I18nProvider configClient={null}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('locale').textContent).toBe('de')
+    expect(window.localStorage.getItem(LOCALE_HINT_STORAGE_KEY)).toBe('not-a-locale')
+  })
+
+  it('keeps an explicit initialLocale prop ahead of the stored hint', () => {
+    window.localStorage.setItem(LOCALE_HINT_STORAGE_KEY, 'zh')
+
+    render(
+      <I18nProvider configClient={null} initialLocale="de">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('locale').textContent).toBe('de')
+  })
+
+  it('stores the applied locale hint when config supplies the language', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'zh-Hans' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(window.localStorage.getItem(LOCALE_HINT_STORAGE_KEY)).toBe('zh')
+  })
+
+  it('stores the locale hint only after a pick persists', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'en' } }),
+      saveConfig: vi.fn().mockRejectedValue(new Error('save failed'))
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
+
+    // The pick rolled back — the hint still holds the config-applied locale,
+    // not the 'zh' the failed pick would have written.
+    expect(window.localStorage.getItem(LOCALE_HINT_STORAGE_KEY)).toBe('en')
+  })
+
+  it('does not store a hint for an OS-inferred locale', async () => {
+    const originalDesktop = window.hermesDesktop
+
+    window.hermesDesktop = {
+      getMachineProfile: vi.fn().mockResolvedValue({ locale: 'zh-CN' })
+    } as unknown as typeof window.hermesDesktop
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({}),
+      saveConfig: vi.fn()
+    }
+
+    try {
+      render(
+        <I18nProvider configClient={configClient}>
+          <LanguageProbe />
+        </I18nProvider>
+      )
+
+      await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+      expect(screen.getByTestId('locale').textContent).toBe('zh')
+      // Inference stays unsaved so OS language changes apply on the next boot.
+      expect(window.localStorage.getItem(LOCALE_HINT_STORAGE_KEY)).toBeNull()
+    } finally {
+      window.hermesDesktop = originalDesktop
+    }
   })
 })

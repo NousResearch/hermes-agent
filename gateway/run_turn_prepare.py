@@ -578,6 +578,13 @@ class GatewayTurnPrepareMixin:
                 if prof and prof != "default" and _lgc().get_home_channel(source.platform):
                     home_env = "set"
         if not home_env:
+            # Subsequent empty chats (dm_policy: open) are not first-ever installs.
+            # Fail open so an unavailable session lookup preserves the original prompt.
+            try:
+                if await self.async_session_store.has_any_sessions():
+                    return
+            except Exception:
+                pass
             # Slack routes every command through the parent `/hermes`; bare `/sethome` would fail.
             sethome_cmd = "/hermes sethome" if source.platform == Platform.SLACK else "/sethome"
             await self._deliver_platform_notice(

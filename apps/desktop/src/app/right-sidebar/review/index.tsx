@@ -214,7 +214,7 @@ export function ReviewPane() {
         </div>
       )}
 
-      <ReviewShipBar key={cwd ?? ''} />
+      <ReviewShipBar key={cwd} />
 
       <ConfirmDialog
         confirmLabel={revertingAll ? c.revertAll : c.revert}

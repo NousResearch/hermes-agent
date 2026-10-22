@@ -62,8 +62,8 @@ def _load_bundled(name: str) -> Optional[DelegationProvider]:
     registered it (a runtime that never ran discovery, or pinned it with zero plugins): delegation is a
     core tool and must not depend on the sweep. ``plugins.disabled`` wins on every call, so a later
     disable takes effect without a restart."""
-    import importlib.util
     from hermes_cli.plugins import get_bundled_plugins_dir
+    from plugins import plugin_loader
     if not _BUNDLED_NAME_RE.match(name) or _bundled_disabled(name):  # the name comes from config.yaml: never a path
         return None
     if name in _first_use:
@@ -71,13 +71,11 @@ def _load_bundled(name: str) -> Optional[DelegationProvider]:
     plugin_dir = get_bundled_plugins_dir() / "delegation" / name
     if not (plugin_dir / "plugin.yaml").is_file():
         return None
-    spec = importlib.util.spec_from_file_location(
-        f"hermes_bundled_delegation_{name.replace('-', '_')}", plugin_dir / "__init__.py",
-        submodule_search_locations=[str(plugin_dir)])
-    if spec is None or spec.loader is None:
+    module = plugin_loader.load_plugin_module(
+        f"plugins.delegation.{name.replace('-', '_')}", plugin_dir, parents=("plugins", "plugins.delegation"),
+        logger=logger)
+    if module is None:
         return None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
     module.register(_BundledRegistrar(name))
     return _first_use.get(name)
 

@@ -542,6 +542,34 @@ class TestBrowserVaultTools:
         finally:
             redact.clear_vault_redaction_values()
 
+    def test_short_vault_password_is_redacted_after_browser_fill(self, store):
+        """A short arbitrary login password remains protected after the real fill seam."""
+        from agent import redact
+        from tools import browser_vault_tool
+        from tools.browser_cdp_tool import _redact_cdp_output
+
+        password = "hunter2!"
+        meta = _add_login(store, origin="https://example.com", password=password)
+        controls = [
+            {"autocomplete": "current-password", "formIndex": 0, "index": 0, "label": "", "name": "pw", "type": "password"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", return_value={"success": True, "result": json.dumps({"filled": 1})}):
+                assert json.loads(browser_vault_tool.browser_vault_fill(meta.id))["success"] is True
+
+            assert password not in redact.redact_sensitive_text(f"DOM text: x{password}x")
+            assert password not in json.dumps(_redact_cdp_output({"result": {"value": password}}))
+        finally:
+            redact.clear_vault_redaction_values()
+
     def test_payment_fill_requires_confirmation_then_fills_card_fields(self, store):
         """A card is written only after the user confirms (a prompt injection reaching a checkout must not be
         able to spend); the secret eval then targets the classified card controls and the result carries
@@ -549,7 +577,8 @@ class TestBrowserVaultTools:
         from tools import browser_vault_tool
         from agent import redact
 
-        meta = store.add_item(kind="payment", label="Visa", origin="https://shop.test", secret=_CARD)
+        payment_secret = {**_CARD, "exp_month": "20"}
+        meta = store.add_item(kind="payment", label="Visa", origin="https://shop.test", secret=payment_secret)
         controls = [
             {"autocomplete": "cc-number", "index": 0, "type": "text"},
             {"label": "Expiry (MM/YY)", "index": 1, "type": "text"},
@@ -585,9 +614,15 @@ class TestBrowserVaultTools:
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
             assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
-            assert len(secret_exprs) == 1 and _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
+            assert len(secret_exprs) == 1 and _CARD["card_number"] in secret_exprs[0] and "20/29" in secret_exprs[0]
             assert '"index": 3' not in secret_exprs[0]  # the email box is never a card target
             assert _CARD["card_number"] not in redact.redact_sensitive_text(f"dom says {_CARD['card_number']}")
+            assert _CARD["card_number"] not in redact.redact_sensitive_text(f"x{_CARD['card_number']}x")
+            # The real payment producer must not promote low-entropy metadata
+            # into process-wide exact-substring scrub keys.
+            assert redact.redact_sensitive_text("Issue 120655 costs £20 in 2026") == "Issue 120655 costs £20 in 2026"
+            assert redact.redact_sensitive_text("unit 7") == "unit 7"
+            assert redact.redact_sensitive_text("Expiry date 20/2029") == "Expiry date 20/2029"
         finally:
             redact.clear_vault_redaction_values()
 

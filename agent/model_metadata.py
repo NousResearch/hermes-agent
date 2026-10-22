@@ -21,6 +21,7 @@ from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
 from agent.model_metadata_relay import (
+    _catalog_scoped_provider,
     _concrete_provider_for_metadata,
     _endpoint_scoped_context_length,
 )
@@ -2232,8 +2233,9 @@ def get_model_context_length(
     # in hermes_cli.models.validate_requested_model.
     model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
     # Provider-scoped metadata keys on a CONCRETE provider: picker-started sessions pass "auto" (no
-    # profile behind that string), so the profile hook would be skipped (#142334).
-    scoped_provider = _concrete_provider_for_metadata(provider, base_url)
+    # profile behind that string) and a gateway route may declare the vendor it resells (#142334).
+    scoped_provider = _catalog_scoped_provider(
+        _concrete_provider_for_metadata(provider, base_url))
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.
     endpoint_context = _endpoint_scoped_context_length(model, base_url, provider=scoped_provider)

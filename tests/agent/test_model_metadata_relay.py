@@ -303,3 +303,40 @@ class TestAutoProviderBeforeProfileHook:
             assert get_model_context_length(
                 "totally-unknown-model-xyz", base_url=RELAY, provider="auto"
             ) == mm.DEFAULT_FALLBACK_CONTEXT
+
+
+class TestCatalogProviderRelayAlias:
+    """Part 3: ``catalog_provider`` names the upstream vendor a custom route resells."""
+
+    @staticmethod
+    def _cfg(config):
+        def _cfg_get(*keys, default=None):
+            node = config
+            for key in keys:
+                if not isinstance(node, dict) or key not in node:
+                    return default
+                node = node[key]
+            return node
+        return patch("agent.models_dev._cfg_get", side_effect=_cfg_get)
+
+    def test_declared_vendor_scopes_relayed_metadata(self):
+        config = {"providers": {"bifrost": {"api": RELAY, "catalog_provider": "kimi-coding"}}}
+        with _quiet_tiers(), self._cfg(config):
+            assert get_model_context_length(
+                "k3", base_url=RELAY, provider="bifrost"
+            ) == KIMI_CTX
+
+    def test_legacy_custom_providers_entry_aliases_too(self):
+        config = {"custom_providers": [
+            {"name": "bifrost", "base_url": RELAY, "catalog_provider": "kimi-coding"}]}
+        with _quiet_tiers(), self._cfg(config):
+            assert get_model_context_length(
+                "k3", base_url=RELAY, provider="custom:bifrost"
+            ) == KIMI_CTX
+
+    def test_without_alias_the_relay_stays_unscoped(self):
+        config = {"providers": {"bifrost": {"api": RELAY}}}
+        with _quiet_tiers(), self._cfg(config):
+            assert get_model_context_length(
+                "k3", base_url=RELAY, provider="bifrost"
+            ) == mm.DEFAULT_FALLBACK_CONTEXT

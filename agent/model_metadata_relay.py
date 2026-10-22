@@ -9,9 +9,9 @@ answers two ways (#142334):
 * ``(provider, model)`` when the host is an unknown relay — a gateway fronting that provider
   serves the same window, unless the host belongs to a different known provider.
 
-Provider-scoped lookups also key on a CONCRETE provider (``auto``/blank resolved), because a
-picker-started session otherwise reaches the provider-profile hook with a name no profile is
-registered under.
+Provider-scoped lookups also key on a CONCRETE provider (``auto``/blank resolved, ``catalog_provider``
+honoured), because a picker-started session and a reselling gateway otherwise reach the
+provider-profile hook with a name no profile is registered under.
 
 Facade symbols (``_normalize_base_url``, ``_infer_provider_from_url``) are imported inside the
 functions that need them: the facade imports this module at module level, so a module-level import
@@ -110,3 +110,20 @@ def _concrete_provider_for_metadata(provider: str, base_url: str) -> str:
             return resolved
     return ""
 
+
+def _catalog_scoped_provider(provider: str) -> str:
+    """The catalogued vendor a custom route resells (``catalog_provider``), else *provider*.
+
+    A gateway declares ``providers.<name>.catalog_provider: <vendor>`` so its models inherit the
+    vendor's catalog metadata (#112649). Context resolution honoured that alias for models.dev
+    lookups only; a relay re-serving the vendor's own model ids needs it for the endpoint-scoped
+    table and the provider-profile hook too (#142334). Lookup key only — routing is untouched.
+    """
+    if not provider:
+        return provider
+    with contextlib.suppress(Exception):  # unreadable config → the configured id stands
+        from agent.models_dev import _configured_catalog_provider
+        alias = (_configured_catalog_provider(provider) or "").strip()
+        if alias:
+            return alias
+    return provider

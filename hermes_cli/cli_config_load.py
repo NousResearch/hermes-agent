@@ -204,7 +204,7 @@ def _cli_config_defaults():
             "personalities": {},  # user overrides merged by name over hermes_cli.personality builtins
         },
         "display": {
-            "compact": False,
+            "compact": False, "banner": True, "composer_hints": True,
             # /resume recap tuning and show_reasoning: keep in sync with hermes_cli/config.py DEFAULT_CONFIG
             "resume_display": "full", "resume_exchanges": 10, "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200, "resume_max_assistant_lines": 3, "resume_skip_tool_only": True,

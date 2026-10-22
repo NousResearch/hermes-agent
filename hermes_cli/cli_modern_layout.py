@@ -315,6 +315,8 @@ def hint_pairs(cli) -> list[tuple[str, str]]:
         if enter != "queue":
             pairs.append(("tab", t("cli.modern.hint_queue")))
         return pairs + [("ctrl+c", t("cli.modern.hint_stop"))]
+    if not getattr(cli, "composer_hints", True):
+        return []
     return [("/", t("cli.modern.hint_commands")), ("@", t("cli.modern.hint_files")), ("!", t("cli.modern.hint_shell"))]
 
 

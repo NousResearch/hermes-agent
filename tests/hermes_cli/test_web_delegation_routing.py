@@ -107,6 +107,23 @@ def test_a_backend_can_only_be_chosen_where_its_plugin_is_registered(client, hom
     assert (root / "config.yaml").read_text(encoding="utf-8") == before
 
 
+@pytest.mark.parametrize(("path", "body"), [
+    ("/api/delegation/backend", {"backend": "default"}),
+    ("/api/delegation/backends/model_map", {"options": []}),
+    ("/api/delegation/backends/profile_routes", {"profiles": []}),
+])
+def test_a_managed_install_refuses_every_routing_write_with_the_reason(client, homes, monkeypatch, path, body):
+    """config.yaml of a package-manager-managed install is not ours: each write is a 409 naming the manager,
+    never a silent ``ok`` over an untouched file."""
+    _root, work = homes
+    before = (work / "config.yaml").read_text(encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED", "nixos")
+    resp = client.put(f"{path}?profile=work", json=body)
+    assert resp.status_code == 409, resp.text
+    assert "managed by nixos" in resp.json()["detail"] and "\n" not in resp.json()["detail"]
+    assert (work / "config.yaml").read_text(encoding="utf-8") == before
+
+
 @pytest.mark.parametrize(("options", "problem"), [
     ([{"name": "a", "description": "x", "provider": "p", "model": "m"},
       {"name": "a", "description": "y", "provider": "p", "model": "m"}], "unique"),

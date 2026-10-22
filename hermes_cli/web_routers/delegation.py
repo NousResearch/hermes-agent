@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import asdict
 from typing import Any, Callable, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -37,6 +38,13 @@ def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=400, detail=detail)
 
 
+def _managed_install(message: str) -> HTTPException:
+    """A package-manager-managed install's config.yaml is not ours to write (``save_config`` would skip it and
+    report nothing): 409 with core's one-line reason, which the page shows as the error. Not 403, which the
+    Desktop transport reads as an auth rejection and answers with a re-login."""
+    return HTTPException(status_code=409, detail=" ".join(message.split()))
+
+
 def _mapping(parent: Any, key: str) -> dict:
     value = parent.get(key) if isinstance(parent, Mapping) else None
     return value if isinstance(value, dict) else {}
@@ -57,8 +65,8 @@ def _registered_backends() -> list[dict[str, Any]]:
     from hermes_cli.plugins import discover_plugins
 
     discover_plugins()  # idempotent; a plugin enabled after boot loads on the next scan
-    return [{"name": b.name, "label": b.label, "description": b.description, "available": b.available,
-             "reason": b.reason, "builtin": b.name == builtin} for b in list_backends()]
+    # ``description`` is the provider's ``summary``: the one line a backend picker shows for it.
+    return [{**asdict(b), "builtin": b.name == builtin} for b in list_backends()]
 
 
 def _redacted_options(options: Any) -> list[dict[str, Any]]:
@@ -121,6 +129,8 @@ async def select_delegation_backend(body: DelegationBackendSelect, profile: Opti
             discover_plugins()
             try:
                 set_global_backend(name)
+            except PermissionError as exc:
+                raise _managed_install(str(exc)) from exc
             except ValueError as exc:
                 raise _bad_request(str(exc)) from exc
 
@@ -182,6 +192,9 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
 
 
 def _write_backend_block(profile: Optional[str], backend: str, build: Callable[[dict], dict]) -> dict:
+    from hermes_cli.config import format_managed_message, is_managed
+    if is_managed():
+        raise _managed_install(format_managed_message(f"save delegation.backends.{backend}"))
     with config_write_scope(profile):
         config = load_config()
         blocks = _section(_section(config, "delegation"), "backends")

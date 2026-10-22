@@ -25,7 +25,7 @@ from hermes_cli.auth_constants import (
     DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     WELCOME_CLAIM_FLAG, _nous_err, httpx)
-from hermes_cli.guest_handoff import drain, note_replacement
+from hermes_cli.guest_handoff import deferred, drain, note_replacement, result_lines
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
     from hermes_cli.auth import ProviderConfig
@@ -1501,6 +1501,8 @@ def step_up_nous_billing_scope(
         invalidate_cached_token()
     except Exception:
         logger.debug("Billing token cache invalidation failed", exc_info=True)
+    from hermes_cli.anon_auth import settle_after_upgrade
+    settle_after_upgrade(auth_state)  # a step-up that replaced the free tier moves its config too
     granted = auth_state.get("scope")
     return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()
 
@@ -1653,13 +1655,18 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         # model-picker "Skip (keep current)" can restore the user's previous provider.
         with _auth_store_lock():
             prior_active_provider = _load_auth_store().get("active_provider")
-        saved_to = _save_active_provider_state("nous", auth_state)
-        # Mirror to the shared store so other profiles can one-tap import (best-effort inside).
-        _write_shared_nous_state(auth_state)
+        with deferred() as handoff:  # a replaced free tier hands its apps over once both saves land
+            saved_to = _save_active_provider_state("nous", auth_state)
+            # Mirror to the shared store so other profiles can one-tap import (best-effort inside).
+            _write_shared_nous_state(auth_state)
         _sync_nous_pool_from_auth_store()
+        from hermes_cli.anon_auth import settle_after_upgrade
+        settle_after_upgrade(auth_state)  # a config left on the free tier's route moves to the account
         print()
         print("Login successful!")
         print(f"  Auth state: {saved_to}")
+        for line in (line for view in handoff.results for line in result_lines(view)):
+            print(f"  {line}")
         # Pick the model BEFORE writing the provider to config.yaml so config is never half-updated.
         selected_model = None
         try:

@@ -21,6 +21,7 @@ import pytest
 from hermes_cli import (
     anon_auth,
     auth_commands,
+    guest_handoff,
     nous_account,
     nous_auth_keepalive,
     portal_cli,
@@ -179,6 +180,14 @@ def test_keepalive_does_not_start_for_free_tier(isolated_store, monkeypatch):
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
 
 
+_HANDOFF_VIEWS = [
+    *({"state": "claimed", "account_email": "person@example.test", "connectors_kind": kind,
+       "moved_toolkits": ["gmail"], "dropped_toolkits": ["slack"]} for kind in ("moved", "conflict", "none")),
+    # The retrying line names Hermes as a subject ("Hermes keeps trying"), not a command; it is not checked here.
+    {"state": "failed", "error": "no_destination"}, {"state": "gone", "probably_moved": True},
+]
+
+
 def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_word():
     placeholders = {
         "link": "https://example.test/sign-in",
@@ -191,6 +200,8 @@ def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_
         "reason": "unknown",
         "detail": "private detail",
         "retry_after": 0.0,
+        # Every handoff result line a completed sign-in can carry.
+        "handoff": tuple(line for view in _HANDOFF_VIEWS for line in guest_handoff.result_lines(view)),
     }
     forbidden = re.compile(r"claim|nous portal|anonymous|guest", re.IGNORECASE)
     terminal_or_url = re.compile(r"hermes |https?://", re.IGNORECASE)

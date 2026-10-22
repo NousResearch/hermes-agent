@@ -313,6 +313,8 @@ def _add_nous_oauth_credential(args, provider: str) -> PooledCredential:
         # `--label` is embedded into providers.nous so label_from_token doesn't overwrite it on every
         # subsequent load_pool("nous").
         entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
+        from hermes_cli.anon_auth import settle_after_upgrade
+        settle_after_upgrade(creds)  # a config left on the free tier's route moves to the account
         shown_label = entry.label if entry is not None else label_from_token(
             creds.get("access_token", ""), f"{provider}-oauth-1")
         print(f'{what} {provider} OAuth {"device-code " if what == "Saved" else ""}credentials: "{shown_label}"')

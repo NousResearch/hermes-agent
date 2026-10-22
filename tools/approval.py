@@ -17,6 +17,7 @@ import importlib
 import logging
 import os
 import threading
+import time
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
@@ -169,11 +170,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
         # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
         # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
         for entry in targets:
+            if entry.deadline is not None and time.monotonic() >= entry.deadline:
+                entry.expired = True
+                entry.event.set()
+                continue
             entry.result = choice
             if reason:
                 entry.reason = reason
             entry.event.set()
-    return len(targets)
+    return sum(entry.result is not None for entry in targets)
 
 
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:

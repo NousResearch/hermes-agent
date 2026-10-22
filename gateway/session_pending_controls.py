@@ -34,6 +34,9 @@ class PendingControls:
                 prompt['choices'] = ['once', 'deny']
             if timeout_s is not None:
                 prompt['timeout_s'] = timeout_s
+            if 'expires_at' in data:
+                prompt['timeout_s'] = data['timeout_s']
+                prompt['expires_at'] = data['expires_at']
             self.pending[prompt_id] = (route, prompt)
             self.events.publish(session_id, prompt, event_type='approval.request')
 

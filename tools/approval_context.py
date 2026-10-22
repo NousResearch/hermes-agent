@@ -309,6 +309,13 @@ def _get_approval_timeout() -> int:
     overflows ``time_t`` inside ``Thread.join`` / ``Lock.acquire`` on macOS and
     crashed every parallel tool batch; clamping at the single config-read site
     keeps every consumer platform-safe at once."""
+    from gateway.session_api_turn import api_execution
+    execution = api_execution.get()
+    scoped = execution['settings'].get('approval_timeout_s') if execution else None
+    if scoped is not None:
+        if type(scoped) is not int or not 1 <= scoped <= 1800:
+            return 0  # corrupt admission must not acquire an unbounded human wait
+        return scoped
     try:
         raw = int(_get_approval_config().get("timeout", 300))
     except (ValueError, TypeError):

@@ -1336,18 +1336,14 @@ def _last_assistant_index(messages: list[dict[str, Any]]) -> int:
     return _last_index_with_role(messages, "assistant")
 
 
-def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
-    """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
-    the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
-    after the newest tool result before the next API call, and two can land in one iteration (one when the tool
-    batch ends, one before the request), so every contiguous trailing steer row is skipped."""
-    end = len(messages)
-    while end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
-        end -= 1
-    start = end
-    while start > 0 and messages[start - 1].get("role") == "tool":
-        start -= 1
-    return range(start, end)
+def _pending_tool_round(messages: list[dict[str, Any]]) -> tuple[int, ...]:
+    """Unread owned results; non-assistant rows do not answer them or consume their hard share."""
+    assistant_idx = _last_assistant_index(messages)
+    if assistant_idx < 0 or not messages[assistant_idx].get("tool_calls"):
+        return ()
+    call_ids = {_tc_get(tc, "id") for tc in messages[assistant_idx]["tool_calls"]}
+    return tuple(i for i in range(assistant_idx + 1, len(messages))
+        if messages[i].get("role") == "tool" and messages[i].get("tool_call_id") in call_ids)
 
 
 def _part_text(item: Any) -> Optional[str]:
@@ -1461,7 +1457,7 @@ def _rewritten(msg: dict[str, Any], content: Any) -> dict[str, Any]:
 
 
 def _retire_stale_tool_result_images(
-    result: list[dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES, spared: range = range(0),
+    result: list[dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES, spared: Sequence[int] = range(0),
 ) -> int:
     """Replace image payloads on older tool results with text placeholders.
     Keeps the newest ``keep_newest`` image-bearing tool messages and any spared pending round;
@@ -1570,7 +1566,7 @@ def _strip_images_from_content(content: Any) -> Any:
     return content if stripped is None else stripped
 
 
-def _strip_historical_media(messages: list[dict[str, Any]], spared: range = range(0)) -> list[dict[str, Any]]:
+def _strip_historical_media(messages: list[dict[str, Any]], spared: Sequence[int] = range(0)) -> list[dict[str, Any]]:
     """Replace image parts in older messages with placeholder text.
     Rule 1: strip everything before the newest image-bearing user message. Rule 1b: the opening
     attachment ages out once a newer tool image exists. Rule 2: keep only the newest tool-result image,
@@ -1666,6 +1662,9 @@ def _sum_terminal(name, args, content, content_len, line_count):
     cmd = _str_arg(args, "command")
     cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
     exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
+    output = _json_dict(content).get("output")
+    if isinstance(output, str):
+        line_count = len(output.splitlines())
     return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
 
 
@@ -3223,7 +3222,7 @@ class ContextCompressor(
 
     def _pressure_demote_tail(
         self, result: list[dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
-        call_id_to_tool: dict[str, tuple[str, str]], min_prune_chars: int, spared: range,
+        call_id_to_tool: dict[str, tuple[str, str]], min_prune_chars: int, spared: Sequence[int],
     ) -> int:
         """Pass 4: demote tool-result bodies inside the protected tail when it alone exceeds the soft
         budget (#61932). Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides
@@ -3271,16 +3270,15 @@ class ContextCompressor(
             )
         return demoted
 
-    def _spared_pending_tool_round(self, messages: list[dict[str, Any]]) -> range:
-        """Return the pending round, owning assistant(tool_calls) row included, only when it fits the input window's
-        hard share. The call's args are part of the unread round: the model reads its result next to them."""
+    def _spared_pending_tool_round(self, messages: list[dict[str, Any]]) -> tuple[int, ...]:
+        """Spare unread results and their owning calls only within the input window's hard share."""
         pending = _pending_tool_round(messages)
-        if pending and pending.start > 0 and messages[pending.start - 1].get("tool_calls"):
-            pending = range(pending.start - 1, pending.stop)
+        if pending:
+            pending = (_last_assistant_index(messages), *pending)
         input_window = self._effective_input_window(
             getattr(self, "context_length", 0) or 0, getattr(self, "max_tokens", None))
         hard_share = int(input_window * TAIL_MAX_CONTEXT_FRACTION)
-        return pending if sum(_estimate_msg_budget_tokens(messages[i]) for i in pending) <= hard_share else range(0)
+        return pending if sum(_estimate_msg_budget_tokens(messages[i]) for i in pending) <= hard_share else ()
 
     def _prune_old_tool_results(
         self, messages: list[dict[str, Any]], protect_tail_count: int,
@@ -3294,12 +3292,10 @@ class ContextCompressor(
         result = [m.copy() for m in messages]
         call_id_to_tool = _tool_calls_by_id(result)
         prune_boundary = self._prune_boundary(result, protect_tail_count, protect_tail_tokens)
-        # The pending tool round is output the model asked for and has not read yet: a stub makes it re-run the
-        # call (side effects included) or answer blind. Passes 2-4 spare it, call args included, unless it alone
-        # exceeds the tail's hard share of the input budget the threshold is computed from (the output reservation
-        # is not room the round can keep) — the #61932 single-200KB-read case, which must still give way.
+        # Spare unread results and call args to avoid blind answers or repeated side effects, unless the round
+        # exceeds the input window's hard share (#61932: a single 200KB read must still give way).
         spared = self._spared_pending_tool_round(result)
-        prune_boundary = min(prune_boundary, spared.start) if spared else prune_boundary
+        prune_boundary = min(prune_boundary, min(spared)) if spared else prune_boundary
         pruned = self._dedupe_tool_results(result)
         # Just-loaded / tail-referenced skills keep full skill_view bodies through the ordinary passes.
         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
@@ -3580,7 +3576,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
     def _demote_stale_tail_tools(self, messages: list[dict[str, Any]], tail_start: int) -> list[dict[str, Any]]:
         """Lean mode: demote stale tail tool results to recovery stubs (``demote_stale_tail_tools``)."""
-        result, demoted = demote_stale_tail_tools(messages, tail_start, getattr(self, "_session_id", "") or "")
+        result, demoted = demote_stale_tail_tools(messages, tail_start, getattr(self, "_session_id", "") or "",
+            spared=self._spared_pending_tool_round(messages))
         if demoted and not self.quiet_mode:
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
         return result
@@ -5097,6 +5094,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 
+        # Interleaved notices can break contiguous tool-group alignment; keep unread owned results together.
+        if spared := self._spared_pending_tool_round(messages):
+            cut_idx = min(cut_idx, min(spared))
         # Floor guarantees progress (>= 1 message claimed); re-align FORWARD only so a raised cut
         # can't split a tool group (backward would give the floor's message back).
         return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))

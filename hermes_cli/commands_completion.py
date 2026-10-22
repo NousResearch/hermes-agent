@@ -169,13 +169,61 @@ def _handoff_completions(sub_text: str, sub_lower: str):
             name, partial, name, f"→ {home_name}" if home_name else "send this session here")
 
 
+@_quiet
+def _resume_completions(sub_text: str, sub_lower: str):
+    """/resume and /sessions — recent sessions from SQLite store."""
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    from hermes_cli.sessions_cmd import _surface_reader
+    from hermes_cli.timefmt import relative_time as _relative_time
+    from hermes_cli.sessions_cmd_browse import _session_status_tag
+
+    db_path = get_hermes_home() / "state.db"
+    if not db_path.exists():
+        return
+    try:
+        db = SessionDB(db_path=db_path, read_only=True)
+    except Exception:  # health: allow BLE001 -- session store read failure simply drops completions
+        return
+    try:
+        sessions = _surface_reader(db).list_sessions_rich(limit=25)
+        if not sessions:
+            return
+        statuses = {}
+        try:
+            statuses = db.session_lifecycle_statuses([s["id"] for s in sessions if "id" in s])
+        except Exception:  # health: allow BLE001, S110 -- status lookup is optional metadata
+            pass
+        q = sub_lower.strip().strip('"').strip("'")
+        for s in sessions:
+            sid = s.get("id", "")
+            title = (s.get("title") or "").strip()
+            preview = (s.get("preview") or "").strip()
+            display_title = title or preview or sid
+            if q and q not in display_title.lower() and q not in sid.lower():
+                continue
+            status_tag = _session_status_tag(statuses.get(sid, ""))
+            msgs = s.get("message_count")
+            msgs_str = f"{msgs} msgs" if isinstance(msgs, int) else ""
+            rel = _relative_time(s.get("last_active"), session_id=sid)
+            meta_parts = [p for p in (rel, msgs_str, status_tag) if p and p != "-"]
+            meta = " • ".join(meta_parts)
+            val = title or sid
+            insert_text = f'"{val}"' if (" " in val and not sub_text.startswith('"')) else val
+            yield _completion(insert_text, sub_text, display_title, meta)
+    finally:
+        db.close()
+
+
 # base command -> (handler(sub_text, sub_lower), single_word_only). Single-word handlers only
 # run while the first argument is typed; /tools and /handoff parse multi-word input themselves.
 _DYNAMIC_COMPLETIONS: dict[str, tuple[Callable[..., Any], bool]] = {
     "/skin": (_skin_completions, True),
     "/personality": (_personality_completions, True),
     "/tools": (_tools_completions, False),
-    "/handoff": (_handoff_completions, False)}
+    "/handoff": (_handoff_completions, False),
+    "/resume": (_resume_completions, False),
+    "/sessions": (_resume_completions, False)}
 
 
 def _extract_path_word(text: str) -> str | None:

@@ -172,9 +172,9 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(or per-model under agent.reasoning_overrides)."))
     add("-t", "--toolsets", default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.")
-    add("--resume", "-r", metavar="SESSION", default=None, help=(
-        "Resume a previous session by ID or title, or pass 'latest' for "
-        "the most recent session (workspace-scoped, like -c with no name)"))
+    add("--resume", "-r", metavar="SESSION", nargs="?", const=True, default=None, help=(
+        "Resume a previous session by ID or title, 'latest' for the most "
+        "recent session, or omit to open interactive session picker"))
     add("--no-restore-cwd", action="store_true", default=False,
         help="Don't cd into a resumed session's recorded working directory.")
     add("--in", dest="in_dir", metavar="DIR", default=None, help=(
@@ -272,9 +272,9 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("--format", choices=["text", "stream-json"], default="text", dest="output_format", help=(
         "Output format for single-query mode (-q). 'text' prints the final response as plain text (default). "
         "'stream-json' emits newline-delimited JSON events (JSONL), implies --quiet, and cannot be combined with --tui."))
-    add("--resume", "-r", metavar="SESSION_ID", default=SUPPRESS, help=(
-        "Resume a previous session by ID (shown on exit), or 'latest' "
-        "for the most recent session"))
+    add("--resume", "-r", metavar="SESSION_ID", nargs="?", const=True, default=SUPPRESS, help=(
+        "Resume a previous session by ID, 'latest' for the most recent session, "
+        "or omit to open interactive session picker"))
     add("--no-restore-cwd", action="store_true", default=SUPPRESS,
         help="Don't cd into a resumed session's recorded working directory.")
     add("--in", dest="in_dir", metavar="DIR", default=SUPPRESS, help=(

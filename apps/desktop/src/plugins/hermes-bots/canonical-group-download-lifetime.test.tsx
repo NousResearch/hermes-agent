@@ -8,8 +8,9 @@ const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { Textarea } = await import('@/components/ui/textarea')
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
 
-  return { Textarea, atom: (await import('nanostores')).atom, MessageTextContent: undefined, Streamdown: undefined, host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { Textarea, atom: (await import('nanostores')).atom, MessageTextContent: undefined, Streamdown: undefined, host: { requestProfile: captureGroupRequests(request).request }, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })

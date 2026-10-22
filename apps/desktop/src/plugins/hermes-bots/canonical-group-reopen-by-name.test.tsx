@@ -19,6 +19,7 @@ const { request, notify, openWorkspace, catalog } = vi.hoisted(() => ({
 }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
   const { en } = await import('@/i18n/en')
 
   return {
@@ -26,7 +27,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     gatewayActivationEpoch: () => 1,
     useGatewayActivationEpoch: () => 1,
     host: {
-      ...sdk.host, requestProfile: request, notify, openWorkspace,
+      ...sdk.host, requestProfile: captureGroupRequests(request).request, notify, openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
       connections: vi.fn(async () => []),
       state: {

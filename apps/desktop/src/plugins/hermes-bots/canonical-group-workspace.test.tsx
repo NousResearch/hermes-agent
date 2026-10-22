@@ -11,6 +11,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
   const { ConfirmDialog } = await import('@/components/ui/confirm-dialog')
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
 
   return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore, ConfirmDialog,
     useI18n: () => ({ t: en }),
@@ -18,7 +19,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
     Input: (p: ComponentProps<'input'>) => <input {...p} />,
     RowButton: (p: ComponentProps<'button'>) => <button type="button" {...p} />,
-    host: { ...gateway.host, requestProfile: request } }
+    host: { ...gateway.host, requestProfile: captureGroupRequests(request).request } }
 })
 import { host } from '@hermes/plugin-sdk'
 

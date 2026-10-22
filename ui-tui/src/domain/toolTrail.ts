@@ -24,12 +24,8 @@ export const DEFAULT_TOOL_TRAIL_POSITION: ToolTrailPosition = 'above'
  * `parseDetailsMode` treats unknown modes.
  */
 export const parseToolTrailPosition = (v: unknown): ToolTrailPosition =>
-  POSITIONS.find(
-    p =>
-      p ===
-      String(v ?? '')
-        .trim()
-        .toLowerCase()
-  ) ?? DEFAULT_TOOL_TRAIL_POSITION
+  typeof v === 'string'
+    ? (POSITIONS.find(p => p === v.trim().toLowerCase()) ?? DEFAULT_TOOL_TRAIL_POSITION)
+    : DEFAULT_TOOL_TRAIL_POSITION
 
 export const nextToolTrailPosition = (p: ToolTrailPosition): ToolTrailPosition => (p === 'above' ? 'below' : 'above')

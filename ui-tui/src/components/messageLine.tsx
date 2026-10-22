@@ -178,7 +178,7 @@ export const MessageLine = memo(function MessageLine({
   const detailsBlock = showDetails ? (
     <Box
       flexDirection="column"
-      {...(toolTrailPosition === 'below' ? { marginTop: 1 } : { marginBottom: 1 })}
+      {...{ above: { marginBottom: 1 }, below: { marginTop: 1 } }[toolTrailPosition]}
       key="details"
     >
       <ToolTrail
@@ -195,6 +195,11 @@ export const MessageLine = memo(function MessageLine({
       />
     </Box>
   ) : null
+
+  const [detailsBefore, detailsAfter] = {
+    above: [detailsBlock, null],
+    below: [null, detailsBlock]
+  }[toolTrailPosition]
 
   const content = (() => {
     if (msg.kind === 'slash') {
@@ -294,7 +299,7 @@ export const MessageLine = memo(function MessageLine({
       marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment || leadGap ? 1 : 0}
     >
-      {toolTrailPosition === 'above' && detailsBlock}
+      {detailsBefore}
 
       {showResponseSeparator && (
         <Box marginBottom={1}>
@@ -328,7 +333,7 @@ export const MessageLine = memo(function MessageLine({
         <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
 
-      {toolTrailPosition === 'below' && detailsBlock}
+      {detailsAfter}
     </Box>
   )
 })

@@ -136,8 +136,8 @@ export const estimatedMsgHeight = (
       // exactly 2 rows shorter. Mirrors shouldShowResponseSeparator(); if that
       // gate changes, this one has to move with it or the virtualizer's
       // pre-mount offsets drift by 2 rows per detailed assistant turn.
-      if (msg.role === 'assistant' && toolTrailPosition === 'above' && /\S/.test(msg.text)) {
-        h += 2
+      if (msg.role === 'assistant' && /\S/.test(msg.text)) {
+        h += { above: 2, below: 0 }[toolTrailPosition]
       }
     }
   }

@@ -21,6 +21,7 @@ describe('parseToolTrailPosition', () => {
     expect(parseToolTrailPosition(true)).toBe('above')
     expect(parseToolTrailPosition(3)).toBe('above')
     expect(parseToolTrailPosition({ position: 'below' })).toBe('above')
+    expect(parseToolTrailPosition(['below'])).toBe('above')
   })
 
   it('defaults to the existing rendering so an unset config changes nothing', () => {

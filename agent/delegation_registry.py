@@ -31,7 +31,8 @@ class DefaultDelegationProvider(DelegationProvider):
         return DEFAULT_BACKEND
 
     def route_task(self, task: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
-        return dict(config)
+        # The delegation section has no speed tier: an unknown key there never becomes one.
+        return {k: v for k, v in config.items() if k != "service_tier"}
 
 
 def _reject_builtin_collision(key: str) -> None:

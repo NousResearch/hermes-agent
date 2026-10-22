@@ -36,7 +36,6 @@ class TaskRoute:
     reasoning_effort: Any = None
     profile_home: Optional[Path] = None
     label: Optional[str] = None
-    reported: bool = False  # a plugin backend chose it: the result reports what the child ran on
 
 
 def _active_provider(config: Mapping[str, Any]) -> DelegationProvider:
@@ -227,7 +226,7 @@ def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[s
 
 def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[str, Any]) -> None:
     """A backend's ``reasoning_effort`` must be a known level: a typo is a tool error, never the parent's level.
-    The ``delegation`` section's own value (a backend returning ``dict(config)``) keeps its warn-and-inherit rule."""
+    The ``delegation`` section's own value (the default route, ``dict(config)``) keeps its warn-and-inherit rule."""
     effort = route.get("reasoning_effort")
     if route.get("profile") or effort in (None, "") or effort == config.get("reasoning_effort"):
         return
@@ -260,21 +259,15 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     """One :class:`TaskRoute` per task from the active provider, or ``([], error)``. Identical
     routes resolve credentials once per call (the default provider resolves exactly once, as
     before the seam)."""
-    from agent.delegation_registry import DEFAULT_BACKEND
     provider = _active_provider(config)
     declared = _declared_parameters(provider, config)
-    from_backend = provider.name != DEFAULT_BACKEND
     cache: dict[str, TaskRoute] = {}
     routes: list[TaskRoute] = []
     try:
         for i, task in enumerate(task_list):
             route = _route_one(provider, declared, i, task, config)
-            if from_backend:
-                _check_backend_effort(i, route, config)
-            else:
-                route.pop("service_tier", None)  # not a delegation-section key: the default route stays today's
-            resolved = _route_to_task_route(route, parent_agent, cache)
-            routes.append(replace(resolved, reported=True) if from_backend else resolved)
+            _check_backend_effort(i, route, config)
+            routes.append(_route_to_task_route(route, parent_agent, cache))
     except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
         return [], str(exc)
     return routes, None

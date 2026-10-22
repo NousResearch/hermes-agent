@@ -1,5 +1,5 @@
 """Route fields a delegation backend returns: ``service_tier`` is checked like ``/fast`` and survives child
-construction, an unknown ``reasoning_effort`` is a tool error, and every backend-routed result reports what the
+construction, an unknown ``reasoning_effort`` is a tool error, and a labelled route's result reports what the
 child actually ran on. Real ``delegate_task``, real credential resolution and tier gates; only the child's
 construction and run are stubbed where a test reads what they were handed.
 
@@ -8,7 +8,6 @@ Tier behaviour ported from #140614 (per-task speed tiers, unsupportedpastels).
 
 import json
 import threading
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -132,23 +131,26 @@ def test_the_delegation_sections_own_effort_keeps_its_warn_and_inherit_rule():
     assert result == {"status": "built"} and child["reasoning_config"] == {"enabled": True, "effort": "medium"}
 
 
-def test_backend_routed_result_reports_what_the_child_ran_on():
+def test_labelled_route_result_reports_what_the_child_ran_on():
     from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry, _fabricated_entry
 
-    _, _, (deep, plain) = _spawn([{**CODEX, "reasoning_effort": "high", "service_tier": "fast", "label": "deep"},
-                                  {**LOCAL, "reasoning_effort": "none"}])
+    _, _, (deep, local) = _spawn([{**CODEX, "reasoning_effort": "high", "service_tier": "fast", "label": "deep"},
+                                  {**LOCAL, "reasoning_effort": "none", "label": "local"}])
     entry = _build_result_entry(deep, {"final_response": "ok", "completed": True}, 0, 1.0,
                                 _SchemaOutcome(None, None, [], 0))
     assert entry["route"] == {"label": "deep", "provider": "openai-codex", "model": "gpt-6-astra",
                               "reasoning_effort": "high", "service_tier": "fast"}
-    assert _fabricated_entry(1, "error", "boom", plain)["route"] == {
-        "provider": "custom", "model": "qwen3-local", "reasoning_effort": "none", "service_tier": "normal"}
+    assert _fabricated_entry(1, "error", "boom", local)["route"] == {
+        "label": "local", "provider": "custom", "model": "qwen3-local", "reasoning_effort": "none",
+        "service_tier": "normal"}
 
 
-def test_default_routed_result_keeps_its_shape():
+def test_unlabelled_route_result_keeps_its_shape():
+    """The report sits next to a route's label; a route without one (the default strategy, a backend's fallback
+    to the delegation section) leaves the result entry exactly as before."""
     from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
 
-    child = SimpleNamespace(model="m", provider="p", reasoning_config=None, service_tier=None)
+    _, _, (child,) = _spawn([{**LOCAL, "reasoning_effort": "high"}])
     entry = _build_result_entry(child, {"final_response": "ok", "completed": True}, 0, 1.0,
                                 _SchemaOutcome(None, None, [], 0))
     assert "route" not in entry

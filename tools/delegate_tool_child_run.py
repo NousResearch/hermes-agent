@@ -34,8 +34,8 @@ def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 def _route_report(child: Any) -> Optional[dict[str, Any]]:
-    """What a backend-routed child ran on: the backend's label plus the resolved provider, model, reasoning
-    effort (None = the provider's default) and speed tier, read off the built child. None for default routes."""
+    """What a labelled route's child ran on: the backend's label plus the resolved provider, model, reasoning
+    effort (None = the provider's default) and speed tier, read off the built child. None for unlabelled routes."""
     route = getattr(child, "_delegate_route", None)
     if not isinstance(route, dict):
         return None

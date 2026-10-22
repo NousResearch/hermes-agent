@@ -122,7 +122,7 @@ A route is a dict with any of:
 
 Unknown keys are dropped. On a profile route, `service_tier` and `reasoning_effort` are ignored too.
 
-Every result entry of a task your backend routed carries `route`: the `label` plus what the child
+Every result entry of a task whose route has a `label` carries `route`: the label plus what the child
 actually ran on, read off the built child:
 
 ```json
@@ -130,8 +130,8 @@ actually ran on, read off the built child:
           "reasoning_effort": "high", "service_tier": "fast"}
 ```
 
-`reasoning_effort` is `null` when the provider's default applies. Results of the built-in `default`
-strategy carry no `route`, so their shape is unchanged.
+`reasoning_effort` is `null` when the provider's default applies. A route without a label (the
+`default` strategy, your fallback to `dict(config)`) leaves the result entry unchanged.
 
 ## Prompt caching
 

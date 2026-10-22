@@ -18,6 +18,8 @@ logger = logging.getLogger("tools.mcp_tool")
 
 # Stateless (2026-07-28) servers reject a legacy ``initialize`` with this or plain method-not-found.
 _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
+# The SDK's own CONNECTION_CLOSED / REQUEST_TIMEOUT codes: raised client-side when no answer arrived.
+_JSONRPC_NO_ANSWER_CODES = (-32000, -32001)
 
 
 def _jsonrpc_matches(exc: BaseException, codes: tuple, markers: tuple, code=None) -> bool:
@@ -534,3 +536,13 @@ def _is_session_expired_error(exc: BaseException) -> bool:
         msg = str(current).lower()
         found = found or isinstance(current, transport_error_types) or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
     return found
+
+
+def _is_server_rejection(exc: BaseException) -> bool:
+    """True when the server answered the call with a JSON-RPC error: it is reachable and rejected the request
+    (e.g. ``-32603 "400 Invalid input"`` for an out-of-range argument). The SDK's own no-answer codes, session
+    expiry and auth failures stay transport failures."""
+    root = _unwrap_exception_group(exc)
+    code = getattr(getattr(root, "error", None), "code", None)
+    return (isinstance(code, int) and code not in _JSONRPC_NO_ANSWER_CODES
+            and not _is_session_expired_error(root) and not _is_auth_error(root))

@@ -608,3 +608,37 @@ def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch
     finally:
         _cleanup(mcp_tool, "srv")
         mcp_tool._server_errors_all_application.pop("srv", None)
+
+
+def test_breaker_opened_by_jsonrpc_error_answers_says_rejected(monkeypatch, tmp_path):
+    """A JSON-RPC error answer (Beeper Desktop: ``-32603 "400 Invalid input"`` for ``limit`` above 20) means
+    the server is reachable and rejected the call: the open breaker must say "rejected", like a tool error
+    payload does. The SDK's own no-answer codes (here REQUEST_TIMEOUT) still read as "unreachable"."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from mcp.shared.exceptions import MCPError
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    raised = {"exc": MCPError(-32603, "400 Invalid input")}
+
+    async def _call_tool_raises(*a, **kw):
+        raise raised["exc"]
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_raises)
+    _mcp_loop._ensure_mcp_loop()
+    try:
+        handler = _make_tool_handler("srv", "search_messages", 10.0)
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            assert "400 Invalid input" in json.loads(handler({"limit": 50}))["error"]
+        tripped = json.loads(handler({"limit": 50}))["error"].lower()
+        assert "rejected" in tripped and "unreachable" not in tripped, tripped
+
+        mcp_tool._reset_server_error("srv")
+        raised["exc"] = MCPError(-32001, "Request timed out")
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            handler({"limit": 5})
+        assert "unreachable" in json.loads(handler({"limit": 5}))["error"].lower()
+    finally:
+        _cleanup(mcp_tool, "srv")
+        mcp_tool._server_errors_all_application.pop("srv", None)

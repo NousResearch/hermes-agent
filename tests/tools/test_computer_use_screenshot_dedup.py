@@ -74,7 +74,7 @@ class TestScreenshotDedup:
         assert data["screen_unchanged"] is True
         assert "screen unchanged" in data["summary"]
         # Text metadata is still complete: the model can keep acting by element index.
-        assert data["app"] == "kate" and "elements" in data
+        assert data["app"] == "kate" and "0 interactable element(s):" in data["summary"]
 
     def test_changed_pixels_deliver_image_again(self):
         cu_tool._capture_response(_cap(seed=1), session_id="s1")

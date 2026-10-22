@@ -107,6 +107,11 @@ Current drivers always return the screenshot AND the tree in one call;
 There is no numbered overlay burned into the screenshot — the index list is
 the map; ground on both and cross-check (the tree lies on some surfaces).
 
+On macOS the app's menu bar is left out of the list by default (it is not
+the window, and Apple menu > Recent Items lists recently opened file names).
+To act on a menu, pass `menus=true` to `capture` (or with `capture_after`):
+indices stay the same either way.
+
 **No vision model?** If your main model can't read images (or the provider
 rejects image tool results), Hermes routes the screenshot through the
 auxiliary vision model and you get a text description instead of pixels.
@@ -116,7 +121,7 @@ Configure `auxiliary.vision` in `config.yaml` to pick that model, or use
 ## Actions
 
 ```
-capture           mode=som|vision|ax   app=…  (default: current app)
+capture           mode=som|vision|ax   app=…  (default: current app)   menus=true (also list the macOS menu bar)
 click             element=N     OR     coordinate=[x, y]    button=left|right|middle
 double_click      element=N     OR     coordinate=[x, y]
 right_click       element=N     OR     coordinate=[x, y]

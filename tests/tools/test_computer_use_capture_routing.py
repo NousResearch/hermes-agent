@@ -169,7 +169,7 @@ class TestCaptureResponseRoutedToAuxVision:
         # is preserved alongside the new vision analysis so the agent loses
         # no context vs the multimodal path.
         assert body["window_title"] == "GitHub – Issue #24015"
-        assert len(body["elements"]) == 2
+        assert body["total_elements"] == 2 and "elements" not in body
 
         assert captured_calls.get("called") is True
         # vision_analyze_tool was invoked with a path under the patched cache

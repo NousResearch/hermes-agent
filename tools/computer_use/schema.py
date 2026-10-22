@@ -44,10 +44,9 @@ _PROPERTIES: dict[str, Any] = {
         "type": "string",
         "enum": ["som", "vision", "ax"],
         "description": (
-            "Capture mode. `som` (default) is a screenshot with numbered overlays on every "
-            "interactable element plus the AX tree — best for vision models, lets you click by "
-            "element index. `vision` is a plain screenshot. `ax` is the accessibility tree only "
-            "(no image; useful for text-only models)."
+            "Capture mode. `som` (default) is a screenshot plus the element list — best for vision "
+            "models, lets you click by element index. `vision` is a plain screenshot. `ax` is the "
+            "element list only (no image; useful for text-only models)."
         ),
     },
     "app": {
@@ -66,6 +65,13 @@ _PROPERTIES: dict[str, Any] = {
             "discovery cannot resolve an X11 app."
         ),
     },
+    "menus": {
+        "type": "boolean",
+        "description": (
+            "For capture and capture_after: also list the macOS app menu bar (omitted by default). "
+            "Set it to act on a menu."
+        ),
+    },
     "window_id": {
         "type": "integer",
         "description": (
@@ -76,8 +82,8 @@ _PROPERTIES: dict[str, Any] = {
     "element": {
         "type": "integer",
         "description": (
-            "The 1-based SOM index returned by the last `capture(mode='som')` call. Strongly "
-            "preferred over raw coordinates."
+            "The element index (`#N`) from the last capture's element list. Strongly preferred "
+            "over raw coordinates."
         ),
     },
     "coordinate": {
@@ -195,7 +201,7 @@ COMPUTER_USE_SCHEMA: dict[str, Any] = {
         "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window; separate "
         "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
         "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
-        "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
+        "action='capture' (lists elements as `#N role 'label'`), then click by `element` "
         "index; re-capture after state-changing actions (or pass capture_after=true). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "
         "syntax when the user asks to see it — not for captures used only for control."

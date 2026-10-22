@@ -7,7 +7,7 @@ plausible-looking zero rect invites coordinate=[0,0] derivation.
 from tools.computer_use.backend import UIElement
 from tools.computer_use.tool import (
     _bounds_unknown,
-    _element_to_dict,
+    _format_elements,
 )
 
 def _el(bounds, index=2, role="radio button", label="Deg"):
@@ -17,11 +17,11 @@ def test_malformed_bounds_fail_open():
     assert _bounds_unknown(None) is False
     assert _bounds_unknown(("x", 0, 0, 0)) is False
 
-def test_json_bounds_nulled_for_zero_rect():
-    out = _element_to_dict(_el((0, 0, 0, 0)))
-    assert out["bounds"] is None
-    assert out["index"] == 2  # index targeting stays intact
+def test_row_bounds_unknown_for_zero_rect():
+    (row,) = _format_elements([_el((0, 0, 0, 0))])
+    assert "(0, 0, 0, 0)" not in row and "bounds-unknown" in row
+    assert row.startswith("  #2 ")  # index targeting stays intact
 
-def test_json_bounds_preserved_for_real_rect():
-    out = _element_to_dict(_el((10, 20, 30, 40)))
-    assert out["bounds"] == [10, 20, 30, 40]
+def test_row_bounds_preserved_for_real_rect():
+    (row,) = _format_elements([_el((10, 20, 30, 40))])
+    assert row.endswith("@ (10, 20, 30, 40)")

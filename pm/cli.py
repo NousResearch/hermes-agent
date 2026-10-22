@@ -606,7 +606,9 @@ def _regenerate_bootstrap_pins(lockfile) -> int:
 def _apply_pins(changed: list, lockfile) -> int:
     if not changed:
         print("pm update: nothing to update")
-        return 0
+        # A run that saved the lock but failed to write the fragments leaves the
+        # pins current, so the retry lands here: it must still repair them.
+        return _regenerate_bootstrap_pins(lockfile)
     pinned: list[str] = []
     failed: dict[str, str] = {}
     for d in changed:

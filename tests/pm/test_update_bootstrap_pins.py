@@ -35,8 +35,8 @@ def _bump(lock):
     return cli.cmd_lock(Namespace(name="uv", version=VERSION))
 
 
-@pytest.mark.parametrize("repin", [_update, _bump], ids=["update", "bump"])
-def test_uv_repin_regenerates_installer_pins(repin, tmp_path, monkeypatch):
+@pytest.fixture
+def checkout(tmp_path, monkeypatch):
     for rel in ("scripts/gen-bootstrap-pins.py", "scripts/install.sh", "scripts/install.ps1"):
         (tmp_path / rel).parent.mkdir(exist_ok=True)
         shutil.copy2(REPO / rel, tmp_path / rel)
@@ -46,10 +46,32 @@ def test_uv_repin_regenerates_installer_pins(repin, tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "hash_url", lambda url: "0" * 64)
     monkeypatch.setattr(cli, "_install_names", lambda names: 0)
     monkeypatch.setattr(cli, "_sync_venv_step", lambda: True)
+    return tmp_path, lock
 
-    assert repin(lock) == 0
-    check = subprocess.run(
-        [sys.executable, str(tmp_path / "scripts" / "gen-bootstrap-pins.py"), "--check"],
+
+def _fragments_check(root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(root / "scripts" / "gen-bootstrap-pins.py"), "--check"],
         capture_output=True, text=True, timeout=60, check=False,
     )
+
+
+@pytest.mark.parametrize("repin", [_update, _bump], ids=["update", "bump"])
+def test_uv_repin_regenerates_installer_pins(repin, checkout):
+    root, lock = checkout
+    assert repin(lock) == 0
+    check = _fragments_check(root)
+    assert check.returncode == 0, check.stderr
+
+
+def test_retry_with_current_pins_repairs_fragments_a_failed_run_left_stale(checkout, monkeypatch):
+    root, lock = checkout
+    regenerate = cli._regenerate_bootstrap_pins
+    monkeypatch.setattr(cli, "_regenerate_bootstrap_pins", lambda lockfile: 1)
+    assert _update(lock) == 1
+    assert _fragments_check(root).returncode != 0, "the failed run must leave the fragments stale"
+
+    monkeypatch.setattr(cli, "_regenerate_bootstrap_pins", regenerate)
+    assert cli._apply_pins([], lock) == 0
+    check = _fragments_check(root)
     assert check.returncode == 0, check.stderr

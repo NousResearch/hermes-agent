@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 import hermes_yaml as yaml
 import pytest
@@ -51,8 +52,11 @@ def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_
     (plugin_dir / "__init__.py").write_text(HOSTED_PROVIDER, encoding="utf-8")
     (home / "config.yaml").write_text(yaml.safe_dump(
         {"plugins": {"enabled": ["hosted-map"], "isolation": "host"}}), encoding="utf-8")
+    # Bundled plugins: only the delegation category, so the bundled default strategy is listed and selectable.
     empty_bundled = tmp_path / "bundled"
     empty_bundled.mkdir()
+    (empty_bundled / "delegation").symlink_to(Path(__file__).resolve().parents[2] / "plugins" / "delegation",
+                                              target_is_directory=True)
     monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)

@@ -25,7 +25,7 @@ def build_acp_parser(subparsers, *, cmd_acp: Callable) -> None:
         help="Run interactive Hermes provider/model setup for ACP terminal auth")
     acp_parser.add_argument(
         "--setup-browser", action="store_true",
-        help="Install agent-browser + Playwright Chromium into ~/.hermes/node/ "
+        help="Prepare PM-pinned browser tools and Chromium "
              "for browser tool support (idempotent).")
     acp_parser.add_argument(
         "--yes", "-y", action="store_true", dest="assume_yes",

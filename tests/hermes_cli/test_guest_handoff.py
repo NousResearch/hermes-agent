@@ -186,8 +186,9 @@ def _err(status, code, **headers):
     (_err(503, "temporarily_disabled"), "retrying", False),
     (_err(503, "temporarily_unavailable", **{"Retry-After": "5"}), "retrying", False),
     (_err(500, "internal_error"), "retrying", False),
-    (_err(409, "no_destination"), "failed", False),
-    (_err(409, "unexpected_account_state"), "failed", False),
+    (_err(409, "no_destination"), "retrying", False),
+    (_err(409, "unexpected_account_state"), "retrying", False),
+    (_err(422, "a_code_this_version_does_not_know"), "retrying", False),
     (_err(403, "client_not_allowed"), "failed", False),
     (_err(403, "account_locked"), "failed", False),
 ], ids=lambda v: v if isinstance(v, str) else None)
@@ -236,15 +237,25 @@ def test_account_token_refreshes_only_when_the_cohort_carried(portal, carried, r
     assert portal.refreshes == refreshes
 
 
-def test_retries_give_up_after_the_cap(portal, monkeypatch):
+def test_transient_failures_keep_retrying_past_the_old_attempt_cap(portal, monkeypatch):
     from hermes_cli import guest_handoff
-    portal.claim_answers = [_err(409, "account_busy")] * (guest_handoff.MAX_ATTEMPTS + 2)
+    portal.claim_answers = [_err(503, "temporarily_disabled")] * 12   # the ops breaker: no Retry-After
     monkeypatch.setattr(guest_handoff, "_BACKOFF_SECONDS", (0.0,))
     _mint_guest()
     _persist(_account())
+    assert len(portal.claims) == 13 and _only_record()["state"] == "claimed"
+
+
+def test_a_long_outage_retries_on_the_slowest_rung(portal, monkeypatch):
+    from hermes_cli import guest_handoff
+    _pending_for(monkeypatch, _account())
+    guest_handoff._update(guest_handoff._records_path(), next(iter(_records())),
+                          lambda r: {**r, "state": "retrying", "attempts": 40})
+    portal.claim_answers = [_err(503, "temporarily_disabled")]
+    guest_handoff.drain()
     record = _only_record()
-    assert record["state"] == "failed" and record["error"] == "account_busy"
-    assert len(portal.claims) == guest_handoff.MAX_ATTEMPTS
+    assert record["state"] == "retrying" and record["anon_token"]
+    assert float(record["next_attempt_at"]) - guest_handoff._now() >= guest_handoff._BACKOFF_SECONDS[-1] - 5
 
 
 # --- Binding, sharing, durability -----------------------------------------------------------------
@@ -373,14 +384,71 @@ def test_a_destination_rebound_before_the_attempt_is_not_claimed_into_the_old_ac
     assert _only_record()["destination"] == "sibling_acct" and _only_record()["state"] == "pending"
 
 
-def test_an_attempt_left_at_the_cap_by_a_crash_sends_nothing(portal, monkeypatch):
+def _age_record(days: float, **fields) -> None:
+    from hermes_cli import guest_handoff
+    created = guest_handoff._iso(guest_handoff._now() - days * 86400)
+    guest_handoff._update(guest_handoff._records_path(), next(iter(_records())),
+                          lambda r: {**r, "created_at": created, **fields})
+
+
+def test_retries_stop_safely_before_the_free_tier_is_reaped(portal, monkeypatch):
     from hermes_cli import guest_handoff
     _pending_for(monkeypatch, _account())
-    guest_handoff._update(guest_handoff._records_path(), next(iter(_records())),
-                          lambda r: {**r, "state": "retrying", "attempts": guest_handoff.MAX_ATTEMPTS})
+    _age_record(13.5, state="retrying", attempts=300)
     guest_handoff.drain()
     assert portal.claims == []
-    assert _only_record()["state"] == "failed" and _only_record()["error"] == "retries_exhausted"
+    assert _only_record()["state"] == "failed" and _only_record()["error"] == "retry_window_ended"
+
+
+@pytest.mark.parametrize("trigger", ["auth_status", "auth_upgrade", "sign_in"])
+def test_a_record_an_older_build_failed_on_a_transient_error_is_rearmed(portal, monkeypatch, capsys, trigger):
+    from hermes_cli import anon_auth, auth_commands
+    anon = _mint_guest()
+    _pending_for_current_guest(monkeypatch, _account())
+    _age_record(2, state="failed", error="retries_exhausted", attempts=8)
+    if trigger == "auth_status":
+        auth_commands.auth_status_command(SimpleNamespace(provider="nous"))
+    elif trigger == "auth_upgrade":
+        anon_auth.upgrade_guest(SimpleNamespace(no_browser=True, timeout=None))
+    else:
+        _persist(_account(refresh="rt_again"))    # the account saved again (re-login)
+    assert [c["body"] for c in portal.claims] == [{"token": anon}]
+    assert _only_record()["state"] == "claimed"
+
+
+def test_a_final_refusal_is_not_rearmed(portal, monkeypatch):
+    from hermes_cli import auth_commands
+    _pending_for(monkeypatch, _account())
+    _age_record(1, state="failed", error="account_locked", attempts=1)
+    auth_commands.auth_status_command(SimpleNamespace(provider="nous"))
+    assert portal.claims == [] and _only_record()["state"] == "failed"
+
+
+@pytest.mark.parametrize("code", ["client_not_allowed", "account_locked", "invalid_request",
+                                  "retry_window_ended", "some_new_code", None])
+def test_failure_copy_never_prints_a_server_code(code):
+    from hermes_cli import guest_handoff
+    lines = guest_handoff.status_lines({"state": "failed", "error": code})
+    assert lines and lines[0].startswith("Your free-tier apps could not be moved.")
+    assert code is None or code not in " ".join(lines)
+
+
+def test_a_claim_answer_without_connectors_reads_as_neutral(portal):
+    from hermes_cli import guest_handoff
+    portal.claim_answers = [httpx.Response(200, json={
+        "status": "claimed", "destination_org_id": "org_1", "account_email": "sid@example.com"})]
+    _mint_guest()
+    _persist(_account())
+    text = " ".join(guest_handoff.status_lines(guest_handoff.handoff_status()))
+    assert "sid@example.com" in text and "no free-tier apps" not in text
+
+
+def test_gone_on_a_first_attempt_reads_as_neutral(portal):
+    from hermes_cli import guest_handoff
+    portal.claim_answers = [_err(404, "unknown_token")]
+    _mint_guest()
+    _persist(_account())
+    assert guest_handoff.status_lines(guest_handoff.handoff_status()) == ["Nothing left to move from the free tier."]
 
 
 def test_a_slow_refusal_at_the_budget_edge_starts_no_refresh_or_second_claim(portal, monkeypatch):

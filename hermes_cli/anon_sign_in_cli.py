@@ -76,6 +76,8 @@ def upgrade_guest(args) -> int:
     """
     from hermes_cli import anon_auth as _core
     from hermes_cli.auth_device_flow import _is_remote_session
+    from hermes_cli.guest_handoff import drain
+    drain()   # a move an earlier sign-in left unfinished gets its next try first
     timeout_seconds = float(getattr(args, "timeout", None) or 15.0)
     open_browser = not getattr(args, "no_browser", False) and not _is_remote_session()
     return _core.render_sign_in_cli(

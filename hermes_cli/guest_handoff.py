@@ -44,21 +44,28 @@ _ACTIVE = frozenset({PENDING, RETRYING})
 HANDOFF_FILENAME = "guest_handoff.json"
 SYNC_BUDGET_SECONDS = 10.0
 CLAIM_TIMEOUT_SECONDS = 10.0
-MAX_ATTEMPTS = 8
+# The service reaps an idle free-tier identity after 14 days, apps included. Transient failures keep
+# retrying (the slowest rung repeats) until this long after the record was made, safely before that.
+RETRY_WINDOW_SECONDS = 13 * 24 * 3600
 _BACKOFF_SECONDS = (2.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0)
 # ``_is_expiring`` treats any token as expiring inside this skew, so the account token refreshes now.
 _FORCE_REFRESH_SKEW = 10**9
 
 # Outcome of one claim response.
 _CLAIMED, _GONE, _RETRY, _FAIL, _REAUTH = "claimed", "gone", "retry", "fail", "reauth"
-# The service's refusal codes; anything unlisted falls back on the HTTP status (``_classify``).
+# Codes no later attempt can change. Every other refusal, unknown codes included, retries: a wrong
+# "final" loses the apps for good, a wrong retry costs one request an hour.
+_FINAL_CODES = frozenset({"client_not_allowed", "account_locked", "invalid_request", "retry_window_ended"})
+# A plain reason per final code; any other code shows only the generic sentence, never the code.
+_FAILURE_COPY = {
+    "client_not_allowed": "This sign-in can't receive them. Sign in again with `hermes auth add nous`.",
+    "account_locked": "This Nous account is locked.",
+    "retry_window_ended": "Hermes kept trying for nearly two weeks, then stopped.",
+}
+# The service's refusal codes; anything unlisted retries (``_classify``).
 _REFUSALS = {
     "unknown_token": _GONE, "already_retired": _GONE,
-    "account_busy": _RETRY, "rate_limited": _RETRY,
-    # The anonymous gate: switched off here (404), its breaker tripped or unreadable (503).
-    "not_found": _RETRY, "temporarily_disabled": _RETRY, "temporarily_unavailable": _RETRY,
-    "no_destination": _FAIL, "unexpected_account_state": _FAIL, "client_not_allowed": _FAIL,
-    "account_locked": _FAIL, "invalid_request": _FAIL,
+    **{code: _FAIL for code in _FINAL_CODES},
 }
 
 _records_lock_holder = threading.local()
@@ -253,6 +260,28 @@ def _remaining(deadline: float) -> float:
     return deadline - time.monotonic()
 
 
+def _retryable(record: dict[str, Any]) -> bool:
+    """A record a run may still attempt: active, or Failed on a code that is not final (an older
+    build closed transient failures after 8 attempts; those re-arm here, on any run: a sign-in,
+    ``hermes auth status``, ``hermes auth upgrade``, the retry worker). The retry window is checked
+    when the attempt is reserved, so a record past it is closed, not silently skipped."""
+    state = record.get("state")
+    return state in _ACTIVE or (state == FAILED and record.get("error") not in _FINAL_CODES
+                                and bool(record.get("anon_token")))
+
+
+def _due(record: dict[str, Any], now: float) -> bool:
+    return _retryable(record) and float(record.get("next_attempt_at") or 0) <= now
+
+
+def _window_ended(record: dict[str, Any], now: float) -> bool:
+    try:
+        created = datetime.fromisoformat(str(record.get("created_at"))).timestamp()
+    except ValueError:
+        return True
+    return now >= created + RETRY_WINDOW_SECONDS
+
+
 # --- The worker: retries in a long-lived process, for every profile -------------------------------
 #
 # A move queued by a short process (a CLI sign-in during an outage) is finished by whichever long-lived
@@ -308,9 +337,7 @@ def retry_all_profiles() -> list[dict[str, Any]]:
     except RuntimeError:
         return []
     now = _now()
-    homes = sorted({home for record in records if record.get("state") in _ACTIVE
-                    and float(record.get("next_attempt_at") or 0) <= now
-                    for home in record.get("profiles", ())})
+    homes = sorted({home for record in records if _due(record, now) for home in record.get("profiles", ())})
     results: list[dict[str, Any]] = []
     for home in homes:
         if not Path(home).is_dir():
@@ -347,8 +374,7 @@ def run_due(*, budget_seconds: float = SYNC_BUDGET_SECONDS) -> list[dict[str, An
         return []
     home, now = _home_key(), _now()
     due = [key for key, record in _load(path)["records"].items()
-           if record.get("state") in _ACTIVE and home in record.get("profiles", ())
-           and float(record.get("next_attempt_at") or 0) <= now]
+           if home in record.get("profiles", ()) and _due(record, now)]
     deadline = time.monotonic() + budget_seconds
     results = []
     for key in due:
@@ -387,23 +413,24 @@ def _run_one(path: Path, key: str, deadline: float) -> Optional[dict[str, Any]]:
 
 
 def _reserve(path: Path, key: str, bearer_subject: Optional[str]) -> Optional[tuple[dict[str, Any], int]]:
-    """Reserve one attempt in a single locked read-modify-write: the record is still active and due,
-    under the attempt cap, and bound to the very account whose Bearer is about to be sent. Returns
-    ``(record, attempts before this one)``, or None when nothing may be sent now. A record found at
-    the cap (a crash after its last send) is closed as Failed instead."""
+    """Reserve one attempt in a single locked read-modify-write: the record is still retryable and
+    due, inside its retry window, and bound to the very account whose Bearer is about to be sent.
+    Returns ``(record, attempts before this one)``, or None when nothing may be sent now. A record
+    past its window is closed as Failed instead; one an older build failed is re-armed."""
     reserved: list[int] = []
 
     def change(record: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-        if (record is None or record["state"] not in _ACTIVE
-                or float(record.get("next_attempt_at") or 0) > _now()
+        now = _now()
+        if (record is None or not _due(record, now)
                 or not bearer_subject or record.get("destination") != bearer_subject):
             return None
+        if _window_ended(record, now):
+            return {**record, "state": FAILED, "error": "retry_window_ended"}
         prior = int(record.get("attempts") or 0)
-        if prior >= MAX_ATTEMPTS:
-            return {**record, "state": FAILED, "error": "retries_exhausted"}
         reserved.append(prior)
         # Counted before the request leaves: an answer lost to a crash still counts as an attempt.
-        return {**record, "attempts": prior + 1, "last_attempt_at": _iso(_now())}
+        return {**record, "state": RETRYING if record["state"] == FAILED else record["state"],
+                "attempts": prior + 1, "last_attempt_at": _iso(now)}
 
     record = _update(path, key, change)
     return (record, reserved[0]) if reserved else None
@@ -498,10 +525,7 @@ def _classify(status: int, payload: dict[str, Any]) -> str:
         return _CLAIMED if payload.get("status") == "claimed" else _RETRY
     if status == 401:
         return _REAUTH
-    code = str(payload.get("error") or "")
-    if code in _REFUSALS:
-        return _REFUSALS[code]
-    return _RETRY if status in (404, 429) or status >= 500 else _FAIL
+    return _REFUSALS.get(str(payload.get("error") or ""), _RETRY)
 
 
 def _apply(record: dict[str, Any], outcome: str, payload: dict[str, Any], retry_after: Optional[float],
@@ -510,19 +534,20 @@ def _apply(record: dict[str, Any], outcome: str, payload: dict[str, Any], retry_
         return record  # never overwritten, whatever a racing attempt heard
     record = {**record, "error": payload.get("error"), "next_attempt_at": None}
     if outcome == _CLAIMED:
-        connectors = payload.get("connectors") if isinstance(payload.get("connectors"), dict) else {}
+        connectors = payload.get("connectors") if isinstance(payload.get("connectors"), dict) else None
         record.update(state=CLAIMED, error=None, result={
             "account_email": payload.get("account_email"),
             "destination_org_id": payload.get("destination_org_id"),
-            "connectors_kind": connectors.get("kind"),
-            "moved_toolkits": list(connectors.get("moved_toolkits") or []),
-            "dropped_toolkits": list(connectors.get("dropped_toolkits") or []),
+            # A service that does not report what moved (an older one) reads as unknown, never "none".
+            "connectors_kind": (connectors or {}).get("kind") or "unknown",
+            "moved_toolkits": list((connectors or {}).get("moved_toolkits") or []),
+            "dropped_toolkits": list((connectors or {}).get("dropped_toolkits") or []),
             "cohort_carried": payload.get("cohort_carried") is True})
     elif outcome == _GONE:
         # Gone after an earlier attempt is most likely that attempt's lost success.
         record.update(state=GONE, probably_moved=payload.get("error") == "already_retired" or prior_attempts > 0)
-    elif outcome == _FAIL or int(record.get("attempts") or 0) >= MAX_ATTEMPTS:
-        record.update(state=FAILED, error=payload.get("error") or "retries_exhausted")
+    elif outcome == _FAIL:
+        record.update(state=FAILED)
     else:
         ladder = _BACKOFF_SECONDS[min(prior_attempts, len(_BACKOFF_SECONDS) - 1)]
         record.update(state=RETRYING, next_attempt_at=_now() + (retry_after if retry_after else ladder))
@@ -559,8 +584,8 @@ def handoff_status() -> dict[str, Any]:
         return {"state": IDLE}
     latest = max(mine, key=lambda r: str(r.get("updated_at") or ""))
     view = public_view(latest)
-    if latest.get("state") in _ACTIVE and _account_bound_to(latest) is None:
-        view["state"] = PAUSED
+    if _retryable(latest):
+        view["state"] = RETRYING if _account_bound_to(latest) else PAUSED
     return view
 
 
@@ -575,10 +600,11 @@ def status_lines(status: dict[str, Any]) -> list[str]:
         return ["Your free-tier apps are set to move to another Nous account. Sign in to that account "
                 "to finish moving them."]
     if state == FAILED:
-        return [f"Your free-tier apps could not be moved ({status.get('error')})."]
+        reason = _FAILURE_COPY.get(str(status.get("error") or ""))
+        return ["Your free-tier apps could not be moved." + (f" {reason}" if reason else "")]
     if state == GONE:
         return ["Your free-tier apps were probably moved already." if status.get("probably_moved")
-                else "There were no free-tier apps left to move."]
+                else "Nothing left to move from the free tier."]
     if state != CLAIMED:
         return []
     kind = status.get("connectors_kind")
@@ -586,8 +612,10 @@ def status_lines(status: dict[str, Any]) -> list[str]:
         lines = [f"Your apps moved to {where}" + (f": {', '.join(moved)}." if moved else ".")]
     elif kind == "conflict":
         lines = [f"{where} already had its own apps, so the free-tier apps stayed behind."]
-    else:
+    elif kind == "none":
         lines = [f"Signed in as {where}. There were no free-tier apps to move."]
+    else:
+        lines = [f"Signed in as {where}. Any free-tier apps are in this account now."]
     if dropped:
         lines.append(f"Reconnect in {where}: {', '.join(dropped)}.")
     return lines

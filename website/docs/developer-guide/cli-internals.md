@@ -164,14 +164,19 @@ call it:
   under its owning profile's home and secrets, so a named profile's move retries from a process
   launched as another profile.
 - Every attempt is reserved in one locked read-modify-write that checks the record is still due,
-  under the attempt cap, and bound to the account whose Bearer is about to be sent (the token's
+  inside its retry window, and bound to the account whose Bearer is about to be sent (the token's
   `sub` must equal the record's destination). Apps never go to any other account.
 
 Answers: `claimed` records what moved (and refreshes the account token only when
-`cohort_carried`); `unknown_token` is Gone, read as "probably moved" after an earlier attempt (a lost
-success); `already_retired` is Gone too; busy, rate-limited, gate and transport failures retry with
-backoff (Retry-After honoured, capped attempts); a 401 refreshes the account token once; the other
-refusals are Failed and keep the credential. A Claimed record is never reopened.
+`cohort_carried`; an answer without `connectors` reads as unknown, never "nothing moved");
+`unknown_token` is Gone, read as "probably moved" after an earlier attempt (a lost success);
+`already_retired` is Gone too; a 401 refreshes the account token once. Only codes no later attempt
+can change are final (`client_not_allowed`, `account_locked`, `invalid_request`). Every other refusal,
+unknown codes included, and every transport failure retries with backoff (Retry-After honoured), the
+slowest rung repeating, until 13 days after the record was made: the service reaps an idle free-tier
+identity, apps included, after 14. A record an older build failed on a transient code re-arms on the
+next run (a sign-in, `hermes auth status`, `hermes auth upgrade`, the retry worker). A Claimed record
+is never reopened, and user copy never shows a server code.
 
 ## Process identity: never infer it from argv substrings
 

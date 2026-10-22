@@ -339,3 +339,203 @@ def test_fetch_portal_account_returns_value_and_keeps_caller_context(monkeypatch
     finally:
         marker.reset(token)
     assert seen == {"force_fresh": True, "marker": "profile-scope"}
+
+
+_XAI_FAKE_TOKEN = "fake-xai-oauth-token-123"
+_XAI_BILLING = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+_XAI_SETTINGS = "https://cli-chat-proxy.grok.com/v1/settings"
+_XAI_BILLING_PAYLOAD = {
+    "config": {
+        "currentPeriod": {
+            "type": "USAGE_PERIOD_TYPE_WEEKLY",
+            "start": "2026-09-27T03:07:35+00:00",
+            "end": "2026-10-04T03:07:35+00:00",
+        },
+        "creditUsagePercent": 14.0,
+        "onDemandCap": {"val": 0},
+        "onDemandUsed": {"val": 0},
+        "productUsage": [
+            {"product": "GrokBuild", "usagePercent": 10.0},
+            {"product": "GrokChat", "usagePercent": 4.0},
+        ],
+        "prepaidBalance": {"val": 0},
+    }
+}
+
+
+class _XaiClient:
+    """Records every request; ``statuses`` overrides the HTTP status per URL."""
+
+    def __init__(self, payloads, statuses=None, calls=None):
+        self._payloads, self._statuses, self.calls = payloads, statuses or {}, calls if calls is not None else []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        import httpx
+
+        self.calls.append((url, headers))
+        status = self._statuses.get(url, 200)
+        request = httpx.Request("GET", url)
+        if status >= 400:
+            return httpx.Response(status, request=request, json={"error": "secret body"})
+        return httpx.Response(status, request=request, json=self._payloads.get(url, {}))
+
+
+class _XaiCalls(list):
+    """HTTP calls, plus the resolver kwargs and pool peeks the fetcher made."""
+
+    def __init__(self):
+        super().__init__()
+        self.resolve_kwargs, self.peeks = [], []
+
+
+class _PeekOnlyPool:
+    """Exposes only ``peek``: a select/refresh/persist call would raise AttributeError."""
+
+    def __init__(self, entry, peeks):
+        self._entry, self._peeks = entry, peeks
+
+    def peek(self):
+        self._peeks.append(True)
+        return self._entry
+
+
+def _patch_xai(monkeypatch, *, token=_XAI_FAKE_TOKEN, statuses=None, payloads=None, pool_entry=None,
+               resolve_error=None):
+    from hermes_cli.auth import AuthError
+
+    calls = _XaiCalls()
+
+    def _resolve(**kw):
+        calls.resolve_kwargs.append(kw)
+        if resolve_error is not None:
+            raise resolve_error
+        if token is None:
+            raise AuthError("not signed in", provider="xai-oauth", code="missing")
+        return {"provider": "xai-oauth", "api_key": token}
+
+    monkeypatch.setattr("hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials", _resolve)
+    monkeypatch.setattr("agent.credential_pool.load_pool",
+                        lambda provider: _PeekOnlyPool(pool_entry if provider == "xai-oauth" else None, calls.peeks))
+    payloads = payloads if payloads is not None else {
+        _XAI_BILLING: _XAI_BILLING_PAYLOAD, _XAI_SETTINGS: {"subscription_tier_display": "SuperGrok"},
+    }
+    monkeypatch.setattr("agent.account_usage.httpx.Client",
+                        lambda timeout=None: _XaiClient(payloads, statuses, calls))
+    return calls
+
+
+def test_xai_oauth_usage_renders_weekly_pool_without_leaking_token(monkeypatch):
+    calls = _patch_xai(monkeypatch)
+
+    snapshot = fetch_account_usage("xai-oauth")
+    text = "\n".join(render_account_usage_lines(snapshot))
+
+    assert snapshot is not None and snapshot.available
+    assert snapshot.plan == "SuperGrok"
+    assert snapshot.windows[0].label == "Weekly pool"
+    assert snapshot.windows[0].reset_at == datetime(2026, 10, 4, 3, 7, 35, tzinfo=timezone.utc)
+    assert "Weekly pool: 86% remaining (14% used) • resets " in text
+    for line in ("Grok Build: 10% used", "Grok Chat: 4% used", "Pay-as-you-go: off", "Prepaid balance: $0"):
+        assert line in snapshot.details
+    assert any(line.startswith("Window: ") for line in snapshot.details)
+    assert _XAI_FAKE_TOKEN not in text
+    assert {url for url, _ in calls} == {_XAI_BILLING, _XAI_SETTINGS}
+    assert all(h["Authorization"] == f"Bearer {_XAI_FAKE_TOKEN}" for _, h in calls)
+
+
+def test_xai_oauth_nonzero_money_is_raw_units_and_unknown_products_kept(monkeypatch):
+    config = dict(_XAI_BILLING_PAYLOAD["config"], onDemandCap={"val": "2500"}, prepaidBalance={"val": 700},
+                  productUsage=[{"product": "GrokImagineVideo", "usagePercent": 1.5}])
+    _patch_xai(monkeypatch, payloads={_XAI_BILLING: {"config": config}}, statuses={_XAI_SETTINGS: 500})
+
+    snapshot = fetch_account_usage("xai-oauth")
+
+    assert snapshot is not None and snapshot.available and snapshot.plan is None
+    assert "Grok Imagine Video: 1.5% used" in snapshot.details
+    assert "Pay-as-you-go: on (cap 2500 raw units, used 0 raw units)" in snapshot.details
+    assert "Prepaid balance: 700 raw units" in snapshot.details
+    assert not any("$" in line for line in snapshot.details)
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_xai_oauth_billing_failure_is_unavailable_not_raised(monkeypatch, status):
+    _patch_xai(monkeypatch, statuses={_XAI_BILLING: status})
+
+    snapshot = fetch_account_usage("xai-oauth")
+    text = "\n".join(render_account_usage_lines(snapshot))
+
+    assert snapshot is not None and not snapshot.available and snapshot.windows == ()
+    assert "hermes auth add xai-oauth" in snapshot.unavailable_reason
+    assert _XAI_FAKE_TOKEN not in text and "secret body" not in text
+
+
+def test_xai_oauth_without_token_returns_none(monkeypatch):
+    calls = _patch_xai(monkeypatch, token=None)
+
+    assert fetch_account_usage("xai-oauth") is None
+    assert calls == []
+
+
+def test_xai_oauth_usage_never_refreshes_the_singleton(monkeypatch):
+    calls = _patch_xai(monkeypatch)
+
+    assert fetch_account_usage("xai-oauth").available
+    assert calls.resolve_kwargs and all(kw.get("refresh_if_expiring") is False for kw in calls.resolve_kwargs)
+    assert calls.peeks == []  # live singleton token wins; the pool is not consulted
+
+
+def test_xai_oauth_pool_only_login_uses_peeked_access_token(monkeypatch):
+    from types import SimpleNamespace
+
+    pooled = "pooled-xai-access-token"
+    calls = _patch_xai(monkeypatch, token=None, pool_entry=SimpleNamespace(access_token=pooled))
+
+    snapshot = fetch_account_usage("xai-oauth")
+
+    assert snapshot is not None and snapshot.available
+    assert calls.peeks == [True]
+    assert _XAI_BILLING in {url for url, _ in calls}
+    assert all(h["Authorization"] == f"Bearer {pooled}" for _, h in calls)
+    assert pooled not in "\n".join(render_account_usage_lines(snapshot))
+
+
+@pytest.mark.parametrize("entry", [None, "empty"])
+def test_xai_oauth_no_singleton_and_no_pool_token_returns_none(monkeypatch, entry):
+    from types import SimpleNamespace
+
+    pool_entry = SimpleNamespace(access_token="") if entry == "empty" else None
+    calls = _patch_xai(monkeypatch, token=None, pool_entry=pool_entry)
+
+    assert fetch_account_usage("xai-oauth") is None
+    assert calls == [] and calls.peeks == [True]
+
+
+def test_xai_oauth_unexpected_resolver_error_fails_open_without_peeking(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = _patch_xai(monkeypatch, resolve_error=TimeoutError("auth lock"),
+                       pool_entry=SimpleNamespace(access_token="other-account-token"))
+
+    assert fetch_account_usage("xai-oauth") is None
+    assert calls == [] and calls.peeks == []
+
+
+@pytest.mark.parametrize("provider", ["openai-codex", "xai"])
+def test_grok_billing_is_only_queried_for_xai_oauth(monkeypatch, provider):
+    calls = _patch_xai(monkeypatch)
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda **_kw: {"provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex",
+                       "api_key": "codex-token"},
+    )
+    monkeypatch.setattr("agent.account_usage._read_codex_tokens", lambda: {"tokens": {}})
+
+    fetch_account_usage(provider)
+
+    assert not any("cli-chat-proxy.grok.com" in url for url, _ in calls)

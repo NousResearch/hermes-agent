@@ -74,4 +74,5 @@ def multiplexer_serves_home(home: Path) -> Path | None:
     if not isinstance(served, list):
         return None
     names = {normalize_profile_name(str(p)) for p in served if p}
-    return root if normalize_profile_name(home.name) in names else None
+    # The entry's name: a junction's target folder can be called anything.
+    return root if normalize_profile_name((profile_entry(home) or home).name) in names else None

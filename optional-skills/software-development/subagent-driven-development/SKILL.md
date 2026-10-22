@@ -31,7 +31,7 @@ Use this skill when:
 - Fresh context per task (no confusion from accumulated state)
 - Automated review process catches issues early
 - Consistent quality checks across all tasks
-- Subagents can ask questions before starting work
+- Subagents report whether they completed, need context, or are blocked
 
 ## The Process
 
@@ -88,6 +88,24 @@ delegate_task(
     toolsets=['terminal', 'file']
 )
 ```
+
+#### Implementer Status Contract
+
+The implementer's final response MUST begin with exactly one status token, followed by a concise report:
+
+- `DONE` — the task is complete and ready for spec review. Include changed files and test results.
+- `DONE_WITH_CONCERNS` — the task is complete, but include concerns the controller must assess before review.
+- `NEEDS_CONTEXT` — required information was not in the dispatched context. State the specific missing context and do not guess.
+- `BLOCKED` — work cannot proceed. State the blocker, what was tried, and what would unblock it.
+
+Hermes subagents return only after their delegated run completes; they cannot pause for an in-run answer. The controller handles each status after receiving the result:
+
+- For `DONE`, dispatch the spec compliance reviewer.
+- For `DONE_WITH_CONCERNS`, resolve or explicitly accept every concern before dispatching review; dispatch a fresh fix subagent if the concern exposes a gap.
+- For `NEEDS_CONTEXT`, supply the missing context and dispatch a fresh implementer subagent. Do not treat it as completed work.
+- For `BLOCKED`, do not advance the task. Resolve the blocker or revise the plan, then dispatch a fresh subagent with the new context.
+
+Never infer success from prose alone: only `DONE` or an assessed `DONE_WITH_CONCERNS` may enter the review loop.
 
 #### Step 2: Dispatch Spec Compliance Reviewer
 
@@ -209,7 +227,7 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 - Dispatch multiple implementation subagents for tasks that touch the same files
 - Make subagent read the plan file (provide full text in context instead)
 - Skip scene-setting context (subagent needs to understand where the task fits)
-- Ignore subagent questions (answer before letting them proceed)
+- Treat `NEEDS_CONTEXT` or `BLOCKED` as a completed task
 - Accept "close enough" on spec compliance
 - Skip review loops (reviewer found issues → implementer fixes → review again)
 - Let implementer self-review replace actual review (both are needed)
@@ -218,11 +236,11 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 
 ## Handling Issues
 
-### If Subagent Asks Questions
+### If a Subagent Needs Context or Is Blocked
 
-- Answer clearly and completely
-- Provide additional context if needed
-- Don't rush them into implementation
+- Read the `NEEDS_CONTEXT` or `BLOCKED` report before changing the plan
+- Provide the missing context or resolve the stated blocker
+- Dispatch a fresh subagent with the resolved context; do not assume the prior run can resume
 
 ### If Reviewer Finds Issues
 
@@ -290,9 +308,9 @@ If a subagent encounters bugs during implementation:
 
 --- Task 1: Create User model ---
 [Dispatch implementer subagent]
-  Implementer: "Should email be unique?"
-  You: "Yes, email must be unique"
-  Implementer: Implemented, 3/3 tests passing, committed.
+  Implementer: NEEDS_CONTEXT — the uniqueness requirement is unspecified.
+  You: Re-dispatch with: "email must be unique."
+  Implementer: DONE — implemented, 3/3 tests passing, committed.
 
 [Dispatch spec reviewer]
   Spec reviewer: ✅ PASS — all requirements met
@@ -304,7 +322,8 @@ If a subagent encounters bugs during implementation:
 
 --- Task 2: Password hashing ---
 [Dispatch implementer subagent]
-  Implementer: No questions, implemented, 5/5 tests passing.
+  Implementer: DONE_WITH_CONCERNS — implemented, 5/5 tests passing; password policy is not specified.
+  You: Accept the concern for this task and dispatch spec review.
 
 [Dispatch spec reviewer]
   Spec reviewer: ❌ Missing: password strength validation (spec says "min 8 chars")

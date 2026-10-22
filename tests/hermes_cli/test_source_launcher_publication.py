@@ -381,21 +381,39 @@ def test_running_source_launcher_can_republish_itself(tmp_path, monkeypatch, lau
 
 
 @pytest.mark.platforms("windows")
-def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypatch):
+@pytest.mark.parametrize("running", [False, True], ids=["idle", "running"])
+def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypatch, running):
     repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / "hermes_cli/main.py").write_text(
+        "import sys\ndef main():\n    print('ready', flush=True)\n    sys.stdin.read()\n    return 0\n",
+        encoding="utf-8")
     local = repo / ".hermes/bin"
     original = Path(_launchers.ensure_install_launchers(repo, local)[0])
     assert original.suffix == ".exe"
+    process = None
+    if running:
+        # The launcher a repin retires is the one running `hermes update`.
+        process = subprocess.Popen([str(original)], cwd=tmp_path, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, text=True, encoding="utf-8")
+        assert any(line.strip() == "ready" for line in iter(process.stdout.readline, ""))
     new_python = home / "tools" / "repinned" / "python.exe"
     new_python.parent.mkdir()
     new_python.touch()
     (home / "tools/facts.json").write_text(
         json.dumps({"packages": {"python": {"entry": "repinned"}}}), encoding="utf-8")
     monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
-    result = _launchers.stage_launcher("hermes", repo, local)
+    try:
+        result = _launchers.stage_launcher("hermes", repo, local)
+    finally:
+        if process is not None:
+            process.communicate("", timeout=30)
     assert result == local / "hermes.cmd"
     assert not original.exists()  # cmd.exe must not run the old exe first
     assert result is not None and str(new_python) in result.read_text(encoding="utf-8-sig")
+    if process is not None:
+        assert process.returncode == 0  # the retired launcher finished its own run
+        assert _launchers.stage_launcher("hermes", repo, local) == local / "hermes.cmd"
+        assert not list(local.glob("hermes.exe*"))  # the aside copy is collected once it exits
 
 
 @pytest.mark.platforms("windows")

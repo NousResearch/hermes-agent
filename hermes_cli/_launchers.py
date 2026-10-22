@@ -11,6 +11,7 @@ interpreter before it publishes either command.
 
 from __future__ import annotations
 
+from contextlib import suppress
 import json
 import os
 import shlex
@@ -559,12 +560,37 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
         if path is not None and path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
             # newly published command when distlib is unavailable.
-            try:
-                (Path(out_dir) / f"{name}.exe").unlink(missing_ok=True)
-            except OSError:
+            if not _retire_exe(Path(out_dir) / f"{name}.exe"):
                 return None
         return path
     return None
+
+
+def _retire_exe(exe: Path) -> bool:
+    """Remove ``exe``; a running one is renamed aside instead.
+
+    Windows refuses to delete a mapped image but allows renaming it, and the
+    launcher a Python repin has to retire is usually the one running
+    ``hermes update`` (or the launch retrying its owed launcher step), so a
+    plain unlink left every repinned update owing launchers -- and the install
+    stamp -- forever. The aside copy goes on the next publication once its
+    process has exited."""
+    for leftover in exe.parent.glob(f"{exe.name}.*.deleteme"):
+        with suppress(OSError):
+            leftover.unlink()
+    try:
+        exe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        pass
+    aside = exe.with_name(f"{exe.name}.{os.getpid()}.deleteme")
+    try:
+        os.replace(exe, aside)
+    except OSError:
+        return False
+    with suppress(OSError):
+        aside.unlink()
+    return True
 
 
 def _first_token(line: str) -> Path | None:

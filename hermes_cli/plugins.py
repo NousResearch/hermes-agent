@@ -57,6 +57,7 @@ from hermes_cli.plugins_dispatch import (
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
+from hermes_cli.plugins_tool_policy import tool_whitelist_denial
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
@@ -1987,10 +1988,8 @@ def _get_pre_tool_call_directive_details(
     ``block`` > ``approve`` > none, not registration order: any plugin's valid veto wins over an
     earlier plugin's request for human confirmation (#87420); among approves the first valid one
     wins. Irrelevant returns are ignored."""
-    allowed = getattr(_thread_tool_whitelist, "allowed", None)
-    if allowed is not None and tool_name not in allowed:
-        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
-        return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
+    if (denial := tool_whitelist_denial(tool_name)) is not None:
+        return _PreToolCallDirective(action="block", message=denial)
     from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
     hook_results = invoke_lifecycle_hook(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},

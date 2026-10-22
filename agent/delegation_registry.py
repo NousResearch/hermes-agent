@@ -38,24 +38,38 @@ def configured_backend(config: Mapping[str, Any]) -> str:
     return lower_key(raw) if isinstance(raw, str) and raw.strip() else DEFAULT_BACKEND
 
 
+_first_use: dict[str, DelegationProvider] = {}
+
+
 class _BundledRegistrar:
-    """The one ``ctx`` method a bundled strategy's ``register()`` calls."""
+    """The one ``ctx`` method a bundled strategy's ``register()`` calls on first use. It keeps the provider
+    outside the plugin registry, whose entries only the plugin manager adds and removes."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
 
     def register_delegation_provider(self, provider: DelegationProvider) -> None:
-        _registry.register(provider)
+        _first_use[self.name] = provider
+
+
+def _bundled_disabled(name: str) -> bool:
+    from hermes_cli.plugins_discovery import _get_disabled_plugins
+    return bool({name, f"delegation/{name}"} & _get_disabled_plugins())
 
 
 def _load_bundled(name: str) -> Optional[DelegationProvider]:
-    """Load the bundled strategy ``plugins/delegation/<name>/`` on first use when the plugin sweep has
-    not registered it (a runtime that never ran discovery, or pinned it with zero plugins): delegation
-    is a core tool and must not depend on the sweep. ``plugins.disabled`` still wins."""
+    """The bundled strategy ``plugins/delegation/<name>/`` on first use when the plugin sweep has not
+    registered it (a runtime that never ran discovery, or pinned it with zero plugins): delegation is a
+    core tool and must not depend on the sweep. ``plugins.disabled`` wins on every call, so a later
+    disable takes effect without a restart."""
     import importlib.util
     from hermes_cli.plugins import get_bundled_plugins_dir
-    from hermes_cli.plugins_discovery import _get_disabled_plugins
-    if not _BUNDLED_NAME_RE.match(name):  # the name comes from config.yaml: never a path
+    if not _BUNDLED_NAME_RE.match(name) or _bundled_disabled(name):  # the name comes from config.yaml: never a path
         return None
+    if name in _first_use:
+        return _first_use[name]
     plugin_dir = get_bundled_plugins_dir() / "delegation" / name
-    if not (plugin_dir / "plugin.yaml").is_file() or {name, f"delegation/{name}"} & _get_disabled_plugins():
+    if not (plugin_dir / "plugin.yaml").is_file():
         return None
     spec = importlib.util.spec_from_file_location(
         f"hermes_bundled_delegation_{name.replace('-', '_')}", plugin_dir / "__init__.py",
@@ -64,8 +78,8 @@ def _load_bundled(name: str) -> Optional[DelegationProvider]:
         return None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.register(_BundledRegistrar())
-    return _registry.get_provider(name)
+    module.register(_BundledRegistrar(name))
+    return _first_use.get(name)
 
 
 def _usable(name: str) -> Optional[DelegationProvider]:

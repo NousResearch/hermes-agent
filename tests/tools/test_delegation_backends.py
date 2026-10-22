@@ -422,8 +422,11 @@ def test_default_strategy_is_the_bundled_plugin_through_the_same_seam(tmp_path, 
 def test_runtime_with_zero_plugins_loaded_still_delegates_on_the_bundled_default(tmp_path, monkeypatch, recorded):
     """Delegation is a core tool: a runtime whose plugin sweep never ran (or was pinned empty) loads the
     bundled default strategy on first use instead of losing delegate_task."""
-    from agent.delegation_registry import _load_bundled, _registry
+    from agent import delegation_registry
+    from agent.delegation_registry import _load_bundled, _registry, get_active_provider
     from tools.delegate_tool import delegate_task
+
+    monkeypatch.setattr(delegation_registry, "_first_use", {})
 
     home = tmp_path / ".hermes"
     home.mkdir(parents=True)
@@ -438,9 +441,63 @@ def test_runtime_with_zero_plugins_loaded_still_delegates_on_the_bundled_default
     try:
         delegate_task(tasks=[{"goal": "one plain delegated task"}], parent_agent=_parent())
         assert recorded[-1]["model"] == "pinned-model"
-        assert _registry.get_provider("default").name == "default"
+        assert get_active_provider({}).name == "default"
         assert _load_bundled("../../tools") is None  # config text never becomes a path
     finally:
         current = _registry.snapshot_registration("default")
         if current is not None:
             _registry.restore_registration("default", current, previous)
+
+
+def test_first_use_default_never_outlives_a_later_disable(tmp_path, monkeypatch, recorded):
+    """The first-use load of the bundled default is not a second, permanent registration: once
+    ``delegation/default`` is disabled, the next delegation refuses even in the runtime that loaded it."""
+    from agent import delegation_registry
+    from agent.delegation_registry import _registry
+    from tools.delegate_tool import delegate_task
+
+    monkeypatch.setattr(delegation_registry, "_first_use", {})
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True)
+    config = home / "config.yaml"
+    config.write_text(yaml.safe_dump({"delegation": {"model": "pinned-model"}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    pinned = PluginManager()
+    pinned._discovered = True  # zero plugins, discovery never runs
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", pinned)
+    previous = _registry.snapshot_registration("default")
+    if previous is not None:
+        _registry.restore_registration("default", previous, None)
+    try:
+        delegate_task(tasks=[{"goal": "one plain delegated task"}], parent_agent=_parent())
+        assert recorded[-1]["model"] == "pinned-model"
+        config.write_text(yaml.safe_dump({"plugins": {"disabled": ["delegation/default"]},
+                                          "delegation": {"model": "pinned-model"}}), encoding="utf-8")
+        out = json.loads(delegate_task(tasks=[{"goal": "one plain delegated task"}], parent_agent=_parent()))
+        assert "delegation/default is disabled" in out.get("error", "")
+        assert len(recorded) == 1
+    finally:
+        current = _registry.snapshot_registration("default")
+        if current is not None:
+            _registry.restore_registration("default", current, previous)
+
+
+def test_a_replacement_default_strategy_gets_the_full_route_contract(monkeypatch):
+    """Rules follow the route, not the name: a provider registered as ``default`` that returns a speed tier and
+    a label has the tier checked and applied, exactly like any other backend."""
+    from agent.delegation_provider import DelegationProvider
+    from tools.delegate_tool_routes import resolve_task_routes
+
+    class Replacement(DelegationProvider):
+        @property
+        def name(self):
+            return "default"
+
+        def route_task(self, task, config):
+            return {"base_url": "https://chatgpt.com/backend-api/codex", "api_key": "k", "model": "gpt-6-astra",
+                    "service_tier": "fast", "label": "codex-fast"}
+
+    monkeypatch.setattr("tools.delegate_tool_routes._active_provider", lambda config: Replacement())
+    (route,), error = resolve_task_routes([{"goal": "one plain delegated task"}], {}, _parent())
+    assert error is None and route.label == "codex-fast"
+    assert route.creds["service_tier"] == "priority" and route.creds["request_overrides"]["service_tier"] == "priority"

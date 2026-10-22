@@ -1831,8 +1831,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Open ``$VISUAL``/``$EDITOR`` on a temp markdown file and return the saved buffer with
         ``#!`` comment lines stripped; "" if the editor failed or the buffer was left empty.
         Factored out so the read-back/strip logic is unit-testable."""
-        editor = (os.environ.get("VISUAL") or os.environ.get("EDITOR")
-                  or ("notepad" if os.name == "nt" else "nano"))
+        from hermes_cli.editor import resolve_editor_command
+
+        editor = resolve_editor_command()
         fd, path = tempfile.mkstemp(suffix=".md", prefix="hermes_prompt_")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:

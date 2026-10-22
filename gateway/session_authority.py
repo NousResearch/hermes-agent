@@ -83,6 +83,9 @@ class LiveSession:
     # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
     review: SimpleNamespace = field(default_factory=SimpleNamespace)
+    # Revision of the last ``session.control.update`` (gateway/session_control_actions.publish): a tool
+    # completion republishes only when a tool actually moved the goal/loop/heartbeat state.
+    control_revision: str = ""
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -523,6 +526,8 @@ class SessionAuthority:
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
+        if revision := payload['native_text_v1']['event'].get('edit_revision'):
+            request_id += ':edit:' + revision  # an edit is its own input, not a changed replay of the send
         committed = [ref]  # the row's target: the write may retarget a rotated-away reservation
         # A /retry re-send carries its transcript rewrite: it commits in this admission's own write.
         from gateway import session_retry_admission
@@ -1347,6 +1352,21 @@ def backfill_legacy_session_owners(db):
     return stamped
 
 
+def backfill_compression_created_sources(db):
+    """List conversations compressed before write-time stamping under their surface again: a chain
+    root without a created_source takes its nearest stamped continuation's. Idempotent and never
+    overwrites a known value, so every start runs it, like the owner backfill above."""
+    import logging
+    try:
+        stamped = db.stamp_legacy_compression_chains()
+    except Exception:
+        logging.getLogger(__name__).warning('Compression created_source repair failed for %s', db.db_path, exc_info=True)
+        return 0
+    if stamped:
+        logging.getLogger(__name__).info('Stamped created_source on %d compressed session row(s)', stamped)
+    return stamped
+
+
 async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):
     """Call after exclusive profile ownership, before connecting adapters/API.
 
@@ -1366,6 +1386,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     from gateway.session_unattended_unknown import settle_recovered_unattended
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
+    await asyncio.to_thread(backfill_compression_created_sources, db)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.

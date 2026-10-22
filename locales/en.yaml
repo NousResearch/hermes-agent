@@ -699,6 +699,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Something went wrong and I couldn't finish this reply.{hint}\nUse /retry to try again, or /new to start a fresh conversation. Technical details are in the gateway log (`hermes logs`)."
     history_unavailable: "⚠️ This session's history is temporarily unavailable, so this message was not processed. Ask the operator to inspect state.db, then resend after it is healthy. Use /reset only if you intentionally want to start a new conversation."
     no_credentials: "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. Use /login to sign in again, or /model to pick a different model. If it keeps failing, run `hermes doctor` on the host."
+    cron_session_read_only: "⚠️ This chat belongs to a scheduled job and only runs that job, so your message was not run. Start a new chat to send it."
 
   skills:
     disabled: "The **{name}** skill is installed but disabled.\nEnable it with: `hermes skills config`"
@@ -3717,7 +3718,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo adds a custom GitHub skill source."
   t070: "hermes skills snapshot export setup.json exports your skill configuration for backup or sharing."
   t071: "hermes mcp add github --command npx adds MCP servers from the command line."
-  t072: "hermes mcp serve runs Hermes itself as an MCP server for other agents."
+  t072: "hermes mcp-serve runs Hermes itself as an MCP server for other agents."
   t073: "hermes auth add lets you add multiple API keys for credential pool rotation."
   t074: "hermes completion bash >> ~/.bashrc enables tab completion for all commands and profiles."
   t075: "hermes logs -f follows agent.log in real time. --level WARNING --since 1h filters output."

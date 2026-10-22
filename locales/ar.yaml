@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ حدث خطأ ما ولم أستطع إكمال هذا الرد.{hint}\nاستخدم /retry لإعادة المحاولة، أو /new لبدء محادثة جديدة. التفاصيل التقنية في سجل البوّابة (`hermes logs`)."
     history_unavailable: "⚠️ سجل هذه الجلسة غير متاح مؤقتًا، لذا لم تُعالج هذه الرسالة. اطلب من المشغّل فحص state.db، ثم أعد الإرسال بعد أن يعود سليمًا. استخدم /reset فقط إن كنت تريد فعلًا بدء محادثة جديدة."
     no_credentials: "⚠️ تعذّر الاتصال بخدمة نموذج الذكاء الاصطناعي، لذا لم تُعالج هذه الرسالة. استخدم /login لتسجيل الدخول مجددًا، أو /model لاختيار نموذج آخر. إن استمرّ الفشل، شغّل `hermes doctor` على المضيف."
+    cron_session_read_only: "⚠️ هذه المحادثة تابعة لمهمة مجدولة ولا تشغّل سوى تلك المهمة، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها."
   skills:
     disabled: "مهارة **{name}** مثبّتة لكنها معطّلة.\nفعّلها بـ: `hermes skills config`"
     not_installed: "مهارة **{name}** متاحة لكنها غير مثبّتة.\nثبّتها بـ: `hermes skills install {install_name}`"
@@ -3603,7 +3604,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo يضيف مصدر مهارات مخصصًا من GitHub."
   t070: "hermes skills snapshot export setup.json يصدّر إعدادات مهاراتك للنسخ الاحتياطي أو المشاركة."
   t071: "hermes mcp add github --command npx يضيف خوادم MCP من سطر الأوامر."
-  t072: "hermes mcp serve يشغّل Hermes نفسه كخادم MCP لوكلاء آخرين."
+  t072: "hermes mcp-serve يشغّل Hermes نفسه كخادم MCP لوكلاء آخرين."
   t073: "hermes auth add يتيح لك إضافة عدة مفاتيح API للتناوب ضمن مجموعة بيانات الاعتماد."
   t074: "hermes completion bash >> ~/.bashrc يفعّل الإكمال بمفتاح Tab لجميع الأوامر والملفات التعريفية."
   t075: "hermes logs -f يتابع agent.log في الوقت الفعلي. و--level WARNING --since 1h يصفّي المخرجات."

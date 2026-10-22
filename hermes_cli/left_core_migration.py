@@ -177,6 +177,10 @@ class LeftCoreFeature:
     # Top-level command the plugin registers in place of core's ``hermes auth <cli>`` login
     # (``hermes <cli> login|status|logout``); :func:`moved_command_hint` points the old spelling at it.
     cli: str = ""
+    # Top-level command the plugin registers in place of core's nested ``old_command``
+    # (``hermes mcp serve`` -> ``hermes mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
+    command: str = ""
+    old_command: str = ""
     # Key of the bundled plugin core shipped (``observability/langfuse``). It stays an alias of the
     # catalog plugin in ``plugins.enabled`` / ``plugins.disabled`` (the loader's gate, an
     # administrator's pinned list) and for every `hermes plugins <verb>` (:func:`legacy_plugin_alias`).
@@ -204,6 +208,13 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         secret_env=("HERMES_LANGFUSE_SECRET_KEY",),
         private_env=("HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_BASE_URL"),
         plugin_key="observability/langfuse",
+    ),
+    LeftCoreFeature(
+        # MCP clients that launch `hermes mcp serve` are configured outside Hermes, so no home shows the
+        # feature in use: nothing installs automatically, and the old spelling prints where it went.
+        plugin="mcp-serve", label="Hermes as an MCP server", in_use=lambda home, **_: False,
+        unchanged="the conversation tools keep their names; MCP clients change their args to [\"mcp-serve\"]",
+        command="mcp-serve", old_command="hermes mcp serve",
     ),
 )
 
@@ -233,13 +244,25 @@ def legacy_plugin_keys(plugin: str) -> set[str]:
 
 def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     """For a command a left-core plugin took over: ``hermes auth [<action>] <cli>`` (core's old login
-    spelling) or ``hermes <cli>`` while the plugin is not loaded, the line saying where it went and
-    how to get it for the active home, else ``""``."""
+    spelling), core's old nested spelling (``hermes mcp serve``), or the plugin's own ``hermes <cli>`` /
+    ``hermes <command>`` while the plugin is not loaded, the line saying where it went and how to get it
+    for the active home, else ``""``."""
     from hermes_constants import get_hermes_home
-    feature = next((f for f in LEFT_CORE if f.cli and f.cli == value), None)
-    if feature is None or prog not in {"hermes", "hermes auth"}:
-        return ""
     home = Path(get_hermes_home())
+    moved = next((f for f in LEFT_CORE if f.old_command and f.old_command == f"{prog} {value}"), None)
+    if moved is not None:
+        present = plugin_present(moved.plugin, home)
+        get = "" if present else f" Install it with: `{_install_command(moved.plugin, home)}`."
+        return (f"{moved.label} moved out of core into the '{moved.plugin}' plugin: `{moved.old_command}` is now "
+                f"`hermes {moved.command}`.{get}")
+    if prog == "hermes auth":
+        feature = next((f for f in LEFT_CORE if f.cli and f.cli == value), None)
+    elif prog == "hermes":
+        feature = next((f for f in LEFT_CORE if value and value in (f.cli, f.command)), None)
+    else:
+        feature = None
+    if feature is None:
+        return ""
     install = _install_command(feature.plugin, home)
     if not plugin_present(feature.plugin, home):
         get = f" Install it with: `{install}`."

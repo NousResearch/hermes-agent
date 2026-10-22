@@ -1,5 +1,5 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { isUndeliveredCorrectionRefusal, JsonRpcGatewayError } from '@hermes/shared'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -890,6 +890,14 @@ export function usePromptActions({
             { session_id: id, text }
           )
 
+          // TUI-26: a bare stop phrase typed mid-turn into a LOCAL voice chat ended that chat on
+          // the owner and reached no turn. Settled (nothing to re-queue), and no bubble stays.
+          if (result?.voice_stopped === true) {
+            discardOptimisticMessage()
+
+            return true
+          }
+
           if (result?.status === 'redirected') {
             if (mode === 'interrupt') {
               flushStreamDeltas(id)
@@ -917,6 +925,13 @@ export function usePromptActions({
           }
         } catch (err) {
           discardOptimisticMessage()
+
+          // Refused before any agent saw it (the turn this pane believed busy is gone):
+          // not a failed send. The composer re-queues the words as the next turn (#141644).
+          if (isUndeliveredCorrectionRefusal(err)) {
+            return false
+          }
+
           throw err
         }
 

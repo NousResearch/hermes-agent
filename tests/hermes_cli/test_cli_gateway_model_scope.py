@@ -110,6 +110,7 @@ def _prepare_for_chat(monkeypatch, cli_mod, stub):
     stub._single_query_mode = False
     stub._clarify_callback = None
     stub._connection_callback = None
+    stub._connection_on_change = None
     stub._confirm_owner_model_switch = lambda refusal: False
     stub._withdraw_gateway_modal = lambda method: None
     stub._current_reasoning_callback = lambda: None
@@ -134,6 +135,7 @@ def _prepare_for_chat(monkeypatch, cli_mod, stub):
     stub._agent_status_print = lambda *_a, **_k: None
     stub._pending_title = None
     stub._auto_load_skills_result = None
+    stub._mark_automation_stale = lambda: None
 
 
 def _chat_cli(monkeypatch, conn):

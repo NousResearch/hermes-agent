@@ -63,9 +63,20 @@ hermes -w -z "Fix issue #123"     # Single query in worktree
 
 `hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.
 With `hermes --tui -w`, closing the terminal detaches from the gateway-owned
-session. Its worktree is retained even when clean: the turn may still be running
-there, and resuming the session uses the same working directory. Review and prune
-it after the session's work is finished.
+session. A clean worktree is removed with its branch on quit unless something
+still needs it. It is retained when it has uncommitted changes or unpushed
+commits, when the gateway still has a turn queued or running there, when a
+session in it has an active `/loop`, `/heartbeat` or `/goal`, when an enabled
+cron job runs in it or is bound to such a session, or when another viewer (a
+Desktop window, say) still holds that session. Resuming a session uses its
+working directory: if quit removed the worktree, `hermes --tui --resume <id>`,
+`hermes --tui -c` and the classic `hermes --resume`/`-c` recreate it at the same
+path before attaching (on its branch if that still exists, else on a new branch
+of the same name from the repo's current `HEAD`). Only worktrees that
+`hermes --tui -w` itself created are recreated. The quit-time check reads the
+session store and then removes the tree; a viewer that attaches and submits in
+the moment between the two is not seen, so that turn can find its directory
+gone.
 A sweep runs automatically at `hermes -w` startup and every 6 hours from the
 cron ticker: idle clean+merged trees are removed, and idle trees with
 uncommitted changes or unpushed commits are **archived, then removed**
@@ -196,7 +207,7 @@ Added multiply; pytest isn't installed here, so I ran the tests directly: 2 pass
  gpt-5-mini · ctx [░░░░░░░░] 4% · ~/project (main)     enter interrupt · tab queue · ctrl+c stop
 ```
 
-- A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, a finished tool call led by its emoji (`📖 Read`, `💻 $`; `✗` in red when it failed, with its exit code), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
+- A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, a finished tool call led by its emoji (`📖 Read`, `💻 $`; `✗` in red when it failed, with its exit code; a refused `skill_manage` write keeps its emoji and shows the reason dim, since the agent retries it itself), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
 - The composer's top rule carries the live activity (spinner, what's running, elapsed time, streamed tokens) on the left and the session title on the right; no spinner row is printed into the scrollback.
 - The status line sits under the composer: the same fields as the classic status bar (model, context, cache hit, latency, tokens/s, background work, goal, duration, YOLO…) plus the working directory (with git branch) on the left; the keys that do something right now on the right.
 - The welcome banner is the same in both layouts.

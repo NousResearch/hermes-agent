@@ -14,6 +14,18 @@ import time
 QUEUE_ROWS = 3
 
 
+def sync_automation(cli) -> None:
+    """Re-read the goal/loop managers' mirrored state once after the gateway flagged it changed mid-turn
+    (``_mark_automation_stale``): one ``state`` round trip per change, none while nothing moves."""
+    if not getattr(cli, "_automation_stale", False):
+        return
+    cli._automation_stale = False
+    for attr in ("_goal_manager", "_loop_manager"):
+        mgr = getattr(cli, attr, None)
+        if mgr is not None and mgr.session_id == getattr(cli, "session_id", None):
+            mgr.refresh()
+
+
 def goal_line(cli) -> str:
     """``GoalManager.status_line()`` for an active or paused goal, else ``''``.
 

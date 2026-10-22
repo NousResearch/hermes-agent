@@ -598,7 +598,7 @@ class GatewayModelCommandsMixin:
             # that searches by the complete peer tuple when session_key doesn't match. origin_json and
             # display_name complete the identity (same shape as the reset path's db_create_kwargs in
             # gateway/session.py, #82633) so consumers that read routing/presentation data from state.db
-            # (mcp_serve, mirror, channel directory) see the branch row fully formed with zero backfill gap.
+            # (the mcp-serve plugin, mirror, channel directory) see the branch row fully formed with zero backfill gap.
             session_key=session_key,
             source=source,
             config_path=(profile_home or _hermes_home) / "config.yaml",

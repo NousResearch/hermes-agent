@@ -140,8 +140,11 @@ class DownloadTransportError(DownloadError):
         # Resolver errors can mean an offline host on macOS. Keep manual
         # recovery available without extending the automatic retry policy.
         self.recoverable = is_transient(cause) or unresolved
+        # Any 5xx is the upstream host failing, not its bytes changing: a CDN's
+        # origin-down codes (520-527) are what a dead third-party host returns.
         self.fallback_allowed = (
-            self.status in (401, 403, 404, 410) or unresolved or is_transient(cause)
+            self.status in (401, 403, 404, 410) or (self.status or 0) >= 500
+            or unresolved or is_transient(cause)
         )
         refused = edge_block(cause) or ("the host refused access" if self.status in (401, 403) else None)
         reason = f"{cause}; {refused}" if refused else str(cause)

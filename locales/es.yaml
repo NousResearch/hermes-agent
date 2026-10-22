@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Algo salió mal y no pude terminar esta respuesta.{hint}\nUsa /retry para intentarlo de nuevo o /new para empezar una conversación nueva. Los detalles técnicos están en el registro del gateway (`hermes logs`)."
     history_unavailable: "⚠️ El historial de esta sesión no está disponible temporalmente, así que este mensaje no se procesó. Pide al operador que revise state.db y reenvíalo cuando esté en buen estado. Usa /reset solo si realmente quieres empezar una conversación nueva."
     no_credentials: "⚠️ No pude conectar con el servicio del modelo de IA, así que este mensaje no se procesó. Usa /login para iniciar sesión de nuevo, o /model para elegir otro modelo. Si sigue fallando, ejecuta `hermes doctor` en el host."
+    cron_session_read_only: "⚠️ Este chat pertenece a una tarea programada y solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo."
   skills:
     disabled: "La skill **{name}** está instalada pero desactivada.\nActívala con: `hermes skills config`"
     not_installed: "La skill **{name}** está disponible pero no instalada.\nInstálala con: `hermes skills install {install_name}`"
@@ -3603,7 +3604,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo agrega una fuente de skills personalizada de GitHub."
   t070: "hermes skills snapshot export setup.json exporta tu configuración de skills para respaldarla o compartirla."
   t071: "hermes mcp add github --command npx agrega servidores MCP desde la línea de comandos."
-  t072: "hermes mcp serve ejecuta Hermes como servidor MCP para otros agentes."
+  t072: "hermes mcp-serve ejecuta Hermes como servidor MCP para otros agentes."
   t073: "hermes auth add te permite agregar varias claves de API para rotar un grupo de credenciales."
   t074: "hermes completion bash >> ~/.bashrc activa el autocompletado con Tab para todos los comandos y perfiles."
   t075: "hermes logs -f sigue agent.log en tiempo real. --level WARNING --since 1h filtra la salida."

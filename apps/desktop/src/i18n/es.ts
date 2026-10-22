@@ -11,6 +11,7 @@ import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
+import { esPluginUpdate } from './es_plugin_update'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
@@ -496,14 +497,6 @@ export const esOverrides = {
     }
   },
   ...esNotices,
-  billingBlock: {
-    titleNous: 'Sin créditos de Nous',
-    titleProvider: provider => `Sin créditos — ${provider}`,
-    fallbackMessage: 'Tu cuenta se quedó sin créditos. Añade créditos para continuar.',
-    openBilling: 'Abrir facturación',
-    addCredits: 'Añadir créditos',
-    dismiss: 'Descartar'
-  },
   sendDiagnostics: {
     title: 'Enviar diagnóstico a Nous',
     privacyNotice:
@@ -2507,25 +2500,13 @@ export const esOverrides = {
         unsupported_gpu: 'GPU no compatible',
         unknown: 'estado desconocido'
       },
-      catalogTitle: 'Catálogo de plugins',
-      catalogBrowse: 'Explorar',
-      catalogHide: 'Ocultar el explorador del catálogo',
-      catalogHint:
-        'Pulsa "+ Añadir a este agente" en cualquier plugin: las entradas revisadas se instalan en su commit fijado en el perfil seleccionado. Los plugins agente+escritorio incluidos ofrecen ambas mitades.',
       alreadyInstalled: (name: string) => `${name} ya está instalado en este perfil.`,
       catalogProvenance: (sha: string) =>
         `Instalado desde el catálogo de Hermes${sha ? ` en el commit fijado ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
-      updateToPin: (sha: string) => `Actualizar a ${sha}`,
-      updateFailed: (name: string) => `No se pudo actualizar ${name}`,
-      updated: (name: string) =>
-        `${name} se actualizó al commit fijado actual del catálogo. Reinicia el gateway para aplicarlo.`,
-      updateConsentTitle: (name: string) => `${name} pide más`,
-      updateConsentBody: (name: string, sha: string) =>
-        `El nuevo commit fijado de ${name} en el catálogo (${sha}) añade superficies que la versión instalada no tiene. Aplícalo solo si confías en ellas:`,
-      updateConsentConfirm: 'Aplicar actualización',
+      ...esPluginUpdate,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `¿Desinstalar ${name}?`,
@@ -3941,43 +3922,6 @@ export const esOverrides = {
     snippetsDesc: 'Elige un prompt inicial para insertarlo en el compositor.',
     dropFiles: 'Suelta archivos para adjuntarlos',
     dropSession: 'Suelta para enlazar este chat',
-    mcpSuggestions: {
-      label: server => `Añadir ${server}`,
-      tip: keyword => `Sugerido porque mencionaste "${keyword}" — haz clic para conectar`,
-      connecting: server => `Conectando ${server}…`,
-      cancelTip: 'Haz clic para cancelar',
-      added: server => `${server} añadido`,
-      addedTip: 'Conectado — sus herramientas están listas en este chat',
-      connectFailed: server => `No se pudo conectar ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Usar habilidad: ${skill}`,
-      tip: skill => `Mencionaste "${skill}" — haz clic para empezar con esa habilidad`,
-      done: skill => `Añadido /${skill}`,
-      doneTip: 'La habilidad se carga cuando envíes'
-    },
-    githubSuggestions: {
-      label: 'Configurar GitHub',
-      tip: 'GitHub funciona aquí mediante las skills de la CLI gh: haz clic para conectar tu cuenta',
-      done: 'Se añadió /github-auth',
-      doneTip: 'Envía el mensaje y el agente te guiará para iniciar sesión en GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Reconectar ${server}`,
-      tip: server => `Una llamada a ${server} acaba de fallar con un error de conexión`,
-      working: server => `Reconectando ${server}…`,
-      workingTip: 'Haz clic para cancelar',
-      done: server => `${server} reconectado`,
-      doneTip: 'Las credenciales nuevas están activas en este chat',
-      failed: server => `No se pudo reconectar ${server}`
-    },
-    cronSuggestions: {
-      label: 'Programar esto',
-      tip: phrase => `"${phrase}" suena recurrente — ejecútalo con un horario en su lugar`,
-      prefix: 'Configúralo como tarea programada:',
-      done: 'Marcado para programar',
-      doneTip: 'Envíalo y el agente creará la tarea'
-    },
     snippets: {
       codeReview: {
         label: 'Revisión de código',
@@ -5056,6 +5000,10 @@ export const esOverrides = {
         loop_error: {
           title: 'Hermes se quedó atascado en un bucle',
           body: 'La respuesta repetía los mismos pasos, así que Hermes la detuvo. Reinténtalo o empieza un chat nuevo si vuelve a ocurrir.'
+        },
+        cron_session_read_only: {
+          title: 'Este chat pertenece a una tarea programada',
+          body: 'Solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
         },
         SESSION_NOT_OWNED: {
           title: 'Este chat está abierto en otro sitio',

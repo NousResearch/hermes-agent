@@ -1343,11 +1343,11 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     with _session_db() as db:
         ws_key = _resolve_workspace_key()
         if ws_key:
-            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key)
+            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key, skip_launch_stubs=True)
             if sessions:
                 return sessions[0]["id"]
         # Fallback: global MRU for this source.
-        sessions = db.search_sessions(source=source, limit=1)
+        sessions = db.search_sessions(source=source, limit=1, skip_launch_stubs=True)
         return sessions[0]["id"] if sessions else None
     return None
 
@@ -1506,26 +1506,6 @@ def _apply_in_dir(args) -> None:
     args.no_restore_cwd = True
 
 
-def _import_foreign_resume(args) -> None:
-    """--resume @claude / @codex: import a foreign session and resume it."""
-    _resume_foreign = getattr(args, "resume", None)
-    if not (isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in ("@claude", "@codex")):
-        return
-    from hermes_cli.foreign_sessions import import_foreign_session, pick_foreign_session
-
-    _picked = pick_foreign_session(_resume_foreign.strip().lower().lstrip("@"))
-    if _picked is None:
-        sys.exit(1)
-    try:
-        _imported_id = import_foreign_session(_picked.source, _picked.path)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    print(f"✓ Imported as {_imported_id} — resuming it now.")
-    print(f"  (later: hermes --resume {_imported_id})")
-    args.resume = _imported_id
-
-
 def _resolve_chat_session_args(args, use_tui: bool) -> None:
     """Normalize --in / --resume / --continue on ``args`` before agent init.
 
@@ -1553,12 +1533,15 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
 
     _resolve_continue_arg(args, use_tui=use_tui)
 
-    _import_foreign_resume(args)
+    from hermes_cli.main_resume_args import import_foreign_resume, recreate_resumed_tui_worktree
+    import_foreign_resume(args)
 
     resume_val = getattr(args, "resume", None)
     if resume_val:
         # On miss keep the original so _init_agent reports "Session not found" with it.
         args.resume = _resolve_session_by_name_or_id(resume_val) or resume_val
+
+    recreate_resumed_tui_worktree(args)
 
     # cd back into a resumed session's recorded cwd (opt out: --no-restore-cwd;
     # --worktree owns its own dir). A missing dir warns and stays put.
@@ -2853,7 +2836,6 @@ _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
     "gateway": ("gateway_command", {"run"}),
-    "mcp": ("mcp_action", {"serve"}),
 }
 
 
@@ -2868,7 +2850,7 @@ def _is_tui_chat_launch(args) -> bool:
     # here, so the wrapper pre-warmed its own MCP discovery while the TUI
     # gateway (spawned moments later) ran a second one — an idle stdio MCP
     # server copy held dead for the whole session. Only chat commands can
-    # launch the TUI; other commands (mcp serve, gateway, acp, cron) keep
+    # launch the TUI; other commands (gateway, acp, cron) keep
     # their own discovery behavior untouched.
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
@@ -2876,16 +2858,9 @@ def _is_tui_chat_launch(args) -> bool:
 
 
 def _agent_subcommand_selected(args) -> bool:
-    """True for ``cron run/tick``, ``gateway run``, ``mcp serve`` (see _AGENT_SUBCOMMANDS)."""
+    """True for ``cron run/tick``, ``gateway run`` (see _AGENT_SUBCOMMANDS)."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     return bool(_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
-
-
-def _command_has_dedicated_mcp_startup(args) -> bool:
-    """acp / gateway run / cron run|tick own their MCP startup on the runtime path."""
-    return args.command == "acp" or (
-        args.command != "mcp" and _agent_subcommand_selected(args)
-    )
 
 
 def _should_background_mcp_startup(args) -> bool:
@@ -2937,7 +2912,7 @@ def _prepare_agent_startup(args) -> None:
                 exc_info=True,
             )
     # -t/--toolsets narrows which configured MCP servers get spawned, on
-    # every discovery path (inline below, background thread, TUI/desktop
+    # every discovery path (background thread, TUI/desktop
     # deferred start). Built-in toolset names never match a server key, so
     # `-t terminal` simply spawns nothing; `-t all` keeps the full set.
     try:
@@ -2952,8 +2927,7 @@ def _prepare_agent_startup(args) -> None:
         if _accept_hooks:  # rides session.create (env_launch_flags) and the classic CLI's consent check
             os.environ["HERMES_ACCEPT_HOOKS"] = "1"
         return
-    _run_inline_mcp_discovery = not (_is_tui_chat_launch(args) or _command_has_dedicated_mcp_startup(args))
-    if _run_inline_mcp_discovery and _should_background_mcp_startup(args):
+    if _should_background_mcp_startup(args):
         try:
             from hermes_cli.mcp_startup import start_background_mcp_discovery
 
@@ -2964,22 +2938,6 @@ def _prepare_agent_startup(args) -> None:
         except Exception:
             logger.debug(
                 "Background MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
-        _run_inline_mcp_discovery = False
-    if _run_inline_mcp_discovery:
-        try:  # synchronous for entrypoints without a later bounded startup path
-            from hermes_cli.mcp_startup import get_mcp_server_filter
-            from tools.mcp_tool_discovery import discover_mcp_tools
-
-            _mcp_filter = get_mcp_server_filter()
-            if _mcp_filter is None:
-                discover_mcp_tools()
-            else:
-                discover_mcp_tools(allowed_mcp_names=_mcp_filter)
-        except Exception:
-            logger.debug(
-                "MCP tool discovery failed at CLI startup",
                 exc_info=True,
             )
     try:

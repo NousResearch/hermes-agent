@@ -373,6 +373,7 @@ export type BotsMessages = {
     imageSwitchApprove: string
     imageSwitchKeep: string
     start: string
+    stop: string
     attaching: string
     streamLost: string
     reconnect: string

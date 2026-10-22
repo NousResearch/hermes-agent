@@ -103,7 +103,7 @@ def _lazy_ensure_quietly(extra: str) -> None:
     Installs are gated by ``security.allow_lazy_installs`` inside pm."""
     try:
         import pm
-        pm.ensure_import(extra)
+        pm.ensure_import(extra, interactive=False)
     except Exception:
         pass
 

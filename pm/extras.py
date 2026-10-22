@@ -24,6 +24,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "parallel-web": "parallel",
     "ddgs": "ddgs",
     "otlp": "opentelemetry.sdk",
+    "langfuse": "langfuse",
     "mistral": "mistralai",
     "edge-tts": "edge_tts",
     "neutts": "neutts",
@@ -168,7 +169,7 @@ def _evaluate_in_runtime(marker: str, environment: dict[str, str]) -> bool:
         command = runtime_command(Path(__file__).with_name("_marker_eval.py"),
                                   [marker, json.dumps(environment)])
         result = subprocess.run(command, env=runtime_environment(), capture_output=True,
-                                text=True, timeout=60, check=False)
+                                text=True, timeout=60)
     except Exception:
         return True  # same fallback as a malformed marker: the resolver decides
     if result.returncode != 0:
@@ -181,7 +182,7 @@ def install_hint(extra: str) -> str:
     return f"hermes pm install --extra {extra}"
 
 
-def ensure_import(extra: str) -> None:
+def ensure_import(extra: str, *, interactive: bool = True) -> None:
     """Make an extra available: no-op when the anchor imports, otherwise
     sync the venv with the extra enabled. Raises InstallError on failure
     — including when a platform gate excludes this machine."""
@@ -197,11 +198,18 @@ def ensure_import(extra: str) -> None:
             f"(gate: {marker!r}); the adapter degrades without it",
         )
     import sys
+    import threading
     from pm.package import InstallError
 
     # prompt_toolkit already owns stdin during a CLI turn; never read from it.
-    app_running = False
-    if "prompt_toolkit.application.current" in sys.modules:
+    # Gateway turns and background worker threads also have no interactive operator
+    # on local stdin (on Windows, a hidden conhost still reports isatty() == True).
+    app_running = (
+        not interactive
+        or "gateway.run" in sys.modules
+        or threading.current_thread() is not threading.main_thread()
+    )
+    if not app_running and "prompt_toolkit.application.current" in sys.modules:
         from prompt_toolkit.application.current import get_app_or_none
 
         app_running = bool(getattr(get_app_or_none(), "is_running", False))

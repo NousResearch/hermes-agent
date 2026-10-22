@@ -177,6 +177,48 @@ def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch,
     assert synced == []
 
 
+def test_ensure_import_skips_prompt_when_non_interactive_or_on_worker_thread(monkeypatch, synced, tmp_path):
+    import builtins
+    import threading
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(extras, "available", lambda _: False)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(isatty=lambda: True))
+    prompts = []
+    monkeypatch.setattr(builtins, "input", lambda text: prompts.append(text) or "n")
+
+    extras.ensure_import("fal", interactive=False)
+    assert prompts == []
+    assert synced == [["fal"]]
+
+    synced.clear()
+    errors = []
+
+    def worker():
+        try:
+            extras.ensure_import("fal")
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=5)
+    assert errors == []
+    assert prompts == []
+    assert synced == [["fal"]]
+
+
+def test_lazy_ensure_quietly_passes_non_interactive(monkeypatch):
+    from tools import transcription_common
+
+    calls = []
+    monkeypatch.setattr(pm, "ensure_import", lambda extra, **kwargs: calls.append((extra, kwargs)))
+    transcription_common._lazy_ensure_quietly("silk")
+    assert calls == [("silk", {"interactive": False})]
+
+
 def test_ensure_import_propagates_install_error(monkeypatch):
     def boom(x=None):
         raise pm.InstallError("venv", "lazy installs are disabled")

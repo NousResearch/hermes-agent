@@ -20,7 +20,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
-import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from '../../cron/job-state'
+import { jobState, jobTitle, nextRunOverdueMs, NOT_FIREABLE_STATES, STATE_DOT } from '../../cron/job-state'
 import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from '../../cron/open-cron-run'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
@@ -154,16 +154,19 @@ export function SidebarCronJobsSection({
   }, [open, visible])
 
   // Upcoming first (soonest next run), jobs with no next run sink to the bottom,
-  // then alphabetical for stability. An inactive job (paused/disabled/completed)
-  // keeps the next_run_at it will never honor, and that stale slot is always in
-  // the past — without this gate it eats the section's first rows (#140608).
+  // then alphabetical for stability. A job that cannot fire again (paused/disabled/
+  // completed) keeps the next_run_at it will never honor, and that stale slot is
+  // always in the past — without this gate it eats the section's first rows
+  // (#140608). An errored job is deliberately NOT sunk: it is still scheduled and
+  // its next_run_at is a genuine future slot, so it keeps its upcoming position
+  // (#143084). INACTIVE_STATES above stays display-only (state label vs countdown).
   const sorted = useMemo(() => {
     return [...jobs].sort((a, b) => {
-      const aInactive = INACTIVE_STATES.has(jobState(a))
-      const bInactive = INACTIVE_STATES.has(jobState(b))
+      const aNotFireable = NOT_FIREABLE_STATES.has(jobState(a))
+      const bNotFireable = NOT_FIREABLE_STATES.has(jobState(b))
 
-      if (aInactive !== bInactive) {
-        return aInactive ? 1 : -1
+      if (aNotFireable !== bNotFireable) {
+        return aNotFireable ? 1 : -1
       }
 
       const an = nextRunMs(a)

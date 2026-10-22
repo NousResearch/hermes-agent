@@ -80,6 +80,34 @@ def test_the_owner_itself_may_bump_the_epoch(tmp_path, owner_process):
         db.close()
 
 
+def test_the_verdict_is_per_profile(tmp_path, owner_process):
+    """A -> B: the owned profile refuses the stranger, and the other profile is untouched.
+
+    The epoch row is a singleton of ITS store, so the refusal is about the profile that was
+    asked - a second profile's own store is still free to be taken over."""
+    import hermes_state_runtime as rt
+
+    owned = tmp_path / "owned"
+    free = tmp_path / "free"
+    owned.mkdir()
+    free.mkdir()
+    _write_lock_record(owned, owner_process)
+
+    db_owned = SessionDB(db_path=owned / "state.db")
+    db_free = SessionDB(db_path=free / "state.db")
+    try:
+        with pytest.raises(rt.RuntimeStoreError) as exc:
+            rt.begin_runtime_epoch(db_owned, instance_id="stranger")
+        assert exc.value.reason == "ownership_conflict"
+        assert _epoch_of(db_owned) is None, "the refused bump must not have created the row"
+
+        # The other profile's store is a different store: free to be taken over.
+        assert rt.begin_runtime_epoch(db_free, instance_id="owner") == 1
+    finally:
+        db_owned.close()
+        db_free.close()
+
+
 def test_an_unowned_store_can_be_taken_over(tmp_path):
     """No live owner: the bump IS the takeover (the gateway's own boot, and every test store)."""
     import hermes_state_runtime as rt

@@ -39,6 +39,72 @@ description: Description for {name}.
 
 class TestScanSkillCommands:
 
+    def test_namespaced_alias_replaces_generated_skill_command(self, tmp_path):
+        """Regression for #114671: aliases use the native skill dispatcher."""
+        _make_skill(tmp_path, "bro", body="Explain plainly.")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_commands._load_skills_config", return_value={
+                "command_aliases": [{"name": "pstack:bro", "skill": "bro", "hide_default": True}]
+            }),
+        ):
+            commands = scan_skill_commands()
+            message = build_skill_invocation_message("/pstack:bro", "be concise")
+
+        assert "/bro" not in commands
+        assert commands["/pstack:bro"]["alias_for"] == "/bro"
+        assert message is not None
+        assert "Explain plainly." in message
+        assert "be concise" in message
+
+    def test_alias_collision_fails_closed(self, tmp_path):
+        _make_skill(tmp_path, "bro")
+        _make_skill(tmp_path, "other")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_commands._load_skills_config", return_value={
+                "command_aliases": [{"name": "pstack:bro", "skill": "bro"},
+                                    {"name": "pstack:bro", "skill": "other"}]
+            }),
+        ):
+            commands = scan_skill_commands()
+
+        assert commands["/pstack:bro"]["name"] == "bro"
+
+    def test_alias_core_command_collision_fails_closed(self, tmp_path):
+        _make_skill(tmp_path, "bro")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_commands._load_skills_config", return_value={
+                "command_aliases": [{"name": "pstack:bro", "skill": "bro"}]
+            }),
+            patch(
+                "agent.skill_commands.skill_command_collision_note",
+                side_effect=lambda name: "core command" if name == "pstack:bro" else None,
+            ),
+        ):
+            commands = scan_skill_commands()
+
+        assert "/pstack:bro" not in commands
+        assert "/bro" in commands
+
+    def test_invalid_or_missing_alias_target_keeps_default_command(self, tmp_path):
+        _make_skill(tmp_path, "bro")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_commands._load_skills_config", return_value={
+                "command_aliases": [
+                    {"name": "not-namespaced", "skill": "bro", "hide_default": True},
+                    {"name": "pstack:missing", "skill": "missing", "hide_default": True},
+                ]
+            }),
+        ):
+            commands = scan_skill_commands()
+
+        assert "/bro" in commands
+        assert "/not-namespaced" not in commands
+        assert "/pstack:missing" not in commands
+
 
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""

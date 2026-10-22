@@ -113,7 +113,7 @@ def _direct_io_args(executable: Path) -> tuple[str, ...]:
 def _gpu_pin_env(backend: str, selection: str) -> dict[str, str]:
     """Env pinning the server to the selected GPU (#134227); {} when no pin applies.
 
-    Never raises: a probe miss means no pin, and the server still boots.
+    An unavailable explicit reservation raises rather than starting on the wrong device.
     """
     from hermes_cli.local_runtime.hardware import gpu_pin_env
 

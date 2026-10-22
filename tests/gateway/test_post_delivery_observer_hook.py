@@ -61,7 +61,7 @@ async def test_nonstream_observer_follows_real_final_send_and_generation(
     event = MessageEvent(text="inbound", source=source, message_id="in-4")
     session_key, run_generation = "session-key", 7
     interrupt_event = asyncio.Event()
-    setattr(interrupt_event, "_hermes_run_generation", run_generation)
+    interrupt_event._hermes_run_generation = run_generation
     adapter._active_sessions[session_key] = interrupt_event
 
     async def handler(_event):
@@ -105,7 +105,7 @@ async def test_stream_observer_requires_confirmed_receipt_and_uses_outbound_id(c
         stream_consumer_holder=[consumer],
     )
     interrupt_event = asyncio.Event()
-    setattr(interrupt_event, "_hermes_run_generation", run_generation)
+    interrupt_event._hermes_run_generation = run_generation
     adapter._active_sessions[session_key] = interrupt_event
     if not confirmed:
         adapter.record_post_delivery_receipt(
@@ -117,7 +117,6 @@ async def test_stream_observer_requires_confirmed_receipt_and_uses_outbound_id(c
             _hook_context(), result, "final", adapter=adapter, session_key=session_key,
             run_generation=run_generation,
         )
-        return None
 
     adapter.set_message_handler(handler)
     await adapter._process_message_background(

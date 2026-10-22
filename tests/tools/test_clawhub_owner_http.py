@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import threading
 import zipfile
 from contextlib import contextmanager
@@ -9,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from tools.skills_hub_clawhub import ClawHubSource
+from tools.url_safety import _reset_allow_private_cache
 
 
 @contextmanager
@@ -54,9 +56,18 @@ def registry(*, fallback=False, mismatch=False):
     thread.start()
     source = ClawHubSource()
     source.BASE_URL = f"http://127.0.0.1:{server.server_port}/api/v1"
+    # The download path is SSRF-guarded (blocks loopback); opt in for the local fixture server.
+    prior = os.environ.get("HERMES_ALLOW_PRIVATE_URLS")
+    os.environ["HERMES_ALLOW_PRIVATE_URLS"] = "true"
+    _reset_allow_private_cache()
     try:
         yield source, requests
     finally:
+        if prior is None:
+            os.environ.pop("HERMES_ALLOW_PRIVATE_URLS", None)
+        else:
+            os.environ["HERMES_ALLOW_PRIVATE_URLS"] = prior
+        _reset_allow_private_cache()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

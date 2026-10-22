@@ -91,12 +91,12 @@ class TestBuiltinAlwaysWins:
     the caller's elif chain handles them natively.
     """
 
-    @pytest.mark.parametrize(
-        "builtin",
-        ["edge", "openai", "elevenlabs", "minimax", "gemini",
-         "mistral", "xai", "piper", "kittentts", "neutts"],
-    )
-    def test_dispatcher_short_circuits_builtin(self, builtin):
+    def test_dispatcher_short_circuits_builtin(self):
+        assert tts_tool.BUILTIN_TTS_PROVIDERS
+        for builtin in tts_tool.BUILTIN_TTS_PROVIDERS:
+            self._assert_short_circuits(builtin)
+
+    def _assert_short_circuits(self, builtin):
         result = tts_tool._dispatch_to_plugin_provider(
             text="hello",
             output_path="/tmp/out.mp3",
@@ -225,3 +225,56 @@ class TestVoiceCompatibleHelper:
 
         tts_registry.register_provider(_ExplodingProvider(name="cartesia"))
         assert tts_tool._plugin_provider_is_voice_compatible("cartesia") is False
+
+
+# ── Streaming voice path (tools.tts_streaming) ──────────────────────────────
+
+
+class _PCMPlugin(TTSProvider):
+    def __init__(self, streams_pcm=True, rate=22050, available=True):
+        self.streams_pcm, self.stream_sample_rate, self._available = streams_pcm, rate, available
+        self.calls = []
+
+    @property
+    def name(self) -> str:
+        return "fake-pcm"
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def synthesize(self, text, output_path, **kw):  # pragma: no cover — streaming must not use it
+        raise AssertionError("synthesize() on the streaming path")
+
+    def stream(self, text, **kw):
+        self.calls.append(kw)
+        yield b"\x01\x02" * 4
+
+
+@pytest.mark.parametrize("streaming", [{}, {"provider": "auto"}, {"provider": "fake-pcm"}])
+def test_opted_in_plugin_streams_pcm_in_the_configured_voice(monkeypatch, streaming):
+    from tools import tts_streaming
+    monkeypatch.setattr(tts_streaming, "_try_instantiate", lambda name, cfg: None)  # no built-in creds
+    plugin = _PCMPlugin()
+    tts_registry.register_provider(plugin)
+    cfg = {"provider": "fake-pcm", "voice": "v1", "speed": 1.25, "streaming": streaming}
+    streamer = tts_streaming.resolve_streaming_provider(cfg)
+    assert streamer.sample_rate == 22050
+    assert list(streamer.stream("Hi.")) == [b"\x01\x02" * 4]
+    # The voice/model/speed synthesize() gets on the sync path: streaming never swaps the voice.
+    assert plugin.calls == [{"format": "pcm", "voice": "v1", "model": None, "speed": 1.25}]
+
+
+@pytest.mark.parametrize("plugin, extra_cfg", [
+    (_PCMPlugin(streams_pcm=False), {}),
+    (_PCMPlugin(rate=None), {}),
+    (_PCMPlugin(rate=0), {}),
+    (_PCMPlugin(rate=0.5), {}),
+    (_PCMPlugin(rate=float("nan")), {}),
+    (_PCMPlugin(available=False), {}),
+    (_PCMPlugin(), {"providers": {"fake-pcm": {"type": "command", "command": "say {input_path}"}}}),
+])
+def test_plugin_without_full_opt_in_keeps_per_sentence_synthesis(plugin, extra_cfg):
+    from tools import tts_streaming
+    tts_registry.register_provider(plugin)
+    assert tts_streaming.resolve_streaming_provider({"provider": "fake-pcm", **extra_cfg}) is None
+    assert plugin.calls == []

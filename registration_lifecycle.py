@@ -24,13 +24,13 @@ def same_registration(left: Any, right: Any) -> bool:
 class ReplacementLease:
     """One ownership generation in a replaceable registry slot."""
 
-    coordinator: "ReplacementCoordinator"
+    coordinator: ReplacementCoordinator
     slot: Hashable
     current: Any
     previous: Any
     restore: Callable[[Any], bool]
     finalize: Callable[[], None] | None = None
-    predecessor: "ReplacementLease | None" = None
+    predecessor: ReplacementLease | None = None
     active: bool = field(default=True, init=False)
 
     def dispose(self) -> None:

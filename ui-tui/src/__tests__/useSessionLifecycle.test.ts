@@ -10,7 +10,6 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
-  scheduleResumeScrollToBottom,
   signalFreshSessionBoundary,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
@@ -68,6 +67,24 @@ describe('live session activation in-flight state', () => {
     expect(getTurnState().streaming).toBe('partial answer')
   })
 
+  it('preserves synthetic turn display metadata while rebuilding live history', () => {
+    const inflight = {
+      assistant: '',
+      display_kind: 'process_complete',
+      display_metadata: { display_text: 'Finished syncing the workspace' },
+      streaming: true,
+      user: 'process completed'
+    }
+
+    expect(liveSessionInflightMessages(inflight)).toEqual([
+      {
+        kind: 'event',
+        role: 'system',
+        text: 'Finished syncing the workspace'
+      }
+    ])
+  })
+
   it('ignores empty in-flight payloads', () => {
     expect(liveSessionInflightMessages({ assistant: '', streaming: false, user: '   ' })).toEqual([])
 
@@ -75,89 +92,5 @@ describe('live session activation in-flight state', () => {
 
     expect(turnController.bufRef).toBe('')
     expect(getTurnState().streaming).toBe('')
-  })
-})
-
-describe('resume scroll settle', () => {
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  it('re-snaps while sticky and stops when the user scrolls away', () => {
-    vi.useFakeTimers()
-    let sticky = true
-    let lastManualScrollAt = 0
-    const scrollToBottom = vi.fn()
-
-    const cancel = scheduleResumeScrollToBottom(
-      {
-        current: {
-          getLastManualScrollAt: () => lastManualScrollAt,
-          isSticky: () => sticky,
-          scrollToBottom
-        }
-      } as any,
-      [0, 80, 240]
-    )
-
-    vi.advanceTimersByTime(0)
-    expect(scrollToBottom).toHaveBeenCalledTimes(1)
-
-    vi.advanceTimersByTime(80)
-    expect(scrollToBottom).toHaveBeenCalledTimes(2)
-
-    sticky = false
-    lastManualScrollAt = Date.now() + 1
-    vi.advanceTimersByTime(160)
-    expect(scrollToBottom).toHaveBeenCalledTimes(2)
-
-    cancel()
-  })
-
-  it('cancels pending resume snaps', () => {
-    vi.useFakeTimers()
-    const scrollToBottom = vi.fn()
-
-    const cancel = scheduleResumeScrollToBottom(
-      {
-        current: {
-          getLastManualScrollAt: () => 0,
-          isSticky: () => true,
-          scrollToBottom
-        }
-      } as any,
-      [20]
-    )
-
-    cancel()
-    vi.advanceTimersByTime(20)
-
-    expect(scrollToBottom).not.toHaveBeenCalled()
-  })
-
-  it('keeps the immediate resume snap even before sticky state settles', () => {
-    vi.useFakeTimers()
-    let sticky = false
-    const scrollToBottom = vi.fn()
-
-    const cancel = scheduleResumeScrollToBottom(
-      {
-        current: {
-          getLastManualScrollAt: () => 0,
-          isSticky: () => sticky,
-          scrollToBottom
-        }
-      } as any,
-      [0, 80]
-    )
-
-    vi.advanceTimersByTime(0)
-    expect(scrollToBottom).toHaveBeenCalledTimes(1)
-
-    vi.advanceTimersByTime(80)
-    expect(scrollToBottom).toHaveBeenCalledTimes(1)
-
-    sticky = true
-    cancel()
   })
 })

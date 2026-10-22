@@ -15,18 +15,19 @@ class SkinConfig:
     """Complete skin configuration."""
     name: str
     description: str = ""
-    colors: Dict[str, str] = field(default_factory=dict)
+    colors: dict[str, str] = field(default_factory=dict)
     # Paired palettes for the opposite background polarity (mirrors the desktop app's
     # colors/darkColors pairing): a light terminal prefers `light_colors` (falling back to
     # `colors`), and vice versa for `dark_colors`.
-    light_colors: Dict[str, str] = field(default_factory=dict)
-    dark_colors: Dict[str, str] = field(default_factory=dict)
-    spinner: Dict[str, Any] = field(default_factory=dict)
-    branding: Dict[str, str] = field(default_factory=dict)
+    light_colors: dict[str, str] = field(default_factory=dict)
+    dark_colors: dict[str, str] = field(default_factory=dict)
+    spinner: dict[str, Any] = field(default_factory=dict)
+    branding: dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
-    tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
+    tool_emojis: dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    custom_css: str = ""     # Raw CSS injected as a <style> tag on the desktop GUI (32 KiB cap)
 
     def get_color(self, key: str, fallback: str = "") -> str:
         return self.colors.get(key, fallback)
@@ -34,13 +35,13 @@ class SkinConfig:
     def get_branding(self, key: str, fallback: str = "") -> str:
         return self.branding.get(key, fallback)
 
-    def get_spinner_wings(self) -> List[Tuple[str, str]]:
+    def get_spinner_wings(self) -> list[tuple[str, str]]:
         """Spinner wing pairs, or empty list if none."""
         return [(str(pair[0]), str(pair[1])) for pair in self.spinner.get("wings", [])
                 if isinstance(pair, (list, tuple)) and len(pair) == 2]
 
 
-def _branding(who: str, symbol: str, goodbye: str, prompt: str = "", help_header: str = "") -> Dict[str, str]:
+def _branding(who: str, symbol: str, goodbye: str, prompt: str = "", help_header: str = "") -> dict[str, str]:
     """Branding block for a "<who> Agent" persona keyed by its glyph."""
     return {
         "agent_name": f"{who} Agent",
@@ -49,17 +50,17 @@ def _branding(who: str, symbol: str, goodbye: str, prompt: str = "", help_header
         "help_header": help_header or f"({symbol}) Available Commands"}
 
 
-def _wings(*glyphs) -> List[List[str]]:
+def _wings(*glyphs) -> list[list[str]]:
     """Spinner wing pairs `⟪g` / `g⟫`; a (left, right) tuple gives asymmetric glyphs."""
     return [[f"⟪{g[0] if isinstance(g, tuple) else g}", f"{g[1] if isinstance(g, tuple) else g}⟫"]
             for g in glyphs]
 
 
 # Branding shared by every Hermes-named built-in (mono/daylight override help_header).
-_HERMES_BRANDING: Dict[str, str] = _branding(
-    "Hermes", "⚕", "Goodbye! ⚕", prompt="❯", help_header="(^_^)? Available Commands")
+_HERMES_BRANDING: dict[str, str] = _branding(
+    "Hermes", "☤", "Goodbye! ☤", prompt="❯", help_header="(^_^)? Available Commands")
 
-_BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
+_BUILTIN_SKINS: dict[str, dict[str, Any]] = {
     "default": {
         "name": "default", "description": "Classic Hermes — gold and kawaii",
         # Dark-authored; values match the TUI's DARK_THEME so both render the same gold.
@@ -342,17 +343,34 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
+# Routed multiplex profiles: (name, skin) per home key. ``display.skin`` and ``<home>/skins/*.yaml``
+# are per profile, and the relay display name / TUI skin payload are read under each profile's
+# override — one module slot would be last-writer-wins across profiles. Unscoped keeps the module slot.
+_active_skin_by_home: dict[str, tuple[str, SkinConfig]] = {}
+
+
+def _routed_home_key() -> Optional[str]:
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    return None if get_hermes_home_override() is None else hermes_home_key()
+
+
+def _profile_config() -> dict:
+    try:
+        from hermes_cli.config import load_config_readonly
+        return load_config_readonly() or {}
+    except Exception:
+        return {}
 
 
 def _skins_dir() -> Path:
     return get_hermes_home() / "skins"
 
 
-def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
+def _load_skin_from_yaml(path: Path) -> Optional[dict[str, Any]]:
     """Load a skin definition from a YAML file; None on any failure."""
     try:
-        import yaml
-        with open(path, "r", encoding="utf-8") as f:
+        import hermes_yaml as yaml
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = yaml.safe_load(f)
         if isinstance(data, dict) and "name" in data:
             return data
@@ -361,12 +379,12 @@ def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
+def _build_skin_config(data: dict[str, Any]) -> SkinConfig:
     """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
     default = _BUILTIN_SKINS["default"]
     skin_name = str(data.get("name", "unknown"))
 
-    def section(key: str) -> Dict[str, Any]:
+    def section(key: str) -> dict[str, Any]:
         value = data.get(key)
         if isinstance(value, dict):
             return value
@@ -375,7 +393,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
                            skin_name, key, type(value).__name__)
         return {}
 
-    def merged(key: str) -> Dict[str, Any]:
+    def merged(key: str) -> dict[str, Any]:
         return {**default.get(key, {}), **section(key)}
     # Paired palettes are NOT merged over the default skin's blocks: an empty block means
     # "no hand-tuned variant for that polarity" and consumers (the TUI) fall back to `colors`
@@ -386,10 +404,11 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         spinner=merged("spinner"), branding=merged("branding"),
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
         tool_emojis=section("tool_emojis"), banner_logo=data.get("banner_logo", ""),
-        banner_hero=data.get("banner_hero", ""))
+        banner_hero=data.get("banner_hero", ""),
+        custom_css=str(data.get("customCSS", "")).strip()[:32768])
 
 
-def list_skins() -> List[Dict[str, str]]:
+def list_skins() -> list[dict[str, str]]:
     """List all available skins (built-in + user-installed); user skins never shadow built-ins."""
     result = [{"name": name, "description": data.get("description", ""), "source": "builtin"}
               for name, data in _BUILTIN_SKINS.items()]
@@ -414,6 +433,14 @@ def load_skin(name: str) -> SkinConfig:
 def get_active_skin() -> SkinConfig:
     """Currently active skin config (cached)."""
     global _active_skin
+    home_key = _routed_home_key()
+    if home_key is not None:
+        entry = _active_skin_by_home.get(home_key)
+        if entry is None:
+            # Cold routed profile: its own ``display.skin`` (nobody ran init_skin_from_config for it).
+            init_skin_from_config(_profile_config())
+            entry = _active_skin_by_home[home_key]
+        return entry[1]
     if _active_skin is None:
         _active_skin = load_skin(_active_skin_name)
     return _active_skin
@@ -422,12 +449,21 @@ def get_active_skin() -> SkinConfig:
 def set_active_skin(name: str) -> SkinConfig:
     """Switch the active skin. Returns the new SkinConfig."""
     global _active_skin, _active_skin_name
+    skin = load_skin(name)
+    home_key = _routed_home_key()
+    if home_key is not None:
+        _active_skin_by_home[home_key] = (name, skin)
+        return skin
     _active_skin_name = name
-    _active_skin = load_skin(name)
+    _active_skin = skin
     return _active_skin
 
 
 def get_active_skin_name() -> str:
+    home_key = _routed_home_key()
+    if home_key is not None:
+        entry = _active_skin_by_home.get(home_key)
+        return entry[0] if entry else "default"
     return _active_skin_name
 
 
@@ -455,7 +491,7 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
     return _active_branding("help_header", fallback)
 
 
-def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
+def get_active_goodbye(fallback: str = "Goodbye! ☤") -> str:
     return _active_branding("goodbye", fallback)
 
 
@@ -503,7 +539,7 @@ _STYLE_TEMPLATES = {
     "voice-status": "bg:{voice_bg} {label}", "voice-status-recording": "bg:{voice_bg} {error} bold"}
 
 
-def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
+def get_prompt_toolkit_style_overrides() -> dict[str, str]:
     """Return prompt_toolkit style overrides derived from the active skin."""
     try:
         skin = get_active_skin()
@@ -512,7 +548,7 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     # `prompt` is unset by default so typed text inherits the terminal's foreground (readable
     # on light and dark schemes); skins opt into a colored prompt symbol via `prompt` in YAML.
     # Every read goes through skin.get_color (cli.py wraps it for light-mode remapping).
-    palette: Dict[str, str] = {}
+    palette: dict[str, str] = {}
     for name, key, fallback in _STYLE_PALETTE:
         palette[name] = skin.get_color(key, palette[fallback[1:]] if fallback.startswith("@") else fallback)
     # This badge paints both sides; foreground-only light remapping destroys its contrast.

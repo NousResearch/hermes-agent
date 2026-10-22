@@ -132,6 +132,22 @@ class TestAnchorInvalidation:
         spliced = messages[:1] + [_msg("assistant", "[marker]")] + messages[5:]
         assert anchored_context_tokens(spliced, anchor) is None
 
+    def test_prefix_rewrite_preserving_base_message_fails_closed(self):
+        messages = _plain_history()
+        anchor = capture_usage_anchor(30_000, 50, messages)
+        # A stale anchor can otherwise survive compaction when the single
+        # checked row at base_count - 1 lands in the protected tail. The old
+        # prefix no longer matches the provider-priced request, even though the
+        # base row still has the same role/content fingerprint.
+        compacted = [
+            _msg("user", "summary handoff"),
+            _msg("assistant", "[compressed summary]"),
+            _msg("user", "new follow-up"),
+            dict(messages[-1]),
+        ]
+        compacted.append(_msg("user", "post-anchor text must not be added to the stale base"))
+        assert anchored_context_tokens(compacted, anchor) is None
+
     def test_reloaded_transcript_with_same_content_still_matches(self):
         """The gateway re-reads history from the DB every turn (fresh dicts, extra
         persistence keys); identity must survive that or every gateway turn falls

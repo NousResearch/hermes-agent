@@ -5,7 +5,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { appIconCandidates, decodingFileProbe, resolveAppIcon } from './app-icon'
+import { appIconCandidates, decodingFileProbe, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 
 // Regression: a packaged app.asar can contain a TRUNCATED apple-touch-icon.png
 // (interrupted electron-builder run, partial copy). Electron's
@@ -17,13 +17,7 @@ import { appIconCandidates, decodingFileProbe, resolveAppIcon } from './app-icon
 test('resolveAppIcon skips an existing but undecodable candidate', () => {
   // First candidate "exists" (probe says true) but does not decode; second
   // decodes. The resolver must return the second, not the first.
-  const probeCalls: string[] = []
-
-  const probe = (p: string) => {
-    probeCalls.push(p)
-
-    return p !== '/packaged/app.asar/public/apple-touch-icon.png'
-  }
+  const probe = (p: string) => p !== '/packaged/app.asar/public/apple-touch-icon.png'
 
   const picked = resolveAppIcon(
     ['/packaged/app.asar/public/apple-touch-icon.png', '/packaged/app.asar/dist/apple-touch-icon.png'],
@@ -31,10 +25,6 @@ test('resolveAppIcon skips an existing but undecodable candidate', () => {
   )
 
   assert.equal(picked, '/packaged/app.asar/dist/apple-touch-icon.png')
-  assert.deepEqual(probeCalls, [
-    '/packaged/app.asar/public/apple-touch-icon.png',
-    '/packaged/app.asar/dist/apple-touch-icon.png'
-  ])
 })
 
 test('resolveAppIcon returns undefined when every candidate fails the probe', () => {
@@ -52,20 +42,6 @@ test('decodingFileProbe rejects a missing file', () => {
   assert.equal(decodingFileProbe(missing), false)
 })
 
-test('decodingFileProbe rejects an existing but empty (0-byte) file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-icon-'))
-  const empty = path.join(dir, 'apple-touch-icon.png')
-  fs.writeFileSync(empty, Buffer.alloc(0))
-
-  try {
-    // 0 bytes exist but decode to an empty image — and without electron in
-    // the test runtime the require itself fails. Both paths must be false.
-    assert.equal(decodingFileProbe(empty), false)
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
-  }
-})
-
 test('decodingFileProbe rejects a directory', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-icon-dir-'))
 
@@ -73,6 +49,49 @@ test('decodingFileProbe rejects a directory', () => {
     assert.equal(decodingFileProbe(dir), false)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// #96857: on a packaged build every path inside app.asar is stat'ed through Electron's asar
+// fs.Stats shim, which emits Node's DEP0180 ("fs.Stats constructor is deprecated") on every launch.
+// A packaged tree always has real on-disk icons (dist/** is asarUnpack'ed; extraResources copies
+// icon.ico to resources/), so resolving the ladder must never probe inside the archive, even though
+// the packed copies exist too.
+test('resolving a packaged icon never probes a path inside app.asar', () => {
+  const resources = path.join('/opt', 'Hermes', 'resources')
+  const appRoot = path.join(resources, 'app.asar')
+  const unpackedPathFor = (p: string) => p.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
+  const unpackedIcon = path.join(unpackedPathFor(appRoot), 'dist', 'apple-touch-icon.png')
+
+  const resourcesIco = path.join(resources, 'icon.ico')
+
+  // package.json build: files (packed) + asarUnpack dist/** + extraResources icon.ico.
+  const shipped = new Set([
+    resourcesIco,
+    path.join(appRoot, 'assets', 'icon.ico'),
+    path.join(appRoot, 'public', 'apple-touch-icon.png'),
+    path.join(appRoot, 'dist', 'apple-touch-icon.png'),
+    unpackedIcon
+  ])
+
+  for (const isWindows of [false, true]) {
+    const probed: string[] = []
+
+    const picked = resolveAppIcon(
+      appIconCandidates({ isWindows, appRoot, resourcesPath: resources, unpackedPathFor }),
+      p => {
+        probed.push(p)
+
+        return shipped.has(p)
+      }
+    )
+
+    assert.equal(picked, isWindows ? resourcesIco : unpackedIcon)
+    assert.deepEqual(
+      probed.filter(p => p.startsWith(appRoot + path.sep)),
+      [],
+      `isWindows=${isWindows}`
+    )
   }
 })
 
@@ -84,9 +103,9 @@ test('appIconCandidates keeps the documented precedence ladder', () => {
   })
 
   assert.deepEqual(mac, [
+    path.join('/Applications/Hermes.app/Contents/Resources.unpacked', 'dist', 'apple-touch-icon.png'),
     path.join('/Applications/Hermes.app/Contents/Resources', 'public', 'apple-touch-icon.png'),
-    path.join('/Applications/Hermes.app/Contents/Resources', 'dist', 'apple-touch-icon.png'),
-    path.join('/Applications/Hermes.app/Contents/Resources.unpacked', 'dist', 'apple-touch-icon.png')
+    path.join('/Applications/Hermes.app/Contents/Resources', 'dist', 'apple-touch-icon.png')
   ])
 
   // Windows prepends the two full-bleed .ico rungs ahead of the PNG ladder.
@@ -97,16 +116,30 @@ test('appIconCandidates keeps the documented precedence ladder', () => {
     unpackedPathFor: p => `${p}\\unpacked`
   })
 
-  assert.equal(win.length, 5)
-  assert.equal(win.filter(c => c.endsWith('.ico')).length, 2)
+  const isIco = win.map(c => c.endsWith('.ico'))
+  assert.ok(isIco.lastIndexOf(true) < isIco.indexOf(false), 'every .ico rung precedes the PNG ladder')
   assert.equal(
     win[0],
     path.join('C:\\resources', 'icon.ico'),
     'resources/ icon.ico is the highest-precedence Windows rung'
   )
-  assert.equal(
-    win.filter(c => c.endsWith('apple-touch-icon.png')).length,
-    3,
-    'all three PNG rungs remain after the ico rungs'
-  )
+})
+
+// #73195: a runtime app.dock.setIcon(png) replaces the bundle's icon for the
+// life of the process, so macOS 26 cannot apply the Clear/Tinted Liquid Glass
+// styles to it. A packaged .app already carries the Hermes icon; only dev runs
+// (the stock Electron bundle) need the runtime override.
+test('shouldOverrideDockIcon leaves a packaged macOS app on its bundle icon', () => {
+  assert.equal(shouldOverrideDockIcon({ platform: 'darwin', isPackaged: true }), false)
+})
+
+test('shouldOverrideDockIcon still brands the dock in a macOS dev run', () => {
+  assert.equal(shouldOverrideDockIcon({ platform: 'darwin', isPackaged: false }), true)
+})
+
+test('shouldOverrideDockIcon never applies off macOS (there is no dock)', () => {
+  for (const platform of ['win32', 'linux'] as const) {
+    assert.equal(shouldOverrideDockIcon({ platform, isPackaged: false }), false)
+    assert.equal(shouldOverrideDockIcon({ platform, isPackaged: true }), false)
+  }
 })

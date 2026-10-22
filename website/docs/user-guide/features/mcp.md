@@ -6,6 +6,10 @@ description: "Connect Hermes Agent to external tool servers via MCP — and cont
 
 # MCP (Model Context Protocol)
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 MCP lets Hermes Agent connect to external tool servers so the agent can use tools that live outside Hermes itself — GitHub, databases, file systems, browser stacks, internal APIs, and more.
 
 If you have ever wanted Hermes to use a tool that already exists somewhere else, MCP is usually the cleanest way to do it.
@@ -57,16 +61,44 @@ Hermes ships a curated catalog of MCP servers that Nous staff has reviewed
 and merged. They're disabled by default — install only what you actually
 want.
 
+You can also ask in chat: "add the Linear MCP". The agent calls
+`manage_connections` with an `mcp: true` target and a setup card appears. The
+card works the same way in the desktop app (a dialog), the terminal UI
+(`hermes --tui`, a callout above the composer) and the classic CLI (a panel):
+
+1. **Fields.** If the entry declares setup values, the card shows all of them
+   at once. A plain value is prefilled with its default. A secret is masked.
+   Nothing is saved while you type.
+2. **Connect or Cancel.** Cancel skips that one server; other servers in the
+   same request continue.
+3. **Authorization.** For an OAuth entry the card shows the authorization link.
+   Hermes never opens the browser by itself: click **Open in browser** on the
+   desktop, or press Enter in the terminal. Over SSH the card tells you how to
+   reach the callback port or paste the redirected URL.
+4. **Save.** Hermes saves the server configuration, the tokens and your setup
+   values together, once the server has accepted the new token and the first
+   connection has returned. If the server rejects the token, or you cancel
+   before that point, nothing from the attempt is kept, your earlier
+   configuration and tokens stay as they were, and a failed form reopens with
+   what you typed. A server that is already authorized connects with its saved
+   tokens; Hermes asks you to authorize again only when they no longer work.
+5. **Tools.** Hermes then lists the server's tools and registers them. The
+   agent can call them in the same turn. If authorization worked and the tool
+   list failed, the card says "Authorized. Tools unavailable." and the agent can
+   run discovery again later without asking you to authorize again.
+
+In messaging apps there is no card; the agent relays the commands below.
+
 ```bash
-hermes mcp                # interactive picker (default)
-hermes mcp catalog        # plain-text list, scriptable
-hermes mcp install n8n    # install a catalog entry by name
+hermes mcp                   # interactive picker (default)
+hermes mcp catalog           # plain-text list, scriptable
+hermes mcp install deepwiki  # install a catalog entry by name
 ```
 
 The picker shows each entry with its current status:
 
 ```
-n8n          available              Manage and inspect n8n workflows from Hermes
+deepwiki     available              Ask questions about public GitHub repositories
 linear       enabled                Linear issue/project management (remote OAuth)
 github       installed (disabled)   GitHub repo + PR tools
 ```
@@ -77,6 +109,14 @@ enable, disable, or uninstall. Catalog entries are stored under
 Nous approval. There is no community submission tier; entries are added by
 merging a PR.
 
+The third-party n8n bridge is no longer available for catalog installation.
+Existing installations keep their `mcp_servers` configuration, credentials,
+installed files, and selected tools. They continue to load as configured MCP
+servers and appear as custom entries in the picker, where you can still
+configure tools or enable and disable them. Catalog reinstall is no longer
+available. This change does not migrate existing connections to
+[n8n's official MCP server](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
+
 Catalog entries can require:
 
 - **API key** — Hermes prompts at install time and writes the value to
@@ -85,6 +125,30 @@ Catalog entries can require:
   client opens a browser on first connection.
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
   `hermes auth <provider>` if you haven't authenticated already.
+
+### n8n's official MCP server
+
+The `n8n-official` catalog entry connects directly to your n8n Cloud or
+self-hosted instance over HTTP with browser OAuth. No local bridge or n8n
+API key is required.
+
+1. Ask an owner or admin to enable **Settings > Instance-level MCP** in n8n.
+2. Open **Connect** and copy the full **Server URL** ending in
+   `/mcp-server/http`, not the editor URL. Older versions show the endpoint
+   directly on the MCP settings page.
+3. Run `hermes mcp install n8n-official` and enter that URL when prompted.
+4. Complete browser OAuth. If needed, run `hermes mcp login n8n-official`
+   or use **Authorize** on the configured server in Desktop or the dashboard.
+5. Review tools with `hermes mcp configure n8n-official`, then start a new
+   session or use `/reload-mcp`.
+
+The Hermes backend must be able to reach the URL. n8n controls permissions
+and workflow exposure; some tools modify or run workflows. See
+[n8n's connection guide](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
+
+This entry uses the existing catalog setup and storage behavior. It is
+separate from the retired `n8n` bridge, so existing connections, credentials,
+installed files, and tool selections are not replaced.
 
 ### Tool selection at install time
 
@@ -165,11 +229,46 @@ Cursor-style context variables are also substituted (case-sensitive):
 `${userHome}` (home directory), `${workspaceFolder}` (session workspace
 root), `${workspaceFolderBasename}`, and `${pathSeparator}` / `${/}`
 (the OS path separator). See the
-[MCP config reference](/docs/reference/mcp-config-reference) for details.
+[MCP config reference](../../reference/mcp-config-reference.md) for details.
 
 Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
 repo into.
+
+### Entries that need your own OAuth app (no DCR)
+
+Some vendors run their remote MCP behind OAuth but do **not** offer Dynamic
+Client Registration — every client must be an app the user pre-registers in
+the vendor's developer console. Asana's V2 server
+(`https://mcp.asana.com/v2/mcp`) is the shipped example: the retired V1
+`https://mcp.asana.com/sse` server accepted any client; V2 does not.
+
+Such a manifest declares the credentials under `auth.env` and pins the
+client under `auth.oauth`, so installing it (CLI picker, web dashboard or
+Desktop) prompts for the Client ID / Client secret, stores them in the
+profile's `.env`, and writes only `${VAR}` references to `config.yaml`:
+
+```yaml
+mcp_servers:
+  asana:
+    url: https://mcp.asana.com/v2/mcp
+    auth: oauth
+    oauth:
+      client_id: "${ASANA_CLIENT_ID}"
+      client_secret: "${ASANA_CLIENT_SECRET}"
+      redirect_host: localhost      # the vendor matches the redirect URL exactly
+      redirect_port: 27890          # register http://localhost:27890/callback on the app
+```
+
+Read the entry's `post_install` notes for the exact app type and redirect URL
+to register, then run `hermes mcp login <name>` and restart (or
+`/reload-mcp`) the session or gateway that should expose the tools. The
+dashboard / Desktop **Authorize** button works too: because the client is
+pre-registered with a pinned `redirect_port`, Hermes keeps the registered
+loopback callback (`http://localhost:27890/callback`) instead of the
+dashboard's own callback URL — so the browser you approve in must run on the
+same machine as the Hermes process. For a remote host, use `hermes mcp login`
+over SSH port-forwarding.
 
 ### Updating tool selection later
 
@@ -198,7 +297,10 @@ keywords as a completed word, or contains a pasted link whose hostname ends
 with one of the host suffixes. It is purely advisory — installs still flow
 through the same validated catalog/config paths — and most hosted remote
 entries (Atlassian, Sentry, Notion, Stripe, Vercel, Supabase, and friends)
-declare it.
+declare it. Optional `applications:` (up to 16 app names), `requires_app: true`
+(the MCP needs that local app; such entries are never offered as a one-click
+pill) and `examples:` (up to six one-line outcomes) describe entries that drive
+a desktop application.
 
 GitHub is deliberately **not** in the catalog: its hosted MCP requires each
 client to bring its own OAuth app (generic dynamic client registration is
@@ -243,6 +345,8 @@ Use HTTP servers when:
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
 
+HTTP and SSE servers honor the standard proxy settings: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (a `socks://` alias is normalized to `socks5://`), then the OS proxy (Windows registry, macOS system settings), with `NO_PROXY` hosts — including CIDR ranges and `*.example.com` patterns — connecting directly.
+
 ### OAuth-authenticated HTTP servers
 
 Most hosted MCP servers (Cloudflare, Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, client identification, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
@@ -270,6 +374,14 @@ mcp_servers:
 ```
 
 On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
+
+Refresh tokens are bound to the authorization server that granted them: Hermes records the discovered issuer alongside the cached tokens and, if a server's advertised authorization server ever changes (server migration, metadata edit, or hijack), the stored refresh token is dropped instead of being sent to the new issuer. The current access token keeps working until it expires, then a normal re-authorization runs against the new issuer.
+
+The redirect back from the authorization server is checked against RFC 9207: when the server's metadata advertises `authorization_response_iss_parameter_supported`, a redirect without a matching `iss` is rejected. Figma's authorization server (`https://api.figma.com`) advertises that support and then omits `iss`; Hermes fills the missing value from the discovered issuer for that one issuer and logs a warning, so `hermes mcp login figma` completes. A present-but-different `iss` is still rejected, and no other server gets the exemption.
+
+The authorization server's metadata document must name the server the resource advertised (RFC 8414 §3.3); a document for a different server is rejected before any registration or login. One shape is accepted without an exact match: a server advertised with a path (`https://host/path`) whose document, fetched from `https://host/.well-known/oauth-authorization-server/path`, names the origin `https://host` as its issuer — Strava's MCP connector publishes exactly that pair. Only the origin's operator controls that well-known location, so the document is treated as the advertised server's own; a document naming another origin or another path, or one reached only through a redirect or a fallback location, still fails with `Authorization server metadata issuer mismatch`.
+
+**Google-hosted servers (Gmail, Calendar).** Google only issues a refresh token when the authorization request carries `access_type=offline`, which MCP discovery never advertises. Hermes adds it (plus `prompt=consent`, so a repeat login is re-granted one) whenever the discovered authorization server is `accounts.google.com`, so the connection persists across restarts and works from `hermes gateway`. Other issuers' requests are untouched.
 
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
@@ -310,6 +422,8 @@ mcp_servers:
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
+
+**Need longer than 5 minutes to approve?** Set `oauth.timeout` on the server entry (seconds). `hermes mcp login`, the dashboard and Desktop re-auth all wait `oauth.timeout` + 15 s (or the entry's `connect_timeout`, whichever is longer); a login that still runs out of time reports `Connecting to MCP server '<name>' timed out after Ns` naming both knobs instead of a blank failure line.
 
 ## mTLS / client certificates
 
@@ -376,6 +490,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `command` | string | Executable for a stdio MCP server |
 | `args` | list | Arguments for the stdio server |
 | `env` | mapping | Environment variables passed to the stdio server |
+| `cwd` | string | Working directory for the stdio server process. Default: the session working directory when one is pinned (ACP/gateway sessions, `terminal.cwd`), else the Hermes process directory |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
 | `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
@@ -383,10 +498,12 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `identity_header` | mapping | Optional per-user identity header for HTTP/SSE servers — `{name, value_from: static\|profile, value}` |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout (also bounds the MCP `initialize` handshake) |
+| `lazy` | bool | If `true`, register the server's tools from the schema cache at startup and only start/connect it on the first tool call (default `false`). Needs one prior live connect to fill the cache. |
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -395,7 +512,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 mcp_servers:
   filesystem:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 ```
 
 ### Recycling memory-heavy stdio servers
@@ -473,6 +590,10 @@ Two behaviors apply to every MCP tool result before the model sees it:
 
 - **Invisible Unicode TAG characters are stripped.** Characters in the U+E0000–U+E007F range render as nothing in terminals and chat UIs but are fully visible to the model — a classic prompt-injection smuggling channel for a malicious or compromised server. Hermes strips them from tool results, resource content, and tool descriptions. Legitimate emoji tag sequences (regional flags like 🏴󠁧󠁢󠁳󠁣󠁴󠁿) are preserved.
 - **Vendor `_meta` is surfaced; protocol-reserved keys are not.** When a server attaches a `_meta` mapping to a tool result (vendor namespaces like `com.example/handoff`), Hermes passes it through to the model alongside the result content. Keys under protocol-reserved prefixes — a `modelcontextprotocol` or `mcp` label followed by another label, e.g. `modelcontextprotocol.io/...` or `tools.mcp.com/...` — are dropped, matching the MCP spec's key-name rules. If nothing model-facing remains, the `_meta` field is omitted entirely.
+
+### Image results
+
+An `ImageContent` block (a screenshot, a rendered chart, a page capture) is saved to Hermes' image cache and its path is reported in the result as `MEDIA:/path/to/image.png`, so you can ask for the file on any attachment-capable surface. When the main model can see images inside tool results, the image itself is attached to the result too, so the model reads the pixels directly. MCP results follow the same rule as `vision_analyze`: `agent.image_input_mode`, an explicit `auxiliary.vision` backend and the model's vision capability all apply (see [Vision](vision.md#vision_analyze-has-the-same-dual-behavior)). Attached images are downscaled to `vision.embed_target_bytes` (up to 4 per result) because they are re-sent on every later turn. Text-only models get the path only.
 
 ## MCP utility tools
 
@@ -629,6 +750,23 @@ That keeps the tool list clean.
 
 Hermes discovers MCP servers at startup and registers their tools into the normal tool registry.
 
+Servers are connected at most **4 at a time** per discovery pass (startup, `/reload-mcp`, config
+watcher). Every stdio server spawns its own child-process tree, so an unbounded pass with many servers
+used to launch them all in the same instant — a CPU/RAM spike and, on multi-profile fleets, a burst of
+simultaneous provider calls. Tune it in `config.yaml`:
+
+```yaml
+mcp:
+  discovery_concurrency: 4   # max simultaneous server connects; 0 = unlimited
+```
+
+A pass with more servers than the cap runs in waves; each wave keeps the usual 120 s budget (whole
+pass capped at 300 s), so a slow fleet finishes later rather than timing out.
+
+### Lazy start
+
+A server with `lazy: true` is registered from the on-disk schema cache instead: its tools appear in the registry immediately, and the process is spawned (or the HTTP endpoint connected) on the first tool call. The cache is written on every live connect, so the first run of a new or changed server is always eager. The banner and the TUI session panel show such a server as **lazy** with its cached tool count (`3 tool(s) (lazy, starts on first use)`) — it is a working server, not a failed one — and the startup discovery summary counts it as `N lazy, not spawned yet`.
+
 ### Dynamic Tool Discovery
 
 MCP servers can notify Hermes when their available tools change at runtime by sending a `notifications/tools/list_changed` notification. When Hermes receives this notification, it automatically re-fetches the server's tool list and updates the registry — no manual `/reload-mcp` required.
@@ -645,7 +783,11 @@ If you change MCP config, use:
 /reload-mcp
 ```
 
-This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
+This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, plugin credentials such as `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
+
+A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. A server whose first connect failed (an unreachable host, or an OAuth server on a headless box that had no token yet) is retried automatically on its connect cooldown schedule (30 s, doubling up to 10 min) once you fix the cause. No restart or `/reload-mcp` needed for the edit to take effect.
+
+**Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe. Until the token files change, starting new sessions does not retry the rejected token: only the timed self-probe does, so a dead grant cannot hammer the provider's token endpoint.
 
 ### Toolsets
 
@@ -736,13 +878,39 @@ Check:
 
 ```bash
 # Verify MCP deps are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 node --version
 npx --version
 ```
 
 Then verify your config and restart Hermes.
+
+The startup summary in `agent.log` names every server that did not register, with the recorded
+connect error, so you never have to work out the failing one by elimination:
+
+```
+MCP: registered 116 tool(s) from 4 server(s) (2 failed: github (Connection closed); notion (HTTP 401 from POST https://mcp.notion.com/mcp))
+```
+
+A server that was skipped this pass because it is still inside its retry cooldown from an earlier
+failure is listed as `not attempted (in retry cooldown)`.
+
+### Remote (HTTP) server rejects the connection
+
+`hermes mcp test <name>` reports what the server actually answered. When the MCP SDK can only say
+`Server returned an error response` (a 4xx/5xx whose body is not a JSON-RPC error), Hermes appends
+the HTTP status, the URL it requested and the start of the response body:
+
+```
+Streamable HTTP: Server returned an error response (HTTP 400 from POST http://host:27200/mcp:
+{"jsonrpc":"2.0","error":{"code":-32020,"message":"Unsupported MCP-Protocol-Version"}})
+```
+
+Read the status and body first: a `400`/`405` on the `initialize` POST usually means the endpoint
+speaks SSE only (set `transport: sse`) or a proxy in front of it rejects the request; a `401`/`403`
+means the token or OAuth grant is wrong; an HTML body means the URL points at a web page, not an MCP
+endpoint. `hermes logs --level debug` additionally shows the exact endpoint each connect attempt used.
 
 ### Tools not appearing
 
@@ -813,6 +981,32 @@ mcp_servers:
       enabled: false
 ```
 
+## Tool costs and spend limits
+
+Some MCP servers spend real money or credits on every call (image, video and 3D generation, paid APIs). A server entry can declare what each tool costs and a budget per chat:
+
+```yaml
+mcp_servers:
+  renders:
+    command: "render-mcp"
+    trust: untrusted
+    tool_costs:
+      create_image: 20                                   # about 20 credits per call
+      animate: {credits: [5, 20], note: "per animation"}  # a range, with a short note
+      get_status: 0                                       # free; same as leaving it out
+    spend_limit: 100     # per chat; 0 or absent = no limit
+    cost_unit: credits   # label in prompts (default: credits)
+```
+
+- The approval prompt names the cost: `Costs about 20 credits.` or `Costs 5-20 credits (per animation).`, plus `This chat has used about 40 credits on 'renders' (limit 100).` once the chat has spent something.
+- Hermes keeps a running total per chat and per server, counting the declared figure (the top of a range) for every costed call it approved and started. Declined or blocked calls add nothing; a call whose server dies before receiving it still counts, which errs toward asking sooner. The total lives in memory: it is a budget for one conversation, not the vendor's bill.
+- The total follows the conversation when context compression or `/branch` continues it under a new session id. Starting a new chat (`/new` in the CLI, a new Desktop chat) starts a new total; on messaging platforms the total belongs to the chat, so it survives `/new` there. Each cron run has its own total. Restarting Hermes resets every total.
+- With `spend_limit`, a costed call that would take the chat past the limit asks first, even on a `trust: full` server that otherwise never prompts, and every further costed call in that chat asks again ("Allow for this session" does not silence it). Where nobody can answer (cron jobs, `hermes chat -q`, a gateway with no approver), the call is refused without running and the model is told not to retry.
+- Below the limit, a `trust: full` server still runs costed tools without asking; on a `trust: untrusted` server every write-capable call already asks and the prompt now carries the cost. Tools annotated `readOnlyHint: true` stay unprompted unless the budget requires it.
+- A malformed `tool_costs`, `spend_limit` or `cost_unit` skips the server with an error naming the key, so a budget you declared is never silently dropped. A `tool_costs` key the server does not offer (a typo, or Hermes' `mcp_<server>_` display prefix copied in) is named in a warning at connect time: use the server's own tool names.
+
+A [portable plugin package](../../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages) can declare the same table for its server. If you add a same-name `mcp_servers` entry (for example to set `trust: full`), the package's `tool_costs`, `spend_limit` and `cost_unit` still apply unless your entry sets those keys itself; `spend_limit: 0` turns the package's limit off and `tool_costs: {}` drops its costs.
+
 ## MCP Elicitation Support
 
 MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Hermes routes **form-mode** elicitations through its existing approval surface — an interactive prompt in the CLI/TUI, or approval buttons on gateway platforms like Telegram and Slack — so the request reaches you wherever the session lives. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
@@ -830,108 +1024,86 @@ mcp_servers:
 
 The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
 
-## Running Hermes as an MCP server
+## MCP Events (experimental)
 
-In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.
+Some MCP servers can notify an agent when something happens upstream (a new email, an incident, a
+new item in a feed) through the `events/*` methods of the
+[MCP events design sketch](https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md).
+The proposal is still a working-group draft. Hermes implements its **webhook** delivery mode: the
+server POSTs each event to the gateway's [webhook listener](../messaging/webhooks.md), and every
+event starts an agent run like any other webhook route.
 
-### When to use this
+Turn it on per server, and tell Hermes the public HTTPS address of the webhook listener (servers
+reject plain-HTTP callbacks, so put a TLS-terminating reverse proxy or tunnel in front of port 8644):
 
-- You want Claude Code, Cursor, or another coding agent to send and read Telegram/Discord/Slack messages through Hermes
-- You want a single MCP server that bridges to all of Hermes's connected messaging platforms at once
-- You already have a running Hermes gateway with connected platforms
+```yaml
+mcp_servers:
+  ambush:
+    url: "https://example.com/mcp"
+    events: true          # registers the event utility tools for this server
 
-### Quick start
-
-```bash
-hermes mcp serve
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      public_url: "https://hermes.example.com"
 ```
 
-This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle.
+The server then gets three more utility tools:
 
-### MCP client configuration
+- `list_event_types`: the event types the server offers, and your current subscriptions to them
+- `subscribe_event`: subscribe with the event's arguments, what to do when it arrives
+  (`instructions`, up to 2000 characters) and where each run's result goes (`deliver`,
+  `deliver_chat_id`). You are asked to approve every subscription, since it starts unattended agent
+  runs; the approval shows the instructions and the destination in full.
+- `unsubscribe_event`: cancel a subscription
 
-Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:
+Each subscription is stored as a dynamic webhook route (`hermes webhook list` shows it) with its own
+`whsec_` signing secret; the grant and the replay cursor are kept beside it in
+`mcp_event_subscriptions.json`, so the route itself only changes when you resubscribe with different
+instructions or a different destination. Hermes answers the server's signed verification challenge, deduplicates
+events by `eventId`, and refreshes the subscription before the lifetime the server granted runs out
+while the MCP connection is up (and again whenever it reconnects). With `lazy: true` or
+`idle_timeout_seconds` the connection is not always up, so a subscription can lapse until the next
+connection resubscribes it. A refresh the server refuses
+for good (access revoked, event type removed, arguments no longer valid) removes the route; other
+failures are retried with back-off. Turning the route off in the webhook dashboard lets the
+subscription lapse, and turning it back on resubscribes it. If the server ends a subscription,
+Hermes removes the route and tells the `deliver` target. Events only arrive while
+`hermes gateway run` is running. The event payload reaches the run whole, up to 32,000 characters
+of JSON, with a note when it is cut. Event payloads are external data: event runs use the same
+constrained webhook toolset as other webhook routes.
+The listener's per-route rate limit (`platforms.webhook.extra.rate_limit`, 30 a minute by default)
+applies to event deliveries too; raise it for a busy event type, since a server may not retry a
+rejected delivery.
+
+Not supported yet: the `poll` and `push` delivery modes, and subscriptions made from a secondary
+profile under `gateway.multiplex_profiles`.
+
+## Running Hermes as an MCP server
+
+Hermes can also **be** an MCP server, so Claude Code, Claude Desktop, Cursor, Codex or any MCP client can list and read your messaging conversations, wait for new messages and send messages across every platform Hermes is connected to, and optionally call Hermes' own web, browser, vision, image generation, skills and TTS tools. This ships as the official **mcp-serve** plugin:
+
+```bash
+hermes plugins install mcp-serve
+```
 
 ```json
 {
   "mcpServers": {
     "hermes": {
       "command": "hermes",
-      "args": ["mcp", "serve"]
+      "args": ["mcp-serve"]
     }
   }
 }
 ```
 
-Or if you installed Hermes in a specific location:
-
-```json
-{
-  "mcpServers": {
-    "hermes": {
-      "command": "/home/user/.hermes/hermes-agent/venv/bin/hermes",
-      "args": ["mcp", "serve"]
-    }
-  }
-}
-```
-
-### Available tools
-
-The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus a Hermes-specific channel browser:
-
-| Tool | Description |
-|------|-------------|
-| `conversations_list` | List active messaging conversations. Filter by platform or search by name. |
-| `conversation_get` | Get detailed info about one conversation by session key. |
-| `messages_read` | Read recent message history for a conversation. |
-| `attachments_fetch` | Extract non-text attachments (images, media) from a specific message. |
-| `events_poll` | Poll for new conversation events since a cursor position. |
-| `events_wait` | Long-poll / block until the next event arrives (near-real-time). |
-| `messages_send` | Send a message through a platform (e.g. `telegram:123456`, `discord:#general`). |
-| `channels_list` | List available messaging targets across all platforms. |
-| `permissions_list_open` | List pending approval requests observed during this bridge session. |
-| `permissions_respond` | Allow or deny a pending approval request. |
-
-### Event system
-
-The MCP server includes a live event bridge that polls Hermes's session database for new messages. This gives MCP clients near-real-time awareness of incoming conversations:
-
-```
-# Poll for new events (non-blocking)
-events_poll(after_cursor=0)
-
-# Wait for next event (blocks up to timeout)
-events_wait(after_cursor=42, timeout_ms=30000)
-```
-
-Event types: `message`, `approval_requested`, `approval_resolved`
-
-The event queue is in-memory and starts when the bridge connects. Older messages are available through `messages_read`.
-
-### Options
-
-```bash
-hermes mcp serve              # Normal mode
-hermes mcp serve --verbose    # Debug logging on stderr
-```
-
-### How it works
-
-The MCP server reads conversation data directly from Hermes's session store — `~/.hermes/state.db` is the primary source, with `sessions.json` kept only as a legacy fallback. A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `hermes send` CLI.
-
-The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
-
-### Current limits
-
-- The embedded `hermes mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Hermes, which already speaks both stdio and HTTP (`url` + `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP servers](#http-servers) above).
-- Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
-- No `claude/channel` push notification protocol yet
-- Text-only sends (no media/attachment sending through `messages_send`)
+It used to be built in as `hermes mcp serve`. An MCP client configured with `"args": ["mcp", "serve"]` changes them to `["mcp-serve"]`; the tool names and parameters are unchanged, and `hermes mcp serve` now prints the new spelling and the install line. Tools, the `--tools` mode and its safety limits are documented in the [plugin's README](https://github.com/NousResearch/hermes-official-plugins/tree/main/mcp-serve).
 
 ## Related docs
 
-- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
-- [CLI Commands](/reference/cli-commands)
-- [Slash Commands](/reference/slash-commands)
-- [FAQ](/reference/faq)
+- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md)
+- [CLI Commands](../../reference/cli-commands.md)
+- [Slash Commands](../../reference/slash-commands.md)
+- [FAQ](../../reference/faq.md)

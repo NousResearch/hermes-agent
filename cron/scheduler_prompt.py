@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -53,14 +54,76 @@ def _job_skill_names(job: dict) -> list[str]:
 _MAX_CONTEXT_CHARS = 8000
 
 _SELF_CONTEXT_INTRO = (
-    "The following is this job's most recent output from its previous run. Use it for "
-    "continuity: avoid repeating what was already reported, and continue where the last run "
-    "left off."
+    "The following is this job's most recent non-silent output from a previous run. Use it "
+    "for continuity: avoid repeating what was already reported, and continue where the last "
+    "run left off."
 )
 _UPSTREAM_CONTEXT_INTRO = (
     "The following is the most recent output from a preceding cron job. Use it as context for "
     "your analysis."
 )
+
+# Run-document length frames. The writer (``cron.scheduler.run_job``) stamps
+# these labels; the reader below parses them. Defined here (not in scheduler.py)
+# because this module binds ``_sched`` only at import tail, so module-level
+# patterns cannot be built from scheduler attributes without an import cycle.
+_PROMPT_FRAME = "**Prompt Characters:** "
+_RESPONSE_FRAME = "**Response Characters:** "
+_PROMPT_HEADING = "## Prompt\n\n"
+_RESPONSE_HEADING = "## Response\n\n"
+_PROMPT_SEPARATOR = "\n\n"  # writer's blank line after the prompt body
+_RESPONSE_TERMINATOR = "\n"  # writer's trailing newline after the response body
+_PROMPT_FRAME_RE = re.compile(
+    rf"(?m)^{re.escape(_PROMPT_FRAME)}(\d+)\n{re.escape(_PROMPT_HEADING)}")
+_RESPONSE_FRAME_RE = re.compile(
+    rf"(?m)^{re.escape(_RESPONSE_FRAME)}(\d+)\n{re.escape(_RESPONSE_HEADING)}")
+
+
+def _archive_answer(archive: str) -> str | None:
+    """The reusable answer of a stored run, using its length frame when available.
+
+    Framed runs (``_PROMPT_FRAME``/``_RESPONSE_FRAME`` stamps) validate the
+    response length before whitespace normalization, so quoted frames inside the
+    prompt or answer can never become boundaries and a truncated write is
+    rejected. Archives without the heading (script-mode runs) stay whole-document.
+    For legacy unframed archives the LAST ``## Response`` occurrence is the
+    writer's boundary — the assembled prompt half can itself carry the literal
+    heading (a skill documenting its response format, an injected previous answer
+    quoting it), so an early split would re-inject the prompt noise this
+    extraction exists to drop.
+    ``None`` marks "no usable answer" — a blank or silent response (any form the
+    delivery lane itself suppresses) — so the caller falls through to an older
+    archive instead of injecting prompt noise the job already has.
+    """
+    # New writers stamp the prompt length outside user-owned text. Jump past
+    # that prompt instead of searching its quoted markers for a response frame.
+    prompt_frame = _PROMPT_FRAME_RE.search(archive)
+    if (prompt_frame is not None
+            and archive.find(_PROMPT_HEADING) == prompt_frame.end() - len(_PROMPT_HEADING)):
+        response_start = prompt_frame.end() + int(prompt_frame.group(1)) + len(_PROMPT_SEPARATOR)
+        frame = _RESPONSE_FRAME_RE.match(archive, response_start)
+        tail = archive[frame.end():] if frame is not None else ""
+        # A missing or truncated writer-owned boundary is unusable.
+        if (frame is None or len(tail) != int(frame.group(1)) + len(_RESPONSE_TERMINATOR)
+                or not tail.endswith(_RESPONSE_TERMINATOR)):
+            return None
+        answer = tail[:-len(_RESPONSE_TERMINATOR)].strip()
+    elif "## Response" not in archive:
+        return archive.strip()
+    else:
+        answer = archive.rpartition("## Response")[2].strip()
+    if not answer or _sched._is_cron_silence_response(answer):
+        return None
+    return answer
+
+
+def _clip_to_context_budget(text: str) -> str:
+    """Clip oversized context head+tail; conclusions and summaries sit at the end."""
+    if len(text) <= _MAX_CONTEXT_CHARS:
+        return text
+    keep = _MAX_CONTEXT_CHARS // 2
+    omitted = len(text) - 2 * keep
+    return f"{text[:keep]}\n\n[... {omitted} chars omitted ...]\n\n{text[-keep:]}"
 
 
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
@@ -93,7 +156,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8").strip()
+                candidate = output_file.read_text(encoding="utf-8-sig")
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
@@ -102,14 +165,16 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if candidate and not silent_audit:
-                    latest_output = candidate
-                    break
-            if len(latest_output) > _MAX_CONTEXT_CHARS:
-                latest_output = (
-                    latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
+                if not candidate.strip() or silent_audit:
+                    continue
+                answer = _archive_answer(candidate)
+                if answer is None:
+                    continue  # [SILENT]/blank response — try an older archive
+                latest_output = answer
+                break
             if not latest_output:
-                continue  # silent skip — empty output
+                continue  # silent skip — no archive with a usable answer
+            latest_output = _clip_to_context_budget(latest_output)
             if is_self:
                 prompt = _prepend_context_block(
                     prompt, "Your previous run's output", _SELF_CONTEXT_INTRO, latest_output)
@@ -130,15 +195,16 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
+    from agent.skill_commands import _inject_skill_config, ambiguous_skill_label
     from agent.skill_utils import normalize_skill_lookup_name
     job_label = job.get("name", job.get("id"))
     task_id = str(job.get("id") or "") or None
     parts: list[str] = []
     skipped: list[str] = []
 
-    def _skip(msg: str, *args) -> None:
+    def _skip(msg: str, *args, label: str | None = None) -> None:
         logger.warning("Cron job '%s': " + msg, job_label, *args)
-        skipped.append(skill_name)
+        skipped.append(label or skill_name)
 
     for skill_name in skill_names:
         # Bundles shadow same-slug skills, mirroring the CLI/gateway slash-command path.
@@ -159,6 +225,9 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
         except (json.JSONDecodeError, TypeError):
             _skip("skill '%s' returned invalid JSON, skipping", skill_name)
             continue
+        if ambiguous := ambiguous_skill_label(skill_name, loaded):
+            _skip("%s — skipping", ambiguous, label=ambiguous)
+            continue
         if not loaded.get("success"):
             _skip(
                 "skill not found, skipping — %s",
@@ -176,6 +245,7 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
             f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
             "",
             str(loaded.get("content") or "").strip()])
+        _inject_skill_config(loaded, parts)
 
     if skipped:
         parts.insert(0, (
@@ -195,17 +265,30 @@ _CRON_HINT = (
     "final response and the system handles the rest. "
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+    "[SILENT] is a literal ASCII control token — never translate or "
+    "rephrase it, whatever language the rest of your answer uses. "
     "Never combine [SILENT] with content — either report your "
-    "findings normally, or say [SILENT] and nothing more.]\n\n"
+    "findings normally, or say [SILENT] and nothing more. "
+    "FAILURE: If a delegated child fails and this cron run must be "
+    "recorded as failed, put [CRON_FAILURE] on the first line by itself, "
+    "then explain the child failure on following lines. "
+    "RECURSION: This is a run of an EXISTING scheduled job — execute "
+    "the task now. NEVER create or update a cron job because of "
+    "recurring or future-schedule language in the task prompt below; "
+    "treat phrasing like \"each Monday\" or \"every day at 9\" as "
+    "context for this run, not as a request to schedule another job.]\n\n"
 )
 
 
 def _build_job_prompt(
-    job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None) -> str:
+    job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
+    runtime_data_prompt: Optional[str] = None,
+) -> str:
     """Build the effective prompt for a cron job, optionally loading skills first.
     ``prerun_script``: cached ``(success, stdout)`` from a script the caller already ran (wake-gate
-    check) — skips re-execution. ``extra_prompt``: per-run ``## Run Context`` for this fire only,
-    never persisted to the job.
+    check) — skips re-execution. ``extra_prompt``: user-authored per-run ``## Run Context`` for this
+    fire only, never persisted to the job. ``runtime_data_prompt`` is operator-configured runtime
+    data (such as monitor output) and is scanned as injected data rather than user input.
 
     When provided, the script is not re-executed and the cached result is used for prompt injection. When
     omitted, the script (if any) runs inline as before. extra_prompt: Optional per-run context (from
@@ -218,11 +301,17 @@ def _build_job_prompt(
     # Runtime DATA (script stdout, upstream output) legitimately quotes command-shape strings, so it
     # must not be scanned with the strict user-prompt set — see _scan_assembled_cron_prompt.
     has_injected_data = False
+    if runtime_data_prompt:
+        prompt = f"{prompt}\n\n## Run Context\n{runtime_data_prompt}"
+        has_injected_data = True
 
     script_path = job.get("script")
     if script_path:
         success, script_output = (
-            prerun_script if prerun_script is not None else _script._run_job_script(script_path))
+            prerun_script if prerun_script is not None
+            else _script._run_job_script(
+                script_path, workdir=_sched._resolve_job_workdir(job, str(job.get("id") or "")),
+                interpreter=job.get("interpreter")))
         if success and not script_output:
             return None  # no output → nothing to report, skip the AI call
         heading, intro = (
@@ -356,6 +445,6 @@ def _block_and_pause_job(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
-from cron import scheduler_delivery as _delivery  # noqa: E402
-from cron import scheduler_script as _script  # noqa: E402
+from cron import scheduler as _sched
+from cron import scheduler_delivery as _delivery
+from cron import scheduler_script as _script

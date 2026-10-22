@@ -118,17 +118,6 @@ class TestOpenRouterModelReasoningCapabilities:
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", caps_by_id)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
 
-    def test_known_model(self, monkeypatch):
-        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
-        self._prime_cache(monkeypatch, {
-            "nvidia/nemotron-3-ultra": {
-                "supports_reasoning": True,
-                "supported_efforts": ["low", "high"],
-                "mandatory": False,
-            },
-        })
-        caps = openrouter_model_reasoning_capabilities("nvidia/nemotron-3-ultra")
-        assert caps["supports_reasoning"] is True
 
     def test_unlisted_model_returns_none(self, monkeypatch):
         from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities

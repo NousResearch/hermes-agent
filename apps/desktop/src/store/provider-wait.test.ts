@@ -17,6 +17,29 @@ describe('providerWaitText', () => {
     expect(providerWaitText('⏳ waiting on local-model — 30s with no output yet')).not.toBe('')
     expect(providerWaitText('◉_◉ cogitating...')).toBe('')
   })
+
+  it('accepts the near-deadline update minted by agent/chat_completion_wait_notice.wait_notice_text', () => {
+    // Exact output of wait_notice_text('gpt-5.5', 290, 'first_event', ('TTFB', 10)); rejecting it
+    // left the status row on the stale first notice until the reconnect.
+    const frame =
+      '⏳ still waiting on gpt-5.5 — 290s waiting for the first provider event (auto-reconnect: TTFB watchdog in 10s)'
+
+    expect(providerWaitText(frame)).toBe(frame)
+  })
+})
+
+describe('providerWaitText accepts retry and auto-recovery frames', () => {
+  // Minted by agent/turn_recovery.py (retry backoff) and
+  // agent/turn_recovery_autorecover.ladder_notice (outage ladder). Rejecting
+  // them left a bare timer for minutes while the backend slept between retries.
+  it.each([
+    '⏳ rate limited — resets in 2m, retrying in 30s (attempt 2/3)',
+    '⏳ provider overloaded — resets in 1m, retrying in 15s (attempt 1/3)',
+    '⏳ waiting on provider — retrying in 6s (attempt 1/3)',
+    '⏳ Provider temporarily unavailable — retrying automatically in 18s (cycle 1/5); press Esc to stop'
+  ])('%s', frame => {
+    expect(providerWaitText(frame)).toBe(frame)
+  })
 })
 
 describe('parseModelLoadWait', () => {

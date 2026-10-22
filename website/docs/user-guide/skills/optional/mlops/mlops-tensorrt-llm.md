@@ -15,12 +15,12 @@ High-throughput LLM inference on NVIDIA GPUs.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/tensorrt-llm` |
-| Path | `optional-skills/mlops\tensorrt-llm` |
+| Path | `optional-skills/mlops/tensorrt-llm` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `tensorrt-llm`, `torch` |
-| Platforms | linux, macos |
+| Platforms | linux |
 | Tags | `Inference Serving`, `TensorRT-LLM`, `NVIDIA`, `Inference Optimization`, `High Throughput`, `Low Latency`, `Production`, `FP8`, `INT4`, `In-Flight Batching`, `Multi-GPU` |
 
 ## Reference: full SKILL.md
@@ -95,8 +95,9 @@ for output in outputs:
 
 ```bash
 # Start server (automatic model download and compilation)
+# Tensor parallelism across 4 GPUs
 trtllm-serve meta-llama/Meta-Llama-3-8B \
-    --tp_size 4 \              # Tensor parallelism (4 GPUs)
+    --tp_size 4 \
     --max_batch_size 256 \
     --max_num_tokens 4096
 
@@ -197,9 +198,9 @@ outputs = llm.generate(
 
 ## References
 
-- **[Optimization Guide](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\tensorrt-llm/references/optimization.md)** - Quantization, batching, KV cache tuning
-- **[Multi-GPU Setup](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\tensorrt-llm/references/multi-gpu.md)** - Tensor/pipeline parallelism, multi-node
-- **[Serving Guide](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\tensorrt-llm/references/serving.md)** - Production deployment, monitoring, autoscaling
+- **[Optimization Guide](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/tensorrt-llm/references/optimization.md)** - Quantization, batching, KV cache tuning
+- **[Multi-GPU Setup](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/tensorrt-llm/references/multi-gpu.md)** - Tensor/pipeline parallelism, multi-node
+- **[Serving Guide](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/tensorrt-llm/references/serving.md)** - Production deployment, monitoring, autoscaling
 
 ## Resources
 

@@ -6,10 +6,14 @@ ran a terminal), remote backends get the translated in-sandbox path (probed for 
 else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
 
 import hashlib
+import json
 import logging
+import math
 import os
 import re
 import shlex
+import sqlite3
+import tempfile
 import threading
 import time
 
@@ -18,15 +22,22 @@ from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAUL
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
-STORAGE_DIR = "/tmp/hermes-results"
+STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
+# Fallback spillover age only (unreadable config); the real default is the session
+# retention window — see _spillover_retention_hours().
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+# The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
+# keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
+_MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
+_ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
+_ENVELOPE_METADATA_CLOSING_TAG = "</mcp-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
 
 _spillover_prune_lock = threading.Lock()
-_spillover_pruned_once = False
+_spillover_pruned_homes: set = set()  # profile home keys already swept this process
 
 
 def get_spillover_dir():
@@ -35,11 +46,98 @@ def get_spillover_dir():
     return get_hermes_home() / SPILLOVER_SUBDIR
 
 
-def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int:
+def _spillover_retention_hours() -> int:
+    """Default spillover age = the session retention window (``sessions.retention_days``).
+    Spill files are archives the durable transcript points at, not a cache: a session resumed
+    days later must still find what the ``<persisted-output>`` pointer promises (#126351).
+    Falls back to the legacy 24h cache age when the config is unreadable."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
+        if not math.isfinite(days):  # YAML ``.inf`` / ``.nan`` parse as floats; int() would raise
+            return SPILLOVER_MAX_AGE_HOURS
+    except Exception:  # health: allow BLE001 -- any config read/parse failure means the legacy floor
+        return SPILLOVER_MAX_AGE_HOURS
+    # ``retention_days: 0`` is legal (ended sessions pruned at once) but session prune never
+    # touches OPEN sessions, while a zero-hour spill cutoff deletes the file the first spill
+    # just wrote (the pointer then names a missing path). Floor at the legacy cache age.
+    return max(SPILLOVER_MAX_AGE_HOURS, int(days * 24))
+
+
+# How a spill archive is named inside transcript text: every pointer form — the host path,
+# the ``~``-relative translation, the in-container mounted path — carries the ``spillover/<name>``
+# segment. Sandbox-fallback pointers (``…/hermes-results/<name>``) do not, so their host-side
+# original stays unreferenced and is reclaimed by the orphan sweep, never by ownership.
+# Either separator: Windows host paths are backslashed (JSON-escaped as ``\\`` inside structured content).
+_SPILLOVER_NAME_RE = re.compile(r"spillover(?:/|\\+)([A-Za-z0-9_.-]+)")
+# instr(), not LIKE: structured content is stored behind a NUL sentinel and LIKE stops at NUL.
+SPILLOVER_SQL_FILTER = "(instr(content, 'spillover') > 0 OR instr(api_content, 'spillover') > 0)"
+
+
+_ARCHIVE_PATH_RE = re.compile(r"(?:^|[/\\])(?:spillover|hermes-results)[/\\][^/\\]+$")
+
+
+def expired_archive_fields(path: str) -> dict:
+    """Extra read_file not-found fields for a persisted-tool-result path: the archive was pruned,
+    so the model gets "expired" instead of a generic miss it might take for a typo (#126351)."""
+    if not isinstance(path, str) or not _ARCHIVE_PATH_RE.search(path):
+        return {}
+    return {"expired": True, "hint": (
+            "This was a persisted tool result archive and it has expired (pruned with its "
+            "session or by the cache sweep); the full output is no longer recoverable. Inspect "
+            "the current state before re-running the original tool — the call that produced it "
+            "may already have taken effect.")}
+
+
+def spillover_names_in_text(*texts) -> set:
+    """Spillover archive basenames referenced by transcript message text (empty set on none)."""
+    names: set = set()
+    for text in texts:
+        if isinstance(text, str) and "spillover" in text:
+            names.update(_SPILLOVER_NAME_RE.findall(text))
+    return names
+
+
+def referenced_spillover_names(spill_dir) -> set | None:
+    """Basenames under *spill_dir* still referenced by any message in the home's ``state.db``.
+
+    ``set()`` when no database exists (no sessions → nothing references anything), ``None``
+    when the reference set is UNKNOWN (unreadable / truncated query) so callers fail closed
+    and keep the files; a plain read-only connection is enough, the write path owns the locks."""
+    db_path = spill_dir.parent.parent / "state.db"
+    if not db_path.exists():
+        return set()
+    try:
+        # as_uri(): a plain f"file:{path}" breaks on Windows drive letters
+        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0)
+        try:
+            rows = conn.execute(
+                f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"
+            ).fetchall()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return None
+    if len(rows) > 20000:  # truncated reference set: treat as unknown, never guess
+        return None
+    names: set = set()
+    for content, api_content in rows:
+        names |= spillover_names_in_text(content, api_content)
+    return names
+
+
+def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:
     """Delete spillover files older than *max_age_hours*; returns count removed (same
-    contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly)."""
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
+    contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly).
+    A ``None`` age means the session retention window, not a cache TTL — an explicit
+    ``max_age_hours`` (tests, legacy callers) still wins. An expired file is deleted only
+    when no message in the home's state.db references it: the transcript's
+    ``<persisted-output>`` promise outlives the archive's mtime exactly as long as the
+    owning session does (#126351) — referenced archives leave with their session, via the
+    unlink SessionDB delete/prune performs, not with the age sweep."""
+    age_hours = _spillover_retention_hours() if max_age_hours is None else max_age_hours
+    cutoff = time.time() - (age_hours * 3600)
+    expired = []
     try:
         entries = list(get_spillover_dir().iterdir())
     except OSError:
@@ -47,20 +145,34 @@ def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int
     for f in entries:
         try:
             if f.is_file() and f.stat().st_mtime < cutoff:
-                f.unlink()
-                removed += 1
+                expired.append(f)
+        except OSError:
+            pass
+    if not expired:
+        return 0
+    referenced = referenced_spillover_names(get_spillover_dir())
+    removed = 0
+    for f in expired:
+        if referenced is None or f.name in referenced:  # unknown set: fail closed, keep
+            continue
+        try:
+            f.unlink()
+            removed += 1
         except OSError:
             pass
     return removed
 
 
 def _prune_spillover_once() -> None:
-    """Best-effort prune, at most once per process (CLI-only installs never run housekeeping)."""
-    global _spillover_pruned_once
+    """Best-effort prune, at most once per process PER PROFILE HOME (CLI-only installs never run
+    housekeeping; a multiplexed gateway must sweep every profile's ``cache/spillover``, not just the
+    first one that spilled)."""
+    from hermes_constants import hermes_home_key
+    home_key = hermes_home_key()
     with _spillover_prune_lock:
-        if _spillover_pruned_once:
+        if home_key in _spillover_pruned_homes:
             return
-        _spillover_pruned_once = True
+        _spillover_pruned_homes.add(home_key)
     try:
         if removed := cleanup_spillover_cache():
             logger.debug("Pruned %d expired spillover file(s)", removed)
@@ -81,14 +193,32 @@ def _is_host_side_env(env) -> bool:
 
 
 def _write_to_spillover(content: str, filename: str):
-    """Write host-side to $HERMES_HOME/cache/spillover; returns path str or None."""
+    """Write host-side to $HERMES_HOME/cache/spillover; returns path str or None.
+
+    The write is size-verified before the caller tells the model "Full output saved":
+    a partially-flushed file (quota, ENOSPC race) fails closed to the bounded inline
+    truncation instead of referencing an archive that silently lost bytes.
+    """
+    data = content.encode("utf-8", errors="replace")
     try:
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         path = spill_dir / filename
-        path.write_text(content, encoding="utf-8", errors="replace")
+        path.write_bytes(data)
+        persisted_size = os.stat(path).st_size
     except OSError as exc:
         logger.warning("Spillover write failed for %s: %s", filename, exc)
+        return None
+    if persisted_size != len(data):
+        logger.warning(
+            "Spillover write for %s is not lossless (%d bytes on disk, "
+            "expected %d) — discarding archive",
+            filename, persisted_size, len(data),
+        )
+        try:
+            path.unlink()
+        except OSError:
+            pass
         return None
     _prune_spillover_once()
     return str(path)
@@ -151,13 +281,86 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 
 
+def _pageable_text(content: str) -> str:
+    """Rewrite an MCP handler result envelope into the text it wraps, else return *content*.
+
+    ``tools/mcp_tool_handlers.py::_render_call_tool_result`` hands the model a JSON string
+    (``{"result": <text>, ...}``) so structured metadata survives inline delivery. Persisting
+    that string verbatim put a multi-hundred-KB document on ONE line with escaped newlines, so
+    the ``read_file`` offset/limit pagination the ``<persisted-output>`` block recommends could
+    not be used at all (#90426).
+
+    Recognized by SHAPE, not by tool name: the envelope is the only JSON object in the codebase
+    whose keys are a subset of ``{"result", "structuredContent", "_meta"}`` with a non-empty
+    string ``result``. That keeps opaque JSON from any other tool verbatim, and it also covers
+    the aggregate path (``enforce_turn_budget`` persists under ``_BUDGET_TOOL_NAME``, so a
+    ``mcp__``-prefix test would miss exactly the results it has to fix).
+
+    Sibling members are appended after the text in a delimited metadata block instead of being
+    dropped: they are the structured payloads ``_render_call_tool_result`` deliberately keeps
+    for the model (#115430), and the spill file is the only copy left once the envelope is
+    replaced by the preview. Anything unrecognized — unparseable JSON, a non-object, an unknown
+    key, a missing/empty/non-string ``result`` (e.g. a structuredContent-only result, which has
+    no pageable text) — is persisted verbatim, exactly as before.
+    """
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    if not isinstance(payload, dict) or not payload or not set(payload) <= _MCP_ENVELOPE_KEYS:
+        return content
+    text = payload.get("result")
+    if not isinstance(text, str) or not text:
+        return content
+    extras = {key: value for key, value in payload.items() if key != "result"}
+    if not extras:
+        return text
+    try:
+        metadata = json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return text
+    return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
+
+
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(); True on success. Content goes through
     stdin, not the command string: Linux ``MAX_ARG_STRLEN`` caps one argv element at 128 KB,
-    so a heredoc-in-command silently failed for exactly the oversized results this handles."""
+    so a heredoc-in-command silently failed for exactly the oversized results this handles.
+
+    The write is round-trip verified with ``wc -c`` (one extra exec RTT per oversized result):
+    a zero exit from ``cat`` does not prove the bytes landed (quota/ENOSPC races, API-body
+    truncation on payload backends). A measured mismatch removes the archive and fails closed;
+    an unprobeable backend (no ``wc``, exec error, unparseable output) stays best-effort success."""
     storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
-    return env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) == 0
+    # Private dir: archived results carry tool output (can hold secrets) under a
+    # shared temp root on remote backends. The umask also covers the cat redirect.
+    from tools.code_execution_rpc import _private_dirs_cmd
+    cmd = (f"{_private_dirs_cmd(storage_dir)} "
+           f"&& cat > {shlex.quote(remote_path)}")
+    if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
+        return False
+
+    expected = len(content.encode("utf-8", errors="replace"))
+    try:
+        probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15)
+    except Exception as exc:
+        logger.debug("Sandbox size probe failed for %s: %s", remote_path, exc)
+        return True
+    if probe.get("returncode", 1) != 0:
+        return True
+    raw = str(probe.get("output", "") or "").strip().split()
+    if not raw or not raw[-1].isdigit():
+        return True
+    persisted_size = int(raw[-1])
+    if persisted_size == expected:
+        return True
+    logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",
+                   remote_path, persisted_size, expected)
+    try:
+        env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15)
+    except Exception:
+        pass
+    return False
 
 
 def _build_persisted_message(preview: str, has_more: bool, original_size: int,
@@ -172,7 +375,9 @@ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
         "Use the read_file tool with offset and limit to access specific sections of this output.\n"
         "Recovery: page through the saved file with read_file (offset/limit) or "
         "process it with execute_code — do NOT re-request the same data from the "
-        "remote API; the full result is already on disk.\n\n"
+        "remote API; the archive is kept while this session's transcript references "
+        "it. If it is missing, inspect the current state before retrying — the call "
+        "that produced it may already have taken effect.\n\n"
         f"Preview (first {len(preview)} chars):\n"
         + preview + ("\n..." if has_more else "")
         + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")
@@ -191,7 +396,7 @@ def extract_persisted_path(content: str) -> str | None:
 
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
-                              threshold: int | float | None = None) -> str:
+                              threshold: float | None = None) -> str:
     """Layer 2: persist an oversized result, return preview + path. ``threshold`` overrides
     ``config.resolve_threshold(tool_name)``; falls back to inline truncation when no write
     location succeeds."""
@@ -199,16 +404,19 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
         threshold = config.resolve_threshold(tool_name)
     if threshold == float("inf") or len(content) <= threshold:
         return content
+    # The size decision above stays on the raw inline result (that is what cost context); the file
+    # and the preview carry the pageable text inside an MCP envelope (#90426).
+    persisted_content = _pageable_text(content)
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
-                    tool_name, tool_use_id, len(content), path, host_suffix)
-        return _build_persisted_message(preview, has_more, len(content), path)
+                    tool_name, tool_use_id, len(persisted_content), path, host_suffix)
+        return _build_persisted_message(preview, has_more, len(persisted_content), path)
 
     # Always persist host-side first: cache/spillover is the single canonical home.
-    host_path = _write_to_spillover(content, filename)
+    host_path = _write_to_spillover(persisted_content, filename)
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
         return _persisted(host_path)
@@ -220,7 +428,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
             return _persisted(visible, f" [host: {host_path}]")
         remote_path = f"{_resolve_storage_dir(env)}/{filename}"
         try:
-            if _write_to_sandbox(content, remote_path, env):
+            if _write_to_sandbox(persisted_content, remote_path, env):
                 return _persisted(remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
@@ -230,14 +438,38 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
             "Full output could not be saved to sandbox.]")
 
 
+def _content_text_size(content) -> int:
+    """Characters of TEXT a tool message carries: a string's length, or the summed text parts of a multimodal
+    part list (image parts are governed by the vision embed budget, and a list's ``len`` counts parts)."""
+    if isinstance(content, list):
+        return sum(len(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+    return len(content or "")
+
+
+def _spill_largest_text_part(parts: list, tool_use_id: str, env, config: BudgetConfig) -> tuple[list, int]:
+    """Persist the largest non-persisted text part of a multimodal list; ``(new parts, chars saved)``."""
+    texts = [(i, p["text"]) for i, p in enumerate(parts) if isinstance(p, dict) and p.get("type") == "text"
+             and isinstance(p.get("text"), str) and PERSISTED_OUTPUT_TAG not in p["text"]]
+    if not texts:
+        return parts, 0
+    idx, text = max(texts, key=lambda t: len(t[1]))
+    replacement = maybe_persist_tool_result(content=text, tool_name=_BUDGET_TOOL_NAME,
+                                            tool_use_id=f"{tool_use_id}_part{idx}", env=env, config=config, threshold=0)
+    if replacement == text:
+        return parts, 0
+    return [*parts[:idx], {**parts[idx], "text": replacement}, *parts[idx + 1:]], len(text) - len(replacement)
+
+
 def enforce_turn_budget(tool_messages: list[dict], env=None,
                         config: BudgetConfig = DEFAULT_BUDGET) -> list[dict]:
     """Layer 3: persist the largest non-persisted results first until the turn's aggregate is
-    under budget. Mutates the list in-place and returns it."""
-    sizes = [len(msg.get("content", "")) for msg in tool_messages]
+    under budget. Mutates the list in-place and returns it. A multimodal result (part list) counts its
+    text characters and spills its largest text part; its images stay inline."""
+    sizes = [_content_text_size(msg.get("content", "")) for msg in tool_messages]
     total_size = sum(sizes)
     candidates = [(i, size) for i, size in enumerate(sizes)
-                  if PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
+                  if isinstance(tool_messages[i].get("content"), list)
+                  or PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
     if total_size <= config.turn_budget:
         return tool_messages
     for idx, size in sorted(candidates, key=lambda x: x[1], reverse=True):
@@ -245,6 +477,13 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
             break
         content = tool_messages[idx]["content"]
         tool_use_id = tool_messages[idx].get("tool_call_id", f"budget_{idx}")
+        if isinstance(content, list):
+            parts, saved = _spill_largest_text_part(content, tool_use_id, env, config)
+            if saved:
+                total_size -= saved
+                tool_messages[idx]["content"] = parts
+                logger.info("Budget enforcement: persisted a text part of tool result %s (%d chars)", tool_use_id, saved)
+            continue
         replacement = maybe_persist_tool_result(
             content=content, tool_name=_BUDGET_TOOL_NAME, tool_use_id=tool_use_id,
             env=env, config=config, threshold=0)
@@ -254,13 +493,3 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
             logger.info("Budget enforcement: persisted tool result %s (%d chars)",
                         tool_use_id, size)
     return tool_messages
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import uuid  # noqa: F401,E402
-
-HEREDOC_MARKER = "HERMES_PERSIST_EOF"
-# ---- END PLUGIN-COMPAT ----

@@ -5,6 +5,7 @@ so an unset reasoning_config defaults reasoning ON at ``medium``, matching the
 "medium (default)" the /reasoning panel shows. Explicit settings always win.
 """
 
+import re
 from typing import Any
 
 from agent.reasoning_effort import EFFORT_LADDER, SOLAR_EFFORTS, clamp_effort
@@ -12,8 +13,9 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 # Deny-list on purpose: new Solar models are assumed reasoning-capable; only these known
-# non-reasoning families ignore reasoning_effort. Substring match covers dated variants.
-_NON_REASONING_MODEL_MARKERS = ("solar-mini", "syn-pro")
+# non-reasoning families ignore reasoning_effort. ``solar-mini`` covers its dated ids
+# (solar-mini-250422) but not later mini generations (solar-mini4), which do reason.
+_NON_REASONING_MODEL_RE = re.compile(r"solar-mini(?:[-:.@]|$)|syn-pro")
 
 
 class UpstageProfile(ProviderProfile):
@@ -23,7 +25,7 @@ class UpstageProfile(ProviderProfile):
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         m = (model or "").strip().lower()
-        if any(marker in m for marker in _NON_REASONING_MODEL_MARKERS):
+        if _NON_REASONING_MODEL_RE.search(m):
             return {}, {}
         if not reasoning_config or not isinstance(reasoning_config, dict):
             return {}, {"reasoning_effort": "medium"}  # unset -> reasoning ON for agents

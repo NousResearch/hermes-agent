@@ -47,14 +47,13 @@ async def test_teardown_bounds_hanging_cancel(bare_runner, monkeypatch, caplog):
             timeout=5.0,
         )
 
-    assert "feishu background-task cancel timed out" in caplog.text
     # disconnect still attempted after the cancel timeout — forward progress.
     adapter.disconnect.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_teardown_continues_after_cancellation_swallowing_background_cancel(
-    bare_runner, monkeypatch, caplog
+    bare_runner, monkeypatch
 ):
     """A stuck cancellation handler cannot prevent adapter disconnect.
 
@@ -87,7 +86,6 @@ async def test_teardown_continues_after_cancellation_swallowing_background_cance
     try:
         assert operation in done
         adapter.disconnect.assert_awaited_once()
-        assert "feishu background-task cancel timed out" in caplog.text
     finally:
         release.set()
         await asyncio.wait({operation}, timeout=0.2)

@@ -46,7 +46,7 @@ hermes fallback [add|remove|list]  Fallback provider chain
 hermes config [show|edit|get|set|unset|path|env-path|check|migrate]
 hermes login / logout       OAuth sign-in / clear stored auth
 hermes doctor [--fix]       Check dependencies and config
-hermes status [--all]       Component status
+hermes status [--full]      Component summary (--full: every section)
 ```
 
 ### Tools & Skills
@@ -68,7 +68,7 @@ hermes bundles              Skill bundles (one /<name> alias loads several skill
 hermes mcp add NAME (--url or --command) | remove | list | test NAME
 hermes mcp catalog | install NAME     Curated catalog install
 hermes mcp configure NAME             Toggle tool selection
-hermes mcp serve                      Run Hermes as an MCP server
+hermes mcp-serve                      Run Hermes as an MCP server (mcp-serve plugin)
 ```
 Details (transport, tool discovery, catalog): `references/native-mcp.md`.
 
@@ -101,6 +101,7 @@ Webhook payloads/routes: `references/webhooks.md`.
 ```
 hermes profile list|create NAME (--clone|--clone-all|--clone-from)|use|show|delete
 hermes profile rename A B | alias NAME | export NAME | import FILE
+hermes profile migrate-identity A B   Retry a completed rename's session/routing identity migration
 ```
 
 ### Credentials & Pools

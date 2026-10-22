@@ -21,7 +21,7 @@ web tasks.
   rating aggregation, JS/delayed render, login chain, cross-category
   compare).
 - **Resume-safe.** Completed cells in `results/*.jsonl` are skipped on rerun
-  (same pattern as `scripts/toolperf_abeval`).
+  (same pattern as `evals/toolperf_abeval`).
 - **Backend matrix.** `orchestrate.py` drives a local headless-Chrome CDP;
   `orchestrate_cloud.py --backend nous-cloud|browserbase` provisions a real
   cloud browser per cell through the same provider plumbing the product uses.

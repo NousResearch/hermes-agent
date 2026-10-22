@@ -21,7 +21,10 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
 from gateway.session_transcript import TranscriptReadError
-from gateway.slash_commands_status import HISTORY_UNREADABLE
+from gateway.slash_commands_branch_thread import (
+    BRANCH_THREAD_PLATFORMS, branch_dest_source, branch_thread_parent, format_thread_ref, parse_branch_args,
+)
+from gateway.slash_commands_status import history_unreadable
 
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
 
@@ -33,7 +36,7 @@ _DM_CHAT_TYPES = {"dm", "direct", "private", ""}
 
 _BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason", "reasoning",
                          "reasoning_content", "reasoning_details", "codex_reasoning_items",
-                         "codex_message_items", "timestamp")
+                         "codex_message_items", "timestamp", "data_use")
 
 
 def _sattr(obj, name: str) -> str:
@@ -58,9 +61,9 @@ def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> l
         summary_err = redact_sensitive_text(summary_err, force=True)
     aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
     if getattr(compressor, "_last_compress_aborted", False):
-        lines.append(t("gateway.compress.aborted", error=(summary_err or "unknown error")))
+        lines.append(t("gateway.compress.aborted", error=(summary_err or t("gateway.shared.unknown_error"))))
     elif aux_fail_model:
-        aux_err = getattr(compressor, "_last_aux_model_failure_error", None) or "unknown error"
+        aux_err = getattr(compressor, "_last_aux_model_failure_error", None) or t("gateway.shared.unknown_error")
         lines.append(t("gateway.compress.aux_failed", model=aux_fail_model, error=aux_err))
     return lines
 
@@ -109,6 +112,29 @@ def _strip_resume_name(parts: list[str]) -> str:
     return name
 
 
+async def discard_lost_turns(authority, session_id) -> str:
+    """Messaging ``/discard`` (#134889 GW-10): acknowledge every ``unknown`` (lost-in-restart) turn
+    of this chat's FIFO through the owner's fenced ``resolve_unknown``, the path Desktop's Discard,
+    the TUI queue and ``hermes sessions discard`` use. Never replays the input; the saved
+    followers run once it commits."""
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=session_id)
+    lost = [row for row in rows if row['status'] == 'unknown']
+    if not lost:
+        return t("gateway.discard.nothing")
+    ref = SessionRef(authority.profile_id, session_id)
+    done = 0
+    for row in lost:
+        try:
+            await authority.resolve_unknown_as_owner(ref, row['admission_id'], row['generation'])
+        except RuntimeStoreError as exc:
+            logger.warning("/discard of %s refused: %s", row['admission_id'], exc.reason)
+            continue
+        done += 1
+    return t("gateway.discard.done", count=done) if done else t("gateway.discard.nothing")
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
@@ -124,9 +150,9 @@ class GatewaySessionCommandsMixin:
             return
         try:
             await asyncio.wait_for(
-                self._run_in_executor_with_context(self._cleanup_agent_resources, _old_agent),
+                self._run_housekeeping_in_executor(self._cleanup_agent_resources, _old_agent),
                 timeout=_RESET_CLEANUP_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Agent resource cleanup for session %s exceeded %ss during /new reset; proceeding with "
                 "reset (the worker thread is left to finish on its own). (#35994)",
@@ -142,17 +168,36 @@ class GatewaySessionCommandsMixin:
         arbitrarily), then session:end and session:reset."""
         platform_value = source.platform.value if source.platform else ""
         with contextlib.suppress(Exception):
-            await self._finalize_session_off_loop(
+            messages = await self._finalize_session_off_loop(
                 session_id=old_sid, platform=platform_value, reason="new_session",
                 old_session_id=old_sid, new_session_id=new_sid)
+            await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
         await self.hooks.emit("session:end", dict(hook_payload))
         await self.hooks.emit("session:reset", dict(hook_payload))
 
-    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+    async def _handle_discard_command(self, event: MessageEvent) -> str:
+        """``/discard``: drop this chat's turn lost in a gateway restart so its queue runs again."""
+        from gateway.session_authorities import active_authority
+        if not self._is_user_authorized_for_source(event.source):
+            return t("gateway.discard.nothing")
+        authority = active_authority(self)
+        session_key = self._session_key_for_source(event.source)
+        sid = authority.logical_owner(self.session_store.peek_session_id(session_key)) if authority else None
+        if not sid:
+            return t("gateway.discard.nothing")
+        if sid not in authority.sessions:
+            # A conversation /resume brought back after a restart is the chat's route but not yet
+            # live: publish the peeked conversation on its route (review #141357). Never through
+            # get-or-create: a suspended route would rotate to a new session and strand the lost turn.
+            authority._publish_route(event.source, sid, session_key)
+        return await discard_lost_turns(authority, sid)
+
+    async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /new or /reset command."""
         source = event.source
         session_key = self._session_key_for_source(source)
+        await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
@@ -179,6 +224,8 @@ class GatewaySessionCommandsMixin:
 
         new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
+        from gateway.session_automation import move_route_wakes
+        await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
         # Scoped to the profile serving this source so a multiplexed /new banner reports the
@@ -302,8 +349,8 @@ class GatewaySessionCommandsMixin:
         Stricter than ``SlashAccessPolicy.is_admin()``, which is True for every caller when slash
         gating is DISABLED — the default config would make everyone cross-origin-capable (IDOR)."""
         try:
-            from gateway.slash_access import policy_for_source
-            policy = policy_for_source(self.config, source)
+            from gateway.slash_access import policy_for_runner_source
+            policy = policy_for_runner_source(self, source)
             uid = getattr(source, "user_id", None)
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:
@@ -385,10 +432,17 @@ class GatewaySessionCommandsMixin:
 
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
+        # Under a session authority the rewrite commits in the re-send's own admission, fenced on
+        # the active rows read here (before the transcript, so any later write fails the fence).
+        owned = self._retry_owned_store(session_entry.session_id)
         try:
+            pinned = owned and await asyncio.to_thread(owned.get_active_message_ids, session_entry.session_id)
             history = await self.async_session_store.load_transcript(session_entry.session_id)
         except TranscriptReadError:
-            return HISTORY_UNREADABLE
+            return history_unreadable()
+        except Exception:
+            logger.debug("/retry could not read the active rows of %s", session_entry.session_id, exc_info=True)
+            return history_unreadable()
         last_user_idx = next((i for i in range(len(history) - 1, -1, -1)
                               if user_originated_turn_view(history[i]) is not None), None)
         if last_user_idx is None:
@@ -400,8 +454,17 @@ class GatewaySessionCommandsMixin:
             last_user_msg = retryable_user_text(live_view.get("content"))
             handoff, _ = split_user_originated_turn(history[last_user_idx])
         except ValueError as exc:
-            return f"Cannot retry that message safely: {exc}"
+            return t("gateway.retry.unsafe", error=exc)
+        # Answer the refusals the re-sent turn would hit BEFORE the transcript rewrite: /retry
+        # passes the post-command gates as a canonical command, the plain-text re-send does not,
+        # and a refusal after the rewrite leaves the transcript shorter and loses the user's turn.
+        readmission_reply = self._retry_readmission_reply(source, last_user_msg)
+        if readmission_reply is not None:
+            return readmission_reply
 
+        if owned:
+            return await self._retry_in_admission(
+                event, session_entry, owned, pinned, truncated, last_user_msg, handoff is not None)
         if handoff is not None:
             # Composite carrier (one row = retained summary + live ask): the carrier-aware rewind
             # archives it and inserts the pure scaffold atomically, reselecting the latest carrier
@@ -412,18 +475,148 @@ class GatewaySessionCommandsMixin:
                 rewind_result = await self.async_session_store.rewind_session(
                     session_entry.session_id, 1, require_retryable_composite=True)
             except ValueError as exc:
-                return f"Cannot retry that message safely: {exc}"
+                return t("gateway.retry.unsafe", error=exc)
             if rewind_result is None:
-                return "Retry failed; transcript was not changed."
+                return t("gateway.retry.failed_unchanged")
             last_user_msg = rewind_result["target_text"]
         # active_only preserves the active=0/compacted=1 archive left by in-place compaction.
         elif not await self.async_session_store.rewrite_transcript(
             session_entry.session_id, truncated, active_only=True, reject_active_turn_lease=True):
-            return "Retry failed; transcript was not changed."
+            return t("gateway.retry.failed_unchanged")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
-        return await self._handle_message(MessageEvent(
+        self._record_model_friction("retry", source, session_entry.session_id)
+        # The re-sent turn is the /retry event's own turn, built on its authenticated source: carry
+        # that event's native callback to it, or admission refuses it under multiplex (#139040).
+        from gateway.session_ingress_context import carry_callback
+        turn = MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
-            raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt)
+        carry_callback(event, turn)
+        return await self._handle_message(turn)
+
+    def _retry_owned_store(self, session_id: str):
+        """The SessionDB that holds both *session_id*'s transcript and its authority's admission
+        ledger, or None (no authority: the rewrite-then-send path). One handle means one write
+        transaction can carry the rewrite and the admission (#139257 step 2)."""
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if authority is None:
+            return None
+        db = self.session_store._db_for_session_id(session_id)
+        return db if db is not None and db is authority.db else None
+
+    async def _retry_in_admission(self, event, session_entry, db, pinned, truncated, resend_text,
+                                  composite: bool) -> Optional[str]:
+        """Plan the rewrite, bind it to the re-send and let ``admit_native`` commit both in one write
+        (``gateway.session_retry_admission``). A refusal leaves the transcript as it was; a
+        transcript changed since the read refuses both."""
+        from gateway import session_retry_admission as retry_admission
+        from gateway.session_ingress_context import carry_callback
+        from hermes_state_rewind import RewindTargetUnavailableError
+        from hermes_state_runtime import RuntimeStoreError
+        session_id = session_entry.session_id
+        if composite:
+            # The carrier-aware rewind, planned on the same snapshot: archive the carrier, keep its scaffold.
+            try:
+                plan = await asyncio.to_thread(db.plan_user_turn_rewind, session_id, -1,
+                                               require_retryable=True, require_composite=True)
+            except ValueError as exc:
+                if isinstance(exc, RewindTargetUnavailableError):
+                    return t("gateway.retry.failed_unchanged")
+                return t("gateway.retry.unsafe", error=exc)
+            except RuntimeError:  # the history changed under the plan, or the target has no row id
+                logger.debug("/retry carrier plan refused for %s", session_id, exc_info=True)
+                return t("gateway.retry.failed_unchanged")
+            if plan.expected_active_ids != pinned:
+                return t("gateway.retry.failed_unchanged")
+            resend_text = plan.live_text
+
+            def write(conn):
+                from hermes_state_mutation_transcript import rewind_in_transaction
+                rewind_in_transaction(db, conn, session_id, plan.target_row_id, preserve_compaction_handoff=True,
+                                      expected_active_ids=plan.expected_active_ids,
+                                      expected_target_content=plan.expected_target_content)
+        else:
+            def write(conn):
+                db.replace_messages_in_transaction(conn, session_id, [dict(m) for m in truncated], active_only=True,
+                                                   reject_active_turn_lease=True, expected_active_ids=pinned)
+
+        def committed():
+            self.session_store._clear_dirty_transcript(session_id)
+            session_entry.last_prompt_tokens = 0  # transcript was truncated
+            self._record_model_friction("retry", event.source, session_id)
+        rewrite = retry_admission.RetryRewrite(db=db, session_id=session_id, source=event.source,
+                                               write=write, on_commit=committed)
+        turn = MessageEvent(
+            text=resend_text, message_type=MessageType.TEXT, source=event.source,
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt)
+        carry_callback(event, turn)
+        token = retry_admission.bind(rewrite)
+        try:
+            return await self._handle_message(turn)
+        except retry_admission.RetryRewriteRefused as exc:
+            logger.info("/retry refused with the transcript unchanged for %s: %s", session_id, exc)
+            return t("gateway.retry.failed_unchanged")
+        except RuntimeStoreError as exc:
+            if not rewrite.applied and exc.reason == 'runtime_draining':
+                # The drain began after the pre-check: the re-send was refused, nothing rewritten.
+                return t("gateway.busy.drain_rejected", action=self._status_action_gerund())
+            raise
+        finally:
+            retry_admission.unbind(token)
+
+    def _retry_readmission_reply(self, source: SessionSource, resend_text: str) -> Optional[str]:
+        """Refusal the /retry re-send would meet in ``_handle_message``, if any — checked before the
+        transcript rewrite so a refused /retry leaves the transcript untouched.  Mirrors the gates
+        the re-sent plain-text turn passes after canonical command dispatch: the emergency-stop
+        pause (canonical commands pass it, plain turns do not), the external-drain new-turn refusal
+        and the active-session cap.  Not race-free — a drain can engage or the cap can fill between
+        this check and the re-send — but every refusal known up front is answered with the
+        transcript intact."""
+        resend = MessageEvent(text=resend_text, message_type=MessageType.TEXT, source=source)
+        paused_notice = self._hm_estop_gate(resend, source, False)
+        if paused_notice is not None:
+            return paused_notice
+        if getattr(self, "_external_drain_active", False):
+            return t("gateway.busy.draining_maintenance")
+        authority_reply = self._retry_authority_refusal(source)
+        if authority_reply is not None:
+            return authority_reply
+        return self._active_session_limit_message(self._session_key_for_source(source))
+
+    def _retry_authority_refusal(self, source: SessionSource) -> Optional[str]:
+        """The routed authority's own admission refusals for the re-send (#139257): a draining or
+        retiring runtime (``runtime_draining``) and a full FIFO (``queue_full``), the gates
+        ``admit_native`` applies. Same not-race-free caveat as the caller."""
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if authority is None:
+            return None
+        import hermes_state_runtime
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            authority._require_admission_open()
+        except RuntimeStoreError:
+            return t("gateway.busy.drain_rejected", action=self._status_action_gerund())
+        entry = self.session_store.lookup_by_session_key(self._session_key_for_source(source))
+        if entry is None:
+            return None
+        rows = hermes_state_runtime.list_session_admissions(
+            authority.db, session_id=authority.logical_owner(entry.session_id))
+        if sum(row["status"] == "queued" for row in rows) >= hermes_state_runtime.ADMISSION_QUEUE_MAX:
+            from gateway.session_ingress import QUEUE_FULL_REPLY
+            return QUEUE_FULL_REPLY
+        return None
+
+    def _record_model_friction(self, signal: str, source, session_id: str, turns: int = 1) -> None:
+        """Slash dispatch does not install the routed profile's scope, so a multiplexed runner
+        names the owning home explicitly."""
+        from hermes_cli.observability.shared_metrics_model import record_model_friction
+        home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            with contextlib.suppress(Exception):
+                home = self._resolve_profile_home_for_source(source)
+        record_model_friction(signal, session_id=session_id, hermes_home=home, turns=turns)
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting the truncated rows and
@@ -442,8 +635,11 @@ class GatewaySessionCommandsMixin:
         if result is None:
             return t("gateway.undo.nothing")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
+        self._record_model_friction("undo", source, session_entry.session_id, result.get("turns_undone") or 1)
         try:
-            self._evict_cached_agent(build_session_key(source))
+            # The cache is keyed by the profile-namespaced key; a bare build_session_key(source)
+            # yields ``agent:main:…`` and misses for every secondary profile.
+            self._evict_cached_agent(self._session_key_for_source(source))
         except Exception as e:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]
@@ -474,66 +670,48 @@ class GatewaySessionCommandsMixin:
 
         agent = self._cached_agent_for(session_key, lockless_fallback=True)
         if agent is None or agent is _AGENT_PENDING_SENTINEL or getattr(agent, "_codex_session", None) is None:
-            return (
-                "🗜️ Nothing to compact: this session runs on the Codex app-server runtime, whose "
-                "context lives in a Codex-owned thread that only exists while the agent is active. "
-                "Send a message first, then /compress — or /reset to start fresh.")
+            return t("gateway.compress.codex_nothing")
         compressor = getattr(agent, "context_compressor", None)
         count_before = getattr(compressor, "compression_count", 0)
         try:
-            await self._run_in_executor_with_context(lambda: agent._compress_context([], "", force=True))
+            await self._run_in_executor_with_context(
+                lambda: agent._compress_context([], "", force=True, task_id=session_id or "default"))
         except Exception as exc:
             return t("gateway.compress.failed", error=exc)
         if getattr(compressor, "compression_count", 0) > count_before:
-            return (
-                "🗜️ Codex app-server thread compacted (thread/compact). The transcript mirror is "
-                "unchanged by design — the app-server now carries the compacted context.")
-        return (
-            "⚠️ Codex app-server compaction did not complete — the thread is unchanged. Check the "
-            "app-server logs, retry /compress, or /reset for a clean session.")
+            return t("gateway.compress.codex_compacted")
+        return t("gateway.compress.codex_incomplete")
 
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress -- manually compress conversation context; ``/compress <focus>`` tells
-        the summariser what to preserve."""
-        from hermes_cli.partial_compress import extract_compress_flags, parse_partial_compress_args
+        the summariser what to preserve. Flags/positional forms are parsed by the shared core."""
+        from agent.conversation_compression_manual import MIN_MESSAGES, parse_compress_args
 
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
         except TranscriptReadError:
-            return HISTORY_UNREADABLE
-        if not history or len(history) < 4:
+            return history_unreadable()
+        if not history or len(history) < MIN_MESSAGES:
             return t("gateway.compress.not_enough")
-        # Flags are stripped before positional parsing so they coexist with the boundary-aware
-        # "here [N]" (partial) and focus-topic (full) forms.
-        _raw_args, _preview, _aggressive = extract_compress_flags((event.get_command_args() or "").strip())
-        partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
-        _agg_note = ""
-        if _aggressive:
-            # LLM-free hard truncation would need its own persistence branch outside the guarded
-            # _compress_context rotation machinery — unsupported on this surface.
-            _agg_note = t("gateway.compress.aggressive_unsupported")
-            if not _preview:
-                return _agg_note
-        if _preview:
-            return _compress_preview_reply(history, partial, keep_last, focus_topic, _agg_note)
+        request = parse_compress_args(event.get_command_args() or "")
+        _agg_note = t("gateway.compress.aggressive_unsupported") if request.aggressive else ""
+        if request.aggressive and not request.preview:
+            return _agg_note
+        if request.preview:
+            return _compress_preview_reply(history, request.partial, request.keep_last, request.focus_topic, _agg_note)
         try:
-            return await self._run_manual_compression(source, session_entry, history, partial,
-                                                      keep_last, focus_topic)
+            return await self._run_manual_compression(source, session_entry, history, request)
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return t("gateway.compress.failed", error=e)
 
-    async def _run_manual_compression(self, source, session_entry, history: list, partial: bool,
-                                      keep_last, focus_topic) -> str:
-        """Build a temporary agent, compress the transcript, persist, and describe the outcome."""
+    async def _run_manual_compression(self, source, session_entry, history: list, request) -> str:
+        """Build a temporary agent, run the shared compress core, persist, and describe the outcome."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
-        from agent.manual_compression_feedback import summarize_manual_compression
-        from agent.model_metadata import estimate_request_tokens_rough
+        from agent.conversation_compression_manual import compress_now, render_compress_result
         from gateway.run import _platform_config_key
-        from hermes_cli.partial_compress import (rejoin_compressed_head_and_tail,
-                                                 split_history_for_partial_compress)
 
         session_key = self._session_key_for_source(source)
         # Platform + stable gateway session key bind this agent (for external context engines) to
@@ -549,54 +727,36 @@ class GatewaySessionCommandsMixin:
         # FULL transcript (tool results included), like auto-compress: user/assistant-only starves
         # tool-result pruning and can trip the protect-first/last early-return.
         msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
-        # Partial: only the head is summarized; the tail snaps to a user-turn start so role
-        # alternation holds after rejoin.
-        head, tail = msgs, []
-        if partial:
-            head, tail = split_history_for_partial_compress(msgs, keep_last)
-            if not tail:  # degenerate split — fall back to full compression
-                partial, head = False, msgs
         # Assign, not setdefault (a resolver value would be a stale placeholder); platform only when
         # known so None -> "cli" holds.
         if platform_key is not None:
             runtime_kwargs["platform"] = platform_key
         runtime_kwargs["gateway_session_key"] = session_key
+        # Same reasoning setting as a live turn (session ``/reasoning`` > per-model > global): without it
+        # the transport applies its default effort — a 400 on non-reasoning models.
+        runtime_kwargs["reasoning_config"] = self._resolve_session_reasoning_config(source=source, model=model)
 
         tmp_agent = await self._build_manual_compression_agent(session_entry.session_id, model, runtime_kwargs)
         try:
-            # Estimate with system prompt + tool schemas (real request pressure); needs the built agent.
-            # Must be computed after tmp_agent is built so _cached_system_prompt/tools are populated. See
-            # #6217.
-            _sys_prompt = getattr(tmp_agent, "_cached_system_prompt", "") or ""
-            _tools = getattr(tmp_agent, "tools", None) or None
-            approx_tokens = estimate_request_tokens_rough(msgs, system_prompt=_sys_prompt, tools=_tools)
-            compressor = tmp_agent.context_compressor
-            if not compressor.has_content_to_compress(head):
-                return t("gateway.compress.nothing_to_do")
             # Not a bare run_in_executor: the profile secret scope is a contextvar the default
             # executor hop would drop, failing aux-client credential resolution closed.
-            compressed, _ = await self._run_in_executor_with_context(
-                lambda: tmp_agent._compress_context(
-                    head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True,
-                    defer_context_engine_notification=True))
-            # A held compression lock returns unchanged; say so instead of the misleading no-op text.
-            _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
-            if _lock_skipped is True or isinstance(_lock_skipped, str):
-                from agent.manual_compression_feedback import describe_compression_lock_skip
-                return describe_compression_lock_skip(_lock_skipped)
-            if partial and tail:
-                compressed = rejoin_compressed_head_and_tail(compressed, tail)
-            await self._persist_manual_compression(tmp_agent, session_entry, source, compressed)
+            result = await self._run_in_executor_with_context(
+                lambda: compress_now(tmp_agent, msgs, request, system_message="", skip_without_window=True,
+                                     task_id=session_entry.session_id or "default"))
+            if result.status == "nothing_to_do":
+                return t("gateway.compress.nothing_to_do")
+            if result.status != "compressed":
+                return "\n".join(render_compress_result(result))
+            await self._persist_manual_compression(tmp_agent, session_entry, source, result.after_messages)
             finalize_context_engine_compression_notification(tmp_agent, committed=True)
-            new_tokens = estimate_request_tokens_rough(compressed, system_prompt=_sys_prompt, tools=_tools)
-            summary = summarize_manual_compression(msgs, compressed, approx_tokens, new_tokens,
-                                                   compression_state=compressor)
+            compressor = tmp_agent.context_compressor
+            summary = result.summary
         finally:
             finalize_context_engine_compression_notification(tmp_agent, committed=False)
             self._evict_cached_agent(session_key)  # next turn rebuilds the prompt from current files
             # Off-loop + bounded: teardown can block on subprocess/network/SQLite.
             await self._cleanup_agent_resources_off_loop(tmp_agent, context="manual compression")
-        return "\n".join(_manual_compression_reply_lines(summary, compressor, focus_topic))
+        return "\n".join(_manual_compression_reply_lines(summary, compressor, request.focus_topic))
 
     async def _build_manual_compression_agent(self, session_id: str, model, runtime_kwargs: dict):
         """Build the throwaway AIAgent that performs a manual /compress rewrite of *session_id*."""
@@ -628,8 +788,10 @@ class GatewaySessionCommandsMixin:
                             session_id=session_id,
                             session_db=getattr(self._session_db, "_db", self._session_db))
         _seed_hygiene_system_prompt(tmp_agent, session_row)
-        # Real platform during construction (context engines bind correctly); afterwards a prompt
-        # rebuilt by compression is stamped as the provider-less fallback, stale for the next turn.
+        # Real platform during construction (context engines bind correctly); the stamp afterwards
+        # only marks this agent as no real surface. Since #104414 Platform is not a restore-identity
+        # field, so it no longer forces the next live turn to rebuild; the seed's retain flag is what
+        # keeps the reduced-toolset build out of the session row (#122822).
         tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
         tmp_agent._print_fn = lambda *a, **kw: None
         # close() must not end the rotated session the gateway entry now points at.
@@ -638,15 +800,16 @@ class GatewaySessionCommandsMixin:
 
     async def _persist_manual_compression(self, tmp_agent, session_entry, source, compressed) -> None:
         """Commit a manual /compress result to the session store.  Rotation (new continuation id)
-        writes the compressed messages into the NEW session so the original stays searchable;
+        makes the NEW session durable (already published, else rewritten) so the original stays searchable;
         persist BEFORE repointing so a failed write is fatal and old history stays reachable.
         In-place compaction already archived + inserted rows, and a rewrite would DELETE the
         archive; an unchanged id without in-place means rotation FAILED."""
         new_session_id = tmp_agent.session_id
         if new_session_id != session_entry.session_id:
-            if not await self.async_session_store.rewrite_transcript(new_session_id, compressed):
-                raise RuntimeError(
-                    f"failed to persist compressed transcript for session {new_session_id}")
+            # Published child is already durable; a rewrite would drop rows cloned at publish.
+            if not await self.async_session_store.persist_rotated_compression_child(
+                    session_entry.session_id, new_session_id, compressed):
+                raise RuntimeError(f"failed to persist compressed transcript for session {new_session_id}")
             session_entry.session_id = new_session_id
             await self.async_session_store._save()
             await asyncio.to_thread(self._sync_telegram_topic_binding, source, session_entry,
@@ -669,7 +832,7 @@ class GatewaySessionCommandsMixin:
 
         # Defense in depth: /topic mutates SQLite side tables, so re-check the allowlist here.
         try:
-            if not self._is_user_authorized(source):
+            if not self._is_user_authorized_for_source(source):
                 return t("gateway.topic.unauthorized")
         except Exception:
             logger.debug("Topic auth check failed", exc_info=True)
@@ -732,7 +895,7 @@ class GatewaySessionCommandsMixin:
         """Handle /save — export the current session and send it as a document."""
         import tempfile
         from hermes_cli.session_export import (
-            SAVE_USAGE, default_save_filename, normalize_save_format, render_session_for_save)
+            SAVE_USAGE, default_save_filename, load_save_snapshot, normalize_save_format, render_session_for_save)
 
         parts = event.get_command_args().split()
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -749,13 +912,18 @@ class GatewaySessionCommandsMixin:
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_id = session_entry.session_id
         if not self._session_db:
-            return "Session database not available."
+            return t("gateway.shared.session_db_unavailable")
         # Never trust path separators from chat input; the filename is only echoed to the platform.
         filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
         filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
-        export_data = await self._session_db.export_session(session_id)
+        from hermes_state import SessionExportTooLargeError
+        try:
+            # One off-loop hop for the cap check + read; the helper is shared with the CLI and TUI /save.
+            export_data = await asyncio.to_thread(load_save_snapshot, self._session_db._db, session_id, fmt)
+        except SessionExportTooLargeError as e:
+            return str(e)
         if not export_data:
-            return f"No stored messages found for this session ({session_id})."
+            return t("gateway.save.no_messages", session_id=session_id)
         if redact:
             from hermes_cli.session_export_md import redact_session_data
             export_data = redact_session_data(export_data)
@@ -769,15 +937,16 @@ class GatewaySessionCommandsMixin:
                     f.write(rendered)
 
             await asyncio.to_thread(_render_and_write)
-            adapter = self.get_adapter(source.platform)
+            # Profile-aware: under multiplex the requester's bot lives in _profile_adapters, not self.adapters.
+            adapter = self._delivery_adapter_for(source)
             if not adapter:
-                return "Platform adapter not found to send the document."
+                return t("gateway.save.no_adapter")
             await adapter.send_document(chat_id=source.chat_id, file_path=temp_path,
-                                        caption=f"Session export: {filename}", file_name=filename)
-            return "Export complete."
+                                        caption=t("gateway.save.caption", filename=filename), file_name=filename)
+            return t("gateway.save.complete")
         except Exception as e:
             logger.warning("Session /save failed: %s", e)
-            return f"Error exporting session: {e}"
+            return t("gateway.save.failed", error=e)
         finally:
             with contextlib.suppress(Exception):
                 os.remove(temp_path)
@@ -831,9 +1000,11 @@ class GatewaySessionCommandsMixin:
     async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
         widen = allow_all and self._resume_caller_is_admin(source)
+        # Rank by lineage activity, not root started_at: a lineage compressed for days is projected
+        # onto its live tip and must sit where the user last touched it (#114271).
         sessions = await self._session_db.list_sessions_rich(
             source=source.platform.value if source.platform else None,
-            session_key=None if widen else session_key, limit=10)
+            session_key=None if widen else session_key, limit=10, order_by_last_active=True)
         titled = [s for s in sessions if s.get("title")][:10]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
 
@@ -911,7 +1082,9 @@ class GatewaySessionCommandsMixin:
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
         self._release_running_agent_state(session_key)
-        new_entry = await self.async_session_store.switch_session(session_key, target_id)
+        new_entry = await self.async_session_store.switch_session(
+            session_key, target_id, preserve_prompt_pin=False,
+        )
         if not new_entry:
             return t("gateway.resume.switch_failed")
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
@@ -919,6 +1092,10 @@ class GatewaySessionCommandsMixin:
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security
         # state in one funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
         self._clear_conversation_scope(session_key, reason="resume")
+        # switch_session keeps the route's persisted /model pin (a re-pin is not a boundary,
+        # #119864); /resume IS one, and the funnel above clears only in-memory state — without this
+        # the next turn's _rehydrate_session_model_override resurrects the pin it just cleared.
+        await self.async_session_store.set_model_override(session_key, None)
         # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)
@@ -927,10 +1104,11 @@ class GatewaySessionCommandsMixin:
             history = await self.async_session_store.load_transcript(target_id)
         except TranscriptReadError:
             # The resume itself succeeded; only the count is missing — say so rather than "empty".
-            return t("gateway.resume.resumed_no_count", title=title) + "\n" + HISTORY_UNREADABLE
+            return t("gateway.resume.resumed_no_count", title=title) + "\n" + history_unreadable()
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         if source.platform == Platform.MATRIX and allow_cross_room:
-            msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+            msg_part = t("gateway.resume.msg_count_one" if msg_count == 1 else "gateway.resume.msg_count_other",
+                         count=msg_count) if msg_count else ""
             return t("gateway.resume.matrix_cross_room_success", title=title,
                      room=source.chat_name or source.chat_id, msg_part=msg_part)
         if not msg_count:
@@ -977,7 +1155,7 @@ class GatewaySessionCommandsMixin:
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
         if search_query == "":
-            return "Usage: `/sessions search <query>`"
+            return t("gateway.sessions.usage_search")
         if target:
             return await self._handle_resume_command(dataclasses.replace(event, text=f"/resume {target}"))
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
@@ -987,7 +1165,7 @@ class GatewaySessionCommandsMixin:
         cross_origin = include_all and self._resume_caller_is_admin(source)
         scope_notice = None
         if include_all and not cross_origin:
-            scope_notice = "_Note: `all` (cross-chat listing) requires a configured admin; showing this chat's sessions only._"
+            scope_notice = t("gateway.sessions.all_requires_admin")
         current_entry = await self.async_session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing, getattr(self._session_db, "_db", self._session_db),
@@ -1002,16 +1180,21 @@ class GatewaySessionCommandsMixin:
             rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
         rows = rows[:10]
         if search_query:
-            title = f"Sessions matching “{search_query}”"
+            title = t("gateway.sessions.title_matching", query=search_query)
         else:
-            title = "Sessions" if include_unnamed else "Named Sessions"
+            title = t("gateway.sessions.title_all" if include_unnamed else "gateway.sessions.title_named")
         return format_gateway_session_listing(rows, include_source=cross_origin, title=title,
                                               notice=scope_notice)
 
     # ----------------------------------------------------------------------- /branch
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
-        """Handle /branch [name] — fork the current session into an independent copy."""
+        """Handle /branch [--here] [name] — fork the current session into an independent copy.
+
+        Thread-capable platforms (Discord/Telegram/Slack/Matrix) open a NEW sibling thread bound
+        to the clone and leave this chat on the original session; ``--here`` (and every platform
+        without threads) switches the current chat onto the clone instead (#66023).
+        """
         import json as _json
         import uuid as _uuid
         from datetime import datetime as _dt
@@ -1024,34 +1207,46 @@ class GatewaySessionCommandsMixin:
         try:
             history = await self.async_session_store.load_transcript(current_entry.session_id)
         except TranscriptReadError:
-            return HISTORY_UNREADABLE
+            return history_unreadable()
         if not history:
             return t("gateway.branch.no_conversation")
         new_session_id = f"{_dt.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
-        branch_title = event.get_command_args().strip()
+        stay_here, branch_title = parse_branch_args(event.get_command_args())
         if not branch_title:
             current_title = await self._session_db.get_session_title(current_entry.session_id)
             branch_title = await self._session_db.get_next_title_in_lineage(current_title or "branch")
         parent_session_id = current_entry.session_id
-        # Full parent origin (same shape as the reset path in gateway/session.py); the live entry's
-        # origin may hold richer metadata than the triggering event's source.
-        # See #82633.
+        # The thread is created BEFORE the clone so a failed create never orphans a branch row;
+        # ``None`` = branch in place (--here, no threads here, or the adapter could not open one).
+        dest_source = None if stay_here else await self._branch_open_thread(source, branch_title)
+        in_place = dest_source is None
+        if in_place:
+            dest_source = source
+        dest_key = session_key if in_place else self._session_key_for_source(dest_source)
+        # Full origin (same shape as the reset path in gateway/session.py); the live entry's origin
+        # may hold richer metadata than the triggering event's source (#82633). A thread branch
+        # is routed by the NEW thread, so its origin is the destination.
         _branch_origin_json = None
         with contextlib.suppress(Exception):
-            _branch_origin_json = _json.dumps((current_entry.origin or source).to_dict())
+            _origin = (current_entry.origin or source) if in_place else dest_source
+            _branch_origin_json = _json.dumps(_origin.to_dict())
         # ``_branched_from`` keeps the branch visible in /resume and /sessions after the parent is
         # reopened and re-ended. ALL routing columns go in at CREATE time: a crash before
         # switch_session() records the peer would otherwise leave the branch unroutable.
+        # The child sends the parent's exact system prompt: a row without one makes the branch's
+        # first turn rebuild (re-probing the workspace) and forfeits the warm cache the copied
+        # transcript buys.
         try:
+            parent = await self._session_db.get_session(parent_session_id)
             await self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
-                parent_session_id=parent_session_id, user_id=source.user_id,
-                session_key=session_key, chat_id=source.chat_id, chat_type=source.chat_type,
-                thread_id=source.thread_id, origin_json=_branch_origin_json,
-                display_name=current_entry.display_name)
+                parent_session_id=parent_session_id, user_id=dest_source.user_id,
+                session_key=dest_key, chat_id=dest_source.chat_id, chat_type=dest_source.chat_type,
+                thread_id=dest_source.thread_id, origin_json=_branch_origin_json,
+                display_name=current_entry.display_name, system_prompt=(parent or {}).get("system_prompt") or None)
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
             return t("gateway.branch.create_failed", error=e)
@@ -1065,11 +1260,43 @@ class GatewaySessionCommandsMixin:
                 new_session_id, [_branch_row(msg) for msg in history], chunk_rows=500)
         with contextlib.suppress(Exception):
             await self._session_db.set_session_title(new_session_id, branch_title)
-        new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
+        if not in_place:
+            # Materialize the thread's own entry, then point IT at the clone; ``session_key`` (this
+            # chat) is never touched, so the original conversation stays live here.
+            await self.async_session_store.get_or_create_session(dest_source)
+        new_entry = await self.async_session_store.switch_session(dest_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
-        self._evict_cached_agent(session_key)
+        self._clear_session_boundary_security_state(dest_key)
+        self._evict_cached_agent(dest_key)
         msg_count = len([m for m in history if m.get("role") == "user"])
-        key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
-        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+        if in_place:
+            key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
+            reply = t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+            if not stay_here and source.platform in BRANCH_THREAD_PLATFORMS:
+                reply += "\n" + t("gateway.branch.thread_fallback")
+            return reply
+        key = "gateway.branch.branched_thread_one" if msg_count == 1 else "gateway.branch.branched_thread_many"
+        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id,
+                 thread=format_thread_ref(source.platform, dest_source.thread_id))
+
+    async def _branch_open_thread(self, source: SessionSource, title: str) -> Optional[SessionSource]:
+        """Open the sibling thread a plain ``/branch`` clones into; the destination source, or
+        None when this chat cannot host one (in-place fallback)."""
+        parent_id = branch_thread_parent(source)
+        adapter = self._delivery_adapter_for(source) if parent_id else None
+        if adapter is None:
+            return None
+        try:
+            thread_id = await adapter.create_handoff_thread(parent_id, title)
+        except Exception:
+            logger.warning("Branch: create_handoff_thread failed on %s; branching in place",
+                           source.platform.value, exc_info=True)
+            return None
+        if not thread_id:
+            return None
+        # Discord only answers un-mentioned follow-ups in threads it has participated in.
+        threads = getattr(adapter, "_threads", None)
+        if threads is not None:
+            await threads.mark_async(str(thread_id))
+        return branch_dest_source(source, parent_id=parent_id, thread_id=str(thread_id), title=title)

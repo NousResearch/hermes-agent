@@ -20,7 +20,7 @@ def _foreign_list(rid, params):
 def _foreign_history_request(rid, params, importing):
     from hermes_cli.foreign_sessions_browser import import_browser_session, preview_foreign_session
     try:
-        with _profile_db(params) as db:
+        with _profile_db(params, writer=importing) as db:
             if db is None:
                 return _db_unavailable_error(rid, code=-32000)
             result = (import_browser_session(params.get("id"), db, _response_profile_name(params.get("profile")))

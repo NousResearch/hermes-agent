@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "default_profile": "tension_relaxed",
+  "focal_events": [
+    "oversized type",
+    "extreme subject crop",
+    "giant object or identifying detail",
+    "concentrated overprint collision",
+    "abnormal scale relationship"
+  ],
+  "release_devices": [
+    "open paper",
+    "pale halftone field",
+    "sparse support type",
+    "quiet alignment",
+    "low-detail image fade"
+  ],
+  "optional_unresolved_edges": [
+    "image fade before frame",
+    "inferable cropped word",
+    "broken alignment",
+    "open contour"
+  ],
+  "profiles": [
+    {
+      "id": "tension_relaxed",
+      "name": "Relaxed",
+      "empty_paper_percent": [25, 55],
+      "focal_event_count": 1,
+      "release_zone_count": 1,
+      "unresolved_edge": "optional",
+      "default_for": ["reflection", "travel", "summer", "leisure", "lifestyle", "unspecified cultural subject"],
+      "energy_distribution": "one audacious event, broad release, sparse support",
+      "subject_behavior": ["partial editorial crop", "ordinary in-between gesture", "identifying fragments", "indirect gaze or incomplete figure"]
+    },
+    {
+      "id": "tension_balanced",
+      "name": "Balanced",
+      "empty_paper_percent": [25, 50],
+      "focal_event_count": 1,
+      "release_zone_count": 1,
+      "unresolved_edge": "optional",
+      "default_for": ["event", "journal", "observation", "editorial information"],
+      "energy_distribution": "one clear event, structured support, readable release",
+      "subject_behavior": ["clear action", "controlled crop", "one dominant relationship"]
+    },
+    {
+      "id": "tension_assertive",
+      "name": "Assertive",
+      "empty_paper_percent": [20, 45],
+      "focal_event_count": 1,
+      "release_zone_count": 1,
+      "unresolved_edge": "optional",
+      "default_for": ["forceful declaration", "phrase-led subject", "high-contrast cultural event"],
+      "energy_distribution": "one dominant public gesture, compressed but subordinate support",
+      "subject_behavior": ["decisive crop", "public-facing gesture", "strong type-image collision"]
+    }
+  ],
+  "failure_signals": [
+    "safe headline-left complete-photo-right split",
+    "complete stock-photo person without a source image",
+    "equal emphasis across all elements",
+    "empty space filled with decorative microcopy",
+    "no focal event readable at thumbnail size"
+  ],
+  "guardrails": [
+    "Choose exactly one focal event and let every energetic secondary element extend it.",
+    "Keep one release zone visibly quieter than the focal event.",
+    "Do not confuse relaxed with uniformly small, pale, sparse, or low contrast.",
+    "Use an unresolved edge only when it strengthens the focal event or release zone.",
+    "Preserve the selected focal event and release zone across retries."
+  ]
+}

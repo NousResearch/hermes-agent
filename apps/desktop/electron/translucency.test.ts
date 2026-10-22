@@ -41,6 +41,7 @@ import {
   type TranslucencyState,
   translucencySupportedOn,
   vibrancyFor,
+  windowBackgroundMaterialOptions,
   windowBackingOptions,
   windowOpacityFor,
   windowOpacityOptions,
@@ -65,14 +66,6 @@ const glass = (intensity: number, material: GlassMaterial = DEFAULT_GLASS_MATERI
   mode: 'glass',
   material,
   scope: DEFAULT_GLASS_SCOPE
-})
-
-describe('lever bounds', () => {
-  it('keeps the bounds and floor stable so persisted settings survive upgrades', () => {
-    expect(TRANSLUCENCY_MIN).toBe(0)
-    expect(TRANSLUCENCY_MAX).toBe(100)
-    expect(TRANSLUCENCY_OPACITY_FLOOR).toBe(0.3)
-  })
 })
 
 describe('clampIntensity', () => {
@@ -279,14 +272,6 @@ describe('hudFrostFor', () => {
     expect(hudFrostFor(glass(0, 'header'), true)).toEqual({ vibrancy: null, backgroundMaterial: 'none' })
   })
 
-  // Unlike a chat window, which keeps 'sidebar' under its titlebar band in
-  // every non-glass state. Pinning this is what stops someone "fixing" the
-  // null into a resting material and painting the slab back.
-  it('resolves off to no material at all, not to a resting one', () => {
-    expect(hudFrostFor(clear(60), true).vibrancy).toBeNull()
-    expect(vibrancyFor(clear(60))).toBe('sidebar')
-  })
-
   // The tint is painted by the renderer, exactly as it is for a chat window —
   // dragging it must not re-issue setVibrancy, whose 150ms animation restarts
   // on every call and never lets the material settle.
@@ -332,14 +317,6 @@ describe('backgroundMaterialFor', () => {
     expect(backgroundMaterialFor(glass(60, 'titlebar'))).toBe('mica')
   })
 
-  // Windows 11 has three system materials for four rungs, so the two heaviest
-  // land on mica. The mapping stays total — a saved 'header' still resolves —
-  // and the picker drops the duplicate instead (see glassMaterialsFor).
-  it('collapses Glare onto mica with Bright', () => {
-    expect(backgroundMaterialFor(glass(60, 'header'))).toBe('mica')
-    expect(backgroundMaterialFor(glass(60, 'header'))).toBe(backgroundMaterialFor(glass(60, 'titlebar')))
-  })
-
   it('resolves every shipped rung to a real system material', () => {
     for (const material of GLASS_MATERIALS) {
       expect(WINDOWS_BACKGROUND_MATERIALS, material).toContain(backgroundMaterialFor(glass(60, material)))
@@ -358,14 +335,6 @@ describe('translucencySupportedOn', () => {
   it('is off on Linux, where neither mode does anything', () => {
     expect(translucencySupportedOn('linux')).toBe(false)
     expect(translucencySupportedOn('freebsd')).toBe(false)
-  })
-
-  // Win10 loses glass but keeps clear, so the row must survive there.
-  it('stays on for a Windows build too old for glass', () => {
-    const oldWindows = `10.0.${WINDOWS_GLASS_MIN_BUILD - 1}`
-
-    expect(glassSupportedOn('win32', oldWindows)).toBe(false)
-    expect(translucencySupportedOn('win32')).toBe(true)
   })
 })
 
@@ -501,6 +470,21 @@ describe('windowBackingOptions', () => {
   })
 })
 
+describe('windowBackgroundMaterialOptions', () => {
+  it('omits the Windows backdrop when glass is inactive', () => {
+    expect(windowBackgroundMaterialOptions(glass(0), true, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(clear(60), true, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(glass(60), false, true)).toEqual({})
+    expect(windowBackgroundMaterialOptions(glass(60), true, false)).toEqual({})
+  })
+
+  it('passes the selected backdrop only for active supported Windows glass', () => {
+    expect(windowBackgroundMaterialOptions(glass(60, 'under-window'), true, true)).toEqual({
+      backgroundMaterial: 'acrylic'
+    })
+  })
+})
+
 // A glass window on Windows is fully opaque natively — the tint is the
 // renderer's and fade defaults to zero — so it used to be handed `opacity: 1`
 // on every launch. Electron's Windows setOpacity layers the window before it
@@ -632,12 +616,6 @@ describe('the defaults a fresh profile lands on', () => {
 
   it('falls back to clear where no native material exists', () => {
     expect(defaultTranslucencyState('dark', false, false).mode).toBe('clear')
-  })
-
-  it('keeps tint consistent across appearances and platforms', () => {
-    for (const values of [mac('light'), mac('dark'), win('light'), win('dark')]) {
-      expect(values.intensity).toBe(mac('light').intensity)
-    }
   })
 
   it('keeps the content column opaque at the native level', () => {

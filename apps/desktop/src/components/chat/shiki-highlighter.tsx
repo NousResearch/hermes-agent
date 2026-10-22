@@ -3,6 +3,8 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
 import { type FC, lazy, Suspense, useMemo } from 'react'
 
+import { hasHttpUrlHost } from '@/app/chat/composer/url-refs'
+import { referenceRe, unquoteReferenceValue } from '@/components/assistant-ui/reference-kinds'
 import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 // Theme constants live in shiki-config (dependency-free) so the lazy shiki
@@ -13,6 +15,8 @@ import { useI18n } from '@/i18n'
 import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
 
 import type { CachedShikiBlockProps } from './shiki-block'
+import { isChunkLoadError, ShikiChunkBoundary } from './shiki-chunk-boundary'
+import { PlainShiki } from './shiki-plain'
 export { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME } from '@/components/chat/shiki-config'
 
 /**
@@ -21,6 +25,14 @@ export { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME } from '@/components/chat/shiki-c
  * `data-streamdown="code-block"` chrome from styles.css. The card is
  * background-only — no header row, no language label — so a fence reads as a
  * tinted slab of the reply; copy is a hover-reveal control in the corner.
+ *
+ * That control is inset 16px rather than hugging the corner: the card's
+ * scroller (`ExpandableBlock` / `CodeCardBody`) spans its full width and
+ * carries `.scrollbar-overlay`, which hands the card's right edge back to the
+ * platform's scrollbar lane (~15px macOS classic with a mouse attached, ~17px
+ * Windows) rather than the app's themed 4px gutter. A 6px inset sat on the
+ * bar it floats over. 16px clears macOS's lane with the control's outer box
+ * and puts the 12px icon (same size as the log-tail copy control) 20px out.
  *
  * The heavy lifting lives in the lazy `shiki-block` chunk (full bundle so all
  * `bundledLanguages` work; theme switches follow the document `color-scheme`
@@ -36,21 +48,48 @@ const MAX_HIGHLIGHT_LINES = 3_000
 const CHUNK_LINES = 200
 const EST_LINE_PX = 16
 
+// A rejected `import('./shiki-block')` re-throws at render time, past
+// Suspense (which only covers the pending state), to the nearest boundary —
+// for chat messages that's `markdown-render` (markdown-text.tsx), whose
+// fallback degrades the WHOLE reply to a raw-Markdown panel because one fence
+// couldn't load its highlighter (#95995: 229 such catches in the reporter's
+// desktop.log, all `Failed to fetch dynamically imported module:
+// …shiki-block-Dcm1B2nM.js`). Chunk-load failures get exactly one retry —
+// some are transient (renderer suspending mid-fetch, asar unpack racing the
+// first highlight) — and ShikiChunkBoundary below degrades any persistent
+// failure to plain code instead of letting it take the message down.
+function importShikiBlock() {
+  return import('./shiki-block').catch((error: unknown) => {
+    if (isChunkLoadError(error)) {
+      return import('./shiki-block')
+    }
+
+    throw error
+  })
+}
+
 // shiki (and through it the multi-MB grammar/theme/wasm bundle) is the
 // heaviest dependency in the renderer. `shiki-block.tsx` is its only static
 // importer, so this lazy() is the single seam that keeps shiki out of the
 // entry chunk — it loads on the first highlighted code block, not at boot.
 // The lazy module is cache-aware (#95595): unchanged blocks paint from a
 // content-keyed cache instead of re-tokenizing on every mount.
-const ShikiBlock = lazy(() => import('./shiki-block'))
+const ShikiBlock = lazy(importShikiBlock)
 
 /** Suspends on first use and renders the code as plain preformatted text
  *  until the shiki chunk arrives. Highlighted output is cached by
- *  (theme, language, code), so revisits never re-tokenize (#95595). */
+ *  (theme, language, code), so revisits never re-tokenize (#95595).
+ *
+ *  A chunk that fails to LOAD (as opposed to render) is caught locally: the
+ *  fence degrades to the same plain block the Suspense fallback shows, the
+ *  warn in ShikiChunkBoundary keeps desktop.log diagnosable, and the rest of
+ *  the message keeps rendering through Streamdown (#95995). */
 export const LazyShiki: FC<CachedShikiBlockProps> = ({ language, code, theme, colorReplacements }) => (
-  <Suspense fallback={<PlainCode code={code} />}>
-    <ShikiBlock code={code} colorReplacements={colorReplacements} language={language} theme={theme} />
-  </Suspense>
+  <ShikiChunkBoundary fallback={<PlainShiki code={code} />}>
+    <Suspense fallback={<PlainShiki code={code} />}>
+      <ShikiBlock code={code} colorReplacements={colorReplacements} language={language} theme={theme} />
+    </Suspense>
+  </ShikiChunkBoundary>
 )
 
 export function exceedsHighlightBudget(code: string): boolean {
@@ -116,6 +155,15 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   )
 }
 
+/** Convert URL references back to literal URLs for code-block clipboard text. */
+export function copyableCodeText(code: string): string {
+  return code.replace(referenceRe(), (directive, kind: string, value: string) => {
+    const url = unquoteReferenceValue(value)
+
+    return kind === 'url' && hasHttpUrlHost(url) ? url : directive
+  })
+}
+
 export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   components: { Pre },
   language,
@@ -142,11 +190,11 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
     <CodeCard data-streaming={defer ? 'true' : undefined}>
       <CopyButton
         appearance="inline"
-        className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
-        iconClassName="size-2.5"
+        className="absolute right-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
+        iconClassName="size-3"
         label={t.assistant.tool.copyCode}
         showLabel={false}
-        text={content}
+        text={() => copyableCodeText(content)}
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>

@@ -81,7 +81,7 @@ def test_validator_flags_ssh_key_persistence_payload():
 
 
 def test_explicit_registration_skips_dangerous_entry_before_connect(monkeypatch):
-    import tools.mcp_tool as mcp_tool
+    from tools import mcp_tool
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools import mcp_tool_loop as _mcp_loop
 
@@ -130,7 +130,7 @@ def test_explicit_registration_skips_dangerous_entry_before_connect(monkeypatch)
 
 
 def test_migration_disables_existing_dangerous_entry(tmp_path):
-    import yaml
+    import hermes_yaml as yaml
 
     from hermes_cli.config import load_config, migrate_config
 

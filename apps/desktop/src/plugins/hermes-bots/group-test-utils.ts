@@ -26,6 +26,7 @@ import { vi } from 'vitest'
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
   content: string
+  display_kind?: string
   role: string
 }
 
@@ -77,6 +78,8 @@ export interface RpcCall {
   params: Record<string, unknown>
   /** Socket refcount after this request released its own lease. */
   refcountAfter: number
+  spawnPriority?: 'background' | 'foreground'
+  timeoutMs?: number
 }
 
 export interface GatewayOptions {
@@ -84,12 +87,16 @@ export interface GatewayOptions {
   busyResumes?: Record<string, number>
   /** Per profile: carry `pending_approval` on its first `until` resumes. */
   approvalUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
-  /** Per profile: carry `pending_clarify` on its first `until` resumes. */
+  /** Per profile: carry open server requests on its first `until` resumes. */
+  /** `payload` is an open-request frame `{ id, method: 'clarify', params }`. */
   clarifyUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
   /** Land a competing writer's `ui_meta` under `key` during the FIRST
    *  `profiles.configure`, then reject it as a CAS conflict — the race the
    *  sync worker's pull-merge-retry exists for. */
   conflictOnce?: { key: string; value: unknown }
+  /** Reject attach RPCs whose method is in this map — after recording the call
+   *  so tests can see the staging attempt even when it throws. */
+  failAttach?: Record<string, unknown>
   /** Reject every prompt.submit with this — a fatal, non-recoverable failure. */
   failEverySubmitWith?: unknown
   /** Reject only the FIRST prompt.submit — the 4001 reap the retry recovers. */
@@ -98,6 +105,10 @@ export interface GatewayOptions {
   onResumePoll?: (polls: number) => void
   /** Report the member inflight for the first N post-submit polls. */
   pollsBusy?: number
+  /** After a submit, every resume replays the gateway's RETAINED failed turn
+   *  (`inflight: { status: 'error', error }`, `running: false`) instead of a
+   *  reply — the snapshot `_fail_inflight_turn` leaves for reconnecting clients. */
+  retainedErrorAfterSubmit?: string
   turn?: TurnScript
 }
 
@@ -119,6 +130,8 @@ export interface ScriptedGateway {
   rpc: RpcCall[]
   /** Filter `rpc` by method. */
   rpcFor: (method: string) => RpcCall[]
+  /** Route retentions acquired for explicit multi-RPC member turns. */
+  retains: Array<{ spawnPriority?: 'background' | 'foreground' }>
   /** Live socket refcount — zero between turns, never zero during one. */
   refcount: () => number
   /** Sessions by stored id, so a test can pre-seed a finished transcript. */
@@ -142,6 +155,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
   const calls: PromptCall[] = []
   const attaches: AttachCall[] = []
   const rpc: RpcCall[] = []
+  const retains: Array<{ spawnPriority?: 'background' | 'foreground' }> = []
   const timeline: string[] = []
   const storage = new Map<string, unknown>()
   const uiMeta: Record<string, unknown> = {}
@@ -162,7 +176,58 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     return stored ? sessions.get(stored) || null : null
   }
 
+  // `profiles.configure`: CAS-checked ui_meta writes, with an optional one-shot conflict.
+  const configureProfiles = (params: Record<string, unknown>) => {
+    if (options.conflictOnce && !conflicted) {
+      conflicted = true
+      const { key, value } = options.conflictOnce
+      uiMeta[key] = value
+      uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
+
+      return {
+        applied: {
+          ui_meta: false,
+          ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key], expected: uiMetaRevisions[key] - 1 } },
+          ui_meta_revisions: { ...uiMetaRevisions }
+        }
+      }
+    }
+
+    const expected = params.ui_meta_expected_revisions as Record<string, number> | undefined
+    const incoming = (params.ui_meta || {}) as Record<string, unknown>
+
+    if (expected) {
+      for (const key of Object.keys(incoming)) {
+        if ((uiMetaRevisions[key] || 0) !== expected[key]) {
+          return {
+            applied: {
+              ui_meta: false,
+              ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key] || 0, expected: expected[key] } }
+            }
+          }
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(incoming)) {
+      if (value === null) {
+        delete uiMeta[key]
+      } else {
+        uiMeta[key] = value
+      }
+
+      uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
+    }
+
+    return { applied: { ui_meta: true, ui_meta_revisions: { ...uiMetaRevisions } } }
+  }
+
   const handle = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+    // A legacy Desktop room: no hosted-room driver, nonpersistent owner.
+    if (method === 'groups.capabilities') {
+      return { driver: false, persistent_process: false }
+    }
+
     if (method === 'profiles.list') {
       return {
         profiles: [{ name: 'default', ui_meta: { ...uiMeta }, ui_meta_revisions: { ...uiMetaRevisions } }]
@@ -170,48 +235,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     }
 
     if (method === 'profiles.configure') {
-      if (options.conflictOnce && !conflicted) {
-        conflicted = true
-        const { key, value } = options.conflictOnce
-        uiMeta[key] = value
-        uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
-
-        return {
-          applied: {
-            ui_meta: false,
-            ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key], expected: uiMetaRevisions[key] - 1 } },
-            ui_meta_revisions: { ...uiMetaRevisions }
-          }
-        }
-      }
-
-      const expected = params.ui_meta_expected_revisions as Record<string, number> | undefined
-      const incoming = (params.ui_meta || {}) as Record<string, unknown>
-
-      if (expected) {
-        for (const key of Object.keys(incoming)) {
-          if ((uiMetaRevisions[key] || 0) !== expected[key]) {
-            return {
-              applied: {
-                ui_meta: false,
-                ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key] || 0, expected: expected[key] } }
-              }
-            }
-          }
-        }
-      }
-
-      for (const [key, value] of Object.entries(incoming)) {
-        if (value === null) {
-          delete uiMeta[key]
-        } else {
-          uiMeta[key] = value
-        }
-
-        uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
-      }
-
-      return { applied: { ui_meta: true, ui_meta_revisions: { ...uiMetaRevisions } } }
+      return configureProfiles(params)
     }
 
     if (method === 'session.create') {
@@ -265,14 +289,19 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       const clarify = options.clarifyUntil?.[session.profile]
       const approval = options.approvalUntil?.[session.profile]
 
+      const retained =
+        options.retainedErrorAfterSubmit && session.messages.at(-1)?.role === 'user'
+          ? { error: options.retainedErrorAfterSubmit, status: 'error', streaming: false }
+          : null
+
       return {
-        inflight: busy,
+        inflight: retained ?? busy,
         message_count: busy ? 0 : session.messages.length,
         messages: busy || params.omit_messages ? [] : [...session.messages],
         running: false,
         session_id: session.runtime,
         session_key: session.stored,
-        ...(clarify && seen <= clarify.until ? { pending_clarify: clarify.payload } : {}),
+        ...(clarify && seen <= clarify.until ? { open_requests: [clarify.payload] } : {}),
         ...(approval && seen <= approval.until ? { pending_approval: approval.payload } : {})
       }
     }
@@ -292,6 +321,10 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
         profile: session.profile,
         runtime: String(params.session_id ?? '')
       })
+
+      if (Object.hasOwn(options.failAttach ?? {}, method)) {
+        throw options.failAttach![method]
+      }
 
       return method === 'file.attach'
         ? { attached: true, ref_text: `@file:attachments/${String(params.name ?? 'attachment')}` }
@@ -349,7 +382,13 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     notify: vi.fn(),
     notifyError: vi.fn(),
     request: async (method: string, params: Record<string, unknown> = {}) => record(method, params),
-    requestProfile: async (_route: unknown, method: string, params: Record<string, unknown> = {}) => {
+    requestProfile: async (
+      _route: unknown,
+      method: string,
+      params: Record<string, unknown> = {},
+      timeoutMs?: number,
+      options?: { spawnPriority?: 'background' | 'foreground' }
+    ) => {
       refcount += 1
 
       try {
@@ -361,11 +400,12 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
           disposals += 1
         }
 
-        rpc.push({ method, params, refcountAfter: refcount })
+        rpc.push({ method, params, refcountAfter: refcount, spawnPriority: options?.spawnPriority, timeoutMs })
         timeline.push(method)
       }
     },
-    retainProfile: async () => {
+    retainProfile: async (_route: unknown, options?: { spawnPriority?: 'background' | 'foreground' }) => {
+      retains.push({ spawnPriority: options?.spawnPriority })
       timeline.push('retain')
       refcount += 1
       let released = false
@@ -400,6 +440,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     refcount: () => refcount,
     rpc,
     rpcFor: (method: string) => rpc.filter(entry => entry.method === method),
+    retains,
     sessions,
     storage,
     timeline,
@@ -414,8 +455,12 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
  *  the `vi.mock` factory rather than hoisted alongside it. */
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
+  const { Textarea } = await import('@/components/ui/textarea')
 
   return {
+    Textarea,
+    // Real value: approval.respond forwards it as its client deadline (#60654).
+    APPROVAL_RESPOND_TIMEOUT_MS: 300_000,
     atom: nanostores.atom,
     // Feature-detected SDK members: the modules read them off the namespace
     // and fall back when absent, but vitest rejects a namespace access with
@@ -424,8 +469,11 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     blobatarSvg: undefined,
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
+    gatewayActivationEpoch: () => 0,
+    GlyphSpinner: () => null,
     host,
-    SkillsView: undefined,
+    CapabilitiesView: undefined,
+    MessageTextContent: undefined,
     Streamdown: undefined,
     queryClient: { invalidateQueries: () => undefined },
     useQuery: () => ({ data: [], isLoading: false }),

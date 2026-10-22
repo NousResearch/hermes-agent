@@ -198,27 +198,27 @@ class GatewayTurnPersistenceMixin:
         return t("gateway.reasoning.block", reasoning=display_reasoning, response=response)
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
-        """Runtime-metadata footer for the FINAL message of the turn; off by default
-        (display.runtime_footer.enabled=false). Never on a finite (`-z`, `chat -q`) turn: its reply is
-        the printed answer itself."""
+        """Render the opted-in final-message footer outside finite viewer turns."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         from gateway.session_finite import finite_turn_required
+        from gateway.runtime_footer import build_footer_line
+
         if finite_turn_required() is True:
             return ""
-        try:
-            from gateway.runtime_footer import build_footer_line as _bfl
-            return _bfl(
-                user_config=_load_gateway_config(),
-                platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
-                context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
-                context_length=agent_result.get("context_length") or None,
-                cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
-                requested_model=agent_result.get("requested_model"),
-                served_model=agent_result.get("served_model"),
-            )
-        except Exception as _footer_err:
-            logger.debug("runtime_footer build failed: %s", _footer_err)
-            return ""
+        return build_footer_line(
+            user_config=_load_gateway_config(), platform_key=_platform_config_key(source.platform),
+            model=agent_result.get("model"), context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+            context_length=agent_result.get("context_length") or None,
+            cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+            tokens_in=agent_result.get("turn_input_tokens"), tokens_out=agent_result.get("turn_output_tokens"),
+            cache_read_tokens=agent_result.get("turn_cache_read_tokens"),
+            cache_write_tokens=agent_result.get("turn_cache_write_tokens"),
+            token_usage_status=agent_result.get("token_usage_status"),
+            cache_usage_status=agent_result.get("cache_usage_status"),
+            context_usage_status=agent_result.get("context_usage_status"),
+            reasoning_effort=agent_result.get("reasoning_effort"),
+            requested_model=agent_result.get("requested_model"), served_model=agent_result.get("served_model"),
+        )
 
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""

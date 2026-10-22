@@ -1281,6 +1281,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             local_sinks = local_viewer_events.wire(self, agent)
             from gateway.session_usage import TURN_BASE_ATTR
             setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
+        from gateway.runtime_footer import capture_turn_usage_baseline
         try:
             agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
             persist_msg, persist_ts = self._prepare_turn_message(agent_history)
@@ -1288,6 +1289,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway.session_cli_turn import run_classic_cli_turn
             from gateway.session_secret_prompt import secret_prompt_scope
             from gateway.session_sudo_prompt import sudo_prompt_scope
+            runtime_usage_baseline = capture_turn_usage_baseline(agent)
             with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent):
                 result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
                     agent, agent_history, observed_group_context, persist_msg, persist_ts))
@@ -1311,21 +1313,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # returns, so early run_sync returns are also finalised.
         # See the outer finally/completion section below. See #60671.
         final_response = result.get("final_response")
-        # Actual token counts from the agent instance used for this run.
+        # Final runtime identity plus provider-reported deltas for this turn.
         agent = ctx.agent_holder[0]
-        has_comp = bool(agent) and hasattr(agent, "context_compressor")
-        comp = agent.context_compressor if has_comp else None
-        usage = {
-            "last_prompt_tokens": getattr(comp, "last_prompt_tokens", 0) if has_comp else 0,
-            "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
-            "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
-            "model": getattr(agent, "model", None) if agent else None,
-            "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
-            # The rest of the `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS): a finite
-            # viewer reads the committed result over `prompt.receipt`, so the projection must keep
-            # what the in-process one-shot took straight from `run_conversation`.
-            **{key: result.get(key) for key in _LEDGER_PASSTHROUGH_KEYS if key in result},
-        }
+        from gateway.runtime_footer import _gateway_turn_runtime_metadata
+        usage = _gateway_turn_runtime_metadata(agent, **runtime_usage_baseline, result_api_calls=result.get("api_calls"))
+        usage.update({key: result.get(key) for key in ("requested_model", "served_model")})
+        usage.update({key: result.get(key) for key in _LEDGER_PASSTHROUGH_KEYS if key in result})
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure
         # persistence). compression_deferred (soft lock-contention defer) is distinct from

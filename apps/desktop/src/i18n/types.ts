@@ -972,6 +972,15 @@ catalog: CatalogTranslations
       accessibility: string
       screenRecording: string
       driverHealth: string
+      targetTitle: string
+      targetAutomatic: string
+      targetWindows: string
+      targetLinux: string
+      targetAutomaticDescription: string
+      targetWindowsDescription: string
+      targetLinuxDescription: string
+      effectiveDriver: (platform: string) => string
+      driverCommand: string
     }
     about: { updates: string; channel: UpdateChannelCopy }
     config: {

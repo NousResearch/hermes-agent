@@ -1185,7 +1185,17 @@ export const en: Translations = {
     computerUse: {
       accessibility: 'Accessibility',
       screenRecording: 'Screen Recording',
-      driverHealth: 'Driver health'
+      driverHealth: 'Driver health',
+      targetTitle: 'Run Computer Use on',
+      targetAutomatic: 'Automatic',
+      targetWindows: 'Windows host',
+      targetLinux: 'Linux guest',
+      targetAutomaticDescription:
+        'Keeps the existing driver resolution. Select Windows host to discover its Windows installation explicitly.',
+      targetWindowsDescription: 'Runs cua-driver on the Windows host and reaches it through WSL.',
+      targetLinuxDescription: 'Runs cua-driver inside this WSL Linux guest.',
+      effectiveDriver: platform => `Effective driver: ${platform}`,
+      driverCommand: 'Driver command'
     },
     about: { updates: 'Updates', channel: enUpdateChannel },
     config: {

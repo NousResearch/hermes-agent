@@ -22,6 +22,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent
+from gateway.response_filters import is_machinery_display_kind
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -530,6 +531,7 @@ class GatewayTurnPersistenceMixin:
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,
         agent_result, agent_messages, response, _footer_line, _intentional_silence,
+        persist_user_display_kind: Optional[str] = None,
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
@@ -539,6 +541,13 @@ class GatewayTurnPersistenceMixin:
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
+
+        # Self-injected machinery has no human requester to act on provider retry guidance.
+        # Keep its failed-turn boundary in the transcript, but never deliver that copy to chat.
+        _delivery_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
+        if agent_result.get("failed") and is_machinery_display_kind(_delivery_kind):
+            logger.info("Suppressing failed machinery turn response for session %s", session_entry.session_id)
+            return ""
 
         adapter = self._delivery_adapter_for(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.

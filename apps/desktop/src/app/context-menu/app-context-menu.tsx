@@ -323,9 +323,8 @@ function domSections(
     )
   }
 
-  // A plugin's rows go FIRST, above the app's own -- the same place the
-  // built-in spell-check suggestions sit, so a suggestion reads as the top
-  // item of the menu.
+  // A plugin's rows go FIRST, above the app's own, so a contributed row
+  // reads as the top item of the menu.
   if (pluginRows.top.length) {
     sections.push(
       pluginRows.top.map((row, index) => (

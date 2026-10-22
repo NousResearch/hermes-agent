@@ -604,8 +604,7 @@ The `rows` callback receives the context of the click that opened the menu:
 | `selectedText` | the current selection in the field |
 
 A row is `{ label, onSelect, icon?, disabled? }`. `position` is `'top'`
-(default — above the app's own rows, where spell-check suggestions sit) or
-`'bottom'` (after them). Rows are resolved when the menu opens.
+(default — above the app's own rows) or `'bottom'` (after them). Rows are resolved when the menu opens.
 
 Your `rows` callback runs inside the app's error boundary: a plugin that
 throws contributes nothing rather than taking the menu down. A plugin that

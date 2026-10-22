@@ -546,8 +546,8 @@ def _codex_reset_guard(payload: dict, available: int, force: bool) -> Optional[C
     )
 
 
-def _codex_reset_outcome(body: dict, available: int) -> CodexResetRedeemResult:
-    """Map the consume response ``code`` to a result (``reset`` also lifts persisted pool cooldowns)."""
+def _codex_reset_outcome(body: dict, available: int, access_token: str) -> CodexResetRedeemResult:
+    """Map the consume response ``code`` to a result and unfreeze only the redeemed pool credential."""
     code = str(body.get("code", "") or "").strip().lower()
     remaining = max(0, available - 1)
     outcomes: dict[str, tuple[str, int]] = {
@@ -565,7 +565,7 @@ def _codex_reset_outcome(body: dict, available: int) -> CodexResetRedeemResult:
         # stale ``last_error_reset_at``.
         try:
             from hermes_cli.auth import clear_codex_pool_quota_cooldowns
-            clear_codex_pool_quota_cooldowns()
+            clear_codex_pool_quota_cooldowns(access_token)
         except Exception:
             logger.debug("Failed to clear Codex pool cooldowns after reset redemption", exc_info=True)
         raw = body.get("windows_reset")
@@ -625,7 +625,7 @@ def redeem_codex_reset_credit(
         return _unavailable(f"Codex backend error (HTTP {code}) — try again shortly.")
     except Exception as exc:
         return _unavailable(f"Could not reach the Codex backend: {exc}")
-    return _codex_reset_outcome(body, available)
+    return _codex_reset_outcome(body, available, token)
 
 
 def _fetch_anthropic_account_usage(

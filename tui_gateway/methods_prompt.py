@@ -837,6 +837,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    # `_sess_nowait` resolves a stored id to the live runtime, but `sid` above is still whatever the
+    # client sent. Everything after this (_reattach_refusal, the orphan-reap cancel, the agent build,
+    # slot limits) looks `_sessions` up by `sid`, so an un-rekeyed id 4007s "session no longer live;
+    # retry resume" on every prompt to a resumed session — after a resume that just succeeded.
+    sid = _resolve_client_session_id(sid, session)
     from tools.bot_relay import DeliveryAuthor
 
     # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.

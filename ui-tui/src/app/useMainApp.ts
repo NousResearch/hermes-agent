@@ -480,7 +480,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  // Trail placement changes separator height, so it owns a measurement bucket.
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}:${ui.toolTrailPosition}`
 
   // Build a render-local snapshot. Registering/pruning the shared cache is a
   // post-commit transition below, so an abandoned concurrent render cannot
@@ -497,9 +498,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [activeHeightCache, heightCacheKey, historyGeneration, virtualRows])
 
-  // Index of the first user-role message — separator-rendering in
-  // appLayout.tsx skips this row, so the height estimator must skip it
-  // too. -1 when no user message exists yet (no row will gate true).
+  // Match appLayout's first-user separator exemption; -1 means no user row.
   const firstUserIdx = useMemo(() => virtualRows.findIndex(r => r.msg.role === 'user'), [virtualRows])
 
   const estimateRowHeight = useCallback(
@@ -518,6 +517,7 @@ export function useMainApp(gw: GatewayClient) {
         thinkingExpanded: historyThinkingExpanded,
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
+        toolTrailPosition: ui.toolTrailPosition,
         userPrompt: ui.theme.brand.prompt,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
@@ -533,6 +533,7 @@ export function useMainApp(gw: GatewayClient) {
       ui.detailsModeCommandOverride,
       ui.sections,
       ui.theme.brand.prompt,
+      ui.toolTrailPosition,
       virtualRows
     ]
   )

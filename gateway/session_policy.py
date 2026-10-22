@@ -1044,14 +1044,30 @@ def policy_for_source(runner, source):
     return None
 
 
+def workspace_ready(policy) -> bool:
+    """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
+    turn runs in a missing directory."""
+    return Path(policy.cwd).is_dir()
+
+
+def workspace_unavailable_result(policy) -> dict:
+    """A failed, never-run turn for a session whose frozen working directory is gone. Nothing ran
+    and an unchanged resend fails the same way, so the reply names the folder and the way out
+    instead of the generic "something went wrong" apology."""
+    from agent.i18n import t
+    from agent.turn_failure_copy import stamp_failure
+    text = t("gateway.errors.workspace_unavailable", path=policy.cwd)
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": text},
+                         "workspace_unavailable", False)
+
+
 @contextmanager
 def policy_scope(policy, *, authority=None):
     if policy is None:
         yield
         return
-    # Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
-    # turn runs in a missing directory.
-    if not Path(policy.cwd).is_dir():
+    if not workspace_ready(policy):
         raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope

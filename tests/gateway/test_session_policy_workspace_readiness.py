@@ -61,3 +61,71 @@ async def test_turn_in_removed_workspace_names_the_folder_instead_of_failing_gen
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.platforms("linux")
+def test_managed_turn_in_removed_workspace_settles_failed_and_never_parks_the_queue(tmp_path):
+    """Safe-mode and config-only sessions run their turns in a managed worker. A removed folder used
+    to crash that worker in its policy scope, which the owner records as a LOST execution: the turn
+    settled ``unknown`` and every later message stayed queued behind it even after the folder came
+    back. Real gateway, real worker, loopback model."""
+    import asyncio
+    import json
+    import sqlite3
+    import threading
+    from http.server import ThreadingHTTPServer
+    from pathlib import Path
+
+    from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
+    from tests.waiting import async_wait_until
+
+    root = Path(__file__).resolve().parents[2]
+    home, user, folder = tmp_path / 'state', tmp_path / 'user', tmp_path / 'project'
+    home.mkdir(mode=0o700)
+    user.mkdir()
+    folder.mkdir()
+    peer = ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    peer.requests, peer.blocked, peer.release = [], threading.Event(), threading.Event()
+    threading.Thread(target=peer.serve_forever, daemon=True).start()
+    url = f'http://127.0.0.1:{peer.server_port}/v1'
+    (home / 'config.yaml').write_text(json.dumps({
+        'gateway': {'multiplex_profiles': False}, 'model': {'provider': 'custom', 'default': 'm', 'base_url': url},
+        'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': []}}))
+    env = child_env()
+    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
+               OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1')
+
+    def admission(name):
+        with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+            return db.execute('SELECT status, outcome FROM session_admissions WHERE request_id=?', (name,)).fetchone()
+
+    async def drive(desc):
+        async with websocket(home, desc) as ws:
+            created = await rpc(ws, 'session.create', request_id='safe', source='cli', cwd=str(folder),
+                                toolsets=[], safe_mode=True,  # a bypass launch names its own route
+                                model='m', provider='custom', base_url=url, api_key='loopback-only')
+            assert 'result' in created, created
+            sid = created['result']['session_id']
+            folder.rmdir()
+            sent = await rpc(ws, 'prompt.submit', session_id=sid, input_id='gone', text='NEVER_RUN')
+            await async_wait_until(lambda: (admission('gone') or ('',))[0] in ('terminal', 'unknown'),
+                                   timeout=60, what='refused turn settled')
+            assert admission('gone') == ('terminal', 'failed')
+            receipt = await rpc(ws, 'prompt.receipt', session_id=sid, admission_id=sent['result']['admission_id'],
+                                include_result=True)
+            result = receipt['result']['result']
+            assert result['failure_reason'] == 'workspace_unavailable' and result['api_calls'] == 0, result
+            assert str(folder) in result['final_response']
+            folder.mkdir()
+            await rpc(ws, 'prompt.submit', session_id=sid, input_id='back', text='FOLDER_BACK')
+            await async_wait_until(lambda: (admission('back') or ('',))[0] == 'terminal',
+                                   timeout=60, what='turn after the folder came back ran')
+            assert admission('back') == ('terminal', 'completed')
+
+    try:
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
+            asyncio.run(drive(desc))
+    finally:
+        peer.shutdown()
+    sent_texts = json.dumps(peer.requests)
+    assert 'NEVER_RUN' not in sent_texts and 'FOLDER_BACK' in sent_texts

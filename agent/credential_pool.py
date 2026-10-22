@@ -5,6 +5,7 @@ from __future__ import annotations
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
+from agent.credential_pool_unmatched_rotation import CredentialPoolUnmatchedRotationMixin
 
 import logging
 import os
@@ -963,7 +964,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin, CredentialPoolUnmatchedRotationMixin):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -2213,45 +2214,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
         return entry
 
-    def _rotate_unmatched(self) -> Optional[PooledCredential]:
-        """Rotate without marking anything when the failed identity matches no entry.
-
-        Falling through to current()/_select_unlocked() would bench an
-        innocent healthy key for the full TTL. But this must be BOUNDED
-        (#70401): with OAuth-token auth the 401's key hint never matches any
-        ``runtime_api_key``, so every retry lands here, nothing is marked, and
-        the caller retries the same dead token forever (~6/sec, starving the
-        event loop). Cap consecutive no-mark rotations at one lap of the
-        available entries, then surface the error; no cooldown is written.
-        """
-        self._unmatched_rotation_streak += 1
-        available_count = len(self._available_entries()[0])
-        if self._unmatched_rotation_streak > max(available_count, 1):
-            logger.warning(
-                "credential pool: failed credential identity matched no "
-                "%s entry for %d consecutive rotations (pool size %d) — "
-                "surfacing the error instead of rotating again",
-                self.provider, self._unmatched_rotation_streak, available_count,
-            )
-            self._unmatched_rotation_streak = 0
-            self._current_id = None
-            return None
-        logger.info(
-            "credential pool: failed credential identity matched no %s "
-            "entry; rotating without marking any credential exhausted",
-            self.provider,
-        )
-        self._current_id = None
-        next_entry, _pending = self._select_unlocked(refresh=False)
-        if next_entry is not None and len(self._available_entries()[0]) == 1:
-            # A single-entry pool cannot rotate: returning its only entry would
-            # report a recovery without changing the credential, and the
-            # caller retries the same 401 indefinitely.
-            self._unmatched_rotation_streak = 0
-            self._current_id = None
-            return None
-        return next_entry
-
     def mark_exhausted_and_rotate(
         self,
         *,
@@ -2262,11 +2224,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         failure_reason: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
+        handled, next_entry = self._try_unmatched_rotation(credential_id, api_key_hint)
+        if handled:
+            return next_entry
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
             entry = self._identify_failed_entry(credential_id, api_key_hint)
             if entry is None and identity_supplied:
-                return self._rotate_unmatched()
+                # The identity stopped matching between the two lock holds: rotate as above, without
+                # the deferred refresh (the next select() refreshes it).
+                return self._rotate_unmatched(self._entry_tokens())[0]
             # A real entry was identified — any prior unmatched streak is stale.
             self._unmatched_rotation_streak = 0
             if entry is None:

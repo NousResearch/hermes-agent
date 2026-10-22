@@ -6,20 +6,21 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.session_contract import SessionRef
+from gateway.session_contract import SessionHandle, SessionRef, SubscriptionSnapshot
 from gateway.session_controls import AuthorityConnection
 
 
 def _attach_snapshot(owner_ref):
-    return SimpleNamespace(
+    return SubscriptionSnapshot(
         subscription_id='sub',
         history=(),
         pending=(),
         prompts=(),
         replay_epoch='e',
         last_sequence=0,
-        handle=SimpleNamespace(
+        handle=SessionHandle(
             ref=owner_ref,
+            instance_id="one",
             execution_state='idle',
             authority_epoch=1,
             revision=1,

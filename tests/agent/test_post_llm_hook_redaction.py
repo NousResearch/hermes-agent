@@ -7,7 +7,8 @@ the next API call sends must keep their exact bytes or the prompt cache breaks.
 """
 from __future__ import annotations
 
-import inspect
+import logging
+import types
 
 import pytest
 
@@ -57,6 +58,29 @@ def test_no_hook_means_no_masking_work(hook_off):
     assert history[0] is messages[0], "nothing should be copied or scanned when no hook is registered"
 
 
-def test_the_dispatch_uses_it():
-    source = inspect.getsource(turn_finalizer._apply_output_hooks)
-    assert "conversation_history=_hook_history(messages)" in source
+def _stub_agent():
+    return types.SimpleNamespace(
+        session_id="s-1", model="m-1", _persist_disabled=False, platform="cli",
+    )
+
+
+def test_the_dispatch_hands_the_hook_masked_text(monkeypatch, hook_on):
+    """End of the chain: what a plugin actually receives from a finished turn."""
+    captured = {}
+
+    def fake_invoke(name, logger, **kwargs):
+        if name == "post_llm_call":
+            captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(turn_finalizer, "_invoke_hook_safely", fake_invoke)
+    messages = [{"role": "user", "content": f"my token is {FAKE_GITHUB}"}]
+
+    turn_finalizer._apply_output_hooks(
+        _stub_agent(), "done", logging.getLogger("test"), platform="cli",
+        effective_task_id="t-1", turn_id="turn-1", original_user_message="hi",
+        messages=messages,
+    )
+
+    assert FAKE_GITHUB not in captured["conversation_history"][0]["content"]
+    assert messages[0]["content"] == f"my token is {FAKE_GITHUB}", "the live turn was mutated"

@@ -1564,6 +1564,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("POST", "/api/sessions/{session_id}/subagents/{subagent_id}/stop", self._handle_session_subagent_stop),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -2353,6 +2354,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         runner = getattr(self, "gateway_runner", None)
         features = {
             "chat_completions": True, "chat_completions_streaming": True,
+            "session_subagent_stop": True,
             "responses_api": True, "responses_streaming": True, "run_submission": True,
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
             **_STATIC_FEATURE_FLAGS,
@@ -2638,6 +2640,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err and err.startswith("title:"):
             return _error_response(err[len("title:"):], 400, code="invalid_title")
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
+
+    @_require_auth
+    async def _handle_session_subagent_stop(self, request: web.Request) -> web.Response:
+        from gateway.platforms.api_server_subagents import stop_session_subagent
+        return await stop_session_subagent(self, request)
 
     @_require_auth
     async def _handle_get_session(self, request: web.Request) -> web.Response:

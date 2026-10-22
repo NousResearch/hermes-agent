@@ -123,6 +123,39 @@ class TestReadAttachmentBytes:
 
 class TestCacheDiscordImage:
 
+    @pytest.mark.asyncio
+    async def test_authenticated_read_caches_named_image(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        from gateway.platforms import base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        adapter = _make_adapter()
+        att = _make_attachment_with_read(_PNG_BYTES)
+        att.filename = "Quarterly chart.png"
+
+        path = Path(await adapter._cache_discord_image(att, ".png"))
+
+        assert path.parent == tmp_path
+        assert path.name.endswith("_Quarterly-chart.png")
+        assert path.read_bytes() == _PNG_BYTES
+        att.read.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_forwards_the_discord_attachment_filename(self):
+        adapter = _make_adapter()
+        att = _make_attachment_with_read(_PNG_BYTES)
+        att.filename = "Screenshot 2026-09-15.png"
+
+        with patch(
+            "plugins.platforms.discord.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/image.png"),
+        ) as mock_bytes:
+            result = await adapter._cache_discord_image(att, ".png")
+
+        assert result == "/tmp/image.png"
+        mock_bytes.assert_awaited_once_with(
+            _PNG_BYTES, ext=".png", filename="Screenshot 2026-09-15.png"
+        )
 
     @pytest.mark.asyncio
     async def test_falls_back_to_url_when_bytes_validator_rejects(self):
@@ -143,7 +176,9 @@ class TestCacheDiscordImage:
             result = await adapter._cache_discord_image(att, ".png")
 
         assert result == "/tmp/fallback.png"
-        mock_url.assert_awaited_once()
+        mock_url.assert_awaited_once_with(
+            att.url, ext=".png", filename="file.png"
+        )
 
 
 # ---------------------------------------------------------------------------

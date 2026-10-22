@@ -199,6 +199,13 @@ VALID_HOOKS: set[str] = {
     # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
     "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
+    # Render-transform: append an extra section to the end of the `/usage` render, after the
+    # account/credits blocks, on every `/usage` path (with or without a live agent). Callbacks
+    # return a string block; non-empty blocks are printed in registration order. Fail-open: a
+    # callback error is logged and skipped, never aborting `/usage`.
+    #   Kwargs: provider, base_url, session_id (no credentials — read your own).
+    # Concrete consumer: rarf/hermes-quota-plugin (precomputed cache, no network I/O).
+    "transform_usage_extra",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

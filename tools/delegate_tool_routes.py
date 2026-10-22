@@ -142,32 +142,55 @@ def child_profile_scope(child: Any) -> contextlib.AbstractContextManager:
     return delegated_profile_scope(getattr(child, "_delegate_profile_home", None))
 
 
+def _profile_model_request(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """``resolve_runtime_provider`` kwargs for a profile's primary model, decoded by the same owner CLI startup
+    uses (``resolve_startup_model_route``): a ``model.default`` alias takes the alias's model, endpoint and key."""
+    from hermes_cli.model_switch import resolve_startup_model_route
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        model = model_cfg.get("default") or model_cfg.get("model")
+        cfg_provider = str(model_cfg.get("provider") or "").strip()
+    else:
+        model, cfg_provider = (model_cfg if isinstance(model_cfg, str) else None), ""
+    request: dict[str, Any] = {"target_model": model or None}
+    if not isinstance(model, str) or not model.strip():
+        return request
+    startup = resolve_startup_model_route(
+        model, current_provider=cfg_provider.lower(), user_providers=cfg.get("providers"),
+        custom_providers=cfg.get("custom_providers"), alias_config=dict(cfg))
+    if startup is not None:
+        request = {"target_model": startup.model, "requested": startup.provider or None,
+                   "explicit_base_url": startup.base_url or None, "explicit_api_key": startup.api_key or None}
+    return request
+
+
 def _profile_route(home: Path, label: Optional[str]) -> TaskRoute:
     """The profile's own primary route, resolved inside its scope (its config.yaml + secrets). The
-    child never borrows the launching profile's key, pool or fallback chain."""
+    child never borrows the launching profile's key, pool, fallback chain or reasoning level."""
     from hermes_cli.config import load_config_readonly
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from tools.delegate_tool_config import _credential_bundle
+    from hermes_constants import resolve_reasoning_config
+    from tools.delegate_tool_config import ResolvedReasoning, _credential_bundle
     with delegated_profile_scope(home):
         cfg = load_config_readonly() or {}
-        model_cfg = cfg.get("model")
-        if isinstance(model_cfg, dict):
-            model = model_cfg.get("default") or model_cfg.get("model")
-        else:
-            model = model_cfg if isinstance(model_cfg, str) else None
+        request = _profile_model_request(cfg)
         try:
-            rt = resolve_runtime_provider(target_model=model or None)
+            rt = resolve_runtime_provider(**request)
         except Exception as exc:
             raise DelegationRouteError(f"Profile at {home} has no usable model provider: {exc}") from exc
-        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        model = request["target_model"] or rt.get("model") or None
         fallback = cfg.get("fallback_providers")
+    # A named custom provider resolves to provider "custom": keep its name as the identity (as delegation.provider
+    # does) so two named providers sharing one URL never lease each other's pool.
+    requested = str(rt.get("requested_provider") or "").strip()
+    provider = requested if rt.get("provider") == "custom" and requested.lower() not in ("", "auto") else rt.get("provider")
     creds = _credential_bundle(
-        model or rt.get("model") or None, rt.get("provider"), rt.get("base_url"),
+        model, provider, rt.get("base_url"),
         rt.get("api_key") or "no-key-required", rt.get("api_mode"), dict(rt.get("request_overrides") or {}),
         command=rt.get("command"), args=list(rt.get("args") or []),
     )
     return TaskRoute(creds, {"fallback_providers": fallback if isinstance(fallback, list) else []},
-                     agent_cfg.get("reasoning_effort"), home, label)
+                     ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home, label)
 
 
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute]) -> TaskRoute:

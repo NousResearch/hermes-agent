@@ -78,7 +78,7 @@ settings live next to the other delegation knobs.
 |---|---|---|
 | `name` | yes | The `delegation.backend` value. `default` is reserved for the built-in strategy. |
 | `route_task(task, config)` | yes | Return the route dict for one task. `task` carries `goal`, `context`, `index` and the values the model supplied for your parameters. Raise `DelegationRouteError` to refuse; its message is the tool error the model reads. |
-| `task_parameters(config)` | no | `{name: json_schema}` merged into `tasks.items.properties`. Core enforces `enum` before `route_task` runs and refuses core-owned names (`goal`, `context`, `output_schema`, `images`, `group`, `role`, `toolsets`, `provider`, `model`, `base_url`, `api_key`, `api_mode`, `acp_command`, `acp_args`). |
+| `task_parameters(config)` | no | `{name: json_schema}` merged into `tasks.items.properties`. Core enforces `enum` before `route_task` runs and refuses core-owned names (`goal`, `context`, `index`, `output_schema`, `images`, `group`, `role`, `toolsets`, `provider`, `model`, `base_url`, `api_key`, `api_mode`, `acp_command`, `acp_args`). |
 | `description(config)` | no | Guidance appended to the `delegate_task` description. |
 | `is_available()` | no | No network calls. `False` makes delegation use `default`. |
 
@@ -90,9 +90,11 @@ A route is a dict with any of:
   `fallback_providers`: shaped exactly like the `delegation` section and resolved by the same
   credential resolver. An empty route inherits the parent's route; `dict(config)` is the default route.
 - `profile`: the name of a Hermes profile. The child runs **as that profile**: its `config.yaml`,
-  primary model and credentials, credential pool, fallback chain, skills, `SOUL.md` and terminal
-  policy. Core binds that profile's scope (HERMES_HOME override, secret scope, multiplex semantics,
-  terminal policy) around the child's construction and conversation, the same binding a multiplexed
+  primary model and credentials (a `model.default` alias or named provider resolves exactly as at
+  CLI startup), credential pool, fallback chain, reasoning (`agent.reasoning_effort` and
+  `agent.reasoning_overrides`), skills, `SOUL.md` and terminal policy. Core binds that profile's
+  scope (HERMES_HOME override, secret scope, multiplex semantics, terminal policy) around the child's
+  construction, its credential lease and every conversation turn, the same binding a multiplexed
   gateway applies to a routed turn, so a secret missing from the target profile is never read from
   the launching profile's environment. The child's transcript stays in the launching profile's
   session database (it is the parent's work) and it keeps the parent's toolset. Other route keys are

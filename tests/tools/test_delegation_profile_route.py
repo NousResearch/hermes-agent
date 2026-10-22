@@ -65,7 +65,7 @@ def test_profile_route_resolves_the_target_profiles_model_and_key(two_profiles):
     assert route.profile_home == coder and route.label == "coder"
     assert (route.creds["model"], route.creds["base_url"], route.creds["api_key"]) == (
         "coder-model", "https://coder.invalid/v1", "coder-key")
-    assert route.reasoning_effort == "low"
+    assert route.reasoning_effort.config == {"enabled": True, "effort": "low"}
     assert _snapshot() == {"home": str(launch), "secret": "launch-secret", "model": "launch-model"}
 
 
@@ -133,6 +133,73 @@ def test_secret_missing_from_target_profile_never_falls_back_to_the_launch_env(t
         assert get_secret("PROBE_SECRET") is None  # launch value sits in os.environ; never borrowed
     assert get_secret("PROBE_SECRET") == "launch-secret"
     assert json.loads(json.dumps(_snapshot()))["model"] == "launch-model"
+
+
+def _set_config(home, **sections):
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    cfg.update(sections)
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+
+def _build(route, parent):
+    from tools.delegate_tool import _build_child_agent, _route_overrides
+    seen = {}
+
+    def construct(**kwargs):
+        seen.update(kwargs)
+        return MagicMock(session_id="child-1")
+
+    with patch("run_agent.AIAgent", side_effect=construct):
+        child = _build_child_agent(task_index=0, goal="work as coder", context=None, toolsets=None,
+                                   model=route.creds["model"], max_iterations=5, task_count=1,
+                                   parent_agent=parent, **_route_overrides(route))
+    return child, seen
+
+
+def test_profile_whose_default_is_an_alias_takes_the_alias_route(two_profiles):
+    """Same owner as CLI startup: ``model.default: <alias>`` is the alias's model and endpoint."""
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    _, coder = two_profiles
+    _set_config(coder, model={"default": "localqwen"},
+                model_aliases={"localqwen": {"model": "qwen3-27b", "base_url": "http://127.0.0.1:8099/v1"}})
+    route = _route_to_task_route({"profile": "coder"}, _parent(), {})
+    assert (route.creds["model"], route.creds["base_url"]) == ("qwen3-27b", "http://127.0.0.1:8099/v1")
+
+
+def test_named_custom_profile_child_leases_its_own_account_on_a_shared_url(two_profiles):
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    _, coder = two_profiles
+    url = "https://gateway.invalid/v1"
+    _set_config(coder, model={"provider": "open-ai", "default": "coder-model"},
+                providers={"claude-ai": {"api": url, "api_key": "key-a"}, "open-ai": {"api": url, "api_key": "key-b"}})
+
+    def entry(cid, key):
+        return {"id": cid, "label": cid, "auth_type": "api_key", "priority": 0, "source": "manual",
+                "access_token": key, "base_url": url}
+    (coder / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {
+        "claude-ai": [entry("a", "pool-key-a")], "open-ai": [entry("b", "pool-key-b")]}}), encoding="utf-8")
+
+    parent = _parent()
+    child, _ = _build(_route_to_task_route({"profile": "coder"}, parent, {}), parent)
+    assert [e.access_token for e in child._credential_pool.entries()] == ["pool-key-b"]
+
+
+@pytest.mark.parametrize("agent_cfg, expected", [
+    ({"reasoning_effort": "high", "reasoning_overrides": {"coder-model": False}}, {"enabled": False}),
+    ({}, None),  # unset in the target profile: its default, never the launching parent's level
+])
+def test_profile_child_reasoning_is_the_target_profiles_resolved_setting(two_profiles, agent_cfg, expected):
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    _, coder = two_profiles
+    _set_config(coder, agent=agent_cfg)
+    parent = _parent()
+    parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    with patch("tools.delegate_tool._load_config", return_value={"reasoning_effort": "xhigh"}):
+        _, built = _build(_route_to_task_route({"profile": "coder"}, parent, {}), parent)
+    assert built["reasoning_config"] == expected
 
 
 def test_profile_child_lease_and_schema_retry_run_inside_the_target_profile(two_profiles):

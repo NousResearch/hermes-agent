@@ -2717,6 +2717,9 @@ class _StreamingCall(StreamingWaitMonitor):
         self._request_cancelled = {"value": False}
         self.first_delta_fired = {"done": False}
         self.deltas_were_sent = {"yes": False}  # for the partial-delivery fallback
+        # Arrival of the call's first real-data delta (text/reasoning/tool start), stamped
+        # ahead of display routing; the decode window is measured from this stamp.
+        self._decode_first_delta_at = None
         self.provider_tool_in_flight = {"yes": False}
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
         self.last_chunk_time = {"t": time.time()}
@@ -2782,6 +2785,9 @@ class _StreamingCall(StreamingWaitMonitor):
         # its tool name (died before any text) must not label a later partial stub or retry.
         self.provider_tool_in_flight["yes"], self.prompt_progress["progress"] = False, None
         self.result["partial_tool_names"] = []
+        # Every attempt's decode window opens with that attempt's OWN first real-data delta:
+        # a stamp inherited from a dropped attempt would measure the retry backoff as decode.
+        self._decode_first_delta_at = None
         return attempt_id
 
     def _cancel_current_stream_attempt(self, reason: str) -> None:
@@ -2818,12 +2824,31 @@ class _StreamingCall(StreamingWaitMonitor):
             stream_attempt_id, discarded_chunks, discarded_bytes,
         )
 
+    def _mark_decode_start(self) -> None:
+        """Decode start: this attempt's first real-data delta reached the wire. Stamp before
+        anything a display callback might do; the measurement is decoupled from the notice."""
+        if self._decode_first_delta_at is None:
+            self._decode_first_delta_at = time.monotonic()
+
     def _fire_first_delta(self):
-        if not self.first_delta_fired["done"] and self.on_first_delta:
-            self.first_delta_fired["done"] = True
-            self._quiet(self.on_first_delta)
+        # Display notice only: replay/display paths fire the notice without opening a
+        # measurement window — the stamp belongs to _mark_decode_start at real-data delivery.
+        if not self.first_delta_fired["done"]:
+            if self.on_first_delta:
+                self.first_delta_fired["done"] = True
+                self._quiet(self.on_first_delta)
+
+    def _record_decode_seconds(self, *, counted: bool = True) -> None:
+        """Close this call's decode window: first real-data delta → the terminal response
+        for this model call was processed. Unmeasured calls (no token arrived, interrupt,
+        runaway cut, relay-replayed output) leave the attribute None so the usage path
+        appends a None decode entry — a fabricated speed is forbidden."""
+        first = self._decode_first_delta_at
+        if counted and first is not None:
+            self.agent._last_api_decode_seconds = time.monotonic() - first
 
     def _emit_text(self, text: str) -> None:
+        self._mark_decode_start()
         self._fire_first_delta()
         self.agent._fire_stream_delta(text)
         self.deltas_were_sent["yes"] = True
@@ -2835,10 +2860,12 @@ class _StreamingCall(StreamingWaitMonitor):
         return bool((getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip())
 
     def _emit_reasoning(self, text: str) -> None:
+        self._mark_decode_start()
         self._fire_first_delta()
         self.agent._fire_reasoning_delta(text)
 
     def _emit_tool_started(self, name: str) -> None:
+        self._mark_decode_start()
         self._fire_first_delta()
         self.agent._fire_tool_gen_started(name)
 
@@ -3219,6 +3246,10 @@ class _StreamingCall(StreamingWaitMonitor):
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
+        # Decode window: only a clean terminal measures. A partial-stub response carries no
+        # finish reason, so it stays unmeasured — like the runaway cut and interrupt deliveries.
+        self._record_decode_seconds(counted=(not runaway and finish_reason is not None
+            and not self.agent._interrupt_requested))
         return response
 
     def _log_runaway_cut(self, channel: str) -> None:
@@ -3488,6 +3519,10 @@ class _StreamingCall(StreamingWaitMonitor):
             message._runaway_repetition = True  # same hand-off as the chat_completions wire
             return message
         if base_final_message is not None:
+            # Decode window: message_stop (the terminal frame) was confirmed and the final
+            # message processed. Relay-modified output stays unmeasured.
+            if not stream.output_modified:
+                self._record_decode_seconds()
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:
                 return self._check_anthropic_message(base_final_message)

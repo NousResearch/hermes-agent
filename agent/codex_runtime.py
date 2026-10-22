@@ -862,6 +862,10 @@ class _CodexResponseAssembler:
     terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
+    # Decode window stamps: arrival of the first real-data delta (text/reason delta/tool
+    # call data) and the observed terminal frame. Either missing → unmeasured (None).
+    decode_first_delta_at = None
+    decode_terminal_at = None
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
@@ -893,6 +897,11 @@ class _CodexResponseAssembler:
             self.next_output_sequence += 1
         if "function_call" in str(item_type):
             self.has_tool_calls = True
+            # An announcement may carry no generated payload at all: backends announce the call
+            # with empty arguments and stream the real args in later argument events. Only args
+            # already on the wire start the window; the argument-event handler stamps those.
+            if self.decode_first_delta_at is None and str(_event_field(item, "arguments", "") or ""):
+                self.decode_first_delta_at = time.monotonic()
             if item_id:
                 announced_sequence, announced_index = self.announced_output_order[item_id]
                 self.pending_function_calls[item_id] = {
@@ -904,6 +913,9 @@ class _CodexResponseAssembler:
         delta_text = _event_field(event, "delta", "")
         if not delta_text:
             return
+        # First token of this call reached the wire: stamp ahead of routing and callbacks.
+        if self.decode_first_delta_at is None:
+            self.decode_first_delta_at = time.monotonic()
         # Harmony commentary/analysis text is mid-turn narration, never the final answer: route to the
         # reasoning callback, keep only the item for replay.
         if self.active_message_phase == "commentary":
@@ -943,6 +955,12 @@ class _CodexResponseAssembler:
 
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
+        # Tool call arguments reached the wire: stamp before the pending lookup so the
+        # window starts at arrival, not at assembly (zero-arg payloads never stamp).
+        if self.decode_first_delta_at is None and (
+                _event_field(event, "delta", "") if "delta" in event_type
+                else _event_field(event, "arguments", "")):
+            self.decode_first_delta_at = time.monotonic()
         key = self._pending_function_key(str(_event_field(event, "item_id", "")),
                                          _event_field(event, "output_index"))
         pending = self.pending_function_calls.get(key)
@@ -958,7 +976,12 @@ class _CodexResponseAssembler:
 
     def _on_reasoning_delta(self, event: Any, event_type: str) -> None:
         reasoning_text = _event_field(event, "delta", "")
-        if not reasoning_text or self.on_reasoning_delta is None:
+        if not reasoning_text:
+            return
+        # Reasoning tokens reached the wire: stamp ahead of the callback gate.
+        if self.decode_first_delta_at is None:
+            self.decode_first_delta_at = time.monotonic()
+        if self.on_reasoning_delta is None:
             return
         summary_index = _event_field(event, "summary_index")
         if summary_index is not None:
@@ -1017,6 +1040,10 @@ class _CodexResponseAssembler:
 
     def _on_terminal(self, event: Any, event_type: str) -> bool:
         self.saw_terminal = True
+        # Decode end: only a confirmed clean completion closes the window; failed/incomplete
+        # terminals leave the window unmeasured (the settled-window gate reads saw_response_completed).
+        if event_type == "response.completed":
+            self.decode_terminal_at = time.monotonic()
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
@@ -1086,7 +1113,13 @@ class _CodexResponseAssembler:
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
-            error=self.terminal_error, service_tier=self.terminal_service_tier)
+            error=self.terminal_error, service_tier=self.terminal_service_tier,
+            # Decode window: measured only when this call's own stream delivered both stamps
+            # under a clean terminal (first real-data delta → observed response.completed);
+            # failed/incomplete terminals and unopened windows stay None.
+            decode_seconds=(float(self.decode_terminal_at - self.decode_first_delta_at)
+                if self.saw_response_completed and self.decode_first_delta_at is not None
+                and self.decode_terminal_at is not None else None))
 
 
 def _consume_codex_event_stream(
@@ -1411,6 +1444,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 raise
             if not agent._interrupt_requested:
                 _drain_for_finalizer(event_stream)
+                # Decode window: recorded for streams that completed normally; an
+                # unmeasured stream (no token, no terminal frame) records None, so the
+                # usage path never sees a stale value from an earlier call.
+                agent._last_api_decode_seconds = getattr(final, "decode_seconds", None)
             if final.status in {"incomplete", "failed"}:
                 logger.warning("Codex Responses stream terminal status=%s "
                                "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",

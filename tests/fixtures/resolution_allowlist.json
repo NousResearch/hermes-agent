@@ -404,11 +404,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/web_routers/git.py",
-    "symbol": "_probe_gh_auth",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/web_routers/tools.py",
     "symbol": "_probe_singularity_backend",
     "kind": "bare_which"

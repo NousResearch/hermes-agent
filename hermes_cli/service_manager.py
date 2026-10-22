@@ -307,7 +307,7 @@ def _s6_run(cmd: str, *args: str, timeout: float = 5, check: bool = False):
 
 
 # UID/GID of the in-image ``hermes`` user; hardcoded to match what ``stage2-hook.sh`` enforces
-# (tests/docker/test_uid_remap.py). s6-supervise starts as root and drops via ``s6-setuidgid``.
+# (tests/docker/test_puid_pgid_remap.py). s6-supervise starts as root and drops via ``s6-setuidgid``.
 _HERMES_UID = 10000
 _HERMES_GID = 10000
 

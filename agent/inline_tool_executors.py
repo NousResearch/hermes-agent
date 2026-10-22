@@ -299,6 +299,10 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+    "review": _tool(
+        "tools.review_tool", "review_tool", ("focus", "focus", ""),
+        parent_agent=lambda agent, ctx: agent, messages=lambda agent, ctx: ctx.messages,
+    ),
 }
 
 

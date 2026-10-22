@@ -96,8 +96,20 @@ def collect_parent_loaded_skills(parent_agent, messages: list[dict[str, Any]], l
     return names[:limit]
 
 
-def build_review_task(snapshot: list[dict[str, str]], user_prompt: str = "", loaded_skills: Optional[list[str]] = None) -> tuple:
+# Who asked for the review: the user typing /review, or the primary agent calling its review tool. The
+# reviewer is told which, so it never attributes the agent's own focus text to the user.
+_REQUESTERS = {
+    "user": ("You were spawned by the /review command.", "Additional review instructions from the user:"),
+    "agent": ("The primary agent requested this review of its own work.", "Review focus from the primary agent:"),
+}
+
+
+def build_review_task(
+    snapshot: list[dict[str, str]], user_prompt: str = "", loaded_skills: Optional[list[str]] = None,
+    requested_by: str = "user",
+) -> tuple:
     """Compose a viewer-friendly goal and the complete reviewer briefing."""
+    origin_line, focus_label = _REQUESTERS[requested_by]
     focus = " ".join(user_prompt.split())
     goal = f"Review: {focus}" if focus else "Review recent work"
     if len(goal) > 80:
@@ -106,7 +118,7 @@ def build_review_task(snapshot: list[dict[str, str]], user_prompt: str = "", loa
     lines = [
         _REVIEW_GOAL,
         "",
-        "You were spawned by the /review command. The following is an excerpt of the most recent conversation "
+        f"{origin_line} The following is an excerpt of the most recent conversation "
         "between the user and their primary agent. It is your starting evidence — the work to "
         "review is referenced in it.",
         "",
@@ -126,7 +138,7 @@ def build_review_task(snapshot: list[dict[str, str]], user_prompt: str = "", loa
             "was produced under them and must be judged against them.",
         ]
     if user_prompt.strip():
-        lines += ["", "Additional review instructions from the user:", user_prompt.strip()]
+        lines += ["", focus_label, user_prompt.strip()]
     lines += [
         "",
         "Your review is delivered back into that conversation, addressed to "
@@ -155,16 +167,21 @@ def _load_review_credentials_cfg() -> Optional[dict[str, Any]]:
     return cfg
 
 
-def start_review(parent_agent, messages: list[dict[str, Any]], user_prompt: str = "") -> dict[str, Any]:
+def start_review(
+    parent_agent, messages: list[dict[str, Any]], user_prompt: str = "", *, requested_by: str = "user",
+) -> dict[str, Any]:
     """Dispatch the reviewer subagent; returns the parsed ``delegate_task`` dict (``status: "dispatched"`` +
     ``delegation_id``, or the synchronous result on channels without async completions). Raises ValueError
-    when there is nothing to review or the dispatch is rejected/errored."""
+    when there is nothing to review or the dispatch is rejected/errored. ``requested_by`` is ``"user"`` for
+    /review and ``"agent"`` for the model-facing review tool; only the reviewer's briefing differs."""
     if parent_agent is None:
         raise ValueError("No active agent — send a message first.")
     snapshot = snapshot_recent_messages(messages)
     if not snapshot:
         raise ValueError("Nothing to review yet — the conversation is empty.")
-    goal, context = build_review_task(snapshot, user_prompt, collect_parent_loaded_skills(parent_agent, messages))
+    goal, context = build_review_task(
+        snapshot, user_prompt, collect_parent_loaded_skills(parent_agent, messages), requested_by=requested_by,
+    )
     credentials_cfg = _load_review_credentials_cfg()
 
     from tools.delegate_tool import delegate_task
@@ -193,3 +210,21 @@ def format_dispatch_note(result: dict[str, Any], user_prompt: str = "") -> str:
         f"⚖ Review completed synchronously{model_note}{focus_note} — "
         f"results:\n{json.dumps(result.get('results', result), ensure_ascii=False)[:4000]}"
     )
+
+
+def run_agent_review(parent_agent, messages: Optional[list[dict[str, Any]]], focus: str = "") -> str:
+    """Model-facing review dispatch: the same reviewer, model (``auxiliary.review``) and async completion rail as
+    /review, started by the agent itself. Returns a tool-result JSON string. ``messages`` is the live turn
+    history; None falls back to the last persisted snapshot."""
+    from tools.registry import tool_error
+
+    if getattr(parent_agent, "_delegate_depth", 0) > 0:
+        # A subagent has no between-turns inbox: the review would complete with nobody to receive it.
+        return tool_error("Subagents cannot start reviews; return your findings and let the primary agent review.")
+    if messages is None:
+        messages = list(getattr(parent_agent, "_session_messages", None) or [])
+    try:
+        result = start_review(parent_agent, messages, focus or "", requested_by="agent")
+    except ValueError as exc:
+        return tool_error(str(exc))
+    return json.dumps(result, ensure_ascii=False)

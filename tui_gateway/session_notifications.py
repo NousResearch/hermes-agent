@@ -218,16 +218,23 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         payload = (resp or {}).get("result") or {}
         if out := str(payload.get("output") or "").strip():
             _notif_loop_status(sid, out)
-        if payload.get("type") == "send" and payload.get("message"):
+        if payload.get("type") in {"send", "skill"} and payload.get("message"):
             if not _notif_claim_turn(session):
                 mgr.abandon_tick()
                 _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
                 return
-            # Releases the claim on failure: the swallow below would otherwise leave the session busy for good.
+            # Releases the claim on failure before the handler abandons the tick.
             _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
             return
-    except Exception:
-        pass
+        if not out:
+            mgr.abandon_tick()
+            _notif_loop_status(sid, "Loop wakeup could not start a turn; it will retry.")
+            return
+    except Exception as exc:
+        _notif_log_failure("loop slash wakeup dispatch failed", exc)
+        mgr.abandon_tick()
+        _notif_loop_status(sid, "Loop wakeup could not start a turn; it will retry.")
+        return
     decision = mgr.complete_tick("")
     if decision.get("message"):
         _notif_loop_status(sid, decision["message"])

@@ -72,7 +72,7 @@ def _advance_or_drop_recurring(_sched, due_jobs: list) -> list:
         return [j for j in due_jobs if not is_recurring(j)]
 
 
-def _pre_dispatch_housekeeping(_sched, headless: bool) -> None:
+def _pre_dispatch_housekeeping(_sched, headless: bool, *, adapters=None, loop=None) -> None:
     """Admission reconcile, legacy upgrade drain and dead-owner reap, run under the tick lock
     before due jobs are read."""
     from cron.scheduler_authority import reconcile_pending
@@ -86,7 +86,7 @@ def _pre_dispatch_housekeeping(_sched, headless: bool) -> None:
         drain_legacy_pending()
     except Exception as _legacy_exc:
         _sched.logger.warning("Legacy Bot Chat pending drain failed: %s", _legacy_exc, exc_info=True)
-    _sched._maybe_reap_dead_owners()
+    _sched._maybe_reap_dead_owners(adapters=adapters, loop=loop)
 
 
 def _tick_admitted(
@@ -122,7 +122,7 @@ def _tick_admitted(
             _sched.logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
-        _pre_dispatch_housekeeping(_sched, headless)
+        _pre_dispatch_housekeeping(_sched, headless, adapters=adapters, loop=loop)
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:
             _sched._maybe_run_worktree_maintenance()

@@ -169,11 +169,11 @@ class CronScheduler(ABC):
         report it as scheduled). Built-in: no-op."""
         return
 
-    def recover_interrupted(self) -> int:
+    def recover_interrupted(self, *, adapters: Any = None, loop: Any = None) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
-        from cron.executions import recover_interrupted_executions
+        from cron.scheduler import _recover_interrupted_executions_with_alerts
 
-        return recover_interrupted_executions()
+        return _recover_interrupted_executions_with_alerts(adapters=adapters, loop=loop)
 
     @property
     def supports_force_fire(self) -> bool:
@@ -468,7 +468,7 @@ class InProcessCronScheduler(CronScheduler):
         # store here must not take the whole ticker thread down (#111010) — the loop's own
         # per-tick handling logs, persists the reason and keeps the thread alive.
         try:
-            recovered = self.recover_interrupted()
+            recovered = self.recover_interrupted(adapters=adapters, loop=loop)
             if recovered:
                 logger.warning(
                     "Marked %d interrupted cron execution(s) unknown after restart", recovered
@@ -570,10 +570,12 @@ class InProcessCronScheduler(CronScheduler):
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
         # cron workspace via the heartbeat below (#47368).
         for entry in initial_homes:
-            _, home = _profile_entry(entry)
+            profile_name, home = _profile_entry(entry)
             try:
                 with _profile_cron_scope(home):
-                    recovered = self.recover_interrupted()
+                    recovered = self.recover_interrupted(
+                        adapters=tick_adapters_for(profile_name), loop=loop
+                    )
                     if recovered:
                         logger.warning(
                             "Marked %d interrupted cron execution(s) for profile at %s",

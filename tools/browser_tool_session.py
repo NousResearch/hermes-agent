@@ -109,6 +109,8 @@ def _format_browser_timeout_error(
     command: str, timeout: int, stdout: str, stderr: str
 ) -> str:
     """Actionable timeout message from captured daemon output."""
+    stdout = _bt._sanitize_url_for_logs(stdout)
+    stderr = _bt._sanitize_url_for_logs(stderr)
     parts = [f"Command timed out after {timeout} seconds"]
     detail = (stderr or stdout or "").strip()
     if detail:
@@ -347,15 +349,25 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> dict[str, Any]:
         return session_info
     except Exception as e:
         provider_name = type(provider).__name__
-        _bt.logger.warning("Cloud provider %s failed (%s); attempting fallback to local Chromium for task %s",
-                           provider_name, e, task_id, exc_info=True)
+        fallback_reason = _bt._sanitize_url_for_logs(str(e))
+        if not getattr(provider, "allow_local_fallback", True):
+            _bt.logger.warning(
+                "Cloud provider %s failed and disabled local Chromium fallback for task %s",
+                provider_name, task_id,
+            )
+            raise RuntimeError(
+                f"Cloud provider {provider_name} could not create a browser session and does not allow local fallback"
+            ) from None
+        _bt.logger.warning("Cloud provider %s failed; attempting fallback to local Chromium for task %s",
+                           provider_name, task_id)
         try:
             session_info = _create_local_session(task_id)
-        except Exception as local_error:
-            raise RuntimeError(f"Cloud provider {provider_name} failed ({e}) and local "
-                               f"fallback also failed ({local_error})") from e
+        except Exception:
+            raise RuntimeError(
+                f"Cloud provider {provider_name} could not create a browser session and local fallback also failed"
+            ) from None
         if isinstance(session_info, dict):  # mark degraded for observability
-            session_info = {**session_info, "fallback_from_cloud": True, "fallback_reason": str(e),
+            session_info = {**session_info, "fallback_from_cloud": True, "fallback_reason": fallback_reason,
                             "fallback_provider": provider_name}
         return session_info
 
@@ -652,6 +664,8 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
     """Finished agent-browser process output → result dict. Empty stdout with rc=0 is a
     broken state (stale daemon) reported as failure except for ``_EMPTY_OK_COMMANDS``;
     non-JSON output is an error except ``screenshot``, whose path is recovered from prose."""
+    stdout = _bt._sanitize_url_for_logs(stdout)
+    stderr = _bt._sanitize_url_for_logs(stderr)
     if stderr and stderr.strip():
         level = logging.WARNING if returncode != 0 else logging.DEBUG
         _bt.logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
@@ -815,6 +829,8 @@ def _spawn_and_collect(
         proc.kill()
         proc.wait()
         stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+        stdout = _bt._sanitize_url_for_logs(stdout)
+        stderr = _bt._sanitize_url_for_logs(stderr)
         _unlink_command_output_files(stdout_path, stderr_path)
         _handle_browser_command_timeout(task_id, session_info, task_socket_dir)
         if stderr and stderr.strip():
@@ -826,6 +842,8 @@ def _spawn_and_collect(
         stdout = f.read()
     with open(stderr_path, "r", encoding="utf-8-sig") as f:
         stderr = f.read()
+    stdout = _bt._sanitize_url_for_logs(stdout)
+    stderr = _bt._sanitize_url_for_logs(stderr)
     _unlink_command_output_files(stdout_path, stderr_path)
     return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)
 
@@ -925,8 +943,9 @@ def _dispatch_browser_command(
         result = _unwrap_batch_result(
             _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout, stdin_payload), command)
     except Exception as e:
-        _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
-        result = {"success": False, "error": str(e)}
+        error = _bt._sanitize_url_for_logs(str(e))
+        _bt.logger.warning("browser '%s' exception: %s", command, error)
+        result = {"success": False, "error": error}
     return engine, result
 
 

@@ -156,6 +156,14 @@ _WS_READ_IDLE_TIMEOUT = 300.0
 # How often to probe liveness with an explicit PING while the read loop waits for data. Comfortably
 # inside the read-idle bound so a PONG can always satisfy it.
 _WS_LIVENESS_PROBE_INTERVAL = 60.0
+# How long to wait for the PONG that answers a probe PING.
+#
+# This MUST be shorter than the remaining read-idle budget, otherwise the outer wait
+# (which shares the `_WS_READ_IDLE_TIMEOUT` deadline) fires first and reports a generic
+# "no WebSocket frame" timeout, masking the actual cause — a PING that was never
+# answered. The probe's worst case is PROBE_INTERVAL + PONG_TIMEOUT, which has to stay
+# below the read-idle bound so the probe's own error is the one that surfaces.
+_WS_PONG_TIMEOUT = 60.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100  # Buzz channel-membership event — live DM discovery
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
@@ -1230,7 +1238,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         `connection.rs` recv_loop), and the library's own keepalive already fails the connection on a
         missed PONG, so this probe only has to observe that a PONG still comes back.
 
-        Raises ConnectionError if the round trip does not complete within the read-idle bound — that
+        Raises ConnectionError if the round trip does not complete within the PONG bound — that
         is the genuine "the socket went silent" case (#98097) this bound was written for.
         """
         await asyncio.sleep(_WS_LIVENESS_PROBE_INTERVAL)
@@ -1239,10 +1247,10 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         except Exception as exc:  # noqa: BLE001 - transport errors mean "not alive"
             raise ConnectionError(f"WebSocket liveness probe failed to send PING: {exc}") from exc
         try:
-            await asyncio.wait_for(pong_waiter, timeout=_WS_READ_IDLE_TIMEOUT)
+            await asyncio.wait_for(pong_waiter, timeout=_WS_PONG_TIMEOUT)
         except asyncio.TimeoutError:
             raise ConnectionError(
-                f"no WebSocket PONG within {_WS_READ_IDLE_TIMEOUT:.0f}s; the connection went silent"
+                f"no WebSocket PONG within {_WS_PONG_TIMEOUT:.0f}s; the connection went silent"
             ) from None
 
     async def _handle_ws_message(self, websocket, subscriptions: dict[str, Optional[str]], message: list) -> None:

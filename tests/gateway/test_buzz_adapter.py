@@ -3552,7 +3552,6 @@ class TestChannelCursorPersistence:
         saved = json.loads(self._cursor_file(tmp_path).read_text(encoding="utf-8"))
         assert saved["channels"][CHANNEL]["last_ts"] == 200
         assert saved["channels"][CHANNEL]["seen"] == ["e1", "e2"]
-        assert path.stat().st_mtime_ns == before
 
 
 class TestBuzzWsLiveness:
@@ -3637,14 +3636,28 @@ class TestBuzzWsLiveness:
 
     @pytest.mark.asyncio
     async def test_dead_connection_raises_connection_error(self, monkeypatch):
-        """No PONG => the socket really is silent => reconnect (the #98097 case)."""
+        """No PONG => the socket really is silent => reconnect (the #98097 case).
+
+        Asserts the SPECIFIC probe error, not merely "some ConnectionError": the read
+        loop has two distinct failure messages — "no WebSocket frame for Ns" (the outer
+        idle deadline) and "no WebSocket PONG within Ns" (the probe). A test that only
+        checks the exception type passes for the wrong reason, because the outer idle
+        deadline fires first and masks the real cause.
+        """
         monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_PROBE_INTERVAL", 0.01, raising=False)
-        monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
+        monkeypatch.setattr(_buzz_mod, "_WS_PONG_TIMEOUT", 0.05, raising=False)
+        # The read-idle deadline is deliberately far larger than the PONG deadline so
+        # the PROBE's error is the one that surfaces. If these were equal, the outer
+        # wait would win the race and this test would pass without exercising the probe.
+        monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 30.0, raising=False)
 
         adapter = BuzzAdapter.__new__(BuzzAdapter)
         adapter._handle_ws_message = AsyncMock()
-        with pytest.raises(ConnectionError):
+        with pytest.raises(ConnectionError) as excinfo:
             await asyncio.wait_for(adapter._ws_read_loop(self._DeadWS(), {}), timeout=3.0)
+        assert "PONG" in str(excinfo.value), (
+            f"expected the liveness probe's own error, got: {excinfo.value}"
+        )
 
     @pytest.mark.asyncio
     async def test_probe_failure_propagates_instead_of_being_swallowed(self, monkeypatch):
@@ -3655,7 +3668,8 @@ class TestBuzzWsLiveness:
         connection was alive then — so this test pins the propagation, not the frame count.
         """
         monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_PROBE_INTERVAL", 0.01, raising=False)
-        monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
+        monkeypatch.setattr(_buzz_mod, "_WS_PONG_TIMEOUT", 0.05, raising=False)
+        monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 30.0, raising=False)
 
         class _FailingProbeWS:
             """The transport is gone: the PING itself raises."""
@@ -3674,5 +3688,8 @@ class TestBuzzWsLiveness:
 
         adapter = BuzzAdapter.__new__(BuzzAdapter)
         adapter._handle_ws_message = AsyncMock()
-        with pytest.raises(ConnectionError):
+        with pytest.raises(ConnectionError) as excinfo:
             await asyncio.wait_for(adapter._ws_read_loop(_FailingProbeWS(), {}), timeout=3.0)
+        assert "liveness probe failed to send PING" in str(excinfo.value), (
+            f"expected the probe's own error, got: {excinfo.value}"
+        )

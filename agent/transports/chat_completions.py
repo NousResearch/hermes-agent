@@ -47,6 +47,17 @@ _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
 
+def _strip_nonstandard_function_fields(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop MCP's local-only result schema from OpenAI Chat Completions payloads."""
+    if not any(isinstance(tool.get("function"), dict) and "outputSchema" in tool["function"] for tool in tools):
+        return tools
+    return [
+        {**tool, "function": {k: v for k, v in tool["function"].items() if k != "outputSchema"}}
+        if isinstance(tool.get("function"), dict) and "outputSchema" in tool["function"] else tool
+        for tool in tools
+    ]
+
+
 def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Alias the client ``tool_search`` declaration for xAI; returns ``(tools, {alias: "tool_search"})``.
 
@@ -392,7 +403,8 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
         api_kwargs["timeout"] = params["timeout"]
     if tools:
         # Moonshot/Kimi uses a stricter JSON Schema flavor; rewriting here also covers aggregator routes.
-        api_kwargs["tools"] = sanitize_moonshot_tools(tools) if is_moonshot_model(model) else tools
+        wire_tools = _strip_nonstandard_function_fields(tools)
+        api_kwargs["tools"] = sanitize_moonshot_tools(wire_tools) if is_moonshot_model(model) else wire_tools
     return api_kwargs
 
 

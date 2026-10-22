@@ -1,15 +1,16 @@
 name: codex-theme
 repo: https://github.com/ethanz-code/hermes-codex-theme
-sha: 4f5c37ce1863b0e0a0d649f864eaef69198dfbb2
+sha: 939bd8dd2c6229c7b2ce0a8fcb08196305a5a305
 description: >-
   Codex × ChatGPT inspired theme for the Hermes Desktop chat: dual light/dark
   palettes that follow the system appearance, graphite-on-paper typography
-  (weight-carried hierarchy), a 10px radius system, hairline borders instead of
-  shadows, the 6/10/16/24 spacing rhythm, and a 736px reading column with
-  width presets. Settings → Plugins → Codex Theme offers an appearance-mode
-  picker (follow system / dark / light) and reading-column width; the theme
-  paints theme-level tokens only and never writes user-configurable settings
-  such as --chat-text-scale. Disclosure — no network calls, no telemetry, no
+  (weight-carried hierarchy) with a 1.7 root line height, a 10px radius
+  system, hairline borders instead of shadows, the 6/10/16/24 spacing rhythm,
+  and an 880px reading column with 768/880/992px presets. Settings → Plugins →
+  Codex Theme offers an appearance-mode picker (follow system / dark / light)
+  and reading-column width as native segmented controls; the theme paints
+  theme-level tokens only and never writes user-configurable settings such as
+  --chat-text-scale. Disclosure — no network calls, no telemetry, no
   credentials; registers only through the Desktop plugin SDK (THEMES_AREA,
   PALETTE_AREA, ctx.registerSettingsPage, ctx.i18n); keeps one plugin-scoped
   settings record via ctx.storage.
@@ -17,12 +18,12 @@ maintainer: ethanz-code
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
-version: "1.0.0"
+version: "1.1.0"
 title: "Codex Theme"
-image: https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/4f5c37ce1863b0e0a0d649f864eaef69198dfbb2/assets/cover.png
+image: https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/939bd8dd2c6229c7b2ce0a8fcb08196305a5a305/assets/cover.png
 screenshots:
-  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/4f5c37ce1863b0e0a0d649f864eaef69198dfbb2/assets/theme-light.png
-  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/4f5c37ce1863b0e0a0d649f864eaef69198dfbb2/assets/theme-dark.png
+  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/939bd8dd2c6229c7b2ce0a8fcb08196305a5a305/assets/theme-light.png
+  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/939bd8dd2c6229c7b2ce0a8fcb08196305a5a305/assets/theme-dark.png
 readme: true
 capabilities:
   provides_tools: []

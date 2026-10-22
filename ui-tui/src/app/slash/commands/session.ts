@@ -25,6 +25,8 @@ import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 import { usageTotalsSections } from '../usagePanel.js'
 
+import { runSessionsManagement } from './sessionsCommand.js'
+
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
@@ -222,7 +224,8 @@ export const sessionCommands: SlashCommand[] = [
     aliases: ['switch', 'session', 'resume'],
     help: 'browse, switch, or resume sessions',
     name: 'sessions',
-    run: (arg, ctx) => {
+    run: (arg, ctx, cmd) => {
+      if (runSessionsManagement(arg, ctx, cmd)) return
       const trimmed = arg.trim()
 
       // A new *live* session keeps the current one running in the background

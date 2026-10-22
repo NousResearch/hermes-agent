@@ -510,3 +510,20 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_windowed_repeat_halt_reaches_the_turn_on_an_unattended_platform():
+    # A B A C A D A E A: the check recurs between distinct searches with an identical result.
+    agent = _make_agent("terminal", "search_files", platform="telegram")
+    check, out = {"command": "python check.py"}, json.dumps({"output": "CHANGED: 0", "exit_code": 0})
+    results = []
+    for i in range(5):
+        results.append(agent._append_guardrail_observation("terminal", check, out, failed=False))
+        if i < 4:
+            agent._append_guardrail_observation("search_files", {"pattern": f"p{i}"}, f"hits {i}", failed=False)
+
+    assert "windowed_repeat_halt" not in "".join(results[:4])
+    assert "separate calls" in results[3]  # the 4th return carries the notice only
+    halt = agent._tool_guardrail_halt_decision
+    assert halt is not None and halt.code == "windowed_repeat_halt"
+    assert "Tool loop hard stop: windowed_repeat_halt" in results[4]

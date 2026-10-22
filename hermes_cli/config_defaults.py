@@ -576,7 +576,7 @@ DEFAULT_CONFIG = {
         # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
         # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
         "non_interactive_hard_stop_enabled": True,
-        "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
+        "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2, "windowed_repeat": 4},
         "hard_stop_after": {
             "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
         },

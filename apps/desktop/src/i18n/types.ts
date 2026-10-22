@@ -1354,6 +1354,8 @@ catalog: CatalogTranslations
       gpuAuto: (largestName: string) => string
       gpuEntry: (index: number, name: string, vram: string) => string
       gpuSelectFailed: string
+      gpuSelected: string
+      gpuServerRestarted: string
       modelsTitle: string
       recommended: string
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer

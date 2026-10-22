@@ -1,16 +1,11 @@
-import { useQueryClient } from '@tanstack/react-query'
 import { type ReactElement, useState } from 'react'
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { setLocalGpu } from '@/hermes'
-import { useI18n } from '@/i18n'
 import { Cpu, Monitor, Package, Zap } from '@/lib/icons'
-import { refreshLocalModels } from '@/store/local-runtime-jobs'
-import { notifyError } from '@/store/notifications'
 import type { LocalHardware } from '@/types/hermes'
 
 import { gbLabel } from './local-model-download-progress'
-import { useScopedLocalModelsOwner } from './local-models-owner'
+import { selectGpu, useLocalModelsActionScope } from './local-models-actions'
 import { Pill, SettingsSection } from './primitives'
 
 export interface LocalModelsHardwareSectionProps {
@@ -18,26 +13,28 @@ export interface LocalModelsHardwareSectionProps {
 }
 
 export function LocalModelsHardwareSection({ hardware }: LocalModelsHardwareSectionProps): ReactElement {
-  const { t } = useI18n()
-  const copy = t.settings.localModels
-  const client = useQueryClient()
-  const [gpuBusy, setGpuBusy] = useState<boolean>(false)
-  const owner = useScopedLocalModelsOwner()
+  const scope = useLocalModelsActionScope()
+  const { copy } = scope
+  const [pendingGpu, setPendingGpu] = useState<string | null>(null)
 
   const gpus = hardware?.gpus ?? []
   const multiGpu = gpus.length > 1
-  const selection = hardware?.gpu ?? 'auto'
+  const configured = hardware?.gpu ?? 'auto'
+  const selectedGpu = gpus.find(gpu => gpu.id === configured || String(gpu.index) === configured)
+  const selection = selectedGpu ? (selectedGpu.id ?? String(selectedGpu.index)) : configured
+
+  const automaticGpu = gpus.reduce<(typeof gpus)[number] | undefined>(
+    (largest, gpu) => (!largest || gpu.total_bytes > largest.total_bytes ? gpu : largest),
+    undefined
+  )
 
   async function handleGpuChange(value: string): Promise<void> {
-    setGpuBusy(true)
+    setPendingGpu(value)
 
     try {
-      await setLocalGpu(value)
-      refreshLocalModels(owner, client)
-    } catch (err) {
-      notifyError(err, copy.gpuSelectFailed)
+      await selectGpu(scope, value)
     } finally {
-      setGpuBusy(false)
+      setPendingGpu(null)
     }
   }
 
@@ -80,29 +77,30 @@ export function LocalModelsHardwareSection({ hardware }: LocalModelsHardwareSect
             {copy.gpuLabel}
           </span>
           <Select
-            disabled={gpuBusy}
+            disabled={pendingGpu !== null}
             onValueChange={(value: string): void => {
               void handleGpuChange(value)
             }}
-            value={selection}
+            value={pendingGpu ?? selection}
           >
-            <SelectTrigger className="h-7 w-auto min-w-56 text-[length:var(--conversation-caption-font-size)]">
+            <SelectTrigger aria-label={copy.gpuLabel} className="w-auto min-w-56" size="sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="auto">
-                {copy.gpuAuto(
-                  gpus.find(gpu => gpu.index === hardware?.gpu_selected)?.name ?? gpus[0]?.name ?? ''
-                )}
-              </SelectItem>
+              <SelectItem value="auto">{copy.gpuAuto(automaticGpu?.name ?? '')}</SelectItem>
               {gpus.map(gpu => (
-                <SelectItem key={gpu.index} value={String(gpu.index)}>
+                <SelectItem key={gpu.id ?? String(gpu.index)} value={gpu.id ?? String(gpu.index)}>
                   {copy.gpuEntry(gpu.index, gpu.name, gbLabel(gpu.total_bytes))}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
+      )}
+      {hardware?.gpu_error && (
+        <p className="py-1 text-[length:var(--conversation-caption-font-size)] text-destructive" role="alert">
+          {hardware.gpu_error}
+        </p>
       )}
     </SettingsSection>
   )

@@ -17,6 +17,8 @@ regression tests, not physical-device validation.
 
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli.local_runtime import hardware as hw
 
 GIB = 1 << 30
@@ -36,10 +38,16 @@ def _smi(monkeypatch, rows):
     """Feed the real parser: the shared cached query spawns nvidia-smi with these rows."""
     monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: "nvidia-smi")
     monkeypatch.setattr(hw, "_gpu_query_cache", None)
+    import os
+    monkeypatch.setattr(hw, "_cuda_visible_uuids", lambda: [
+        f"GPU-00000000-0000-0000-0000-{int(t):012d}"
+        for t in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if t.isdigit()])
 
     def run(argv, **kwargs):
         assert argv[1].startswith("--query-gpu=memory.total")
-        return SimpleNamespace(returncode=0, stdout="\n".join(rows))
+        output = [row + f", {i}, GPU-00000000-0000-0000-0000-{i:012d}, 00000000:0{i}:00.0"
+                  if len(row.split(",")) == 6 else row for i, row in enumerate(rows)]
+        return SimpleNamespace(returncode=0, stdout="\n".join(output))
 
     monkeypatch.setattr(hw.subprocess, "run", run)
 
@@ -123,19 +131,20 @@ def test_index_pin_selects_that_card(monkeypatch):
     assert hw.selected_nvidia_card()["gpu_name"] == NAME_2060
 
 
-def test_out_of_range_pin_falls_back_to_largest(monkeypatch):
+def test_out_of_range_pin_reports_unavailable(monkeypatch):
     _smi(monkeypatch, ROWS_2060_3070)
     _select(monkeypatch, "3")
     _no_env_pin(monkeypatch)
-    # A stale pin (card removed) must never block budgeting — fall back to auto.
-    assert hw.selected_nvidia_card()["gpu_name"] == NAME_3070
+    with pytest.raises(ValueError, match="unavailable"):
+        hw.selected_nvidia_card()
 
 
-def test_garbage_pin_falls_back_to_largest(monkeypatch):
+def test_garbage_pin_reports_unavailable(monkeypatch):
     _smi(monkeypatch, ROWS_2060_3070)
     _select(monkeypatch, "not-a-gpu")
     _no_env_pin(monkeypatch)
-    assert hw.selected_nvidia_card()["gpu_name"] == NAME_3070
+    with pytest.raises(ValueError, match="unavailable"):
+        hw.selected_nvidia_card()
 
 
 def test_user_env_pin_is_respected_under_auto(monkeypatch):
@@ -171,7 +180,7 @@ def test_single_card_machine_pins_nothing(monkeypatch):
     _no_env_pin(monkeypatch)
     card = hw.selected_nvidia_card()
     assert card is not None and card["index"] == 0
-    assert hw.gpu_pin_env(backend="cuda") == {}
+    assert hw.gpu_pin_env(backend="cuda")["CUDA_VISIBLE_DEVICES"].endswith("000000000000")
 
 
 # ── pricing follows the selection ─────────────────────────────
@@ -228,34 +237,31 @@ def test_launch_budget_reads_the_selected_cards_free(monkeypatch):
 # ── the spawn-side pin ────────────────────────────────────────
 
 
-def test_gpu_pin_env_pins_index_and_bus_order(monkeypatch):
+def test_gpu_pin_env_uses_physical_uuid(monkeypatch):
     _smi(monkeypatch, ROWS_2060_3070)
     _select(monkeypatch, "1")
     _no_env_pin(monkeypatch)
-    env = hw.gpu_pin_env(backend="cuda")
-    # CUDA enumerates fastest-first by default, NOT in smi/PCI order — pinning by
-    # smi index without fixing the order silently selects the wrong card.
-    assert env == {"CUDA_VISIBLE_DEVICES": "1", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+    assert hw.gpu_pin_env("cuda") == {"CUDA_VISIBLE_DEVICES": "GPU-00000000-0000-0000-0000-000000000001"}
 
 
-def test_gpu_pin_env_auto_is_empty(monkeypatch):
+def test_gpu_pin_env_auto_pins_the_card_it_prices(monkeypatch):
     _smi(monkeypatch, ROWS_2060_3070)
     _select(monkeypatch, "auto")
     _no_env_pin(monkeypatch)
-    assert hw.gpu_pin_env(backend="cuda") == {}
+    assert hw.gpu_pin_env("cuda")["CUDA_VISIBLE_DEVICES"].endswith("000000000001")
 
 
-def test_gpu_pin_env_vulkan_and_hip_use_their_variables(monkeypatch):
+def test_smi_indices_never_leak_into_other_backends(monkeypatch):
     _smi(monkeypatch, ROWS_2060_3070)
     _select(monkeypatch, "1")
-    _no_env_pin(monkeypatch)
-    assert hw.gpu_pin_env(backend="vulkan") == {"GGML_VK_VISIBLE_DEVICES": "1"}
-    assert hw.gpu_pin_env(backend="hip") == {"HIP_VISIBLE_DEVICES": "1"}
+    assert hw.gpu_pin_env("vulkan") == {}
+    assert hw.gpu_pin_env("hip") == {}
 
 
-def test_gpu_pin_env_survives_a_missing_query(monkeypatch):
+def test_gpu_pin_env_refuses_unidentified_explicit_card(monkeypatch):
     monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: None)
     monkeypatch.setattr(hw, "_gpu_query_cache", None)
     _select(monkeypatch, "1")
     _no_env_pin(monkeypatch)
-    assert hw.gpu_pin_env(backend="cuda") == {}
+    with pytest.raises(ValueError, match="unavailable"):
+        hw.gpu_pin_env("cuda")

@@ -196,24 +196,34 @@ CLI and headless users as `local_runtime.gpu`). This matters most on the
 common two-card topology — a small display card driving your monitors and
 a bigger card bought for models:
 
-- **Automatic** (default) — the engine places the model itself; Hermes
-  prices the catalog against the largest card, matching that placement.
-- **An explicit card** (`0`, `1`, … in `nvidia-smi` order) — the managed
-  server is pinned to that card at spawn (`CUDA_VISIBLE_DEVICES` +
-  `CUDA_DEVICE_ORDER=PCI_BUS_ID` for CUDA, the vendor equivalent for
-  Vulkan/HIP), and the catalog is priced against the same card. Pinning
-  the compute card keeps model memory off the display card entirely.
+- **Automatic** (default) chooses the largest visible discrete card (an integrated GPU
+  only when there is no discrete one). The managed server is pinned to the same card
+  the catalogue prices; it does not silently spread layers onto the display card.
+- **An explicit card** reserves that card for models. CUDA uses its physical GPU UUID,
+  not an enumeration ordinal. Vulkan/HIP use the installed engine's device names.
+  CUDA devices can be listed before the runtime is installed; other backends require
+  the engine's device probe. Metal and CPU keep their existing behaviour.
 
-Changing the selection restarts a running managed server so the new pin
-takes effect without restarting Hermes. A pin that no longer matches a
-detected card (a card removed, an index from another machine's config)
-falls back to automatic behaviour — it never blocks the server from
-starting or the catalog from pricing.
+The picker stores a stable device identifier. CLI users can select a CUDA index or
+UUID with `hermes config set local_runtime.gpu 1`; unlike the picker, a numeric CLI
+choice follows that index if a driver changes enumeration after reboot. Use
+`nvidia-smi --query-gpu=index,name,uuid,memory.total --format=csv` to find a physical
+UUID if that distinction matters.
 
-Run `nvidia-smi --query-gpu=index,name,memory.total --format=csv` to see
-which index is which card. Users who export `CUDA_VISIBLE_DEVICES`
-themselves before starting Hermes: that choice is respected under
-Automatic, and an explicit `local_runtime.gpu` overrides it.
+The choice is saved in the selected profile. The managed runtime is machine-shared:
+while it is running, all profiles price its actual selected GPU, not an unrelated
+profile preference. Changing it restarts an idle server and reprices the catalogue.
+A busy server or one owned by another Hermes process returns an explicit error
+instead of interrupting inference. A stopped server stays stopped.
+
+If applying the choice fails, Hermes restores the previous setting and attempts
+server recovery; the error states whether recovery succeeded. An unavailable
+explicit GPU never falls back onto a reserved display/other-workload card. Select
+Automatic or another detected GPU to recover.
+
+Under Automatic, CUDA visibility masks are respected (including UUIDs, lists, and
+an empty `CUDA_VISIBLE_DEVICES`). An explicit choice overrides that mask for the
+managed child only. No parent environment or external llama-server is changed.
 
 ## Requirements and limits
 

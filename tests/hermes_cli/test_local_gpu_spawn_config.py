@@ -18,10 +18,13 @@ from fastapi.testclient import TestClient
 
 from hermes_cli.local_runtime import supervisor
 
+UUID0 = "GPU-00000000-0000-0000-0000-000000000000"
+UUID1 = "GPU-11111111-0000-0000-0000-000000000001"
+
 CARDS = [
-    {"index": 0, "gpu_name": "NVIDIA GeForce RTX 2060", "total_bytes": 6 << 30,
+    {"index": 0, "uuid": UUID0, "id": UUID0, "gpu_name": "NVIDIA GeForce RTX 2060", "total_bytes": 6 << 30,
      "free_bytes": 3 << 30, "used_bytes": 3 << 30, "gpu_util_percent": 6, "gpu_pci_id": None},
-    {"index": 1, "gpu_name": "NVIDIA GeForce RTX 3070", "total_bytes": 8 << 30,
+    {"index": 1, "uuid": UUID1, "id": UUID1, "gpu_name": "NVIDIA GeForce RTX 3070", "total_bytes": 8 << 30,
      "free_bytes": 8 << 30, "used_bytes": 0, "gpu_util_percent": 0, "gpu_pci_id": None},
 ]
 
@@ -31,6 +34,7 @@ def _spawnable(tmp_path, monkeypatch, cards, selection, backend="cuda"):
     from hermes_cli.local_runtime import hardware
 
     monkeypatch.setattr(hardware, "nvidia_cards", lambda: list(cards))
+    monkeypatch.setattr(hardware, "accelerator_cards", lambda **kw: [dict(c, name=f"Vulkan{c['index']}") for c in cards])
     monkeypatch.setattr(hardware, "_configured_gpu_selection", lambda: selection)
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path / "runtime")
     monkeypatch.setattr(supervisor, "_direct_io_args", lambda exe: [])
@@ -60,11 +64,10 @@ def test_spawn_pins_selected_card_on_cuda(monkeypatch, tmp_path):
     finally:
         sup.stop()
     env = _child_env(spawns)
-    assert env["CUDA_VISIBLE_DEVICES"] == "1"
-    assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert env["CUDA_VISIBLE_DEVICES"] == UUID1
 
 
-def test_spawn_pins_nothing_under_auto(monkeypatch, tmp_path):
+def test_spawn_auto_pins_the_card_it_prices(monkeypatch, tmp_path):
     spawns = _spawnable(tmp_path, monkeypatch, CARDS, "auto")
     sup = _sup(tmp_path)
     monkeypatch.setattr(sup, "_write_state", lambda: None)
@@ -73,22 +76,15 @@ def test_spawn_pins_nothing_under_auto(monkeypatch, tmp_path):
     finally:
         sup.stop()
     env = _child_env(spawns)
-    assert "CUDA_VISIBLE_DEVICES" not in env or env.get("CUDA_VISIBLE_DEVICES") != "1"
-    assert "CUDA_DEVICE_ORDER" not in env
+    assert env["CUDA_VISIBLE_DEVICES"] == UUID1
 
 
-def test_spawn_pin_survives_probe_miss(monkeypatch, tmp_path):
-    """No smi answer (probe miss): pin nothing, still spawn. A dead probe must never
-    prevent the server from booting."""
+def test_spawn_refuses_probe_miss_for_explicit_choice(monkeypatch, tmp_path):
     spawns = _spawnable(tmp_path, monkeypatch, [], "1")
     sup = _sup(tmp_path)
-    monkeypatch.setattr(sup, "_write_state", lambda: None)
-    try:
+    with pytest.raises(ValueError, match="unavailable"):
         sup._spawn()
-    finally:
-        sup.stop()
-    env = _child_env(spawns)
-    assert "CUDA_VISIBLE_DEVICES" not in env
+    assert spawns == []
 
 
 def test_spawn_uses_vulkan_variable_on_vulkan_backend(monkeypatch, tmp_path):
@@ -101,32 +97,25 @@ def test_spawn_uses_vulkan_variable_on_vulkan_backend(monkeypatch, tmp_path):
     finally:
         sup.stop()
     env = _child_env(spawns)
-    assert env.get("GGML_VK_VISIBLE_DEVICES") == "1"
+    assert "--device" in spawns[0]["argv"]
+    assert spawns[0]["argv"][-4:] == ["--device", "Vulkan1", "--split-mode", "none"]
+    assert "GGML_VK_VISIBLE_DEVICES" not in env
     assert "CUDA_VISIBLE_DEVICES" not in env
 
 
-def test_spawn_pin_applies_on_restart(monkeypatch, tmp_path):
-    """The crash-restart loop calls _spawn repeatedly; the pin must ride EVERY spawn,
-    not only the first."""
+def test_spawn_pin_applies_on_restart_and_does_not_borrow_new_profiles_config(monkeypatch, tmp_path):
+    from hermes_cli.local_runtime import hardware
     spawns = _spawnable(tmp_path, monkeypatch, CARDS, "1")
     sup = _sup(tmp_path)
     monkeypatch.setattr(sup, "_write_state", lambda: None)
-    monkeypatch.setattr(sup, "_wait_health", lambda self, timeout_s=120: None)
-    original = supervisor.LlamaServerSupervisor._spawn
-
-    def spawn_twice(self):
-        original(self)
-        self._log_handle = None
-        original(self)
-
-    monkeypatch.setattr(supervisor.LlamaServerSupervisor, "_spawn", spawn_twice)
     try:
-        sup.start()
+        sup._spawn()
+        monkeypatch.setattr(hardware, "_configured_gpu_selection", lambda: "0")
+        sup._spawn()
     finally:
         sup.stop()
     assert len(spawns) == 2
-    assert spawns[0]["env"]["CUDA_VISIBLE_DEVICES"] == "1"
-    assert spawns[1]["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+    assert all(s["env"]["CUDA_VISIBLE_DEVICES"] == UUID1 for s in spawns)
 
 
 # ── the config knob ──────────────────────────────────────────
@@ -218,11 +207,12 @@ def test_gpu_selection_endpoint_writes_config_and_bounces(client, monkeypatch):
     monkeypatch.setattr(hardware, "_configured_gpu_selection", lambda: "1")
     monkeypatch.setattr(router_mod.hardware, "_configured_gpu_selection", lambda: "1")
     bounces = []
-    monkeypatch.setattr(router_mod.bootstrap, "refresh_local_runtime", lambda: bounces.append(1))
+    monkeypatch.setattr(router_mod.bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda: True))
+    monkeypatch.setattr(router_mod.bootstrap, "refresh_local_runtime", lambda: bounces.append(1) or True)
     r = client.post("/api/local-models/gpu", json={"gpu": "1"})
     assert r.status_code == 200
-    assert r.json()["gpu"] == "1"
+    assert r.json()["gpu"] == UUID1
     assert bounces == [1]
     # Durable: the key landed in the on-disk config.
     from hermes_cli import config as config_mod
-    assert config_mod.load_config_readonly()["local_runtime"]["gpu"] == "1"
+    assert config_mod.load_config_readonly()["local_runtime"]["gpu"] == UUID1

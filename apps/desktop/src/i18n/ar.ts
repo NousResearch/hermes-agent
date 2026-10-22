@@ -106,7 +106,9 @@ export const arOverrides = {
       gpuLabel: 'GPU للنماذج المحلية',
       gpuAuto: largestName => `تلقائي (${largestName})`,
       gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
-      gpuSelectFailed: 'تعذّر تغيير اختيار GPU'
+      gpuSelectFailed: 'تعذّر تغيير اختيار GPU',
+      gpuSelected: 'تم حفظ اختيار GPU.',
+      gpuServerRestarted: 'تم حفظ اختيار GPU وإعادة تشغيل خادم النماذج.'
     }
   },
   skills: arCapabilities.skills,

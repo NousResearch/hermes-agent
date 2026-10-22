@@ -99,25 +99,25 @@ def _stable_api_key() -> str:
 @lru_cache(maxsize=16)
 def _direct_io_args(executable: Path) -> tuple[str, ...]:
     """Select the loading option supported by this engine, including older pinned builds."""
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
     result = subprocess.run([str(executable), "--help"], capture_output=True,
                             text=True, encoding="utf-8", errors="replace", check=True,
-                            timeout=15, cwd=str(executable.parent))
+                            timeout=15, cwd=str(executable.parent), creationflags=windows_hide_flags())
     help_text = result.stdout + result.stderr
     if "--load-mode" in help_text:
         return ("--load-mode", "dio")
     return ("-dio",) if "--direct-io" in help_text else ()
 
 
-def _gpu_pin_env(backend: str) -> dict[str, str]:
+def _gpu_pin_env(backend: str, selection: str) -> dict[str, str]:
     """Env pinning the server to the selected GPU (#134227); {} when no pin applies.
 
     Never raises: a probe miss means no pin, and the server still boots.
     """
-    with suppress(Exception):
-        from hermes_cli.local_runtime.hardware import gpu_pin_env
+    from hermes_cli.local_runtime.hardware import gpu_pin_env
 
-        return gpu_pin_env(backend)
-    return {}
+    return gpu_pin_env(backend, selection)
 
 
 class LlamaServerSupervisor:
@@ -134,7 +134,7 @@ class LlamaServerSupervisor:
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
                  preset_path: Path | None = None,
-                 backend: str = ""):
+                 backend: str = "", gpu: str | None = None, engine_tag: str = ""):
         # The exact engine binary (PM store path, backend-selected), handed
         # in by boot — the supervisor never discovers binaries itself: a
         # legacy-directory scan could resurrect bytes pm did not pin.
@@ -147,6 +147,12 @@ class LlamaServerSupervisor:
         # Engine backend (cuda/vulkan/hip/metal/cpu) from boot; picks the *_VISIBLE_DEVICES
         # variable for the spawn-side GPU pin (#134227). Empty = unknown, pins nothing.
         self.backend = backend
+        self.engine_tag = engine_tag
+        from hermes_cli.local_runtime.hardware import _configured_gpu_selection
+        from hermes_cli.local_runtime.gpu_selection import normalize
+
+        # Snapshot profile-bound policy before the watchdog moves into a plain thread.
+        self.gpu_selection = normalize(gpu if gpu is not None else _configured_gpu_selection())
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
         self.proc: subprocess.Popen | None = None
@@ -189,7 +195,15 @@ class LlamaServerSupervisor:
     # ── lifecycle ────────────────────────────────────────────
 
     def _spawn(self) -> None:
+        from hermes_cli.local_runtime.hardware import gpu_device_args
+
         exe = self.binary
+        pin_env = _gpu_pin_env(self.backend, self.gpu_selection)
+        device_args = gpu_device_args(self.backend, self.gpu_selection)
+        if pin_env.get("CUDA_VISIBLE_DEVICES", "").startswith("GPU-"):
+            self.gpu_selection = pin_env["CUDA_VISIBLE_DEVICES"]
+        elif device_args:
+            self.gpu_selection = device_args[1]
         cmd = [
             str(exe),
             "--host", "127.0.0.1",
@@ -212,6 +226,7 @@ class LlamaServerSupervisor:
         else:
             cmd += ["--models-dir", str(self.models_dir)]
         cmd += self.extra_args
+        cmd += device_args
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         if self._log_handle is not None:
             # The crash-restart loop calls _spawn repeatedly; each restart would leak one fd.
@@ -224,9 +239,12 @@ class LlamaServerSupervisor:
         # (hardware.selected_nvidia_card); resolved per spawn, so a restart after a card
         # change re-pins correctly (#134227).
         child_env = server_child_env(os.environ)
-        child_env.update(_gpu_pin_env(self.backend))
+        child_env.update(pin_env)
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
-                                             cwd=str(exe.parent), env=child_env)
+                                             cwd=str(exe.parent), env=child_env,
+                                             creationflags=windows_hide_flags())
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
@@ -254,6 +272,8 @@ class LlamaServerSupervisor:
                        "pid": proc.pid, "create_time": proc.create_time(),
                        "start_time": get_process_start_time(proc.pid),
                        "executable": proc.exe(), "owner_pid": os.getpid(),
+                       "gpu_selection": self.gpu_selection, "backend": self.backend,
+                       "engine_tag": self.engine_tag,
                        "owner_create_time": psutil.Process().create_time(),
                        "owner_start_time": get_process_start_time(os.getpid())}
         path = state_path()

@@ -22,6 +22,7 @@ _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
 # The engine that singleton runs (or is booting). Budgets price ITS devices: the server is shared by
 # every profile this process hosts, so another profile's ``local_runtime.backend`` must not resize it.
 _SERVING_ENGINE = None
+_SERVING_GPU = None
 _EXIT_HOOKED = False
 
 
@@ -410,7 +411,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
     falls back to configured providers."""
-    global _SUPERVISOR, _SERVING_ENGINE
+    global _SUPERVISOR, _SERVING_ENGINE, _SERVING_GPU
     section = (config or {}).get("local_runtime") or {}
     if not force and not section.get("enabled"):
         return None
@@ -456,7 +457,16 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             if engine is None:
                 logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
                 return None
+            from hermes_cli.local_runtime.gpu_selection import normalize
+
             _SERVING_ENGINE = engine
+            _SERVING_GPU = normalize(section.get("gpu", "auto"))
+            if engine.backend in {"cuda", "vulkan", "hip"}:
+                from hermes_cli.local_runtime.hardware import selected_gpu_card
+
+                physical = selected_gpu_card(_SERVING_GPU)
+                if physical is not None:
+                    _SERVING_GPU = physical.get("id") or physical.get("uuid") or _SERVING_GPU
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
@@ -465,7 +475,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
                                             engine_tag=engine.tag)
 
             sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
-                                        models_max=models_max, backend=engine.backend,
+                                        models_max=models_max, backend=engine.backend, gpu=_SERVING_GPU,
+                                        engine_tag=engine.tag,
                                         port=int(section.get("port", 0)) or None)
             try:
                 sup.start()
@@ -482,16 +493,32 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             return sup
         except Exception as exc:
             _SERVING_ENGINE = None
+            _SERVING_GPU = None
             logger.warning("managed local runtime unavailable: %s", exc)
             return None
 
 
 def shutdown_local_runtime() -> None:
-    global _SUPERVISOR, _SERVING_ENGINE
+    global _SUPERVISOR, _SERVING_ENGINE, _SERVING_GPU
     if _SUPERVISOR is not None:
         _SUPERVISOR.stop()
         _SUPERVISOR = None
     _SERVING_ENGINE = None
+    _SERVING_GPU = None
+
+
+def _recorded_serving_state():
+    from hermes_cli.local_runtime.recovery import read_state, recorded_process
+
+    state = read_state()
+    return state if state and recorded_process(state) is not None else None
+
+
+def serving_gpu_selection():
+    """Frozen device policy of this server, including one supervised by another process."""
+    if _SERVING_GPU is not None:
+        return _SERVING_GPU
+    return (_recorded_serving_state() or {}).get("gpu_selection")
 
 
 def get_supervisor():
@@ -501,8 +528,15 @@ def get_supervisor():
 
 
 def serving_engine():
-    """The engine the process-local server runs or is booting, or None when there is none."""
-    return _SERVING_ENGINE
+    """The engine actually serving/booting, independent of the requesting profile."""
+    if _SERVING_ENGINE is not None:
+        return _SERVING_ENGINE
+    state = _recorded_serving_state() or {}
+    if state.get("backend") and state.get("executable"):
+        from hermes_cli.local_runtime.binaries import Engine
+
+        return Engine(state["backend"], state.get("engine_tag", ""), Path(state["executable"]))
+    return None
 
 
 _SWEEP_EVERY_S = 120

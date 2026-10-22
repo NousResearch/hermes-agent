@@ -1119,6 +1119,8 @@ export const zhHantSettings = {
       gpuAuto: largestName => `自動（${largestName}）`,
       gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
       gpuSelectFailed: '無法變更 GPU 選擇',
+      gpuSelected: '已儲存 GPU 選擇。',
+      gpuServerRestarted: '已儲存 GPU 選擇並重新啟動模型伺服器。',
       modelsTitle: '模型',
       recommended: '推薦',
       recommendedReason: {

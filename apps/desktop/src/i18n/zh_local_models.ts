@@ -35,6 +35,8 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   gpuAuto: largestName => `自动（${largestName}）`,
   gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
   gpuSelectFailed: '无法更改 GPU 选择',
+  gpuSelected: '已保存 GPU 选择。',
+  gpuServerRestarted: '已保存 GPU 选择并重启模型服务器。',
   modelsTitle: '模型',
   recommended: '推荐',
   recommendedReason: {

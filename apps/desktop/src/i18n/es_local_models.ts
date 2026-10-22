@@ -26,6 +26,8 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   gpuAuto: largestName => `Automático (${largestName})`,
   gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
   gpuSelectFailed: 'No se pudo cambiar la GPU seleccionada',
+  gpuSelected: 'Selección de GPU guardada.',
+  gpuServerRestarted: 'Selección de GPU guardada y servidor de modelos reiniciado.',
   modelsTitle: 'Modelos',
   recommended: 'Recomendado',
   recommendedReason: {

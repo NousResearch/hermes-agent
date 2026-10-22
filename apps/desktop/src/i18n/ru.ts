@@ -349,7 +349,9 @@ export const ruOverrides = {
       gpuLabel: 'GPU для локальных моделей',
       gpuAuto: largestName => `Автоматически (${largestName})`,
       gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
-      gpuSelectFailed: 'Не удалось изменить выбор GPU'
+      gpuSelectFailed: 'Не удалось изменить выбор GPU',
+      gpuSelected: 'Выбор GPU сохранён.',
+      gpuServerRestarted: 'Выбор GPU сохранён, сервер моделей перезапущен.'
     },
     subpages: {
       appearanceTheme: 'Тема',

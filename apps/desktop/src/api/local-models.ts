@@ -147,8 +147,14 @@ export function setLocalServer(action: 'start' | 'stop', scope?: LocalModelsScop
   })
 }
 
-export function setLocalGpu(gpu: string, scope?: LocalModelsScope): Promise<{ gpu: string; ok: boolean }> {
-  return hermesApi<{ gpu: string; ok: boolean }>({
+export interface LocalGpuSelectionResult {
+  gpu: string
+  ok: boolean
+  server_restarted: boolean
+}
+
+export function setLocalGpu(gpu: string, scope?: LocalModelsScope): Promise<LocalGpuSelectionResult> {
+  return hermesApi<LocalGpuSelectionResult>({
     ...(scope ?? profileScoped()),
     body: { gpu },
     method: 'POST',

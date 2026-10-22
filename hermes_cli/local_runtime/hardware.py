@@ -64,6 +64,7 @@ _GPU_ENGINE_BACKENDS = ("vulkan", "hip")
 # long so a runtime installed mid-session gets picked up by the engine fallback.
 _POOL_NEGATIVE_TTL_S = 60.0
 _pool_probe_cache: tuple[float, tuple[int, bool | None] | None] | None = None
+_pool_probe_key: tuple | None = None
 
 # '  CUDA0: NVIDIA Example Device (1234-core Example GPU) (46464 MiB, 46284 MiB free)'
 # — greedy .* pins the LAST parenthesized group, so device names with parentheses parse.
@@ -224,6 +225,9 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     Selection-aware (#134227): the card priced here is the card the spawn pins, via
     ``selected_nvidia_card()``. Single-card machines get their only card — the historical answer.
     """
+    engine = _configured_engine()
+    if engine is not None and engine.backend != "cuda":
+        return None
     card = selected_nvidia_card()
     if card is None:
         return None
@@ -238,7 +242,7 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
 
 
 def nvidia_cards() -> list[dict]:
-    """Every NVIDIA card from the shared query, in nvidia-smi (PCI bus) order; [] on any miss."""
+    """Every NVIDIA card with its explicit smi index and physical UUID; [] on probe miss."""
     query = _cached_nvidia_gpu_query()
     if query is None:
         return []
@@ -246,86 +250,127 @@ def nvidia_cards() -> list[dict]:
 
 
 def _configured_gpu_selection() -> str:
-    """``local_runtime.gpu``: "auto" (default), or a pin ("0", "1", …). Reads are cached by
-    ``load_config_readonly``; this must never raise — a config miss means auto."""
-    with suppress(Exception):
-        from hermes_cli.config import load_config_readonly
+    """Read this profile's requested choice without treating YAML integer 0 as missing."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.local_runtime.gpu_selection import normalize
 
-        return str((load_config_readonly().get("local_runtime") or {}).get("gpu") or "auto")
-    return "auto"
+    return normalize((load_config_readonly().get("local_runtime") or {}).get("gpu", "auto"))
 
 
-def _env_visible_devices() -> str | None:
-    """The single card a user's own *_VISIBLE_DEVICES pin (if any) leaves visible, else None.
+def _effective_gpu_selection() -> str:
+    """Budget the shared server's frozen choice, not a different profile's preference."""
+    from hermes_cli.local_runtime.bootstrap import serving_gpu_selection
 
-    A user who exports CUDA_VISIBLE_DEVICES=1 before Hermes has already chosen; pricing must
-    follow that card or it prices a card the engine cannot see. Multi-card lists and unknown
-    formats read as None (both cards visible -> the engine places layers itself).
+    serving = serving_gpu_selection()
+    return serving if serving is not None else _configured_gpu_selection()
+
+
+_cuda_visibility_cache: dict[tuple, tuple[float, list[str] | None]] = {}
+
+
+def _cuda_visible_uuids() -> list[str] | None:
+    from hermes_cli.local_runtime.devices import cuda_visible_uuids
+
+    key = (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
+    now = time.monotonic()
+    cached = _cuda_visibility_cache.get(key)
+    if cached and now - cached[0] < _GPU_QUERY_TTL_S:
+        return cached[1]
+    result = cuda_visible_uuids()
+    _cuda_visibility_cache[key] = (now, result)
+    return result
+
+
+def selected_nvidia_card(selection: str | None = None) -> dict | None:
+    from hermes_cli.local_runtime.gpu_selection import GpuSelectionError, choose
+
+    choice = _effective_gpu_selection() if selection is None else selection
+    env = os.environ
+    mask = env.get("CUDA_VISIBLE_DEVICES", "")
+    if choice == "auto" and any(re.fullmatch(r"[0-9]+", t.strip()) for t in mask.split(",")):
+        visible = _cuda_visible_uuids()
+        if visible is None:
+            raise GpuSelectionError("CUDA visibility could not be resolved; use a GPU UUID or select a detected GPU")
+        env = dict(env, CUDA_VISIBLE_DEVICES=",".join(visible))
+    return choose(nvidia_cards(), choice, env=env)
+
+
+def gpu_pin_env(backend: str, selection: str | None = None) -> dict[str, str]:
+    """Pin CUDA by UUID, independently of CUDA/smi/PCI enumeration order.
+
+    Automatic also pins the card it prices. An unavailable explicit choice raises:
+    running unpinned would violate a reserved display/other-workload GPU.
+    Vulkan/HIP use the engine's own device names (``gpu_device_args``), never smi ordinals.
     """
-    for key in ("CUDA_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
-        value = os.environ.get(key, "").strip()
-        if value and re.fullmatch(r"\d+", value):
-            return value
-    return None
-
-
-def selected_nvidia_card() -> dict | None:
-    """The card the managed runtime prices and pins, or None (no NVIDIA card / probe miss).
-
-    Order of authority: ``local_runtime.gpu`` pin > the user's own *_VISIBLE_DEVICES single-card
-    pin > auto. Auto mirrors llama.cpp's placement rule among discrete devices: the largest card,
-    first smi row breaking ties. A stale or malformed pin NEVER blocks budgeting — it falls back
-    to auto, so removing a card degrades to today's behaviour instead of failing the probe.
-    """
-    cards = nvidia_cards()
-    if not cards:
-        return None
-    configured = _configured_gpu_selection().strip()
-    if configured.lower() != "auto" and re.fullmatch(r"\d+", configured):
-        pinned = next((c for c in cards if c["index"] == int(configured)), None)
-        if pinned is not None:
-            return pinned
-        logger.warning("local_runtime.gpu=%s matches no detected card (have %s); using auto",
-                       configured, [c["index"] for c in cards])
-    else:
-        env = _env_visible_devices()
-        if env is not None:
-            pinned = next((c for c in cards if c["index"] == int(env)), None)
-            if pinned is not None:
-                return pinned
-    return max(cards, key=lambda c: (c["total_bytes"], -c["index"]))
-
-
-# The spawn-side pin per backend. CUDA enumerates fastest-first by default, NOT in smi/PCI
-# order — pinning by smi index without fixing the order silently selects the wrong card.
-_GPU_PIN_ENV_KEYS = {"cuda": ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"),
-                     "vulkan": ("GGML_VK_VISIBLE_DEVICES", None),
-                     "hip": ("HIP_VISIBLE_DEVICES", None)}
-
-
-def gpu_pin_env(backend: str) -> dict[str, str]:
-    """Environment pinning the managed server to the selected card, or {} when no pin applies.
-
-    Auto and single-card machines pin nothing: llama.cpp places layers itself (largest discrete
-    device), matching the auto pricing rule. An explicit pin that cannot be honoured (probe miss)
-    pins nothing rather than pinning a wrong card — the server still boots.
-    """
-    keys = _GPU_PIN_ENV_KEYS.get(backend)
-    if keys is None:  # cpu/metal: no device selection to do
+    if backend != "cuda":
         return {}
-    selected = selected_nvidia_card()
-    cards = nvidia_cards()
-    if selected is None or len(cards) < 2:
-        # One card (or a probe miss): nothing to choose — but an explicit config pin still
-        # applies on a probe miss... it cannot resolve an index, so it pins nothing.
-        return {}
-    if _configured_gpu_selection().strip().lower() == "auto":
-        return {}
-    visible, order = keys
-    env = {visible: str(selected["index"])}
-    if order is not None:
-        env[order] = "PCI_BUS_ID"
-    return env
+    card = selected_nvidia_card(selection)
+    if card is None:
+        # Some Windows drivers interpret an empty mask as unset. Explicitly disable
+        # CUDA when an inherited visibility mask selected no known device.
+        return {"CUDA_VISIBLE_DEVICES": "-1"} if nvidia_cards() else {}
+    from hermes_cli.local_runtime.gpu_selection import GpuSelectionError
+
+    uuid = card.get("uuid")
+    if not uuid:
+        # Driver probes predate UUID discovery only on legacy fixtures/probe misses.
+        # A single auto card requires no pin. Multi-device launch must not guess an ordinal.
+        if len(nvidia_cards()) == 1 and (selection or _effective_gpu_selection()) == "auto":
+            return {}
+        raise GpuSelectionError("GPU UUID is unavailable; refresh GPU detection before launching")
+    return {"CUDA_VISIBLE_DEVICES": uuid}
+
+
+_engine_cards_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def accelerator_cards(*, fresh: bool = False) -> list[dict]:
+    """Vulkan/HIP inventory in the engine's device namespace, including mixed vendors."""
+    from hermes_cli.local_runtime.devices import probe_devices
+
+    engine = _configured_engine()
+    if engine is None or engine.backend not in _GPU_ENGINE_BACKENDS:
+        return []
+    key, now = str(engine.binary), time.monotonic()
+    cached = _engine_cards_cache.get(key)
+    if not fresh and cached and now - cached[0] < _GPU_QUERY_TTL_S:
+        return cached[1]
+    devices = probe_devices(engine.binary.parent, engine.backend)
+    cards = [{"index": i, "id": d["name"], "name": d["name"], "backend": engine.backend,
+              "gpu_name": d["description"], "total_bytes": d["total"],
+              "free_bytes": d["free"], "type": d["type"]}
+             for i, d in enumerate(devices) if d.get("name")]
+    _engine_cards_cache[key] = (now, cards)
+    return cards
+
+
+def gpu_cards() -> list[dict]:
+    """Selectable GPUs of the configured/serving backend, not another vendor's ordinal space."""
+    engine = _configured_engine()
+    if engine is not None:
+        if engine.backend in _GPU_ENGINE_BACKENDS:
+            return accelerator_cards()
+        if engine.backend != "cuda":
+            return []
+    return nvidia_cards()
+
+
+def selected_gpu_card(selection: str | None = None) -> dict | None:
+    from hermes_cli.local_runtime.gpu_selection import choose
+
+    engine = _configured_engine()
+    if engine is not None and engine.backend in _GPU_ENGINE_BACKENDS:
+        return choose(accelerator_cards(), _effective_gpu_selection() if selection is None else selection)
+    return selected_nvidia_card(selection)
+
+
+def gpu_device_args(backend: str, selection: str) -> list[str]:
+    if backend not in _GPU_ENGINE_BACKENDS:
+        return []
+    from hermes_cli.local_runtime.gpu_selection import choose
+
+    card = choose(accelerator_cards(fresh=True), selection)
+    return ["--device", card["name"], "--split-mode", "none"] if card else []
 
 
 _gpu_query_cache: tuple[float, dict | None] | None = None
@@ -357,7 +402,7 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
     from hermes_cli._subprocess_compat import windows_hide_flags
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
+            [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu,index,uuid,pci.bus_id",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             creationflags=windows_hide_flags(), check=False)
@@ -366,22 +411,26 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
             return None
 
         def _card(row: str, index: int) -> dict | None:
-            """One nvidia-smi CSV row -> one card dict, or None when the row is malformed."""
             try:
-                total_mib, free_mib, name, raw_id, used_mib, util = next(
-                    csv.reader([row], skipinitialspace=True))
+                fields = next(csv.reader([row], skipinitialspace=True))
+                total_mib, free_mib, name, raw_id, used_mib, util = fields[:6]
                 pci_id = None
-                with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
+                with suppress(ValueError):
                     pci_id = int(raw_id, 16)
-                return {
-                    "index": index,  # nvidia-smi row order == PCI bus order, the stable identity
-                    "gpu_name": name.strip(),
-                    "total_bytes": int(total_mib) << 20,
-                    "free_bytes": int(free_mib) << 20,
+                total, free = int(total_mib) << 20, int(free_mib) << 20
+                if total <= 0 or not 0 <= free <= total:
+                    return None
+                data = {
+                    "index": int(fields[6]) if len(fields) > 6 else index,
+                    "gpu_name": name.strip(), "total_bytes": total, "free_bytes": free,
                     "used_bytes": int(used_mib) << 20,
-                    "gpu_util_percent": int(util),
+                    "gpu_util_percent": int(util) if util.strip().isdigit() else None,
                     "gpu_pci_id": pci_id,
                 }
+                if len(fields) >= 9:
+                    data.update(uuid=fields[7].strip(), id=fields[7].strip(),
+                                pci_bus_id=fields[8].strip())
+                return data
             except (StopIteration, ValueError):
                 return None
 
@@ -421,7 +470,15 @@ def _cuda_driver_pool() -> tuple[int, bool | None] | None:
         if cuda.cuInit(0) != 0:
             return None
         dev = ctypes.c_int()
-        if cuda.cuDeviceGet(ctypes.byref(dev), 0) != 0:
+        selected = selected_nvidia_card()
+        target = (selected or {}).get("pci_bus_id")
+        if target:
+            # PCI identity selects the same physical card despite CUDA visibility/ordinal remapping.
+            get_by_bus = cuda.cuDeviceGetByPCIBusId
+            get_by_bus.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_char_p]
+            if get_by_bus(ctypes.byref(dev), target.encode("ascii")) != 0:
+                return None
+        elif cuda.cuDeviceGet(ctypes.byref(dev), 0) != 0:
             return None
         total = ctypes.c_size_t()
         getter = getattr(cuda, "cuDeviceTotalMem_v2", None) or cuda.cuDeviceTotalMem
@@ -459,8 +516,14 @@ def _engine_device_pool() -> tuple[int, bool | None] | None:
         if engine is None:
             return None
         exe = engine.binary
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        child_env = dict(os.environ)
+        child_env.update(gpu_pin_env(engine.backend))
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent), check=False)
+                             text=True, encoding="utf-8", errors="replace", timeout=30,
+                             cwd=str(exe.parent), check=False, env=child_env,
+                             creationflags=windows_hide_flags())
         if out.returncode != 0:
             return None
         for line in (out.stdout + out.stderr).splitlines():
@@ -473,7 +536,13 @@ def _engine_device_pool() -> tuple[int, bool | None] | None:
 def _device_pool_view() -> tuple[int, bool | None] | None:
     """Best available allocator-side view, cached: a hit is permanent for the process, a miss
     retries after a short TTL (the engine binary can appear mid-session via a pane install)."""
-    global _pool_probe_cache
+    global _pool_probe_cache, _pool_probe_key
+    selected = selected_nvidia_card()
+    key = ((selected or {}).get("uuid"), (selected or {}).get("index"),
+           os.environ.get("CUDA_VISIBLE_DEVICES"))
+    if key != _pool_probe_key:
+        _pool_probe_cache = None
+        _pool_probe_key = key
     now = time.monotonic()
     if _pool_probe_cache is not None:
         stamp, view = _pool_probe_cache
@@ -488,29 +557,30 @@ _accelerator_cache: dict[str, tuple[float, dict | None]] = {}
 
 
 def _accelerator_device(*, fresh: bool = False) -> dict | None:
-    """The device a Vulkan/HIP engine will place layers on, or None (no such engine, probe miss).
+    """Selected Vulkan/HIP device, with legacy auto-only probe fallback."""
+    from hermes_cli.local_runtime.devices import probe_devices
+    from hermes_cli.local_runtime.gpu_selection import choose
 
-    Mirrors llama.cpp's own placement: discrete devices whenever one exists, an integrated one only
-    otherwise; among discrete devices the largest. Cached per engine binary like
-    ``_device_pool_view`` (a hit lasts the process, a miss retries after the TTL): the hardware
-    endpoint polls this every few seconds and each probe initializes the GPU driver. ``fresh`` skips
-    the cache read for a launch-time free-memory answer.
-    """
-    with suppress(Exception):  # a probe miss must never block budgeting
-        from hermes_cli.local_runtime.devices import probe_devices
-
-        engine = _configured_engine()
-        if engine is None or engine.backend not in _GPU_ENGINE_BACKENDS:
-            return None
-        key, now = str(engine.binary), time.monotonic()
-        cached = _accelerator_cache.get(key)
-        if not fresh and cached is not None and (cached[1] is not None or now - cached[0] < _POOL_NEGATIVE_TTL_S):
-            return cached[1]
-        devices = probe_devices(engine.binary.parent, engine.backend)
-        device = max(devices, key=lambda d: (d["type"] == GGML_DEVICE_GPU, d["total"]), default=None)
-        _accelerator_cache[key] = (now, device)
-        return device
-    return None
+    engine = _configured_engine()
+    if engine is None or engine.backend not in _GPU_ENGINE_BACKENDS:
+        return None
+    cards = accelerator_cards(fresh=fresh)
+    if cards:
+        card = choose(cards, _effective_gpu_selection())
+        if card is not None:
+            return {"name": card["name"], "description": card["gpu_name"],
+                    "type": card["type"], "total": card["total_bytes"], "free": card["free_bytes"]}
+    # Older probe results may not carry device names; only Automatic can use those safely.
+    if _effective_gpu_selection() != "auto":
+        choose([], _effective_gpu_selection())
+    key, now = str(engine.binary), time.monotonic()
+    cached = _accelerator_cache.get(key)
+    if not fresh and cached and (cached[1] is not None or now - cached[0] < _POOL_NEGATIVE_TTL_S):
+        return cached[1]
+    devices = probe_devices(engine.binary.parent, engine.backend)
+    device = max(devices, key=lambda d: (d["type"] == GGML_DEVICE_GPU, d["total"]), default=None)
+    _accelerator_cache[key] = (now, device)
+    return device
 
 
 def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
@@ -618,6 +688,16 @@ def _windows_igpu_bytes(device: dict | None) -> int | None:
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
+    from hermes_cli.local_runtime.gpu_selection import GpuSelectionError
+
+    try:
+        return _probe_budget(planning=planning)
+    except GpuSelectionError as exc:
+        logger.warning("GPU budget unavailable: %s", exc)
+        return HardwareBudget(0, 0, 0)
+
+
+def _probe_budget(*, planning: bool = False) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
     ``planning=False``: LIVE budget (free VRAM now) for launch-time fit and growth re-grants.
@@ -633,7 +713,13 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     # but nvcuda loads via the system loader). Deliberately NOT clamped to OS RAM: carved-out
     # memory is invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that
     # capacity. On Windows, commit narrows the launch window instead (``launch_budget``).
-    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
+    engine = _configured_engine()
+    unified = None
+    if engine is None or engine.backend == "cuda":
+        # Missing smi can still have a usable CUDA allocator (N1X). A visibility mask
+        # hiding known cards, in contrast, must not price an allocator the child cannot use.
+        if vram is not None or not nvidia_cards():
+            unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "

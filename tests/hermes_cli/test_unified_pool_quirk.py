@@ -138,6 +138,8 @@ def test_budget_unified_no_smi_still_classifies(monkeypatch):
     still budgets the full pool, and live falls back to OS-available."""
     _no_cache(monkeypatch)
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "nvidia_cards", list)
+    monkeypatch.setattr(hw, "_configured_engine", lambda: None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, True))
     planning = hw.probe_budget(planning=True)
@@ -174,6 +176,8 @@ def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
     attribute-less pool claim alone must never flip the verdict."""
     _no_cache(monkeypatch)
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "nvidia_cards", list)
+    monkeypatch.setattr(hw, "_configured_engine", lambda: None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, None))
     monkeypatch.setattr(gpu_adapters, "windows_gpu_adapters", tuple)
@@ -211,7 +215,7 @@ def test_vulkan_device_type_decides_discrete_vs_unified(monkeypatch, tmp_path, d
 
     b = hw.probe_budget(planning=True)
 
-    assert requested == ["vulkan"]
+    assert requested and all(backend == "vulkan" for backend in requested)
     assert b.uma is (not discrete)
     if discrete:
         assert b.total_device_bytes == total

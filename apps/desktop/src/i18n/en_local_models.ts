@@ -24,6 +24,8 @@ export const enLocalModels: Translations['settings']['localModels'] = {
   gpuAuto: largestName => `Automatic (${largestName})`,
   gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
   gpuSelectFailed: 'Could not change the GPU selection',
+  gpuSelected: 'GPU selection saved.',
+  gpuServerRestarted: 'GPU selection saved and model server restarted.',
   modelsTitle: 'Models',
   recommended: 'Recommended',
   /* The Recommended badge's tooltip, keyed by the resolver branch that

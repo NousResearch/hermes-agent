@@ -27,6 +27,21 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     return bool(host) and (host == "ollama.com" or host.endswith(".ollama.com") or "ollama" in host.split("."))
 
 
+def _may_send_ollama_options(ctx: dict) -> bool:
+    """Whether Ollama's own request extension may go to this endpoint.
+
+    ``options.num_ctx`` exists because Ollama defaults its window to 2048, so only an Ollama
+    endpoint may receive it. A local compatibility gateway answers ``/api/tags`` and ``/api/show``
+    in Ollama's shape - dotted ``general.*`` keys included - so a probe-based verdict marks it
+    Ollama and the field then reaches a relayed non-Ollama model, which rejects it with an
+    unknown-field 400 (#142239). The endpoint's SIGNATURE is the authority; an explicit
+    ``model.ollama_num_ctx`` is the operator's own opt-in and wins over it."""
+    if ctx.get("ollama_num_ctx_explicit"):
+        return True
+    base_url = ctx.get("base_url")
+    return not base_url or _looks_like_ollama_endpoint(base_url)
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -58,7 +73,7 @@ class CustomProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
-        if ollama_num_ctx:
+        if ollama_num_ctx and _may_send_ollama_options(ctx):
             extra_body["options"] = {"num_ctx": ollama_num_ctx}
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
         # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->

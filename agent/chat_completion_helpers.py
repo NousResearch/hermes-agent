@@ -1471,7 +1471,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
-        cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
+        cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx, ollama_num_ctx_explicit=getattr(agent, "_ollama_num_ctx_explicit", False),
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
         supports_reasoning=agent._supports_reasoning_extra_body(),
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,

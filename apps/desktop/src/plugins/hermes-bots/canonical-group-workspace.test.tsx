@@ -23,6 +23,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 })
 import { host } from '@hermes/plugin-sdk'
 
+import { CANONICAL_GROUP_CAPABILITIES, LEGACY_STANDALONE_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { $canonicalGroupBindings, CanonicalGroupList, registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
@@ -461,4 +462,50 @@ it('uploads a file pasted while another upload runs once that one finishes, inst
   await screen.findByText('second.txt')
   expect(screen.getByText('first.png')).toBeTruthy()
   expect(uploads()).toEqual(['first.png', 'second.txt'])
+})
+
+it.each([
+  ['the gateway', CANONICAL_GROUP_CAPABILITIES, true, true],
+  ['the standalone server', STANDALONE_GROUP_CAPABILITIES, false, true],
+  ['an older standalone server', LEGACY_STANDALONE_GROUP_CAPABILITIES, false, false]
+])('offers Discard and attachments only where %s lists them', async (_surface, capabilities, discard, attachments) => {
+  const actions = [{ kind: 'discard', member_id: 'ops', task_id: 'unknown', execution_generation: 2 },
+    { kind: 'retry', member_id: 'qa', task_id: 'late', execution_generation: 1 }]
+
+  const events = [{ seq: 1, room_id: 'surfaces', event_id: 'file-event', kind: 'message.member', actor: { kind: 'member', id: 'ops' },
+    payload: { attachments: [{ attachment_id: 'att_1', kind: 'file', name: 'notes.txt', mime: 'text/plain' }] } }]
+
+  let answer!: (value: unknown) => void
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities'
+    ? new Promise(resolve => { answer = resolve })
+    : method === 'groups.state' ? { room: { name: 'Room' }, driver_status: { pending_actions: actions } }
+      : method === 'groups.log' ? { events } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'surfaces' }} />)
+  await screen.findByText('notes.txt')
+  // Until the gateway says what it offers, no optional control is shown.
+  expect(screen.queryByRole('button', { name: 'Discard' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Attach files' })).toBeNull()
+
+  answer(capabilities)
+  await screen.findByRole('button', { name: 'Retry' })
+  expect(Boolean(screen.queryByRole('button', { name: 'Discard' }))).toBe(discard)
+  expect(Boolean(screen.queryByRole('button', { name: 'Attach files' }))).toBe(attachments)
+  expect((screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(!attachments)
+  // Both surfaces list groups.rename and groups.disband.
+  expect(screen.getByRole('button', { name: 'Rename' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: /disband/i })).toBeTruthy()
+})
+
+it('hides Rename and Disband, and ignores pasted files, on a gateway that does not list their methods', async () => {
+  const methods = ['groups.capabilities', 'groups.state', 'groups.log', 'groups.send', 'groups.stop']
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? { driver: true, methods } : roomReads()(method) ?? {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'bare' }} />)
+  await screen.findByRole('button', { name: 'Stop' })
+  await waitFor(() => expect(request.mock.calls.some(c => c[1] === 'groups.capabilities')).toBe(true))
+  const box = screen.getByRole('textbox')
+  await waitFor(() => expect((box as HTMLTextAreaElement).disabled).toBe(false))
+  expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull()
+  expect(screen.queryByRole('button', { name: /disband/i })).toBeNull()
+  fireEvent.paste(box, { clipboardData: { files: [new File(['a'], 'a.png', { type: 'image/png' })], types: ['Files'] } })
+  expect(request.mock.calls.some(c => c[1] === 'groups.attachment.upload')).toBe(false)
 })

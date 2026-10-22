@@ -3,9 +3,11 @@ import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from
 
 import { type CanonicalDriverActivity, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
+import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
 import { forgetCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
@@ -32,6 +34,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
+  const methods = useGroupMethods(binding, visible)
   const [state, setState] = useState<RoomState | null>(null)
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
@@ -186,25 +189,24 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     if (!files.length) {return}
     event.preventDefault()
 
-    if (!composerLocked) {uploader.current?.upload(files)}
+    if (!composerLocked && offersGroupMethod(methods, 'groups.attachment.upload')) {uploader.current?.upload(files)}
   }
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
-    <CanonicalGroupHeader busy={busy} canStop={!!state?.driver_status} onBack={onBack} onDisband={end} onRename={rename}
+    <CanonicalGroupHeader busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
+      canStop={!!state?.driver_status} onBack={onBack} onDisband={end} onRename={rename}
       onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))} phases={phases} room={state?.room} />
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
     <div className="min-h-0 flex-1 overflow-auto" role="log">
-      <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={state?.room.members} />
+      <CanonicalGroupHistory binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events}
+        members={state?.room.members} />
       <CanonicalGroupWorkingLine driver={state?.driver_status} labels={labels} members={state?.room.members} phases={phases} />
     </div>
-    {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
-      <span>{action.member_id}</span>
-      {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
-      {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
-      {action.kind === 'approval' && <><Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button><Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button></>}
-    </div>)}
+    {(state?.driver_status?.pending_actions || []).map(action => <CanonicalPendingActionRow action={action} busy={busy}
+      key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} methods={methods}
+      onAct={(exact, choice) => void act(exact, choice)} onDiscard={setDiscard} />)}
     {discard && <div aria-label={labels.discardUnknown} role="alertdialog">
       <p>{labels.discardWarning}</p>
       <Button disabled={busy} onClick={() => { const exact = discard; setDiscard(null); void act(exact) }}>{labels.confirmDiscard}</Button>
@@ -213,7 +215,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     {restoredPending && <p role="status">{labels.restoredPendingSend}</p>}
     <form className="flex gap-2" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) {event.preventDefault()} }}
       onDrop={event => attachTransfer(event, event.dataTransfer)} onPaste={event => attachTransfer(event, event.clipboardData)} onSubmit={event => { event.preventDefault(); send() }}>
-      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} ref={uploader} />
+      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} downloads={offersGroupMethod(methods, 'groups.attachment.download')}
+        onChange={setAttachments} onUploadingChange={setUploading} ref={uploader} uploads={offersGroupMethod(methods, 'groups.attachment.upload')} />
       <GroupMentionInput aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} handleFor={member => member.handle}
         members={mentionMembers} onChange={setDraft} onSubmitDraft={send} value={draft} />
       <Button disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>

@@ -84,13 +84,50 @@ export const CANONICAL_GROUP_CAPABILITIES = declaredCapabilities({
   max_log_limit: 500
 })
 
+/** The standalone server's answer (`hermes serve`, `hermes dashboard`; tui_gateway/methods_groups.py
+ *  `_METHODS`): it starts its own room driver at boot, so `driver` is true too. */
+export const STANDALONE_GROUP_CAPABILITIES = declaredCapabilities({
+  protocol_version: 2,
+  driver: true,
+  persistent_process: false,
+  authority_gateway_id: 'install:standalone',
+  room_link: { enabled: false, reason: 'gateway_roomlink_secret_unavailable' },
+  features: ['authority_epoch', 'coordinator_fencing', 'room_identity', 'monotonic_log', 'idempotent_send',
+    'replayable_disband', 'typed_events', 'actor_identity', 'log_replication', 'authority_takeover'],
+  methods: ['groups.capabilities', 'groups.list', 'groups.create', 'groups.state', 'groups.send', 'groups.rename',
+    'groups.log', 'groups.disband', 'groups.replicate', 'groups.replica_state', 'groups.promote', 'groups.demote',
+    'groups.stop', 'groups.retry', 'groups.approve', 'groups.peer.invite', 'groups.peer.revoke', 'groups.peer.register',
+    'groups.attachment.upload', 'groups.attachment.download'],
+  max_log_limit: 500
+})
+
+/** Older standalone backends still connect: they advertise neither file method. */
+export const LEGACY_STANDALONE_GROUP_CAPABILITIES = declaredCapabilities({
+  ...STANDALONE_GROUP_CAPABILITIES,
+  methods: STANDALONE_GROUP_CAPABILITIES.methods.filter(method => !method.startsWith('groups.attachment.'))
+})
+
 export interface GroupRequestCall {
   method: string
   params: Record<string, unknown>
 }
 
-/** Refuse what the gateway refuses before any handler runs (`4001 invalid_params`): a method it
- *  does not list, an unknown key, or a missing required one. */
+const shared = new Map<string, Declaration>(contract.methods.map((method: Declaration) => [method.name, method]))
+
+/** The keys a call to the standalone server would be refused for (`4000`, tui_gateway/rpc_dispatch.py
+ *  `validate_params`): it checks only for unknown keys, against the shared declaration. Methods it
+ *  does not list are never offered there. */
+export function standaloneGroupProblems({ method, params }: GroupRequestCall): string[] {
+  const declaration = STANDALONE_GROUP_CAPABILITIES.methods.includes(method) ? shared.get(method) : undefined
+  const { properties } = declaration ? schema(declaration.params[0].schema.$ref) : { properties: undefined }
+
+  return properties ? Object.keys(params).filter(key => params[key] !== undefined && !Object.hasOwn(properties, key))
+    .map(key => `${method}.${key}`) : []
+}
+
+/** Refuse what either surface refuses before any handler runs. The gateway (`4001 invalid_params`):
+ *  a method it does not list, an unknown key, or a missing required one. The standalone server: an
+ *  unknown key in a method it lists. */
 export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
   for (const { method, params } of calls) {
     const declared = CANONICAL_GROUP_CAPABILITIES.methods.includes(method) ? declaredGroupMethod(method)?.params : undefined
@@ -113,13 +150,19 @@ export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
         throw new Error(`Missing canonical group field: ${method}.${field}`)
       }
     }
+
+    const refused = standaloneGroupProblems({ method, params })
+
+    if (refused.length) {
+      throw new Error(`The standalone server refuses group field: ${refused.join(', ')}`)
+    }
   }
 }
 
 type ProfileRequest = (route: unknown, method: string, params?: Record<string, unknown>, ...rest: unknown[]) => unknown
 
 /** Wrap a test's `host.requestProfile` double: its answers are unchanged, and
- *  every `groups.*` call it saw is checked against the gateway after each test. */
+ *  every `groups.*` call it saw is checked against both surfaces after each test. */
 export function captureGroupRequests(request: ProfileRequest) {
   const calls: GroupRequestCall[] = []
   afterEach(() => assertCanonicalGroupCalls(calls.splice(0)))

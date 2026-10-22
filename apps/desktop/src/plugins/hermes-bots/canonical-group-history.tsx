@@ -23,6 +23,8 @@ interface CanonicalGroupHistoryProps {
   events: CanonicalGroupEvent[]
   members?: CanonicalRoomMember[]
   disabled?: boolean
+  /** Whether the room's gateway lists groups.attachment.download. */
+  downloads?: boolean
 }
 
 function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRoomMember>, isMessage: boolean) {
@@ -153,7 +155,7 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
 }
 
-export function CanonicalGroupHistory({ binding, events, members = [], disabled = false }: CanonicalGroupHistoryProps) {
+export function CanonicalGroupHistory({ binding, events, members = [], disabled = false, downloads = true }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
 
@@ -183,10 +185,10 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
       <EventTime timestamp={event.created_at} />
     </div>
     <EventBody event={event} notice={notice} />
-    {previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
+    {downloads && previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
       <ImagePreview attachment={a} binding={binding} disabled={disabled} eventId={previewEventId} key={a.attachment_id ?? a.name} />)}
     {!!event.payload.attachments?.length && <CanonicalGroupAttachments
       attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
-      binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly />}
+      binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} downloads={downloads} readOnly />}
   </div>})}</>
 }

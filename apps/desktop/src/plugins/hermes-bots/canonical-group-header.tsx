@@ -7,6 +7,9 @@ import type { CanonicalRoom } from './canonical-groups'
 
 interface CanonicalGroupHeaderProps {
   busy: boolean
+  /** Whether the room's gateway lists groups.disband / groups.rename. */
+  canDisband: boolean
+  canRename: boolean
   canStop: boolean
   onBack?: () => void
   onDisband: () => Promise<void>
@@ -16,7 +19,7 @@ interface CanonicalGroupHeaderProps {
   room?: CanonicalRoom
 }
 
-export function CanonicalGroupHeader({ busy, canStop, onBack, onDisband, onRename, onStop, phases, room }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, onBack, onDisband, onRename, onStop, phases, room }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
   const [renaming, setRenaming] = useState<string | null>(null)
   const [ending, setEnding] = useState(false)
@@ -35,8 +38,8 @@ export function CanonicalGroupHeader({ busy, canStop, onBack, onDisband, onRenam
         <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} phases={phases} />
       </div>
       <Button disabled={busy || !canStop} onClick={onStop}>{labels.stop}</Button>
-      <Button disabled={busy || !room} onClick={() => setRenaming(room?.name ?? '')}>{labels.rename}</Button>
-      <Button disabled={busy || !room} onClick={() => setEnding(true)}>{labels.disband}</Button>
+      {canRename && <Button disabled={busy || !room} onClick={() => setRenaming(room?.name ?? '')}>{labels.rename}</Button>}
+      {canDisband && <Button disabled={busy || !room} onClick={() => setEnding(true)}>{labels.disband}</Button>}
     </header>
     {renaming !== null && <form className="flex items-center gap-2" onSubmit={event => { event.preventDefault(); rename(renaming.trim()) }}>
       <Input aria-label={labels.renameLabel} autoFocus onChange={event => setRenaming(event.target.value)} value={renaming} />

@@ -9,7 +9,7 @@ from typing import Any, Callable, NoReturn
 
 _POLL_SECONDS = 2.0
 _DONE_STATES = frozenset({"connected", "skipped", "failed", "expired", "not_connected"})
-_SIGN_IN = "Sign in with `hermes login` to manage connectors."
+_SIGN_IN = "Run `hermes auth upgrade` to sign in."
 
 
 class _CommandError(Exception):
@@ -237,7 +237,7 @@ def cmd_connectors(args) -> int:
         print(f"Unknown connectors action: {args.connectors_action}", file=sys.stderr)
         return 2
     if not connectors_available():
-        print("Connectors are not available. Sign in with `hermes login` first.", file=sys.stderr)
+        print(f"Connectors are not available. {_SIGN_IN}", file=sys.stderr)
         return 1
     try:
         return handler(args)

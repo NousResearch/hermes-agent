@@ -87,14 +87,20 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser",
+                 configured_scope: str | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
+        # The SDK replaces client metadata scope with advertised scopes after a 401.  An
+        # explicit Hermes setting is an operator's least-privilege choice, not a hint.
+        self._hermes_configured_scope = configured_scope
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
 
     async def _perform_authorization(self):
+        if self._hermes_configured_scope:
+            self.context.client_metadata.scope = self._hermes_configured_scope
         info = self.context.client_info
         grants = getattr(info, "grant_types", None) or []
         if (getattr(self, "_hermes_oauth_flow", "browser") == "device"
@@ -524,7 +530,7 @@ def _metadata_issuer(context: Any) -> str | None:
 
 def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
     """Whether *metadata* may stand in for the exact-issuer match of RFC 8414 §3.3 because it is the
-    document of the path-scoped authorization server *auth_server_url* and names that server's origin.
+    document of the authorization server *auth_server_url* and names that server's origin.
 
     The issuer check stops a party controlling a path or a sibling host from making the client accept
     endpoints of a different authorization server (RFC 8414 §3.3, RFC 9728 §3.3). This narrow shape keeps
@@ -536,14 +542,16 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     matches. Whoever can publish that document already
     controls the origin's well-known tree, so accepting it grants a path-controlling attacker nothing.
     Strava's MCP connector publishes exactly this pair (#116233). Anything else (another origin, a
-    different path, the root or OIDC fallback documents, a redirect target) still goes through the
-    exact-string check."""
+    different path, the OIDC fallback document, or a redirect target) still goes through the
+    exact-string check. A root server is also accepted when its only difference is the canonical
+    trailing slash (for example Google's ``https://accounts.google.com/`` advertisement and
+    slash-less metadata issuer)."""
     from urllib.parse import urlsplit
     if not auth_server_url:
         return False
     parts = urlsplit(auth_server_url)
     path = parts.path.rstrip("/")
-    if (not path or ".." in path.split("/") or parts.username is not None or parts.query or parts.fragment
+    if (".." in path.split("/") or parts.username is not None or parts.query or parts.fragment
             or response.status_code != 200):
         return False
     origin = f"{parts.scheme}://{parts.netloc}"
@@ -632,4 +640,5 @@ def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_h
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
+        "configured_scope": cfg.get("scope"),
         **mo.cimd_provider_kwargs(cfg)}

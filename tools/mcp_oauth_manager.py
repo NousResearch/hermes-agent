@@ -129,6 +129,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     if prm.authorization_servers:
                         self.context.auth_server_url = str(prm.authorization_servers[0])
                     break
+
             # ASM discovery against auth_server_url (server_url fallback for legacy providers).
             for url in build_oauth_authorization_server_metadata_discovery_urls(self.context.auth_server_url, server_url):
                 resp = await _send(client, url, "ASM")
@@ -138,6 +139,14 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if not ok:
                     break
                 if asm:
+                    from mcp.client.auth.utils import validate_metadata_issuer
+                    from mcp.client.auth.exceptions import OAuthFlowError
+                    from tools.mcp_oauth_provider import metadata_issued_by_origin
+                    try:
+                        validate_metadata_issuer(asm, self.context.auth_server_url)
+                    except OAuthFlowError:
+                        if not metadata_issued_by_origin(asm, self.context.auth_server_url, resp):
+                            raise
                     self.context.oauth_metadata = asm
                     storage = self._hermes_storage()  # persist now so a later cold-load skips discovery
                     if storage is not None:
@@ -145,6 +154,24 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     logger.debug("MCP OAuth '%s': pre-flight ASM discovered token_endpoint=%s",
                                  self._hermes_server_name, asm.token_endpoint)
                     break
+
+    async def force_authorization(self) -> None:
+        """Run browser authorization after an explicit ``hermes mcp login``.
+
+        Some OAuth servers allow MCP initialization and tool discovery anonymously, so the
+        normal HTTP auth hook never sees a 401 to start the browser flow. Login is explicit,
+        therefore discover metadata and perform the code grant even on that public probe path.
+        """
+        await self._initialize()
+        if self.context.oauth_metadata is None:
+            await self._prefetch_oauth_metadata()
+        if self.context.oauth_metadata is None:
+            raise RuntimeError("OAuth authorization server metadata was not discovered")
+        from tools.mcp_tool import sdk_httpx
+        httpx = sdk_httpx()
+        request = await self._perform_authorization()
+        async with httpx.AsyncClient() as client:
+            await self._handle_token_response(await client.send(request))
 
     def _persist_oauth_metadata_if_changed(self) -> None:
         """Save metadata the SDK discovered lazily (401 branch); no-op when absent/unchanged."""

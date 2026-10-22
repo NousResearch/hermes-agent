@@ -1,6 +1,6 @@
 name: agent-importers
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 6108b7b4c75a604890e40934a9305752692f6aca
+sha: 2442ec1fd902139a04fd40a1d0bf71302c85c608
 subdir: agent-importers
 description: '`hermes import-agent`: import an OpenClaw (~/.openclaw, or legacy ~/.clawdbot /
   ~/.moltbot), Claude Code (~/.claude), Codex CLI (~/.codex) or Cursor (~/.cursor) setup into Hermes in one
@@ -27,7 +27,7 @@ tier: official
 category: tools
 requires_hermes: ">=0.21.6"
 version: "1.1.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/6108b7b4c75a604890e40934a9305752692f6aca/assets/agent-importers.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/2442ec1fd902139a04fd40a1d0bf71302c85c608/assets/agent-importers.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/agent-importers
 platforms: []
 capabilities:

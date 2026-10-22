@@ -12,6 +12,7 @@ whole-file overwrite of content this task never saw or that changed since.
 
 import fnmatch
 import os
+import uuid
 from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error
@@ -480,6 +481,52 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
     return "unavailable"
 
 
+def _effective_binary_guard_path(filepath: str, task_id: str = "default") -> tuple[str, bool]:
+    """Return the write target for extension guards and whether it is unknowable.
+
+    Local path resolution follows symlinks, but remote/container resolution deliberately
+    only normalizes paths.  Ask the backend to resolve a final symlink too: its atomic
+    write follows that link, so classifying only its text-suffixed name can corrupt the
+    binary target.  An unresolved remote symlink fails closed.
+    """
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except Exception:
+        return filepath, False
+    try:
+        from tools.file_tools import _file_ops_uses_host_paths, _get_file_ops
+        file_ops = _get_file_ops(task_id)
+    except Exception:
+        return resolved, False
+    if _file_ops_uses_host_paths(file_ops):
+        return resolved, False
+    try:
+        path = file_ops._expand_path(resolved)
+        arg = file_ops._escape_shell_arg(path)
+        marker = f"__HERMES_BINARY_GUARD_{uuid.uuid4().hex}__"
+        result = file_ops._exec(
+            f"if [ -L {arg} ]; then target=$(readlink -f {arg} 2>/dev/null "
+            f"|| realpath {arg} 2>/dev/null || printf __HERMES_UNRESOLVED_SYMLINK__); "
+            "else target=__HERMES_NOT_SYMLINK__; fi; "
+            f"printf '%s\\n%s\\n%s' {file_ops._escape_shell_arg(marker)} \"$target\" "
+            f"{file_ops._escape_shell_arg(marker)}")
+        output = result.stdout.strip()
+    except Exception:
+        return resolved, True
+    prefix = f"{marker}\n"
+    suffix = f"\n{marker}"
+    if not (output.startswith(prefix) and output.endswith(suffix)):
+        return resolved, True
+    target = output.removeprefix(prefix).removesuffix(suffix)
+    if "\n" in target:
+        return resolved, True
+    if target == "__HERMES_NOT_SYMLINK__":
+        return resolved, False
+    if target and target != "__HERMES_UNRESOLVED_SYMLINK__" and result.exit_code == 0:
+        return target, False
+    return resolved, True
+
+
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
     """Reject text-tool writes that would corrupt a binary document (read_file showed
     EXTRACTED text, so the model may write it back). Opaque document formats and
@@ -494,8 +541,15 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
     """
-    ext = os.path.splitext(filepath)[1].lower()
-    if has_opaque_document_extension(filepath):
+    effective_path, unresolved_symlink = _effective_binary_guard_path(filepath, task_id)
+    if unresolved_symlink:
+        return (
+            f"Refusing to write to '{filepath}': could not resolve a symbolic link on "
+            "the target environment, so its file type cannot be checked. The file was "
+            "NOT modified — retry once the environment is reachable.")
+
+    ext = os.path.splitext(effective_path)[1].lower()
+    if has_opaque_document_extension(effective_path):
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -506,7 +560,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     # A -wal/-shm/-journal path is never a legitimate text target, even when
     # no sidecar exists yet: a checkpointed db has none on disk, and a garbage
     # WAL dropped next to a live database is picked up on the next open.
-    if is_sqlite_sidecar(filepath):
+    if is_sqlite_sidecar(effective_path):
         return (
             f"Refusing to write plain text to binary SQLite sidecar '{filepath}' ({ext}). "
             "A -wal/-shm/-journal file holds raw database pages that SQLite "
@@ -517,9 +571,9 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     # with text destroys it — the model only ever saw extracted or mojibake
     # text. Creating a NEW file with such an extension stays allowed: raw PDF
     # syntax is text-authorable and text fixtures named ``*.db`` exist.
-    pdf = is_pdf_path(filepath)
-    if pdf or has_binary_extension(filepath):
-        state = _target_regular_file_state(filepath, task_id)
+    pdf = is_pdf_path(effective_path)
+    if pdf or has_binary_extension(effective_path):
+        state = _target_regular_file_state(effective_path, task_id)
         if state == "exists":
             if pdf:
                 return (

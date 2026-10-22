@@ -240,3 +240,64 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
         db.close()
 
     asyncio.run(check())
+
+
+def test_turn_built_without_a_session_db_still_reaches_state_db(tmp_path):
+    """#140823: the turn runner injects the runner's session DB handle into the agent at turn
+    START. When that resolution returned None (SessionStore handle inside its retry backoff),
+    the agent's flush no-ops silently; the persistence block then defaulted agent_persisted from
+    the runner's CURRENT handle — recovered by turn END — and skipped its own transcript write
+    too, so the turn never reached state.db while sessions.json kept touching. The flag now
+    reflects the handle the turn's agent actually holds, so the gateway writes the rows."""
+    import asyncio
+    from types import SimpleNamespace
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import _agent_persisted_flag
+    from gateway.session import SessionSource, SessionStore
+
+    # The default itself: an explicit flag wins; absent, the agent's OWN handle decides.
+    assert _agent_persisted_flag({"agent_persisted": True}, None) is True
+    assert _agent_persisted_flag({"agent_persisted": False}, object()) is False
+    assert _agent_persisted_flag({}, SimpleNamespace(_session_db=None)) is False
+    assert _agent_persisted_flag({}, SimpleNamespace(_session_db=object())) is True
+    assert _agent_persisted_flag({}, None) is False
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._session_db = object()  # recovered by turn END — the #140823 mismatch
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="nodb", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        # What the turn runner now returns for an agent built without a handle.
+        result = {
+            "failed": False, "final_response": "ok", "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "history_offset": 0, "last_prompt_tokens": 5,
+            "agent_persisted": _agent_persisted_flag({}, SimpleNamespace(_session_db=None)),
+        }
+        await runner._hmwa_persist_turn_transcript(
+            event=MessageEvent(text="hello", source=source, message_id="m-9"),
+            source=source, session_entry=entry, session_key=entry.session_key, agent_result=result,
+            agent_messages=result["messages"],
+            prepared=runner._PreparedTurn([], "", "hello", None, None, None, sid, "o"),
+            response="ok", agent_failed_early=False, hidden_reasoning_incomplete=False,
+            is_context_overflow_failure=False,
+        )
+        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert [(m["role"], m["content"]) for m in rows] == [("user", "hello"), ("assistant", "ok")]
+        assert rows[0]["platform_message_id"] == "m-9"
+        db.close()
+
+    asyncio.run(check())

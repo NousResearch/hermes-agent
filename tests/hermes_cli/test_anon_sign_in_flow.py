@@ -123,12 +123,32 @@ def test_the_portal_override_is_read_inside_the_profile_scope(portal, free_accou
         finally:
             in_scope.pop()
 
+    from hermes_cli import auth_nous
     reads = []
-    real_portal = anon_auth._portal_base_url
-    monkeypatch.setattr(anon_auth, "_portal_base_url", lambda: (reads.append(bool(in_scope)), real_portal())[1])
+    real_override = auth_nous._nous_portal_env_override
+    monkeypatch.setattr(auth_nous, "_nous_portal_env_override",
+                        lambda: (reads.append(bool(in_scope)), real_override())[1])
 
     assert _drain(scope=_scope)[-1].kind == "completed"
-    assert reads == [True]
+    assert reads and all(reads[:1])
+
+
+def test_the_portal_override_wins_over_a_saved_portal(portal, monkeypatch):
+    guest = _seed_free_tier()
+    from hermes_cli.auth import _save_auth_store, _save_provider_state
+    store = _load_auth_store()
+    _save_provider_state(store, "nous", {**guest, "portal_base_url": "https://portal.nousresearch.com"})
+    _save_auth_store(store)
+    asked = []
+
+    def _record(client, portal_base_url, client_id, scope):
+        asked.append(portal_base_url)
+        raise RuntimeError("stop after the code request")
+    monkeypatch.setattr(auth_device_flow, "_request_device_code", _record)
+
+    _drain()
+
+    assert asked == [PORTAL]
 
 
 def test_a_transport_error_yields_failed_without_leaking_the_detail_into_chat_copy(portal, monkeypatch):

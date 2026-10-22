@@ -543,3 +543,27 @@ async def test_a_local_session_gets_the_sign_in_code_on_its_event_stream(monkeyp
     assert [text for *_, text in published][:2] == ["https://example.test/sign-in", "CODE-1"]
     assert published[-1][2] == anon_auth.TimedOut().copy
     runner._deliver_platform_notice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_final_cancel_check_and_the_save_share_the_login_lock(monkeypatch):
+    runner = _runner(monkeypatch)
+    seen = []
+
+    def flow(**kwargs):
+        seen.append(kwargs)
+        yield anon_auth.TimedOut()
+
+    monkeypatch.setattr(anon_auth, "run_sign_in", flow)
+    await runner._handle_login_command(_event())
+    attempt = runner._login_attempts["login"]
+    await _finish_tasks(runner)
+
+    lock, _attempts = runner._login_registry()
+    guard = seen[0]["persist_guard"]
+    with guard() as may_persist:
+        assert may_persist is True and lock.locked()
+    attempt.cancelled = True
+    with guard() as may_persist:
+        assert may_persist is False
+

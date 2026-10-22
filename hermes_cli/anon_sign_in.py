@@ -267,7 +267,7 @@ def run_sign_in(
     from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
     from hermes_cli.auth_device_flow import DeviceFlowCancelled, _request_device_code
     from hermes_cli.auth_error_copy import is_device_code_expired
-    from hermes_cli.auth_nous import _nous_http_client
+    from hermes_cli.auth_nous import _nous_http_client, _nous_portal_base_url
     from hermes_cli.guest_handoff import deferred
 
     is_cancelled = cancelled or (lambda: False)
@@ -278,9 +278,10 @@ def run_sign_in(
     try:
         with open_scope():
             state = _core.current_nous_state()
-            # Read inside the scope: the Portal override is a profile setting.
-            portal = ((state or {}).get("portal_base_url") or _core._portal_base_url()).rstrip("/")
-    except Exception as exc:
+            # Inside the scope: the operator's Portal override is a profile setting, and it wins over
+            # a saved URL the same way it does for every other Nous call.
+            portal = _nous_portal_base_url(state or {})
+    except Exception as exc:  # health: allow BLE001 -- the generator's contract is one terminal state, never a raise
         yield Failed(reason="", detail=str(exc))
         return
     if state and not _core.is_guest_state(state) and not replace_account:

@@ -131,7 +131,14 @@ class GatewayLoginCommandsMixin:
             with lock:
                 return attempt.cancelled
 
-        gen = anon_auth.run_sign_in(timeout_seconds=15.0, cancelled=_cancelled)
+        @contextlib.contextmanager
+        def _persist_guard():
+            # The final cancel check and the save share the registry lock, so a replacing /login
+            # cannot land between them (the desktop's guarantee too).
+            with lock:
+                yield not attempt.cancelled
+
+        gen = anon_auth.run_sign_in(timeout_seconds=15.0, cancelled=_cancelled, persist_guard=_persist_guard)
         pushed_terminal = False
         try:
             while True:

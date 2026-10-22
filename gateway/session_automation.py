@@ -326,8 +326,14 @@ def admission_display(payload):
     return card
 
 
+# Not identity: the reply anchor, and labels the platform may change at any time. A session keeps the
+# origin it was created with (a plugin injection, or before the user renamed their profile), so a
+# label that differs from the human's committed source would refuse every wake of the route forever.
+_ROUTE_LABEL_FIELDS = frozenset({'message_id', 'user_name', 'chat_name', 'chat_topic'})
+
+
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    return {key: value for key, value in source.to_dict().items() if key not in _ROUTE_LABEL_FIELDS}
 
 
 def committed_route_envelope(authority, entry):

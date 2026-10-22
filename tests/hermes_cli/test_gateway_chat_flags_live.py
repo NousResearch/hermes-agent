@@ -79,6 +79,19 @@ def test_continue_latest_footer_and_tool_listing(tmp_path):
             latest, latest_sid = hermes("chat", "--resume", "latest", "-q", "latest in b", "-Q", cwd=repo_b)
             assert latest.returncode == 0 and latest_sid == sid_b, latest
 
+            # Pre-authority CLI recorded the explicit turn cap in model_config.
+            from hermes_state import SessionDB
+            with SessionDB(db_path=home / "state.db") as db:
+                db.create_session("legacy-capped", source="cli", model="flags-model", cwd=str(repo_a),
+                                  model_config={"max_iterations": 1000})
+                db.append_message("legacy-capped", role="user", content="retained old prompt")
+                db.append_message("legacy-capped", role="assistant", content="retained old answer")
+                db.end_session("legacy-capped", "cli_exit")
+            resumed, old_sid = hermes("chat", "--resume", "legacy-capped", "--max-turns", "1000",
+                                      "-q", "legacy again", "-Q", cwd=repo_a)
+            assert resumed.returncode == 0 and old_sid == "legacy-capped", resumed
+            assert "retained old answer" in json.dumps(peer.requests[-1]["messages"])
+
             tools, _ = hermes("--list-toolsets", cwd=repo_a, module="cli")
             assert tools.returncode == 0 and "terminal" in tools.stdout, tools
             listing, _ = hermes("--list-tools", "--toolsets", "file", cwd=repo_a, module="cli")

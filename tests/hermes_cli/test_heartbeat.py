@@ -137,22 +137,22 @@ def test_due_prompt_fires_once_and_reanchors():
     mgr.set("tick", 600)
     # Not due immediately after set.
     assert mgr.due_prompt() is None
-    # Force due by rewinding the anchor.
-    mgr.state.created_at = time.time() - 700
-    prompt = mgr.due_prompt()
+    # Advance the clock past the first interval.
+    due_at = mgr.state.created_at + 700
+    prompt = mgr.due_prompt(now=due_at)
     assert prompt is not None and "tick" in prompt
     assert mgr.state.fire_count == 1
     # Immediately after firing it re-anchors — not due again.
-    assert mgr.due_prompt() is None
+    assert mgr.due_prompt(now=due_at + 1) is None
 
 
 def test_missed_ticks_coalesce():
     mgr = HeartbeatManager(session_id="hb-coalesce-sid")
     mgr.set("tick", 600)
     # Simulate 5 missed intervals: exactly ONE fire results.
-    mgr.state.created_at = time.time() - 600 * 5 - 10
-    assert mgr.due_prompt() is not None
-    assert mgr.due_prompt() is None
+    due_at = mgr.state.created_at + 600 * 5 + 10
+    assert mgr.due_prompt(now=due_at) is not None
+    assert mgr.due_prompt(now=due_at + 1) is None
     assert mgr.state.fire_count == 1
 
 

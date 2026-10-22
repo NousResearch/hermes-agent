@@ -325,6 +325,7 @@ class PluginDispatchMixin:
         (worker abandoned, never joined), or the worker could not be started. Exceptions
         propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
+        callback_module = getattr(cb, "__module__", "unknown plugin")
         # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
         # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
         suppression_key = (hook_name, id(cb))
@@ -335,8 +336,8 @@ class PluginDispatchMixin:
             if (gate_key in self._hook_running_callbacks
                     or (suppressed_until is not None and suppressed_until > time.monotonic())):
                 logger.warning(
-                    "Hook '%s' callback %s skipped after previous "
-                    "timeout or while still running", hook_name, callback_name)
+                    "Hook '%s' callback %s (%s) skipped after previous "
+                    "timeout or while still running", hook_name, callback_name, callback_module)
                 return _HOOK_SKIPPED
             # Workers abandoned on timeout still hold threads. Once the suppression window has
             # passed, a fresh call id may start a new worker (a hung guard must not fail every
@@ -399,7 +400,8 @@ class PluginDispatchMixin:
                 if self._hook_running_callbacks.get(gate_key) is token:
                     self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
             logger.warning(
-                "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
+                "Hook '%s' callback %s (%s) timed out after %gs — skipping",
+                hook_name, callback_name, callback_module, timeout)
             return _HOOK_SKIPPED
         if "exc" in failure:
             raise failure["exc"]

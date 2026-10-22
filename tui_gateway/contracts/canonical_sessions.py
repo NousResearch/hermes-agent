@@ -9,7 +9,7 @@ from pydantic import RootModel
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
-from .sessions import TodoState
+from .sessions import OpenRequestEntry, TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -155,6 +155,8 @@ class CanonicalSnapshot(Result):
     pending_connection: ConnectionRequestPayload | None = None
     # The session's todo snapshot (its transcript's newest todo result); null when it has none.
     todo_state: TodoState | None = None
+    # The owner's server→client requests still unanswered (``session_server_requests.open_requests``).
+    open_requests: list[OpenRequestEntry] | None = None
 
 
 class CanonicalListParams(ProfileParams):
@@ -314,6 +316,7 @@ class CanonicalEventsResult(Result):
     truncated: bool
     snapshot_required: bool
     count: int
+    open_requests: list[OpenRequestEntry] | None = None
 
 
 for _name, _params, _result in (

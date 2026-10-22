@@ -405,12 +405,10 @@ def _profiles(authority, actor, home, params, siblings=()):
     path = home / 'profile.yaml'
     meta = yaml.safe_load(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
     meta = meta if isinstance(meta, dict) else {}
-    revisions = meta.get('_ui_meta_revisions')
-    row['ui_meta_revisions'] = {str(k): max(0, v) for k, v in revisions.items()
-                              if type(v) is int} if isinstance(revisions, dict) else {}
+    row['ui_meta_revisions'] = _ui_meta_revisions(meta)
     if isinstance(meta.get('ui_meta'), dict):
         row['ui_meta'] = meta['ui_meta']
-    row['has_avatar'] = any((home / 'assets' / f'avatar.{ext}').is_file() for ext in ('png', 'jpg', 'webp'))
+    row['has_avatar'] = _has_avatar(home)
     if include_sessions:
         row.update(_bot_sessions(authority, actor))
     profiles = [row]
@@ -423,13 +421,17 @@ def _profiles(authority, actor, home, params, siblings=()):
             return
         seen.add(target.resolve())
         entry = {'name': configured, 'path': str(target), 'is_default': configured == 'default',
-                 'model': '', 'provider': '', 'description': '', 'display_name': configured,
-                 'skill_count': 0}
+                 'model': '', 'provider': '', 'description': '', 'display_name': '',
+                 'skill_count': 0, 'has_avatar': _has_avatar(target), 'ui_meta_revisions': {}}
         if include_sessions and reach is not None:
             entry.update(_sibling_sessions(*reach))
         meta = _discovered_profile_meta(configured, target / 'profile.yaml')
         if isinstance(meta, dict):
-            entry['display_name'] = str(meta.get('display_name') or configured)
+            # The profile's own metadata, not a placeholder: Desktop seeds the Edit profile dialog
+            # from these fields and skips the avatar push when ``has_avatar`` is set.
+            entry['description'] = str(meta.get('description') or '')
+            entry['display_name'] = str(meta.get('display_name') or '')
+            entry['ui_meta_revisions'] = _ui_meta_revisions(meta)
             if isinstance(meta.get('ui_meta'), dict):
                 entry['ui_meta'] = meta['ui_meta']
         profiles.append(entry)
@@ -517,6 +519,25 @@ def _named_profile_dirs():
     if signature is not None:
         _NAMED_DIRS_CACHE[str(profiles_root)] = (signature, targets)
     return targets
+
+
+_ASSET_EXTS = ('png', 'jpg', 'webp')
+
+
+def _has_avatar(home):
+    """Cheap existence flag so a roster paint skips a ``get_asset`` probe per profile."""
+    return any((home / 'assets' / f'avatar.{ext}').is_file() for ext in _ASSET_EXTS)
+
+
+def _ui_meta_revisions(meta):
+    """``_ui_meta_revisions`` from a parsed profile.yaml: str keys, non-bool ints, floor 0.
+
+    Always present (``{}`` when the profile never wrote one) so a client can feature-detect
+    gateway-owned CAS instead of reading a missing field as revision zero.
+    """
+    revisions = meta.get('_ui_meta_revisions') if isinstance(meta, dict) else None
+    return {str(k): max(0, v) for k, v in revisions.items()
+            if type(v) is int} if isinstance(revisions, dict) else {}
 
 
 def _discovered_profile_meta(name, meta_path):

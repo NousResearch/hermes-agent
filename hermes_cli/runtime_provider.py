@@ -368,6 +368,20 @@ def _config_base_url_for_provider(model_cfg: dict[str, Any], provider: str) -> s
     return str(model_cfg.get("base_url") or "").strip().rstrip("/") if _same_registered_provider(provider, configured_provider) else ""
 
 
+def _custom_alias_owns_saved_base_url(requested_provider: str, saved_provider: str) -> bool:
+    """Only a local alias that owns model.base_url may adopt it.
+
+    An explicit provider override for ollama must not inherit a llamacpp
+    URL merely because both providers normalize to generic custom. Without
+    an endpoint belonging to the requested alias, fail closed rather than
+    routing the local model to another provider's endpoint. Bare custom
+    retains its existing intentionally generic endpoint semantics.
+    """
+    requested = (requested_provider or "").strip().lower()
+    saved = (saved_provider or "").strip().lower()
+    return requested in {"", "auto", "custom"} or not _resolves_to_custom(requested) or requested == saved
+
+
 def is_foreign_provider_endpoint(provider: Optional[str], base_url: Optional[str]) -> bool:
     """True when ``base_url`` is another built-in provider's canonical endpoint, not ``provider``'s.
 
@@ -946,7 +960,9 @@ def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_bas
     if str(explicit_base_url or "").strip() or get_secret_str("CUSTOM_BASE_URL", "").strip():
         return
     model_cfg = _get_model_config()
-    if _config_base_url_trustworthy_for_bare_custom(str(model_cfg.get("base_url") or ""), _cfg_provider(model_cfg)):
+    if (_custom_alias_owns_saved_base_url(requested_provider, _cfg_provider(model_cfg))
+            and _config_base_url_trustworthy_for_bare_custom(
+                str(model_cfg.get("base_url") or ""), _cfg_provider(model_cfg))):
         return
     if str((_get_named_custom_provider(requested_provider) or {}).get("base_url") or "").strip():
         return

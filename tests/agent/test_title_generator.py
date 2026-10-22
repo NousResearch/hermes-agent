@@ -13,6 +13,7 @@ from agent.title_generator import (
     auto_title_session,
     is_titleable_user_message,
     maybe_auto_title,
+    regenerate_title,
     wait_for_title_upgrades,
     _title_language,
 )
@@ -951,3 +952,38 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestRegenerateTitle:
+    def test_titles_the_conversation_at_user_authority(self, tmp_path):
+        """Bare /title: the model sees the whole conversation, and its title outranks auto-titling."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "hi there")
+        db.append_message("s", "assistant", "Hello! What are we doing?")
+        db.append_message("s", "user", "the tern job charts should follow log files")
+        db.set_auto_title("s", "Friendly greeting", source="derived")
+        captured = {}
+
+        def fake(**kwargs):
+            captured["text"] = kwargs["messages"][-1]["content"]
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Tern charts: log files"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=fake):
+            assert regenerate_title(db, "s") == "Tern charts: log files"
+        assert "log files" in captured["text"] and "Hello!" in captured["text"]
+        assert db.get_session_title_source("s") == "user"
+        assert not db.set_auto_title("s", "Something else", source="llm")
+        db.close()
+
+    def test_nothing_to_title_leaves_the_session_alone(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("s", "cli")
+        with patch("agent.title_generator.call_llm") as call_llm:
+            assert regenerate_title(db, "s") is None
+        call_llm.assert_not_called()
+        assert db.get_session_title("s") is None
+        db.close()

@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "Відкотити N ходів користувача та запитати знову (типово 1)"
   title:
-    description: "Задати назву поточного сеансу"
+    description: "Назвати сесію; без назви її напише модель"
   handoff:
     description: "Передати цей сеанс на платформу повідомлень (Telegram, Discord тощо)"
   branch:

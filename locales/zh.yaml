@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "回退 N 个用户回合并重新提问（默认 1）"
   title:
-    description: "为当前会话设置标题"
+    description: "为会话命名；不提供名称时由模型生成"
   handoff:
     description: "将此会话移交到消息平台（Telegram、Discord 等）"
   branch:

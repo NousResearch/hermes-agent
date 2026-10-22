@@ -1205,17 +1205,20 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('/title with no args fetches and displays the current title', async () => {
-    patchUiState({ sid: 'sid-abc' })
-    const rpc = vi.fn(() => Promise.resolve({ title: 'demo title' }))
-    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+  it('/title with no args has the backend title the session and shows the result', async () => {
+    patchUiState({ sid: 'sid-abc', sessionTitle: '' })
+    const gateway = buildGateway()
+    vi.mocked(gateway.gw.request).mockImplementation(((method: string) =>
+      Promise.resolve(method === 'slash.exec' ? { output: 'Session title set: Tern charts' } : {})) as never)
+    const rpc = vi.fn(() => Promise.resolve({ title: 'Tern charts' }))
+    const ctx = buildCtx({ gateway: { ...gateway, rpc } })
 
     createSlashHandler(ctx)('/title')
 
-    expect(rpc).toHaveBeenCalledWith('session.title', { session_id: 'sid-abc' })
-    expect(gatewayWork(ctx)).toEqual([])
+    expect(gateway.gw.request).toHaveBeenCalledWith('slash.exec', { command: 'title', session_id: 'sid-abc' })
     await vi.waitFor(() => {
-      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('demo title'))
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Session title set: Tern charts')
+      expect(getUiState().sessionTitle).toBe('Tern charts')
     })
   })
 })

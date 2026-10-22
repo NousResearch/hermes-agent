@@ -1587,7 +1587,7 @@ slash:
   undo:
     description: "Back up N user turns and re-prompt (default 1)"
   title:
-    description: "Set a title for the current session"
+    description: "Name the session; with no name, the model writes one"
   handoff:
     description: "Hand off this session to a messaging platform (Telegram, Discord, etc.)"
   branch:

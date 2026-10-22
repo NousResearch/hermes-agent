@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "Téigh siar N seal úsáideora agus athleid (réamhshocrú 1)"
   title:
-    description: "Socraigh teideal don seisiún reatha"
+    description: "Ainmnigh an seisiún; gan ainm, scríobhann an múnla ceann"
   handoff:
     description: "Tabhair an seisiún seo ar láimh d'ardán teachtaireachtaí (Telegram, Discord, etc.)"
   branch:

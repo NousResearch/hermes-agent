@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "사용자 턴 N개를 되돌리고 다시 프롬프트 입력 (기본값 1)"
   title:
-    description: "현재 세션의 제목 설정"
+    description: "세션 이름 지정. 이름을 생략하면 모델이 작성합니다"
   handoff:
     description: "이 세션을 메시징 플랫폼(Telegram, Discord 등)으로 넘기기"
   branch:

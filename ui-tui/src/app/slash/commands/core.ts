@@ -290,14 +290,25 @@ export const coreCommands: SlashCommand[] = [
       }
 
       if (!arg) {
-        ctx.gateway
-          .rpc<SessionTitleResponse>('session.title', { session_id: ctx.sid })
-          .then(
-            ctx.guarded<SessionTitleResponse>(r => {
-              const current = (r?.title ?? '').trim()
-              ctx.transcript.sys(current ? t('slashCmd.core.title.current', current) : t('slashCmd.core.title.none'))
-            })
-          )
+        ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: 'title', session_id: ctx.sid })
+          .then(r => {
+            if (ctx.stale()) {
+              return
+            }
+
+            ctx.transcript.sys(r?.output || t('slashCmd.core.title.none'))
+
+            return ctx.gateway.rpc<SessionTitleResponse>('session.title', { session_id: ctx.sid }).then(
+              ctx.guarded<SessionTitleResponse>(current => {
+                const value = (current?.title ?? '').trim()
+
+                if (value) {
+                  patchUiState({ sessionTitle: value })
+                }
+              })
+            )
+          })
           .catch(ctx.guardedErr)
 
         return

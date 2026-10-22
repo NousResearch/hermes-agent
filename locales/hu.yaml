@@ -1533,7 +1533,7 @@ slash:
   undo:
     description: "Visszalépés N felhasználói körrel és új prompt (alapértelmezés: 1)"
   title:
-    description: "Cím beállítása az aktuális munkamenethez"
+    description: "A munkamenet elnevezése; név nélkül a modell ír egyet"
   handoff:
     description: "A munkamenet átadása egy üzenetküldő platformnak (Telegram, Discord stb.)"
   branch:

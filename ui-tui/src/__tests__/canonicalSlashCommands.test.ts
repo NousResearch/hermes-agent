@@ -21,6 +21,8 @@ function harness(rewindRefusal?: Error) {
       'config.get:full': () => ({ config: { display: { skin: 'ares', streaming: true }, voice: { record_key: 'ctrl+b' } } }),
       'config.get:voice': () => ({ value: voiceMode }),
       'process.stop': () => ({ killed: 0 }),
+      'session.list': () => ({ sessions: [{ id: 'owner', title: 'Tern charts' }] }),
+      'slash.exec:title': () => ({ type: 'exec', output: 'Session title set: Tern charts' }),
       'reload.mcp': () =>
         params.confirm
           ? { message: 'MCP servers reconciled (no server changes)', status: 'reloaded' }
@@ -207,6 +209,16 @@ it('/title renames and /undo, /retry rewind through session.mutate with the snap
   // Main's /retry resubmits the rewound turn's own text.
   expect(send).toHaveBeenCalledWith('second question')
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
+})
+
+it('bare /title runs on the owner (slash.exec) and repaints the stored title', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/title')
+  await flush()
+  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'title', session_id: 'owner' })
+  expect(sys).toHaveBeenCalledWith('Session title set: Tern charts')
+  expect(getUiState().sessionTitle).toBe('Tern charts')
 })
 
 it('/undo and /retry while a turn runs print main\'s stop-first text, not the bare reason code', async () => {

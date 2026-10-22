@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "التراجع N أدوار مستخدم وإعادة المطالبة (الافتراضي 1)"
   title:
-    description: "تعيين عنوان للجلسة الحالية"
+    description: "سمِّ الجلسة؛ بدون اسم يكتب النموذج اسمًا"
   handoff:
     description: "تسليم هذه الجلسة إلى منصة مراسلة (Telegram أو Discord وغيرهما)"
   branch:

@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "回退 N 個使用者回合並重新輸入提示（預設 1）"
   title:
-    description: "為目前工作階段設定標題"
+    description: "為工作階段命名；未提供名稱時由模型撰寫"
   handoff:
     description: "將此工作階段移交到訊息平台（Telegram、Discord 等）"
   branch:

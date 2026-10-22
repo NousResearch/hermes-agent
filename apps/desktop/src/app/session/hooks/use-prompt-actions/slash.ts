@@ -1202,13 +1202,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, message) : message)
         },
-        // /title <name> renames via the gateway's session.title RPC — the same
-        // path the TUI uses, NOT REST renameSession (which 404s on runtime ids)
-        // nor the slash worker (whose DB write can silently fail). Bare /title
-        // shows the current title, which the worker owns, so delegate to exec.
+        // /title <name> renames via the gateway's session.title RPC, NOT REST renameSession (404s on runtime
+        // ids) nor the slash worker (its DB write can silently fail). Bare /title asks the backend to title it.
         title: async ctx => {
           if (!ctx.arg) {
             await runExec(ctx)
+            await refreshSessions().catch(() => undefined)
 
             return
           }

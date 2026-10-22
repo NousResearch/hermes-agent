@@ -1768,7 +1768,7 @@ slash:
   undo:
     description: "Revenir N tours utilisateur en arrière et reformuler (1 par défaut)"
   title:
-    description: "Définir un titre pour la session en cours"
+    description: "Nommer la session ; sans nom, le modèle en écrit un"
   handoff:
     description: "Transférer cette session vers une plateforme de messagerie (Telegram, Discord, etc.)"
   branch:

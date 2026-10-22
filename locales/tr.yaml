@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "N kullanıcı turu geri git ve yeniden istem gir (varsayılan 1)"
   title:
-    description: "Geçerli oturum için bir başlık ayarla"
+    description: "Oturumu adlandır; ad verilmezse model bir ad yazar"
   handoff:
     description: "Bu oturumu bir mesajlaşma platformuna devret (Telegram, Discord vb.)"
   branch:

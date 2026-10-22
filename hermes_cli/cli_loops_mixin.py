@@ -145,9 +145,14 @@ class CLILoopsMixin:
         from hermes_state import format_session_db_unavailable
         parts = cmd_original.split(maxsplit=1)
         if len(parts) == 1:
-            # No argument: show current title and session ID.
             if not self._session_db:
                 _cprint(f"  {format_session_db_unavailable(details=True)}")
+                return
+            from agent.title_generator import regenerate_title
+            if self._session_db.get_session(self.session_id) and (
+                    new_title := regenerate_title(self._session_db, self.session_id)):
+                self._status_bar_title_checked_at = 0.0
+                _cprint(f"  {t('cli.title.set', title=new_title)}")
                 return
             _cprint(f"  {t('cli.title.session_id', session_id=self.session_id)}")
             session = self._session_db.get_session(self.session_id)

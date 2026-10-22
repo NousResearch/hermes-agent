@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "N Benutzer-Züge zurückgehen und erneut prompten (Standard 1)"
   title:
-    description: "Titel für die aktuelle Sitzung festlegen"
+    description: "Sitzung benennen; ohne Namen schreibt das Modell einen"
   handoff:
     description: "Diese Sitzung an eine Messaging-Plattform übergeben (Telegram, Discord usw.)"
   branch:

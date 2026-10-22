@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "Torna indietro di N turni utente e riformula il prompt (predefinito 1)"
   title:
-    description: "Imposta un titolo per la sessione attuale"
+    description: "Dai un nome alla sessione; senza nome, lo scrive il modello"
   handoff:
     description: "Passa questa sessione a una piattaforma di messaggistica (Telegram, Discord, ecc.)"
   branch:

@@ -8,6 +8,7 @@ import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 
 import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
+import type { SlashExecResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchUiState } from '../uiStore.js'
@@ -86,15 +87,24 @@ export function canonicalTitle(arg: string, ctx: SlashRunCtx) {
   const title = arg.trim()
 
   if (!title) {
-    // The live listing is the authority's projection of the stored title.
     return void ctx.gateway.gw
-      .request<{ sessions?: Array<{ id?: string; title?: string }> }>('session.list', { limit: 200 })
+      .request<SlashExecResponse>('slash.exec', { command: 'title', session_id: sid })
       .then(r => {
-        const current = (r?.sessions?.find(row => row.id === sid)?.title ?? '').trim()
-
-        if (!ctx.stale()) {
-          ctx.transcript.sys(current ? t('slashCmd.core.title.current', current) : t('slashCmd.core.title.none'))
+        if (ctx.stale()) {
+          return
         }
+
+        ctx.transcript.sys(r?.output || t('slashCmd.core.title.none'))
+
+        return ctx.gateway.gw
+          .request<{ sessions?: Array<{ id?: string; title?: string }> }>('session.list', { limit: 200 })
+          .then(list => {
+            const current = (list?.sessions?.find(row => row.id === sid)?.title ?? '').trim()
+
+            if (current && !ctx.stale()) {
+              patchUiState({ sessionTitle: current })
+            }
+          })
       })
       .catch(ctx.guardedErr)
   }

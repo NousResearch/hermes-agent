@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "ユーザーターンを N 個戻して再入力（デフォルト 1）"
   title:
-    description: "現在のセッションにタイトルを設定"
+    description: "セッションに名前を付けます。名前を省略するとモデルが付けます"
   handoff:
     description: "このセッションをメッセージングプラットフォーム（Telegram、Discord など）に引き継ぐ"
   branch:

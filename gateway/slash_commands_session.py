@@ -972,6 +972,12 @@ class GatewaySessionCommandsMixin:
                     thread_id=source.thread_id)
         title_arg = event.get_command_args().strip()
         if not title_arg:
+            from agent.title_generator import regenerate_title
+            generated = await asyncio.to_thread(regenerate_title, self._session_db._db, session_id)
+            if generated:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(self._schedule_telegram_topic_title_rename, source, session_id, generated)
+                return t("gateway.title.set_to", title=generated)
             title = await self._session_db.get_session_title(session_id)
             if title:
                 return t("gateway.title.current_with_title", session_id=session_id, title=title)

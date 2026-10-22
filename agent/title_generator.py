@@ -631,6 +631,27 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
         return _set(deduped)
 
 
+def regenerate_title(session_db, session_id: str, timeout: Optional[float] = None) -> Optional[str]:
+    """``/title`` with no name: title the conversation so far and store it at ``user`` authority, so no
+    automatic title replaces it. None when there is nothing to title or the model gave nothing usable."""
+    turns = []
+    for message in session_db.get_messages_as_conversation(session_id, include_ancestors=True):
+        text = flatten_message_text(message.get("content")) if message.get("role") in ("user", "assistant") else ""
+        if text.strip() and (message["role"] == "assistant" or is_titleable_user_message(text)):
+            turns.append(f"{message['role']}: {' '.join(_summarize_user_message(text).split())[:140]}")
+    if not any(turn.startswith("user: ") for turn in turns):
+        return None
+    title = generate_title("\n".join(turns[:1] + turns[1:][-6:]), timeout=timeout)
+    if not title:
+        return None
+    try:
+        session_db.set_session_title(session_id, title)
+    except ValueError:
+        title = session_db.get_next_title_in_lineage(title)
+        session_db.set_session_title(session_id, title)
+    return title
+
+
 def apply_subagent_title(session_db, session_id: str, goal: str) -> Optional[str]:
     """Title a delegate run ``Subagent: <goal's first line>`` at ``derived`` authority. No model call:
     runs fan out in bulk, and the prefix alone is what tells them apart from conversations wherever

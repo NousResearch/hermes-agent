@@ -1516,7 +1516,7 @@ slash:
   undo:
     description: "Retroceder N turnos de usuario y volver a preguntar (predeterminado 1)"
   title:
-    description: "Establecer un título para la sesión actual"
+    description: "Nombra la sesión; sin nombre, el modelo escribe uno"
   handoff:
     description: "Transferir esta sesión a una plataforma de mensajería (Telegram, Discord, etc.)"
   branch:

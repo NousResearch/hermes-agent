@@ -103,7 +103,7 @@ class TestHandleTitleCommand:
 
     @pytest.mark.asyncio
     async def test_show_title_does_not_rename_topic(self, tmp_path):
-        """Showing the title (no arg) must not trigger a topic rename."""
+        """A bare /title with nothing to title shows the current one and renames nothing."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("test_session_123", "telegram")
@@ -116,6 +116,28 @@ class TestHandleTitleCommand:
         await runner._handle_title_command(event)
 
         runner._schedule_telegram_topic_title_rename.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_bare_title_asks_the_model(self, tmp_path):
+        """/title with no name titles the conversation, stores it as the user's, and renames the topic."""
+        from unittest.mock import patch
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+        db.append_message("test_session_123", "user", "the tern job charts should follow log files")
+
+        runner = _make_runner(session_db=db)
+        runner._schedule_telegram_topic_title_rename = MagicMock()
+        reply = MagicMock()
+        reply.choices = [MagicMock()]
+        reply.choices[0].message.content = '{"title": "Tern charts: log files"}'
+        with patch("agent.title_generator.call_llm", return_value=reply):
+            result = await runner._handle_title_command(_make_event(text="/title"))
+
+        assert "Tern charts: log files" in result
+        assert db.get_session_title_source("test_session_123") == "user"
+        runner._schedule_telegram_topic_title_rename.assert_called_once()
         db.close()
 
 # ---------------------------------------------------------------------------

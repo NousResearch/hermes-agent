@@ -339,6 +339,9 @@ def deliver_to_live_owner(
 
     Retry with the same id AND pinned owner/message to inspect the existing
     state. Reusing an id with a different payload is an error, never an overwrite.
+    The authority checks a new delivery's session pin against the current Bot
+    Chat under its mailbox lock, after looking up existing admissions. Legacy
+    viewer leases grant no execution rights; retries survive a target handoff.
     """
     return _door(authority_delivery, profile_home, owner, message, delivery_id=delivery_id, author=author,
                  notification_category=notification_category)

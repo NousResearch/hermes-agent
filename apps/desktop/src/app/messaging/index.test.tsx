@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { $settingsScopeOverride } from '@/store/settings-scope'
+import { $gatewayRestarting } from '@/store/system-actions'
 import type { MessagingPlatformInfo } from '@/types/hermes'
 
 import { MessagingView } from './index'
@@ -22,6 +23,7 @@ const approvePairing = vi.fn()
 const revokePairing = vi.fn()
 const openExternalLink = vi.fn()
 const runGatewayRestart = vi.fn()
+const runGatewayStart = vi.fn()
 const watchGatewayRestartOutcome = vi.fn()
 const startTelegramOnboarding = vi.fn()
 const getTelegramOnboardingStatus = vi.fn()
@@ -37,6 +39,7 @@ vi.mock('@/hermes', () => ({
   revokePairing: (platformId: string, userId: string, profile?: null | string) =>
     revokePairing(platformId, userId, profile),
   setApiRequestProfile: vi.fn(),
+  resolveOwnerNow: (owner: unknown) => owner,
   applyTelegramOnboarding: (pairingId: string, ids: string[], profile?: null | string) =>
     applyTelegramOnboarding(pairingId, ids, profile),
   cancelTelegramOnboarding: vi.fn(async () => ({ ok: true })),
@@ -75,6 +78,7 @@ vi.mock('@/store/system-actions', async () => {
   return {
     $gatewayRestarting: atom(false),
     runGatewayRestart: () => runGatewayRestart(),
+    runGatewayStart: () => runGatewayStart(),
     watchGatewayRestartOutcome: () => watchGatewayRestartOutcome()
   }
 })
@@ -95,14 +99,18 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
 }
 
 beforeEach(() => {
+  $gatewayRestarting.set(false)
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })
   getPairing.mockResolvedValue({ approved: [], pending: [] })
   runGatewayRestart.mockResolvedValue(true)
+  runGatewayStart.mockResolvedValue(true)
   watchGatewayRestartOutcome.mockResolvedValue(true)
 })
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
+  $settingsScopeOverride.set(null)
   vi.clearAllMocks()
 })
 
@@ -453,6 +461,219 @@ describe('MessagingView restart banner', () => {
     })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['start', 'restart'] as const)(
+    'does not let a late %s completion clear another profile’s saved banner',
+    async action => {
+      let finish!: (ok: boolean) => void
+
+      const pending = new Promise<boolean>(resolve => {
+        finish = resolve
+      })
+
+      const runner = action === 'start' ? runGatewayStart : runGatewayRestart
+      runner.mockReturnValueOnce(pending)
+      $settingsScopeOverride.set('profile-a')
+      getMessagingPlatforms.mockImplementation(async (profileName: string) => ({
+        platforms: [
+          platform({
+            configured: true,
+            enabled: true,
+            gateway_running: profileName !== 'profile-a' || action === 'restart',
+            env_vars: [tokenField]
+          })
+        ]
+      }))
+
+      await renderMessaging()
+
+      if (action === 'restart') {
+        fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'a-token' } })
+        await act(async () => {
+          fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+        })
+      }
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: action === 'start' ? 'Start messaging gateway' : 'Restart now'
+        })
+      )
+      await waitFor(() => expect(runner).toHaveBeenCalledOnce())
+
+      await act(async () => {
+        $settingsScopeOverride.set('profile-b')
+      })
+      await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith('profile-b'))
+      fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'b-token' } })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+      })
+      expect(await screen.findByRole('button', { name: 'Restart now' })).toBeTruthy()
+
+      const fetched = getMessagingPlatforms.mock.calls.length
+      vi.useFakeTimers()
+      await act(async () => {
+        finish(true)
+        await pending
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000)
+      })
+
+      expect(getMessagingPlatforms).toHaveBeenCalledTimes(fetched)
+      expect(screen.getByRole('button', { name: 'Restart now' })).toBeTruthy()
+      $settingsScopeOverride.set(null)
+    }
+  )
+
+  it.each([
+    ['start', true],
+    ['restart', true],
+    ['start', false],
+    ['restart', false]
+  ] as const)('does not let an old %s completion clear a later save (A→B→A: %s)', async (action, switchAway) => {
+    let finish!: (ok: boolean) => void
+
+    const pending = new Promise<boolean>(resolve => {
+      finish = resolve
+    })
+
+    const runner = action === 'start' ? runGatewayStart : runGatewayRestart
+    runner.mockReturnValueOnce(pending)
+    $settingsScopeOverride.set('profile-a')
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({ configured: true, enabled: true, gateway_running: action === 'restart', env_vars: [tokenField] })
+      ]
+    })
+    await renderMessaging()
+
+    if (action === 'restart') {
+      fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'initial-token' } })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+      })
+    }
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: action === 'start' ? 'Start messaging gateway' : 'Restart now' })
+    )
+    await waitFor(() => expect(runner).toHaveBeenCalledOnce())
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+
+    if (switchAway) {
+      await act(async () => {
+        $settingsScopeOverride.set('profile-b')
+      })
+      await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith('profile-b'))
+      await act(async () => {
+        $settingsScopeOverride.set('profile-a')
+      })
+    }
+
+    fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'new-token' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+    expect(await screen.findByRole('button', { name: 'Restart now' })).toBeTruthy()
+    const fetched = getMessagingPlatforms.mock.calls.length
+    vi.useFakeTimers()
+    await act(async () => {
+      finish(true)
+      await pending
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000)
+    })
+    expect(screen.getByRole('button', { name: 'Restart now' })).toBeTruthy()
+    expect(getMessagingPlatforms).toHaveBeenCalledTimes(fetched)
+  })
+
+  it('keeps saved-banner priority while a busy stopped gateway still means Start', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ configured: true, enabled: true, gateway_running: false, env_vars: [tokenField] })]
+    })
+    await renderMessaging()
+    fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'saved-token' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+    expect(
+      await screen.findByText('Saved. Restart the messaging gateway so the new settings take effect.')
+    ).toBeTruthy()
+
+    await act(async () => {
+      $gatewayRestarting.set(true)
+    })
+    expect((screen.getByRole('button', { name: 'Starting messaging gateway…' }) as HTMLButtonElement).disabled).toBe(
+      true
+    )
+    await act(async () => {
+      $gatewayRestarting.set(false)
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Start messaging gateway' }))
+    })
+    expect(runGatewayStart).toHaveBeenCalledOnce()
+    expect(runGatewayRestart).not.toHaveBeenCalled()
+  })
+
+  it('disables Restart with the Restart progress copy while a running gateway is busy', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+    await renderMessaging()
+    fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'saved-token' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+    await screen.findByRole('button', { name: 'Restart now' })
+
+    await act(async () => {
+      $gatewayRestarting.set(true)
+    })
+    expect((screen.getByRole('button', { name: 'Restarting…' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('starts a stopped messaging gateway from the Messaging page', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ configured: true, enabled: true, gateway_running: false, state: 'gateway_stopped' })]
+    })
+
+    await renderMessaging()
+
+    const start = await screen.findByRole('button', { name: 'Start messaging gateway' })
+    await act(async () => {
+      fireEvent.click(start)
+    })
+
+    expect(runGatewayStart).toHaveBeenCalledOnce()
+    expect(runGatewayRestart).not.toHaveBeenCalled()
+  })
+
+  it('keeps the stopped gateway Start control available after a declined start', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ configured: true, enabled: true, gateway_running: false, state: 'gateway_stopped' })]
+    })
+    runGatewayStart.mockResolvedValueOnce(false)
+
+    await renderMessaging()
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Start messaging gateway' }))
+    })
+
+    expect(await screen.findByRole('button', { name: 'Start messaging gateway' })).toBeTruthy()
+    expect(runGatewayRestart).not.toHaveBeenCalled()
+  })
+
+  it('does not offer Start for a disabled platform', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ gateway_running: false })] })
+
+    await renderMessaging()
+    await screen.findAllByText('Microsoft Teams')
+
+    expect(screen.queryByRole('button', { name: 'Start messaging gateway' })).toBeNull()
+    expect(runGatewayStart).not.toHaveBeenCalled()
   })
 })
 

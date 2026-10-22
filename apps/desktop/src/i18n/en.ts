@@ -13,6 +13,7 @@ import { enErrorLayers } from './en_error_layers'
 import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
+import { enMessagingGateway } from './en_messaging_gateway'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
@@ -2505,6 +2506,7 @@ export const en: Translations = {
   },
 
   messaging: {
+    ...enMessagingGateway,
     search: 'Search messaging...',
     statusFilter: {
       all: 'All',

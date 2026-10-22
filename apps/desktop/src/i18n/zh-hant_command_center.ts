@@ -138,6 +138,15 @@ export const zhHantCommandCenter = {
   },
 
   messaging: {
+    hintGatewayStopped: "在此啟動訊息閘道以建立連線。",
+    restartNeeded: '已儲存。請重新啟動訊息閘道以套用新設定。',
+    restartNow: '立即重新啟動',
+    restarting: '正在重新啟動…',
+    restartFailedManual: '閘道重新啟動失敗 — 請手動重新啟動並檢查閘道日誌。',
+    restartFailedManualDetail: "請再次嘗試重新啟動；如果仍然失敗，請開啟日誌並傳送診斷資訊。",
+    startMessagingGateway: "啟動訊息閘道",
+    startingMessagingGateway: "正在啟動訊息閘道…",
+    gatewayStartFailed: "訊息閘道啟動失敗。",
     search: '搜尋訊息平台…',
     statusFilter: {
       all: '全部',
@@ -162,11 +171,6 @@ export const zhHantCommandCenter = {
     unknown: '未知',
     hintPendingRestart: '在狀態列重新啟動閘道以套用此變更。',
     sharedListenerUrl: '透過共享閘道監聽器提供，位址為',
-    hintGatewayStopped: '在狀態列啟動閘道以建立連線。',
-    restartNeeded: '已儲存。請重新啟動訊息閘道以套用新設定。',
-    restartNow: '立即重新啟動',
-    restarting: '正在重新啟動…',
-    restartFailedManual: '閘道重新啟動失敗 — 請手動重新啟動並檢查閘道日誌。',
     telegramQr: {
       title: '選擇連接 Telegram 機器人的方式',
       subtitle: '兩種方式都會連接由你控制的機器人，憑證僅儲存在此 Hermes 安裝中。',

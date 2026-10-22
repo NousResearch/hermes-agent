@@ -166,6 +166,15 @@ export const arCommandCenter = {
     actions: count => `${count} إجراء`
   },
   messaging: {
+    hintGatewayStopped: "ابدأ بوابة المراسلة هنا للاتصال.",
+    restartNeeded: 'تم الحفظ. أعد تشغيل بوابة المراسلة لتطبيق الإعدادات الجديدة.',
+    restartNow: 'إعادة التشغيل الآن',
+    restarting: 'جارٍ إعادة التشغيل…',
+    restartFailedManual: 'فشلت إعادة تشغيل البوابة — أعد تشغيلها يدويًا وتحقق من سجلات البوابة.',
+    restartFailedManualDetail: "حاول إعادة التشغيل مرة أخرى؛ إذا استمر الفشل، افتح السجلات وأرسل بيانات التشخيص.",
+    startMessagingGateway: "بدء بوابة المراسلة",
+    startingMessagingGateway: "جارٍ بدء بوابة المراسلة…",
+    gatewayStartFailed: "فشل بدء بوابة المراسلة.",
     search: 'بحث',
     statusFilter: {
       all: 'الكل',
@@ -190,11 +199,6 @@ export const arCommandCenter = {
     unknown: 'غير معروف',
     hintPendingRestart: 'تحتاج إعادة تشغيل لتطبيق التغييرات.',
     sharedListenerUrl: 'يُخدم عبر مستمع البوابة المشتركة على',
-    hintGatewayStopped: 'البوابة متوقفة.',
-    restartNeeded: 'تم الحفظ. أعد تشغيل بوابة المراسلة لتطبيق الإعدادات الجديدة.',
-    restartNow: 'إعادة التشغيل الآن',
-    restarting: 'جارٍ إعادة التشغيل…',
-    restartFailedManual: 'فشلت إعادة تشغيل البوابة — أعد تشغيلها يدويًا وتحقق من سجلات البوابة.',
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',
       subtitle: 'كلا الخيارين يربط بوتًا تتحكم به ويحفظ بياناته في هذا التثبيت من Hermes فقط.',

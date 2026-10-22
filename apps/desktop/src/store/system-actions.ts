@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
-import { getActionStatus, getStatus, restartGateway } from '@/hermes'
+import { $apiRequestScope } from '@/api/client'
+import { getActionStatus, getStatus, type ResolvedOwner, resolveOwnerNow, restartGateway, startGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { sharedGatewayProfiles } from '@/lib/shared-gateway-restart'
 import { confirm } from '@/store/confirm'
@@ -11,6 +12,32 @@ import type { ActionResponse } from '@/types/hermes'
 const POLL_ATTEMPTS = 18
 const POLL_INTERVAL_MS = 1200
 const GATEWAY_RESTART_ACTION = 'gateway-restart'
+
+// Resolve once, and keep invalidation sticky across A→B→A. The authority
+// subscription's immediate first notification equals the captured origin.
+function captureActionOwner(owner = resolveOwnerNow()) {
+  const origin = $apiRequestScope.get()
+  let current = true
+
+  const dispose = $apiRequestScope.subscribe(scope => {
+    if (scope.connectionId !== origin.connectionId || scope.profile !== origin.profile) {
+      current = false
+    }
+  })
+
+  return {
+    owner,
+    dispose,
+    isCurrent: () => current,
+    canReconnect: () => {
+      const active = resolveOwnerNow()
+
+      return current && active.connectionId === owner.connectionId && active.profile === owner.profile
+    }
+  }
+}
+
+type ActionOwner = ReturnType<typeof captureActionOwner>
 
 // True while a gateway restart is in flight — drives the statusbar gateway
 // indicator (glyph spinner) so the restart shows up where users already look,
@@ -31,7 +58,11 @@ export const $gatewayRestarting = atom(false)
 // a window refused end to end is a failure, not a silent success: resolving it
 // would erase the caller's "restart needed" banner while the gateway stays
 // down.
-async function awaitAction(name: string, profile?: string): Promise<void> {
+async function awaitAction(
+  name: string,
+  owner: ResolvedOwner,
+  failureMessage = translateNow('commandCenter.gatewayRestartFailed')
+): Promise<void> {
   let sawAnsweredPoll = false
   let lastPollError: unknown = null
 
@@ -41,7 +72,7 @@ async function awaitAction(name: string, profile?: string): Promise<void> {
     let status: Awaited<ReturnType<typeof getActionStatus>>
 
     try {
-      status = await getActionStatus(name, 200, profile)
+      status = await getActionStatus(name, 200, owner)
     } catch (err) {
       // The backend accepted the restart POST a moment ago and is now
       // refusing — the expected shape of the restart window itself.
@@ -62,7 +93,16 @@ async function awaitAction(name: string, profile?: string): Promise<void> {
 
     if (!status.running) {
       if (status.exit_code != null && status.exit_code !== 0) {
-        throw new Error(translateNow('commandCenter.gatewayRestartFailed'))
+        // The action endpoint retains the child process output. Keep its last
+        // line with the toast so a failed restart names the actual cause
+        // (bad credentials, a port conflict, and so on) instead of making the
+        // user open gateway.log to learn why it failed.
+        const cause = status.lines
+          .map(line => line.trim())
+          .filter(Boolean)
+          .at(-1)
+
+        throw new Error(cause || failureMessage)
       }
 
       return
@@ -70,7 +110,7 @@ async function awaitAction(name: string, profile?: string): Promise<void> {
   }
 
   if (!sawAnsweredPoll) {
-    throw lastPollError ?? new Error(translateNow('commandCenter.gatewayRestartFailed'))
+    throw lastPollError ?? new Error(failureMessage)
   }
 }
 
@@ -80,11 +120,11 @@ async function awaitAction(name: string, profile?: string): Promise<void> {
 // backends that do not report `gateway_shared_with`) keep the silent restart.
 // Resolves the served list when the user confirmed, `null` when nothing is
 // shared, `false` when they cancelled.
-export async function confirmSharedGatewayRestart(): Promise<false | null | string[]> {
+export async function confirmSharedGatewayRestart(owner?: ResolvedOwner): Promise<false | null | string[]> {
   let shared: null | string[] = null
 
   try {
-    shared = sharedGatewayProfiles(await getStatus())
+    shared = sharedGatewayProfiles(await getStatus(owner))
   } catch {
     // Status unavailable: fall back to the plain restart rather than blocking it.
     return null
@@ -110,21 +150,43 @@ export async function confirmSharedGatewayRestart(): Promise<false | null | stri
 // messaging save/toggle toasts — gets identical feedback from a plain
 // `void runGatewayRestart()`, and a failure is the only thing that toasts.
 // Resolves `true` when the restart child completed cleanly (callers that keep
-// a "restart needed" banner clear it on that signal only). Pass `profile` to
-// pin both the restart request and its status polls to one backend owner; the
-// ambient scope serves callers without an owner (#71352).
-export async function runGatewayRestart(profile?: string): Promise<boolean> {
-  const shared = await confirmSharedGatewayRestart()
+// a "restart needed" banner clear it on that signal only).
+export async function runGatewayRestart(owner: ResolvedOwner | string = resolveOwnerNow()): Promise<boolean> {
+  const context = captureActionOwner(typeof owner === 'string' ? resolveOwnerNow({ profile: owner }) : owner)
+  const shared = await confirmSharedGatewayRestart(context.owner)
 
-  if (shared === false) {
+  if (shared === false || !context.isCurrent()) {
+    context.dispose()
+
     return false
   }
 
+  return runGatewayAction(
+    () => restartGateway(context.owner),
+    context,
+    translateNow('commandCenter.gatewayRestartFailed'),
+    shared
+  )
+}
+
+// Starting loads saved settings without interrupting an existing shared gateway.
+export function runGatewayStart(owner = resolveOwnerNow()): Promise<boolean> {
+  const context = captureActionOwner(owner)
+
+  return runGatewayAction(() => startGateway(context.owner), context, translateNow('messaging.gatewayStartFailed'))
+}
+
+async function runGatewayAction(
+  request: () => Promise<ActionResponse>,
+  context: ActionOwner,
+  failureMessage: string,
+  shared: null | string[] = null
+): Promise<boolean> {
   $gatewayRestarting.set(true)
 
   try {
-    const started: ActionResponse = await restartGateway(profile)
-    await awaitAction(started.name, profile)
+    const started = await request()
+    await awaitAction(started.name, context.owner, failureMessage)
 
     if (shared) {
       notify({ kind: 'success', message: translateNow('commandCenter.sharedGatewayRestarted', shared.length) })
@@ -132,11 +194,12 @@ export async function runGatewayRestart(profile?: string): Promise<boolean> {
 
     return true
   } catch (err) {
-    notifyError(err, translateNow('commandCenter.gatewayRestartFailed'))
+    notifyError(err, failureMessage)
 
     return false
   } finally {
     $gatewayRestarting.set(false)
+
     // The restart took down the process serving this client's own WebSocket
     // (and any action-registry state with it), so leaving recovery to the
     // passive close→backoff machinery lets a Windows close-frame-less drop sit
@@ -148,26 +211,40 @@ export async function runGatewayRestart(profile?: string): Promise<boolean> {
     // path's unconditional close). A not-yet-registered handler or a
     // still-down backend rejects and is swallowed (the boot loop keeps
     // retrying regardless).
-    void reconnectGateway({ source: 'restart-followthrough' }).catch(() => undefined)
+    if (context.canReconnect()) {
+      void reconnectGateway({ source: 'restart-followthrough', isCurrent: context.canReconnect })
+        .catch(() => undefined)
+        .finally(context.dispose)
+    } else {
+      context.dispose()
+    }
   }
 }
 
 // Watch a restart the BACKEND spawned (e.g. after Telegram QR onboarding writes
 // credentials) instead of one this app requested. Same indicator, same bounded
 // poll, same restart-window tolerance and reconnect follow-through.
-export async function watchGatewayRestartOutcome(): Promise<boolean> {
+export async function watchGatewayRestartOutcome(owner = resolveOwnerNow()): Promise<boolean> {
+  const context = captureActionOwner(owner)
   $gatewayRestarting.set(true)
 
   try {
-    await awaitAction(GATEWAY_RESTART_ACTION)
+    await awaitAction(GATEWAY_RESTART_ACTION, context.owner)
 
     return true
   } catch {
     return false
   } finally {
     $gatewayRestarting.set(false)
+
     // Same restart follow-through as the requested flow above: probe-first
     // recovery, never the manual path's unconditional teardown.
-    void reconnectGateway({ source: 'restart-followthrough' }).catch(() => undefined)
+    if (context.canReconnect()) {
+      void reconnectGateway({ source: 'restart-followthrough', isCurrent: context.canReconnect })
+        .catch(() => undefined)
+        .finally(context.dispose)
+    } else {
+      context.dispose()
+    }
   }
 }

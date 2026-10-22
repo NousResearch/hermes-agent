@@ -8,6 +8,7 @@ import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
 import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
+import { jaMessagingGateway } from './ja_messaging_gateway'
 import { jaModelMenu } from './ja_model_menu'
 import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
@@ -1591,6 +1592,7 @@ export const jaOverrides = {
   },
 
   messaging: {
+    ...jaMessagingGateway,
     search: 'メッセージングを検索...',
     statusFilter: {
       all: 'すべて',

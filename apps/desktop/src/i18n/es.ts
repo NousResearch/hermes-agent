@@ -7,6 +7,7 @@ import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
 import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
+import { esMessagingGateway } from './es_messaging_gateway'
 import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
@@ -2886,6 +2887,7 @@ export const esOverrides = {
     }
   },
   messaging: {
+    ...esMessagingGateway,
     search: 'Buscar mensajería...',
     statusFilter: {
       all: 'Todos',

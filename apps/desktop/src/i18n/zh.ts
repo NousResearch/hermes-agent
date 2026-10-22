@@ -7,6 +7,7 @@ import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
+import { zhMessagingGateway } from './zh_messaging_gateway'
 import { zhModelMenu } from './zh_model_menu'
 import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
@@ -2432,6 +2433,7 @@ export const zhOverrides = {
   },
 
   messaging: {
+    ...zhMessagingGateway,
     search: '搜索消息平台…',
     statusFilter: {
       all: '全部',

@@ -234,3 +234,91 @@ def test_foreign_profile_poller_requeues_event_owned_through_another_profiles_li
         with server._sessions_lock:
             server._sessions.clear()
             server._sessions.update(saved)
+
+
+def test_detached_owner_delegation_is_delivered_once_after_durable_owner_resumes(monkeypatch):
+    """A detached live owner's result waits for, then reaches, its resumed UI.
+
+    The unrelated poller must neither display nor dispatch the event.  Once
+    the durable owner resumes under a new UI id, it alone gets one dispatch.
+    """
+    import queue
+    import threading
+    from types import SimpleNamespace
+
+    completion_queue = queue.Queue()
+    registry = SimpleNamespace(completion_queue=completion_queue)
+    detached_event = {
+        "type": "async_delegation",
+        "origin_ui_session_id": "detached-ui",
+        "session_key": "durable-owner",
+        "delegation_id": "deleg-detached-owner",
+        "results": [],
+    }
+    draining_session = {"session_key": "other-session"}
+    resumed_session = {
+        "session_key": "durable-owner",
+        "history_lock": threading.RLock(),
+        "running": False,
+    }
+    dispatched = []
+    emitted = []
+
+    def record_dispatch(sid, _session, event, text):
+        dispatched.append((sid, event, text))
+
+    monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+    monkeypatch.setattr(server, "_notif_dispatch_event", record_dispatch)
+
+    assert server._notif_handle_event(
+        "other-ui", draining_session, detached_event, set(), registry,
+        lambda _event: (_ for _ in ()).throw(AssertionError("unowned event dispatched")), None,
+    ) is True
+    assert not emitted and not dispatched
+    resumed_event = completion_queue.get_nowait()
+
+    assert server._notif_handle_event(
+        "resumed-ui", resumed_session, resumed_event, set(), registry,
+        lambda _event: "delegation finished", None,
+    ) is True
+    assert dispatched == [("resumed-ui", detached_event, "delegation finished")]
+    assert completion_queue.empty()
+
+
+def test_detached_owner_ordinary_completion_remains_fail_closed():
+    """Only durable delegation completions may wait for a resumed owner."""
+    import queue
+    from types import SimpleNamespace
+
+    completion_queue = queue.Queue()
+    registry = SimpleNamespace(completion_queue=completion_queue)
+    unowned_completion = {"type": "completion", "session_key": "durable-owner"}
+
+    assert server._notif_handle_event(
+        "other-ui", {"session_key": "other-session"}, unowned_completion, set(), registry,
+        lambda _event: (_ for _ in ()).throw(AssertionError("unowned event dispatched")), None,
+    ) is True
+    assert completion_queue.empty()
+
+
+def test_detached_owner_restored_completion_returns_to_durable_sweep(monkeypatch):
+    """Durable replays retain upstream offer handback instead of queue churn."""
+    import queue
+    from types import SimpleNamespace
+    from tools import async_delegation
+
+    completion_queue = queue.Queue()
+    event = {
+        "type": "async_delegation", "session_key": "durable-owner",
+        "delegation_id": "restored-detached-owner", "restored": True,
+    }
+    returned = []
+    monkeypatch.setattr(async_delegation, "return_completion_offer", returned.append)
+
+    assert server._notif_handle_event(
+        "other-ui", {"session_key": "other-session"}, event, set(),
+        SimpleNamespace(completion_queue=completion_queue),
+        lambda _event: (_ for _ in ()).throw(AssertionError("unowned replay dispatched")), None,
+    ) is True
+    assert returned == [event]
+    assert completion_queue.empty()

@@ -305,7 +305,7 @@ def _check_url(url: str, baseline: dict[str, Any], retrieved: Optional[str]) -> 
     except SourceRedirectBlocked as exc:
         return "skipped", str(exc)[:200], None
     except Exception as exc:  # network, TLS, timeout, policy at connect time
-        logger.debug("Source check failed for %s: %s", url, exc)
+        logger.debug("Source check failed for %s: %s", url, exc, exc_info=True)
         return "unreachable", f"{type(exc).__name__}: {exc}"[:200], None
 
     digest = _normalized_body_digest(body)

@@ -73,4 +73,10 @@ describe('cleanThinkingText', () => {
       )
     ).toBe('**Resolving comments on GitHub**\nActual step\nnext step')
   })
+
+  it('keeps spinner verbs that are words in the reasoning', () => {
+    const text = "shown as their model's reasoning stream\ncareful reasoning, analyzing and pondering are required"
+
+    expect(cleanThinkingText(text)).toBe(text)
+  })
 })

@@ -1097,9 +1097,12 @@ def _aggregator_catalog_match(new_model: str, catalog: list) -> str | None:
 
 def _config_declares_model(
     new_model: str, target_provider: str, base_url: str, user_providers, custom_providers) -> bool:
-    """A model declared in the user's ``providers:``/``custom_providers:`` config is accepted even
-    when the remote /v1/models does not list it (cloud/aliased models). Custom entries match by
-    slug alias or by base_url."""
+    """Accept a configured model that a remote listing does not expose.
+
+    ``model.default`` is a declaration for its configured provider too; it can name an
+    account-scoped model that the provider's generic ``/models`` response omits. Custom entries
+    match by slug alias or by base_url.
+    """
     if user_providers:
         from hermes_cli.config import is_provider_enabled
         cfg = user_providers.get(target_provider)
@@ -1110,6 +1113,20 @@ def _config_declares_model(
             new_model == entry.get("model", "") or new_model in _declared_model_ids(entry.get("models", {}))
         ):
             return True
+    try:
+        from hermes_cli.runtime_provider import _get_model_config
+
+        model_cfg = _get_model_config()
+        configured_provider = model_cfg.get("provider", "")
+        if (
+            isinstance(configured_provider, str)
+            and configured_provider.strip()
+            and normalize_provider(configured_provider) == normalize_provider(target_provider)
+            and new_model == model_cfg.get("default", "")
+        ):
+            return True
+    except Exception:
+        logger.debug("Could not read configured default model", exc_info=True)
     return False
 
 

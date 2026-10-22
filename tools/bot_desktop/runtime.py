@@ -161,19 +161,29 @@ def _read(path: Path) -> Optional[str]:
 
 def _pid_alive(pid: int) -> bool:
     """A zombie is dead for our purposes: a SIGKILLed launcher stays a zombie in the gateway until the next
-    Popen reaps it, and reporting it as running would hide its orphaned X server behind a live status."""
+    Popen reaps it, and reporting it as running would hide its orphaned X server behind a live status.
+
+    An unmeasurable pid is not alive: on a host whose procfs is mounted ``hidepid=invisible,subset=pid``
+    the read can fail with ``FileNotFoundError``/``RuntimeError`` — neither is ``psutil.Error`` — and a
+    crash here aborts the caller's bookkeeping (#134452)."""
     import psutil
     try:
         return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
-    except psutil.Error:
+    except (psutil.Error, OSError, RuntimeError):
         return False
 
 
 def _create_time(pid: int) -> Optional[float]:
+    """Process create time, or ``None`` when it cannot be measured.
+
+    ``None`` is the contract for every caller (recycled-pid guard, ``start()`` bookkeeping). psutil reads
+    ``/proc/stat`` for ``boot_time()``, so a procfs without it (``subset=pid`` sandboxes) raises
+    ``FileNotFoundError`` or ``RuntimeError`` — not ``psutil.Error`` — and must degrade to ``None``
+    rather than abort the launcher bookkeeping (#134452)."""
     import psutil
     try:
         return psutil.Process(pid).create_time()
-    except (psutil.Error, OverflowError, ValueError):
+    except (psutil.Error, OSError, OverflowError, RuntimeError, ValueError):
         return None
 
 

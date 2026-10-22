@@ -9,6 +9,7 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
@@ -275,6 +276,10 @@ _SHELL_COMMAND_FLAGS = {"-c", "--command"}
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
+# POSIX shlex dequotes `\(` and `'|'` to the same text as a real operator; private-use stand-ins
+# keep quoted/escaped control characters inside words until tokenization is done.
+_CONTROL_STANDINS = {char: chr(0xE000 + offset) for offset, char in enumerate(sorted(_CONTROL_CHARS))}
+_STANDIN_TO_CONTROL = str.maketrans({standin: char for char, standin in _CONTROL_STANDINS.items()})
 
 # Directory names directly under `Library` that mark a FileProvider-backed subtree: `Mobile
 # Documents` is iCloud Drive; `CloudStorage` hosts third-party providers (Dropbox, OneDrive, Google
@@ -483,6 +488,7 @@ class _LifecycleScanBudget:
         "paths_remaining",
         "refusal",
         "remote_reads_remaining",
+        "soft_skipped",
     )
 
     def __init__(self) -> None:
@@ -492,6 +498,9 @@ class _LifecycleScanBudget:
         self.paths_remaining = _MAX_LIFECYCLE_SCAN_PATHS
         self.remote_reads_remaining = _MAX_LIFECYCLE_SCAN_REMOTE_READS
         self.refusal: Optional[str] = None
+        # Oversized files skipped as soft candidates: deduplicated here, not in `visited`, so a
+        # later real execution of the same file is still read and fails closed.
+        self.soft_skipped: set[Path] = set()
 
     def charge_text(self, text: str) -> bool:
         """Charge *text* before tokenization; False when it does not fit."""
@@ -609,12 +618,55 @@ def _split_logical_lines(text: str) -> list[str]:
     return lines
 
 
-def _shlex_tokens(line: str) -> list[str]:
-    """POSIX-tokenize one shell line, honoring quotes and `#` comments; raises ValueError."""
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+class _LiteralWord(str):
+    """A token spelled only with quoted/escaped control characters: shell data, never an operator."""
+
+
+class _ShieldingStream:
+    """Input stream for shlex that hands back a stand-in for each control character the lexer reads
+    while inside quotes or right after a backslash. Keyed on the lexer's own state, so comments,
+    nesting and escapes are classified exactly as shlex classifies them."""
+
+    _UNQUOTED_STATES = frozenset({" ", "a", "c", None})
+
+    def __init__(self, text: str) -> None:
+        self._stream = io.StringIO(text)
+        self.lexer: Optional[shlex.shlex] = None
+
+    def read(self, size: int = -1) -> str:
+        char = self._stream.read(size)
+        if char in _CONTROL_STANDINS and self.lexer.state not in self._UNQUOTED_STATES:
+            return _CONTROL_STANDINS[char]
+        return char
+
+    def readline(self) -> str:
+        return self._stream.readline()
+
+
+def _restore_literal_controls(token: str) -> str:
+    restored = token.translate(_STANDIN_TO_CONTROL)
+    if restored == token:
+        return token
+    return _LiteralWord(restored) if set(restored) <= _CONTROL_CHARS else restored
+
+
+def _shlex_tokens(line: str, *, shield: bool = False) -> list[str]:
+    """POSIX-tokenize one shell line, honoring quotes and `#` comments; raises ValueError.
+
+    With *shield*, a quoted/escaped `(`, `;`, `|` or `&` stays a word (`magick \\( in.png ...`)
+    instead of reading as an operator, as the shell itself parses it. Unshielded (the default) such a
+    character still splits the line: `eval`, `ssh`, `parallel` and friends re-parse their arguments,
+    so for detection the over-split view is the safe one. A line that already contains a stand-in
+    character is never shielded."""
+    shield = shield and not any(standin in line for standin in _CONTROL_STANDINS.values())
+    stream = _ShieldingStream(line) if shield else line
+    lexer = shlex.shlex(stream, posix=True, punctuation_chars=";&|()")
+    if shield:
+        stream.lexer = lexer
     lexer.whitespace_split = True
     lexer.commenters = "#"
-    return list(lexer)
+    tokens = list(lexer)
+    return [_restore_literal_controls(token) for token in tokens] if shield else tokens
 
 
 def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterator[list[str]]:
@@ -622,7 +674,7 @@ def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterat
     control token is also yielded as its own segment so the line can be rebuilt in order."""
     segment: list[str] = []
     for token in tokens:
-        if token and set(token) <= _CONTROL_CHARS:
+        if token and set(token) <= _CONTROL_CHARS and not isinstance(token, _LiteralWord):
             if segment:
                 yield segment
                 segment = []
@@ -634,16 +686,16 @@ def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterat
         yield segment
 
 
-def _iter_command_segments(command: str) -> Iterator[list[str]]:
+def _iter_command_segments(command: str, *, shield: bool = False) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments per logical line; a line shlex rejects (unbalanced
     quotes) falls back to per-physical-line tokenization."""
     for line in _split_logical_lines(command.replace("\\\n", "")):
         try:
-            tokens = _shlex_tokens(line)
+            tokens = _shlex_tokens(line, shield=shield)
         except ValueError:
             for physical_line in line.splitlines():
                 try:
-                    yield from _split_segments(_shlex_tokens(physical_line))
+                    yield from _split_segments(_shlex_tokens(physical_line, shield=shield))
                 except ValueError:
                     continue
             continue
@@ -918,11 +970,13 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
         yield from _resolved_or_nothing(executable, cwd)
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
+def _iter_referenced_shell_scripts(
+    command: str, *, cwd: Optional[str] = None, shield: bool = False
+) -> Iterator[Path]:
     """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
     a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
-    for segment in _iter_command_segments(command):
+    for segment in _iter_command_segments(command, shield=shield):
         index = _command_token_index(segment)
         if index is None:
             continue
@@ -1090,6 +1144,35 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 
 # --- recursive walk ---------------------------------------------------------------------------
 
+def _exceeds_scan_cap(path: Path) -> bool:
+    """True when *path* itself is a regular file over the per-script cap (not the walk budget)."""
+    try:
+        metadata = os.stat(path)
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISREG(metadata.st_mode) and metadata.st_size > _MAX_REFERENCED_SCRIPT_BYTES
+
+
+def _walk_candidates(
+    command: str, walk_command: str, *, cwd: Optional[str], executed: bool
+) -> list[tuple[Path, bool, bool]]:
+    """``(path, executed, soft)`` per referenced script, executed candidates first.
+
+    A path that reaches command position only because a quoted/escaped `(`/`;`/`|`/`&` was split
+    (`magick \\( in.png ...`) is *soft*: the shell runs it only if a re-parser such as `eval` or
+    `ssh` re-reads the arguments. Soft only annotates the existing candidates (same set, same
+    order); the one difference is that a soft file over the per-script scan cap is no verdict."""
+    shell_view = set(_iter_referenced_shell_scripts(walk_command, cwd=cwd, shield=True))
+    candidates = [
+        (path, executed, path not in shell_view)
+        for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)
+    ]
+    if walk_command != command:
+        mentions = _iter_referenced_shell_scripts(command, cwd=cwd)
+        candidates += [(path, False, False) for path in mentions]
+    return candidates
+
+
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
@@ -1126,11 +1209,8 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
-    if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
-
-    for script_path, candidate_executed in candidates:
+    candidates = _walk_candidates(command, walk_command, cwd=cwd, executed=executed)
+    for script_path, candidate_executed, soft in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:
@@ -1141,7 +1221,7 @@ def _contains_unsafe_gateway_action(
                 )
             continue
         resolved = _resolve_lenient(script_path)
-        if resolved in visited:
+        if resolved in visited or (soft and resolved in budget.soft_skipped):
             continue
         if not budget.charge_path():
             if candidate_executed:
@@ -1152,6 +1232,10 @@ def _contains_unsafe_gateway_action(
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
+            if soft and candidate_executed and _exceeds_scan_cap(script_path):
+                visited.discard(resolved)
+                budget.soft_skipped.add(resolved)
+                continue
             if candidate_executed:
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
             continue

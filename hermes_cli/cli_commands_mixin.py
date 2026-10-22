@@ -1315,17 +1315,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _save(f"{subsystem}.write_approval", bool(enabled))
 
     # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
-    def _queue_prompt_turn(self, msg: str, command: str, ack: str = "") -> None:
-        """Inject ``msg`` onto the agent's input queue as the next normal user turn (the
-        /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe). ``ack``
-        paints first on the turn's own channel (_cprint), so the turn's `────` never overtakes it."""
-        if ack:
-            __import__("cli")._cli_visible_print("\n" + ack)
-        if hasattr(self, "_pending_input"):
-            self._pending_input.put(msg)
-        else:  # pragma: no cover - defensive (no live input loop)
-            print(f"  {_t('shared.needs_active_session', command=command)}")
-
+    # `_queue_prompt_turn` (the shared queue-injection helper) lives with the other split
+    # handlers in `cli_commands_session_tools`; `self` resolves it up the MRO.
     def _handle_learn_command(self, cmd: str):
         """Handle /learn — distill a reusable skill from anything the user describes (a directory,
         a URL, "what we just did", pasted notes). The live agent gathers the material with the
@@ -1333,24 +1324,6 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from agent.learn_prompt import build_learn_prompt
         user_request = _command_arg(cmd)
         self._queue_prompt_turn(build_learn_prompt(user_request), "/learn", _t("learn.from_description" if user_request else "learn.from_conversation"))
-
-    def _handle_correct_command(self, cmd: str):
-        """Handle /correct — fix one wrong fact everywhere it was stored. The host runs the
-        literal search first: with no hits the command says so and starts no agent turn."""
-        from agent.correct_prompt import (build_correct_prompt, no_hits_message, parse_correction,
-                                          search_terms, usage_message)
-        from agent.learning_mutations import search_learned_text
-
-        user_request = _command_arg(cmd)
-        wrong, _right = parse_correction(user_request)
-        terms = search_terms(wrong)
-        if not terms:
-            return _cp(usage_message())
-        found = search_learned_text(terms)
-        if not found["hits"]:
-            return _cp(no_hits_message(found["terms"] or terms))
-        self._queue_prompt_turn(build_correct_prompt(user_request, found), "/correct",
-                                _t("correct.searching", count=len(found["hits"])))
 
     def _handle_plan_command(self, cmd: str):
         """Handle /plan — write a markdown implementation plan, no execution. The live agent

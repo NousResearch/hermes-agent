@@ -57,6 +57,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
+| **DarkBloom** | `DARKBLOOM_API_KEY` in `~/.hermes/.env` (provider: `darkbloom`; aliases: `dark`, `db`; optional `DARKBLOOM_BASE_URL`). Decentralized private-inference network — OpenAI-compatible requests routed to verified Apple Silicon Macs with hardware-backed encryption |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 

@@ -639,11 +639,8 @@ class CLIStreamMixin:
         from cli import _DIM, _RST, _cprint
         import asyncio as _asyncio
         from gateway.warning_notifications import render_notification
-        from tools.vision_tools import vision_analyze_tool
-        analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information.")
+        from tools.vision_tools import get_vision_analysis_prompt, vision_analyze_tool
+        analysis_prompt = get_vision_analysis_prompt("detailed")
         enriched_parts = []
         for img_path in images:
             if not img_path.exists():

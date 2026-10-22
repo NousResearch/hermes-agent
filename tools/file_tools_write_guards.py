@@ -23,7 +23,8 @@ from tools.binary_extensions import (
     is_sqlite_sidecar,
 )
 from tools.file_tools_paths import (
-    _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
+    _expand_tilde, _posix_match_forms, _resolve_path_for_task, _ssh_path_escapes_home,
+    _terminal_env_type_for_task)
 from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
 import itertools
 
@@ -154,7 +155,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     nt_err = get_nt_namespace_error(filepath, verb="Write")
     if nt_err:
         return nt_err
-    candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
+    candidates = (_resolved_or_raw(filepath, task_id), *_posix_match_forms(filepath))
     if _ssh_path_escapes_home(candidates[0]) and _terminal_env_type_for_task(task_id) == "ssh":
         return (
             f"Refusing to write to {filepath}: it climbs above the SSH home and the remote "

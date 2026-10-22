@@ -110,7 +110,7 @@
                   "type": "string"
                 },
                 "file_path": {
-                  "description": "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' — no leading slash, never absolute; first segment references/, templates/, scripts/, or assets/.",
+                  "description": "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' or 'CHANGELOG.md' — no leading slash, never absolute, no hidden paths (.git/, dotfiles).",
                   "type": "string"
                 },
                 "name": {

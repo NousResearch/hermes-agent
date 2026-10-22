@@ -149,9 +149,38 @@ class TestValidateFilePath:
         # The SKILL.md exception must not weaken the traversal guard.
         assert _validate_file_path("../SKILL.md") is not None
 
-    def test_other_root_md_still_rejected(self):
-        # Only SKILL.md gets the root-level exception, not arbitrary files.
-        assert _validate_file_path("README.md") is not None
+    def test_root_level_files_allowed(self):
+        # agentskills.io: a skill directory may hold any files beyond SKILL.md.
+        assert _validate_file_path("CHANGELOG.md") is None
+        assert _validate_file_path("README.md") is None
+
+    def test_hidden_components_rejected(self):
+        # A skill dir can be its own git checkout; .git/ and dotfiles stay out of reach.
+        assert _validate_file_path(".git/config") is not None
+        assert _validate_file_path(".gitignore") is not None
+        assert _validate_file_path("references/.env") is not None
+
+    def test_index_filenames_reserved(self):
+        # Discovery would read a nested SKILL.md / DESCRIPTION.md outside the support dirs
+        # as a phantom skill / category description; 'skill.md' aliases SKILL.md.
+        assert _validate_file_path("skill.md") is not None
+        assert _validate_file_path("steps/sub/SKILL.md") is not None
+        assert _validate_file_path("steps/skill.md") is not None
+        assert _validate_file_path("DESCRIPTION.md") is not None
+        assert _validate_file_path("steps/DESCRIPTION.md") is not None
+
+    def test_custom_subdirs_allowed(self):
+        # The conventional dirs are not a whitelist under agentskills.io.
+        assert _validate_file_path("steps/one.md") is None
+        assert _validate_file_path("examples/deep/two.py") is None
+
+    def test_absolute_path_rejected(self):
+        assert _validate_file_path("/etc/passwd") is not None
+        assert _validate_file_path("/CHANGELOG.md") is not None
+
+    def test_skill_root_itself_rejected(self):
+        assert _validate_file_path(".") is not None
+        assert _validate_file_path("./") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +439,15 @@ class TestPatchSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "Do the new thing." in content
 
+    def test_patch_root_level_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "CHANGELOG.md", "# Changelog\n")
+            result = _patch_skill("my-skill", "# Changelog\n", "# Changelog\n\n## 1.1.0\n",
+                                  file_path="CHANGELOG.md")
+        assert result["success"] is True
+        assert "## 1.1.0" in (tmp_path / "my-skill" / "CHANGELOG.md").read_text()
+
     def test_patch_surfaces_oversized_body_finding_and_stays_quiet_when_clean(self, tmp_path):
         # SKILL.md grows by patches; the write that crosses the body budget carries the advisory
         # finding, a small clean patch attaches no lint keys at all.
@@ -562,6 +600,45 @@ class TestWriteFile:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "references" / "api.md").exists()
 
+    def test_write_root_level_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "CHANGELOG.md", "# Changelog\n")
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "CHANGELOG.md").read_text() == "# Changelog\n"
+
+    def test_write_creates_custom_subdir(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "steps/one.md", "# Step one\n")
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "steps" / "one.md").read_text() == "# Step one\n"
+
+    @pytest.mark.parametrize("folder", ["references", "steps"])
+    def test_write_onto_existing_directory_rejected(self, tmp_path, folder):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", f"{folder}/one.md", "# One\n")
+            result = _write_file("my-skill", folder, "clobber")
+        assert result["success"] is False
+        assert "is a directory" in result["error"]
+        assert (tmp_path / "my-skill" / folder / "one.md").exists()
+
+    def test_write_root_file_named_like_a_conventional_dir(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "references", "a plain file")
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "references").is_file()
+
+    def test_write_into_git_dir_blocked(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            (tmp_path / "my-skill" / ".git").mkdir()
+            result = _write_file("my-skill", ".git/config", "[core]")
+        assert result["success"] is False
+        assert not (tmp_path / "my-skill" / ".git" / "config").exists()
+
     def test_write_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
@@ -590,6 +667,34 @@ class TestRemoveFile:
             result = _remove_file("my-skill", "references/api.md")
         assert result["success"] is True
         assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_remove_missing_file_lists_visible_files(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "CHANGELOG.md", "# Changelog\n")
+            _write_file("my-skill", "steps/one.md", "# Step one\n")
+            (tmp_path / "my-skill" / ".git").mkdir()
+            (tmp_path / "my-skill" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+            result = _remove_file("my-skill", "NOTES.md")
+        assert result["success"] is False
+        assert result["available_files"] == ["CHANGELOG.md", "steps/one.md"]
+
+    def test_remove_directory_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "steps/one.md", "# Step one\n")
+            result = _remove_file("my-skill", "steps")
+        assert result["success"] is False
+        assert "is a directory" in result["error"]
+        assert (tmp_path / "my-skill" / "steps" / "one.md").exists()
+
+    def test_remove_custom_subdir_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "steps/one.md", "# Step one\n")
+            result = _remove_file("my-skill", "steps/one.md")
+        assert result["success"] is True
+        assert not (tmp_path / "my-skill" / "steps").exists()
 
     def test_remove_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"

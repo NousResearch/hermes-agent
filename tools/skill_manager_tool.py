@@ -64,6 +64,15 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     return None
 
 
+# A batch holds every target's mutation lock and validates its completed candidate before
+# releasing it.  Individual writes defer their package-wide scan while that transaction runs.
+_defer_security_scan: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
+    "defer_security_scan", default=False)
+# Per-operation audit captures are provisional until the batch validates every skill.
+_pending_skill_batch: _ctxvars.ContextVar[Optional[dict[str, list[dict[str, Any]]]]] = _ctxvars.ContextVar(
+    "pending_skill_batch", default=None)
+
+
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
@@ -404,7 +413,12 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir)
+    if (pending := _pending_skill_batch.get()) is not None:
+        # An interruption before the handler returns must still undo this write in an
+        # adopted empty directory, without deleting files that arrived out of band.
+        pending["writes"].append(dict(name=name, action="write_file",
+                                      file_path=str(target.relative_to(skill_dir))))
+    scan_error = None if _defer_security_scan.get() else _security_scan_skill(skill_dir)
     if not scan_error:
         return None
     if original is not None:
@@ -729,9 +743,22 @@ _ACTION_HANDLERS = {
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
-                    session_id, ledger_before) -> None:
+                    session_id, ledger_before, ledger_after=None, ledger_deferred=False) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry (which fires ``on_skill_lifecycle`` for plugins)."""
+    if (pending := _pending_skill_batch.get()) is not None:
+        # Capture each operation's actual after-state for the audit chain, without appending
+        # a committed row or notifying consumers about an unvalidated candidate.
+        ledger_after = None
+        with suppress(Exception):
+            from tools import skill_ledger as _ledger
+            post = _find_skill(name)
+            ledger_after = _ledger.capture_before(post["path"] if post else None)
+        pending["successes"].append(dict(action=action, name=name, result=result, file_path=file_path,
+                            absorbed_into=absorbed_into, task_id=task_id, session_id=session_id,
+                            ledger_before=ledger_before, ledger_after=ledger_after,
+                            ledger_deferred=True))
+        return
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)
@@ -739,9 +766,16 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
                      if action == "delete" else {})
         _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
-        _ledger.record_mutation(
-            action, name, before=ledger_before if ledger_before is not None else [],
-            after_root=_post["path"] if _post else None, evidence=_evidence)
+        if ledger_deferred:
+            # None means capture failed/disabled, not an empty package: never fabricate
+            # a deletion audit, or recapture the final state as this operation's after.
+            if ledger_after is not None:
+                _ledger.append_entry(action, name, before=ledger_before or [],
+                                     after=ledger_after, evidence=_evidence)
+        else:
+            _ledger.record_mutation(
+                action, name, before=ledger_before if ledger_before is not None else [],
+                after_root=_post["path"] if _post else None, evidence=_evidence)
     with suppress(Exception):
         from agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)

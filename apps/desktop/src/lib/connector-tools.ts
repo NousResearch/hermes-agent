@@ -1,5 +1,6 @@
 import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
+import type { ToolLabel } from '@hermes/shared'
 
 export interface McpTarget {
   name: string
@@ -86,13 +87,68 @@ const TITLES: ConnectorTitles = {
 }
 
 export function connectorTitle(slug: string): string {
-  return TITLES[slug] ?? slug.replace(/[_-]+/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase())
+  return (
+    TITLES[slug] ??
+    slug
+      .replace(/[_-]+/g, ' ')
+      .replace(/\b\w/g, letter => letter.toUpperCase())
+      .replace(/\bMcp\b/g, 'MCP')
+  )
 }
+
+/** The identity every connector row and summary renders from. */
+export const connectorSubject = (slug: string) => ({
+  iconUrl: connectorIconUrl(slug),
+  name: slug,
+  title: connectorTitle(slug)
+})
 
 export function connectorToolName(name: string): { connector: string; action: string } | null {
   const match = /^connectors__([a-z0-9_-]+)__(.+)$/i.exec(name)
 
   return match ? { connector: match[1], action: match[2].replace(/_/g, ' ').toLowerCase() } : null
+}
+
+const TOOL_LABEL_KINDS: readonly ToolLabel['kind'][] = ['connector', 'mcp', 'tool']
+
+/** Where the labels ride on a tool row's args. A real tool takes a `labels` argument
+ *  (GitHub, Linear and Jira issue tools all do), so the key is one that cannot be one. */
+export const TOOL_LABELS_ARG = 'hermes_tool_labels'
+
+/** The gateway's own words for each inner call of a bridged `tool_call`, in call order.
+ *  Rides beside `context` and `preview` on the tool row's args; empty for an ordinary tool. */
+export function toolLabels(args: ToolCallMessagePart['result']): ToolLabel[] {
+  const rows = recordOf(args)[TOOL_LABELS_ARG]
+
+  if (!Array.isArray(rows)) {
+    return []
+  }
+
+  return rows.flatMap(entry => {
+    const row = recordOf(entry)
+    const app = connectorText(row.app)
+    const text = connectorText(row.text)
+    const kind = connectorText(row.kind)
+
+    return app !== undefined && text !== undefined
+      ? [
+          {
+            action: connectorText(row.action) ?? '',
+            app,
+            emoji: connectorText(row.emoji) ?? '',
+            kind: TOOL_LABEL_KINDS.find(known => known === kind) ?? 'tool',
+            name: connectorText(row.name) ?? '',
+            preview: connectorText(row.preview) ?? '',
+            text
+          }
+        ]
+      : []
+  })
+}
+
+/** The row's own title: the phrase, then the primary argument the classic CLI also shows. */
+export function toolLabelTitle(label: ToolLabel): string {
+  return label.preview ? `${label.text}  ${label.preview}` : label.text
 }
 
 interface ConnectorCall {

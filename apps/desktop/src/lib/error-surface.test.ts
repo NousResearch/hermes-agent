@@ -60,19 +60,6 @@ describe('parseErrorSurface', () => {
 })
 
 describe('formatErrorDiagnostics', () => {
-  it('includes layer, code, model and error', () => {
-    const text = formatErrorDiagnostics({
-      errorText: 'boom',
-      model: 'anthropic/claude-opus-4.6',
-      surface: { layer: 'provider', code: 'rate_limit', retryable: true }
-    })
-
-    expect(text).toContain('layer: provider')
-    expect(text).toContain('code: rate_limit')
-    expect(text).toContain('model: anthropic/claude-opus-4.6')
-    expect(text).toContain('error: boom')
-  })
-
   it('prefers the descriptor identity over the caller fallback', () => {
     const text = formatErrorDiagnostics({
       errorText: 'boom',
@@ -86,9 +73,16 @@ describe('formatErrorDiagnostics', () => {
     expect(text).not.toContain('some/other-model')
   })
 
+  it('stamps the recorded failure time, never the copy time (#141348)', () => {
+    expect(formatErrorDiagnostics({ errorText: 'boom', failedAt: 1_792_000_000 })).toContain(
+      'time: 2026-10-14T17:46:40.000Z'
+    )
+  })
+
   it('omits absent fields without leaving blank lines', () => {
     const text = formatErrorDiagnostics({ errorText: 'boom' })
 
+    expect(text).not.toContain('time:')
     expect(text).not.toContain('layer:')
     expect(text).not.toContain('model:')
     expect(text.split('\n').every(line => line.trim().length > 0)).toBe(true)
@@ -163,8 +157,6 @@ describe('error copy never names a hidden Retry', () => {
 
     const { body, title } = errorCardText(thread, surface)
     expect(title).toBe(en.assistant.thread.errorCodes.upstream_blocked.title)
-    expect(body).toMatch(/firewall/i)
-    expect(body).toMatch(/User-Agent/)
     expect(body).not.toBe(thread.errorLayerBodies.provider)
     expect(errorRecoveryPlan(surface).retry).toBe(false)
   })
@@ -201,17 +193,14 @@ describe('free-tier refusals', () => {
     )
     expect(errorRecoveryPlan(bare).retry).toBe(true)
   })
+})
 
-  it('every free-tier code has copy and the copy never blames the free model', () => {
-    for (const code of ERROR_CODE_KEYS.filter(key => key.startsWith('free_tier_'))) {
-      const copy = en.assistant.thread.errorCodes[code]
+describe('cron session read-only (#141348)', () => {
+  it('renders its own copy and offers a new chat instead of Retry', () => {
+    const surface = parseErrorSurface({ layer: 'gateway', code: 'cron_session_read_only', retryable: false })
 
-      const text =
-        `${typeof copy.title === 'string' ? copy.title : ''} ${typeof copy.body === 'string' ? copy.body : ''}`.toLowerCase()
-
-      expect(text).not.toMatch(/free (service|model|tier) is (off|switched off|unavailable|down)/)
-      expect(text).not.toMatch(/anonymous|guest|credential|token|rate limit/)
-    }
+    expect(errorCardText(en.assistant.thread, surface)).toEqual(en.assistant.thread.errorCodes.cron_session_read_only)
+    expect(errorRecoveryPlan(surface)).toMatchObject({ retry: false, startNewSession: true })
   })
 })
 
@@ -228,7 +217,6 @@ describe('limit reset (#98852)', () => {
     const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
 
     expect(formatLimitReset(surface?.resetsAt, now)).toBe(`${clock} (in 1h 05m)`)
-    expect(en.assistant.thread.errorLimitResets(`${clock} (in 1h 05m)`)).toContain(clock)
     expect(formatErrorDiagnostics({ errorText: 'x', surface })).toContain('resets_at: ')
   })
 

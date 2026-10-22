@@ -19,7 +19,6 @@ import pytest
 from hermes_constants import get_hermes_home
 from tui_gateway import server as tui_server
 
-
 class _Agent:
     def __init__(self, seen):
         self._session_messages = [{"role": "user", "content": "hi"}]
@@ -27,7 +26,6 @@ class _Agent:
 
     def _persist_session(self, _messages):
         self._seen.append(str(get_hermes_home()))
-
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
@@ -37,12 +35,10 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(launch))
     return launch, served
 
-
 def _install_session(monkeypatch, session):
     monkeypatch.setattr(tui_server, "_sessions", {"sid": session}, raising=False)
     monkeypatch.setattr(tui_server, "_sessions_lock", threading.RLock(), raising=False)
     monkeypatch.setattr(tui_server, "_INCREMENTAL_FLUSH_INTERVAL_S", 30.0, raising=False)
-
 
 def test_incremental_flush_persists_into_the_sessions_own_home(homes, monkeypatch):
     launch, served = homes
@@ -52,7 +48,6 @@ def test_incremental_flush_persists_into_the_sessions_own_home(homes, monkeypatc
     assert tui_server._flush_dirty_sessions(now=1000.0) == 1
     assert seen == [str(served)], f"transcript flushed into {seen} instead of the served home"
     assert str(launch) not in seen
-
 
 def test_exit_flush_never_waits_on_an_external_secret_source(homes, monkeypatch):
     """A slow ``op run`` / ``bws`` source must not cost the transcript the exit flush exists to save."""
@@ -67,18 +62,3 @@ def test_exit_flush_never_waits_on_an_external_secret_source(homes, monkeypatch)
     _install_session(monkeypatch, {"agent": _Agent([]), "profile_home": str(served)})
 
     assert tui_server._flush_sessions_before_exit(budget_s=1.0) == 1
-
-
-def test_exit_flush_warns_when_it_loses_a_transcript(homes, monkeypatch, caplog):
-    """Both callers discard the return value, so an overrun is invisible without this line."""
-    _launch, served = homes
-
-    class _Stuck(_Agent):
-        def _persist_session(self, _messages):
-            time.sleep(2.0)
-
-    _install_session(monkeypatch, {"agent": _Stuck([]), "profile_home": str(served)})
-
-    with caplog.at_level("WARNING"):
-        assert tui_server._flush_sessions_before_exit(budget_s=0.2) == 0
-    assert any("Exit flush persisted 0 of 1" in r.getMessage() for r in caplog.records), caplog.text

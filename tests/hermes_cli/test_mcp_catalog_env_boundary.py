@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 from fastapi.testclient import TestClient
 
 from hermes_cli.web_server import _SESSION_TOKEN, app
@@ -65,7 +65,7 @@ def test_catalog_rejects_undeclared_key_before_any_write_or_install(
     catalog_env: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    import hermes_cli.mcp_catalog as mcp_catalog
+    from hermes_cli import mcp_catalog
 
     installs: list[str] = []
     monkeypatch.setattr(
@@ -101,7 +101,7 @@ def test_catalog_cannot_declare_reserved_control_key(
     catalog_env: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    import hermes_cli.mcp_catalog as mcp_catalog
+    from hermes_cli import mcp_catalog
 
     catalog_root = Path(os.environ["HERMES_OPTIONAL_MCPS"])
     manifest_path = catalog_root / "demo" / "manifest.yaml"
@@ -142,7 +142,7 @@ def test_catalog_accepts_declared_credential(
     catalog_env: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    import hermes_cli.mcp_config as mcp_config
+    from hermes_cli import mcp_config
     from agent.secret_scope import get_secret
     from tools.connectors.mcp import _CatalogBackend
 
@@ -175,7 +175,7 @@ def test_catalog_non_secret_env_never_lands_in_env_file(
 ):
     """Non-secret declared env vars (e.g. a base URL) are not written to .env:
     install_entry inlines them into the server config instead."""
-    import hermes_cli.mcp_catalog as mcp_catalog
+    from hermes_cli import mcp_catalog
 
     catalog_root = Path(os.environ["HERMES_OPTIONAL_MCPS"])
     manifest_path = catalog_root / "demo" / "manifest.yaml"
@@ -329,7 +329,7 @@ def test_connection_card_install_keeps_env_file_secrets_only(
 ):
     """The connector-card backend (Desktop/TUI/CLI setup card) makes the same secrets-only split
     as the terminal install: a declared non-secret lands in the server block, never in .env."""
-    import hermes_cli.mcp_config as mcp_config
+    from hermes_cli import mcp_config
     from tools.connectors.mcp import _CatalogBackend
 
     catalog_root = Path(os.environ["HERMES_OPTIONAL_MCPS"])

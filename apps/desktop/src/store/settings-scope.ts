@@ -52,9 +52,8 @@ export const $settingsScopeEditsNonDefault = computed([$settingsScopeProfile, $p
 // Send the concrete key the pages render. Only a name with no profile
 // directory behind it (`custom`, a HERMES_HOME outside profiles/) stays
 // `undefined`, where the ambient path is the only correct answer.
-export const $settingsRequestProfile = computed(
-  $settingsScopeProfile,
-  (selected): string | undefined => (selected === 'custom' ? undefined : selected)
+export const $settingsRequestProfile = computed($settingsScopeProfile, (selected): string | undefined =>
+  selected === 'custom' ? undefined : selected
 )
 
 // Select the profile the settings pages should edit. Picking the app's active

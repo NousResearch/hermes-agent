@@ -39,7 +39,7 @@ def test_config_show_no_managed_scope_silent(tmp_path, monkeypatch, capsys):
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
     managed_scope.invalidate_managed_cache()
-    from hermes_cli.config import show_config
+    from hermes_cli.config_show import show_config
 
     show_config()
     out = capsys.readouterr().out.lower()

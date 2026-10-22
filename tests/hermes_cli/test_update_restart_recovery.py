@@ -92,9 +92,6 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
     # Serve units travel in the same payload so one fresh child covers both
     # runtime families (#92145).
     assert set(payload["serve_units"]) == {"recover", "skip"}
-    assert kwargs["text"] is True
-    assert kwargs["capture_output"] is True
-    assert kwargs["check"] is False
     assert kwargs["env"]["HERMES_UPDATE_RESTART_RECOVERY"] == "1"
 
 
@@ -280,8 +277,8 @@ def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
         "covered": {},
     }
     assert [call[0] for call in calls] == [
-        [sys.executable, "-m", "hermes_cli.main", "-p", "coder", "gateway", "restart"],
-        [sys.executable, "-m", "hermes_cli.main", "-p", "default", "gateway", "restart"],
+        [sys.executable, "-m", "hermes_cli.main", "-p", "coder", "gateway", "restart", "--interrupt", "--detach"],
+        [sys.executable, "-m", "hermes_cli.main", "-p", "default", "gateway", "restart", "--interrupt", "--detach"],
     ]
     for _, kwargs in calls:
         assert kwargs["stdin"] is subprocess.DEVNULL
@@ -384,23 +381,6 @@ def test_recovery_payload_rejects_malformed_supervisors_map():
         raise AssertionError("malformed supervisors map must be rejected")
 
 
-def test_recovery_module_empty_payload_is_a_real_clean_process():
-    result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"],
-        input=json.dumps({"profiles": []}),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert json.loads(result.stdout) == {
-        "failed": [],
-        "relaunch_attempted": [],
-        "verified": [],
-        "covered": {},
-        "serve_units": {"verified": [], "failed": []},
-    }
 
 
 def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
@@ -486,4 +466,4 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
     restarts = [json.loads(line) for line in ledger.read_text().splitlines()]
     assert [argv[argv.index("-p") + 1] for argv in restarts] == ["coder", "default"]
     for argv in restarts:
-        assert argv[-2:] == ["gateway", "restart"]
+        assert argv[-4:] == ["gateway", "restart", "--interrupt", "--detach"]

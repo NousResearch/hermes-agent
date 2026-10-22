@@ -71,8 +71,18 @@ def owned(monkeypatch):
 
 
 def _rpc(client, method, **params):
-    return server.dispatch({"jsonrpc": "2.0", "id": 7, "method": method, "params": {"session_id": SID, **params}},
-                           client.transport)
+    before = len(client.frames)
+    response = server.dispatch({"jsonrpc": "2.0", "id": 7, "method": method,
+                                "params": {"owner": {"type": "session", "session_id": SID}, **params}}, client.transport)
+    if response is not None:
+        return response
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        replies = [frame for frame in list(client.frames)[before:] if frame.get("id") == 7]
+        if replies:
+            return replies[-1]
+        time.sleep(0.01)
+    raise AssertionError("no reply")
 
 
 def _connect_rpc(client, **params):
@@ -181,6 +191,9 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     mints = []
 
     class Client:
+        def __init__(self, **_):
+            pass
+
         def connections(self, names, *, reinitiate=False, **_):
             mints.append((tuple(names), reinitiate))
             return {"results": [{"connector": n, "status": "initiated", "connect_url": f"https://l/{n}/2"} for n in names]}
@@ -211,6 +224,9 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
     operation.transition("notion", dead, actor, detail="vendor: nope")
 
     class Client:
+        def __init__(self, **_):
+            pass
+
         def connections(self, names, *, reinitiate=False, **_):
             return {"results": [{"connector": n, "status": "failed", "status_reason": "vendor: still no"} for n in names]}
 

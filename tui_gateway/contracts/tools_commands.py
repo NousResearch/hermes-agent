@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .registry import method
+from .registry import canonical_method, method
 
 
 class _Open(Result):
@@ -58,10 +58,12 @@ class ProcessStopParams(Params):
 
 class ProcessStopResult(Result):
     killed: int
+    delegations: int = 0
 
 
 method("process.stop", params=ProcessStopParams, result=ProcessStopResult,
-       doc="Kill every background process in the registry (``/stop``), answering the count killed.")
+       doc="``/stop``: on the shared owner, kill the background processes ``session_id`` owns (required); a "
+           "standalone sidecar kills every process it holds. Answers the count killed.")
 
 
 class AgentsListParams(Params):
@@ -107,6 +109,7 @@ class ProcessEntry(_Open):
     notify_on_complete: bool | None = None
     exit_code: int | None = None
     exited_at: float | None = None
+    started_epoch: float | None = None
     completion_reason: str | None = None
     detached: bool | None = None
 
@@ -167,6 +170,17 @@ method("shell.exec", params=ShellExecParams, result=ShellExecResult,
        doc="Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution.")
 
 
+class CanonicalShellExecParams(Params):
+    session_id: str
+    command: str
+    profile: str | None = None
+
+
+canonical_method("shell.exec", params=CanonicalShellExecParams, result=ShellExecResult,
+                 doc="Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in "
+                     "its frozen launch cwd (``gateway/session_shell.py``).")
+
+
 class CliExecParams(Params):
     argv: list[str]
     timeout: int | None = None
@@ -201,6 +215,7 @@ class ArgumentMode(WireEnum):
 class CommandCatalogMeta(Result):
     argument_mode: ArgumentMode | None = None
     desktop: str | None = None
+    desktop_subcommands: list[str] | None = None
 
 
 class CommandCategory(Result):
@@ -222,6 +237,11 @@ class CommandsCatalogResult(Result):
     skills: dict[str, SkillCatalogEntry] = Field(default_factory=dict)
     skill_count: int = 0
     warning: str = ""
+    # Non-empty when plugin command discovery failed: the plugin list is unknown, not empty.
+    plugin_discovery_error: str = ""
+    # Every plugin command (name without ``/`` -> description), also one a display row such as Ink's
+    # ``/logs`` hides from ``categories``: route on this, not on the display list.
+    plugin_commands: dict[str, str] = Field(default_factory=dict)
 
 
 method("commands.catalog", params=CommandsCatalogParams, result=CommandsCatalogResult,
@@ -369,6 +389,9 @@ class RollbackRestoreParams(Params):
     hash: str
     file_path: str | None = None
     profile: str | None = None
+    # A whole-tree restore keeps the user's hand-edits (``CheckpointManager.restore(safe=True)``, as the
+    # gateway text command and the in-process CLI do); ``all`` reverts them too (main's ``--all``).
+    all: bool | None = None
 
 
 class RollbackRestoreResult(_Open):
@@ -450,7 +473,7 @@ class CronJobRow(_Open):
     last_run_at: str | None = None
     last_status: str | None = None
     last_delivery_error: str | None = None
-    last_delivery_unverified: bool | None = None
+    last_delivery_unverified: list[str] | None = None  # unconfirmed ``platform:chat_id[:thread_id]`` targets
     last_fire_error: str | None = None
     last_error: str | None = None
     enabled: bool = True
@@ -513,11 +536,14 @@ class BrowserAction(WireEnum):
     status = "status"
     connect = "connect"
     disconnect = "disconnect"
+    use = "use"
 
 
 class BrowserManageParams(Params):
     action: BrowserAction = BrowserAction.status
     url: str | None = None
+    # ``use`` only: True selects Browser Use mode (browser_exec), False the built-in browser tools.
+    enabled: bool | None = None
     session_id: str | None = None
     profile: str | None = None
 
@@ -526,7 +552,10 @@ class BrowserManageResult(Result):
     connected: bool
     url: str | None = None
     messages: list[str] | None = None
+    # ``status`` / ``use``: whether new agents for this profile get browser_exec.
+    browser_use: bool | None = None
 
 
 method("browser.manage", params=BrowserManageParams, result=BrowserManageResult,
-       doc="Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.")
+       doc="Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode "
+           "(``use``, applies to new sessions); ``messages`` narrate a connect.")

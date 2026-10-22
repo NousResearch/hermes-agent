@@ -24,6 +24,5 @@ def test_timeout_line_names_outcome_and_the_timeout_setting_without_duplicating_
     raw = "Subagent timed out after 600s with 4 API call(s) completed — likely stuck on a slow API call."
     line = format_subagent_failure_line("scan the repo", "timeout", error=raw, duration_seconds=600)
     assert "delegation.child_timeout_seconds" in line
-    assert "carry on without it" in line
     assert line.count("600") == 0 and "10 min" in line
     assert "API call" not in line

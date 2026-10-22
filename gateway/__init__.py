@@ -1,16 +1,27 @@
 """Hermes Gateway - multi-platform messaging integration (sessions, context
 injection, delivery routing, platform-specific toolsets)."""
 
-from .config import GatewayConfig, PlatformConfig, HomeChannel, load_gateway_config
-from .session import (
-    SessionContext,
-    SessionStore,
-    build_session_context_prompt,
-)
-from .delivery import DeliveryRouter, DeliveryTarget
+from importlib import import_module
 
-__all__ = [
-    "GatewayConfig", "PlatformConfig", "HomeChannel", "load_gateway_config",
-    "SessionContext", "SessionStore", "build_session_context_prompt",
-    "DeliveryRouter", "DeliveryTarget",
-]
+# Control/status clients must not initialize config, plugins or user data.
+# The existing package exports remain available when actually requested.
+_EXPORTS = {
+    "GatewayConfig": ".config",
+    "PlatformConfig": ".config",
+    "HomeChannel": ".config",
+    "load_gateway_config": ".config",
+    "SessionContext": ".session",
+    "SessionStore": ".session",
+    "build_session_context_prompt": ".session",
+    "DeliveryRouter": ".delivery",
+    "DeliveryTarget": ".delivery",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(import_module(module, __name__), name)

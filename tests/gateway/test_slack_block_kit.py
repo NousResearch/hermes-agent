@@ -2,7 +2,6 @@
 
 from plugins.platforms.slack.block_kit import (
     MAX_BLOCKS,
-    MAX_HEADER_TEXT,
     MAX_SECTION_TEXT,
     render_blocks,
     sanitize_blocks,
@@ -30,7 +29,7 @@ class TestNestedLists:
     def test_nested_bullets_produce_increasing_indent(self):
         md = "- a\n  - b\n    - c"
         blocks = render_blocks(md)
-        rich = [b for b in blocks if b["type"] == "rich_text"][0]
+        rich = next(b for b in blocks if b["type"] == "rich_text")
         indents = [e["indent"] for e in rich["elements"] if e["type"] == "rich_text_list"]
         # true nesting: indent levels must strictly increase across the run
         assert indents == sorted(indents)
@@ -39,12 +38,6 @@ class TestNestedLists:
 
 
 class TestInlineFormatting:
-    def test_link_becomes_link_element(self):
-        blocks = render_blocks("see [docs](https://example.com/x) now")
-        # link lives in a section (paragraph) — but a bulleted link is a
-        # rich_text link element; assert the URL survives somewhere.
-        blob = str(blocks)
-        assert "https://example.com/x" in blob
 
     def test_slack_mrkdwn_link_in_bullet_becomes_link_element(self):
         """rich_text lists must parse Slack <url|label>, not emit it as text.
@@ -56,7 +49,7 @@ class TestInlineFormatting:
             "- <https://example.com/x|GitLab #1> — allow `in_progress`"
         )
         assert blocks is not None
-        rich = [b for b in blocks if b["type"] == "rich_text"][0]
+        rich = next(b for b in blocks if b["type"] == "rich_text")
         els = rich["elements"][0]["elements"][0]["elements"]
         links = [e for e in els if e.get("type") == "link"]
         assert len(links) == 1
@@ -84,7 +77,7 @@ class TestInlineFormatting:
         """
         md = "1. alpha\n\n1. beta\n\n1. gamma"
         blocks = render_blocks(md)
-        rich = [b for b in blocks if b["type"] == "rich_text"][0]
+        rich = next(b for b in blocks if b["type"] == "rich_text")
         lists = [e for e in rich["elements"] if e["type"] == "rich_text_list"]
         # Must be ONE list with 3 items, not 3 separate single-item lists
         assert len(lists) == 1

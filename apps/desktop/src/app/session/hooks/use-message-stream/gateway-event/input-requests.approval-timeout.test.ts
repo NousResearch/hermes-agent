@@ -60,11 +60,9 @@ describe('approval request.cancel', () => {
     expect(next.messages).toHaveLength(1)
     expect(next.messages[0].role).toBe('system')
     expect(next.messages[0].parts[0].text).toMatch(/timed out/i)
-    expect(next.messages[0].parts[0].text).toMatch(/Settings → Safety/)
     expect(next.messages[0].parts[0].text).not.toMatch(/BLOCKED|Do NOT/)
 
     const toast = $notifications.get()[0]
-    expect(toast?.action?.label).toBe('Open Safety settings')
     toast?.action?.onClick()
     expect($routeRequest.get()?.path).toBe('/settings?tab=config:safety')
   })

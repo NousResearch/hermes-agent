@@ -13,7 +13,7 @@ import functools
 import json
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -30,12 +30,30 @@ def _state_file(name: str) -> Path:
 
 
 def is_safe_path(path: Path) -> bool:
-    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*`` (rejects /mnt/c etc.)."""
-    with contextlib.suppress(ValueError, OSError):
-        path.resolve().relative_to(get_hermes_home())
+    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*``.
+
+    Rejects Windows mounts (``/mnt/c`` etc.) and any system directory.
+    """
+    hermes_home = get_hermes_home()
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        return False
+    try:
+        resolved.relative_to(hermes_home)
         return True
-    parts = path.parts
-    return len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-")
+    except ValueError:
+        pass
+
+    # Allow /tmp/hermes-* explicitly. Compare resolved roots rather than raw
+    # path parts because macOS resolves /tmp to /private/tmp.
+    try:
+        # Deliberate /tmp alias detection (#98854): we resolve the POSIX root
+        # itself so the same directory matches under /private/tmp.
+        relative_tmp = resolved.relative_to(Path("/tmp").resolve())  # no-tmp: ok — alias detection, not a scratch path
+    except (ValueError, OSError):
+        return False
+    return bool(relative_tmp.parts and relative_tmp.parts[0].startswith("hermes-"))
 
 
 def _log(message: str) -> None:
@@ -43,30 +61,34 @@ def _log(message: str) -> None:
     with contextlib.suppress(OSError):
         log_file = _state_file("cleanup.log")
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
 
 
-def load_tracked() -> List[Dict[str, Any]]:
+def load_tracked() -> list[dict[str, Any]]:
     """Load tracked.json.  Restores from ``.bak`` on corruption."""
     tf = _state_file("tracked.json")
     tf.parent.mkdir(parents=True, exist_ok=True)
     if not tf.exists():
         return []
-    with contextlib.suppress(ValueError):
-        return json.loads(tf.read_text(encoding="utf-8"))
-    bak = tf.with_suffix(".json.bak")
-    if bak.exists():
-        with contextlib.suppress(Exception):
-            data = json.loads(bak.read_text(encoding="utf-8"))
-            _log("WARN: tracked.json corrupted — restored from .bak")
-            return data
-    _log("WARN: tracked.json corrupted, no backup — starting fresh")
-    return []
+
+    try:
+        return json.loads(tf.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, ValueError):
+        bak = tf.with_suffix(".json.bak")
+        if bak.exists():
+            try:
+                data = json.loads(bak.read_text(encoding="utf-8-sig"))
+                _log("WARN: tracked.json corrupted — restored from .bak")
+                return data
+            except Exception:
+                pass
+        _log("WARN: tracked.json corrupted, no backup — starting fresh")
+        return []
 
 
-def save_tracked(tracked: List[Dict[str, Any]]) -> None:
+def save_tracked(tracked: list[dict[str, Any]]) -> None:
     """Atomic write: ``.tmp`` → backup old → rename."""
     tf = _state_file("tracked.json")
     tf.parent.mkdir(parents=True, exist_ok=True)
@@ -150,7 +172,13 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     if category not in ALLOWED_CATEGORIES:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
-    path = Path(path_str).resolve()
+
+    try:
+        path = Path(path_str).resolve()
+    except (OSError, RuntimeError):
+        _log(f"REJECT: {path_str} (could not resolve path)")
+        return False
+
     if not path.exists():
         _log(f"SKIP: {path} (does not exist)")
         return False
@@ -161,7 +189,7 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     tracked = load_tracked()
     if any(item["path"] == str(path) for item in tracked):
         return False
-    tracked.append({"path": str(path), "timestamp": datetime.now(timezone.utc).isoformat(),
+    tracked.append({"path": str(path), "timestamp": datetime.now(UTC).isoformat(),
                     "category": category, "size": size})
     save_tracked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")
@@ -182,7 +210,7 @@ def forget(path_str: str) -> int:
     return removed
 
 
-def _live_items(tracked: List[Dict], now: datetime, *, log_stale: bool = False) -> Iterator[Tuple[Dict, Path, int]]:
+def _live_items(tracked: list[dict], now: datetime, *, log_stale: bool = False) -> Iterator[tuple[dict, Path, int]]:
     """Yield ``(item, path, age_days)`` for entries whose path still exists."""
     for item in tracked:
         p = Path(item["path"])
@@ -196,7 +224,7 @@ def _is_auto_delete(cat: str, age: int) -> bool:
     return cat == "test" or (cat == "temp" and age > 7) or (cat == "cron-output" and age > 14)
 
 
-def _prompt_group(item: Dict, age: int) -> Optional[str]:
+def _prompt_group(item: dict, age: int) -> Optional[str]:
     """Prompt-only bucket: ``research`` / ``chrome`` / ``large`` or None."""
     cat = item["category"]
     if cat == "research" and age > 30:
@@ -206,7 +234,7 @@ def _prompt_group(item: Dict, age: int) -> Optional[str]:
     return "large" if item["size"] > _LARGE_FILE_BYTES else None
 
 
-def _delete_item(item: Dict) -> Optional[str]:
+def _delete_item(item: dict) -> Optional[str]:
     """Delete a tracked file/dir and audit-log it. Returns an error string on OSError, else None."""
     p = Path(item["path"])
     try:
@@ -226,10 +254,10 @@ def _delete_item(item: Dict) -> Optional[str]:
 _STALE_SKIP_NOTE = {"cron-output": "", "test": " — under protected tree"}
 
 
-def dry_run() -> Tuple[List[Dict], List[Dict]]:
+def dry_run() -> tuple[list[dict], list[dict]]:
     """Return (auto_delete_list, needs_prompt_list) without touching files."""
     auto, prompt = [], []
-    for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc)):
+    for item, p, age in _live_items(load_tracked(), datetime.now(UTC)):
         cat = item["category"]
         # Stale cron-output entries and protected dirs are skipped by quick(); omit them here too.
         if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
@@ -241,12 +269,12 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     return auto, prompt
 
 
-def quick() -> Dict[str, Any]:
+def quick() -> dict[str, Any]:
     """Safe deterministic cleanup — no prompts. Returns ``{deleted, empty_dirs, freed, errors}``."""
     deleted = freed = 0
-    new_tracked: List[Dict] = []
-    errors: List[str] = []
-    for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc), log_stale=True):
+    new_tracked: list[dict] = []
+    errors: list[str] = []
+    for item, p, age in _live_items(load_tracked(), datetime.now(UTC), log_stale=True):
         cat = item["category"]
         if cat in _STALE_SKIP_NOTE and (re_cat := guess_category(p)) != cat:
             # Misclassified stale entry — drop it rather than delete the file.
@@ -275,7 +303,7 @@ def quick() -> Dict[str, Any]:
     return {"deleted": deleted, "empty_dirs": empty_removed, "freed": freed, "errors": errors}
 
 
-def _subdirs(dirpath: Path, exclude: frozenset) -> List[Path]:
+def _subdirs(dirpath: Path, exclude: frozenset) -> list[Path]:
     try:
         return [c for c in dirpath.iterdir() if c.is_dir() and not c.is_symlink() and c.name not in exclude]
     except OSError:
@@ -287,7 +315,7 @@ def _sweep_empty_dirs(hermes_home: Path) -> int:
     rglob over a checkout+venv under HERMES_HOME can stall the gateway loop for minutes).
     Iterative post-order so parents emptied by child removal are caught."""
     removed = 0
-    stack: List[Tuple[Path, bool]] = [
+    stack: list[tuple[Path, bool]] = [
         (top, False) for top in _subdirs(hermes_home, _EMPTY_DIR_PROTECTED_TOP_LEVEL | _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
     while stack:
         dirpath, visited = stack.pop()
@@ -303,10 +331,10 @@ def _sweep_empty_dirs(hermes_home: Path) -> int:
     return removed
 
 
-def status() -> Dict[str, Any]:
+def status() -> dict[str, Any]:
     """Return per-category breakdown and top 10 largest tracked files."""
     tracked = load_tracked()
-    cats: Dict[str, Dict] = {}
+    cats: dict[str, dict] = {}
     for item in tracked:
         c = cats.setdefault(item["category"], {"count": 0, "size": 0})
         c["count"] += 1
@@ -316,7 +344,7 @@ def status() -> Dict[str, Any]:
     return {"categories": cats, "top10": existing[:10], "total_tracked": len(tracked)}
 
 
-def format_status(s: Dict[str, Any]) -> str:
+def format_status(s: dict[str, Any]) -> str:
     """Human-readable status string (for slash command output)."""
     lines = [f"{'Category':<20} {'Files':>6}  {'Size':>10}", "-" * 40]
     cats = s["categories"]
@@ -336,18 +364,46 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
-def _inside_git_worktree(path: Path) -> bool:
-    """True if *path* sits inside a Git worktree/checkout: a ``.git`` entry (a directory in a
-    normal checkout, a pointer FILE in a linked worktree) exists anywhere on the directory chain.
-    Files there are Git-owned — a ``test_*`` file in a worktree is typically a committed
-    regression test, not session scratch (#115295).
+def _git_tracks(path: Path) -> bool:
+    """True when the git repo enclosing *path* (at any depth) tracks it.
 
-    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for in-home paths: a home kept
-    in a dotfiles repo (``~/.git``) would otherwise make every scratch file look Git-owned."""
-    parents = list(path.resolve().parents)
+    Asked per candidate: ``guess_category`` only reaches this for ``test_*``/``tmp_*``
+    names, so one ``ls-files --error-unmatch`` is cheap, needs no cache that could outlive
+    the index (a file committed after first classification is seen immediately), and covers
+    both a HERMES_HOME that IS a checkout and one nested in an enclosing repo (a ``~/.git``
+    dotfiles repo tracking ``~/.hermes/scripts/test_x.py``). Unlike a bare ``.git`` probe
+    above HERMES_HOME, an exact tracked check cannot make untracked scratch look Git-owned.
+    ``:(literal)`` stops git globbing the name (``test_[1].py`` must not match ``test_1.py``).
+    Git missing / not a repo / file untracked all mean "not tracked".
+    """
+    from hermes_cli.source_check import _git_ok
+
+    return _git_ok(["-C", str(path.parent), "ls-files", "--error-unmatch", "--",
+                    ":(literal)" + path.name], timeout=5)
+
+
+def _inside_git_worktree(path: Path) -> bool:
+    """True if *path* is Git-owned: a ``.git`` entry (a directory in a normal checkout, a
+    pointer FILE in a linked worktree) exists on the directory chain below HERMES_HOME, or
+    an enclosing repo (HERMES_HOME itself, or one above it) actually TRACKS the file.
+
+    Files whose repo tracks them are Git-owned — a ``test_*`` file in a worktree is typically
+    a committed regression test, not session scratch (#115295).
+
+    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for the parent-chain probe: a
+    home kept in a dotfiles repo (``~/.git``) would otherwise make every scratch file look
+    Git-owned. Git is only asked when a ``.git`` exists at or above HERMES_HOME; otherwise no
+    repo can track the file and the spawn is skipped.
+    """
+    resolved = path.resolve()
+    parents = list(resolved.parents)
+    above: list[Path] = []
     with contextlib.suppress(ValueError):
-        parents = parents[: parents.index(get_hermes_home())]
-    return any((parent / ".git").exists() for parent in parents)
+        i = parents.index(get_hermes_home())
+        parents, above = parents[:i], parents[i:]
+    if any((parent / ".git").exists() for parent in parents):
+        return True
+    return any((parent / ".git").exists() for parent in above) and _git_tracks(resolved)
 
 
 def guess_category(path: Path) -> Optional[str]:

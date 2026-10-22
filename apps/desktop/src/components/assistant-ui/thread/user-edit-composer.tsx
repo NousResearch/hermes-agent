@@ -16,6 +16,7 @@ import {
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
+  ackComposerInsert,
   type ComposerInsertMode,
   focusComposerInput,
   markActiveComposer,
@@ -78,7 +79,9 @@ import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $terminalBackend } from '@/store/session'
-import { isSessionRemote } from '@/store/session-states'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { isSessionRemote, requestForOwnedSession } from '@/store/session-states'
+import { useForcedTextDirection } from '@/store/text-direction'
 import { notifyThreadEditClose } from '@/store/thread-scroll'
 
 interface UserEditComposerProps {
@@ -92,6 +95,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const copy = t.assistant.thread
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
+  const textDirection = useForcedTextDirection()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   // Capture the original draft immediately before the first edit. The runtime
@@ -119,7 +123,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
-  const slash = useSlashCompletions({ gateway })
+  const slash = useSlashCompletions({ gateway, sessionId })
   const emoji = useEmojiCompletions()
 
   // Timers this composer schedules must not outlive it. Every callback below
@@ -186,11 +190,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }, [])
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode) => {
+    (text: string, mode: ComposerInsertMode): boolean => {
       const value = text.trim()
 
       if (!value) {
-        return
+        return false
       }
 
       rememberInitialDraft()
@@ -209,6 +213,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
 
       setFocusRequestId(id => id + 1)
+
+      return true
     },
     [aui, rememberInitialDraft]
   )
@@ -246,9 +252,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target, text }) => {
+    const offInsert = onComposerInsertRequest(({ mode, target, text, token }) => {
       if (target === 'edit') {
-        appendExternalText(text, mode)
+        // Tokened inserts come from the plugin SDK: acknowledge whether the
+        // text landed instead of reporting success unconditionally.
+        ackComposerInsert(token, appendExternalText(text, mode))
       }
     })
 
@@ -455,8 +463,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       const remote = isSessionRemote(sessionId)
 
+      // Staged on the edited session's owner: a bare-profile owner otherwise
+      // rides the ambient socket, which refuses another profile's session.
+      const ambient = ambientRequestFor(gateway)
+
       const requestGateway = <T,>(method: string, params?: Record<string, unknown>) =>
-        gateway.request<T>(method, params)
+        requestForOwnedSession<T>(sessionId, ambient, method, params)
 
       const refs: InlineRefInput[] = []
 
@@ -549,8 +561,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     // In-app drags (project tree / gutter) are workspace-relative paths that
     // resolve on the gateway as-is, so they stay inline refs. OS drops need to
-    // be staged + uploaded first, then their gateway-side ref is inserted.
-    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    // be staged + uploaded first, then their gateway-side ref is inserted —
+    // unless the backend resolves this machine's paths as-is, in which case
+    // the drop keeps its original-path inline ref too (#52427).
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates, {
+      backendCwd: cwd,
+      remote: isSessionRemote(sessionId),
+      terminalBackend: $terminalBackend.get()
+    })
 
     if (insertDroppedRefs(inAppRefs)) {
       triggerHaptic('selection')
@@ -869,6 +887,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               contentEditable
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
+              dir={textDirection}
               onBeforeInput={handleBeforeInput}
               onBlur={() => scheduleTimeout(closeTrigger, 80)}
               onCompositionEnd={event => {

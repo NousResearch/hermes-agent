@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "ci"))
 
-from check_os_marker_fakes import find_unmarked_fakes  # noqa: E402
+from check_os_marker_fakes import find_unmarked_fakes
 
 
 def _write(root: Path, name: str, body: str) -> None:
@@ -18,7 +18,7 @@ def test_unmarked_fake_is_flagged_marked_and_opted_out_are_not(tmp_path):
     _write(tmp_path, "test_fake.py", "def test_x(monkeypatch):\n"
            "    monkeypatch.setattr(gw, 'is_macos', lambda: True)\n"
            "    monkeypatch.setattr(sys, 'platform', 'darwin')\n")
-    _write(tmp_path, "test_marked.py", "import pytest\npytestmark = pytest.mark.macos_only\n"
+    _write(tmp_path, "test_marked.py", "import pytest\npytestmark = pytest.mark.platforms(\"macos\")\n"
            "def test_x(monkeypatch):\n    monkeypatch.setattr(gw, 'is_macos', lambda: True)\n")
     _write(tmp_path, "test_opted.py", "def test_x(monkeypatch):\n"
            "    patch('m.is_macos', return_value=True)  # os-marker: ok — pure data mapping\n")

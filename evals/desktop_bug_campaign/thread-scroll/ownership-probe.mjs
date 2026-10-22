@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 const out=process.env.THREAD_SCROLL_OUTPUT;
 assert.ok(out);
-const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const browser=await chromium.launch({channel:'chromium',executablePath:process.env.AGENT_BROWSER_EXECUTABLE_PATH,headless:true,args:['--no-sandbox']});
 const result={};
 try {
  const page=await browser.newPage({viewport:{width:1200,height:800}});

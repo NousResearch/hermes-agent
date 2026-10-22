@@ -103,6 +103,7 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | Tencent TokenPlan | `tencent-tokenplan` | `TOKENPLAN_API_KEY` |
 | Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
+| Local llama.cpp (managed) | `llamacpp` (aliases `llama.cpp`, `llama-cpp`) | The local model server Hermes manages (Desktop **Settings → Providers → Local models**), no `base_url` needed. If it is not running the entry is skipped — Hermes never sends the local model name to another provider |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 | Mixture of Agents preset | `moa` (`model` = preset name) | A configured MoA preset whose aggregator has credentials — the fallback runs the whole preset (references + aggregator), not the aggregator alone |
@@ -201,7 +202,7 @@ fallback_providers:
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
 | Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
-| Cron jobs | ✔ (cron agents inherit configured fallback providers) |
+| Cron jobs | ✔ (unpinned jobs inherit the configured chain; a job with its own provider/model/base_url never falls back to it) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
 :::tip
@@ -319,6 +320,7 @@ These options apply to `auxiliary:`, `compression:`, and `fallback_providers:` e
 | `"codex"` | Force Codex OAuth | `hermes model` → ChatGPT or Codex Subscription |
 | `"main"` | Use whatever provider the main agent uses (auxiliary tasks only) | Active main provider configured |
 | `"anthropic"` | Force Anthropic native | `ANTHROPIC_API_KEY` or Claude Code credentials |
+| `"llamacpp"` | Force the managed local llama.cpp server | Local model server running; when it is off, the local model name is never sent to another provider |
 
 ### Direct Endpoint Override
 
@@ -427,7 +429,7 @@ See [Subagent Delegation](./delegation.md) for full configuration details.
 
 ## Cron Job Providers
 
-Cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`) when they create an agent. To use a different primary provider for a cron job, configure `provider` and `model` overrides on the cron job itself:
+Unpinned cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`), both when the primary's credentials fail to resolve before the run and when the provider errors mid-run. A job pinned to its own provider, model or endpoint does **not**: if that route fails, the run fails (same-provider [credential pool](../configuration.md#credential-pool-strategies) rotation still applies). This matches how a pinned [delegation](./delegation.md) child behaves. Pin a cron job with `provider` and `model` overrides on the job itself:
 
 ```python
 cronjob(
@@ -439,7 +441,7 @@ cronjob(
 )
 ```
 
-See [Scheduled Tasks (Cron)](./cron.md) for full configuration details.
+To keep fallback for a job, leave it unpinned and choose its model with `cron.model` / `cron.model_provider` instead. See [Scheduled Tasks (Cron)](./cron.md#provider-recovery) for details.
 
 ---
 
@@ -458,4 +460,4 @@ See [Scheduled Tasks (Cron)](./cron.md) for full configuration details.
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
 | Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
-| Cron jobs | Inherit the configured `fallback_providers` chain; optional per-job provider override | Per-job `provider` / `model` |
+| Cron jobs | Unpinned jobs inherit the configured `fallback_providers` chain; a job with its own `provider` / `model` / `base_url` never falls back to it | Per-job `provider` / `model`, or `cron.model` / `cron.model_provider` |

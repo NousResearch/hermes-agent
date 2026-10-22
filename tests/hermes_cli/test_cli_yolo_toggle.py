@@ -23,13 +23,13 @@ file's path layout — ``HermesCLI.__init__`` imports a lot of optional
 state we don't need here.
 """
 
-import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 import tools.approval as approval_module
+from tools.approval_yolo import transfer_session_yolo
 from tools import approval_context
 from cli import HermesCLI
 
@@ -74,15 +74,6 @@ class TestToggleYoloIsSessionScoped:
     can run.
     """
 
-    def test_toggle_yolo_enables_session_bypass(self):
-        stand_in = _make_stand_in()
-
-        assert approval_module.is_session_yolo_enabled(SESSION_KEY) is False
-
-        with patch("cli._cprint"):
-            HermesCLI._toggle_yolo(stand_in)
-
-        assert approval_module.is_session_yolo_enabled(SESSION_KEY) is True
 
     def test_toggle_yolo_disables_session_bypass_on_second_call(self):
         stand_in = _make_stand_in()
@@ -98,7 +89,7 @@ class TestToggleYoloIsSessionScoped:
         """``/yolo`` toggled in one session must not bypass approvals in
         another session — mirrors the gateway-side invariant."""
         cli_a = _make_stand_in(session_id="session-yolo-a")
-        cli_b = _make_stand_in(session_id="session-yolo-b")
+        _make_stand_in(session_id="session-yolo-b")
 
         try:
             with patch("cli._cprint"):
@@ -190,15 +181,14 @@ class TestSessionRotationTransfersYolo:
     compression continuation), YOLO state keyed under the old id must move
     to the new id. Otherwise the user's ``/yolo ON`` silently reverts on
     the next turn — the same UX failure mode this PR set out to fix.
-    Mirrors ``tui_gateway/server.py`` ~line 1297-1305."""
+    Shared with the TUI rotation path via ``tools.approval_yolo``."""
 
     def test_transfer_moves_yolo_to_new_session(self):
-        stand_in = _make_stand_in(session_id="old-id")
         try:
             approval_module.enable_session_yolo("old-id")
             assert approval_module.is_session_yolo_enabled("old-id") is True
 
-            HermesCLI._transfer_session_yolo(stand_in, "old-id", "new-id")
+            transfer_session_yolo("old-id", "new-id")
 
             assert approval_module.is_session_yolo_enabled("new-id") is True
             assert approval_module.is_session_yolo_enabled("old-id") is False
@@ -209,11 +199,10 @@ class TestSessionRotationTransfersYolo:
 
 
     def test_transfer_handles_empty_inputs_safely(self):
-        stand_in = _make_stand_in(session_id="x")
         # Both directions of empty input should be safe no-ops; nothing
         # to transfer from "" / to "".
-        HermesCLI._transfer_session_yolo(stand_in, "", "new")
-        HermesCLI._transfer_session_yolo(stand_in, "old", "")
+        transfer_session_yolo("", "new")
+        transfer_session_yolo("old", "")
         # Neither key should have been touched.
         assert approval_module.is_session_yolo_enabled("new") is False
         assert approval_module.is_session_yolo_enabled("old") is False

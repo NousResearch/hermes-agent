@@ -32,8 +32,8 @@ def _profile_user_agent() -> str:
     (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
     """
     try:
-        from hermes_cli import __version__ as _ver  # lazy: avoid layer cycle at import time
-        return f"hermes-cli/{_ver}"
+        from hermes_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
+        return f"hermes-cli/{get_version_info().base_version}"
     except Exception:
         return "hermes-cli"
 
@@ -51,6 +51,12 @@ class ProviderProfile:
     display_name: str = ""       # e.g. "GMI Cloud" — shown in picker/labels
     description: str = ""        # e.g. "GMI Cloud (multi-model direct API)" — picker subtitle
     signup_url: str = ""         # e.g. "https://www.gmicloud.ai/" — shown during setup
+
+    # True when the provider is pre-release / not for public listing. Discovery surfaces (provider
+    # pickers, the setup provider list, the dashboard accounts tab) skip it unless ``listed()``
+    # says otherwise; resolution by name is untouched, so an explicit ``model.provider`` /
+    # ``hermes auth add <name>`` keeps working.
+    hidden: bool = False
 
     # ── Auth & endpoints ─────────────────────────────────────
     env_vars: tuple = ()
@@ -305,6 +311,18 @@ class ProviderProfile:
         """
         return None
 
+    def listed(self) -> bool:
+        """Whether discovery surfaces may offer this provider.
+
+        Every non-``hidden`` profile is listed. A ``hidden`` (pre-release) one surfaces once the user
+        opted in by name (``hermes auth add <name>`` put a row in its credential pool), so the
+        pickers can then offer it. Reads auth.json only: it runs on every picker build.
+        """
+        if not self.hidden:
+            return True
+        from hermes_cli.auth import read_credential_pool  # lazy: providers/ must not import hermes_cli at load
+        return bool(read_credential_pool(self.name))
+
     def create_client(self, **client_kwargs: Any) -> Any | None:
         """Return a provider-specific client, or ``None`` for the standard one.
 
@@ -409,7 +427,9 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
+            from hermes_cli.chat_catalog import chat_catalog_ids
+
+            return chat_catalog_ids(items)
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None

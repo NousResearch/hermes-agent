@@ -6,19 +6,19 @@ print and issue strings to append. No printing inside workers — the caller pri
 
 from __future__ import annotations
 
+from pm import install_hint
 import concurrent.futures
 import errno
 import functools
 import os
 import socket
-import sys
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
+from utils import base_url_host_matches, normalize_proxy_env_vars
 
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
@@ -109,7 +109,7 @@ def _build_apikey_providers_list() -> list:
             if {_normalize_provider(a) for a in (_pp.name, *(_pp.aliases or ()))} & _dedicated_canonical:
                 continue
             # Key vars vs base-URL vars: the first found value goes out as Authorization: Bearer, never a URL.
-            _is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
+            _is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")
             _key_vars = tuple(v for v in _pp.env_vars if not _is_url(v))
             if not _key_vars:
                 continue
@@ -279,8 +279,10 @@ def _probe_bedrock() -> ProbeResult:
         n = len(client.list_foundation_models().get("modelSummaries", []))
         return _row(name, "ok", f"({auth_var}, {region}, {n} models)", label=label)
     except ImportError:
-        pip = f"{sys.executable} -m pip install boto3"
-        return _row(name, "warn", f"(boto3 not installed — {pip})", [f"Install boto3 for Bedrock: {pip}"], label=label)
+        hint = ("From the Hermes environment, run: "
+                f"{install_hint('bedrock')}. "
+                "Then restart Hermes.")
+        return _row(name, "warn", "(boto3 not installed)", [hint], label=label)
     except Exception as e:
         err_name = type(e).__name__
         return _row(name, "warn", f"({err_name}: {e})", [f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"], label=label)
@@ -311,7 +313,9 @@ def _probe_azure_entra() -> ProbeResult:
     except Exception as exc:
         return _row(name, "warn", f"(adapter import failed: {exc})", [f"Azure Foundry adapter import failed: {exc}"], label=label)
     if not has_azure_identity_installed():
-        return _row(name, "warn", "(azure-identity not installed)", [f"Install azure-identity: {sys.executable} -m pip install azure-identity"], label=label)
+        return _row(name, "warn", "(azure-identity not installed)", ["From the Hermes environment, run: "
+                     f"{install_hint('azure-identity')}. "
+                     "Then restart Hermes."], label=label)
     entra_cfg = model_cfg.get("entra") or {}
     scope = (str(entra_cfg.get("scope") or "").strip() if isinstance(entra_cfg, dict) else "") or SCOPE_AI_AZURE_DEFAULT
     info = describe_active_credential(config=EntraIdentityConfig(scope=scope), timeout_seconds=10.0)
@@ -426,6 +430,9 @@ def run_probes(probes: list) -> list:
     """
     # Disable boto3's EC2 instance-metadata probe (169.254.169.254, multi-second timeout off-EC2). Set on the
     # parent thread before submitting so it never races a worker; has_aws_credentials() already gates on real creds.
+    normalize_proxy_env_vars()  # a bracketed-IPv6 NO_PROXY entry ([::1], Clash Verge/mihomo) makes every bare
+    # trust_env client a probe builds raise InvalidURL at construction (#118159) — sanitize once, before any
+    # worker runs, so no probe ever reports "(Invalid port: :1])" as provider downtime.
     _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
     os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
     try:

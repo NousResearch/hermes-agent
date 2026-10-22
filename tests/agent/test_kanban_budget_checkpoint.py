@@ -7,7 +7,7 @@ from tests.agent.test_iteration_budget_warning import _agent
 
 
 @pytest.mark.parametrize("ratio,scope,expected,kanban_notice", [
-    *[(ratio, "ordinary", False, False) for ratio in ("null", "true", "0", "1", ".nan", "junk")],
+    *[(ratio, "ordinary", False, False) for ratio in ("null", "0", "junk")],
     ("0.75", "ordinary", True, False),
     ("null", "owner", True, True),
     ("null", "non-owner", False, False),

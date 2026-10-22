@@ -1,4 +1,4 @@
-"""Run a child process while prefixing each stderr line with a timestamp."""
+"""Run a child process while prefixing each stdout and stderr line with a timestamp."""
 
 from __future__ import annotations
 
@@ -8,25 +8,38 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Sequence, TextIO
 
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
+_LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
+# gateway.restart.GATEWAY_FATAL_CONFIG_EXIT_CODE. This wrapper is a launcher boot
+# file: it runs from a source slice and stays stdlib-only.
+_GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 
 _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)")
+# A grandchild that inherited stdout can hold the pipe open after the child exits; the
+# wrapper must still exit with the child's status so launchd KeepAlive sees it.
+_STDOUT_DRAIN_TIMEOUT_S = 5.0
 
 
-def _timestamp() -> str:
-    """Match logging.Formatter's default ``%(asctime)s`` timestamp shape."""
+def timestamp() -> str:
+    """Local time in logging.Formatter's default ``%(asctime)s`` shape, which ``hermes logs --since`` parses."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:23]
 
 
-def _write_timestamped_line(log_file: TextIO, line: str) -> None:
+def stamp_line(line: str) -> str:
+    """*line* with a leading :func:`timestamp` (kept as-is if it already has one) and one ``\\n``."""
     rendered = line.rstrip("\r\n")
-    prefix = "" if _TIMESTAMP_PREFIX.match(rendered) else f"{_timestamp()} "
-    log_file.write(f"{prefix}{rendered}\n")
+    prefix = "" if _TIMESTAMP_PREFIX.match(rendered) else f"{timestamp()} "
+    return f"{prefix}{rendered}\n"
+
+
+def _write_timestamped_line(log_file: TextIO, line: str) -> None:
+    log_file.write(stamp_line(line))
     log_file.flush()
 
 
@@ -39,6 +52,14 @@ def _copy_stderr_with_timestamps(stderr: BinaryIO, log_path: Path) -> None:
     with _open_log(log_path) as log_file:
         for raw_line in iter(stderr.readline, b""):
             _write_timestamped_line(log_file, raw_line.decode("utf-8", errors="replace"))
+
+
+def _copy_stdout_with_timestamps(stdout: BinaryIO) -> None:
+    # fd 1 is the caller's target (launchd appends it to gateway.log, the logging handler's
+    # file), so lines keep their destination and gain the stamp `hermes logs --since` needs.
+    with open(1, "w", encoding="utf-8", buffering=1, closefd=False) as out:
+        for raw_line in iter(stdout.readline, b""):
+            _write_timestamped_line(out, raw_line.decode("utf-8", errors="replace"))
 
 
 def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, object]:
@@ -85,6 +106,24 @@ def _is_hermes_gateway_run_argv(command: Sequence[str]) -> bool:
     return bool(looks_like_gateway_command_line(" ".join(str(part) for part in command)))
 
 
+def _child_launchd_label_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Env vars that carry this wrapper's launchd identity to the grandchild.
+
+    launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on this wrapper (its direct child; an
+    interactive shell has none, the grandchild sees ``XPC_SERVICE_NAME=0``). Re-exporting the
+    label lets the gateway resolve its job without it (the stop-drain cap reading the live
+    ``ExitTimeOut``, the exit-75 restart route, the control-socket supervisor declaration — all
+    via ``gateway.restart.launchd_job_label``). Only ``ai.hermes.*`` labels are exported;
+    app-coalition labels are meaningless as a job identity.
+    """
+    env = os.environ if environ is None else environ
+    for variable in ("XPC_SERVICE_NAME", _LAUNCHD_LABEL_ENV):
+        label = str(env.get(variable, "") or "").strip()
+        if label.startswith("ai.hermes"):
+            return {_LAUNCHD_LABEL_ENV: label}
+    return {}
+
+
 def _prepare_child_command(command: Sequence[str], environ: Mapping[str, str] | None = None) -> list[str]:
     """Return the argv to exec, upgrading stale launchd-wrapped gateway commands.
 
@@ -110,15 +149,15 @@ def _child_returncode_for_supervisor(command: Sequence[str], returncode: int) ->
     """
     if returncode < 0:
         return 128 + abs(returncode)
-    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, map_fatal_config_exit_for_launchd
-
-    if returncode == GATEWAY_FATAL_CONFIG_EXIT_CODE and _is_hermes_gateway_run_argv(command):
-        return map_fatal_config_exit_for_launchd(returncode)
+    if returncode == _GATEWAY_FATAL_CONFIG_EXIT_CODE and _is_hermes_gateway_run_argv(command):
+        return 0
     return returncode
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a command and timestamp each stderr line into a log file.")
+    parser = argparse.ArgumentParser(
+        description="Run a command, timestamp each stderr line into a log file and each stdout line to stdout."
+    )
     parser.add_argument("--error-log", required=True, type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -134,19 +173,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_path: Path = args.error_log
 
     try:
-        proc = subprocess.Popen(_prepare_child_command(args.command), stderr=subprocess.PIPE)
+        proc = subprocess.Popen(
+            _prepare_child_command(args.command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, **_child_launchd_label_env()},
+        )
     except OSError as exc:
         with _open_log(log_path) as log_file:
             _write_timestamped_line(log_file, f"failed to start stderr-timestamped command: {exc}")
         return 127
 
-    assert proc.stderr is not None
+    assert proc.stdout is not None and proc.stderr is not None
+    stdout_pump = threading.Thread(target=_copy_stdout_with_timestamps, args=(proc.stdout,), daemon=True)
+    stdout_pump.start()
     previous_handlers = _install_signal_forwarders(proc)
     try:
         _copy_stderr_with_timestamps(proc.stderr, log_path)
         # Keep forwarding until the child has actually exited: a signal that lands between
         # its stderr EOF and wait() would otherwise kill the wrapper with the default action.
         returncode = proc.wait()
+        stdout_pump.join(_STDOUT_DRAIN_TIMEOUT_S)
     finally:
         proc.stderr.close()
         for signum, handler in previous_handlers.items():

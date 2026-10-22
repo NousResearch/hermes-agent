@@ -24,7 +24,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
+from hermes_cli.local_runtime.binaries import runtimes_root
+from hermes_cli.local_runtime.endpoint import child_query
 from hermes_cli.local_runtime.processes import server_child_env, spawn_server
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ def _stable_api_key() -> str:
     """
     key_path = runtimes_root() / ".api_key"
     with suppress(OSError):
-        existing = key_path.read_text(encoding="utf-8").strip()
+        existing = key_path.read_text(encoding="utf-8-sig").strip()
         if len(existing) >= 16:
             return existing
     key = secrets.token_urlsafe(24)
@@ -116,12 +117,15 @@ class LlamaServerSupervisor:
     # comes back to.
     IDLE_UNLOAD_S = 15 * 60
 
-    def __init__(self, install_dir: Path, models_dir: Path, *,
+    def __init__(self, binary: Path, models_dir: Path, *,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
                  preset_path: Path | None = None):
-        self.install_dir = Path(install_dir)
+        # The exact engine binary (PM store path, backend-selected), handed
+        # in by boot — the supervisor never discovers binaries itself: a
+        # legacy-directory scan could resurrect bytes pm did not pin.
+        self.binary = Path(binary)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
         self.port = port or _stable_port()
@@ -140,6 +144,8 @@ class LlamaServerSupervisor:
         self._watchdog: threading.Thread | None = None
         self._log_handle = None
         self._idle_since: dict[str, float] = {}
+        # Launch budget the preset file was last planned against (bootstrap.refit_idle_presets).
+        self._refit_usable: int | None = None
 
     # ── endpoints ────────────────────────────────────────────
 
@@ -167,7 +173,7 @@ class LlamaServerSupervisor:
     # ── lifecycle ────────────────────────────────────────────
 
     def _spawn(self) -> None:
-        exe = server_binary(self.install_dir)
+        exe = self.binary
         cmd = [
             str(exe),
             "--host", "127.0.0.1",
@@ -218,13 +224,17 @@ class LlamaServerSupervisor:
     def _write_state(self) -> None:
         import os
         import psutil
+        from gateway.status import get_process_start_time
         from utils import atomic_json_write
 
         proc = psutil.Process(self.proc.pid)
+        # create_time stays for runtimes that predate start_time.
         self._state = {"base_url": self.base_url, "api_key": self.api_key,
                        "pid": proc.pid, "create_time": proc.create_time(),
+                       "start_time": get_process_start_time(proc.pid),
                        "executable": proc.exe(), "owner_pid": os.getpid(),
-                       "owner_create_time": psutil.Process().create_time()}
+                       "owner_create_time": psutil.Process().create_time(),
+                       "owner_start_time": get_process_start_time(os.getpid())}
         path = state_path()
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)
@@ -271,7 +281,7 @@ class LlamaServerSupervisor:
                 self._wait_health(120)
                 if self.primary_model:
                     self.ensure_model_ready(self.primary_model)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("llama-server restart failed: %s", exc)
 
     def stop(self) -> None:
@@ -340,8 +350,8 @@ class LlamaServerSupervisor:
         try:
             import psutil
 
-            exe = str(server_binary(self.install_dir))
-        except Exception:  # noqa: BLE001
+            exe = str(self.binary)
+        except Exception:
             return
         own_pid = self.proc.pid if self.proc is not None else None
         for p in psutil.process_iter(["exe", "ppid"]):
@@ -355,13 +365,19 @@ class LlamaServerSupervisor:
 
     # ── model management (router endpoints) ──────────────────
 
-    def models(self) -> dict:
+    def models(self, timeout_s: int = 30) -> dict:
         """{model_id: status_value} from GET /models."""
         return {m["id"]: m.get("status", {}).get("value", "unknown")
-                for m in self._request("/models").get("data", [])}
+                for m in self._request("/models", timeout_s=timeout_s).get("data", [])}
 
     def load_model(self, model_id: str, timeout_s: int = 600) -> None:
         self._request("/models/load", {"model": model_id}, timeout_s=timeout_s)
+
+    def reload_presets(self) -> None:
+        """Have the router re-read the preset file (GET /models?reload=1). It applies new launch
+        flags to models that aren't loaded and unloads any loaded model whose flags changed, so
+        callers rewrite the file only while nothing is loaded."""
+        self._request("/models?reload=1", timeout_s=10)
 
     def unload_model(self, model_id: str) -> None:
         """Free the child's VRAM now (POST /models/unload; bogus name -> 400). Momentary: never
@@ -372,7 +388,7 @@ class LlamaServerSupervisor:
             try:
                 if self.models().get(model_id) not in (*_RESIDENT, "unloading"):
                     return
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return
             time.sleep(0.3)
 
@@ -385,7 +401,7 @@ class LlamaServerSupervisor:
         unloaded: list[str] = []
         try:
             statuses = self.models()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return unloaded
         for model_id, status in statuses.items():
             if status not in _RESIDENT:
@@ -407,7 +423,7 @@ class LlamaServerSupervisor:
                 self._idle_since.pop(model_id, None)
                 unloaded.append(model_id)
                 logger.info("idle-unloaded %s (idle %ds)", model_id, int(now - first_idle))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("idle unload of %s failed: %s", model_id, exc)
         return unloaded
 
@@ -421,7 +437,7 @@ class LlamaServerSupervisor:
             msg = resp["choices"][0]["message"]
             blob = (msg.get("content") or "") + " " + (msg.get("reasoning_content") or "")
             return TOUCH_EXPECT in blob.lower()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("touch generation failed for %s: %s", model_id, exc)
             return False
 
@@ -445,20 +461,26 @@ class LlamaServerSupervisor:
     def _probe_idle(self, model_id: str | None = None) -> bool | None:
         """Tri-state idle probe for the sweeper: True = confirmed idle, False = confirmed
         busy, None = the probe itself failed. The sweeper must never mistake a dead probe
-        for activity — that resets the idle clock and pins the model's VRAM."""
+        for activity — that resets the idle clock and pins the model's VRAM. A model that
+        isn't loaded is idle: the router answers 400 for it (the reads don't autoload)."""
         try:
             loaded = ([model_id] if model_id is not None
                       else [m for m, status in self.models().items() if status in _RESIDENT])
             for mid in loaded:
-                slots = self._request(f"/slots?model={mid}")
+                try:
+                    slots = self._request(f"/slots?{child_query(mid)}")
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 400:
+                        continue
+                    raise
                 if any(s.get("is_processing") for s in slots):
                     return False
-                with self._open(f"/metrics?model={mid}", timeout_s=10, json_type=False) as r:
+                with self._open(f"/metrics?{child_query(mid)}", timeout_s=10, json_type=False) as r:
                     text = r.read().decode()
                 for line in text.splitlines():
                     if (line.startswith("llamacpp:requests_processing")
                             and float(line.split()[-1]) != 0.0):
                         return False
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None

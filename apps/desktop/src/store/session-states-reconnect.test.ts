@@ -9,14 +9,17 @@ import {
   $awaitingResponse,
   $busy,
   $selectedStoredSessionId,
+  $turnStartedAt,
   $unreadFinishedSessionIds
 } from './session'
+import { stampSecondaryProfileOwner } from './session-event-provenance'
 import {
   $attentionSessionIds,
   $sessionStates,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
+  liveSessionScopes,
   publishSessionState,
   reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
@@ -66,6 +69,7 @@ describe('reconcileBusyStatesOnReconnect', () => {
     $selectedStoredSessionId.set(null)
     $activeSessionId.set(null)
     $busy.set(false)
+    $turnStartedAt.set(null)
     $awaitingResponse.set(false)
     setSessionTileDelegate(noDelegate)
   })
@@ -78,6 +82,7 @@ describe('reconcileBusyStatesOnReconnect', () => {
     $selectedStoredSessionId.set(null)
     $activeSessionId.set(null)
     $busy.set(false)
+    $turnStartedAt.set(null)
     $awaitingResponse.set(false)
     setSessionTileDelegate(noDelegate)
   })
@@ -89,6 +94,17 @@ describe('reconcileBusyStatesOnReconnect', () => {
     reconcileBusyStatesOnReconnect()
 
     expect($workingSessionIds.get()).not.toContain('s1')
+  })
+
+  it('retires the clock and live claim when the backend cannot finish a pending bubble', () => {
+    $activeSessionId.set('rt1')
+    publishSessionState('rt1', state({ busy: true, turnStartedAt: 1_000, turnLive: true }))
+    $turnStartedAt.set(1_000)
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($sessionStates.get()['rt1']).toMatchObject({ busy: false, turnStartedAt: null, turnLive: false })
+    expect($turnStartedAt.get()).toBeNull()
   })
 
   it('disarms the stall watchdog with the busy claim', () => {
@@ -109,6 +125,31 @@ describe('reconcileBusyStatesOnReconnect', () => {
 
     expect($workingSessionIds.get()).not.toContain('s1')
     expect($attentionSessionIds.get()).toContain('s1')
+  })
+
+  it('primary reconnect leaves a registry-scoped turn clock alone', () => {
+    $activeSessionId.set('rtA')
+    publishSessionState('rtA', state({ busy: true, storedSessionId: 'sA', turnStartedAt: 1_000, turnLive: true }))
+    recordSessionEventScope({ connectionId: 'connA', profile: 'default', session_id: 'rtA' })
+    $turnStartedAt.set(1_000)
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($sessionStates.get()['rtA']).toMatchObject({ busy: true, turnStartedAt: 1_000, turnLive: true })
+    expect($turnStartedAt.get()).toBe(1_000)
+  })
+
+  it('scoped reconnect retires its own focused turn clock', () => {
+    const scope = registryBackendScopeKey('connA', 'default')
+    $activeSessionId.set('rtA')
+    publishSessionState('rtA', state({ busy: true, storedSessionId: 'sA', turnStartedAt: 1_000, turnLive: true }))
+    recordSessionEventScope({ connectionId: 'connA', profile: 'default', session_id: 'rtA' })
+    $turnStartedAt.set(1_000)
+
+    reconcileBusyStatesOnReconnect(scope)
+
+    expect($sessionStates.get()['rtA']).toMatchObject({ busy: false, turnStartedAt: null, turnLive: false })
+    expect($turnStartedAt.get()).toBeNull()
   })
 
   it('primary reconcile leaves registry-scoped sessions alone', () => {
@@ -139,6 +180,29 @@ describe('reconcileBusyStatesOnReconnect', () => {
     expect($workingSessionIds.get()).not.toContain('sA')
     expect($workingSessionIds.get()).toContain('sB')
     expect($workingSessionIds.get()).toContain('sLocal')
+  })
+
+  it('primary reconcile leaves local-secondary scoped sessions alone, and scoped reconcile clears them (#121865)', () => {
+    publishSessionState('rtJody', state({ busy: true, storedSessionId: 'sJody' }))
+    const event = stampSecondaryProfileOwner({ session_id: 'rtJody' } as never, 'jody')
+    recordSessionEventScope(event)
+    publishSessionState('rtLocalPrimary', state({ busy: true, storedSessionId: 'sLocalPrimary' }))
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($workingSessionIds.get()).toContain('sJody')
+    expect($workingSessionIds.get()).not.toContain('sLocalPrimary')
+
+    reconcileBusyStatesOnReconnect('jody')
+    expect($workingSessionIds.get()).not.toContain('sJody')
+  })
+
+  it('liveSessionScopes includes local secondary profiles for busy sessions (#121865)', () => {
+    publishSessionState('rtJody', state({ busy: true, storedSessionId: 'sJody' }))
+    const event = stampSecondaryProfileOwner({ session_id: 'rtJody' } as never, 'jody')
+    recordSessionEventScope(event)
+
+    expect(liveSessionScopes().has('jody')).toBe(true)
   })
 
   // #93059: the store is a mirror of the wiring cache; downgrading only the

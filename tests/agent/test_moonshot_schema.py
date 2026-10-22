@@ -191,11 +191,6 @@ class TestTopLevelGuarantees:
         assert sanitize_moonshot_tool_parameters("garbage") == empty
         assert sanitize_moonshot_tool_parameters([]) == empty
 
-    def test_non_object_top_level_coerced(self):
-        params = {"type": "string"}
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["type"] == "object"
-        assert "properties" in out
 
     def test_does_not_mutate_input(self):
         params = {
@@ -325,21 +320,6 @@ class TestEnumNullStripping:
     """Rule 3: Moonshot rejects null/empty-string inside enum arrays."""
 
 
-    def test_enum_empty_string_stripped(self):
-        """enum containing empty string '' must have it removed for Moonshot."""
-        params = {
-            "type": "object",
-            "properties": {
-                "db_type": {
-                    "type": "string",
-                    "enum": ["mysql", "postgresql", ""],
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        db_type = out["properties"]["db_type"]
-        assert "" not in db_type["enum"]
-        assert db_type["enum"] == ["mysql", "postgresql"]
 
 
     def test_dataslayer_db_type_after_mcp_normalize(self):

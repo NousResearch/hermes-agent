@@ -9,18 +9,19 @@ import time
 import pytest
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_cron_timeout_closes_the_descendant_snapshot_fork_window(tmp_path):
     probe = Path(__file__).resolve().parents[2] / "evals" / "cron_timeout_fork_race.py"
     result = subprocess.run(
         [sys.executable, str(probe)],
         env={**os.environ, "HOME": str(tmp_path), "HERMES_HOME": str(tmp_path)},
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=35,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("initially_stopped", [False, True])
 def test_refused_hard_kill_preserves_the_targets_original_run_state(monkeypatch, initially_stopped):
     import psutil

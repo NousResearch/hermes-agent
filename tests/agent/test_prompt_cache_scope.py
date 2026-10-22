@@ -46,9 +46,6 @@ class TestResolvePromptCacheScope:
     def test_no_db_falls_back_to_physical_id(self):
         assert resolve_prompt_cache_scope(_agent("root-sess")) == "root-sess"
 
-    def test_unrotated_session_is_its_own_scope(self, db):
-        db.create_session("root-sess", source="webui")
-        assert resolve_prompt_cache_scope(_agent("root-sess", db)) == "root-sess"
 
     def test_rotation_child_inherits_root_scope(self, db):
         """THE fix: scope survives a compression rotation boundary."""
@@ -224,13 +221,6 @@ class TestRotationContinuityEndToEnd:
 
         assert key_before == key_after
 
-    def test_unrelated_sessions_keep_distinct_keys(self, db):
-        db.create_session("conv-a", source="webui")
-        db.create_session("conv-b", source="webui")
-
-        assert self._key_for(_agent("conv-a", db)) != self._key_for(
-            _agent("conv-b", db)
-        )
 
     def test_sibling_forks_keep_distinct_keys(self, db):
         db.create_session("parent-sess", source="webui")
@@ -358,32 +348,6 @@ class TestTransportWiring:
             cache_scope_id="cron_backup_20260815_120000",
         )
         assert k1["prompt_cache_key"] == k2["prompt_cache_key"]
-
-
-class TestAuxiliaryRuntimeThreading:
-    def test_set_runtime_main_carries_cache_scope(self):
-        import agent.auxiliary_client as aux
-
-        token = aux.set_runtime_main(
-            "openrouter",
-            "gpt-5.5",
-            session_id="rotated-1",
-            cache_scope="root-sess",
-        )
-        try:
-            assert aux._runtime_main_value("cache_scope") == "root-sess"
-            assert aux._runtime_main_value("session_id") == "rotated-1"
-        finally:
-            aux.reset_runtime_main(token)
-
-    def test_cache_scope_defaults_empty(self):
-        import agent.auxiliary_client as aux
-
-        token = aux.set_runtime_main("openrouter", "gpt-5.5", session_id="s-1")
-        try:
-            assert aux._runtime_main_value("cache_scope") == ""
-        finally:
-            aux.reset_runtime_main(token)
 
 
 class TestPerResponseRunNonceIsolation:

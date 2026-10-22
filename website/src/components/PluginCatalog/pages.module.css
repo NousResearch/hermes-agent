@@ -70,7 +70,8 @@
   font-size: 0.72rem;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: #a8860a;
+  /* #a8860a was only 3.5:1 on white; dark mode overrides. */
+  color: var(--ifm-color-primary-darker);
   margin: 0 0 0.5rem;
 }
 
@@ -151,6 +152,12 @@
   border-color: rgba(96, 165, 250, 0.45);
   background: rgba(96, 165, 250, 0.12);
   color: rgba(96, 165, 250, 0.95);
+}
+
+[data-theme="light"] .versionPill {
+  border-color: rgba(29, 78, 216, 0.45);
+  background: rgba(29, 78, 216, 0.08);
+  color: var(--plugin-catalog-link);
 }
 
 .starPill {
@@ -338,6 +345,10 @@
   transform: translateY(-1px);
 }
 
+[data-theme="light"] .shot:hover {
+  border-color: rgba(110, 79, 0, 0.45);
+}
+
 .shot img {
   display: block;
   width: 100%;
@@ -506,6 +517,11 @@
   transform: translateY(-1px);
 }
 
+[data-theme="light"] .miniCard:hover {
+  border-color: rgba(110, 79, 0, 0.45);
+  box-shadow: 0 4px 16px rgba(28, 30, 33, 0.06);
+}
+
 .miniAccent {
   position: absolute;
   top: 0;
@@ -549,7 +565,7 @@
 [data-theme="light"] .miniStars,
 [data-theme="light"] .starPill,
 [data-theme="light"] .starPill:hover {
-  color: #8a6d00;
+  color: var(--ifm-color-primary-darker);
 }
 
 .miniDesc {

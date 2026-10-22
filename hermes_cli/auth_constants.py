@@ -121,6 +121,16 @@ ACTUAL_LOCAL_NOAUTH_PLACEHOLDER = "dummy-actual-local-api-key"
 # Upstream rate-limit / usage-quota exhaustion (HTTP 429): transient, re-authenticating cannot resolve
 # it, so it must stay distinct from missing/expired-credential errors.
 CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
+# Resolve-time absence only. Never use for quota, refresh/network failures, or runtime 401/403.
+AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL = "missing_credential"
+
+
+def missing_credential_category_for_state(state: Any) -> Optional[str]:
+    """Classify absence only when no terminal quarantine proves credentials existed before."""
+    marker = state.get("last_auth_error") if isinstance(state, dict) else None
+    if isinstance(marker, dict) and marker.get("relogin_required") is True:
+        return None
+    return AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL
 
 
 class AuthError(RuntimeError):
@@ -129,6 +139,7 @@ class AuthError(RuntimeError):
     def __init__(
         self, message: str, *, provider: str = "", code: Optional[str] = None, relogin_required: bool = False,
         retry_after: Optional[float] = None, retryable: Optional[bool] = None,
+        category: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.provider = provider
@@ -139,11 +150,47 @@ class AuthError(RuntimeError):
         # "retryable, no hint" for transport-shaped errors and as terminal for auth refusals.
         self.retry_after = retry_after
         self.retryable = retryable
+        self.category = category
+
+
+# Resolve-time operator misconfig: fail closed. Do not silently spend a different paid provider.
+NON_FALLBACK_AUTH_CODES = frozenset({
+    "missing_api_key",
+    "no_provider_configured",
+    "invalid_provider",
+    "missing_external_process_cli",
+})
+
+
+def is_configuration_auth_error(error: Exception) -> bool:
+    return (
+        isinstance(error, AuthError)
+        and (
+            getattr(error, "category", None) == AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL
+            or getattr(error, "code", None) in NON_FALLBACK_AUTH_CODES
+        )
+    )
+
+
+def should_try_fallback_on_auth_error(error: Exception) -> bool:
+    return not is_configuration_auth_error(error)
 
 
 def _provider_error_factory(provider: str) -> Callable[..., AuthError]:
-    def factory(message: str, code: Optional[str] = None, *, relogin: bool = False) -> AuthError:
-        return AuthError(message, provider=provider, code=code, relogin_required=relogin)
+    def factory(
+        message: str,
+        code: Optional[str] = None,
+        *,
+        relogin: bool = False,
+        category: Optional[str] = None,
+    ) -> AuthError:
+        return AuthError(
+            message,
+            provider=provider,
+            code=code,
+            relogin_required=relogin,
+            category=category,
+        )
 
     return factory
 

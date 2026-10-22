@@ -86,3 +86,39 @@ def test_copilot_acp_launch_details_are_unchanged(fake_cli, monkeypatch):
     monkeypatch.setenv("COPILOT_CLI_PATH", str(fake_cli / ("custom-acme.exe" if os.name == "nt" else "custom-acme")))
     assert resolve_external_process_provider_credentials("copilot-acp")["command"] == str(fake_cli / ("custom-acme.exe" if os.name == "nt" else "custom-acme"))
     assert resolve_runtime_provider(requested="copilot-acp", target_model="x")["base_url"] == "acp://copilot"
+
+
+@pytest.mark.parametrize("requested", ["acme-acp", "auto"])
+def test_missing_external_process_cli_does_not_resolve_paid_fallback(tmp_path, monkeypatch, requested):
+    """A real missing CLI must surface its install hint before resolving a paid fallback."""
+    from hermes_cli import runtime_provider
+    from hermes_cli.auth import AuthError
+
+    missing_cli = str(tmp_path / "missing-acme-cli")
+    monkeypatch.setenv("ACME_CLI_PATH", missing_cli)
+    config = {
+        "model": {"provider": "acme-acp", "default": "acme-model"},
+        "fallback_providers": [{
+            "provider": "openrouter", "model": "fallback-model", "api_key": "fallback-key",
+        }],
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr(runtime_provider, "load_pool", lambda _provider: None)
+    original_resolve = runtime_provider.resolve_runtime_provider
+    requested_providers = []
+
+    def record_resolve(**kwargs):
+        requested_providers.append(kwargs.get("requested"))
+        return original_resolve(**kwargs)
+
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", record_resolve)
+    with runtime_provider.frozen_runtime_config(config):
+        with pytest.raises(AuthError) as exc_info:
+            runtime_provider.resolve_runtime_with_fallback(
+                config, requested=requested, target_model="acme-model",
+            )
+
+    assert exc_info.value.code == "missing_external_process_cli"
+    assert missing_cli in str(exc_info.value)
+    assert "Install it" in str(exc_info.value)
+    assert requested_providers == [requested]

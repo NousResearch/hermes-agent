@@ -179,3 +179,26 @@ def test_compact_api_payloads_rewrites_the_settled_candidates(backend, scope_a):
     assert store.admissions.compact_api_payloads(admission_ids=ids) == 0
     # CONTRACT: the digest is untouched, so the exact retry still replays.
     assert store.admissions.admit(epoch=epoch, principal_id="api", session_id=SESSION, request_id="chat-2", payload=history)[1] is False
+
+
+def test_history_pages_every_status_of_one_session_after_a_cursor(backend, scope_a):
+    store = backend.open(scope_a)
+    epoch = _seed(store, SESSION, "other")
+    assert store.admissions.last_seq(session_id=SESSION) == 0
+    assert store.admissions.history(session_id=SESSION, after_seq=0, limit=10) == []
+    cancelled = _admit(store, epoch, "cancelled")
+    store.admissions.cancel(epoch=epoch, admission_id=cancelled.admission_id)
+    started = _admit(store, epoch, "started")
+    store.admissions.claim(epoch=epoch, session_id=SESSION)
+    _admit(store, epoch, "elsewhere", session_id="other")
+    queued = _admit(store, epoch, "queued")
+    # CONTRACT: terminal, started and queued rows alike, in seq order, another session's rows ignored.
+    page = store.admissions.history(session_id=SESSION, after_seq=0, limit=2)
+    assert [row.admission_id for row in page] == [cancelled.admission_id, started.admission_id]
+    assert [row.status for row in page] == ["terminal", "started"]
+    # CONTRACT: the cursor is exclusive and the newest row's seq is the session's last_seq.
+    rest = store.admissions.history(session_id=SESSION, after_seq=page[-1].seq, limit=2)
+    assert [row.admission_id for row in rest] == [queued.admission_id]
+    assert store.admissions.last_seq(session_id=SESSION) == queued.seq
+    assert store.admissions.history(session_id=SESSION, after_seq=queued.seq, limit=2) == []
+    assert store.admissions.last_seq(session_id="absent") == 0

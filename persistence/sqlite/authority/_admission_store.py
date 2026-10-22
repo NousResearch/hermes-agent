@@ -9,6 +9,7 @@ values and run at a fixed point inside that transaction; their bodies live in :m
 from __future__ import annotations
 
 import heapq
+import itertools
 import json
 import uuid
 
@@ -128,6 +129,26 @@ def list_session_admissions(holder, *, session_id: str, pending_only: bool = Tru
 
 
 _ADMISSION_STATUSES = ('queued', 'started', 'unknown', 'terminal')  # the table's status CHECK
+def session_admission_history(holder, *, session_id: str, after_seq: int, limit: int) -> list[dict]:
+    """One bounded page of a reconnecting observer's admission history: one ascending stream per status past
+    ``after_seq``, merged by ``seq``, so each walks the (target, status, seq) index with no sort and the page reads at
+    most ``limit`` rows of each. A (target, seq) index would also serve the pending probes, and the planner would pick
+    it there to skip their sort, walking the session's finished history."""
+    sql = 'SELECT * FROM session_admissions WHERE target_session_id=? AND status=? AND seq>? ORDER BY seq LIMIT ?'
+    with holder._read_ctx() as conn:
+        cursors = [conn.execute(sql, (session_id, status, after_seq, limit)) for status in _ADMISSION_STATUSES]
+        try:
+            return [_row(row) for row in itertools.islice(heapq.merge(*cursors, key=lambda row: row['seq']), limit)]
+        finally:
+            for cursor in cursors:
+                cursor.close()
+
+
+def last_session_admission_seq(holder, *, session_id: str) -> int:
+    """The session's highest ``seq``: one index probe per status, so the cost never grows with its history."""
+    with holder._read_ctx() as conn:
+        return max((conn.execute('SELECT MAX(seq) FROM session_admissions WHERE target_session_id=? AND status=?',
+                                 (session_id, status)).fetchone()[0] or 0 for status in _ADMISSION_STATUSES), default=0)
 
 
 def latest_session_admission(holder, *, session_id: str, payload_marker: str) -> dict | None:

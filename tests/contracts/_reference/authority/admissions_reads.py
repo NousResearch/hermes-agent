@@ -74,6 +74,13 @@ class AdmissionReadsMixin:
         row = rows.lookup(self._committed(), admission_id)
         return rows.record(row) if row is not None else None
 
+    def history(self, *, session_id: str, after_seq: int, limit: int) -> list[AdmissionRecord]:
+        selected = [r for r in rows.session_rows(self._committed(), session_id) if r["seq"] > after_seq]
+        return [rows.record(r) for r in selected[:limit]]
+
+    def last_seq(self, *, session_id: str) -> int:
+        return max((r["seq"] for r in rows.session_rows(self._committed(), session_id)), default=0)
+
     def latest_admission(self, *, session_id: str, payload_marker: str) -> AdmissionRecord | None:
         selected = rows.session_rows(self._committed(), session_id)
         row = next((r for r in reversed(selected) if isinstance(r["payload"], dict) and payload_marker in r["payload"]), None)

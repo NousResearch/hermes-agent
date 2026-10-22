@@ -345,6 +345,14 @@ class AdmissionRepository(Protocol):
         """The live row, else its terminal tombstone, else ``None``."""
         ...
 
+    def history(self, *, session_id: str, after_seq: int, limit: int) -> list[AdmissionRecord]:
+        """At most ``limit`` of the session's live rows with ``seq > after_seq``, of any status, in ``seq`` order."""
+        ...
+
+    def last_seq(self, *, session_id: str) -> int:
+        """The highest ``seq`` among the session's live rows, ``0`` when it has none."""
+        ...
+
     def latest_admission(self, *, session_id: str, payload_marker: str) -> AdmissionRecord | None:
         """The session's newest row by ``seq``, of any status, whose decoded payload holds the top-level key ``payload_marker``; ``None`` when no row does."""
         ...

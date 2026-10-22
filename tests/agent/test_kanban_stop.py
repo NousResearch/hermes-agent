@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent.kanban_stop import (
@@ -88,6 +90,51 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
             ],
         },
         {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": "done"},
+    ]
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_nudge_after_rejected_terminal_handoff(clear_kanban_env):
+    """Regression for #136843: rejected handoffs do not end worker ownership."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_rejected")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": json.dumps({"error": "kanban_complete blocked: task is still running"}),
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
+
+
+def test_no_nudge_while_terminal_handoff_is_in_flight(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_in_flight")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }
+            ],
+        }
     ]
     assert session_called_kanban_terminal(messages) is True
     assert build_kanban_stop_nudge(messages=messages) is None

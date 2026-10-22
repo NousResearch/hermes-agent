@@ -17,7 +17,7 @@ import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTest
 import { $activeSessionId } from '@/store/session'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
-import { PendingApprovalStack } from './approval'
+import { ApprovalPlacementContext, PendingApprovalStack } from './approval'
 
 function Runtime({ children }: { children: ReactNode }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({ messages: [], isRunning: false, onNew: async () => {} })
@@ -281,6 +281,24 @@ describe('PendingApprovalStack', () => {
     expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
     expect(screen.queryByText(/Allow this session/)).toBeNull()
     expect(screen.queryByText(/Always allow/)).toBeNull()
+  })
+
+  it.each(['inline', 'floating'] as const)('keeps multi-line approval reasons readable in %s placement', placement => {
+    const description = 'Run command:\npwd\n<em>Show the working directory</em>'
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({ command: '<terminal> (plugin approval rule)', description, requestId: 'apr-1', sessionId: 'sess-1' })
+    render(
+      <ApprovalPlacementContext.Provider value={placement}>
+        <PendingApprovalStack />
+      </ApprovalPlacementContext.Provider>
+    )
+
+    const descriptionElement = screen.getByText(description, { collapseWhitespace: false })
+    expect(descriptionElement.textContent).toBe(description)
+    expect(descriptionElement.querySelector('em')).toBeNull()
+    expect(descriptionElement.className).toContain('whitespace-pre-wrap')
+    expect(descriptionElement.className).toContain('overflow-auto')
+    expect(descriptionElement.className).toContain('max-h-24')
   })
 
   it('renders only choices explicitly supplied by the gateway event', () => {

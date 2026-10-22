@@ -160,6 +160,28 @@ def test_streamed_already_sent_none_recovers_text_for_hooks():
 
 
 @pytest.mark.asyncio
+async def test_non_streamed_stripped_reply_still_completes_loop_tick(loop_env):
+    """Non-streamed delivery returns display text with LOOP_COMPLETE stripped; the post-turn
+    hook must read the raw reply stashed on the event so the loop still finishes."""
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+
+    event = _make_event("wakeup")
+    event._raw_final_response = "CI is done.\nLOOP_COMPLETE"
+    # _handle_message_with_agent returned the stripped display text.
+    final_text = GatewayRunner._final_text_for_post_turn_hooks("CI is done.", event)
+    assert final_text == "CI is done.\nLOOP_COMPLETE"
+
+    await GatewayRunner._post_turn_loop_completion(
+        runner, session_entry=_FakeSessionEntry(), source=None, final_response=final_text,
+    )
+    assert loops.load_loop("sid-gateway-loop").status == "done"
+
+
+@pytest.mark.asyncio
 async def test_streamed_already_sent_completes_loop_tick(loop_env):
     """A streamed wakeup must not leave awaiting_response stuck."""
     runner = _make_runner()
@@ -322,11 +344,12 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
     """A secondary profile with no ACTIVE loop must not get its runtime scope entered on
     every tick (each entry re-parses the profile's config/secrets — the dominant idle-CPU
     cost on multiplex gateways); a profile holding an active loop must still be scanned."""
-    from hermes_state import SessionDB
+    from hermes_state_registry import acquire, release
 
     work_home = tmp_path / "profiles" / "work"
     work_home.mkdir(parents=True)
-    work_db = SessionDB(db_path=work_home / "state.db")
+    # goals' cache requires a registry-owned handle, not a bare SessionDB.
+    work_db = acquire(work_home / "state.db")
     goals._DB_CACHE[str(work_home)] = work_db
 
     scopes = [(None, None), ("work", work_home)]
@@ -405,4 +428,5 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         assert entered == [work_home], (
             f"unavailable store must fall back to the historical scan; got {entered}")
     finally:
-        work_db.close()
+        goals._DB_CACHE.pop(str(work_home), None)
+        release(work_db)

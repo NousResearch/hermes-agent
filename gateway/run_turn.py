@@ -26,7 +26,7 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
-    display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, reply_expected_metadata,
+    display_kind_for_event, display_metadata_for_event, hide_loop_complete_marker, is_machinery_display_kind, reply_expected_metadata,
     silence_allowed,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
@@ -308,7 +308,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
             )
-            response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
+            response = hide_loop_complete_marker(event, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
@@ -1774,7 +1774,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 logger.debug("Stream consumer wait before queued message failed: %s", e)
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
         _delivery_result = response if isinstance(response, dict) else (result or {})
-        first_response = _delivery_result.get("final_response", "")
+        first_response = hide_loop_complete_marker(None, _delivery_result.get("final_response", ""))
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )

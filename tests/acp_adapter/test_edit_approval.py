@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
+from acp_adapter import edit_approval
 from acp_adapter.edit_approval import (
     EditProposal,
     build_acp_edit_tool_call,
@@ -39,6 +41,71 @@ def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
     assert diff.path == "demo.txt"
     assert diff.oldText == "old\n"
     assert diff.newText == "new\n"
+
+
+def test_edit_permission_timeout_latches_only_its_acp_session(monkeypatch):
+    calls = []
+
+    def timed_out(_request_permission, _loop, session_id, **_kwargs):
+        calls.append(session_id)
+        return None, True
+
+    monkeypatch.setattr("acp_adapter.permissions.await_permission", timed_out)
+    proposal = EditProposal("write_file", "demo.txt", None, "new\n", {})
+    first_state = edit_approval.EditApprovalState()
+    first_session = edit_approval.make_acp_edit_approval_requester(
+        lambda **_kwargs: None, None, "s1", state=first_state
+    )
+    second_session = edit_approval.make_acp_edit_approval_requester(
+        lambda **_kwargs: None, None, "s2", state=edit_approval.EditApprovalState()
+    )
+
+    assert first_session(proposal) is False
+    first_session = edit_approval.make_acp_edit_approval_requester(
+        lambda **_kwargs: None, None, "s1", state=first_state
+    )
+    assert first_session(proposal) is False
+    assert second_session(proposal) is False
+    assert calls == ["s1", "s2"]
+
+
+def test_explicit_edit_denial_does_not_latch(monkeypatch):
+    calls = []
+
+    def denied(_request_permission, _loop, session_id, **_kwargs):
+        calls.append(session_id)
+        outcome = SimpleNamespace(outcome="selected", option_id="deny")
+        return SimpleNamespace(outcome=outcome), False
+
+    monkeypatch.setattr("acp_adapter.permissions.await_permission", denied)
+    state = edit_approval.EditApprovalState()
+    requester = edit_approval.make_acp_edit_approval_requester(
+        lambda **_kwargs: None, None, "s1", state=state
+    )
+    proposal = EditProposal("write_file", "demo.txt", None, "new\n", {})
+
+    assert requester(proposal) is False
+    requester = edit_approval.make_acp_edit_approval_requester(
+        lambda **_kwargs: None, None, "s1", state=state
+    )
+    assert requester(proposal) is False
+    assert calls == ["s1", "s1"]
+
+
+def test_timed_out_session_still_honors_local_auto_approval(monkeypatch):
+    def unexpected_permission_request(*_args, **_kwargs):
+        raise AssertionError("an auto-approved edit must not request ACP permission")
+
+    monkeypatch.setattr("acp_adapter.permissions.await_permission", unexpected_permission_request)
+    requester = edit_approval.make_acp_edit_approval_requester(
+        lambda **_kwargs: None,
+        None,
+        "s1",
+        state=edit_approval.EditApprovalState(timed_out=True),
+        auto_approve_getter=lambda: (edit_approval.AUTO_APPROVE_SESSION, None),
+    )
+
+    assert requester(EditProposal("write_file", "demo.txt", None, "new\n", {})) is True
 
 
 

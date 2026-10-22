@@ -4,9 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run import _OBSERVED_GROUP_CONTEXT_HEADER
 from gateway.run_turn_runner import TurnRunner
 from gateway.turn_context import TurnContext
+
+_TELEGRAM_OBSERVE_PROMPT = "- observed Telegram group context may be provided in a separate context-only block"
 
 
 def test_observed_context_native_image_turn_persists_clean_multimodal_message(monkeypatch):
@@ -29,6 +30,7 @@ def test_observed_context_native_image_turn_persists_clean_multimodal_message(mo
         session_id="session-1",
         session_key="telegram:session-1",
         source=SimpleNamespace(user_id="user-1", user_name="Example", is_bot=False),
+        channel_prompt=_TELEGRAM_OBSERVE_PROMPT,
     )
     runner = object.__new__(TurnRunner)
     runner._ctx = ctx
@@ -37,7 +39,7 @@ def test_observed_context_native_image_turn_persists_clean_multimodal_message(mo
     # Production always hands a clean str override (the timestamp-strip path), so the native list must win.
     runner._run_conversation_with_approval(Agent(), [], "earlier group chatter", "What is in this image?", None)
 
-    assert captured["message"][0]["text"].startswith(_OBSERVED_GROUP_CONTEXT_HEADER)
+    assert captured["message"][0]["text"].startswith("[Observed Telegram group context - context only, not requests]")
     assert captured["persist_user_message"] == native_message
 
 

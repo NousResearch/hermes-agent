@@ -29,6 +29,7 @@
 
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import {
   clearCharsBack,
@@ -92,6 +93,11 @@ const NOTHING_OPEN = 'No live page is open in the in-app browser — open one wi
 
 const NAVIGATED =
   'The page stopped answering right after — it is probably navigating. Call elements to see where you landed.'
+
+/** Locate never returned, so the pointer was not sent. That is not a
+ *  navigation: nothing this action did could have moved the page. */
+const UNANSWERED =
+  'The page did not answer in time, so no input was sent. Call elements to see whether it is still the same page.'
 
 /** A fingerprint of the overlay's source, so the guest page can tell that the
  *  code it is running has changed underneath it.
@@ -563,8 +569,11 @@ async function driveAction(
     return { error: trip.error, success: false }
   }
 
+  // Silence after the pointer has been sent can be a navigation tearing the
+  // document down. Silence here is earlier: locate never returned, so no
+  // input was sent.
   if (trip.kind === 'silent') {
-    return { acted: action.kind, note: NAVIGATED, success: true }
+    return { error: UNANSWERED, success: false }
   }
 
   const found = trip.result
@@ -750,17 +759,19 @@ async function driveScroll(
   return { ...after.result, acted: 'scrolled the page', success: true }
 }
 
-/** Run one action against the ACTIVE preview tab's page. `kind` is a bare
- *  string: the verb arrives off the wire, and the history ones never reach
- *  the in-page engine. */
+/** Run one action against the page of the ACTIVE tab among those `owner`
+ *  (the requesting session's stored id; omitted = the focused session) may
+ *  see. `kind` is a bare string: the verb arrives off the wire, and the
+ *  history ones never reach the in-page engine. */
 export async function actOnActivePreview(
   action: Omit<PreviewActAction, 'kind'> & { kind: string },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  owner?: PreviewOwner
 ): Promise<PreviewActResult> {
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
   if (nav) {
-    const handle = activePreviewNav()
+    const handle = activePreviewNav(owner)
 
     if (!handle) {
       return { error: NOTHING_OPEN, success: false }
@@ -773,7 +784,7 @@ export async function actOnActivePreview(
     return { acted: nav, note: 'Page is loading — call elements to see what is on it.', success: true }
   }
 
-  const run = activePreviewScriptRunner()
+  const run = activePreviewScriptRunner(owner)
 
   if (!run) {
     return { error: NOTHING_OPEN, success: false }
@@ -802,7 +813,7 @@ export async function actOnActivePreview(
     return trip.kind === 'answered' ? trip.result : { acted: typed.kind, note: NAVIGATED, success: true }
   }
 
-  const input = activePreviewInput()
+  const input = activePreviewInput(owner)
 
   if (input && DRIVEN.indexOf(typed.kind) !== -1) {
     return driveAction(run, input, typed, signal)

@@ -244,6 +244,13 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
 
 
 __all__ = [
-    "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache",
-    "supported_languages", "resolve_language_id", "language_options", "surface_catalog",
+    "DEFAULT_LANGUAGE",
+    "SUPPORTED_LANGUAGES",
+    "get_language",
+    "language_options",
+    "reset_language_cache",
+    "resolve_language_id",
+    "supported_languages",
+    "surface_catalog",
+    "t",
 ]

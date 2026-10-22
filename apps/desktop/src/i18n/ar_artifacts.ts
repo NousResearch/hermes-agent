@@ -55,6 +55,8 @@ export const arArtifacts = {
   },
   preview: {
     tab: 'معاينة',
+    pin: 'تثبيت في مساحة العمل',
+    unpin: 'إلغاء التثبيت من مساحة العمل',
     closePane: 'إغلاق جزء المعاينة',
     loading: 'جار تحميل المعاينة',
     unavailable: 'المعاينة غير متاحة',

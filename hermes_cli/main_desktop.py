@@ -1,4 +1,4 @@
-"""Desktop (Electron) app: build/stamp, stage-and-swap pack, exe integrity gate, macOS signing/TCC, Linux sandbox, launch (hermes gui/desktop).
+"""Desktop (Electron) app: build/stamp, stage-and-swap pack, exe integrity gate, macOS signing, Linux sandbox, launch (hermes gui/desktop).
 
 Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
 are imported lazily inside the functions that use them (avoids an import cycle).
@@ -17,7 +17,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time as _time_mod
 
 from pathlib import Path
@@ -42,15 +41,17 @@ def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Pa
     if source_mode:
         return desktop_dir / "dist"
 
+    resources = _packaged_resources_dir(desktop_dir)
+    return None if resources is None else resources / "app.asar.unpacked" / "dist"
+
+
+def _packaged_resources_dir(desktop_dir: Path) -> Optional[Path]:
+    """The packaged app's ``resources`` dir (renderer bundle, baked ``install-stamp.json``)."""
     executable = _desktop_packaged_executable(desktop_dir)
     if executable is None:
         return None
-
     # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
-    resources = (
-        executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
-    )
-    return resources / "app.asar.unpacked" / "dist"
+    return executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
 
 
 # The module files the renderer fetches before any app code runs: Vite emits
@@ -123,6 +124,27 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     from hermes_cli.source_build import source_product_current
 
     return dist_dir is None or not source_product_current(project_root, "desktop", dist_dir)
+
+
+def _packaged_desktop_current_for_head(desktop_dir: Path, project_root: Path) -> bool:
+    """True when the packaged app was built from HEAD and none of its inputs changed since.
+
+    Freshness alone cannot answer this for an update: the baked ``install-stamp.json`` is a
+    desktop input that only the build itself rewrites, so after a pull that touched no other
+    desktop input the receipt still reads current while the app names the previous commit.
+    The commit the packaged app actually ships is the missing half; anything unreadable
+    means "build".
+    """
+    resources = _packaged_resources_dir(desktop_dir)
+    if resources is None:
+        return False
+    from hermes_cli.steward import read_install_stamp
+    from hermes_cli.version_info import _run_git
+
+    commit = read_install_stamp(resources).get("commit")
+    if not isinstance(commit, str) or commit != _run_git(project_root, "rev-parse", "HEAD"):
+        return False
+    return not _desktop_build_needed(desktop_dir, project_root, source_mode=False)
 
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
@@ -216,6 +238,22 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
     return unpacked
 
 
+def _recover_interrupted_swap(live: Path, aside: Path) -> None:
+    """Finish a swap that died between its two renames before starting a new one: a missing
+    ``live`` with its ``aside`` copy present means the previous app was moved out and nothing
+    moved in, so put it back; otherwise ``aside`` is leftover. Deleting ``aside`` first (as the
+    swappers used to) destroyed the only remaining copy of the app."""
+    if not live.exists() and aside.is_dir():
+        try:
+            aside.rename(live)
+            logger.warning("restored %s from an interrupted desktop app swap", live)
+            return
+        except OSError as exc:
+            logger.warning("could not restore %s from %s: %s", live, aside, exc)
+            return
+    shutil.rmtree(aside, ignore_errors=True)
+
+
 def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
@@ -229,7 +267,7 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         live_root = release_dir / staged_root.name
         previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
         release_dir.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(previous, ignore_errors=True)
+        _recover_interrupted_swap(live_root, previous)
         moved_aside = live_root.exists()
         if moved_aside:
             # A Desktop may have reopened during the long packaging step (Windows lock) or
@@ -569,7 +607,7 @@ def _desktop_macos_local_signing_identity() -> Optional[str]:
 
 
 def _codesign_verify(codesign: str, app: Path, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
         [codesign, "--verify", "--deep", "--strict", str(app)], capture_output=True, **kwargs)
 
 
@@ -848,161 +886,6 @@ def _desktop_macos_relaunchable_fixup(
     return _macos_legacy_adhoc_resign(codesign, app)
 
 
-def _macos_codesigning_identity_valid(security: str, identity: str) -> bool:
-    """True when `identity` is among VALID (``-v``) code-signing identities — the plain listing also
-    shows untrusted certs codesign refuses. Idempotency probe + postcondition. Never raises."""
-    try:
-        result = subprocess.run(
-            [security, "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-        )
-    except Exception:
-        return False
-
-    return f'"{identity}"' in (result.stdout or "")
-
-
-def _macos_create_signing_identity(
-    openssl: str, security: str, codesign: str, keychain: str, identity: str) -> bool:
-    """Create a self-signed code-signing cert (10 years), import it with codesign access, trust it for codeSign."""
-    tmp_dir = Path(tempfile.mkdtemp(prefix="hermes-tcc-"))
-    try:
-        key = tmp_dir / "sign.key"
-        crt = tmp_dir / "sign.crt"
-        p12 = tmp_dir / "sign.p12"
-        subprocess.run(
-            [
-                openssl, "req", "-x509", "-newkey", "rsa:2048",
-                "-keyout", str(key), "-out", str(crt),
-                "-days", "3650", "-nodes",
-                "-subj", f"/CN={identity}",
-                "-addext", "basicConstraints=critical,CA:TRUE",
-                "-addext", "keyUsage=critical,digitalSignature,keyCertSign",
-                "-addext", "extendedKeyUsage=codeSigning",
-            ],
-            capture_output=True, check=True)
-
-        # OpenSSL 3 defaults to AES/SHA-2 PKCS#12 that `security import` rejects
-        # with "MAC verification failed". `-legacy` restores the accepted
-        # RC2/SHA-1 format but only exists on OpenSSL 3 — so try plain first and
-        # fall back to `-legacy` when the IMPORT fails with that signature.
-        # (Verified E2E on macOS 26.3.1 / OpenSSL 3.6.3 by @ctaylor86 on PR #77189.)
-        def _export_p12(extra_args: list) -> None:
-            subprocess.run(
-                [
-                    openssl, "pkcs12", "-export", *extra_args,
-                    "-inkey", str(key), "-in", str(crt),
-                    "-out", str(p12), "-passout", "pass:hermeslocal",
-                ],
-                capture_output=True, check=True)
-
-        def _import_p12():
-            return subprocess.run(
-                [
-                    security, "import", str(p12), "-k", keychain,
-                    "-P", "hermeslocal",
-                    "-T", codesign, "-T", "/usr/bin/codesign_allocate",
-                ],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-
-        _export_p12([])
-        imported = _import_p12()
-        if imported.returncode != 0 and "MAC verification failed" in (imported.stderr or ""):
-            # older OpenSSL without -legacy: keep the original failure
-            with contextlib.suppress(subprocess.CalledProcessError):
-                _export_p12(["-legacy"])
-                imported = _import_p12()
-        if imported.returncode != 0:
-            print(f"  (could not import signing identity into keychain: {imported.stderr.strip()})")
-            return False
-
-        # Without explicit trust for the codeSign policy `find-identity -v`
-        # reports 0 valid identities. This writes user trust settings, so macOS
-        # may prompt for the login password ONCE — the one-time cost this
-        # command exists to front-load.
-        trusted = subprocess.run(
-            [security, "add-trusted-cert", "-r", "trustRoot", "-p", "codeSign", "-k", keychain, str(crt)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-        if trusted.returncode != 0:
-            print(
-                "  (could not trust the certificate for code signing: "
-                f"{(trusted.stderr or trusted.stdout).strip()})"
-            )
-            return False
-        print(f"  → created, imported, and trusted self-signed identity: {identity!r}")
-        return True
-    except Exception as exc:
-        print(f"  (certificate creation failed: {exc})")
-        return False
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def _desktop_macos_setup_tcc_identity(identity: str = "Hermes Local Signing") -> bool:
-    """``--setup-tcc-identity``: create/import a self-signed code-signing cert, point
-    ``desktop.macos_signing_identity`` at it and re-sign the packaged app. TCC grants follow the
-    signing identity, so a certificate-anchored one is stable across rebuilds (the yabai/skhd
-    mechanism). Idempotent; never raises."""
-    from hermes_cli.main import PROJECT_ROOT
-    if sys.platform != "darwin":
-        print("  (--setup-tcc-identity is macOS-only; skipping)")
-        return False
-
-    openssl = shutil.which("openssl")
-    security = shutil.which("security")
-    codesign = shutil.which("codesign")
-    if not (openssl and security and codesign):
-        print(
-            "  (--setup-tcc-identity requires openssl, security, and codesign; "
-            f"found openssl={bool(openssl)} security={bool(security)} codesign={bool(codesign)})"
-        )
-        return False
-
-    keychain = str(Path.home() / "Library" / "Keychains" / "login.keychain-db")
-    # Probe with `-v` (valid identities only) so a previously imported-but-
-    # untrusted cert is repaired rather than reported as done.
-    if _macos_codesigning_identity_valid(security, identity):
-        print(f"  → identity {identity!r} already valid in keychain")
-    elif not _macos_create_signing_identity(openssl, security, codesign, keychain, identity):
-        return False
-
-    # Postcondition gate: name-in-output checks pass for invalid identities;
-    # only macOS agreeing the identity is usable counts.
-    if not _macos_codesigning_identity_valid(security, identity):
-        print(
-            f"  (identity {identity!r} was imported but is not a VALID code-signing identity; "
-            "run `security find-identity -v -p codesigning` to inspect, and see the manual "
-            "Keychain Access steps in the desktop docs)"
-        )
-        return False
-
-    # config.yaml, not .env — it's not a secret.
-    try:
-        from hermes_cli.config import set_config_value
-        set_config_value("desktop.macos_signing_identity", identity)
-        print(f"  → set desktop.macos_signing_identity = {identity!r}")
-    except Exception as exc:
-        print(f"  (could not write desktop.macos_signing_identity: {exc})")
-        return False
-
-    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-    if _desktop_packaged_executable(desktop_dir) is not None:
-        try:
-            if _desktop_macos_relaunchable_fixup(desktop_dir):
-                print(
-                    "  → packaged app re-signed with certificate-anchored identity; "
-                    "TCC grants persist across rebuilds"
-                )
-        except Exception as exc:
-            print(f"  (could not re-sign packaged app: {exc})")
-
-    print(
-        "\n  Note: macOS will re-prompt for permissions ONE final time (the identity "
-        "changed). Grant them and they persist from then on. If a permission gets "
-        "stuck, reset it with:  tccutil reset All com.nousresearch.hermes"
-    )
-    return True
-
-
 def _app_asar_hash(app_path: Path) -> str | None:
     """Return the SHA-256 hex digest of an app bundle's app.asar, or None."""
     asar = app_path / "Contents" / "Resources" / "app.asar"
@@ -1014,7 +897,7 @@ def _app_asar_hash(app_path: Path) -> str | None:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)
         return h.hexdigest()
-    except (OSError, IOError):
+    except OSError:
         return None
 
 
@@ -1053,7 +936,7 @@ def _running_macos_app_bundles() -> set[Path]:
     """``.app`` bundles of every live Hermes Desktop process. A running bundle is never swapped
     under: Electron loads ``app.asar`` chunks and helper apps lazily, so renaming its bundle away
     and deleting the old tree crashes the live app (the detached updater waits for it to exit)."""
-    import psutil  # noqa: PLC0415
+    import psutil
     bundles: set[Path] = set()
     for proc in psutil.process_iter(["exe"]):
         exe = proc.info.get("exe") or ""
@@ -1109,8 +992,8 @@ def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
             print(f"  ✓ Installed the rebuilt Desktop app at {app}")
     for problem in problems:
         print(f"  ⚠ {problem}")
-    from hermes_cli.gui_uninstall import desktop_install_record  # noqa: PLC0415
-    from utils import atomic_json_write, read_json_or_empty  # noqa: PLC0415
+    from hermes_cli.gui_uninstall import desktop_install_record
+    from utils import atomic_json_write, read_json_or_empty
     # A copy that failed to reinstall stays recorded, so the next update retries it. Every
     # `hermes desktop` launch lands here: write only when the set changed.
     apps = [str(app) for app in owned]
@@ -1147,8 +1030,8 @@ def _owns_installed_desktop_apps() -> bool:
     backend."""
     if sys.platform != "darwin":
         return False
-    from hermes_cli.main import PROJECT_ROOT  # noqa: PLC0415
-    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    from hermes_cli.main import PROJECT_ROOT
+    from hermes_constants import get_default_hermes_root
     return Path(PROJECT_ROOT).resolve() == (get_default_hermes_root() / "hermes-agent").resolve()
 
 
@@ -1162,8 +1045,8 @@ def _installed_desktop_apps() -> list[Path]:
     """
     if not _owns_installed_desktop_apps():
         return []
-    from hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths  # noqa: PLC0415
-    from utils import read_json_or_empty  # noqa: PLC0415
+    from hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths
+    from utils import read_json_or_empty
     candidates = packaged_gui_app_paths()
     if owned := _update_owned_macos_bundles(candidates):
         return owned
@@ -1208,6 +1091,10 @@ def _install_rebuilt_macos_bundles(
     installed: list[Path] = []
     problems: list[str] = []
     for app in candidates:
+        # Either swapper (this one or the Desktop hand-off's posix.sh ``.old``) may have died
+        # between its renames; recover before judging what is installed.
+        _recover_interrupted_swap(app, app.parent / f"{app.name}.hermes-update-old")
+        _recover_interrupted_swap(app, app.parent / f"{app.name}.old")
         if app.is_dir() and _app_asar_hash(app) == rebuilt_hash:
             continue
         if app.resolve() in running:
@@ -1225,7 +1112,6 @@ def _install_rebuilt_macos_bundles(
         tmp = app.parent / f"{app.name}.hermes-update-new"
         old = app.parent / f"{app.name}.hermes-update-old"
         shutil.rmtree(tmp, ignore_errors=True)
-        shutil.rmtree(old, ignore_errors=True)
         try:
             _stage_macos_bundle_copy(rebuilt_app, tmp)
             _swap_in_new_macos_bundle(tmp, app, old)
@@ -1402,7 +1288,7 @@ def _detect_linux_password_store() -> str | None:
                 "org.freedesktop.DBus.Peer.Ping",
             ],
             capture_output=True,
-            timeout=5)
+            timeout=5, check=False)
         if result.returncode == 0:
             return "gnome-libsecret"
     return None
@@ -1543,7 +1429,7 @@ def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
-    from pm.progress import run_contained
+    from hermes_cli.source_build import run_in_custody  # npm writes the checkout: update custody
 
     if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
         # The Desktop running this build holds the exe lock the promotion rename needs,
@@ -1577,11 +1463,11 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         if stopped:
             print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
     try:
-        run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
+        run_in_custody(desktop_dir.parents[1], build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
-            run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
+            run_in_custody(desktop_dir.parents[1], [npm, "run", "builder", "--", "--dir", "--publish", "never",
                            f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
-                          cwd=desktop_dir, env=build_env)
+                           cwd=desktop_dir, env=build_env)
         packaged_executable = (
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )
@@ -1784,6 +1670,7 @@ def cmd_gui(args: argparse.Namespace):
     # macOS-only one-shot: create a self-signed code-signing identity so TCC
     # grants survive rebuilds, then exit without building/launching.
     if getattr(args, "setup_tcc_identity", False):
+        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
         identity = getattr(args, "identity", None) or "Hermes Local Signing"
         sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
 
@@ -1809,7 +1696,7 @@ def cmd_gui(args: argparse.Namespace):
             print("  Refusing to run npm without serialization; check the checkout permissions and retry.")
             sys.exit(1)
         if not acquired:
-            print("✗ Another Hermes desktop dependency install or build is already running.")
+            print("✗ A Hermes update or another desktop dependency install or build is already running.")
             print("  Wait for it to finish, then retry.")
             sys.exit(2)
 

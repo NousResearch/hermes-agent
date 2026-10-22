@@ -1,5 +1,6 @@
 import { skillInvocationText } from '@hermes/shared'
 
+import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { splitLeadingAttachmentRefs } from '@/components/assistant-ui/reference-kinds'
 import { extractImageRefs } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -33,6 +34,20 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const LEGACY_HEARTBEAT_ROW_RE = /^\[Background process \S+ heartbeat #\d+ /
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+
+// Native ingress persists the image-routing hints followed by one placeholder
+// per flattened image part. Recognize that suffix only, not quoted caption prose.
+function persistedImageRefs(text: string) {
+  const suffix = /\n\n((?:\[Image attached(?: at)?: [^\n]+\]\n)+)((?:\[screenshot\](?:\n|$))+)$/.exec(text)
+
+  if (!suffix) { return extractImageRefs(text) }
+  const paths = [...suffix[1].matchAll(/^\[Image attached(?: at)?: (.+)\]$/gm)].map(match => match[1])
+
+  if (paths.length !== suffix[2].split('[screenshot]').length - 1) { return extractImageRefs(text) }
+  const extracted = extractImageRefs(text.slice(0, suffix.index))
+
+  return { cleanedText: extracted.cleanedText, refs: [...extracted.refs, ...paths.map(path => `@image:${formatRefValue(path)}`)] }
+}
 
 // Gateway routing note for Discord turns (gateway/run_inbound.py::discord_triggering_note).
 // Current gateways persist the authored text; this heals rows written before that fix. Only
@@ -158,8 +173,7 @@ function transcriptContent(
 
 /**
  * Backend-authored transcript notices. The gateway persists these itself and no
- * view "sent" them, so they render as system rows but are not authored
- * transcript content (see `ChatMessage.systemNotice`).
+ * view "sent" them, so they render as system rows.
  */
 const NOTICE_DISPLAY_KINDS = [
   'model_switch',
@@ -189,6 +203,12 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   }
 
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+}
+
+// A micro-compaction merge (`display_metadata.model_only`) is the model's copy of prompts whose originals
+// the history shows: the owner's resume snapshot keeps it as an undo target, and it is never painted.
+function isPainted(message: SessionMessage): boolean {
+  return parseDisplayMetadata(message.display_metadata)?.model_only !== true
 }
 
 // `agent/conversation_loop.py::_failed_turn_display_metadata`: the failed turn's error card,
@@ -403,7 +423,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     clearPendingTools()
   }
 
-  messages.forEach((message, index) => {
+  // `index` stays the stored row position (it keys tool-part and message ids), so skipped merges shift nothing.
+  const painted = messages.flatMap((message, index) => (isPainted(message) ? [{ index, message }] : []))
+
+  painted.forEach(({ message, index }) => {
     if (message.role === 'assistant') {
       nearestAssistant = message
     } else if (message.role === 'user' || message.role === 'system') {
@@ -460,7 +483,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // optimistic composer already uses) and render them via the dedicated
     // attachments row below the bubble instead. The leading `@file:` block
     // (attached files, large pastes) moves there too, for the same parity.
-    const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? extractImageRefs(rawDisplayContent) : null
+    const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? persistedImageRefs(rawDisplayContent) : null
     const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
     const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
     const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
@@ -605,7 +628,6 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
-      ...(isMachineNotice(message.display_kind) ? { systemNotice: true } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

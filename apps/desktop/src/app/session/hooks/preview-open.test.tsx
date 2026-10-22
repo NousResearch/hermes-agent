@@ -151,7 +151,13 @@ describe('preview routing', () => {
       try {
         await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
 
-        await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/from-tile.html'))
+        // Honoured, and owned by the tile's session (#73890): it shows in
+        // that session's drawer, not in whichever one holds focus.
+        await waitFor(() =>
+          expect($previewTabs.get().map(tab => [tab.target.path, tab.sessionId])).toEqual([
+            ['/tmp/from-tile.html', 'stored-tile']
+          ])
+        )
       } finally {
         $sessionTiles.set(tiles)
       }
@@ -281,6 +287,30 @@ describe('preview routing', () => {
         expect($previewTabs.get().map(tab => tab.id)).toEqual([tabId])
       } finally {
         markBrowserTabPopped(tabId, false)
+      }
+    })
+
+    it('closes only the tile session tabs when its agent closes without a url', async () => {
+      const { $sessionTiles } = await import('@/store/session-states')
+      const tiles = $sessionTiles.get()
+
+      $selectedStoredSessionId.set('stored-main')
+      $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
+      render(<Harness />)
+
+      try {
+        await emitPreviewOpen('/tmp/main.html')
+        await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
+        await waitFor(() => expect($previewTabs.get()).toHaveLength(2))
+
+        await emitPreviewClose('', 'tile-runtime')
+
+        expect($previewTabs.get().map(tab => [tab.target.path, tab.sessionId])).toEqual([
+          ['/tmp/main.html', 'stored-main']
+        ])
+        expect($previewTarget.get()?.path).toBe('/tmp/main.html')
+      } finally {
+        $sessionTiles.set(tiles)
       }
     })
 

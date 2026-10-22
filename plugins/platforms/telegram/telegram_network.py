@@ -11,6 +11,8 @@ from typing import Iterable, Optional
 
 import httpx
 
+from agent.ssl_verify import platform_ssl_context
+
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
@@ -265,7 +267,7 @@ async def discover_fallback_ips() -> list[str]:
     IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
     against the same address via the IP-rewrite path before the seed list is consulted (#14520).
     """
-    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=platform_ssl_context()) as client:
         system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
         results = await asyncio.gather(*[_query_doh_provider(client, p) for p in _DOH_PROVIDERS], return_exceptions=True)
     # The getaddrinfo leg has no timeout of its own and only feeds the log line below — bound it.

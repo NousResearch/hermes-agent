@@ -82,7 +82,7 @@ class Rig:
     def run(self, *args: str, timeout: float = TURN_TIMEOUT, extra_env: dict[str, str] | None = None,
             ) -> subprocess.CompletedProcess:
         return subprocess.run(hermes_argv(*args), cwd=self.project, env=self.env(extra_env), capture_output=True,
-                              text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                              text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
 
     def stop(self) -> None:
         reap_adopted(kill_tagged(self.tag))

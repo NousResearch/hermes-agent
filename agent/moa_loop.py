@@ -22,6 +22,7 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
+from agent.message_metadata import DATA_USE
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
@@ -300,6 +301,37 @@ def _with_cache_disabled(runtime: dict[str, Any], cache_disabled: Any) -> dict[s
     return runtime if cache_disabled is None else {**runtime, "_cache_disabled": cache_disabled}
 
 
+def _reference_liveness_hook(agent: Any, label: str) -> Any:
+    """Thread-local aux progress hook bridging advisor stream chunks to the agent's
+    activity clock.
+
+    The MoA fan-out runs in worker threads outside the main agent loop, so without this
+    bridge nothing stamps the turn's activity clock while advisors stream — the
+    turn-liveness watchdog then reads the clock frozen at the last main-loop stamp and
+    force-aborts healthy, still-streaming advisor turns at ``agent.turn_liveness.timeout_s``
+    (default 600s) even though the aux stream layer deliberately permits
+    ``max(600, 4 × timeout)``. ``call_llm`` preserves a thread-local hook across its
+    dispatch/protected-daemon paths and ticks it per substantive stream chunk, so each
+    chunk re-arms the watchdog. A failed touch must never break the advisor call.
+    """
+    touch = getattr(agent, "_touch_activity", None)
+
+    def _touch_on_progress() -> None:
+        if callable(touch):
+            touch(f"MoA reference {label}: stream progress")
+
+    return _touch_on_progress
+
+
+def _touch_fanout_progress(agent: Any, description: str) -> None:
+    """Best-effort activity stamp for fan-out milestones; never raises (display of
+    progress must not decide turn liveness on its own, it only supports it)."""
+    touch = getattr(agent, "_touch_activity", None)
+    if callable(touch):
+        with contextlib.suppress(Exception):
+            touch(description)
+
+
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]], runtime: dict[str, Any], *, cache_disabled: bool | None = None,
     cache_ttl: str | None = None,
@@ -367,7 +399,7 @@ def _price_reference_response(
 def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
-    cache_disabled: bool | None = None, cache_ttl: str | None = None,
+    cache_disabled: bool | None = None, cache_ttl: str | None = None, agent: Any = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model; return ``(label, text, accounting)``. Never raises:
     a failed reference becomes a labelled ``[failed: …]`` note. Runs in a thread pool."""
@@ -393,12 +425,23 @@ def _run_reference(
         # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
-        response = call_llm(
-            task="moa_reference", messages=trimmed, temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-            extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
-        )
+        if agent is not None:
+            from agent.auxiliary_client import aux_progress_hook
+
+            with aux_progress_hook(_reference_liveness_hook(agent, label)):
+                response = call_llm(
+                    task="moa_reference", messages=trimmed, temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
+                    extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+                )
+        else:
+            response = call_llm(
+                task="moa_reference", messages=trimmed, temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
+                extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+            )
         output_text = _extract_text(response) or "(empty response)"
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
@@ -593,6 +636,10 @@ def _run_references_parallel(
             idx = futures[future]
             results[idx] = future.result()
             completed += 1
+            # Each completion is fan-out progress the main loop cannot see: the
+            # fan-out blocks it, so stamp the turn's activity clock here (non-streaming
+            # advisors otherwise tick nothing between dispatch and completion).
+            _touch_fanout_progress(agent, f"MoA: {completed} of {total} references complete")
             if progress_callback is not None:
                 try:
                     progress_callback(completed, total, _slot_label(reference_models[idx]))
@@ -604,11 +651,20 @@ def _run_references_parallel(
             if slot.get("provider") == "moa":
                 results[idx] = _placeholder_output(slot, "[skipped: MoA presets cannot recursively reference MoA]")
                 continue
-            futures[executor.submit(
-                propagate_context_to_thread(_run_reference), slot, ref_messages, temperature=temperature,
-                max_tokens=max_tokens, reference_timeout=reference_timeout, context_length_cache=ctx_len_cache,
-                cache_disabled=cache_disabled, cache_ttl=cache_ttl,
-            )] = idx
+            futures[
+                executor.submit(
+                    propagate_context_to_thread(_run_reference),
+                    slot,
+                    ref_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    reference_timeout=reference_timeout,
+                    context_length_cache=ctx_len_cache,
+                    cache_disabled=cache_disabled,
+                    cache_ttl=cache_ttl,
+                    agent=agent,
+                )
+            ] = idx
 
         # Collect every reference (no early exit except a user interrupt).
         pending = set(futures)
@@ -740,6 +796,9 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:
                 rendered.append({"role": "assistant", "content": block})
+            # The preview is still the raw result, so the folded turn keeps its data-use requirement.
+            if msg.get(DATA_USE):
+                rendered[-1][DATA_USE] = sorted({*rendered[-1].get(DATA_USE, ()), *msg[DATA_USE]})
         # system and any other role are ignored.
 
     # Anthropic rejects trailing assistant prefill: end on a synthetic user request.
@@ -891,15 +950,14 @@ def aggregate_moa_context(
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
-    cache_disabled, cache_ttl = _agent_cache_opts(agent)
+    _touch_fanout_progress(
+        agent, f"MoA: synthesizing aggregator guidance ({agg_label})"
+    )
     try:
-        # Same cache_control decoration as the advisor calls; this synthesis call is
-        # a third independent MoA call path that otherwise re-bills its full input.
-        agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], _with_cache_disabled(agg_runtime, cache_disabled), cache_ttl=cache_ttl,
-        )
+        # Undecorated: the prompt embeds this call's reference outputs, so no later call
+        # reads it back and a marker would only pay a cache write (is_one_shot_request).
         synthesis = _extract_text(call_llm(
-            task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
+            task="moa_aggregator", messages=[{"role": "user", "content": synth_prompt}], temperature=aggregator_temperature,
             reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
         ))
     except Exception as exc:

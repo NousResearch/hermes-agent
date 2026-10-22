@@ -318,7 +318,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     monkeypatch.setattr(
         subprocess_compat,
         "windows_detach_popen_kwargs",
-        lambda: {},
+        dict,
     )
 
     def fake_popen(cmd, **kwargs):
@@ -561,7 +561,7 @@ async def test_request_restart_skips_wait_for_cron_run_past_inflight_allowance(m
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 300.0  # would hang the test without the wedge bypass
@@ -638,7 +638,7 @@ async def test_request_restart_skips_wait_for_scope_isolated_cron_worker(monkeyp
     import cron.scheduler as sched
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 300.0  # would hang the test without the scope bypass
@@ -672,7 +672,7 @@ async def test_request_restart_still_waits_for_worker_without_its_own_scope(monk
     import cron.scheduler as sched
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     runner._restart_after_turn_timeout = 300.0
     runner._scale_to_zero_status = MagicMock()
@@ -706,7 +706,7 @@ def test_same_job_id_scoped_in_one_profile_does_not_hide_degraded_in_another(mon
     """
     import cron.scheduler as sched
 
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
     try:
@@ -735,7 +735,7 @@ def test_same_job_id_wedged_in_one_profile_does_not_hide_live_run_in_another(mon
     import cron.scheduler as sched
 
     monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
     try:

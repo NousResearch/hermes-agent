@@ -9,7 +9,7 @@ import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILL
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
 
-import { catalogSourceFor } from '../skills/skill-provenance'
+import { skillSearchTerms } from '../skills/skills-data'
 
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
@@ -46,6 +46,8 @@ function ScopedSkillCatalog({
 }: SkillCatalogProps) {
   const { t } = useI18n()
   const h = t.skills.hub
+  // "Try …" nudges from the user's own skills: search reads categories, not just names.
+  const searchHints = useMemo(() => (skills.length ? skillSearchTerms(skills).map(term => t.common.tryHint(term)) : undefined), [skills, t])
   const mounted = useRef(true)
   const pending = useRef(new Set<string>())
   const [installing, setInstalling] = useState<ReadonlySet<string>>(new Set())
@@ -106,7 +108,7 @@ function ScopedSkillCatalog({
         name: skill.name,
         description: skill.description,
         category: skill.category,
-        source: catalogSourceFor(skill.provenance)
+        source: skill.provenance === 'bundled' ? 'built-in' : skill.provenance === 'hub' ? 'hub' : 'local'
       }))
     ).map(entry => {
       const skill = skillsByName.get(entry.name)!
@@ -316,6 +318,7 @@ function ScopedSkillCatalog({
 
         return skill ? renderInstalledDetail(skill) : null
       }}
+      searchHints={searchHints}
     />
   )
 }

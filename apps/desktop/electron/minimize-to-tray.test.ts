@@ -195,6 +195,52 @@ test('Windows restore re-activates the window instead of showInactive (#119252)'
   }
 })
 
+test('Windows restore of a tray-hidden window by any other path activates it (#127349)', async () => {
+  setPlatform('win32')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+
+    main.minimize()
+    await flushDeferredHide()
+
+    const show = vi.spyOn(main, 'show')
+    const focus = vi.spyOn(main, 'focus')
+
+    // A relaunch, deep link or notification click restores without the tray.
+    // restore() alone leaves a painted window that is not the OS foreground
+    // window, so it drops all input. It needs show() then focus().
+    main.restore()
+    await flushDeferredHide()
+    expect(show).toHaveBeenCalledOnce()
+    expect(focus).toHaveBeenCalledOnce()
+    expect(main.skipped).toBe(false)
+    expect(show.mock.invocationCallOrder[0]).toBeLessThan(focus.mock.invocationCallOrder[0])
+  } finally {
+    restorePlatform()
+  }
+})
+
+test('a restore of a window the tray never hid is left alone', async () => {
+  setPlatform('win32')
+
+  try {
+    const { main } = setup()
+    const show = vi.spyOn(main, 'show')
+    const focus = vi.spyOn(main, 'focus')
+
+    main.minimize()
+    main.restore()
+    await flushDeferredHide()
+    expect(show).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+  } finally {
+    restorePlatform()
+  }
+})
+
 test('Windows tray hide releases keyboard focus before hiding (#126570)', async () => {
   setPlatform('win32')
 

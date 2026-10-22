@@ -353,7 +353,7 @@ class TestMultiQuerySearch:
         assert result["queries"] == ["post slack message"]
 
     def test_max_query_cap_respected(self, issue_defs, monkeypatch):
-        import tools.tool_search as tool_search
+        from tools import tool_search
 
         monkeypatch.setattr(tool_search, "_MAX_QUERIES_PER_CALL", 2)
         cfg = tool_search.ToolSearchConfig.from_raw({})
@@ -489,7 +489,7 @@ class TestBatchedDescribe:
         assert "not_found" not in result
 
     def test_empty_and_overcap_names_error(self, issue_defs, monkeypatch):
-        import tools.tool_search as tool_search
+        from tools import tool_search
 
         monkeypatch.setattr(tool_search, "_MAX_DESCRIBE_NAMES_PER_CALL", 2)
         cfg = tool_search.ToolSearchConfig.from_raw({})
@@ -497,7 +497,7 @@ class TestBatchedDescribe:
             {}, current_tool_defs=issue_defs, config=cfg))
         assert "error" in json.loads(tool_search.dispatch_tool_describe(
             {"names": []}, current_tool_defs=issue_defs, config=cfg))
-        over = ["n%d" % i for i in range(3)]
+        over = [f'n{i:d}' for i in range(3)]
         parsed = json.loads(tool_search.dispatch_tool_describe(
             {"names": over}, current_tool_defs=issue_defs, config=cfg))
         assert "error" in parsed

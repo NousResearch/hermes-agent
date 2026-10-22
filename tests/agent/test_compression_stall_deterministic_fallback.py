@@ -78,9 +78,22 @@ def _summary_rows(messages):
     return [m for m in messages if isinstance(m.get("content"), str) and m["content"].startswith(SUMMARY_PREFIX)]
 
 
+def _wait_cancelled_workers_settled():
+    """A fence-cancelled worker keeps unwinding after ``_compress_context`` returns and records its
+    ``stall_interrupted`` backoff from its own thread. Its admission slot frees only once it has returned,
+    so a free pool means every late write has landed: the state read next is the state under test."""
+    deadline = time.monotonic() + 30.0
+    while cc._compress_admitted_count and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert cc._compress_admitted_count == 0, "a cancelled compression worker never finished unwinding"
+
+
 @pytest.fixture
 def fast_timeouts(monkeypatch):
-    monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (0.4, 4.0))
+    # The idle window bounds each attempt INCLUDING the deterministic rung's no-LLM compress pass (prompt
+    # rebuild, SQLite commit, malloc_trim), which outran a 0.4 s window on loaded CI runners. 2 s keeps a
+    # stall cheap while leaving that work several times its normal cost.
+    monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (2.0, 20.0))
 
 
 def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp_path, fast_timeouts):
@@ -100,25 +113,17 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
         assert calls == ["primary"], "no deterministic rung on the FIRST stall: the LLM route gets its backoff retry"
 
         # The backoff lapses; the still-oversized context re-triggers compression (the reporter's next turn).
-        # The host arms this cooldown synchronously, but the fence-cancelled worker keeps unwinding after
-        # ``_compress_context`` has returned and may re-arm it from its own thread — a legitimate late write,
-        # not a result under test. Clear and retry until an attempt actually runs rather than racing it, so
-        # the assertions below depend only on the synchronous arm.
-        second = live
-        for _ in range(5):
-            # Re-assert the state this phase tests — one stall already on the record (line above) — and
-            # clear the lapsed backoff. Pinning the counter also stops a retry from ACCUMULATING stall
-            # history, which would let a regression that makes escalation harder (e.g. a threshold of 3)
-            # satisfy itself on a later iteration and pass. A refused, or fleetingly degraded, attempt
-            # stays retryable; a regression cannot buy itself green.
-            compressor._consecutive_timeout_failures = 1
-            compressor._summary_failure_cooldown_until = 0.0
-            compressor._session_db.clear_compression_failure_cooldown(compressor._session_id)
-            calls.clear()
-            second, _ = agent._compress_context(live, "sys", approx_tokens=50_000)
-            if second is not live:
-                break
-            time.sleep(0.05)
+        # The first attempt's cancelled worker re-arms the cooldown from its own thread after
+        # ``_compress_context`` returned; clearing before it lands let a cooldown-skipped attempt commit the
+        # static summary with no LLM call at all. Wait it out, then run the second attempt exactly once.
+        _wait_cancelled_workers_settled()
+        # One stall on the record (asserted above), lapsed backoff. Pinning the counter keeps a regression
+        # that makes escalation harder (e.g. a threshold of 3) from satisfying itself.
+        compressor._consecutive_timeout_failures = 1
+        compressor._summary_failure_cooldown_until = 0.0
+        compressor._session_db.clear_compression_failure_cooldown(compressor._session_id)
+        calls.clear()
+        second, _ = agent._compress_context(live, "sys", approx_tokens=50_000)
 
     assert second is not live and len(second) < len(live)
     assert len(_summary_rows(second)) == 1, "the deterministic fallback summary is committed as the handoff"
@@ -126,8 +131,8 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
     assert getattr(agent, "_last_compression_timed_out", None) is not True
     # The stalled LLM route stays in its backoff even though the deterministic rung committed. This arm
     # comes from the cancelled PRIMARY worker's `stall_interrupted` record (the deterministic retry path
-    # never reaches `on_timeout`), which normally lands while the retry above runs — hence the read last,
-    # after that work, rather than immediately after the clear.
+    # never reaches `on_timeout`), written from that worker's thread — read it once the worker is done.
+    _wait_cancelled_workers_settled()
     assert compressor._summary_failure_cooldown_until > time.monotonic(), (
         "the stalled LLM route keeps its stall backoff after the deterministic commit"
     )

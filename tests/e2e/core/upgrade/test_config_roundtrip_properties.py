@@ -721,7 +721,7 @@ def rpc(tmp_path_factory):
 _RPC_CASES = [
     ("display.in_app_tips", ["false", "true"], ("display", "in_app_tips"), {"false": False, "true": True}),
     ("skin", ["mono", "ares", "slate"], ("display", "skin"), None),
-    ("approvals.mode", ["off", "smart", "manual"], ("approvals", "mode"), None),
+    ("approvals.mode", ["off", "smart", "manual", "deny"], ("approvals", "mode"), None),
     ("theme", ["dark", "light", "auto"], ("display", "tui_theme"), None),
     ("busy", ["steer", "queue", "interrupt"], ("display", "busy_input_mode"), None),
     ("voice.voice_chat_mode", ["gpt-live", "chained"], ("voice", "voice_chat_mode"), None),

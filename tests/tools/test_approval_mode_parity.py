@@ -69,6 +69,9 @@ CASES = [
         id="global-smart-timeout",
     ),
     pytest.param(
+        "approvals:\n  mode: deny\n", "deny", 300, id="global-deny"
+    ),
+    pytest.param(
         # YAML 1.1 parses bare OFF as boolean False; the normalizer maps
         # False -> "off". Both surfaces must agree on that quirk.
         "approvals:\n  mode: OFF\n  timeout: 45\n",

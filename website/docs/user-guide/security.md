@@ -27,11 +27,11 @@ Before executing any command, Hermes checks it against a curated list of dangero
 
 ### Approval Modes
 
-The approval system supports three modes, configured via `approvals.mode` in `~/.hermes/config.yaml`:
+The approval system supports four modes, configured via `approvals.mode` in `~/.hermes/config.yaml`:
 
 ```yaml
 approvals:
-  mode: smart                     # smart | manual | off
+  mode: smart                     # smart | manual | deny | off
   timeout: 300                    # seconds to wait for user response (default: 300)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   single_query_mode: deny         # deny | approve — what single-query (-q) sessions do on a dangerous command
@@ -56,6 +56,7 @@ The full set of keys:
 |------|----------|
 | **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
 | **manual** | Always prompt the user for approval on dangerous commands. |
+| **deny** | Block dangerous commands in interactive chats without presenting an approval prompt. Existing permanent allowlist entries still apply. |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
 
 :::warning

@@ -51,7 +51,7 @@ class RoomExecutionPolicy:
         if len(set(toolsets)) != len(toolsets) or "bot_room" not in toolsets:
             raise RoomExecutionPolicyError("enabled_toolsets are invalid")
         approval_mode = str(value["approval_mode"] or "").strip().lower()
-        if approval_mode not in {"manual", "smart", "off"}:
+        if approval_mode not in {"manual", "smart", "deny", "off"}:
             raise RoomExecutionPolicyError("approval_mode is invalid")
         max_iterations = bounded_int(
             value["max_iterations"], error=RoomExecutionPolicyError, message="max_iterations is invalid", low=1,

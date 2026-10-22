@@ -26,11 +26,11 @@ Hermes Agent 采用纵深防御安全模型。本页涵盖所有安全边界—�
 
 ### 审批模式
 
-审批系统支持三种模式，通过 `~/.hermes/config.yaml` 中的 `approvals.mode` 配置：
+审批系统支持四种模式，通过 `~/.hermes/config.yaml` 中的 `approvals.mode` 配置：
 
 ```yaml
 approvals:
-  mode: smart     # smart | manual | off
+  mode: smart     # smart | manual | deny | off
   timeout: 300    # 等待用户响应的秒数（默认：300）
 ```
 
@@ -38,6 +38,7 @@ approvals:
 |------|----------|
 | **smart**（默认） | 使用辅助 LLM 评估风险。低风险命令（如 `python -c "print('hello')"`）仅对当前命令自动批准，真正危险的命令自动拒绝，不确定的情况升级为手动提示。 |
 | **manual** | 始终提示用户审批危险命令。 |
+| **deny** | 在交互式聊天中阻止危险命令，不展示审批提示。现有的永久允许列表条目仍然有效。 |
 | **off** | 禁用所有审批检查——等同于使用 `--yolo` 运行。所有命令无需提示即可执行。 |
 
 :::warning

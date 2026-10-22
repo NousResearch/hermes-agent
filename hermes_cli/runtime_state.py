@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import time
 import uuid
@@ -182,7 +183,12 @@ def lease_directory(generation: Path) -> Callable[[], None]:
 
 
 def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
-    """Remove unselected lease-managed generations after their readers exit."""
+    """Remove unselected lease-managed generations after their readers exit.
+
+    A generation a supervisor definition on this host still names is kept: the
+    definition starts it by path, so reclaiming the tree is what turns a stale
+    reference into a ``203/EXEC`` restart loop (#133184).
+    """
     from pm.environments import selected_venv
     removed = []
     root = install_state_dir(project)
@@ -196,16 +202,92 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
         generations = root / "environments"
         if not generations.is_dir():
             return removed
+        referenced = service_unit_generation_references(project)
         for generation in generations.iterdir():
             if generation.is_symlink() or not generation.is_dir() or generation.resolve() == selected:
                 continue
             marker = generation / ".lease-managed"
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue
+            unit = referenced.get(generation.name)
+            if unit is not None:
+                LOG.warning("keeping dependency generation %s: referenced by %s", generation.name, unit)
+                continue
             if not leases_held(generation):
                 shutil.rmtree(generation)
                 removed.append(generation)
     return removed
+
+
+#: Generation names PM mints (``uuid.uuid4().hex``).
+_GENERATION_NAME = re.compile(r"[0-9a-f]{32,}")
+
+
+def _service_unit_directories() -> list[Path]:
+    """Unit trees whose definitions may ExecStart a generation (#133184)."""
+    from hermes_constants import get_real_home
+
+    config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(config_home) if config_home else Path(get_real_home()) / ".config"
+    return [base / "systemd" / "user", Path("/etc/systemd/user"), Path("/etc/systemd/system")]
+
+
+def _referenced_generation_names(text: str, needles: tuple[str, ...]) -> set[str]:
+    """Generation names in *text* whose path sits under one of *needles*.
+
+    The spelling comes from the definition's own text (written by the operator
+    or by an earlier Hermes), so match the literal path: the generation name
+    must follow ``environments/`` and end on a path boundary. A bare word like
+    ``environments/x`` in a comment is not a path, and a definition naming
+    another install's tree must not shield this install's generations.
+    """
+    names: set[str] = set()
+    for needle in needles:
+        start = 0
+        while (index := text.find(needle, start)) != -1:
+            start = index + len(needle)
+            match = _GENERATION_NAME.match(text, start)
+            if match is None:
+                continue
+            end = match.end()
+            # A path boundary: the name is the whole segment being named.
+            # ``environments/<name>-backup`` is some other directory, not the generation.
+            if end == len(text) or text[end] in "/\"' \t\r\n":
+                names.add(match.group(0))
+    return names
+
+
+def service_unit_generation_references(project: Path) -> dict[str, Path]:
+    """``{generation_name: definition}`` for unit files naming this install's generations.
+
+    Both ``.service`` units and ``.d/*.conf`` drop-ins count: a drop-in replaces
+    ``ExecStart`` for a live unit, so it names the tree that actually runs. Only
+    paths under this install's state dir match — another install's generations
+    are its own collectors' concern. Unreadable entries are skipped: scanning
+    must never fail an install, and collection only ever keeps extra trees.
+    """
+    state = install_state_dir(project)
+    needles = {str(state / "environments") + "/"}
+    with suppress(OSError):
+        needles.add(str(state.resolve() / "environments") + "/")
+    references: dict[str, Path] = {}
+    for directory in _service_unit_directories():
+        if not directory.is_dir():
+            continue
+        try:
+            candidates = sorted(directory.rglob("*"))
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                if not path.is_file() or path.suffix not in (".service", ".conf"):
+                    continue
+                text = path.read_text(encoding="utf-8-sig", errors="ignore")
+            except OSError:
+                continue
+            for name in sorted(_referenced_generation_names(text, tuple(needles))):
+                references.setdefault(name, path)
+    return references
 
 
 def leases_held(generation: Path) -> bool:

@@ -807,9 +807,16 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     # decision has to be taken HERE — before the projected assistant rows are persisted,
     # before the external-memory and background-review consumers see the text, and before
     # the result is returned (PR 120170 re-review at 0e25ab97f7, P1 #2).
+    #
+    # EVERY non-empty candidate is gated, including an error-bearing one. A Codex turn
+    # that ends with `turn.error` set (an `<turn_aborted>` marker, a transport error) still
+    # projects an assistant row and a final_text, and that text was persisted and returned
+    # without the policy ever being consulted. The error is a Codex-side fact, not a
+    # policy outcome: the gate decides whether the candidate may become durable, and the
+    # turn still reports its own error afterwards (PR 120170 re-review at 03fa20beac, F-001).
     final_text = turn.final_text
     final_output = None
-    if final_text and turn.error is None:
+    if final_text:
         final_output = _gate_codex_final_output(agent, final_text, turn)
         if final_output != "allow":
             logger.warning(

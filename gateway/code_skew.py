@@ -55,3 +55,19 @@ def detect_code_skew() -> tuple[str, str] | None:
     if current is None or current == _boot_fingerprint:
         return None
     return _short(_boot_fingerprint), _short(current)
+
+
+def code_skew_status() -> dict[str, str] | None:
+    """Public, read-only status projection for clients that can restart this runtime.
+
+    The boot fingerprint remains the authority: update receipts are advisory and
+    can be missing or malformed.  Do not report anything until the existing
+    detector has proved that this process and the checkout disagree.
+    """
+    skew = detect_code_skew()
+    if skew is None:
+        return None
+    boot_rev, disk_rev = skew
+    if not boot_rev or not disk_rev or boot_rev == disk_rev:
+        return None
+    return {"boot_rev": boot_rev, "disk_rev": disk_rev}

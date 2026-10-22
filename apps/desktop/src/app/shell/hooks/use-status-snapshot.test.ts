@@ -10,13 +10,21 @@ import { $freeTierStatus } from '@/store/free-tier'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 import { clearNotifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { reportBackendCodeSkew } from '@/store/updates'
 
 import { deferred } from '../../../test/deferred'
 
 import { useStatusSnapshot } from './use-status-snapshot'
 
 vi.mock('@/hermes', () => ({
-  getStatus: vi.fn()
+  getStatus: vi.fn(),
+  // reportBackendCodeSkew imports the update store, which retains the profile
+  // store's API-scope subscription during this hook-level test.
+  setApiRequestProfile: vi.fn()
+}))
+
+vi.mock('@/store/updates', () => ({
+  reportBackendCodeSkew: vi.fn()
 }))
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -50,6 +58,17 @@ afterEach(() => {
 })
 
 describe('useStatusSnapshot', () => {
+  it('reports a backend-confirmed checkout drift from the status snapshot', async () => {
+    const codeSkew = { boot_rev: 'before-update', disk_rev: 'after-update' }
+    vi.mocked(getStatus).mockResolvedValue({ code_skew: codeSkew } as never)
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    expect(reportBackendCodeSkew).toHaveBeenCalledWith(codeSkew)
+  })
+
   it.each(Object.entries(TRANSLATIONS) as [Locale, Translations][])(
     'localizes and deduplicates shared-profile warnings in %s',
     async (locale: Locale, copy: Translations): Promise<void> => {

@@ -14447,6 +14447,7 @@ registerPetOverlayIpc({
 
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
 const hudIpc = registerHudIpc({
+  darwinMajor: DARWIN_MAJOR,
   isMac: IS_MAC,
   getTranslucencyState: () => translucencyState,
   getHudWindow: () => hudWindow,

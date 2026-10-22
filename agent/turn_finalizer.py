@@ -866,6 +866,7 @@ def finalize_turn(
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
     if not getattr(agent, "_persist_disabled", False):
+        _last_turn_usage = getattr(agent, "_last_turn_usage", None)
         _invoke_hook_safely(
             "on_session_end", logger,
             session_id=agent.session_id,
@@ -877,6 +878,12 @@ def finalize_turn(
             turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=_platform,
+            # Context-gauge snapshot for push watchers (e.g. Pixel Agents' office): the
+            # last API response's canonical token totals — None on a turn that never
+            # reached one — and the window the compressor resolved. Key names match
+            # ``post_api_request`` on purpose; integers only, never transcript text.
+            usage=dict(_last_turn_usage) if _last_turn_usage else None,
+            context_length=int(getattr(agent.context_compressor, "context_length", 0) or 0) or None,
         )
 
     agent._turn_preflight_display_snapshot = None

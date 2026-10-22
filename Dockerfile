@@ -330,6 +330,12 @@ RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --w
     mkdir -p /opt/products && \
     cp -RL node_modules/typescript /opt/products/typescript
 
+# .git is excluded from the context; optional metadata stamps the web product.
+# Keep these args in the frontend stage, after dependency preparation.
+ARG HERMES_GIT_SHA=
+ARG BUILD_SOURCE_BRANCH=
+ARG BUILD_SOURCE_DIRTY=
+ARG SOURCE_DATE_EPOCH
 COPY pyproject.toml uv.lock ./
 COPY web/ web/
 COPY ui-tui/ ui-tui/

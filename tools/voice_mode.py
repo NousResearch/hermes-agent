@@ -16,6 +16,7 @@ import sys
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
+import queue
 import tempfile
 import threading
 import time
@@ -24,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from agent.memory_provider import ctx_bound, spawn_context_thread
 from hermes_constants import is_termux as _is_termux_environment
 from hermes_platform.host.runtime import is_wsl
 from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
@@ -36,6 +38,10 @@ SAMPLE_WIDTH = 2  # bytes per sample (int16)
 SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
 SILENCE_DURATION_SECONDS = 3.0  # continuous silence before auto-stop
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
+_SD_PLAYBACK_SLOT = threading.BoundedSemaphore(1)
+_SD_PLAYBACK_QUEUE: queue.Queue = queue.Queue(maxsize=1)
+_SD_PLAYBACK_WORKER: Optional[threading.Thread] = None
+_SD_PLAYBACK_WORKER_LOCK = threading.Lock()
 
 
 # ── Lazy audio imports ──
@@ -367,14 +373,119 @@ def _get_beep_volume() -> float:
     return volume
 
 
+class _SounddevicePlaybackJob:
+    """One explicitly owned sounddevice stream lifecycle."""
+
+    def __init__(self, sd, audio, sample_rate: int, blocksize: int):
+        self.sd = sd
+        self.audio = audio
+        self.sample_rate = sample_rate
+        self.blocksize = blocksize
+        self.cancelled = threading.Event()
+        self.done = threading.Event()
+        self.error: Optional[Exception] = None
+        self.run = ctx_bound(
+            lambda: _run_sd_playback(self.sd, self.audio, self.sample_rate, self.blocksize, self.cancelled))
+
+
+def _run_sd_playback(sd, audio, sample_rate: int, blocksize: int, cancelled: threading.Event) -> None:
+    """Run one OutputStream lifecycle; only this worker may terminate its stream."""
+    finished = threading.Event()
+    frame = 0
+    channels = 1 if getattr(audio, "ndim", 1) == 1 else audio.shape[1]
+
+    def callback(outdata, frames, _time_info, _status) -> None:
+        nonlocal frame
+        remaining = len(audio) - frame
+        count = min(frames, remaining)
+        if count:
+            if channels == 1:
+                outdata[:count, 0] = audio[frame:frame + count]
+            else:
+                outdata[:count] = audio[frame:frame + count]
+            frame += count
+        if count < frames:
+            outdata[count:] = 0
+            raise sd.CallbackStop()
+
+    if cancelled.is_set():
+        return
+    stream = sd.OutputStream(
+        samplerate=sample_rate,
+        channels=channels,
+        dtype=audio.dtype,
+        blocksize=blocksize,
+        callback=callback,
+        finished_callback=finished.set,
+    )
+    try:
+        stream.start()
+        while not finished.wait(0.01):
+            if cancelled.is_set():
+                stream.abort()
+                return
+    finally:
+        stream.close()
+
+
+def _sd_playback_worker() -> None:
+    """Own sounddevice stream cleanup without making the interpreter wait at exit."""
+    global _active_sd_playback
+    while True:
+        job = _SD_PLAYBACK_QUEUE.get()
+        try:
+            job.run()
+        except Exception as error:
+            job.error = error
+            logger.debug("Owned sounddevice playback cleanup failed: %s", error, exc_info=True)
+        finally:
+            with _playback_lock:
+                if _active_sd_playback is job:
+                    _active_sd_playback = None
+            _SD_PLAYBACK_SLOT.release()
+            _SD_PLAYBACK_QUEUE.task_done()
+            job.done.set()
+
+
+def _ensure_sd_playback_worker() -> None:
+    global _SD_PLAYBACK_WORKER
+    with _SD_PLAYBACK_WORKER_LOCK:
+        if _SD_PLAYBACK_WORKER is None or not _SD_PLAYBACK_WORKER.is_alive():
+            _SD_PLAYBACK_WORKER = spawn_context_thread(
+                target=_sd_playback_worker, daemon=True, name="voice-output")
+            _SD_PLAYBACK_WORKER.start()
+
+
 def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0) -> None:
-    """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
-    hangs forever if the device stalls)."""
-    sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
-    deadline = time.monotonic() + timeout
-    while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
-        time.sleep(0.01)
-    sd.stop()
+    """Drain one owned output stream without letting a stalled backend block callers.
+
+    ``sounddevice.play()`` and its ``wait()``/``stop()`` helpers share a global last
+    callback, so a delayed cleanup can affect a later cue.  A single worker owns one
+    explicit OutputStream at a time.  On timeout the caller returns immediately; the
+    worker aborts and closes only that stream before accepting another cue.
+    """
+    global _active_sd_playback
+    if not _SD_PLAYBACK_SLOT.acquire(blocking=False):
+        logger.debug("Skipping voice cue while a previous sounddevice stream is cleaning up")
+        return
+
+    job = _SounddevicePlaybackJob(sd, audio, sample_rate, blocksize)
+    try:
+        with _playback_lock:
+            _active_sd_playback = job
+        _ensure_sd_playback_worker()
+        _SD_PLAYBACK_QUEUE.put_nowait(job)
+    except Exception:
+        with _playback_lock:
+            if _active_sd_playback is job:
+                _active_sd_playback = None
+        _SD_PLAYBACK_SLOT.release()
+        raise
+    if not job.done.wait(timeout):
+        job.cancelled.set()
+        return
+    if job.error is not None:
+        raise job.error
 
 
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
@@ -979,6 +1090,7 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> dict[str
 
 # ── Audio playback (interruptable) ──
 _active_playback: Optional[subprocess.Popen] = None  # so stop_playback can interrupt it
+_active_sd_playback: Optional[_SounddevicePlaybackJob] = None
 _playback_lock = threading.Lock()
 
 
@@ -994,13 +1106,13 @@ def stop_playback() -> None:
     with _playback_lock:
         proc = _active_playback
         _active_playback = None
+        sounddevice_job = _active_sd_playback
     if proc and proc.poll() is None:
         with suppress(Exception):
             proc.terminate()
             logger.info("Audio playback interrupted")
-    with suppress(Exception):  # also stop sounddevice playback if active
-        sd, _ = _import_audio()
-        sd.stop()
+    if sounddevice_job is not None:
+        sounddevice_job.cancelled.set()
 
 
 def _wsl_powershell_tts_available() -> bool:

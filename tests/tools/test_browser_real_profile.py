@@ -184,7 +184,8 @@ class TestRealProfileCdpLaunch:
         self._reset()
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")):
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp", return_value=None):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp is None
         assert err and "boom" in err
@@ -237,8 +238,8 @@ class TestRealProfileCdpLaunch:
            by headless — the drop we avoid comes from ``--use-mock-keychain``,
            not from headless. We launch without mock-keychain switches, so the
            copied auth/login state still loads.
-        2. agent-browser ATTACHES to that running Chrome via ``--cdp``, so its
-           argv must contain ``--cdp`` and must NOT contain launch-mode
+        2. agent-browser ATTACHES to that running Chrome via ``connect``, so its
+           argv must contain ``connect`` and must NOT contain launch-mode
            switches (``--headless`` / ``--profile``).
         """
         import tools.browser_tool as bt
@@ -267,6 +268,8 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_session, "_agent_browser_command_env",
+                          side_effect=lambda socket_dir: {"AGENT_BROWSER_SOCKET_DIR": socket_dir}), \
              patch.object(bt_session, "_popen_agent_browser", side_effect=fake_agent_browser_spawn), \
              patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
@@ -276,7 +279,7 @@ class TestRealProfileCdpLaunch:
         # agent-browser attaches, it does not launch.
         assert "--headless" not in captured["argv"]
         assert "--profile" not in captured["argv"]
-        assert "--cdp" in captured["argv"]
+        assert captured["argv"][-2:] == ["connect", "41000"]
         # #100855: the attach daemon lives in a reaper-visible socket dir claimed by this
         # process, and never self-terminates (Chrome is ours, not the daemon's).
         socket_dir = captured["env"]["AGENT_BROWSER_SOCKET_DIR"]

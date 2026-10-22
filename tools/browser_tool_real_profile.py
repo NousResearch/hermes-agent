@@ -46,6 +46,10 @@ def _real_profile_daemon_env() -> tuple:
     socket_dir = _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
     env = _session._agent_browser_command_env(socket_dir)
     env.pop("AGENT_BROWSER_IDLE_TIMEOUT_MS", None)
+    # This lane attaches to Chrome we launched, not the bundled executable.
+    # Keeping the launch override makes subsequent CLI commands replace the
+    # attached browser and lose its CDP endpoint (and authenticated profile).
+    env.pop("AGENT_BROWSER_EXECUTABLE_PATH", None)
     return env, socket_dir
 
 
@@ -238,8 +242,12 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> tuple[Opt
         browser_cmd = _install._find_agent_browser()
     except FileNotFoundError as e:
         return None, f"{_RP}the local browser engine (agent-browser) is not installed: {e}"
+    # An existing daemon retains its original AGENT_BROWSER_CDP environment.
+    # `--cdp <new> open` can therefore auto-reconnect to the dead old endpoint
+    # before handling the command. Explicit connect bypasses that auto-launch
+    # and replaces the connection without navigating an authenticated tab.
     argv = [*_session._agent_browser_argv(browser_cmd), "--session", _bt._REAL_PROFILE_SESSION,
-            "--cdp", str(port), "open", "about:blank"]
+            "connect", str(port)]
     try:
         proc = _capture_agent_browser_cli(
             argv, timeout=_bt._get_open_command_timeout(first_open=True), tag="rp-open",

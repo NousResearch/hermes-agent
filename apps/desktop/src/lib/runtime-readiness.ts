@@ -52,9 +52,6 @@ export interface RuntimeReadinessResult {
   ready: boolean
   reason: null | string
   source: 'fallback' | 'runtime_check' | 'setup_status'
-  /** The check failed and setup.status says no provider is set up at all: `reason` is then the
-   *  check's own sentence for "nothing is set up", not a cause. */
-  unconfigured?: true
 }
 
 export type RuntimeReadinessDisplay = 'checking' | 'needs_setup' | 'ready' | 'unavailable'
@@ -129,6 +126,10 @@ export function interpretRuntimeReadiness(
   const runtimeOk = typeof signals.runtime?.ok === 'boolean' ? Boolean(signals.runtime.ok) : undefined
   const runtimeFailure = normalizeMessage(signals.runtime?.error) ?? normalizeMessage(signals.runtimeError)
   const setupFailure = normalizeMessage(signals.setupError)
+  // With nothing set up, the check's own sentence only restates that in CLI terms (`hermes model`,
+  // the home path), so every surface gets the caller's default instead. A requested provider keeps
+  // its cause: that check was about that provider.
+  const nothingSetUp = setupConfigured === false && !options.requestedProvider?.trim()
 
   // Route facts the check reported, carried through untouched so consumers
   // (free-tier chrome) don't have to re-issue setup.runtime_check. Left
@@ -152,7 +153,7 @@ export function interpretRuntimeReadiness(
       }
     }
 
-    let reason = runtimeFailure ?? defaultReason
+    let reason = (nothingSetUp ? null : runtimeFailure) ?? defaultReason
 
     if (checksDisagree && setupConfigured) {
       reason = `${reason} setup.status reports configured credentials, but runtime resolution still failed.`
@@ -163,8 +164,7 @@ export function interpretRuntimeReadiness(
       checksDisagree,
       ready: false,
       reason,
-      source: 'runtime_check',
-      ...(setupConfigured === false ? { unconfigured: true as const } : {})
+      source: 'runtime_check'
     }
   }
 
@@ -173,7 +173,7 @@ export function interpretRuntimeReadiness(
       ...route,
       checksDisagree: false,
       ready: setupConfigured,
-      reason: setupConfigured ? null : (runtimeFailure ?? setupFailure ?? defaultReason),
+      reason: setupConfigured ? null : ((nothingSetUp ? null : (runtimeFailure ?? setupFailure)) ?? defaultReason),
       source: 'setup_status'
     }
   }

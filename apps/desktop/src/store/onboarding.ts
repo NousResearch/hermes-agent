@@ -818,7 +818,7 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
     return false
   }
 
-  const reason = (runtime.unconfigured ? null : runtime.reason) || state.reason || DEFAULT_ONBOARDING_REASON
+  const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
 
   if (shouldPreserveConfiguredOnBootRace(runtime, state)) {
     // The backend answered inside its boot window with a not-ready that is

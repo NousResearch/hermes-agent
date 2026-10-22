@@ -24,6 +24,9 @@ import {
 // Onboarding's due check answered "not due": first-run surfaces are free to show.
 markOnboardingDecided()
 
+const NOT_CONNECTED =
+  'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, or `hermes auth add <provider>`.'
+
 function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnboardingState {
   return {
     configured: false,
@@ -224,6 +227,33 @@ describe('refreshOnboarding', () => {
 
     expect(await refreshOnboarding(onboardingContext(unconfigured))).toBe(false)
     expect($desktopOnboarding.get()).toMatchObject({ configured: false, reason: DEFAULT_ONBOARDING_REASON })
+  })
+
+  it.each([
+    ['answers', async () => ({ ok: false, error: NOT_CONNECTED }) as never],
+    [
+      'fails',
+      async () => {
+        throw new Error(NOT_CONNECTED)
+      }
+    ]
+  ])('drops an earlier raw sentence once nothing is set up and the runtime check %s', async (_, runtimeCheck) => {
+    $desktopOnboarding.set(baseState({ reason: NOT_CONNECTED }))
+
+    const unconfigured: OnboardingContext['requestGateway'] = async method => {
+      if (method === 'setup.status') {
+        return { provider_configured: false } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return runtimeCheck()
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    expect(await refreshOnboarding(onboardingContext(unconfigured))).toBe(false)
+    expect($desktopOnboarding.get().reason).not.toContain('hermes model')
   })
 
   it('keeps cached providers when onboarding was not re-requested', async () => {
@@ -1081,7 +1111,7 @@ describe('saveOnboardingLocalEndpoint', () => {
       }
 
       if (method === 'setup.status') {
-        return { provider_configured: false } as never
+        return { provider_configured: true } as never
       }
 
       if (method === 'setup.runtime_check') {

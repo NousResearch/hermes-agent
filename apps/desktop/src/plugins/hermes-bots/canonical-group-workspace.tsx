@@ -61,6 +61,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [restored, setRestored] = useState(false)
+  const [journalError, setJournalError] = useState('')
+  const [journalAttempt, setJournalAttempt] = useState(0)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
@@ -84,10 +86,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   // The log is append-only within one authority epoch: each poll reads only what is new.
   const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
 
-  // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
+  // eslint-disable-next-line no-restricted-syntax -- mounted lifetime, not a reactive store mirror
   useEffect(() => {
     alive.current = true
+
+    return () => { alive.current = false; revision.current++ }
+  }, [])
+
+  // Send stays locked until the journal is read: a pending intent must never be sent twice. A
+  // failed read only reads again; it never writes, so a journal that recovers keeps its intent.
+  useEffect(() => {
     let cancelled = false
+    setJournalError('')
     void readCanonicalGroupSend(binding).then(entry => {
       if (cancelled) {return}
 
@@ -98,10 +108,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       }
 
       setRestored(true)
-    }).catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+    }).catch(e => { if (!cancelled) {setJournalError(e instanceof Error ? e.message : String(e))} })
 
-    return () => { cancelled = true; alive.current = false; revision.current++ }
-  }, [binding])
+    return () => { cancelled = true }
+  }, [binding, journalAttempt])
 
   const refresh = async () => {
     const version = ++revision.current
@@ -339,7 +349,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       </div>
       <Button disabled={stopping || !state?.driver_status} onClick={() => void stop()}>{labels.stop}</Button>
     </header>
-    <CanonicalGroupNotices error={error} labels={labels} notice={notice} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
+    <CanonicalGroupNotices error={error} journalError={journalError} labels={labels} notice={notice}
+      onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
       readError={readError} unavailable={Boolean(state && !state.driver_status)} />
     <div className="min-h-0 flex-1 overflow-auto" role="log">
       <CanonicalGroupHistory binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events}

@@ -446,6 +446,87 @@ class TestMemoryStoreCharLimitOnLoad:
         assert "exceeds" not in caplog.text
 
 
+class TestZeroCharLimit:
+    """char_limit == 0 means "unlimited" (e.g. provider: atheneum, where the
+    .md file is a benign local cache). The add/replace/patch/apply_batch budget
+    checks must treat 0 as unlimited, not as an impossibly-tight ceiling
+    that rejects every write. (The drift guard is a separate concern: add()
+    skips it entirely — it's append-only and can't clobber — so replace/remove/patch
+    is the path where char_limit=0 treats size as unlimited, bypassing the
+    whole-file entry length ceiling.)"""
+
+    @pytest.fixture()
+    def unlimited_store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        s = MemoryStore(memory_char_limit=0, user_char_limit=0)
+        s.load_from_disk()
+        return s
+
+    def test_add_not_budget_blocked_with_zero_limit(self, unlimited_store, tmp_path):
+        # Regression: a pre-existing entry made the budget check's
+        # `new_total > char_limit` (i.e. > 0) always fire, so every add()
+        # was refused as over-budget. With 0 = unlimited the new entry must
+        # succeed. (add() bypasses drift check since upstream 25e2312230).
+        (tmp_path / "MEMORY.md").write_text("prior session fact")
+        result = unlimited_store.add("memory", "new fact, " * 80)
+        assert result["success"] is True
+
+    def test_replace_not_budget_blocked_with_zero_limit(self, unlimited_store):
+        unlimited_store.add("memory", "x" * 600)
+        result = unlimited_store.replace("memory", "x", "y" * 800)
+        assert result["success"] is True
+
+    def test_patch_not_budget_blocked_with_zero_limit(self, unlimited_store):
+        unlimited_store.add("memory", "base fact with key")
+        result = unlimited_store.patch("memory", "key", "expanded key " + ("k" * 600))
+        assert result["success"] is True
+
+    def test_remove_not_drift_blocked_with_zero_limit(self, unlimited_store):
+        unlimited_store.add("memory", "first fact")
+        unlimited_store.add("memory", "second fact")
+        result = unlimited_store.remove("memory", "first fact")
+        assert result["success"] is True
+        assert unlimited_store.memory_entries == ["second fact"]
+
+    def test_apply_batch_not_budget_blocked_with_zero_limit(self, unlimited_store):
+        # Same class of bug as add()/replace(): apply_batch's final-budget
+        # check (`new_total > limit`) had no `limit > 0` guard, so a
+        # non-empty batch was always rejected at char_limit=0.
+        result = unlimited_store.apply_batch(
+            "memory",
+            [{"action": "add", "content": "z" * 900}],
+        )
+        assert result["success"] is True
+
+    def test_bipolar_drift_guard_finite_vs_zero_limit(self, tmp_path, monkeypatch):
+        # Paired bipolar probe verifying that while char_limit=0 treats size as unlimited
+        # (allowing large entries without false drift refusal), a finite char_limit
+        # STILL detects an entry exceeding the whole-file limit as external drift.
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+
+        # 1. Finite limit store (limit=500): large single entry (>500 chars) triggers drift.
+        finite_store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        mem_file.write_text("existing entry\n§\n" + "x" * 800, encoding="utf-8")
+        result_finite = finite_store.replace("memory", "existing entry", "updated entry")
+        assert result_finite["success"] is False
+        assert "drift_backup" in result_finite
+
+        # 2. Unlimited store (limit=0): same large entry is NOT treated as drift.
+        unlimited_store = MemoryStore(memory_char_limit=0, user_char_limit=0)
+        result_unlimited = unlimited_store.replace("memory", "existing entry", "updated entry")
+        assert result_unlimited["success"] is True
+
+    def test_zero_limit_on_load_does_not_warn(self, tmp_path, monkeypatch, caplog):
+        import logging
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text("x" * 600, encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            store = MemoryStore(memory_char_limit=0, user_char_limit=0)
+            store.load_from_disk()
+        assert "exceeds" not in caplog.text
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         assert store.format_for_system_prompt("memory") is None  # empty store

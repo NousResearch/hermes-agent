@@ -620,6 +620,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           busy: false,
           awaitingResponse: false,
           turnLive: false,
+          turnInFlight: false,
           turnStartedAt: null,
           messages
         }))
@@ -720,6 +721,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           busy: false,
           awaitingResponse: false,
           turnLive: false,
+          turnInFlight: false,
           turnStartedAt: null,
           messages
         }))
@@ -786,6 +788,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           busy: false,
           awaitingResponse: false,
           turnLive: false,
+          turnInFlight: false,
           turnStartedAt: null,
           messages
         }))

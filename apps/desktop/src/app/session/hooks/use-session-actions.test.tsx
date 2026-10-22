@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- defect-1 (contract 9) adds 5 test cases for the relaxed mid-turn branch gate; the mid-turn describe + its BranchHarness additions are kept in this monolithic action-test pending a broader split
 import { registryBackendScopeKey } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
@@ -3203,6 +3204,8 @@ describe('resumeSession warm switch away from a streaming session (#89696)', () 
 
 function BranchHarness({
   activeSessionId = null,
+  busy,
+  initialSessionStates,
   navigate = vi.fn(),
   onCurrentReady,
   onLoadedReady,
@@ -3213,6 +3216,8 @@ function BranchHarness({
   selectedStoredSessionId = null
 }: {
   activeSessionId?: string | null
+  busy?: boolean
+  initialSessionStates?: Map<string, ClientSessionState>
   navigate?: ReturnType<typeof vi.fn>
   onCurrentReady?: (branchCurrentSession: (messageId?: string) => Promise<boolean>) => void
   onLoadedReady?: (branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession']) => void
@@ -3234,7 +3239,7 @@ function BranchHarness({
   const actions = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
-    busyRef: ref(false),
+    busyRef: ref(busy ?? false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
@@ -3246,7 +3251,7 @@ function BranchHarness({
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
-    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    sessionStateByRuntimeIdRef: ref(initialSessionStates ?? new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: (sessionId, updater) => {
       const next = updater(createClientSessionState(null))
@@ -3886,6 +3891,170 @@ describe('branchStoredSession desktop source tagging', () => {
         parent_session_id: 'stored-parent'
       })
     )
+  })
+})
+
+describe('branchLoadedSession mid-turn gate (contract 9)', () => {
+  const branchWhoseGateway = vi.fn(async (method: string) => {
+    if (method === 'session.branch_whole') {
+      return {
+        session_id: 'branch-runtime',
+        stored_session_id: 'branch-stored',
+        title: 'Branch',
+        message_count: 4,
+        messages_omitted: true,
+        mid_turn: true,
+        info: {}
+      } as never
+    }
+
+    return {} as never
+  })
+
+  // A settled two-turn transcript the branch would cut from.
+  const settledMessages = [
+    { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
+    { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] }
+  ]
+
+  const liveState = (flags: Partial<ClientSessionState>): ClientSessionState => ({
+    ...createClientSessionState('stored-live', settledMessages),
+    ...flags
+  })
+
+  afterEach(() => {
+    cleanup()
+    $notifications.set([])
+    setActiveSessionId(null)
+    vi.restoreAllMocks()
+    vi.clearAllMocks()
+  })
+
+  const renderLoaded = async (
+    busy: boolean,
+    state: ClientSessionState | undefined,
+    runtimeId = 'live-parent'
+  ): Promise<ReturnType<typeof useSessionActions>['branchLoadedSession']> => {
+    let branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession'] | null = null
+
+    render(
+      <BranchHarness
+        busy={busy}
+        initialSessionStates={state ? new Map([[runtimeId, state]]) : undefined}
+        onLoadedReady={branch => (branchLoadedSession = branch)}
+        onReady={() => undefined}
+        requestGateway={branchWhoseGateway}
+      />
+    )
+
+    await waitFor(() => expect(branchLoadedSession).not.toBeNull())
+
+    return branchLoadedSession!
+  }
+
+  it('proceeds when the session is busy with a real in-flight turn on a v9 backend', async () => {
+    vi.clearAllMocks()
+    const branchLoadedSession = await renderLoaded(true, liveState({ busy: true, turnInFlight: true, backendContract: 9 }))
+
+    await expect(
+      branchLoadedSession({
+        busy: true,
+        turnInFlight: true,
+        backendContract: 9,
+        cwd: '/repo',
+        messages: settledMessages,
+        runtimeId: 'live-parent',
+        storedSessionId: null
+      })
+    ).resolves.toBe(true)
+
+    expect(branchWhoseGateway).toHaveBeenCalledWith('session.branch_whole', expect.objectContaining({ session_id: 'live-parent' }))
+    // Honest copy: the child holds the settled transcript, not the in-flight turn.
+    const notice = $notifications.get().find(n => n.kind === 'info')
+
+    expect(notice).toBeDefined()
+    expect(notice?.title).toBe('Branch from the last settled message')
+    expect($notifications.get().some(n => n.kind === 'warning' && n.title === 'Session busy')).toBe(false)
+  })
+
+  it('keeps the blanket "Session busy" gate when busy without an in-flight turn (compaction hold)', async () => {
+    vi.clearAllMocks()
+    const branchLoadedSession = await renderLoaded(true, liveState({ busy: true, turnInFlight: false, backendContract: 9 }))
+
+    await expect(
+      branchLoadedSession({
+        busy: true,
+        turnInFlight: false,
+        backendContract: 9,
+        cwd: '/repo',
+        messages: settledMessages,
+        runtimeId: 'live-parent',
+        storedSessionId: null
+      })
+    ).resolves.toBe(false)
+
+    expect(branchWhoseGateway).not.toHaveBeenCalled()
+    expect($notifications.get().some(n => n.kind === 'warning' && n.title === 'Session busy')).toBe(true)
+  })
+
+  it('keeps the blanket gate on a v8 backend even with a real in-flight turn', async () => {
+    vi.clearAllMocks()
+    const branchLoadedSession = await renderLoaded(true, liveState({ busy: true, turnInFlight: true, backendContract: 8 }))
+
+    await expect(
+      branchLoadedSession({
+        busy: true,
+        turnInFlight: true,
+        backendContract: 8,
+        cwd: '/repo',
+        messages: settledMessages,
+        runtimeId: 'live-parent',
+        storedSessionId: null
+      })
+    ).resolves.toBe(false)
+
+    expect(branchWhoseGateway).not.toHaveBeenCalled()
+    expect($notifications.get().some(n => n.kind === 'warning' && n.title === 'Session busy')).toBe(true)
+  })
+
+  it('keeps the blanket gate when the backend contract has not been reported yet', async () => {
+    vi.clearAllMocks()
+    const branchLoadedSession = await renderLoaded(true, liveState({ busy: true, turnInFlight: true }))
+
+    await expect(
+      branchLoadedSession({
+        busy: true,
+        turnInFlight: true,
+        backendContract: undefined,
+        cwd: '/repo',
+        messages: settledMessages,
+        runtimeId: 'live-parent',
+        storedSessionId: null
+      })
+    ).resolves.toBe(false)
+
+    expect(branchWhoseGateway).not.toHaveBeenCalled()
+  })
+
+  it('still branches a settled (non-busy) chat on a v9 backend without the in-flight flag', async () => {
+    vi.clearAllMocks()
+    const branchLoadedSession = await renderLoaded(false, liveState({ busy: false, turnInFlight: false, backendContract: 9 }))
+
+    await expect(
+      branchLoadedSession({
+        busy: false,
+        turnInFlight: false,
+        backendContract: 9,
+        cwd: '/repo',
+        messages: settledMessages,
+        runtimeId: 'live-parent',
+        storedSessionId: null
+      })
+    ).resolves.toBe(true)
+
+    expect(branchWhoseGateway).toHaveBeenCalledWith('session.branch_whole', expect.objectContaining({ session_id: 'live-parent' }))
+    // The relaxed (settled) copy must NOT fire on the idle path.
+    expect($notifications.get().some(n => n.kind === 'info' && n.title === 'Branch from the last settled message')).toBe(false)
   })
 })
 

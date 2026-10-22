@@ -429,6 +429,8 @@ export const arChat = {
     branchNeedsChat: 'يحتاج التفريع إلى محادثة',
     sessionBusy: 'الجلسة مشغولة',
     branchStopCurrent: 'أوقف الدور الحالي قبل التفريع',
+    branchSettledTitle: 'التفريع من آخر رسالة مستقرة',
+    branchSettledBody: 'الدور الحالي ما زال قيد التشغيل، لذا تحتفظ الجلسة الجديدة بكل ما قبل آخر رسالة مستقرة — لا يُنسخ الطلب الجاري.',
     branchNoText: 'لا يوجد نص للتفريع',
     branchTitle: n => `مسودة: تفريع #${n}`,
     branchFailed: 'فشل التفريع',

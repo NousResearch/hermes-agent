@@ -669,6 +669,8 @@ describe('useSessionTileDelegate resumeTile', () => {
     await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-x', 'a1')).resolves.toBe(true)
     expect(branchLoadedSession).toHaveBeenCalledWith({
       busy: false,
+      turnInFlight: false,
+      backendContract: undefined,
       cwd: '/repo',
       messageId: 'a1',
       messages,
@@ -740,6 +742,7 @@ describe('useSessionTileDelegate retireBusyClaim', () => {
       awaitingResponse: false,
       busy: false,
       turnLive: false,
+      turnInFlight: false,
       turnStartedAt: null
     })
   })

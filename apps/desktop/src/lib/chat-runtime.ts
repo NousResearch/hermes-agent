@@ -47,6 +47,7 @@ export function createClientSessionState(
     runtimeStartedAt: Date.now(),
     turnStartedAt: null,
     turnLive: false,
+    turnInFlight: false,
     usage: null
   }
 }

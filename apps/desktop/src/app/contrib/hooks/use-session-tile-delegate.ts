@@ -256,6 +256,8 @@ export function useSessionTileDelegate({
 
         return await branchLoadedSession({
           busy: state.busy,
+          turnInFlight: state.turnInFlight,
+          backendContract: state.backendContract,
           cwd: state.cwd,
           messageId,
           messages: state.messages,
@@ -335,6 +337,7 @@ export function useSessionTileDelegate({
           awaitingResponse: false,
           busy: false,
           turnLive: false,
+          turnInFlight: false,
           turnStartedAt: null
         }))
 

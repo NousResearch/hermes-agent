@@ -153,6 +153,21 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
   }
 }
 
+/**
+ * A `session.info` heartbeat is a no-op when the busy flag, the awaiting-response
+ * latch (only meaningful while idle), and the turn-in-flight flag are all unchanged.
+ * `turnInFlight` (a live model turn, distinct from a manual-compaction hold) is part of
+ * the key: the mid-turn branch gate re-reads it on every heartbeat, so a flip must
+ * surface even when busy is unchanged.
+ */
+function sessionInfoNoChange(
+  state: { busy: boolean; awaitingResponse: boolean; turnInFlight?: boolean },
+  busy: boolean,
+  turnInFlight: boolean
+): boolean {
+  return state.busy === busy && (busy || !state.awaitingResponse) && Boolean(state.turnInFlight) === turnInFlight
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -361,8 +376,12 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         sessionId,
         state => {
           const busy = Boolean(payload!.running)
+          // A real in-flight turn (inflight_turn is not None) — NOT a compaction hold,
+          // which reports running=true with no inflight turn. Absent on pre-v9 backends,
+          // so the historic blanket gate (false) is the default there.
+          const turnInFlight = payload!.turn_in_progress ?? state.turnInFlight
 
-          if (state.busy === busy && (busy || !state.awaitingResponse)) {
+          if (sessionInfoNoChange(state, busy, Boolean(turnInFlight))) {
             return state
           }
 
@@ -390,6 +409,9 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
               // message.start (e.g. resuming an already-running session
               // that never replays its start event).
               turnLive: true,
+              // Only a live model turn qualifies a mid-turn branch; a compaction
+              // hold stays false and keeps the blanket gate.
+              turnInFlight,
               turnStartedAt: state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now()
             }
           }
@@ -478,7 +500,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             pendingBranchGroup: null,
             streamId: null,
             turnStartedAt: null,
-            turnLive: false
+            turnLive: false,
+            turnInFlight: false
           }
         },
         payload?.stored_session_id || undefined

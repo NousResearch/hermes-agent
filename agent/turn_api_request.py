@@ -151,9 +151,22 @@ def build_api_request(
         api_kwargs = _llm_request_mw.payload
         _original_api_kwargs = _llm_request_mw.original_payload
         _llm_middleware_trace = _llm_request_mw.trace
+        _middleware_rewrote_request = bool(
+            getattr(_llm_request_mw, "changed", _llm_middleware_trace)
+        )
     except Exception:
         _original_api_kwargs = dict(api_kwargs)
         _llm_middleware_trace = []
+        _middleware_rewrote_request = False
+
+    # Request middleware receives already-encoded OpenAI tool-call arguments and may
+    # rewrite them as ordinary text. Re-run the send-path repair after that mutable
+    # boundary so a replacement cannot leave invalid JSON for strict providers (#137028).
+    request_messages = api_kwargs.get("messages") if isinstance(api_kwargs, dict) else None
+    if _middleware_rewrote_request and isinstance(request_messages, list):
+        from agent.conversation_loop import _canonicalize_api_tool_calls
+
+        _canonicalize_api_tool_calls(request_messages)
 
     _fire_pre_api_request_hook(
         agent, api_kwargs, api_messages, _llm_middleware_trace, messages=messages,

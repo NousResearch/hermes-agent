@@ -132,7 +132,7 @@ def test_todo_tool_prints_a_checklist_not_a_progress_count():
     result = json.dumps({"todos": todos, "summary": {"total": 3, "completed": 1}})
     lines = _run(cli, [_tool("todo_list", {"todos": todos}, result)])
     assert any("☒ write tests" in line for line in lines)
-    assert any("◼ fix frame" in line for line in lines)
+    assert any("■ fix frame" in line for line in lines)
     assert any("☐ ship" in line for line in lines)
 
 

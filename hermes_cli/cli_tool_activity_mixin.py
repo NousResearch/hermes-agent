@@ -68,14 +68,6 @@ class CLIToolActivityMixin:
         mode = getattr(self, "tool_progress_mode", "all")
         if mode not in _SCROLLBACK_MODES:
             return
-        if is_modern(self):
-            from cli import _cprint
-            from hermes_cli.cli_modern_layout import completed_tool_line
-            if mode == "new" and name == getattr(self, "_last_scrollback_tool", None):
-                return  # "new" skips consecutive repeats of one tool
-            self._last_scrollback_tool = name
-            _cprint(completed_tool_line(self, name, args, duration, result, is_error))
-            return
         if mode in _GROUP_MODES and not failed and render.explore_kind(name):
             pending = self.__dict__.get("_explore_pending") or render.ExploreGroup()
             pending.add(name, args, duration, result)
@@ -86,15 +78,22 @@ class CLIToolActivityMixin:
         if mode == "new" and name == getattr(self, "_last_scrollback_tool", None) and name not in render.TODO_TOOLS:
             return
         self._last_scrollback_tool = name
-        self._print_tool_block(rows, name, result, failed, args)
+        self._print_tool_block(rows, name, result, failed, args, duration, is_error)
 
-    def _print_tool_block(self, rows: list[str], name: str, result, failed: bool, args: dict | None = None) -> None:
+    def _print_tool_block(self, rows: list[str], name: str, result, failed: bool, args: dict | None = None,
+                          duration: float = 0.0, is_error: bool = False) -> None:
         from cli import _cprint
-        for row in rows:
-            _cprint(row)
+        modern = is_modern(self)
+        if modern:
+            from hermes_cli.cli_modern_layout import completed_tool_line
+            _cprint(completed_tool_line(self, name, args, duration, result, is_error))
+        else:
+            for row in rows:
+                _cprint(row)
         if name in render.TODO_TOOLS and not failed:
             # The plan itself is the result: a checklist, independent of the preview budget.
-            for line in render.render_todo_checklist(render.todo_items(args, result), _columns()):
+            for line in render.render_todo_checklist(render.todo_items(args, result), _columns(),
+                                                     gutter_indent=2 if modern else 4):
                 _cprint(line)
             return
         budget = self._tool_preview_line_budget()
@@ -102,7 +101,7 @@ class CLIToolActivityMixin:
             return
         expand_hint = getattr(self, "_app", None) is not None  # Ctrl+O only exists in the TUI
         for line in render.render_preview(name, result, failed=failed, max_lines=budget, width=_columns(),
-                                          expand_hint=expand_hint):
+                                          expand_hint=expand_hint, indent=2 if modern else 4):
             _cprint(line)
 
     def _flush_explore_group(self) -> None:
@@ -116,9 +115,13 @@ class CLIToolActivityMixin:
             name, args, duration, result = group.calls[0]
             rows, failed = render.render_tool_row(name, args, duration, result)
             self._last_scrollback_tool = name
-            self._print_tool_block(rows, name, result, failed, args)
+            self._print_tool_block(rows, name, result, failed, args, duration)
             return
         self._last_scrollback_tool = _EXPLORED_SENTINEL
+        if is_modern(self):
+            from hermes_cli.cli_modern_layout import _take_gap
+            _cprint(_take_gap() + render.render_explore_row(group, _columns(), modern=True))
+            return
         _cprint(render.render_explore_row(group, _columns()))
 
     # ── inline diffs ────────────────────────────────────────────────────────────────────────
@@ -131,14 +134,12 @@ class CLIToolActivityMixin:
         self._transcript().attach_diff("", tool_name, plain_diff(diff_text))
         if not getattr(self, "_inline_diffs_enabled", True):
             return
-        if is_modern(self):  # the glyph layout's gutter rows (never width-padded), changed words lit
-            from hermes_cli.cli_diff_render import emphasize_word_changes
-            from hermes_cli.cli_modern_layout import gutter_print
-            emit = gutter_print(_cprint)
-            for line in emphasize_word_changes(diff_text.rstrip("\n").splitlines()):
-                emit(line)
-            return
         self._flush_explore_group()
+        if is_modern(self):  # numbered rows behind the row's gutter, sized to the diff, not the window
+            from hermes_cli.cli_diff_render import render_gutter_diff
+            for line in render_gutter_diff(diff_text, _columns()):
+                _cprint(line)
+            return
         for line in render_inline_diff(diff_text, _columns()):
             _cprint(line)
 

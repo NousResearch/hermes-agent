@@ -173,17 +173,34 @@ def tool_row(function_name: str, args: dict | None, duration: float, result=None
     neutral = is_neutral_failure(function_name, result)
     out = []
     for index, (emoji, verb, detail, suffix) in enumerate(rows):
-        verb = (verb or function_name).strip()
-        mark = f"{_RED}✗{_RST}" if suffix is not None and not neutral else (emoji or "●")
-        line = f"{mark} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
-        if detail:
-            line += f" {detail}"
+        state = "ok" if suffix is None else "neutral" if neutral else "failed"
+        line = row_head(emoji, verb or function_name, state) + (detail or "")
         if index == len(rows) - 1 and duration >= 0.1:
             line += f"  {_DIM}{duration:.1f}s{_RST}"
         if suffix:
             line += f"{_DIM if neutral else _RED}{suffix}{_RST}"
         out.append(line)
     return "\n".join(out)
+
+
+VERB_COLUMN = 9  # "Explored" + one space: every row's detail starts in the same column
+
+
+def _ok_mark() -> str:
+    return f"{_fg(_skin_hex('ui_ok', '#4caf50'))}✓{_RST}"
+
+
+def row_head(emoji: str, verb: str, state: str = "ok") -> str:
+    """``✓ 💻 $        `` — status mark (``ok`` ✓, ``failed`` red ✗, ``neutral`` dim ✗ for a refusal
+    the agent handles itself), the tool's emoji (normalised to two cells) and the bold verb padded
+    to ``VERB_COLUMN``, so tool rows read as one aligned list. Width-independent."""
+    from prompt_toolkit.utils import get_cwidth
+    icon = (emoji or "●").strip()
+    icon += " " * max(0, 2 - get_cwidth(icon))
+    verb = verb.strip()
+    verb = verb[:1].upper() + verb[1:]
+    mark = {"failed": f"{_RED}✗{_RST}", "neutral": f"{_DIM}✗{_RST}"}.get(state) or _ok_mark()
+    return f"{mark} {icon} {_BOLD}{verb}{_RST}{' ' * max(1, VERB_COLUMN - get_cwidth(verb))}"
 
 
 _ACTIVE = False  # one CLI per process; read by printers that get no CLI handle (gateway inline diffs)

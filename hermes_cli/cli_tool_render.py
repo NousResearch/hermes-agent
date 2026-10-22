@@ -181,6 +181,38 @@ def preview_source(name: str, result: Any) -> list[str]:
     return lines
 
 
+_RULE_ONLY_RE = re.compile(r"^\s*([=\-_~*#.])\1{5,}\s*$")
+_ERROR_LINE_RE = re.compile(r"\b(error|fail(ed|ure)?|exception|assert\w*|denied|not found|cannot|no such|fatal|panic)\b",
+                            re.IGNORECASE)
+_NOISE_LINE_RE = re.compile(r"^\s*(Traceback \(most recent call last\)|File \".*\", line \d+)")
+
+
+def preview_lines(lines: list[str], failed: bool, max_lines: int) -> tuple[list[str], int]:
+    """The lines worth showing under a row, plus how many are hidden. Separator rules and blank
+    lines never take a slot. A failure leads with the lines that say what went wrong (``FAIL:``,
+    ``AssertionError: …``, ``FAILED (failures=1)``) rather than the first lines of output."""
+    kept = [ln for ln in lines if ln.strip() and not _RULE_ONLY_RE.match(clean_text(ln))]
+    if failed:
+        errors = [ln for ln in kept if _ERROR_LINE_RE.search(ln) and not _NOISE_LINE_RE.match(ln)]
+        # Indented matches are usually echoed source (``    self.assertEqual(…)``), not the verdict.
+        errors = [ln for ln in errors if not ln[:1].isspace()] or errors
+        if errors:
+            shown, _ = fold(errors, max_lines)
+            return shown, len(kept) - len(shown)
+        if len(kept) > max_lines + 1:
+            return kept[-max_lines:], len(kept) - max_lines  # no error line: the end says most
+    return fold(kept, max_lines)
+
+
+def _short_paths(text: str) -> str:
+    """Absolute paths under the working directory or home, as the user would type them."""
+    import os
+    cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+    home = os.path.expanduser("~")
+    text = text.replace(cwd.rstrip("/") + "/", "") if cwd not in ("", "/") else text
+    return text.replace(home.rstrip("/") + "/", "~/") if home not in ("", "/") else text
+
+
 def fold(lines: list[str], max_lines: int) -> tuple[list[str], int]:
     """First ``max_lines`` lines plus the hidden count; a single hidden line is shown instead."""
     if len(lines) <= max_lines + 1:
@@ -189,23 +221,25 @@ def fold(lines: list[str], max_lines: int) -> tuple[list[str], int]:
 
 
 def render_preview(name: str, result: Any, *, failed: bool, max_lines: int, width: int,
-                   expand_hint: bool) -> list[str]:
+                   expand_hint: bool, indent: int = 4) -> list[str]:
     """The ``⎿`` block under a completed tool row: up to ``max_lines`` dim lines (red on failure),
     ``(no output)`` for an empty command, then ``… +N lines``."""
     if max_lines <= 0 or name in _NO_PREVIEW or result is None:
         return []
+    first, rest = " " * indent + "⎿  ", " " * (indent + 3)
     lines = preview_source(name, result)
     if not lines:
-        return [f"{DIM}{GUTTER_FIRST}{t('cli.tool_render.no_output')}{RST}"] if name in _COMMAND_TOOLS else []
-    shown, hidden = fold(lines, max_lines)
+        return [f"{DIM}{first}{t('cli.tool_render.no_output')}{RST}"] if name in _COMMAND_TOOLS else []
+    shown, hidden = preview_lines(lines, failed, max_lines)
     color = error_color() if failed else DIM
-    body = width - len(GUTTER_FIRST)
+    body = width - len(first)
     from agent.redact import redact_sensitive_text
-    rendered = [f"{color}{GUTTER_FIRST if i == 0 else GUTTER_REST}{clip(clean_text(redact_sensitive_text(line)), body)}{RST}"
+    rendered = [f"{color}{first if i == 0 else rest}"
+                f"{clip(_short_paths(clean_text(redact_sensitive_text(line))), body)}{RST}"
                 for i, line in enumerate(shown)]
     if hidden:
         hint = "cli.tool_render.more_lines_hint" if expand_hint else "cli.tool_render.more_lines"
-        rendered.append(f"{DIM}{GUTTER_REST}{t(hint, count=hidden, shortcut=EXPAND_KEY)}{RST}")
+        rendered.append(f"{DIM}{rest}{t(hint, count=hidden, shortcut=EXPAND_KEY)}{RST}")
     return rendered
 
 
@@ -254,7 +288,7 @@ def running_tool_label(name: str, args: dict | None, width: int = 60) -> str:
 TODO_TOOLS = frozenset({"todo", "todo_list"})
 TODO_MAX_ITEMS = 8
 _STRIKE = "\033[9m"
-_TODO_GLYPHS = {"completed": "☒", "in_progress": "◼", "cancelled": "☒"}
+_TODO_GLYPHS = {"completed": "☒", "in_progress": "■", "cancelled": "☒"}
 
 
 def todo_items(args: dict | None, result: Any) -> list[dict]:
@@ -276,20 +310,21 @@ def _todo_window(items: list[dict], limit: int) -> list[dict]:
     return items[start:start + limit]
 
 
-def render_todo_checklist(items: list[dict], width: int, limit: int = TODO_MAX_ITEMS) -> list[str]:
-    """``⎿ ☐ pending`` / ``◼ in progress`` (accent) / ``☒ done`` (dim, struck through), then
+def render_todo_checklist(items: list[dict], width: int, limit: int = TODO_MAX_ITEMS, gutter_indent: int = 4) -> list[str]:
+    """``⎿ ☐ pending`` / ``■ in progress`` (accent) / ``☒ done`` (dim, struck through), then
     ``… +N more`` when the list is longer than ``limit``."""
     if not items:
         return []
     accent = _hex_fg("ui_accent", "#FFBF00")
     shown = _todo_window(items, limit)
-    body = max(10, width - len(GUTTER_FIRST))
+    first_gutter, rest_gutter = " " * gutter_indent + "⎿  ", " " * (gutter_indent + 3)
+    body = max(10, width - len(first_gutter))
     out = []
     for index, item in enumerate(shown):
         status = str(item.get("status") or "pending")
         indent = "  " if item.get("parent") else ""
         text = clip(clean_text(str(item.get("content") or "")).replace("\n", " "), body - 2 - len(indent))
-        gutter = GUTTER_FIRST if index == 0 else GUTTER_REST
+        gutter = first_gutter if index == 0 else rest_gutter
         glyph = _TODO_GLYPHS.get(status, "☐")
         if status == "in_progress":
             line = f"{gutter}{indent}{accent}{glyph} {text}{RST}"
@@ -299,7 +334,7 @@ def render_todo_checklist(items: list[dict], width: int, limit: int = TODO_MAX_I
             line = f"{gutter}{indent}{glyph} {text}"
         out.append(line)
     if len(items) > len(shown):
-        out.append(f"{DIM}{GUTTER_REST}{t('cli.tool_render.more_items', count=len(items) - len(shown))}{RST}")
+        out.append(f"{DIM}{rest_gutter}{t('cli.tool_render.more_items', count=len(items) - len(shown))}{RST}")
     return out
 
 
@@ -341,14 +376,17 @@ def _part_items(items: list[str], limit: int = 3) -> str:
     return shown + (f" +{len(unique) - limit}" if len(unique) > limit else "")
 
 
-def render_explore_row(group: ExploreGroup, width: int) -> str:
-    """``  ┊ ✓ 🔎 explored  read a.py, b.py · searched "foo"  1.2s``."""
+def render_explore_row(group: ExploreGroup, width: int, modern: bool = False) -> str:
+    """``  ┊ ✓ 🔎 explored  read a.py, b.py · searched "foo"  1.2s`` (glyph layout: no rail)."""
     from agent.display import get_skin_tool_prefix
     parts: dict[str, list[str]] = {}
     for name, args, _, _ in group.calls:
         parts.setdefault(explore_kind(name) or "read", []).append(_subject(name, args))
     detail = " · ".join(t(f"cli.tool_render.explored_{kind}", items=_part_items(items)) for kind, items in parts.items())
     duration = sum(call[2] or 0.0 for call in group.calls)
+    if modern:
+        from hermes_cli.cli_modern_layout import row_head
+        return row_head("🔎", t("cli.tool_render.explored")) + detail + f"  {DIM}{format_duration(duration)}{RST}"
     head = f"  {get_skin_tool_prefix()} {ok_color()}✓{RST} 🔎 {t('cli.tool_render.explored'):9} "
     tail = f"  {DIM}{format_duration(duration)}{RST}"
     return head + clip(detail, max(20, width - 40)) + tail

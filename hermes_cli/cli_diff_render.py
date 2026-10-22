@@ -15,6 +15,7 @@ from difflib import SequenceMatcher
 from agent.i18n import t
 from hermes_cli.cli_tool_render import DIM, RST, clean_text, clip, error_color, ok_color
 
+_BOLD = "\033[1m"
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _FILE_RE = re.compile(r"^(?P<a>\S.*?) → (?P<b>\S.*)$")
 _INDENT = "    "
@@ -198,7 +199,8 @@ def _render_row(kind: str, number: int | None, body: str, digits: int, width: in
 def _header(diff: DiffFile) -> str:
     from agent.display import get_skin_tool_prefix
     counts = f"{ok_color()}+{diff.added}{RST} {error_color()}−{diff.removed}{RST}"
-    return f"  {get_skin_tool_prefix()} ✎ {t('cli.tool_render.edited', path=diff.path)}  {counts}"
+    from hermes_cli.cli_modern_layout import _display_path
+    return f"  {get_skin_tool_prefix()} ✎ {t('cli.tool_render.edited', path=_display_path(diff.path))}  {counts}"
 
 
 def render_inline_diff(text: str, width: int) -> list[str]:
@@ -219,6 +221,49 @@ def render_inline_diff(text: str, width: int) -> list[str]:
         out.extend(_render_row(kind, number, body, digits, width, colors, spans.get(index))
                    for index, (kind, number, body) in enumerate(diff.rows))
     out.extend(f"{DIM}{_INDENT}{line}{RST}" for line in trailer)
+    return out
+
+
+def render_gutter_diff(text: str, width: int = 0) -> list[str]:
+    """The glyph layout's inline diff, hung under the edit's row behind a dim ``│`` (the column of
+    the previews' ``⎿``), its text in the tool rows' verb column: numbered rows, and the
+    added/removed rows tinted as one block as wide as the diff's longest row (at most ``width``
+    when given, so the padding itself never wraps). The edit's row already names a single file;
+    an edit of several files gets a ``path  +N −M`` line per file."""
+    files, trailer = parse_inline_diff(text)
+    if not any(f.rows for f in files):
+        return [f"{DIM}  │{RST}  {line}" for line in (text or "").rstrip("\n").splitlines()]
+    from prompt_toolkit.utils import get_cwidth
+
+    from agent.display import _diff_ansi
+    from hermes_cli.cli_modern_layout import _display_path
+    colors = _diff_ansi()
+    gutter = f"{DIM}  │{RST}  "
+    out: list[str] = []
+    for diff in files:
+        if len(files) > 1:
+            counts = f"{ok_color()}+{diff.added}{RST} {error_color()}−{diff.removed}{RST}"
+            out.append(f"{gutter}{_BOLD}{_display_path(diff.path)}{RST}  {counts}")
+        numbers = [n for _, n, _ in diff.rows if n is not None]
+        digits = len(str(max(numbers))) if numbers else 1
+        block = max((get_cwidth(f"{'0' * digits} + {body}") for kind, _, body in diff.rows if kind != "gap"), default=0)
+        if width:
+            block = min(block, max(20, width - 6))
+        spans = _pair_rows(diff.rows)
+        for index, (kind, number, body) in enumerate(diff.rows):
+            if kind == "gap":
+                out.append(f"{gutter}{DIM}{' ' * digits} ⋮{RST}")
+                continue
+            prefix = f"{str(number).rjust(digits)} {kind} "
+            if kind == " ":
+                out.append(f"{gutter}{colors['dim']}{prefix}{body}{RST}".rstrip())
+                continue
+            key = "plus" if kind == "+" else "minus"
+            pad = " " * max(0, block - get_cwidth(prefix + body))
+            emphasis = colors.get(f"{key}_em")
+            shown = _highlight(body, spans[index], colors[key], emphasis) if spans.get(index) and emphasis else body
+            out.append(f"{gutter}{colors[key]}{prefix}{shown}{pad}{RST}")
+    out.extend(f"{gutter}{DIM}{line}{RST}" for line in trailer)
     return out
 
 

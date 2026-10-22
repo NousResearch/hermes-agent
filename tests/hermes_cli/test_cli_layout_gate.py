@@ -51,12 +51,13 @@ def test_turn_chrome_follows_the_layout_and_both_reach_the_viewer(modern):
                  lambda c: c._flush_stream())
     frame = [line for line in lines if line.startswith(("╭", "╰"))]
     tool_row = next(line for line in lines if "make" in line)
-    if modern:  # glyph rows: no frame, the tool row leads with its emoji, no ✓ / result preview
-        assert frame == [] and not tool_row.lstrip().startswith("┊") and "✓" not in tool_row, lines
-        assert sum(line.startswith("☤") for line in lines) == 2 and not any("⎿" in line for line in lines)
-    else:  # classic: one reply frame per turn around a ✓ row with its result preview
-        assert [line[0] for line in frame] == ["╭", "╰"] and "✓" in tool_row, lines
-        assert any("⎿" in line and "ok" in line for line in lines)
+    # Both layouts: a ✓ row with its result preview under ⎿.
+    assert "✓" in tool_row and any("⎿" in line and "ok" in line for line in lines), lines
+    if modern:  # glyph rows: no frame, no ┊ rail; the row starts in column 0 with its status mark
+        assert frame == [] and tool_row.startswith("✓ 💻"), lines
+        assert sum(line.startswith("☤") for line in lines) == 2
+    else:  # classic: one reply frame per turn around the ┊ rail
+        assert [line[0] for line in frame] == ["╭", "╰"] and tool_row.lstrip().startswith("┊"), lines
     entry = cli._transcript().entries[-1]
     assert (entry.kind, entry.name, entry.result) == ("tool", "terminal", "ok")
 
@@ -137,8 +138,9 @@ def test_word_diff_highlight_in_both_layouts(modern):
     added = next(line for line in raw if "beta" in line and emphasis in line)
     assert f"{emphasis}beta" in added
     plain = [_ANSI.sub("", line) for line in raw]
-    if modern:  # glyph layout: the diff hangs behind the gutter, rows keep their own width
-        assert all(line.startswith("│") for line in plain if "alpha" in line or "beta" in line), plain
+    if modern:  # glyph layout: numbered rows hang behind the row's gutter, sized to the diff
+        changed = [line for line in plain if "alpha" in line or "beta" in line]
+        assert [line.split()[:3] for line in changed] == [["│", "1", "-"], ["│", "1", "+"]], plain
     assert "+value = compute(beta)" in cli._transcript().entries[-1].diff
 
 

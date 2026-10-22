@@ -170,7 +170,7 @@ def test_todo_checklist_marks_each_status_and_folds_long_lists():
     result = json.dumps({"todos": items, "summary": {"total": 12}})
     lines = render.render_todo_checklist(render.todo_items({}, result), 80)
     text = plain(lines)
-    assert "☒ task 0" in text[0] and "◼ task 2" in "".join(text) and "☐ task 3" in "".join(text)
+    assert "☒ task 0" in text[0] and "■ task 2" in "".join(text) and "☐ task 3" in "".join(text)
     assert len(lines) == render.TODO_MAX_ITEMS + 1
     assert t("cli.tool_render.more_items", count=12 - render.TODO_MAX_ITEMS) in text[-1]
     in_progress = next(line for line in lines if "task 2" in line)
@@ -181,7 +181,7 @@ def test_todo_checklist_marks_each_status_and_folds_long_lists():
 def test_todo_checklist_window_keeps_the_active_item_visible():
     items = [{"id": str(i), "content": f"task {i}", "status": "completed"} for i in range(10)]
     items += [{"id": "10", "content": "now", "status": "in_progress"}]
-    assert any("◼ now" in line for line in plain(render.render_todo_checklist(items, 80, limit=4)))
+    assert any("■ now" in line for line in plain(render.render_todo_checklist(items, 80, limit=4)))
 
 
 def _row_with(lines, marker):

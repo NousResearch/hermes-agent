@@ -374,6 +374,7 @@ def _register_child(
         "owner_agent_session_id": (
             str(getattr(child, "_parent_session_id", "") or "") or str(getattr(parent_agent, "session_id", "") or "") or None
         ),
+        "owner_db_path": getattr(getattr(parent_agent, "_session_db", None), "db_path", None),
         # Immutable live gateway/TUI session that commissioned this child.
         # Empty outside those hosts; RPC authority fails closed.
         "owner_session_id": owner_session_id,

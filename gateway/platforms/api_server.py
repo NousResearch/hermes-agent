@@ -1667,6 +1667,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("POST", "/api/sessions/{session_id}/subagents/{subagent_id}/stop", self._handle_session_subagent_stop),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -2453,33 +2454,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_require_auth
     async def _handle_capabilities(self, request: web.Request) -> web.Response:
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
+        from gateway.platforms.api_server_capabilities import browser_control_features
+
         runner = getattr(self, "gateway_runner", None)
         features = {
             "chat_completions": True, "chat_completions_streaming": True,
+            "session_subagent_stop": True,
             "responses_api": True, "responses_streaming": True, "run_submission": True,
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
             **_STATIC_FEATURE_FLAGS,
             "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
             "cors": bool(self._cors_origins),
             # Always advertised for feature-detection; enabled follows config.
-            "browser_extension_control": {
-                "enabled": self._browser_control_enabled(),
-                "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
-                "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
-                "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
-                "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
-                "developer_mode": self._browser_control_developer_mode(),
-                "artifact_transport": {
-                    "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
-                    "download": {
-                        "method": "GET", "path": "/v1/artifacts/download/{artifact_id}"},
-                    "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
-                    "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
-                    "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES)},
-                "real_browser_actions": True,
-                "transports": {
-                    "local_vps": "websocket-subprotocol-ticket",
-                    "cloud": "authenticated-gateway-rpc"}}}
+            "browser_extension_control": browser_control_features(self)}
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
@@ -3134,6 +3121,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err and err.startswith("title:"):
             return _error_response(err[len("title:"):], 400, code="invalid_title")
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
+
+    @_require_auth
+    async def _handle_session_subagent_stop(self, request: web.Request) -> web.Response:
+        from gateway.platforms.api_server_subagents import stop_session_subagent
+        return await stop_session_subagent(self, request)
 
     @_require_auth
     async def _handle_get_session(self, request: web.Request) -> web.Response:

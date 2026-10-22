@@ -82,3 +82,28 @@ delegation config > parent; the selected provider supplies its own credential
 bundle. An unresolvable provider raises `SubagentLifecycleError` before launch.
 Core does not expose `provider` to the model: the plugin chooses it, for example
 from operator config.
+
+## HTTP cancellation for delegated children
+
+The API server advertises `features.session_subagent_stop` through authenticated
+`GET /v1/capabilities`. When true, a client may request:
+
+```http
+POST /api/sessions/{session_id}/subagents/{subagent_id}/stop
+Authorization: Bearer <the-owning-profile-api-key>
+```
+
+The `/p/{profile}/` mirror uses that profile's credential and SessionDB. The
+session must exist with source `api_server`; the live child must belong to that
+session's compression lineage and exact profile DB. A guessed child ID cannot
+control a sibling conversation or another profile. This route operates on
+`delegate_task` registry children, not plugin lifecycle handles.
+
+An accepted cooperative stop returns HTTP 202 with `{"status":"stopping"}`.
+Repeated admission for the same live child does not interrupt it again. Recent
+finished children return 409; foreign or unknown targets return 404 without
+revealing their owner. Missing API-key configuration is rejected. Request
+acceptance is not worker completion: the normal child teardown/completion path
+keeps partial output and records the eventual interrupted result. The parent
+and sibling workers are not stopped. A gateway restart does not revive a
+finished or lost child merely because a Stop request is retried.

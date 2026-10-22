@@ -67,6 +67,27 @@ def test_third_party_request_on_the_wire_carries_no_foreign_bearer(monkeypatch):
     assert "authorization" not in captured["headers"]
 
 
+def test_standard_client_uses_the_anthropic_httpx2_timeout():
+    """Anthropic 1.x rejects timeout objects from Hermes's separate httpx package."""
+    pytest.importorskip("anthropic")
+
+    client = build_anthropic_client("sk-ant-api03-test")
+
+    assert client is not None
+
+
+def test_bearer_client_uses_the_anthropic_httpx2_client():
+    """The per-request Entra hook must use the HTTP client type Anthropic 1.x accepts."""
+    pytest.importorskip("anthropic")
+
+    client = build_anthropic_client(
+        lambda: "entra-test-token",
+        base_url="https://example.openai.azure.com/anthropic",
+    )
+
+    assert type(client._client).__module__.startswith("httpx2")
+
+
 @pytest.mark.parametrize(("family", "oauth"), [("api03", False), ("usr01", False), ("svc01", False), ("admin01", False), ("oat01", True)])
 def test_console_key_families_carry_x_api_key_without_claude_code_identity(monkeypatch, family, oauth):
     """#133856: Console key families must not ride Bearer + the Claude Code beta/user-agent (that request
@@ -90,12 +111,12 @@ def test_key_cmd_token_lands_in_the_header_its_family_needs(monkeypatch, base_ur
     """A key_cmd (callable) credential takes the per-request hook path: on the native host a Console key it
     prints must go out as x-api-key like the static path; OAuth tokens and non-native gateways keep Bearer."""
     pytest.importorskip("anthropic")
-    import httpx
+    import httpx2
 
     monkeypatch.setattr("agent.anthropic_adapter._claude_code_version_cache", "0.0.0")
     key = "sk-" + "ant-" + family + "-" + "X" * 24
     client = build_anthropic_client(lambda: key, base_url)
-    request = httpx.Request("POST", (base_url or "https://api.anthropic.com") + "/v1/messages", headers={"Authorization": "Bearer entra-id-bearer-via-http-hook"})
+    request = httpx2.Request("POST", (base_url or "https://api.anthropic.com") + "/v1/messages", headers={"Authorization": "Bearer entra-id-bearer-via-http-hook"})
     client._client.event_hooks["request"][0](request)
     sent = {"x-api-key": request.headers.get("x-api-key"), "bearer": request.headers.get("authorization")}
     assert sent == ({"x-api-key": key, "bearer": None} if expect == "x-api-key" else {"x-api-key": None, "bearer": "Bearer " + key})

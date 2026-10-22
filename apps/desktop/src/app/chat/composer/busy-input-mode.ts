@@ -27,10 +27,51 @@ export type { BusyInputMode } from '@/store/busy-input-mode'
 export type BusyComposerAction = 'redirect' | 'queue' | 'steer' | 'stop'
 
 /**
- * One-message keyboard override while a turn is running. Queue and steer are
- * inverses; interrupt keeps queue as its non-interrupting alternate.
+ * One-message keyboard override while a turn is running. Queue redirects;
+ * steer and interrupt queue. The saved preference itself never changes.
  */
-export const alternateBusyInputMode = (mode: BusyInputMode): BusyInputMode => (mode === 'queue' ? 'steer' : 'queue')
+export const alternateBusyInputMode = (mode: BusyInputMode): BusyInputMode => (mode === 'queue' ? 'interrupt' : 'queue')
+
+export function isBusyOverrideChord(event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey'>): boolean {
+  return event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey
+}
+
+const ACTION_HINT = {
+  redirect: 'composer.redirect',
+  queue: 'composer.queue',
+  steer: 'composer.steer',
+  stop: 'composer.send'
+} as const
+
+export type ComposerHintAction = (typeof ACTION_HINT)[BusyComposerAction]
+
+/** Session hints follow the dispatch result, including direct replies and fallbacks. */
+export function resolveComposerHintActions({
+  canSubmit,
+  directSubmit,
+  action,
+  mode,
+  alternateCanRedirect
+}: {
+  canSubmit: boolean
+  directSubmit: boolean
+  action: BusyComposerAction
+  mode: BusyInputMode | null
+  alternateCanRedirect: boolean
+}): { enterAction: ComposerHintAction | null; alternateAction: ComposerHintAction | null } {
+  if (!canSubmit) {
+    return { enterAction: null, alternateAction: null }
+  }
+
+  return {
+    enterAction: directSubmit ? 'composer.send' : ACTION_HINT[action],
+    alternateAction: directSubmit
+      ? 'composer.send'
+      : mode === 'queue' && alternateCanRedirect
+        ? 'composer.redirect'
+        : 'composer.queue'
+  }
+}
 
 /**
  * The action the composer should take for a busy Enter, so the visible
@@ -92,10 +133,12 @@ export function resolveBusyComposerAction({
  * deliver (a steer-mode composer with only `onSteer` wired would read as
  * steer-able and then silently queue on Enter).
  */
-export function busyModeHasCarrier(mode: BusyInputMode, carriers: {
-  onSteer: boolean
-  onSteerHidden: boolean
-}): boolean {
+export function busyModeHasCarrier(
+  mode: BusyInputMode,
+  carriers: {
+    onSteer: boolean
+    onSteerHidden: boolean
+  }
+): boolean {
   return mode === 'steer' ? carriers.onSteerHidden : carriers.onSteer
 }
-

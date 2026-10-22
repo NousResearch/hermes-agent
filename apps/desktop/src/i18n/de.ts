@@ -180,7 +180,6 @@ export const deOverrides = {
     },
 
     accounts: deConnectorAccounts,
-
     tools: {
       title: 'Tools',
       notInstalledBody: 'Installieren Sie ihn auf diesem Gerät, um seine Tools zu sehen.',
@@ -657,6 +656,7 @@ export const deOverrides = {
       'composer.send': 'Nachricht senden',
       'composer.newline': 'Neue Zeile einfügen',
       'composer.steer': 'Laufenden Turn steuern',
+      'composer.redirect': 'Aktuellen Lauf umleiten',
       'composer.queue': 'Nachricht in Warteschlange',
       'composer.sendQueued': 'Nächsten eingereihten Turn senden',
       'composer.mention': 'Dateien, Ordner, URLs referenzieren',
@@ -666,10 +666,7 @@ export const deOverrides = {
       'composer.cancel': 'Popover schließen · Lauf abbrechen'
     }
   },
-  findInPage: {
-    next: 'Nächster Treffer',
-    previous: 'Vorheriger Treffer'
-  },
+  findInPage: { next: 'Nächster Treffer', previous: 'Vorheriger Treffer' },
   language: {
     label: 'Sprache',
     description: 'Wählen Sie die Sprache der Desktop-Oberfläche.',
@@ -1361,7 +1358,7 @@ export const deOverrides = {
         personality: 'Standard-Assistentenstil für neue Sessions.',
         showReasoning: 'Denkabschnitte anzeigen, wenn das Backend sie liefert.',
         busyInputMode:
-          'Bestimmt das Verhalten beim Drücken der Eingabetaste (Enter), während der Agent noch läuft. Interrupt leitet den aktuellen Turn mit Ihrem Text um, steer fügt ihn ohne Abbruch an das nächste Tool-Ergebnis an und queue führt ihn nach Beendigung des Turns aus. Mit Cmd/Strg+Enter wird nur für diese Nachricht die alternative Aktion verwendet: queue ↔ steer, interrupt → queue.'
+          'Bestimmt das Verhalten beim Drücken der Eingabetaste (Enter), während der Agent noch läuft. Interrupt leitet den aktuellen Turn mit Ihrem Text um, steer fügt ihn ohne Abbruch an das nächste Tool-Ergebnis an und queue führt ihn nach Beendigung des Turns aus. Cmd/Strg+Enter leitet im Modus queue den aktuellen Lauf um und reiht die Nachricht im Modus steer oder interrupt ein, jeweils nur für diese Nachricht. Umschalt+Enter fügt immer einen Zeilenumbruch ein.'
       },
       desktop: {
         repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, die in Projekten angezeigt werden.',

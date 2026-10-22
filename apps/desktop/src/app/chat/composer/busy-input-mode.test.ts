@@ -73,8 +73,8 @@ describe('resolveBusyComposerAction', () => {
 
 
 describe('alternateBusyInputMode', () => {
-  it('temporarily swaps queue and steer', () => {
-    expect(alternateBusyInputMode('queue')).toBe('steer')
+  it('redirects one queued follow-up and queues one steered follow-up', () => {
+    expect(alternateBusyInputMode('queue')).toBe('interrupt')
     expect(alternateBusyInputMode('steer')).toBe('queue')
   })
 

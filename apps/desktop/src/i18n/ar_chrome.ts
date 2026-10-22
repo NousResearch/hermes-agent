@@ -138,6 +138,7 @@ export const arChrome = {
       'composer.send': 'إرسال الرسالة',
       'composer.newline': 'إدراج سطر جديد',
       'composer.steer': 'توجيه الدور الجاري',
+      'composer.redirect': 'إعادة توجيه التشغيل الحالي',
       'composer.sendQueued': 'إرسال الدور التالي في الطابور',
       'composer.mention': 'الإشارة إلى الملفات والمجلدات وعناوين URL',
       'composer.slash': 'لوحة الأوامر المائلة',

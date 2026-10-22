@@ -1,5 +1,7 @@
 import type { BusyInputMode } from '@/store/busy-input-mode'
 
+import { busyModeHasCarrier, resolveBusyComposerAction, resolveComposerHintActions } from './busy-input-mode'
+
 export type ComposerBusyAction = 'interrupt' | 'steer' | 'queue' | 'stop'
 
 export interface BusySubmitInputs {
@@ -17,6 +19,54 @@ export interface BusySubmitState {
   busyAction: ComposerBusyAction
   canSteer: boolean
   canSubmit: boolean
+}
+
+interface BusyComposerInputs extends BusySubmitInputs {
+  cardWaiting: boolean
+  hasHiddenSteerHandler: boolean
+  hasText: boolean
+  queueEditing: boolean
+}
+
+/** Resolve controls and help together, using the carrier each action will call. */
+export function deriveBusyComposerState(inputs: BusyComposerInputs) {
+  const { attachmentCount, blockingPrompt, busy, busyInputMode, cardWaiting, compacting, isSteerableText } = inputs
+
+  const { canSteer, canSubmit } = deriveBusySubmitState({
+    ...inputs,
+    blockingPrompt: blockingPrompt || cardWaiting
+  })
+
+  const canCorrectPayload = busy && !cardWaiting && !blockingPrompt && attachmentCount === 0 && isSteerableText
+
+  const canCorrect =
+    canCorrectPayload &&
+    busyInputMode !== null &&
+    busyModeHasCarrier(busyInputMode, {
+      onSteer: inputs.hasSteerHandler,
+      onSteerHidden: inputs.hasHiddenSteerHandler
+    })
+
+  const action = cardWaiting
+    ? 'steer'
+    : resolveBusyComposerAction({
+        busy,
+        canCorrect,
+        compacting,
+        hasPayload: inputs.hasComposerPayload,
+        blockingPrompt,
+        mode: busyInputMode ?? 'interrupt'
+      })
+
+  const hints = resolveComposerHintActions({
+    canSubmit,
+    directSubmit: inputs.queueEditing || cardWaiting || (inputs.hasText && !isSteerableText && attachmentCount === 0),
+    action,
+    mode: busyInputMode,
+    alternateCanRedirect: canCorrectPayload && !compacting && inputs.hasSteerHandler
+  })
+
+  return { busyAction: action === 'redirect' ? ('interrupt' as const) : action, canSteer, canSubmit, ...hints }
 }
 
 /** The Send button's gate plus the busy-turn routing (steer / queue / stop). */

@@ -180,7 +180,6 @@ export const esOverrides = {
     },
 
     accounts: esConnectorAccounts,
-
     tools: {
       title: 'Herramientas',
       notInstalledBody: 'Instálalo en este dispositivo para ver las herramientas que incluye.',
@@ -660,6 +659,7 @@ export const esOverrides = {
       'composer.send': 'Enviar mensaje',
       'composer.newline': 'Insertar salto de línea',
       'composer.steer': 'Guiar el turno en ejecución',
+      'composer.redirect': 'Redirigir la ejecución actual',
       'composer.queue': 'Poner mensaje en cola',
       'composer.sendQueued': 'Enviar el siguiente turno en cola',
       'composer.mention': 'Referenciar archivos, carpetas y URL',
@@ -669,10 +669,7 @@ export const esOverrides = {
       'composer.cancel': 'Cerrar popover · cancelar ejecución'
     }
   },
-  findInPage: {
-    next: 'Siguiente coincidencia',
-    previous: 'Coincidencia anterior'
-  },
+  findInPage: { next: 'Siguiente coincidencia', previous: 'Coincidencia anterior' },
   language: {
     label: 'Idioma',
     description: 'Elige el idioma de la interfaz de escritorio.',
@@ -1363,7 +1360,7 @@ export const esOverrides = {
         personality: 'Estilo predeterminado del asistente para sesiones nuevas.',
         showReasoning: 'Muestra secciones de razonamiento cuando el backend las proporcione.',
         busyInputMode:
-          'Define la acción al pulsar Enter mientras el agente está en ejecución. Interrupt redirige el turno actual con tu texto, steer lo añade al siguiente resultado de herramienta sin detener la ejecución y queue lo ejecuta al finalizar el turno. Cmd/Ctrl+Enter aplica la acción alternativa solo a este mensaje: queue ↔ steer, interrupt → queue.'
+          'Define la acción al pulsar Enter mientras el agente está en ejecución. Interrupt redirige el turno actual con tu texto, steer lo añade al siguiente resultado de herramienta sin detener la ejecución y queue lo ejecuta al finalizar el turno. Cmd/Ctrl+Enter redirige la ejecución actual en modo queue y pone el mensaje en cola en modo steer o interrupt, solo para este mensaje. Mayús+Enter siempre inserta un salto de línea.'
       },
       desktop: {
         repoScanEnabled: 'Busca repositorios Git en carpetas locales para mostrarlos en Proyectos.',

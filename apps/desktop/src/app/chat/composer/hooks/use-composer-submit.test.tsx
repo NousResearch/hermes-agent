@@ -595,6 +595,7 @@ describe('useComposerSubmit busy-turn routing', () => {
 
   it('freezes terminal selections before non-cancelling steer', async () => {
     setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
     const { hook, onSteerHidden } = renderSubmitHook({
       busy: true,
       busyInputMode: 'steer',
@@ -610,11 +611,13 @@ describe('useComposerSubmit busy-turn routing', () => {
 
   it('preserves the frozen selection when a non-cancelling steer is rejected', async () => {
     setComposerTerminalSelection('zsh:23-58', 'original terminal lines')
+
     const { hook, onSteerHidden } = renderSubmitHook({
       busy: true,
       busyInputMode: 'steer',
       text: 'inspect @terminal:`zsh:23-58`'
     })
+
     onSteerHidden.mockResolvedValue(false)
 
     act(() => hook.result.current.submitDraft())
@@ -628,6 +631,7 @@ describe('useComposerSubmit busy-turn routing', () => {
 
   it('refuses to steer an unresolved terminal chip without discarding draft', () => {
     clearComposerTerminalSelections()
+
     const { hook, onSteerHidden, clearDraft } = renderSubmitHook({
       busy: true,
       busyInputMode: 'steer',
@@ -646,6 +650,7 @@ describe('useComposerSubmit busy-turn routing', () => {
       busyInputMode: 'steer',
       text: 'retry me'
     })
+
     onSteerHidden.mockImplementation(() => {
       throw new Error('transport unavailable')
     })
@@ -655,16 +660,17 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() => expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['retry me']))
   })
 
-  it('lets queue mode use a one-message steer override', async () => {
-    const { hook, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+  it('lets queue mode redirect one message without steering at a tool boundary', async () => {
+    const { hook, onSteer, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
       busy: true,
       busyInputMode: 'queue',
-      text: 'steer this one'
+      text: 'redirect this one'
     })
 
-    act(() => hook.result.current.submitDraft('steer'))
+    act(() => hook.result.current.submitDraft('interrupt'))
 
-    await waitFor(() => expect(onSteerHidden).toHaveBeenCalledWith('steer this one'))
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('redirect this one', 'interrupt'))
+    expect(onSteerHidden).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
   })
 

@@ -614,7 +614,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.',
     busyInputMode:
-      'What Enter does while the agent is running. Interrupt redirects the current turn, Steer adds text to the next tool result without stopping, and Queue runs it after the turn. While busy, Cmd/Ctrl+Enter swaps Queue and Steer for one message; in Interrupt mode it queues.'
+      'What Enter does while the agent is running. Interrupt redirects the current turn, Steer adds text to the next tool result without stopping, and Queue runs it after the turn. Cmd/Ctrl+Enter redirects one message in Queue mode; in Steer or Interrupt mode it queues. Shift+Enter always inserts a newline.'
   },
   desktop: {
     repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',

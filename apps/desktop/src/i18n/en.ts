@@ -654,6 +654,7 @@ export const en: Translations = {
       'composer.send': 'Send message',
       'composer.newline': 'Insert newline',
       'composer.steer': 'Steer the running turn',
+      'composer.redirect': 'Redirect the current run',
       'composer.queue': 'Queue message',
       'composer.sendQueued': 'Send next queued turn',
       'composer.mention': 'Reference files, folders, URLs',
@@ -663,7 +664,6 @@ export const en: Translations = {
       'composer.cancel': 'Close popover · cancel run'
     }
   },
-
   findInPage: {
     next: 'Next match',
     previous: 'Previous match'

@@ -350,6 +350,7 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.send', category: 'composer', keys: ['enter'] },
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
   { id: 'composer.steer', category: 'composer', keys: ['enter'] },
+  { id: 'composer.redirect', category: 'composer', keys: ['enter'] },
   { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
@@ -384,13 +385,15 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
  */
 export function readonlyKeybindsFor(mode: BusyInputMode): readonly KeybindReadonly[] {
   return KEYBIND_READONLY
-    .filter(entry => mode !== 'interrupt' || entry.id !== 'composer.steer')
+    .filter(entry =>
+      entry.id === 'composer.steer' ? mode === 'steer' : entry.id !== 'composer.redirect' || mode !== 'steer'
+    )
     .map(entry => {
       if (entry.id === 'composer.queue') {
         return { ...entry, keys: mode === 'queue' ? ['enter'] : ['mod+enter'] }
       }
 
-      if (entry.id === 'composer.steer') {
+      if (entry.id === 'composer.redirect') {
         return { ...entry, keys: mode === 'queue' ? ['mod+enter'] : ['enter'] }
       }
 

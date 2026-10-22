@@ -45,8 +45,8 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
-import { alternateBusyInputMode, busyModeHasCarrier, resolveBusyComposerAction } from './busy-input-mode'
-import { deriveBusySubmitState } from './busy-submit-state'
+import { alternateBusyInputMode, isBusyOverrideChord } from './busy-input-mode'
+import { deriveBusyComposerState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
 import {
   acceptsTriggerCompletion,
@@ -196,9 +196,7 @@ export function ChatBar({
     requestGateway: requestBusyConfig
   })
 
-  // Status items (subagents, background processes) are keyed by the RUNTIME
-  // session id — gateway events and process.list both speak that id. Only the
-  // queue uses the stored-session fallback key (prompts can queue pre-resume).
+  // Status items use the runtime id; only the queue can predate session resume.
   const statusSessionId = sessionId ?? null
 
   // The guide's conversational steps have no use for the model pill and git
@@ -213,12 +211,9 @@ export function ChatBar({
 
   const composerTourMarker = useTourMarker('composer')
 
-  // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
-  // every per-item status mutation or other sessions' churn (see the hook).
+  // Subscribe only to visibility changes, not per-item or other sessions' churn.
   const statusPresent = useSessionStatusPresence(statusSessionId, busy)
 
-  // Publishes contributed micro actions for this session; the status stack
-  // renders them as the pill strip at the top of the overlay lane.
   useComposerMicroActions(statusSessionId, busy)
 
   const composerRef = useRef<HTMLFormElement | null>(null)
@@ -403,67 +398,21 @@ export function ChatBar({
   const hasComposerPayload = hasText || attachments.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
 
-  const { canSteer, canSubmit } = deriveBusySubmitState({
+  const { busyAction, canSteer, canSubmit, enterAction: enterHintAction, alternateAction: alternateHintAction } = deriveBusyComposerState({
     attachmentCount: attachments.length,
-    blockingPrompt: blockingPrompt || cardWaiting,
+    blockingPrompt,
     busy,
     busyInputMode,
+    cardWaiting,
     compacting,
     hasComposerPayload,
+    hasHiddenSteerHandler: !!onSteerHidden,
     hasSteerHandler: !!onSteer,
-    isSteerableText
+    hasText,
+    isSteerableText,
+    queueEditing: !!queueEdit
   })
 
-  // A parked card consumes typed replies before any busy-mode routing.
-  // Every other mid-turn submission follows the configured policy, with a
-  // carrier check for redirect versus non-cancelling tool-boundary steering.
-  const canCorrect =
-    busy &&
-    busyInputMode !== null &&
-    !cardWaiting &&
-    !blockingPrompt &&
-    busyModeHasCarrier(busyInputMode, { onSteer: !!onSteer, onSteerHidden: !!onSteerHidden }) &&
-    attachments.length === 0 &&
-    isSteerableText
-
-  const resolvedBusyAction = cardWaiting
-    ? 'steer'
-    : resolveBusyComposerAction({
-        busy,
-        canCorrect,
-        compacting,
-        hasPayload: hasComposerPayload,
-        blockingPrompt,
-        mode: busyInputMode ?? 'interrupt'
-      })
-
-  const busyAction = resolvedBusyAction === 'redirect' ? 'interrupt' : resolvedBusyAction
-
-  // The hotkey help must show the action that can actually execute, not an
-  // unreachable Steer when the gateway has no steer carrier or is compacting.
-  const enterHintAction = !canSubmit
-    ? null
-    : queueEdit || cardWaiting || (hasText && !isSteerableText && attachments.length === 0)
-      ? 'composer.send'
-    : busyAction === 'queue'
-      ? 'composer.queue'
-      : busyAction === 'steer'
-        ? 'composer.steer'
-        : 'composer.send'
-
-  const alternateCanSteer =
-    busy &&
-    !cardWaiting &&
-    !compacting &&
-    !blockingPrompt &&
-    !!onSteerHidden &&
-    attachments.length === 0 &&
-    isSteerableText
-
-  const alternateHintAction =
-    cardWaiting ? 'composer.send' : busyInputMode === 'queue' && alternateCanSteer ? 'composer.steer' : 'composer.queue'
-
-  // The submit engine — the orchestration seam where draft + queue meet.
   const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
@@ -1013,10 +962,8 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter is a one-message override while a turn runs: Queue and
-    // Steer swap, while Interrupt keeps Queue as its non-interrupting alternate.
-    // The configured mode itself is unchanged.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+    // Apply the alternate once; keep the saved mode.
+    if (isBusyOverrideChord(event)) {
       event.preventDefault()
 
       if (busy && !disabled) {

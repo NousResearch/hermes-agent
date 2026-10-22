@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { $busyInputConfig, busyInputOwnerKey, type BusyInputMode } from '@/store/busy-input-mode'
+import { $busyInputConfig, type BusyInputMode, busyInputOwnerKey } from '@/store/busy-input-mode'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 
@@ -40,10 +40,22 @@ describe('useKeybindHint and display.busy_input_mode', () => {
     expect(result.current).toBeNull()
 
     act(() => setMode('queue'))
-    expect(result.current).toBe(formatCombo('mod+enter'))
+    expect(result.current).toBeNull()
 
     act(() => setMode('steer'))
     expect(result.current).toBe(formatCombo('enter'))
+  })
+
+  it('advertises Redirect for the Queue override and Interrupt default only', () => {
+    setMode('queue')
+    const { result } = renderHook(() => useKeybindHint('composer.redirect'))
+    expect(result.current).toBe(formatCombo('mod+enter'))
+
+    act(() => setMode('interrupt'))
+    expect(result.current).toBe(formatCombo('enter'))
+
+    act(() => setMode('steer'))
+    expect(result.current).toBeNull()
   })
 
   it('does not leak hints from another gateway profile', () => {

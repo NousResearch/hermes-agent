@@ -425,6 +425,7 @@ export const zhOverrides = {
       'composer.send': '发送消息',
       'composer.newline': '插入换行',
       'composer.steer': '引导正在运行的回合',
+      'composer.redirect': '重定向当前运行',
       'composer.queue': '消息排队',
       'composer.sendQueued': '发送下一条排队消息',
       'composer.mention': '引用文件、文件夹、网址',
@@ -434,11 +435,7 @@ export const zhOverrides = {
       'composer.cancel': '关闭弹窗·取消运行'
     }
   },
-
-  findInPage: {
-    next: '下一个匹配',
-    previous: '上一个匹配'
-  },
+  findInPage: { next: '下一个匹配', previous: '上一个匹配' },
 
   language: {
     label: '语言',
@@ -1081,7 +1078,7 @@ export const zhOverrides = {
         personality: '新会话的默认助手风格。',
         showReasoning: '当后端提供推理内容时予以显示。',
         busyInputMode:
-          '控制智能体运行期间按 Enter 的行为。中断（interrupt）会使用输入文本重定向并重启当前回合，引导（steer）会将其追加到下一个工具结果且不中断运行，排队（queue）则在当前回合结束后执行。 按 Cmd/Ctrl+Enter 可仅对当前消息使用另一种操作：queue 与 steer 互换，interrupt 则改为 queue。'
+          '控制智能体运行期间按 Enter 的行为。中断（interrupt）会使用输入文本重定向当前回合，引导（steer）会将其追加到下一个工具结果且不中断运行，排队（queue）则在当前回合结束后执行。Cmd/Ctrl+Enter 仅对当前消息使用替代操作：queue 模式下重定向当前运行，steer 或 interrupt 模式下排队。Shift+Enter 始终换行。'
       },
       desktop: {
         repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',

@@ -2238,6 +2238,7 @@ display:
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: ""         # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
+  busy_input_mode: interrupt  # Enter while working: interrupt | steer | queue
   cli_multiline_shortcuts: true  # CLI: Ctrl+J, \ + Enter, and supported Shift+Enter insert newlines (false = legacy c-j submit fallback)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
@@ -2265,6 +2266,8 @@ display:
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+In Desktop, `display.busy_input_mode` is **Settings → Chat → Enter While Running**. While running, Cmd/Ctrl+Enter redirects in Queue mode and queues in Steer or Interrupt mode; Shift+Enter always inserts a newline. See the [Desktop busy-input keyboard matrix](./desktop.md#busy-input-keyboard-matrix) for all three modes.
 
 ### Per-turn summary and spinner token flow
 

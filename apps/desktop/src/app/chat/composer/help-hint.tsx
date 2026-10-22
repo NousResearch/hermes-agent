@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
 
+import type { ComposerHintAction } from './busy-input-mode'
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
@@ -20,29 +21,29 @@ const COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.history', combos: ['up', 'down'] }
 ] as const
 
-type HintActionId = 'composer.send' | 'composer.queue' | 'composer.steer'
-
 export function HelpHint({
   busy = false,
   enterAction = 'composer.send',
   alternateAction = 'composer.queue'
 }: {
   busy?: boolean
-  enterAction?: HintActionId | null
-  alternateAction?: HintActionId
+  enterAction?: ComposerHintAction | null
+  alternateAction?: ComposerHintAction | null
 }) {
   const { t } = useI18n()
   const c = t.composer
   const hotkeyDescriptions: Record<string, string> = c.hotkeyDescs
   const actionLabels: Record<string, string> = t.keybinds.actions
+
   // Use resolved actions, not just the user's preference: when a carrier is
   // missing or the turn is compacting, an Enter may queue instead of steer.
   const actionRows = busy
     ? [
         ...(enterAction ? [{ id: enterAction, combos: ['enter'] }] : []),
-        { id: alternateAction, combos: ['mod+enter'] }
+        ...(alternateAction ? [{ id: alternateAction, combos: ['mod+enter'] }] : [])
       ]
     : [{ id: 'composer.send', combos: ['enter'] }]
+
   const hotkeyRows = [...COMPOSER_HOTKEY_ROWS.filter(row => row.id !== 'composer.send'), ...actionRows]
 
   return (

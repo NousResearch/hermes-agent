@@ -1220,6 +1220,7 @@ display:
   skin: default           # 内置或自定义 CLI 皮肤（参阅 user-guide/features/skins）
   personality: "kawaii"  # 旧版外观字段，仍在某些摘要中显示
   compact: false          # 紧凑输出模式（减少空白）
+  busy_input_mode: interrupt  # 工作时按 Enter：interrupt | steer | queue
   resume_display: full    # full（恢复时显示之前的消息）| minimal（仅单行）
   bell_on_complete: false # 当 agent 完成时播放终端铃声（适合长任务）
   show_reasoning: false   # 在每次响应上方显示模型推理/思考（用 /reasoning show|hide 切换）
@@ -1233,6 +1234,20 @@ display:
   file_mutation_verifier: true    # 当本轮 write_file/patch 调用失败时附加建议性页脚
   language: en            # 静态消息的 UI 语言（审批提示、部分 gateway 回复）。en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+### 桌面端的繁忙输入
+
+桌面端的 **Settings → Chat → Enter While Running**（运行时按 Enter）对应 `display.busy_input_mode`。当前回合运行期间，纯文本后续消息使用以下操作：
+
+| 模式 | Enter | Cmd+Enter（macOS）/ Ctrl+Enter（Windows/Linux） |
+| --- | --- | --- |
+| Queue（`queue`） | 排队 | 重定向当前运行 |
+| Steer（`steer`） | 在下一个工具边界引导当前回合 | 排队 |
+| Interrupt（`interrupt`，默认） | 重定向当前运行 | 排队 |
+
+Cmd/Ctrl+Enter 的替代操作仅作用于当前消息，不会更改保存的模式。重定向采用 Interrupt 的行为；Steer 则在下一个工具边界注入文字且不中断回合。**Shift+Enter 始终换行**。空闲时，单独按 Enter 发送消息；Cmd/Ctrl+Enter 不执行任何操作。
+
+附件、上下文压缩以及阻塞中的审批、sudo 或密钥提示会回退为排队；斜杠命令仍立即执行，被拒绝的修正消息会排队保留。
 
 ### 文件变更验证器
 

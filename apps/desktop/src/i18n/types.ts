@@ -800,6 +800,12 @@ catalog: CatalogTranslations
       sessionDensityCompact: string
       sessionDensityComfortable: string
       sessionDensityDetailed: string
+      projectLabelTitle: string
+      projectLabelDesc: string
+      projectLabelShort: string
+      projectLabelFull: string
+      showEmptyWorktreeLanesTitle: string
+      showEmptyWorktreeLanesDesc: string
       tabStripTitle: string
       tabStripDesc: string
       tabStripAuto: string

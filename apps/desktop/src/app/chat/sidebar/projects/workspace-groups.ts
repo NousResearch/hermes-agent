@@ -1,6 +1,8 @@
 import type { HermesGitBranch, HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
+import { displayPath } from '@/lib/display-path'
 import { normalize } from '@/lib/text'
+import type { ProjectLabelMode } from '@/store/sidebar-project-display'
 
 import { rankSessions } from '../order'
 
@@ -78,6 +80,22 @@ export interface SidebarProjectTree {
   // Every session id the backend assigned to this project — the authoritative
   // owner set the live overlay keys on (complete, unlike `previewSessions`).
   sessionIds?: string[]
+}
+
+/** Apply the user's project-label preference without changing project identity. */
+export function projectSidebarLabel(
+  project: Pick<SidebarProjectTree, 'isAuto' | 'label' | 'path'>,
+  mode: ProjectLabelMode
+): string {
+  return mode === 'full' && project.isAuto && project.path ? displayPath(project.path) : project.label
+}
+
+/** Main checkout lanes remain navigable even when empty; linked lanes do not. */
+export function filterWorktreeLanes(
+  groups: SidebarSessionGroup[],
+  showEmptyWorktreeLanes: boolean
+): SidebarSessionGroup[] {
+  return showEmptyWorktreeLanes ? groups : groups.filter(group => group.isMain || group.sessions.length > 0)
 }
 
 /** Path split into segments, ignoring trailing slashes and mixed separators. */

@@ -7,6 +7,7 @@ import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 import {
   baseName,
   excludeProjectSessions,
+  filterWorktreeLanes,
   kanbanWorktreeDir,
   laneSwitchTarget,
   liveSessionProjectId,
@@ -15,6 +16,7 @@ import {
   overlayLiveLanes,
   overlayLivePreviews,
   projectOwnerBySessionId,
+  projectSidebarLabel,
   reconcileEnteredProjectSessions,
   sessionBucketId,
   sessionMatchesProjectFilter,
@@ -454,6 +456,32 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
 
     expect(merged.map(g => g.label)).toEqual(['main'])
     expect(merged[0].isHome).toBeFalsy()
+  })
+})
+
+describe('sidebar display preferences (#137443)', () => {
+  it('hides only empty linked worktree lanes when requested', () => {
+    const groups = [
+      lane({ id: 'main', label: 'main', isMain: true }),
+      lane({ id: 'active', label: 'feature', sessions: [makeCwdSession('/repo-feature')] }),
+      lane({ id: 'empty', label: 'scratch' })
+    ]
+
+    expect(filterWorktreeLanes(groups, false).map(group => group.id)).toEqual(['main', 'active'])
+    expect(filterWorktreeLanes(groups, true).map(group => group.id)).toEqual(['main', 'active', 'empty'])
+  })
+
+  it('formats an auto-discovered project label as its display path in full mode', () => {
+    expect(projectSidebarLabel({ isAuto: true, label: 'notes', path: '/Users/nolan/dev/notes' }, 'full')).toBe(
+      '~/dev/notes'
+    )
+  })
+
+  it('keeps explicit project names and short labels unchanged', () => {
+    expect(projectSidebarLabel({ isAuto: false, label: 'Writing', path: '/Users/nolan/dev/notes' }, 'full')).toBe(
+      'Writing'
+    )
+    expect(projectSidebarLabel({ isAuto: true, label: 'notes', path: '/Users/nolan/dev/notes' }, 'short')).toBe('notes')
   })
 })
 

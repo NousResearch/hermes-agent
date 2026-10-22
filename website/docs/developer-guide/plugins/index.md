@@ -296,6 +296,39 @@ the `TRUSTED_TURN_ORIGIN_API_VERSION` constant for this contract's version.
 This API supplies origin evidence to plugin tools. It does not restrict other
 tools or enforce a channel's tool policy; those need a separate execution gate.
 
+### Required MCP dispatch guards
+
+An optional `pre_tool_call` hook cannot enforce an MCP authorization policy: a
+missing or failed hook may leave the call dispatchable. For a server shared by
+several gateway users, a profile can instead require a plugin callback at the
+native MCP dispatch boundary:
+
+```yaml
+mcp:
+  required_dispatch_guards:
+    - server: knowledge
+      plugin: knowledge-access
+      profile: assistant
+      platform: slack
+```
+
+The enabled plugin registers `ctx.register_required_mcp_dispatch_guard(server="knowledge",
+callback=guard)`. The callback receives `server`, `tool_name`, a JSON-object
+`args`, an optional host-recorded `plugin_call`, and available call IDs. It
+returns the complete canonical argument object. It should read
+`current_origin()` and reject a missing, internal, mismatched, or unadmitted
+turn; the remote service still makes the final access decision. A raw model MCP
+alias receives no `plugin_call`, while `ctx.call_mcp(...)` has one-use plugin
+provenance for the exact server and tool.
+
+When the policy exists, an absent or disabled plugin, missing callback, invalid
+origin, callback error, timeout, or invalid returned arguments denies the call
+before transport. A registered required guard whose policy is removed also
+denies. Other MCP servers keep their existing behavior. A policy may separately
+allow exact built-in scheduled job hashes and explicitly listed tools that
+advertise `readOnlyHint=true`; that exception does not accept Slack actor fields
+in arguments. Keep scheduler access narrower than human access.
+
 ### Deprecation policy
 
 A documented native plugin behavior may be deprecated only with all of the

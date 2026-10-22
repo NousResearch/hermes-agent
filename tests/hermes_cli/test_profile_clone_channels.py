@@ -7,6 +7,7 @@ while provider/tool keys and general config survive; ``--clone-channels`` restor
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -145,6 +146,56 @@ def test_strip_env_file_keeps_comments_and_unknown_keys_verbatim(tmp_path):
 
 
 # --- post-merge review of #109502 (gaoanze888): clone safety + ownership-based inventory ---------
+
+
+_LINKED_KEEPERS = {".env": "OPENAI_API_KEY=sk-model-key", "config.yaml": "gpt-5", "SOUL.md": "Be helpful."}
+
+
+@pytest.mark.require_symlinks
+@pytest.mark.parametrize("name", sorted(_LINKED_KEEPERS))
+@pytest.mark.parametrize("layout", ["default-outside", "named-outside", "named-linked-dir", "default-skipped-dir",
+                                    "default-absolute"])
+def test_clone_all_copies_a_linked_root_file_as_the_source_resolves_it(home, tmp_path, layout, name):
+    """GNU Stow links ``config.yaml -> ../dotfiles/hermes/config.yaml``, relative to the source profile's
+    directory (#142943). Resolved from the staged copy, which sits elsewhere, it named another path and the
+    clone silently ran on defaults; so did a link into a folder the clone skips, or one in a named profile
+    whose own folder is a link (``..`` is physical). Named sources otherwise worked only by staging depth."""
+    src = home / "profiles" / "src" if layout.startswith("named") else home
+    real = tmp_path / "elsewhere" / "src" if layout == "named-linked-dir" else src
+    real.mkdir(parents=True, exist_ok=True)
+    if real != src:
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.symlink_to(real)  # profiles kept on another disk
+    target = (home / "bin" if layout == "default-skipped-dir" else tmp_path / "dotfiles" / "hermes") / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes((home / name).read_bytes())
+    (real / name).unlink(missing_ok=True)
+    (real / name).symlink_to(target if layout == "default-absolute" else os.path.relpath(target, real))
+    original = target.read_bytes()
+
+    profile_dir = create_profile("full", clone_from="src" if layout.startswith("named") else "default",
+                                 clone_all=True, no_alias=True)
+
+    cloned = profile_dir / name
+    assert cloned.is_file() and not cloned.is_symlink()
+    assert _LINKED_KEEPERS[name] in cloned.read_text(encoding="utf-8")
+    assert (real / name).is_symlink() and target.read_bytes() == original  # never written through
+
+
+@pytest.mark.require_symlinks
+def test_clone_all_drops_a_root_file_link_that_dangles_in_the_source(home, tmp_path):
+    """A source link to a missing file is still dropped and the clone seeded like a fresh profile; the
+    seeding never writes through the link (that would create the missing target)."""
+    from hermes_cli.profiles import _PLACEHOLDER_ENV
+    missing = tmp_path / "dotfiles" / "hermes" / ".env"
+    missing.parent.mkdir(parents=True)
+    (home / ".env").unlink()
+    (home / ".env").symlink_to(os.path.relpath(missing, home))
+
+    profile_dir = create_profile("full", clone_all=True, no_alias=True)
+
+    assert not (profile_dir / ".env").is_symlink() and not missing.exists()
+    assert (profile_dir / ".env").read_text(encoding="utf-8") == _PLACEHOLDER_ENV
 
 
 def test_clone_all_never_writes_through_a_symlinked_source_env(home, tmp_path):

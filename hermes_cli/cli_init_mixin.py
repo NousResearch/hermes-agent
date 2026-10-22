@@ -42,8 +42,9 @@ def _gateway_launch(cli):
     """This run's explicit launch flags as gateway ``session.create`` policy (main handed them to AIAgent)."""
     explicit_model = getattr(cli, "_explicit_model_override", False)
     provider = getattr(cli, "_explicit_provider", None)
-    return {"model": cli.model if explicit_model else None,
-            "provider": provider if explicit_model and provider not in {None, "", "auto"} else None,
+    explicit_provider = provider not in {None, "", "auto"}
+    return {"model": cli.model if explicit_model or explicit_provider else None,
+            "provider": provider if explicit_provider else None,
             "api_key": getattr(cli, "_explicit_api_key", None),
             "base_url": getattr(cli, "_explicit_base_url", None),
             # Only a typed -t; the gateway resolves the profile default and the coding posture (#138670).

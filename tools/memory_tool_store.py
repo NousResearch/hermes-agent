@@ -9,6 +9,7 @@ import re
 import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -93,17 +94,65 @@ def _substring_matches(entries: list[str], old_text: str) -> list[int]:
     return [i for i, e in enumerate(entries) if needle in _normalize_for_match(e)]
 
 
+# Fuzzy best-match for OVERSIZED old_text only. Models regenerate a stored entry
+# from context with drift (punctuation, spacing, small rewording); the typography
+# fold in _substring_matches covers punctuation/spacing but NOT rewording, so a
+# drifted whole-entry paste still reports "No entry matched" and the model
+# retry-loops. A drifted paste is safe to resolve when it clearly identifies ONE
+# entry: accept the best similarity score only past a high threshold AND with a
+# clear margin over the runner-up. Short old_text keeps exact/folded-substring
+# semantics (unchanged behavior).
+_FUZZY_GATE_CHARS = 200   # only whole-entry-sized pastes get fuzzy treatment
+_FUZZY_MIN_SCORE = 0.85   # below this the paste is not recognizable as an entry
+_FUZZY_MIN_MARGIN = 0.10  # best must beat the runner-up by this much to be unambiguous
+_FUZZY_MIN_CHARS = 40     # below this, never fuzzy (short anchors stay exact)
+
+
+def _fuzzy_entry_match(entries: list[str], old_text: str) -> Optional[int]:
+    """Index of the single entry a drifted *old_text* paste clearly identifies,
+    else None (no recognizable match, or ambiguous between entries)."""
+    if not entries or len(old_text) < _FUZZY_MIN_CHARS:
+        return None
+    best_i, best_s, second_best = None, 0.0, 0.0
+    for i, e in enumerate(entries):
+        s = SequenceMatcher(None, old_text, e).ratio()
+        if best_i is None or s > best_s:
+            # the previous best becomes the runner-up
+            if best_i is not None and best_s > second_best:
+                second_best = best_s
+            best_i, best_s = i, s
+        elif s > second_best:
+            second_best = s
+    if best_s < _FUZZY_MIN_SCORE or (best_s - second_best) < _FUZZY_MIN_MARGIN:
+        return None
+    return best_i
+
+
+def _is_drifted_whole_entry_paste(entry: str, old_text: str) -> bool:
+    """True when oversized *old_text* is a drifted re-emission of the WHOLE *entry*
+    (not just a span inside it) — the shape that fuzzy resolution accepts."""
+    if len(old_text) <= _FUZZY_GATE_CHARS or len(old_text) < 0.75 * len(entry):
+        return False
+    return SequenceMatcher(None, old_text, entry).ratio() >= _FUZZY_MIN_SCORE
+
+
 def _find_unique_match(entries: list[str], old_text: str) -> tuple[Optional[int], bool]:
     """``(index, ambiguous)`` for entries matching *old_text*. A whole-entry
     EXACT match (``old_text == entry``) takes absolute priority — substring
     matches are only considered when no entry equals *old_text*, so a short
     entry stays addressable even when its full text is contained inside a
     longer sibling entry (remove('test') vs '...tests pass...'). Exact-duplicate
-    matches are safe (first wins); distinct matches → ``(None, True)``."""
+    matches are safe (first wins); distinct matches → ``(None, True)``. A whole-entry
+    paste that DRIFTED (reworded) still resolves when it clearly identifies one
+    entry — oversized old_text only, see _fuzzy_entry_match."""
     exact = [i for i, e in enumerate(entries) if e == old_text]
     matches = exact or _substring_matches(entries, old_text)
     if len({entries[i] for i in matches}) > 1:
         return None, True
+    if not matches and len(old_text) > _FUZZY_GATE_CHARS:
+        # Drifted whole-entry paste: one fuzzy best-match before declaring no match.
+        if (fi := _fuzzy_entry_match(entries, old_text)) is not None:
+            return fi, False
     return (matches[0] if matches else None), False
 
 
@@ -145,10 +194,16 @@ def _span_occurrences(text: str, span: str) -> int:
 def _patch_entry(entry: str, old_text: str, new_text: str) -> tuple[Optional[str], str, str]:
     """``(patched entry, "", "none")``, or ``(None, error, failure class)`` when the span occurs more
     than once in the entry, the edit changes nothing, or the patched entry fails the threat scan.
-    Single and batch patches both go through here, so they share one rule."""
+    Single and batch patches both go through here, so they share one rule. When *old_text* is a
+    DRIFTED whole-entry paste that fuzzy resolution matched to this entry (the span is absent
+    because the model re-emitted the entry with wording drift), the patch rewrites the whole
+    entry — the same outcome an exact whole-entry patch produces."""
     if (count := _span_occurrences(entry, old_text)) > 1:
         return None, _repeated_span_message(old_text, count), "ambiguous"
-    patched = entry.replace(old_text, new_text, 1)
+    if count == 0 and _is_drifted_whole_entry_paste(entry, old_text):
+        patched = new_text.strip()
+    else:
+        patched = entry.replace(old_text, new_text, 1)
     if patched == entry:
         return None, f"Patch is a no-op: '{old_text}' -> '{new_text}' leaves the entry unchanged.", "invalid_args"
     if scan_error := _scan_memory_content(patched):

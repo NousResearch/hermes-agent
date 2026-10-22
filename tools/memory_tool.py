@@ -415,7 +415,7 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'patch' and 'remove': text from one entry. 'patch' replaces exactly this span (it must occur once in the entry); 'remove' deletes the whole entry. Omit for 'add'."
+                "description": "REQUIRED for 'patch' and 'remove': text from one entry. 'patch' replaces exactly this span (it must occur once in the entry); 'remove' deletes the whole entry. Omit for 'add'. Prefer a short unique anchor (~10-40 chars); a whole-entry paste that drifted from the stored text still resolves when it clearly identifies exactly one entry."
             },
             "new_text": {
                 "type": "string",

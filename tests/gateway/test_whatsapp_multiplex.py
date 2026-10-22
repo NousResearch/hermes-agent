@@ -180,6 +180,7 @@ async def test_secondary_adopts_its_own_orphaned_bridge(tmp_path, monkeypatch):
         adapter = WhatsAppAdapter(PlatformConfig())
     adapter._runtime_status_platform_key = "c:whatsapp"
     monkeypatch.setattr(adapter, "_preflight", lambda: True)
+    monkeypatch.setattr(adapter, "_ensure_bridge_deps", lambda path: True)
     sock, port = _hold_port()
     (home / "platforms/whatsapp").mkdir(parents=True)
     (home / "platforms/whatsapp/bridge_port").write_text(str(port))

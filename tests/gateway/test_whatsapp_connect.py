@@ -37,6 +37,19 @@ def _pm_node(monkeypatch):
     monkeypatch.setattr(whatsapp_adapter, "find_node_executable", lambda name: f"/pm/{name}")
 
 
+@pytest.fixture
+def lazy_install_policy(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+
+    def configure(allowed):
+        (tmp_path / "config.yaml").write_text(
+            f"security:\n  allow_lazy_installs: {str(allowed).lower()}\n", encoding="utf-8"
+        )
+
+    return configure
+
+
 def _make_adapter():
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
@@ -236,21 +249,61 @@ class TestBridgeTokenOffLoop:
 
 
 class TestConnectPreflight:
-    """Gateway startup verifies bridge dependencies without mutating them."""
+    """Gateway dependency preparation honors the native install policy."""
 
     @pytest.mark.asyncio
-    async def test_missing_node_fails_without_installing(self):
+    @pytest.mark.parametrize("allowed", [False, True])
+    async def test_missing_node_uses_native_install_policy(self, allowed, lazy_install_policy):
+        lazy_install_policy(allowed)
         adapter = _make_adapter()
         with patch(
             "plugins.platforms.whatsapp.adapter.find_node_executable",
             return_value=None,
-        ), patch("pm.ensure") as mock_ensure:
+        ), patch("pm.ensure") as mock_ensure, patch.object(adapter, "_preflight", return_value=False):
             assert await adapter.connect() is False
 
-        assert adapter.fatal_error_code == "whatsapp_node_missing"
-        mock_ensure.assert_not_called()
+        assert mock_ensure.call_args_list == ([(("node",), {})] if allowed else [])
 
-    def test_dependency_check_is_read_only_and_actionable(self, tmp_path):
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("allowed", [False, True])
+    @pytest.mark.parametrize("stale", [False, True])
+    async def test_bridge_refresh_uses_native_policy_and_both_manifests(
+            self, tmp_path, allowed, stale, lazy_install_policy):
+        from gateway.platforms.whatsapp_common import (
+            record_whatsapp_bridge_dependency_fingerprint,
+            whatsapp_bridge_dependencies_fresh,
+        )
+
+        lazy_install_policy(allowed)
+        bridge = tmp_path / "bridge"
+        (bridge / "node_modules").mkdir(parents=True)
+        (bridge / "bridge.js").write_text("// bridge")
+        (bridge / "package.json").write_text('{"dependencies": {}}')
+        (bridge / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        assert record_whatsapp_bridge_dependency_fingerprint(bridge)
+        if stale:
+            (bridge / "package-lock.json").write_text('{"lockfileVersion": 3, "version": "2"}')
+        session = tmp_path / "session"
+        session.mkdir()
+        (session / "creds.json").write_text("{}")
+        adapter = _make_adapter()
+        adapter._bridge_script = str(bridge / "bridge.js")
+        adapter._session_path = session
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._release_platform_lock = MagicMock()
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter.ensure_aiohttp", return_value=None), \
+             patch.object(adapter, "_reuse_running_bridge", new_callable=AsyncMock, return_value=True), \
+             patch("subprocess.run", return_value=types.SimpleNamespace(returncode=0)) as install:
+            assert await adapter.connect() is (allowed or not stale)
+
+        assert install.call_count == int(allowed and stale)
+        assert whatsapp_bridge_dependencies_fresh(bridge) is (allowed or not stale)
+        if stale and not allowed:
+            assert adapter.fatal_error_code == "whatsapp_bridge_dependencies_stale"
+
+    def test_dependency_check_is_read_only_and_actionable(self, tmp_path, lazy_install_policy):
+        lazy_install_policy(False)
         bridge_dir = tmp_path / "bridge"
         (bridge_dir / "node_modules").mkdir(parents=True)
         (bridge_dir / "bridge.js").write_text("// bridge", encoding="utf-8")
@@ -278,13 +331,13 @@ class TestConnectPreflight:
             ),
             patch("subprocess.run") as mock_run,
         ):
-            assert stale_adapter._preflight() is False
+            assert stale_adapter._ensure_bridge_deps(bridge_dir) is False
             from gateway.platforms.whatsapp_common import (
                 record_whatsapp_bridge_dependency_fingerprint,
             )
 
             assert record_whatsapp_bridge_dependency_fingerprint(bridge_dir) is True
-            assert fresh_adapter._preflight() is True
+            assert fresh_adapter._ensure_bridge_deps(bridge_dir) is True
 
         assert stale_adapter.fatal_error_code == "whatsapp_bridge_dependencies_stale"
         assert stale_adapter.fatal_error_retryable is False
@@ -659,10 +712,23 @@ class TestNoCredsPreflight:
 class TestNamedConnectFailures:
     """A failed connect names its cause; an unnamed False loops forever as an unclassified failure (#126358)."""
 
+    @pytest.mark.parametrize("install_error", [None, RuntimeError("download failed")])
+    def test_missing_aiohttp_uses_native_installer_when_allowed(
+            self, lazy_install_policy, install_error):
+        from plugins.platforms.whatsapp.adapter import ensure_aiohttp
+
+        lazy_install_policy(True)
+        with patch("plugins.platforms.whatsapp.adapter._import_aiohttp",
+                   side_effect=[ModuleNotFoundError("aiohttp"), object()]), \
+             patch("pm.extras.ensure_import", side_effect=install_error) as install, \
+             patch("pm.environments.running_from_selected_environment", return_value=True):
+            result = ensure_aiohttp()
+        install.assert_called_once_with("sms")
+        assert result == (("download failed", True) if install_error else None)
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("aiohttp_module,lazy_allowed", [
         (None, False),
-        (None, True),
         (types.ModuleType("aiohttp"), True),
     ])
     async def test_missing_aiohttp_is_named_and_final_without_installing(

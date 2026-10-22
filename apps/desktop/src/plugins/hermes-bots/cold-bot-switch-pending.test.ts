@@ -127,7 +127,7 @@ describe('cold bot switch publishes its target after the fronted-tab miss', () =
 
     expect($pendingBotOpen.get()?.key).toBe('local::bravo')
     $groupChats.set({ Team: { log: [], sessions: {}, watermarks: {} } })
-    openGroupChat('Team')
+    openGroupChat('Team', 'name')
     expect($pendingBotOpen.get()).toBeNull()
 
     gate.resolve()

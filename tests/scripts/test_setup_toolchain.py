@@ -12,7 +12,7 @@ import pytest
 from pm.lock import Lockfile
 from pm.paths import lockfile_path
 from pm.store import current_target
-from tests.pm._fixtures import build_worker, client, isolated_python  # noqa: F401
+from tests.pm._fixtures import build_worker, client, isolated_python
 
 
 @pytest.mark.parametrize("test_environment", [False, True], ids=["runtime", "tests"])
@@ -52,6 +52,7 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
     result = subprocess.run(
         [outputs["python-path"], "-I", "-c", "import importlib.util; print(importlib.util.find_spec('test_only_dep') is not None)"],
         cwd=tmp_path, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(test_environment)
@@ -59,6 +60,7 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
         [outputs["python-path"], "-I", "-c",
          "import importlib.util; print(importlib.util.find_spec('dev_only_dep') is not None)"],
         cwd=tmp_path, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert probe.returncode == 0, probe.stderr
     assert probe.stdout.strip() == str(test_environment)
@@ -76,6 +78,7 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
              "import importlib.util; assert importlib.util.find_spec('dev_only_dep') is None; "
              "assert importlib.util.find_spec('test_only_dep') is None"],
             cwd=tmp_path, capture_output=True, text=True, timeout=30,
+            check=False,
         )
         assert bundle.returncode == 0, bundle.stderr
 
@@ -95,6 +98,7 @@ def test_stdlib_bootstrap_exports_the_pm_lock(toolchain, names, tmp_path):
         [sys.executable, "-S", str(root / "scripts/ci/setup_toolchain.py"),
          "prepare", "--toolchain", toolchain, "--home", str(home)],
         cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8-sig").splitlines())
@@ -120,6 +124,7 @@ def test_invalid_extras_do_not_export_or_install(extras, tmp_path):
          "--home", str(home), "--extras", extras],
         cwd=tmp_path, env={**os.environ, "GITHUB_OUTPUT": str(output)},
         capture_output=True, text=True, encoding="utf-8", timeout=30,
+        check=False,
     )
     assert result.returncode != 0
     assert "extras must be a JSON array of extra names" in result.stderr

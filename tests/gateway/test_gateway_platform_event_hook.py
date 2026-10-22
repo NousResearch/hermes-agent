@@ -36,10 +36,10 @@ if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from gateway.run import GatewayRunner  # noqa: E402
-from gateway.profile_routing import ProfileRoute  # noqa: E402
-from hermes_cli.plugins import (  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.run import GatewayRunner
+from gateway.profile_routing import ProfileRoute
+from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -326,7 +326,7 @@ class TestNormalizeMessageEdited:
         a = _adapter()
         update = _edited_update()
         update.edited_message.edit_date = _dt.datetime(
-            2026, 8, 12, 10, 30, tzinfo=_dt.timezone.utc,
+            2026, 8, 12, 10, 30, tzinfo=_dt.UTC,
         )
 
         event = a._normalize_platform_event(update)
@@ -527,7 +527,7 @@ class TestProfileScopedPlatformEventHandler:
             )
 
         assert source.profile == "work"
-        assert getattr(source, "_transport_adapter_ref")() is adapter
+        assert source._transport_adapter_ref() is adapter
 
         resolver = MagicMock(return_value=Path("/profiles/work"))
         runner._resolve_profile_home_for_source = resolver

@@ -68,6 +68,7 @@ class TestWrapCommandAdvertisesHarness:
         out = subprocess.run(
             ["bash", "-c", wrapped], capture_output=True, text=True,
             env=clean_env, timeout=30,
+            check=False,
         )
         assert f"AI={HARNESS_ID} HERMES=true" in out.stdout
 
@@ -75,5 +76,6 @@ class TestWrapCommandAdvertisesHarness:
         out = subprocess.run(
             ["bash", "-c", wrapped], capture_output=True, text=True,
             env=outer_env, timeout=30,
+            check=False,
         )
         assert "AI=pi HERMES=false" in out.stdout

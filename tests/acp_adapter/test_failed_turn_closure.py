@@ -37,7 +37,7 @@ class _LoopbackProvider:
             def log_message(self, *args):
                 pass
 
-            def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
+            def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 provider.requests.append(body)
                 spec = provider.script.pop(0)
@@ -94,8 +94,8 @@ def acp(tmp_path, monkeypatch):
 
     import acp_adapter.session as acp_session
     import hermes_cli.config as cli_config
-    import hermes_cli.mcp_startup as mcp_startup
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import mcp_startup
+    from hermes_cli import runtime_provider
 
     monkeypatch.setattr(cli_config, "load_config", lambda *a, **k: {
         "model": {"provider": "openai-compat", "default": _MODEL, "context_length": 131072},
@@ -293,4 +293,50 @@ def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, mon
     assert metadata["error_surface"]["provider"] == "opencode-go"
     stored = db.get_messages(sid)[-1]["display_metadata"]
     assert (stored if isinstance(stored, dict) else json.loads(stored))["error_surface"]["code"] == "timeout"
+    db.close()
+
+
+def test_failed_turn_after_a_tool_row_is_closed_with_its_error_card(tmp_path, monkeypatch):
+    """A turn that fails after a tool already ran (an onboarding beat answered, then the provider
+    429s) leaves a ``tool`` row as the durable tail. It is as open as a bare user tail: without the
+    boundary a client reopening the session has no error card to draw for the turn."""
+    from types import SimpleNamespace
+
+    from agent.conversation_loop import _close_durable_failed_turn
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    sid = "s1"
+    db.create_session(session_id=sid, source="tui", model="m")
+    call = {"id": "call_setup_beat_name", "type": "function",
+            "function": {"name": "setup_beat", "arguments": '{"beat":"name"}'}}
+    messages = [
+        {"role": "user", "content": "opening"},
+        {"role": "assistant", "content": "Hi!", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": call["id"], "content": '{"answer":{"name":"Austin"}}'},
+    ]
+    db.append_message(sid, "user", "opening")
+    db.append_message(sid, "assistant", "Hi!", tool_calls=[call])
+    db.append_message(sid, "tool", messages[-1]["content"], tool_call_id=call["id"])
+
+    def flush(rows):
+        last = rows[-1]
+        db.append_message(sid, last["role"], last["content"], display_kind=last.get("display_kind"),
+                          display_metadata=last.get("display_metadata"))
+
+    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush,
+                            provider="nous", model="m")
+    failed = {"completed": False, "failed": True, "failure_reason": "rate_limit",
+              "error": "429 Too Many Requests", "messages": messages, "current_turn_user_idx": 0}
+    _close_durable_failed_turn(agent, failed)
+    _close_durable_failed_turn(agent, failed)  # redelivery: the tail is now the boundary
+
+    stored = db.get_messages(sid)
+    assert [row["role"] for row in stored] == ["user", "assistant", "tool", "assistant"]
+    boundary = stored[-1]
+    assert (boundary["content"], boundary["display_kind"]) == (PARTIAL_FAILED_TURN_NOTICE, FAILED_TURN_DISPLAY_KIND)
+    metadata = boundary["display_metadata"]
+    assert (metadata if isinstance(metadata, dict) else json.loads(metadata))["error_surface"]["code"] == "rate_limit"
     db.close()

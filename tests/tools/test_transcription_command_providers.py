@@ -18,10 +18,14 @@ identically on Linux, macOS, and Windows (with minor quoting differences).
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 import wave
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 
 from tools.transcription_common import BUILTIN_STT_PROVIDERS
@@ -75,6 +79,23 @@ def _python_emit_stdout_command(transcript_text: str) -> str:
     interpreter = sys.executable
     payload = f"import sys; sys.stdout.write({transcript_text!r})"
     return f'"{interpreter}" -c "{payload}"'
+
+
+def _python_echo_input_command() -> str:
+    """Return a portable shell command that writes the received {input_path} to {output_path}."""
+    interpreter = sys.executable
+    payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
+    return f'"{interpreter}" -c "{payload}" {{input_path}} {{output_path}}'
+
+
+def _python_copy_input_command(copy_dest: str) -> str:
+    """Command that copies the received {input_path} to *copy_dest* and echoes the path
+    to {output_path} — lets a test inspect the exact bytes the provider received even
+    after the runner's temp dir is cleaned up."""
+    interpreter = sys.executable
+    payload = ("import sys, shutil; shutil.copyfile(sys.argv[1], sys.argv[3]); "
+               "open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])")
+    return f'"{interpreter}" -c "{payload}" {{input_path}} {{output_path}} {copy_dest}'
 
 
 # ---------------------------------------------------------------------------
@@ -353,3 +374,119 @@ class TestCommandWinsOverPlugin:
 
         assert result["success"] is True
         assert result["transcript"] == "FROM_PLUGIN"
+
+
+# ---------------------------------------------------------------------------
+# normalize: opt-in ffmpeg transcode (16 kHz mono) before the command runs
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeCommandSTTInput:
+    """``stt.providers.<name>.normalize: true`` hands the command a 16 kHz mono
+    m4a instead of the raw container (desktop voice notes are WebM/Opus 48 kHz;
+    providers with container/sample-rate contracts reject the raw file — #81811).
+
+    The flag is opt-in: providers that accept any container (whisper CLIs) must
+    keep receiving the original file untouched.
+    """
+
+    def test_normalize_false_passes_original_file(self, tmp_path):
+        import tools.transcription_command as mod
+
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        cfg = {"type": "command", "command": _python_echo_input_command()}
+        with patch.object(mod, "_transcode_audio_for_stt") as transcode:
+            result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        transcode.assert_not_called()
+        assert result["success"] is True
+        assert Path(result["transcript"]) == audio
+
+    def test_normalize_true_passes_transcoded_file(self, tmp_path):
+        import tools.transcription_command as mod
+
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        converted = tmp_path / "converted" / "input-stt.m4a"
+        converted.parent.mkdir()
+        converted.write_bytes(b"fake m4a")
+        cfg = {
+            "type": "command",
+            "command": _python_echo_input_command(),
+            "normalize": True,
+        }
+        with patch.object(mod, "_transcode_audio_for_stt",
+                          return_value=(str(converted), None)) as transcode:
+            result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        transcode.assert_called_once()
+        assert result["success"] is True
+        assert Path(result["transcript"]) == converted
+        # The original file is never modified.
+        assert audio.read_bytes() != b"fake m4a"
+
+    def test_normalize_transcode_failure_returns_error(self, tmp_path):
+        import tools.transcription_command as mod
+
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        cfg = {
+            "type": "command",
+            "command": _python_echo_input_command(),
+            "normalize": True,
+        }
+        with patch.object(mod, "_transcode_audio_for_stt",
+                          return_value=(None, "ffmpeg was not found")):
+            result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        assert result["success"] is False
+        assert "normalize" in result["error"]
+        assert "ffmpeg was not found" in result["error"]
+
+    def test_normalize_string_false_passes_original_file(self, tmp_path):
+        import tools.transcription_command as mod
+
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        cfg = {
+            "type": "command",
+            "command": _python_echo_input_command(),
+            "normalize": "false",
+        }
+        with patch.object(mod, "_transcode_audio_for_stt") as transcode:
+            result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        transcode.assert_not_called()
+        assert result["success"] is True
+        assert Path(result["transcript"]) == audio
+
+
+_HAS_FFMPEG = bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe"))
+
+
+def _make_opus_webm(path: Path) -> Path:
+    """Write a minimal WebM/Opus file (48 kHz), like a desktop voice recording."""
+    silent_wav = _make_silent_wav(path.with_suffix(".wav"), seconds=0.2)
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(silent_wav),
+         "-c:a", "libopus", "-b:a", "32k", str(path)],
+        check=True, timeout=60)
+    return path
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")
+class TestNormalizeCommandSTTRealFFmpeg:
+    def test_webm_normalized_to_16k_mono_m4a(self, tmp_path):
+        audio = _make_opus_webm(tmp_path / "voice.webm")
+        received_copy = str(tmp_path / "received.m4a")
+        cfg = {
+            "type": "command",
+            "command": _python_copy_input_command(received_copy),
+            "normalize": True,
+        }
+        result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        assert result["success"] is True, result
+        received = Path(result["transcript"])
+        assert received != audio
+        assert received.suffix == ".m4a"
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=sample_rate,channels", "-of",
+             "default=noprint_wrappers=1:nokey=1", received_copy],
+            check=True, capture_output=True, text=True, timeout=30)
+        sample_rate, channels = probe.stdout.split()
+        assert int(sample_rate) == 16000
+        assert int(channels) == 1

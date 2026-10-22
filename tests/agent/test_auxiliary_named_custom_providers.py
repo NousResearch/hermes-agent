@@ -65,7 +65,7 @@ class TestResolveProviderClientMainAlias:
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
-        client, model = resolve_provider_client("main", "test")
+        client, _model = resolve_provider_client("main", "test")
         assert client is not None
         assert "beans.local" in str(client.base_url)
 
@@ -427,7 +427,7 @@ class TestResolveProviderClientMainRuntimeCustom:
 
         from agent.auxiliary_client import resolve_provider_client
         # main_runtime with key but no base_url → must fall through
-        client, model = resolve_provider_client(
+        client, _model = resolve_provider_client(
             "custom",
             main_runtime={"api_key": "k", "base_url": ""},
         )

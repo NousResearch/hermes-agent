@@ -40,7 +40,7 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
-    "/assets/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
+    "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 
 def _path_is_public(path: str) -> bool:
@@ -54,10 +54,17 @@ def _path_is_public(path: str) -> bool:
 def _safe_next_target(request: Request) -> str:
     """URL-encoded ``next`` value for the login redirect, or ``""``. Only same-origin paths outside
     the auth flow and ``/api`` are kept (query preserved); dropped deep links fall back to the
-    SPA's ``sessionStorage["hermes.lastLocation"]``."""
+    SPA's ``sessionStorage["hermes.lastLocation"]``.
+
+    Behind a reverse proxy at a sub-path (``X-Forwarded-Prefix``, e.g. ``/hermes``), the prefix
+    is prepended AFTER validation so the post-login redirect lands within the mount
+    (``/hermes/sessions`` rather than bare ``/sessions``)."""
     path = request.url.path
     if not path or not is_safe_next_path(path):
         return ""
+    prefix = prefix_from_request(request)
+    if prefix:
+        path = prefix + path
     query = request.url.query
     return quote(f"{path}?{query}" if query else path, safe="")
 
@@ -157,7 +164,9 @@ async def gated_auth_middleware(
         return await call_next(request)
     # Already authenticated by the token-auth seam (service caller on a registered token
     # route): not a cookie session, must not bounce to /login.
-    if getattr(request.state, "token_authenticated", False) or _path_is_public(request.url.path):
+    if (getattr(request.state, "token_authenticated", False)
+            or getattr(request.state, "native_http_principal", None)
+            or _path_is_public(request.url.path)):
         return await call_next(request)
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
     # stores, verified with the same provider stack, no cookie read or set. A presented-but-

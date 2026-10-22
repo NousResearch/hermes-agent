@@ -110,6 +110,6 @@ def test_verifier_cli(tmp_path, changes, expect, error):
         env.setdefault("SystemRoot", r"C:\Windows")
         env.setdefault("ComSpec", r"C:\Windows\system32\cmd.exe")
     result = subprocess.run([sys.executable, str(_SCRIPT), "--repo", str(repo), "--stamp", str(path), *expect],
-                            env=env, capture_output=True, text=True, timeout=30)
+                            env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == (1 if error else 0), result.stderr
     assert error in result.stderr if error else "stamp verified" in result.stdout

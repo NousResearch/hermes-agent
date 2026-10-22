@@ -13,12 +13,13 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 
 import json
 import logging
+import threading
 import time
 from contextvars import ContextVar
 from contextlib import ExitStack, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 from urllib.parse import urljoin
 
 import httpx
@@ -28,6 +29,7 @@ from tools.url_safety import is_safe_url
 from tools.url_safety import create_ssrf_safe_client
 from tools.website_policy import check_website_access
 from tools.skills_hub_models import _normalize_lock_install_path, _validate_skill_name
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -118,14 +120,14 @@ def _skills_hub_http_get(url: str, **kwargs: Any) -> httpx.Response:
 
 
 def _ssrf_safe_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
-                        headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+                        headers: Optional[dict[str, str]] = None) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
     with skills_hub_http_session():
         return _skills_hub_http_client.get().get(url, timeout=timeout, headers=headers)
 
 
 def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
-                      headers: Optional[Dict[str, str]] = None) -> Optional[httpx.Response]:
+                      headers: Optional[dict[str, str]] = None) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
 
     *headers* are plain request headers (no credentials) and are sent on every hop."""
@@ -170,7 +172,7 @@ def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
 def _guarded_http_stream(
     url: str,
     *,
-    params: Optional[Dict[str, str]] = None,
+    params: Optional[dict[str, str]] = None,
     timeout: int = _DEFAULT_HTTP_TIMEOUT,
 ) -> Iterator[Optional[httpx.Response]]:
     """Stream one response with bounded, policy-checked redirects."""
@@ -277,6 +279,7 @@ class _JsonStateFile:
 
     EMPTY: dict = {}
     DEFAULT_PATH: Any = None
+    _LOCK_HOLDER: threading.local
 
     def __init__(self, path: Optional[Path] = None):
         self.path = path if path is not None else type(self).DEFAULT_PATH()
@@ -289,7 +292,31 @@ class _JsonStateFile:
 
     def _write(self, data: dict, **dumps_kwargs) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, **dumps_kwargs) + "\n", encoding="utf-8")
+        # Temp + rename: another process (CLI vs desktop install) reading mid-write would see an
+        # empty file, load EMPTY and save a lock that drops every other installed skill.
+        atomic_write_text(self.path, json.dumps(data, indent=2, **dumps_kwargs) + "\n", preserve_mode=True)
+
+    def _update(self, mutate: Callable[[dict], bool], **dumps_kwargs) -> bool:
+        """Re-read, ``mutate`` and save under a cross-process lock; the file is rewritten only
+        when ``mutate`` returns True. The CLI and desktop rewrite the same file, and a save from a
+        snapshot loaded outside the lock drops whatever the other process recorded meanwhile.
+
+        An unusable lock (no flock on the filesystem, a wedged holder) degrades to an unlocked
+        update rather than failing the install that triggered it."""
+        from hermes_cli.auth import _file_lock
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(_file_lock(
+                    self.path.with_name(self.path.name + ".lock"), type(self)._LOCK_HOLDER, 10.0,
+                    f"Timed out waiting for the skills hub state lock ({self.path})",
+                ))
+            except (OSError, TimeoutError):
+                logger.warning("Updating %s without its lock", self.path, exc_info=True)
+            data = self._read()
+            changed = mutate(data)
+            if changed:
+                self._write(data, **dumps_kwargs)
+            return changed
 
 
 class HubLockFile(_JsonStateFile):
@@ -297,6 +324,7 @@ class HubLockFile(_JsonStateFile):
 
     EMPTY = {"version": 1, "installed": {}}
     DEFAULT_PATH = staticmethod(_lock_file)
+    _LOCK_HOLDER = threading.local()
 
     def load(self) -> dict:
         return self._read()
@@ -313,40 +341,45 @@ class HubLockFile(_JsonStateFile):
         scan_verdict: str,
         skill_hash: str,
         install_path: str,
-        files: List[str],
-        metadata: Optional[Dict[str, Any]] = None,
-        scan_provenance: Optional[Dict[str, Any]] = None,
+        files: list[str],
+        metadata: Optional[dict[str, Any]] = None,
+        scan_provenance: Optional[dict[str, Any]] = None,
     ) -> None:
         # Validate name and install-path SHAPE at write time: a poisoned lock
         # entry is the precondition for the uninstall_skill rmtree-escape.
         safe_name = _validate_skill_name(name)
         safe_install_path = _normalize_lock_install_path(install_path, safe_name)
-        data = self.load()
-        now = datetime.now(timezone.utc).isoformat()
-        data["installed"][safe_name] = {
-            "source": source,
-            "identifier": identifier,
-            "trust_level": trust_level,
-            "scan_verdict": scan_verdict,
-            "content_hash": skill_hash,
-            "install_path": safe_install_path,
-            "files": files,
-            "metadata": metadata or {},
-            "scan_provenance": scan_provenance or {},
-            "installed_at": now,
-            "updated_at": now,
-        }
-        self.save(data)
+
+        def record(data: dict) -> bool:
+            now = datetime.now(UTC).isoformat()
+            data.setdefault("installed", {})[safe_name] = {
+                "source": source,
+                "identifier": identifier,
+                "trust_level": trust_level,
+                "scan_verdict": scan_verdict,
+                "content_hash": skill_hash,
+                "install_path": safe_install_path,
+                "files": files,
+                "metadata": metadata or {},
+                "scan_provenance": scan_provenance or {},
+                "installed_at": now,
+                "updated_at": now,
+            }
+            return True
+
+        self._update(record, ensure_ascii=False)
 
     def record_uninstall(self, name: str) -> None:
-        data = self.load()
-        data["installed"].pop(name, None)
-        self.save(data)
+        def forget(data: dict) -> bool:
+            data.setdefault("installed", {}).pop(name, None)
+            return True
+
+        self._update(forget, ensure_ascii=False)
 
     def get_installed(self, name: str) -> Optional[dict]:
         return self.load()["installed"].get(name)
 
-    def list_installed(self) -> List[dict]:
+    def list_installed(self) -> list[dict]:
         return [{"name": name, **entry} for name, entry in self.load()["installed"].items()]
 
 
@@ -355,30 +388,34 @@ class TapsManager(_JsonStateFile):
 
     EMPTY = {"taps": []}
     DEFAULT_PATH = staticmethod(_taps_file)
+    _LOCK_HOLDER = threading.local()
 
-    def load(self) -> List[dict]:
+    def load(self) -> list[dict]:
         return self._read().get("taps", [])
 
-    def save(self, taps: List[dict]) -> None:
+    def save(self, taps: list[dict]) -> None:
         self._write({"taps": taps})
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""
-        taps = self.load()
-        if any(t["repo"] == repo for t in taps):
-            return False
-        taps.append({"repo": repo, "path": path})
-        self.save(taps)
-        return True
+        def append(data: dict) -> bool:
+            taps = data.setdefault("taps", [])
+            if any(t["repo"] == repo for t in taps):
+                return False
+            taps.append({"repo": repo, "path": path})
+            return True
+
+        return self._update(append)
 
     def remove(self, repo: str) -> bool:
         """Remove a tap by repo name. Returns False if not found."""
-        taps = self.load()
-        new_taps = [t for t in taps if t["repo"] != repo]
-        if len(new_taps) == len(taps):
-            return False
-        self.save(new_taps)
-        return True
+        def drop(data: dict) -> bool:
+            taps = data.get("taps", [])
+            kept = [t for t in taps if t["repo"] != repo]
+            data["taps"] = kept
+            return len(kept) != len(taps)
+
+        return self._update(drop)
 
     list_taps = load
 
@@ -388,7 +425,7 @@ def append_audit_log(action: str, skill_name: str, source: str,
     """Append one space-separated line to the audit log (best-effort)."""
     audit_log = _audit_log()
     audit_log.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     parts = [timestamp, action, skill_name, f"{source}:{trust_level}", verdict]
     if extra:
         parts.append(extra)

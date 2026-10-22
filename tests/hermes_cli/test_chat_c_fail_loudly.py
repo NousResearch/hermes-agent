@@ -156,7 +156,8 @@ class TestChatCFailLoudlyOnStderr:
 
         created = []
         monkeypatch.setattr(store_mod, "create_titled_session",
-                            lambda title: created.append(title) or "local-" + "a" * 64, raising=False)
+                            lambda title, run=None: created.append((title, run)) or "local-" + "a" * 64,
+                            raising=False)
         args = type(
             "Args",
             (),
@@ -164,13 +165,17 @@ class TestChatCFailLoudlyOnStderr:
                 "continue_last": "Bot Chat",
                 "resume": None,
                 "create_if_missing": True,
+                "toolsets": "file",
+                "model": "m2",
             },
         )()
 
         main_mod._resolve_continue_arg(args, use_tui=False)
 
         assert args.resume == "local-" + "a" * 64, "resume should be set to the new session id"
-        assert created == ["Bot Chat"]
+        assert [title for title, _launch in created] == ["Bot Chat"]
+        # The run's arguments reach the create: the resume that follows never sends -t/-m.
+        assert created[0][1] is args
         assert not (isolated_home / "state.db").exists(), "the CLI must not write the titled row itself"
 
     def test_tui_create_if_missing_keeps_the_local_titled_row(self, isolated_home):

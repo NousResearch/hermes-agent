@@ -454,7 +454,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
             return <CanonicalPendingCard action={action} avatar={avatarFor(member?.profile || action.member_id, 24)} busy={busy}
               key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} methods={methods} name={name}
-              onAct={act} onDiscard={() => setDiscard({ ...action })} />
+              onAct={act} onDiscard={() => setDiscard({ ...action })}
+              onRefresh={() => void refresh().catch(e => setReadError(String(e)))} />
           })}
           {discard && <div aria-label={labels.discardUnknown} className="mx-3 grid gap-2 rounded-xl bg-(--chrome-action-hover) px-3 py-2 text-xs" role="alertdialog">
             <p>{labels.discardWarning}</p>

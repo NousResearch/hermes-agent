@@ -169,7 +169,7 @@ def check_skills_requirements() -> bool:
     return True  # always available: the directory is created on first use
 
 
-def _extract_conditions(frontmatter: Dict[str, Any]) -> Dict[str, list]:
+def _extract_conditions(frontmatter: dict[str, Any]) -> dict[str, list]:
     """Extract conditional activation fields from parsed frontmatter.
 
     Delegates to ``agent.skill_utils.extract_skill_conditions`` — the same

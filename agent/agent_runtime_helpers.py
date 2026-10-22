@@ -942,8 +942,10 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             agent.provider or "provider",
         )
         return False, has_retried_429
-    # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
-    # burns its single-use refresh token for a failure it never had.
+    refresh_counts = getattr(agent, "_auth_pool_refresh_counts", {}) or {}
+    if credential_id and refresh_counts.get((agent.provider, credential_id), 0) >= _MAX_AUTH_REFRESH_ATTEMPTS:
+        _ra().logger.warning("Credential auth failure reached refresh cap for pool entry %s; rotating", credential_id)
+        return (True, False) if rotate_and_swap(401, "auth persists after refresh") else (False, has_retried_429)
     refresh_kwargs = {"api_key_hint": api_key_hint}
     if credential_id:
         refresh_kwargs["credential_id"] = credential_id
@@ -951,8 +953,6 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
     if refreshed is None:
         # Refresh failed; rotate (the failed entry is already marked exhausted).
         return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
-    # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry
-    # refreshes so a single-entry pool falls through to fallback.
     refreshed_id = getattr(refreshed, "id", None)
     if refreshed_id is not None:
         if getattr(agent, "_auth_pool_refresh_counts", None) is None:
@@ -960,13 +960,6 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
         refresh_counts = agent._auth_pool_refresh_counts
         refresh_key = (agent.provider, refreshed_id)
         refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
-        if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
-            _ra().logger.warning(
-                "Credential auth failure persists after %s refreshes for "
-                "pool entry %s — treating as unrecoverable and allowing "
-                "fallback to activate.", refresh_counts[refresh_key] - 1, refreshed_id,
-            )
-            return False, has_retried_429
     _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
     if agent._swap_credential(refreshed) is False:
         return False, has_retried_429
@@ -1116,6 +1109,7 @@ def recover_with_credential_pool(
         # match the key that failed, not a different account.
         return (True, False) if _rotate_and_swap(402, "billing") else (False, has_retried_429)
     if effective_reason == FailoverReason.rate_limit:
+        agent._auth_pool_refresh_counts = {}
         return _recover_rate_limit(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,

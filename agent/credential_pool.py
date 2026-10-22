@@ -2391,13 +2391,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
     ) -> Optional[PooledCredential]:
-        """Force-refresh the entry that supplied the failed request.
-
-        Direct integrations may reload the pool after a request failed, so
-        ``current_id`` cannot identify the issuing credential. With no hint,
-        select WITHOUT the normal proactive refresh: the forced refresh below
-        must consume a rotating refresh token exactly once.
-        """
+        """Force-refresh the entry that supplied the failed request."""
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id) if credential_id else None
             if entry is None:
@@ -2408,6 +2402,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if entry is None:
                 return None
             self._current_id = entry.id
+            if (
+                api_key_hint and entry.runtime_api_key != api_key_hint
+                and not self._entry_needs_refresh(entry)
+            ):
+                return entry
             return self._try_refresh_current_unlocked()
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:

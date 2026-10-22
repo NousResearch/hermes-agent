@@ -887,6 +887,9 @@ class ClientLifecycleMixin:
             or self.provider != "anthropic" or base_url_host_matches(anthropic_base_url, "azure.com")
         ):
             return False
+        # A leased session must refresh through its pool so it retains its attributed credential.
+        if getattr(self, "_credential_pool", None) is not None and getattr(self, "_credential_pool_entry_id", None):
+            return False
         # Off the official hosts (a /anthropic proxy the resolver accepts, or a URL-bearing alias,
         # #28660) rotate only a credential the endpoint already holds: swapping a custom key for
         # ANTHROPIC_API_KEY / the OAuth token would leak it (#17829). Hostname match, not substring,

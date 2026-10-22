@@ -129,6 +129,19 @@ describe('persistent browser terminals', () => {
     expect(resumed.sent.join('')).not.toContain('\u000c')
   })
 
+  // A trimmed replay can start mid-way through a full-screen program; an unchanged size sends no SIGWINCH.
+  it('forces one redraw by a real size change only when resuming from a trimmed replay', async () => {
+    const api = install()
+    await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    Socket.instances[0].close(1006)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(Socket.instances[1].sent).toEqual(['\u001b[RESIZE:80;24]'])
+    Socket.reply = socket => socket.metadata({ truncated: true })
+    Socket.instances[1].close(1006)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(Socket.instances[2].sent).toEqual(['\u001b[RESIZE:80;23]', '\u001b[RESIZE:80;24]'])
+  })
+
   it('closes explicitly with a fresh authenticated request even while disconnected', async () => {
     const api = install()
     const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })

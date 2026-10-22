@@ -68,6 +68,13 @@ function settleOpen(state: TerminalState): void {
   state.openedAt = null
 }
 
+/** A trimmed replay can start mid-way through a full-screen program's output, and an
+ * unchanged size sends no SIGWINCH: step one row away first so the program redraws. */
+function sendResumeSize(socket: WebSocket, state: TerminalState, trimmed?: boolean): void {
+  if (trimmed) {socket.send(`\u001b[RESIZE:${state.cols};${state.rows > 1 ? state.rows - 1 : state.rows + 1}]`)}
+  socket.send(`\u001b[RESIZE:${state.cols};${state.rows}]`)
+}
+
 async function closeSavedShell(saved: SavedTerminal, websocketUrl: BrowserTerminalOptions['websocketUrl']): Promise<boolean> {
   const url = new URL(await websocketUrl(saved.profile))
   url.searchParams.set('attach', saved.terminalId)
@@ -210,7 +217,7 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
           handshakeComplete = true
 
           // Resume query dimensions do not resize an existing server PTY.
-          if (resuming) {socket.send(`\u001b[RESIZE:${state.cols};${state.rows}]`)}
+          if (resuming) {sendResumeSize(socket, state, meta.truncated)}
           setStatus(state, 'open')
           state.openedAt = Date.now()
 

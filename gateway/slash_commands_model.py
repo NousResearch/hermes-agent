@@ -229,8 +229,21 @@ class GatewayModelCommandsMixin:
                 if not picker and getattr(_sess_entry, "was_auto_reset", False):
                     # See #48031.
                     _sess_entry.was_auto_reset = False
+                # A bare-custom session switching models keeps ``custom`` as its provider
+                # (model_switch._creds_for_switched_provider, #45597). Persisting that billing class
+                # loses the entry name, and the next turn resolves it to "no endpoint or API key"
+                # (runtime_provider._raise_for_credentialless_bare_custom). Heal the name from the
+                # endpoint + model this switch carries before writing the route.
+                _provider = result.target_provider
+                if str(_provider or "").strip().lower() == "custom":
+                    from hermes_cli.runtime_provider import canonical_custom_identity
+                    try:
+                        _provider = canonical_custom_identity(
+                            base_url=result.base_url, model=result.new_model) or ""
+                    except Exception:
+                        _provider = ""
                 await _sess_db.update_session_model(
-                    _sess_entry.session_id, result.new_model, provider=result.target_provider,
+                    _sess_entry.session_id, result.new_model, provider=_provider,
                     base_url=result.base_url, api_mode=result.api_mode,
                 )
             except Exception as exc:

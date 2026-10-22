@@ -330,6 +330,19 @@ def _model_id_matches(value: Any, target: str) -> bool:
     return isinstance(value, str) and value.strip().lower() == target
 
 
+def _entry_serves_model(entry: dict[str, Any], target: str) -> bool:
+    """Whether one configured custom entry advertises *target* (already lowercased/stripped)."""
+    if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
+        return True
+    models = entry.get("models")
+    if isinstance(models, dict):
+        return any(str(mid).strip().lower() == target for mid in models)
+    if isinstance(models, list):
+        return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
+                   for item in models)
+    return False
+
+
 def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     """Map a model id back to the ``custom:<name>`` entry that serves it — companion to
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
@@ -337,19 +350,25 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     target = str(model or "").strip().lower()
     if not target:
         return None
+    return _find_custom_identity(lambda entry: _entry_serves_model(entry, target))
 
-    def _entry_serves_model(entry: dict[str, Any]) -> bool:
-        if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
-            return True
-        models = entry.get("models")
-        if isinstance(models, dict):
-            return any(str(mid).strip().lower() == target for mid in models)
-        if isinstance(models, list):
-            return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
-                       for item in models)
-        return False
 
-    return _find_custom_identity(_entry_serves_model)
+def find_custom_provider_identity_for(base_url: str, model: str) -> Optional[str]:
+    """Map ``(endpoint, model)`` back to one ``custom:<name>`` entry.
+
+    Several custom providers may share one gateway endpoint (ai-hub-gpt / ai-hub-claude /
+    ai-hub-deepseek all point at the same base_url). The endpoint alone is then ambiguous, and
+    :func:`find_custom_provider_identity` returns the first entry — the wrong identity for every
+    sibling. Pairing the endpoint with the model that entry advertises makes the match unique
+    again, so bare ``custom`` can be healed to the provider that actually serves the route.
+    """
+    target_url = _normalize_base_url_for_match(base_url)
+    target_model = str(model or "").strip().lower()
+    if not target_url or not target_model:
+        return None
+    return _find_custom_identity(
+        lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target_url
+        and _entry_serves_model(entry, target_model))
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
@@ -359,6 +378,14 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
     provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
     if base_url:
+        # The endpoint alone is ambiguous when several custom providers share one gateway
+        # (ai-hub-gpt / ai-hub-claude / ai-hub-deepseek all use the same base_url): the bare
+        # endpoint match returns the first sibling, which is the wrong identity for the others.
+        # Pair it with the model the entry advertises first, then fall back to the endpoint.
+        if model:
+            paired = find_custom_provider_identity_for(base_url, model)
+            if paired:
+                return paired
         identity = find_custom_provider_identity(base_url)
         if identity:
             return identity

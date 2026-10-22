@@ -10,7 +10,6 @@ import { type RoomHandoff, roomHandoffs, type RoomLogEvent } from './group-room-
 import { fill, ROOM_AVATAR_SIZE, RoomActivityRow, RoomMessage, RoomNoticeRow } from './group-room-ui'
 
 const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
-const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 
 export interface CanonicalGroupEvent {
   seq: number
@@ -74,11 +73,9 @@ function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: str
 
   const text = event.payload.text || event.payload.content || ''
 
-  // The shared renderer (layout and large-message safeguards). media={false}: room text
-  // may come from another machine, so its MEDIA: paths never resolve against this gateway;
-  // room files keep their own download path below.
-  return MessageTextContent ? <MessageTextContent media={false} text={text} />
-    : Streamdown ? <Streamdown>{text}</Streamdown> : <>{text}</>
+  // Remote room text cannot resolve local files, images, directives or rich fences.
+  // The shared preview renderer permits only explicit public web links, opened on a click.
+  return MessageTextContent ? <MessageTextContent media={false} previewOnly text={text} /> : <>{text}</>
 }
 
 // Previews download the whole file over RPC; larger or unsized images keep only Download.

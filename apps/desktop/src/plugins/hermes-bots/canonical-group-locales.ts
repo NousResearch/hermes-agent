@@ -951,7 +951,7 @@ export const CANONICAL_GROUP_LOCALES = {
     assignment: '{lead} hat das an {names} gegeben',
     assignmentFallback: '{lead} übernimmt das',
     statusBlocked: 'Blockiert',
-    statusApprovals: '{count} warten auf Freigabe',
+    statusApprovals: 'Freigabe ausstehend: {count}',
     statusAttention: 'Aufmerksamkeit erforderlich: {count}',
     stopped: 'Stopp angefordert',
     nothingRunning: 'Keine neuen Antworten wurden abgebrochen.',

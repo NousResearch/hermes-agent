@@ -19,9 +19,11 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
+from agent.memory_context import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
+from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
+from agent.plugin_live_notes import pop_plugin_notices
 from agent.skills_index_delta import stage_skills_index_note
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.model_metadata import (
@@ -612,7 +614,7 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_harness_metrics_turn", None),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
-    ("_pre_verify_nudges", 0),
+    ("_pre_verify_nudges", 0), ("_lsp_turn_end_notes", 0),
 )
 
 
@@ -641,6 +643,10 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
                     "issue — cleaned up automatically. Proceeding with fresh "
                     "connection."
                 )
+    # A stale streak against a local server that has since recovered must not fail this turn on arrival.
+    with suppress(Exception):
+        from agent.chat_completion_local import retry_recovered_local_server
+        retry_recovered_local_server(agent)
     # Replay compression warning through status_callback for gateway platforms.
     if agent._compression_warning:
         agent._replay_compression_warning()
@@ -851,11 +857,12 @@ def _merge_gateway_notes(
     agent: Any, messages: list[Any], current_turn_user_idx: int, plugin_user_context: str
 ) -> str:
     """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
-    ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
-    surface-switch correction. Multimodal (list) content can't take the string sidecar —
-    append a durable text part instead."""
+    ephemeral system prompt stays byte-stable: the gateway's staged notes, plugin go-live notices no
+    tool result carried, then the surface-switch correction. Multimodal (list) content can't take the
+    string sidecar — append a durable text part instead."""
+    forward_lsp_verdicts(agent)  # late LSP verdicts on last turn's edits ride the plugin-notice queue
     _turn_notes = "\n\n".join(
-        part for part in (consume_gateway_turn_context_notes(agent),
+        part for part in (consume_gateway_turn_context_notes(agent), pop_plugin_notices(agent),
                           consume_surface_switch_note(agent),
                           consume_skills_index_note(agent)) if part
     )
@@ -1327,6 +1334,11 @@ def build_api_messages(
         # 'reasoning_details' is shaped by the replay policy above on chat_completions and
         # left intact for the native adapters (anthropic/bedrock rebuild signed blocks from it).
         api_messages.append(api_msg)
+
+    # Rows rebuilt from the session DB carry ``[screenshot]`` lines: re-attach the newest retained
+    # images on this wire copy (vision.replay_recent_images; native image input only).
+    from agent.image_replay import replay_for_agent
+    replay_for_agent(agent, api_messages)
 
     # A provider-rejected Anthropic signature is suppressed outside canonical history and
     # survives fresh request construction / process resume via session model_config.

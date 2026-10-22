@@ -64,8 +64,8 @@ def test_plugin_workspace_trusts_core_lock_instead_of_rechecking_release_age(lay
     """Release age is checked when Hermes locks, never on the user's machine (#135589).
 
     The generated root carries no ``exclude-newer`` (a mirror without upload times makes
-    uv reject every file it cannot date) and instead holds each core-locked package at its
-    locked version, so a plugin cannot move one; plugin-only packages stay free (#120076).
+    uv reject every file it cannot date) and adds no constraints of its own: core's ranges
+    still bound what a plugin may move, and plugin-only packages stay free (#120076).
     """
     import tomllib
 
@@ -86,7 +86,7 @@ def test_plugin_workspace_trusts_core_lock_instead_of_rechecking_release_age(lay
 
     policy = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]
     assert "exclude-newer" not in policy and "exclude-newer-package" not in policy
-    assert sorted(policy["constraint-dependencies"]) == sorted(f"{n}=={v}" for n, v in core_packages.items())
+    assert "constraint-dependencies" not in policy
     locked = {p["name"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
     assert "member-dep" in locked
 
@@ -103,6 +103,18 @@ def test_classify_network_failure_stays_generic():
 
     err = classify_uv_failure("lock", 1, "error: Failed to fetch https://pypi.org (timed out)")
     assert not isinstance(err, ResolutionConflict)
+
+
+def test_core_only_generation_carries_no_release_age_cutoff(layout):
+    """A core-only install (hermes update) is a frozen sync: the cutoff there only gates the build
+    tools uv fetches, and a mirror without upload times rejects every one of them (#135589)."""
+    tmp, core, _, _ = layout
+    manifest = core / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace("[tool.uv]\n", '[tool.uv]\nexclude-newer = "3 days"\n', 1))
+    root = tmp / "workspace"
+    ws._generate_pyproject([], root, source=core)
+    generated = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "exclude-newer" not in generated and "[tool.uv]" in generated
 
 
 def test_undated_index_failure_names_the_index_not_a_conflict():

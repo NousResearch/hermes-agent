@@ -35,13 +35,11 @@ export const ruPluginSettings = {
       desktopOnlyNote: 'Пакеты только для приложения не устанавливают плагин агента.',
       insecureWarning:
         'Этот URL использует небезопасную или локальную схему. Для боевой установки предпочитайте https:// или git@.',
-      securityHeading: 'Перед установкой',
       securityIntro:
         'Устанавливайте только из проверенных источников — при желании просмотрите репозиторий ниже, чтобы увидеть, что будет добавлено.',
       sourceHeading: 'Исходный код',
       viewRepository: 'Посмотреть репозиторий',
       viewPluginFiles: 'Посмотреть файлы плагина',
-      gitCloneLabel: 'URL для git clone',
       enableAgent: 'Включить плагин агента после установки',
       forceReinstall: 'Принудительная переустановка (заменить, если уже установлен)',
       pinToCommit: 'Закрепить на коммите (необязательно)',
@@ -65,7 +63,17 @@ export const ruPluginSettings = {
       toolsConnected: n => `Подключено инструментов: ${n}`,
       skillsReady: names => (names.length === 1 ? `навык ${names[0]} готов` : `готово навыков: ${names.length}`),
       nextChat: 'остальные инструменты появятся в следующем чате',
-      serverNotConnected: (server, reason) => `MCP-сервер ${server} не подключён${reason ? `: ${reason}` : '.'}`
+      serverNotConnected: (server, reason) => `MCP-сервер ${server} не подключён${reason ? `: ${reason}` : '.'}`,
+      verified: 'Проверен',
+      unverified: 'Не проверен',
+      reviewedByNous: 'Проверен Nous.',
+      installsAndEnables: profile => `Устанавливается для ${profile} и сразу включается.`,
+      installsOnly: profile => `Устанавливается для ${profile}.`,
+      advanced: 'Дополнительно',
+      versionLabel: 'Версия',
+      reviewedPin: sha => (sha ? `Проверенный пин ${sha}` : 'Проверенный пин'),
+      latestCommit: 'Последний коммит',
+      nothingToInstall: 'В этом пакете нечего устанавливать здесь.'
     }
   }
 } satisfies Pick<SettingsOverrides, 'pluginPages' | 'plugins'>

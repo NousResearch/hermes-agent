@@ -212,8 +212,10 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
 const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
 
 /** The pane a NEW preview tile should stack into: another preview tile already
- *  in the tree, else another open tab adopted earlier in the same pass (a
- *  reload restores every tab at once, before any of them is in the tree).
+ *  in the tree, else — when several tabs arrive in one pass (a reload, or a
+ *  session switch bringing its tabs back) — the FIRST of them, which itself
+ *  gets no anchor and opens the zone. One shared head keeps the anchors
+ *  acyclic; adoption places a pane after an anchor arriving with it (store.ts).
  *  `undefined` means this is the first preview — it opens its own zone. */
 function existingPreviewAnchor(tabId: string): string | undefined {
   const own = previewPaneId(tabId)
@@ -223,9 +225,9 @@ function existingPreviewAnchor(tabId: string): string | undefined {
     return inTree
   }
 
-  const other = $dockedVisiblePreviewTabs.get().find(tab => tab.id !== tabId)
+  const head = $dockedVisiblePreviewTabs.get()[0]
 
-  return other ? previewPaneId(other.id) : undefined
+  return head && head.id !== tabId ? previewPaneId(head.id) : undefined
 }
 
 /** Keep pane contributions mirroring `$previewTabs`, keep the store's selection

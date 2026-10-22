@@ -18,7 +18,6 @@ def _minimal_terminal_config(cwd="/tmp"):
         "host_cwd": None,
         "modal_mode": "auto",
         "docker_image": "",
-        "singularity_image": "",
         "modal_image": "",
         "daytona_image": "",
     }

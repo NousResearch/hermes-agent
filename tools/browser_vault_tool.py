@@ -321,9 +321,10 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     finally:
         answer.clear()
     filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
+    fill_next = str(filled.get("next") or "Verify the required form fields before submitting.")
     return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
                        "identifier_type": id_type, "fill": filled,
-                       "next": "Type the identifier into the username field if the form has one, then submit."},
+                       "next": "Type the identifier into the username field if the form has one. " + fill_next},
                       ensure_ascii=False)
 
 
@@ -397,7 +398,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
-    """Fill the current page's password field from a vault handle.
+    """Fill the current page's login field or matched sign-up password pair.
 
     Password-only: the identifier is agent-visible metadata (see
     browser_vault_list) and is typed by the agent via normal input tools.
@@ -561,8 +562,23 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
-        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
-                       + (" (a code will be generated automatically)." if meta.has_otp else "."))
+        signup_pair = {"new-password", "confirm-password"}.issubset({f["token"] for f in fills})
+        if signup_pair and filled >= len(fills):
+            out["next"] = (
+                "The password and its confirmation were filled. Complete and verify all other required "
+                "non-secret fields before submitting; do not submit if either password field is still empty."
+            )
+        elif signup_pair:
+            out["next"] = (
+                "The sign-up password pair was not fully filled. Do not submit; inspect the form and complete "
+                "the required non-secret fields before trying again."
+            )
+        else:
+            out["next"] = (
+                "Verify all required form fields before submitting. If the site then asks for a verification code, "
+                "call browser_vault with action=enter_code and this handle"
+                + (" (a code will be generated automatically)." if meta.has_otp else ".")
+            )
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
     return json.dumps(out)
@@ -592,9 +608,10 @@ BROWSER_VAULT_SCHEMA = {
         "entering the conversation. "
         "Actions: list (call first: saved logins/cards/addresses as handles; logins carry the identifier you type "
         "yourself with the browser's input tool; locked password managers appear under `locked`); fill (handle: "
-        "the password for a login, card fields after the user confirms, address fields; refused unless the page "
+        "a login fills a current-password control, or a matched new-password and confirmation pair in one sign-up "
+        "form; card fields after the user confirms; address fields; refused unless the page "
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
-        "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
+        "Hermes saves and fills it, including a matched sign-up confirmation); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
         "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
         "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "

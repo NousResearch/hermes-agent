@@ -713,11 +713,15 @@ class CLIChatTurnMixin:
                 _post_stream_text = _post_stream_transform_output(response, turn.result)
                 if _post_stream_text.strip():
                     _cprint(_post_stream_text)
+                if modern and response.strip():  # the answer is the turn's last text block: bar it
+                    from hermes_cli.cli_modern_layout import closing_separator
+                    _cprint(closing_separator(True))
             elif modern:
-                from hermes_cli.cli_modern_layout import answer_label, closing_separator
-                _cprint(answer_label())
+                from hermes_cli.cli_modern_layout import TEXT_HANG, closing_separator, open_text_block, text_lead
+                _cprint(open_text_block())
                 ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
-                                    style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
+                                    style=_resp_text, soft_wrap=True,  # terminal wraps; resize re-flows
+                                    line_prefixes=(text_lead(), TEXT_HANG))
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(

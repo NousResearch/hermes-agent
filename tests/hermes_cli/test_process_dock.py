@@ -42,7 +42,7 @@ def test_dock_paints_processes_under_agents_and_retires_finished_rows(monkeypatc
         procs_at = next(i for i, line in enumerate(lines) if 'sleep 30' in line)
         assert agents_at < procs_at
         assert any('⚙ sleep 30' in line and t('cli.dock.starting') in line for line in lines)
-        assert any('✘ echo hello-dock; exit 3' in line and t('cli.dock.exit_code', code=3) in line for line in lines)
+        assert any('✗ echo hello-dock + 1 command' in line and t('cli.dock.exit_code', code=3) in line for line in lines)
         assert all(get_cwidth(line) <= 100 for line in lines)
         # A short narrow viewport still names the live work in its one row and stays in bounds.
         narrow = dock.dock_text(columns=40, rows=14).splitlines()

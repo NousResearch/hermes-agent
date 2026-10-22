@@ -903,14 +903,16 @@ class ChatConsole:
         self._buffer = StringIO()
         self._inner = Console(file=self._buffer, force_terminal=True, color_system="truecolor", highlight=False)
 
-    def print(self, *args, **kwargs):
+    def print(self, *args, line_prefixes: tuple[str, str] | None = None, **kwargs):
+        """``line_prefixes=(first, rest)`` leads the first printed line with ``first`` and the others
+        with ``rest`` (the glyph layout's answer block); both are 2 cells wide."""
         from cli import _OSC_ESCAPE_RE, _cprint
         self._buffer.seek(0)
         self._buffer.truncate()
-        self._inner.width = shutil.get_terminal_size((80, 24)).columns
+        self._inner.width = shutil.get_terminal_size((80, 24)).columns - (2 if line_prefixes else 0)
         self._inner.print(*args, **kwargs)
-        for line in _OSC_ESCAPE_RE.sub("", self._buffer.getvalue()).rstrip("\n").split("\n"):
-            _cprint(line)
+        for index, line in enumerate(_OSC_ESCAPE_RE.sub("", self._buffer.getvalue()).rstrip("\n").split("\n")):
+            _cprint((line_prefixes[0 if index == 0 else 1] + line) if line_prefixes else line)
 
     @contextmanager
     def status(self, *_args, **_kwargs):

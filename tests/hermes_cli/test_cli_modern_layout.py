@@ -40,12 +40,13 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
     thought = [line for line in rows if line.startswith("∴")]
     assert len(thought) == 1 and "Planning the change" in thought[0], rows
     # Reasoning streams in full like classic, under a fixed-width dim bar (never re-wraps on resize)
-    # and closed by the ∴ summary; the answer opens under its own bar.
+    # and closed by the ∴ summary; the answer is a ☤-led block after a blank line, its first line
+    # beside the glyph and the rest hung under it.
     start = rows.index("**Planning the change**")
     assert rows[start - 1] == "─" * 40 and rows[start + 1] == "I will read calc.py first.", rows
     assert rows[start + 2] == thought[0], rows
-    assert rows[next(i for i, r in enumerate(rows) if r.startswith("☤ Hermes")) - 1] == "─" * 40, rows
-    assert any("Added multiply to calc.py." in line for line in rows)
+    answer = next(i for i, r in enumerate(rows) if "Added multiply to calc.py." in r)
+    assert rows[answer].startswith("☤ ") and rows[answer - 1] == "", rows
 
 
 @pytest.mark.parametrize("reasoning", [

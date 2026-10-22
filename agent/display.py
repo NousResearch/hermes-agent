@@ -297,6 +297,17 @@ def _clean_shell_segment(segment: str) -> str:
     return " ".join(out).strip()
 
 
+_SHELL_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+
+
+def _is_shell_setup(segment: str) -> bool:
+    """``X=/some/dir`` or ``mkdir -p <dir>``: plumbing ahead of the command that matters."""
+    words = _split_shell_words(segment)
+    if len(words) == 1 and _SHELL_ASSIGNMENT_RE.match(words[0]):
+        return True
+    return len(words) >= 2 and _shell_basename(words[0]) == "mkdir" and words[1] == "-p"
+
+
 def _is_shell_boundary_echo(segment: str) -> bool:
     words = _split_shell_words(segment)
     if _shell_basename(words[0] if words else "") != "echo":
@@ -315,7 +326,8 @@ def summarize_shell_command(command: str) -> str:
     core: list[str] = []
     for segment in segments:
         cleaned = _clean_shell_segment(segment)
-        if cleaned and _shell_head_word(cleaned) not in _SHELL_SILENT_HEADS and not _is_shell_boundary_echo(cleaned):
+        if cleaned and _shell_head_word(cleaned) not in _SHELL_SILENT_HEADS and not _is_shell_boundary_echo(cleaned) \
+                and not _is_shell_setup(cleaned):
             core.append(cleaned)
     if not core:
         return original

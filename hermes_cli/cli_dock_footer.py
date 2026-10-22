@@ -165,12 +165,24 @@ def _agent_cells(row):
             f"{activity} · {elapsed(row.get('elapsed'))}")
 
 
+def _command_label(command: str) -> str:
+    """The command as the transcript's row shows it: wrapper plumbing (``cd``, ``X=…``) dropped,
+    paths relative to the working directory or ``~``, a heredoc body folded."""
+    from agent.display import summarize_shell_command
+    from hermes_cli.cli_modern_layout import compact_detail
+    try:
+        return compact_detail(summarize_shell_command(command)) or command
+    except Exception:
+        return command
+
+
 def _process_cells(row):
+    command = _command_label(row["command"])
     if row["status"] != "running":
         glyph_style = "class:live-dock.ok" if row["status"] == "done" else "class:live-dock.bad"
-        return glyph_style, procs.process_glyph(row), row["command"], procs.process_activity(row)
+        return glyph_style, procs.process_glyph(row), command, procs.process_activity(row)
     detail = row.get("detail") or t("cli.dock.starting")
-    return ("class:live-dock.count", MONITOR_GLYPH if is_monitor(row) else SHELL_GLYPH, row["command"],
+    return ("class:live-dock.count", MONITOR_GLYPH if is_monitor(row) else SHELL_GLYPH, command,
             f"{detail} · {elapsed(row.get('elapsed'))}")
 
 

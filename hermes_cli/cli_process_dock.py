@@ -74,7 +74,7 @@ def process_rows(now: float | None = None) -> list:
     return rows
 
 
-_GLYPH = {"running": "⚙", "done": "✔", "failed": "✘", "killed": "✘", "lost": "?"}
+_GLYPH = {"running": "⚙", "done": "✓", "failed": "✗", "killed": "✗", "lost": "?"}
 # Finished-status id → catalog key of the exit verdict (looked up at paint time).
 _VERDICT_KEYS = {"done": "cli.dock.exit_code", "failed": "cli.dock.exit_code",
                  "killed": "cli.dock.verdict_killed", "lost": "cli.dock.verdict_lost"}

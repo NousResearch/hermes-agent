@@ -52,13 +52,34 @@ def _done(name, args, result, duration=0.2):
     return step
 
 
-def test_rows_align_their_detail_in_one_column_whatever_the_verb_or_emoji():
-    rows = [_plain(row_head(e, v)) for e, v in (("💻", "$"), ("🔎", "explored"), ("✍️", "write"), ("", "x"))]
+def _cells(text: str) -> int:
+    """Terminal cells, counting an emoji + VS16 (✍️) as the two cells terminals draw."""
     from prompt_toolkit.utils import get_cwidth
-    starts = {get_cwidth(row) for row in rows}
-    assert starts == {1 + 1 + 2 + 1 + VERB_COLUMN}, rows  # mark, space, 2-cell emoji, space, verb column
+    return get_cwidth(text) + text.count("\ufe0f")
+
+
+def test_rows_align_their_detail_in_one_column_whatever_the_verb_or_emoji():
+    rows = [_plain(row_head(e, v)) for e, v in (("🔎", "explored"), ("✍️", "write"), ("⚙️", "proc"), ("", "x"))]
+    assert {_cells(row) for row in rows} == {1 + 1 + 2 + 1 + VERB_COLUMN}, rows  # mark, emoji (2), verb column
     assert [row.split()[0] for row in rows] == ["✓"] * 4
+    # A command reads as typed: ``$ make``, not padded into the verb column.
+    assert _plain(row_head("💻", "$")) == "✓ 💻 $ "
     assert _plain(row_head("💻", "$", "failed")).startswith("✗ 💻 $")
+
+
+def test_long_details_stay_on_one_row_at_any_width():
+    from hermes_cli.cli_modern_layout import DETAIL_MAX
+    prompt = "Three framing candidates of a harpoon gun in first person. " * 4
+    row = _plain(tool_row("vision_analyze", {"question": prompt}, 0.3))
+    assert "\n" not in row and row.endswith("…  0.3s"), row
+    assert len(row.split("Vision", 1)[1].strip()) <= DETAIL_MAX + 8
+
+
+def test_heredoc_and_home_paths_are_compacted(monkeypatch, tmp_path):
+    from hermes_cli.cli_modern_layout import compact_detail
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "shop"))
+    command = f"python3 - <<'EOF' p='a' s=open(p).read() EOF grep -n X {tmp_path}/shop/pier/a.cpp"
+    assert compact_detail(command) == "python3 - <<'EOF' … EOF grep -n X pier/a.cpp"
 
 
 def test_failed_command_preview_leads_with_what_went_wrong():

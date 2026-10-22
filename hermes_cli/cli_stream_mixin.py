@@ -483,8 +483,11 @@ class CLIStreamMixin:
         """Print one response line with the skin's true-color text escape (if any)."""
         from cli import _RST, _STREAM_PAD, _cprint
         _tc = getattr(self, "_stream_text_ansi", "")
-        _cprint(
-            f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+        pad = _STREAM_PAD
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import TEXT_HANG, text_lead
+            pad = text_lead() if self.__dict__.pop("_text_lead_pending", False) else TEXT_HANG
+        _cprint(f"{pad}{_tc}{printed_line}{_RST}" if _tc else f"{pad}{printed_line}")
 
     def _flush_stream_table_buf(self) -> None:
         """Emit the held table block re-aligned as a whole. Cell-level markdown is stripped FIRST
@@ -540,9 +543,11 @@ class CLIStreamMixin:
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
             if getattr(self, "_modern_layout", False):
-                from hermes_cli.cli_modern_layout import answer_label
-                _cprint(answer_label(datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))
-                                     if self.show_timestamps else ""))
+                # A glyph-led block: ``☤ first line``, the rest hung under it. No per-segment bars,
+                # so a run's in-between messages stay light; the turn's last block gets the bar.
+                from hermes_cli.cli_modern_layout import open_text_block
+                _cprint(open_text_block())
+                self._text_lead_pending = True
             elif getattr(self, "_reply_frame_open", False):
                 _cprint("")
             else:
@@ -649,8 +654,8 @@ class CLIStreamMixin:
         # The glyph layout closes each answer segment with its bar; the classic reply frame stays
         # open until the turn ends (_close_reply_frame).
         if self._stream_box_opened and getattr(self, "_stream_box_live", False) and getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import closing_separator
-            _cprint(closing_separator(True))
+            from hermes_cli.cli_modern_layout import close_text_block
+            close_text_block()  # the turn's end closes its last block (the answer) with the accent bar
         self._stream_box_live = False
         if release_held:
             self._release_held_status_lines()

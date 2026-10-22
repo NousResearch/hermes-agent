@@ -953,7 +953,13 @@ class GatewayAgent:
         if self.interim_assistant_callback is not None:
             self.interim_assistant_callback(text, already_streamed=bool(payload.get("already_streamed")))
         elif text and str(text).strip():
-            self._emit_print(text)
+            from hermes_cli import cli_modern_layout as layout
+            if layout._ACTIVE:  # the glyph layout: a ☤-led block, spaced off the tool rows around it
+                for line in layout.text_block_lines(str(text)):
+                    self._emit_print(line)
+                layout.close_text_block()
+            else:
+                self._emit_print(text)
 
     def _on_tool_generating(self, payload, stream_callback, starts):
         if self.tool_gen_callback is not None:

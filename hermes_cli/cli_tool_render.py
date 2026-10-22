@@ -181,9 +181,9 @@ def preview_source(name: str, result: Any) -> list[str]:
     return lines
 
 
-_RULE_ONLY_RE = re.compile(r"^\s*([=\-_~*#.])\1{5,}\s*$")
-_ERROR_LINE_RE = re.compile(r"\b(error|fail(ed|ure)?|exception|assert\w*|denied|not found|cannot|no such|fatal|panic)\b",
-                            re.IGNORECASE)
+_RULE_ONLY_RE = re.compile(r"^\s*(([=\-_~*#.])\2{5,}|[~^]{3,})\s*$")  # rules, traceback carets
+_ERROR_LINE_RE = re.compile(r"(\w*(error|exception)\b|\b(fail(ed|ure)?|assert\w*|denied|not found|cannot|no such|"
+                            r"fatal|panic)\b)", re.IGNORECASE)
 _NOISE_LINE_RE = re.compile(r"^\s*(Traceback \(most recent call last\)|File \".*\", line \d+)")
 
 

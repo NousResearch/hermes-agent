@@ -112,6 +112,35 @@ def answer_label(timestamp: str = "") -> str:
     return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
 
 
+def text_lead() -> str:
+    """The brand glyph that leads an answer or an in-between message, e.g. ``☤ ``."""
+    glyph, _ = _brand_glyph()
+    return f"{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph}{_RST} "
+
+
+TEXT_HANG = "  "  # text after a block's first line hangs under its first word, past the glyph
+
+
+def open_text_block() -> str:
+    """The blank line that opens a text block (it settles a gap the previous block owes)."""
+    global _GAP_PENDING
+    _GAP_PENDING = False
+    return ""
+
+
+def close_text_block() -> None:
+    """A text block ends without a bar: the blank line after it is owed to whatever prints next."""
+    global _GAP_PENDING
+    _GAP_PENDING = True
+
+
+def text_block_lines(text: str) -> list[str]:
+    """A whole message as a glyph-led block (non-streamed interims): ``☤ first line`` then the rest
+    hung under it."""
+    lines = (text or "").strip("\n").split("\n")
+    return [open_text_block()] + [(text_lead() if i == 0 else TEXT_HANG) + line for i, line in enumerate(lines)]
+
+
 def _full_title(text: str) -> str:
     """The reasoning's first ``**bold**`` heading, else its first sentence, whitespace-collapsed."""
     text = (text or "").strip()
@@ -164,7 +193,44 @@ def completed_tool_line(cli, function_name: str, args: dict | None, duration: fl
     return f"  {get_cute_tool_message(function_name, args, duration, result=result)}"
 
 
-def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False) -> str:
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1\s.*?\s\2(?=\s|$)")
+
+
+def compact_detail(text: str) -> str:
+    """A row's detail as the user would type it: paths under the working directory relative, the
+    home directory as ``~``, and a heredoc body (already flattened to one line) folded to ``…``."""
+    from hermes_cli.cli_tool_render import _short_paths
+    text = _HEREDOC_RE.sub(lambda m: f"<<{m.group(1)}{m.group(2)}{m.group(1)} … {m.group(2)}", text or "")
+    return _short_paths(text)
+
+
+# A row's detail stops at this many cells (with ``…``), whatever the window: a heredoc, a long path
+# or a vision prompt stays one row on an ordinary terminal, and the row is the same at every width,
+# so a resize cannot re-wrap it. The full text is in the Ctrl+O viewer.
+DETAIL_MAX = 96
+
+
+def fit_row(head: str, detail: str, tail: str, width: int | None = None) -> str:
+    """``head + detail + tail`` with the detail cut to ``DETAIL_MAX`` cells (or to ``width`` when
+    a caller passes one, e.g. a fixed-width panel)."""
+    from prompt_toolkit.utils import get_cwidth
+    if width:
+        room = width - 1 - get_cwidth(_ANSI_RE.sub("", head)) - get_cwidth(_ANSI_RE.sub("", tail))
+    else:
+        room = DETAIL_MAX
+    if get_cwidth(detail) > room:
+        cut, used = [], 0
+        for ch in detail:
+            used += get_cwidth(ch)
+            if used > max(room - 1, 8):
+                break
+            cut.append(ch)
+        detail = "".join(cut).rstrip() + "…"
+    return head + detail + tail
+
+
+def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False,
+             width: int | None = None) -> str:
     """``📖 Read calc.py  0.2s`` / ``✗ $ pytest -q  0.4s [exit 1]`` — one row per completed call, led by
     the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed. A tool in
     ``NEUTRAL_FAILURE_TOOLS`` keeps its emoji and shows the reason dim."""
@@ -174,12 +240,12 @@ def tool_row(function_name: str, args: dict | None, duration: float, result=None
     out = []
     for index, (emoji, verb, detail, suffix) in enumerate(rows):
         state = "ok" if suffix is None else "neutral" if neutral else "failed"
-        line = row_head(emoji, verb or function_name, state) + (detail or "")
+        tail = ""
         if index == len(rows) - 1 and duration >= 0.1:
-            line += f"  {_DIM}{duration:.1f}s{_RST}"
+            tail += f"  {_DIM}{duration:.1f}s{_RST}"
         if suffix:
-            line += f"{_DIM if neutral else _RED}{suffix}{_RST}"
-        out.append(line)
+            tail += f"{_DIM if neutral else _RED} {' '.join(suffix.split())}{_RST}"
+        out.append(fit_row(row_head(emoji, verb or function_name, state), compact_detail(detail), tail, width))
     return "\n".join(out)
 
 
@@ -196,10 +262,13 @@ def row_head(emoji: str, verb: str, state: str = "ok") -> str:
     to ``VERB_COLUMN``, so tool rows read as one aligned list. Width-independent."""
     from prompt_toolkit.utils import get_cwidth
     icon = (emoji or "●").strip()
-    icon += " " * max(0, 2 - get_cwidth(icon))
+    # An emoji with the VS16 selector (⚙️, 👁️) draws two cells although wcwidth counts one.
+    icon += " " * max(0, 2 - (2 if "\ufe0f" in icon else get_cwidth(icon)))
     verb = verb.strip()
     verb = verb[:1].upper() + verb[1:]
     mark = {"failed": f"{_RED}✗{_RST}", "neutral": f"{_DIM}✗{_RST}"}.get(state) or _ok_mark()
+    if verb == "$":  # a command reads as typed: ``$ make test``, not padded into the verb column
+        return f"{mark} {icon} {_BOLD}${_RST} "
     return f"{mark} {icon} {_BOLD}{verb}{_RST}{' ' * max(1, VERB_COLUMN - get_cwidth(verb))}"
 
 

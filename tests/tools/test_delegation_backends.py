@@ -190,6 +190,37 @@ def test_plugin_parameters_never_redefine_core_or_route_fields(tmp_path, monkeyp
         _registry.restore_registration("greedy", greedy, None)
 
 
+def test_route_task_always_sees_the_core_task_position(tmp_path, monkeypatch):
+    """``index`` is core's: a provider declaring it never lets the model's value replace the real position."""
+    from agent.delegation_provider import DelegationProvider
+    from agent.delegation_registry import _registry
+    from tools.delegate_tool_routes import resolve_task_routes, schema_extension
+
+    seen = []
+
+    class Positional(DelegationProvider):
+        @property
+        def name(self):
+            return "positional"
+
+        def task_parameters(self, config):
+            return {"index": {"type": "integer"}}
+
+        def route_task(self, task, config):
+            seen.append(task["index"])
+            return {}
+
+    positional = Positional()
+    _registry.register(positional)
+    try:
+        assert schema_extension({"backend": "positional"})[0] == {}
+        _, err = resolve_task_routes([{"goal": "first", "index": 7}, {"goal": "second", "index": 0}],
+                                     {"backend": "positional"}, _parent())
+        assert err is None and seen == [0, 1]
+    finally:
+        _registry.restore_registration("positional", positional, None)
+
+
 def test_backend_key_reads_through_the_real_loader(tmp_path, monkeypatch):
     """``delegation.backend`` defaults to ``default`` and a configured value reaches the registry."""
     from agent.delegation_registry import configured_backend

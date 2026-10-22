@@ -36,7 +36,7 @@ from agent.provider_base import ProviderBase
 #: refused at schema-build time: plugins add parameters, they never redefine core ones, and the
 #: raw route fields (``provider``/``model``/``base_url``/``api_key``) never become model-facing.
 RESERVED_TASK_PARAMETERS = frozenset({
-    "goal", "context", "output_schema", "images", "group", "role", "toolsets",
+    "goal", "context", "index", "output_schema", "images", "group", "role", "toolsets",
     "acp_command", "acp_args", "provider", "model", "base_url", "api_key", "api_mode",
 })
 

@@ -1620,6 +1620,15 @@ platform_toolsets:
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
 #
+# Tighten a parameter the server enforces but its schema leaves out
+# (JSON-schema keys merged onto the declared parameter):
+#   beeper:
+#     url: http://127.0.0.1:23373/v0/mcp
+#     tools:
+#       parameter_overrides:
+#         search_messages:
+#           limit: {minimum: 1, maximum: 20}
+#
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:
 #   analysis:

@@ -262,6 +262,23 @@ def _make_tool_filter(name: str, config: dict) -> Callable[[str], bool]:
     return lambda tool_name: not (exclude_set and matches_name_filter(tool_name, exclude_set))
 
 
+def _apply_parameter_overrides(name: str, config: Optional[dict], tool_name: str, schema: dict) -> dict:
+    """``tools.parameter_overrides.<tool>.<parameter>``: JSON-schema keys merged onto one declared parameter,
+    for a server that enforces a constraint its published schema leaves out (e.g. ``maximum``). Returns a new
+    schema; an override naming an undeclared parameter is skipped with a warning."""
+    overrides = (((config or {}).get("tools") or {}).get("parameter_overrides") or {}).get(tool_name) or {}
+    if not overrides:
+        return schema
+    properties = dict(schema["parameters"].get("properties") or {})
+    for parameter, keys in overrides.items():
+        if isinstance(properties.get(parameter), dict) and isinstance(keys, dict):
+            properties[parameter] = {**properties[parameter], **keys}
+        else:
+            logger.warning("MCP server '%s': parameter override %s.%s does not match the tool's schema; skipped",
+                           name, tool_name, parameter)
+    return {**schema, "parameters": {**schema["parameters"], "properties": properties}}
+
+
 def _cached_tools(raws: Iterable[Any]) -> list[SimpleNamespace]:
     """Schema-cache rows -> stand-ins for MCP Tool objects; rows that are not dicts or lack a name
     are dropped. Missing or non-dict ``annotations`` (older cache files) fail closed to write-capable."""
@@ -286,7 +303,7 @@ class _Candidate:
 
 
 def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[[str], bool],
-                     tool_timeout) -> list[_Candidate]:
+                     tool_timeout, *, config: Optional[dict] = None) -> list[_Candidate]:
     """Native tools (live SDK objects or cache stand-ins) -> candidates. The injection scan runs on
     BOTH paths: the cache file is user-writable JSON."""
     out: list[_Candidate] = []
@@ -295,7 +312,7 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
             logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, t.name)
             continue
         _schema._scan_mcp_description(name, t.name, t.description or "")
-        schema = _schema._convert_mcp_schema(name, t)
+        schema = _apply_parameter_overrides(name, config, t.name, _schema._convert_mcp_schema(name, t))
         handler = _handlers._make_tool_handler(name, t.name, tool_timeout, native_images=True)
         out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
     return out
@@ -437,7 +454,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     key = _server_key_for_task(server)
     _record_tool_trust_metadata(name, config, server._tools, key)
     _warn_unknown_cost_keys(name, key, [t.name for t in server._tools if getattr(t, "name", None)])
-    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
+    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout, config=config)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
     # Judged by the connection's owner scope (the ``(scope, name)`` key the registration below
     # publishes into), never by the bare name resolved in the caller's context.
@@ -612,7 +629,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         _record_scope_trust(name, config, scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
-        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
+        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout,
+                                      config=config)
         candidates += _utility_candidates(
             name, _select_utility_schemas(name, server, config), server.tool_timeout)
         names = _register_candidates(
@@ -639,7 +657,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]
     tool_timeout = _resolve_tool_timeout(config)
     cached_tools = _cached_tools(tools_from_cache_entry(entry))
     _record_tool_trust_metadata(name, config, cached_tools)
-    candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout)
+    candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout, config=config)
     candidates += _utility_candidates(name, utility_tools_from_cache_entry(entry), tool_timeout)
     registered = _register_candidates(
         name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True,

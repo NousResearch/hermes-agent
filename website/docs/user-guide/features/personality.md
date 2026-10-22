@@ -160,7 +160,7 @@ A useful rule:
 
 `SOUL.md` is your durable default personality.
 
-`/personality` is a session-level overlay that changes or supplements the current system prompt.
+`/personality` is a session-level overlay that changes the current system prompt.
 
 So:
 - `SOUL.md` = baseline voice
@@ -227,7 +227,7 @@ Then switch to it with:
 /personality codereviewer
 ```
 
-Your selection is stored as a name in `display.personality`. Personalities never touch `agent.system_prompt` — that field is reserved for a manual system prompt you write yourself, and it applies only when no personality is selected.
+Your selection is stored as a name in `display.personality`. Personalities never touch `agent.system_prompt` — that field is reserved for a manual system prompt you write yourself, and it applies only when no personality is selected. When both are set, the selected personality replaces `agent.system_prompt`; run `hermes config` to see a warning and use `/personality none` to restore the manual prompt.
 
 ## Resetting to the default
 

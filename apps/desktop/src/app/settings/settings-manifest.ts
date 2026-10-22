@@ -162,6 +162,11 @@ export const SETTINGS_MANIFEST = {
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],
       copy: t => ({ label: t.settings.config.disableF12Title, description: t.settings.config.disableF12Desc })
     },
+    alwaysExternalLinks: {
+      subpage: 'desktop',
+      keywords: ['link', 'links', 'external', 'browser', 'in-app browser', 'open externally'],
+      copy: t => ({ label: t.settings.config.alwaysExternalLinksTitle, description: t.settings.config.alwaysExternalLinksDesc })
+    },
     quickEntry: {
       subpage: 'desktop',
       keywords: ['quick entry', 'global shortcut', 'spotlight', 'summon', 'prompt anywhere'],

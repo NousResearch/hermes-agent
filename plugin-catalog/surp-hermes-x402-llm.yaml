@@ -6,6 +6,22 @@ maintainer: ivcained
 tier: community
 category: models
 version: "0.5.0"
-requires_env:
-  - SURP_API_KEY
 readme: true
+capabilities:
+  provides_tools:
+    - surp_models
+    - surp_markets
+    - surp_providers
+    - surp_route_prefs
+    - surp_quote
+    - surp_cache_status
+    - surp_chat
+    - surp_usage
+    - surp_jev_stats
+    - surp_combo_create
+    - surp_combo_list
+    - surp_combo_get
+  provides_hooks:
+    - pre_tool_call
+  requires_env:
+    - SURP_API_KEY

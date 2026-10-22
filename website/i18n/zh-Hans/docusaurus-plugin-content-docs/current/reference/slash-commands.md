@@ -128,7 +128,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 
 | 命令 | 描述 |
 |---------|-------------|
-| `/<skill-name>` | 将任意已安装的 skill 作为按需命令加载。示例：`/gif-search`、`/github-pr-workflow`、`/excalidraw`。 |
+| `/<skill-name>` | 将任意已安装的 skill 作为按需命令加载。示例：`/gif-search`、`/github`、`/excalidraw`。 |
 | `/skills ...` | 从注册表和官方可选 skill 目录搜索、浏览、检查、安装、审计、发布和配置 skill。 |
 
 ### 快捷命令

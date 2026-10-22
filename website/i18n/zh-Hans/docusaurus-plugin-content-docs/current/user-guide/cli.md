@@ -33,7 +33,7 @@ hermes chat --toolsets "web,terminal,skills"
 
 # 启动时预加载一个或多个 skill
 hermes -s hermes-agent,github
-hermes chat -s github-pr-workflow -q "open a draft PR"
+hermes chat -s github -q "open a draft PR"
 
 # 恢复之前的会话
 hermes --continue             # 恢复最近的 CLI 会话（-c）
@@ -180,7 +180,7 @@ Hermes 会在第一轮对话前将每个指定的 skill 加载到会话 prompt �
 ```
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
-/github-pr-workflow create a PR for the auth refactor
+/github create a PR for the auth refactor
 
 # 仅输入 skill 名称即可加载它，让 agent 询问你的需求：
 /excalidraw

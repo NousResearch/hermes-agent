@@ -371,8 +371,8 @@ To have the same skills active at the start of **every** new session — CLI, TU
 ```yaml
 skills:
   auto_load:
-    - hermes-agent-dev
-    - github-pr-workflow
+    - hermes-agent
+    - github
 ```
 
 Each entry is a skill name. The list is resolved once when a session's system prompt is first built and the rendered bytes are reused for the life of the conversation (model switches, compression), so prompt caching stays intact; config edits take effect in the next session. Missing or disabled skills log a warning and are skipped. `-s` names that overlap the list are loaded once.
@@ -386,7 +386,7 @@ Every installed skill in `~/.hermes/skills/` is automatically registered as a sl
 ```
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
-/github-pr-workflow create a PR for the auth refactor
+/github create a PR for the auth refactor
 
 # Just the skill name loads it and lets the agent ask what you need:
 /excalidraw

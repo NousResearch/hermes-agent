@@ -111,7 +111,7 @@ You can also help directly: say "remember this for next time" after a productive
 - `/tools list` — see available tools; a tool disabled earlier with `/tools disable` stays out of the agent's toolset for the session.
 - `/context all` — per-skill and per-toolset cost listing, which doubles as an inventory of what's actually loaded.
 
-**What it means:** Skills are the agent's procedural knowledge — multi-step workflows and tool-specific instructions. If a skill is missing or a toolset was trimmed (e.g., a session started with `hermes chat -t "terminal"` to reduce prompt weight), the agent genuinely has less to work with in that session. Re-enable tools with `/tools enable`, or invoke the skill explicitly by name (`/github-pr-workflow`) to confirm it loads.
+**What it means:** Skills are the agent's procedural knowledge — multi-step workflows and tool-specific instructions. If a skill is missing or a toolset was trimmed (e.g., a session started with `hermes chat -t "terminal"` to reduce prompt weight), the agent genuinely has less to work with in that session. Re-enable tools with `/tools enable`, or invoke the skill explicitly by name (`/github`) to confirm it loads.
 
 ## 7. Compression side-effects
 

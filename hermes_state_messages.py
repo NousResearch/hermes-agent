@@ -119,39 +119,23 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
-def _redact_durable_text(text: str) -> str:
-    """Mask credentials in text on its way into the durable transcript.
+def _durable_content_for_storage(content: Any) -> Any:
+    """``content`` as it lands in the transcript: text masked, everything else untouched.
 
-    The same redactor the log path and the request-dump path already run
-    (``agent/redact.py``), forced on because a stored transcript outlives the
-    process and is what replay, compaction and search read back. Late import:
-    ``agent.redact`` loads the vault registry, which must not run at
-    ``hermes_state`` import time.
+    Late import: ``agent.redact`` loads the vault registry, which must not run at
+    ``hermes_state`` import time. The masking itself lives beside the redactor so the
+    log path, the dump path, the transcript and the plugin payload cannot drift apart.
     """
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_message_content
 
-    return redact_sensitive_text(text, force=True)
+    return redact_message_content(content)
 
 
-def _redact_durable_content(content: Any) -> Any:
-    """``content`` as it is stored: text redacted, everything else untouched.
+def _durable_api_content(api_content: Any) -> Any:
+    """The ``api_content`` sidecar masked the same way (it is the bytes replay would resend)."""
+    from agent.redact import redact_message_text
 
-    Only string leaves are rewritten — a multimodal part's ``type``/image
-    payload and any non-text structure pass through so ``_encode_content``
-    round-trips the envelope unchanged. A false positive here corrupts a
-    transcript silently, so the masking is the shared redactor's; a local
-    pattern list would drift from the one the log and dump paths use.
-    """
-    if isinstance(content, str):
-        return _redact_durable_text(content)
-    if isinstance(content, list):
-        return [
-            {**part, "text": _redact_durable_text(part["text"])}
-            if isinstance(part, dict) and isinstance(part.get("text"), str) else part
-            for part in content
-        ]
-    return content
-
+    return redact_message_text(api_content) if isinstance(api_content, str) else api_content
 
 
 class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
@@ -309,9 +293,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None
         api_content = msg.get("api_content")
         if isinstance(api_content, str):
-            api_content = _redact_durable_text(api_content)
+            api_content = _durable_api_content(api_content)
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None
-        encoded_content = self._encode_content(_redact_durable_content(msg.get("content")))
+        encoded_content = self._encode_content(_durable_content_for_storage(msg.get("content")))
         encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
         encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
         display_metadata = msg.get("display_metadata")

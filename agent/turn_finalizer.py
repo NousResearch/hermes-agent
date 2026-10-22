@@ -450,6 +450,30 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
     return None
 
 
+def _hook_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """History as the ``post_llm_call`` payload: text masked, live list untouched.
+
+    Context-engine plugins persist from this payload — hermes-lcm's ``ingest`` writes its
+    own store from it — so it is a second write path that no transcript redaction
+    reaches. Copies are shallow (role, ids and timestamps are the same objects) and only
+    text leaves change. Nothing is masked when no hook is registered, so sessions with no
+    plugin pay no cost.
+    """
+    try:
+        from agent.redact import redact_message_content
+        from hermes_cli.lifecycle import has_hook
+    except Exception:
+        return list(messages)
+    if not has_hook("post_llm_call"):
+        return list(messages)
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if isinstance(msg, dict) and "content" in msg:
+            msg = {**msg, "content": redact_message_content(msg.get("content"))}
+        out.append(msg)
+    return out
+
+
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
     messages,
@@ -473,7 +497,7 @@ def _apply_output_hooks(
             turn_id=turn_id,
             user_message=original_user_message,
             assistant_response=final_response,
-            conversation_history=list(messages),
+            conversation_history=_hook_history(messages),
             model=agent.model,
             platform=platform,
         )

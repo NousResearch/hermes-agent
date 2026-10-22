@@ -53,10 +53,14 @@ _BUILD_MARKERS = ("the build backend returned an error",)
 _VCS_REQUIREMENT = re.compile(r"\b(?:git|hg|svn|bzr)\+", re.IGNORECASE)
 
 
-def _remove_vcs_requirements(requirements: Path) -> None:
-    """Leave VCS sources to the final frozen sync, not hash-required artifact installs."""
-    lines = requirements.read_text(encoding="utf-8").splitlines()
-    lines = [line for line in lines if not _VCS_REQUIREMENT.search(line)]
+def _remove_source_requirements(requirements: Path, local_registry_pins: set[str]) -> None:
+    """Leave VCS and hashless local registry sources to the final frozen sync."""
+    lines = requirements.read_text(encoding="utf-8").replace("\\\n", "").splitlines()
+    lines = [
+        line for line in lines
+        if not _VCS_REQUIREMENT.search(line)
+        and ("--hash=" in line or line.split(";", 1)[0].strip() not in local_registry_pins)
+    ]
     requirements.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 # The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
@@ -486,6 +490,7 @@ class PythonEnvironment:
         command = ["export", "--frozen", "--python", str(self.python),
                    "--no-emit-project", "--no-annotate", "--no-header",
                    "--format", "requirements-txt", "--output-file", str(out)]
+        local_registry_pins: set[str] = set()
         if artifact_only:
             command += ["--no-emit-workspace", "--no-emit-local"]
             with (source / "uv.lock").open("rb") as lock:
@@ -493,9 +498,9 @@ class PythonEnvironment:
             for package in packages:
                 registry = package.get("source", {}).get("registry", "")
                 if registry and not registry.startswith(("https://", "http://")):
-                    # Local find-links wheels have no lock hashes and cannot
-                    # be redirected to an index; frozen sync owns their paths.
-                    command += ["--no-emit-package", package["name"]]
+                    # Do not exclude the whole name: another platform may
+                    # select a hashed remote version of the same package.
+                    local_registry_pins.add(f"{package['name']}=={package['version']}")
         if no_default_groups:
             command.append("--no-default-groups")
         if all_packages:
@@ -516,7 +521,7 @@ class PythonEnvironment:
         if result.returncode:
             raise classify_uv_failure("export", result.returncode, result.stderr or result.stdout)
         if artifact_only:
-            _remove_vcs_requirements(out)
+            _remove_source_requirements(out, local_registry_pins)
 
     def install_locked_requirements(
         self,

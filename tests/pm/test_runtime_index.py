@@ -334,6 +334,9 @@ def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypat
         "git-dep", "1.0.0", {"git_dep/__init__.py": b"VALUE = 'git dep'\n"},
     )
     packages = {"workspace-dep": workspace_wheel, "git-dep": git_wheel}
+    packages["variant-dep"] = _wheel(
+        "variant-dep", "2.0.0", {"variant_dep.py": b"VALUE = 'remote'\n"},
+    )
     for name in ("extra-dep", "group-dep", "unselected-dep"):
         packages[name] = _wheel(name, "1.0.0", {name.replace("-", "_") + ".py": b"VALUE = 1\n"})
     lock_index = _index(server, handler, "locked", packages)
@@ -344,6 +347,8 @@ def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypat
     local_wheels = tmp_path / "local-wheels"
     local_wheels.mkdir()
     filename, body = _wheel("local-dep", "1.0.0", {"local_dep.py": b"VALUE = 'local'\n"})
+    (local_wheels / filename).write_bytes(body)
+    filename, body = _wheel("variant-dep", "1.0.0", {"variant_dep.py": b"VALUE = 'local'\n"})
     (local_wheels / filename).write_bytes(body)
     _write_buildable_project(
         project / "plugin",
@@ -377,10 +382,16 @@ def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypat
     assert commit.returncode == 0, commit.stdout + commit.stderr
     git_requirement = f"git-fixture @ git+{git_project.as_uri()}@{commit.stdout.strip()}"
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    other_platform = "linux" if sys.platform != "linux" else "win32"
+    dependencies = (
+        "workspace-plugin", "local-dep==1.0.0", git_requirement,
+        f"variant-dep==1.0.0; sys_platform == '{other_platform}'",
+        f"variant-dep==2.0.0; sys_platform != '{other_platform}'",
+    )
     (project / "pyproject.toml").write_text(
         '[project]\nname = "source-graph-fixture"\nversion = "0.0.0"\n'
         f'requires-python = ">={python_version},<{sys.version_info.major}.{sys.version_info.minor + 1}"\n'
-        f"dependencies = [\"workspace-plugin\", \"local-dep==1.0.0\", {json.dumps(git_requirement)}]\n"
+        f"dependencies = {json.dumps(dependencies)}\n"
         '[project.optional-dependencies]\nchosen = ["extra-dep==1.0.0"]\n'
         'unchosen = ["unselected-dep==1.0.0"]\n'
         '[dependency-groups]\nchecks = ["group-dep==1.0.0"]\n'
@@ -429,14 +440,17 @@ def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypat
     assert "group-dep==1.0.0" in requirements
     assert "unselected-dep" not in requirements
     assert "local-dep" not in requirements
+    assert "variant-dep==1.0.0" not in requirements
+    assert "variant-dep==2.0.0" in requirements
     assert "--hash=sha256:" in requirements
     assert "workspace-plugin" not in requirements
     assert "git+" not in requirements
     assert hashlib.sha256(lock_path.read_bytes()).digest() == lock_digest
     imported = subprocess.run(
         [str(environment.executable), "-I", "-B", "-c",
-         "import extra_dep, git_dep, git_fixture, group_dep, local_dep, workspace_dep, workspace_plugin; "
+         "import extra_dep, git_dep, git_fixture, group_dep, local_dep, variant_dep, workspace_dep, workspace_plugin; "
          "import importlib.util; assert importlib.util.find_spec('unselected_dep') is None; "
+         "assert variant_dep.VALUE == 'remote'; "
          "assert git_fixture.VALUE == 'git' and workspace_plugin.VALUE == 'workspace'"],
         capture_output=True, text=True, timeout=30, check=False,
     )

@@ -1,3 +1,4 @@
+import re
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -244,6 +245,70 @@ async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     )
     adapter.send.assert_awaited_once()
     assert "ABC12DEF" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_dm_uses_platform_pairing_message(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        pairing_message="Global code: {code} on {platform}",
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"pairing_message": "Approve {code} in the WhatsApp dashboard."},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    runner.pairing_store.generate_code.return_value = "ABC12DEF"
+
+    assert await runner._handle_message(
+        _make_event(Platform.WHATSAPP, "15551234567@s.whatsapp.net", "15551234567@s.whatsapp.net")
+    ) is None
+
+    adapter.send.assert_awaited_once_with(
+        "15551234567@s.whatsapp.net", "Approve ABC12DEF in the WhatsApp dashboard."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached", [True, False])
+async def test_pairing_message_uses_receiving_profile_not_routed_runtime(tmp_path, monkeypatch, cached):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.pairing import ALPHABET, CODE_LENGTH, PairingStore
+
+    primary = GatewayConfig(multiplex_profiles=True, pairing_message="Primary-only {code}")
+    runner, adapter = _make_runner(Platform.WHATSAPP, primary)
+    receiving = GatewayConfig(
+        pairing_message="Work global {code}",
+        platforms={Platform.WHATSAPP: PlatformConfig(extra={"pairing_message": "Work {code} {platform}"})},
+    )
+    runner._primary_profile_name = "default"
+    runner._profile_configs = {"work": receiving} if cached else {}
+    runner._profile_adapters = {"work": {Platform.WHATSAPP: adapter}}
+    runner.adapters = {}
+    # The secondary bot delivers into a default-profile runtime. Policy follows the transport.
+    source = _make_event(Platform.WHATSAPP, "guest", "guest", profile="default").source
+    source._transport_adapter_ref = lambda: adapter
+    runner.pairing_store = PairingStore()
+
+    await runner._hm_offer_pairing_code(source)
+
+    pending = runner.pairing_store.list_pending("whatsapp")
+    assert len(pending) == 1
+    assert pending[0]["request_id"] and "code" not in pending[0]
+    reply = adapter.send.await_args.args[1]
+    code = re.search(f"[{ALPHABET}]{{{CODE_LENGTH}}}", reply).group()
+    if cached:
+        assert reply == f"Work {code} whatsapp"
+    else:
+        assert code in reply and "hermes pairing approve whatsapp" in reply
+    assert "Primary-only" not in reply
+    assert not runner.pairing_store.is_approved("whatsapp", "guest")
+    assert runner.pairing_store.approve_code("whatsapp", code)["user_id"] == "guest"
+    await runner._hm_offer_pairing_code(source)
+    adapter.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio

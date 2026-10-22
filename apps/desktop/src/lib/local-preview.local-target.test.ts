@@ -6,9 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // be previewed. A remote backend's paths are not on this machine, so remote
 // mode keeps the fabricated fallback the gateway read resolves later.
 
-const { isDesktopFsRemoteMode } = vi.hoisted(() => ({
-  isDesktopFsRemoteMode: vi.fn(() => false)
+const { isDesktopFsRemoteMode, resolveAgentHostPath } = vi.hoisted(() => ({
+  isDesktopFsRemoteMode: vi.fn(() => false),
+  resolveAgentHostPath: vi.fn(async (): Promise<null | string> => null)
 }))
+
+vi.mock('@/lib/agent-path', () => ({ resolveAgentHostPath }))
 
 vi.mock('@/lib/desktop-fs', () => ({
   isDesktopFsRemoteMode,
@@ -61,6 +64,27 @@ describe('normalizeOrLocalPreviewTarget non-previewable results', () => {
     })
 
     await expect(normalizeOrLocalPreviewTarget('/work/gone.md')).resolves.toBeNull()
+  })
+
+  it('retries a missing docker container path with its host path (#143098)', async () => {
+    const hostTarget = {
+      kind: 'file',
+      label: 'report.md',
+      path: '/home/user/projects/report.md',
+      previewKind: 'text',
+      source: '/home/user/projects/report.md',
+      url: 'file:///home/user/projects/report.md'
+    }
+
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async (target: string) =>
+        target === hostTarget.path ? hostTarget : { ...hostTarget, path: target, previewKind: 'missing' }
+      )
+    } as never
+    resolveAgentHostPath.mockResolvedValueOnce(hostTarget.path)
+
+    await expect(normalizeOrLocalPreviewTarget('/workspace/report.md')).resolves.toEqual(hostTarget)
+    expect(resolveAgentHostPath).toHaveBeenCalledWith('/workspace/report.md')
   })
 
   it('treats a null main-process result as authoritative in local mode', async () => {

@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify'
 
+import { resolveAgentHostPath } from '@/lib/agent-path'
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import type { PreviewTarget } from '@/store/preview'
@@ -302,6 +303,13 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
   }
 }
 
+// A docker agent's container path misses on this disk; retry once with its host path (#143098).
+async function agentHostPreviewTarget(rawTarget: string, cwd?: null | string): Promise<PreviewTarget | null> {
+  const hostPath = await resolveAgentHostPath(rawTarget.trim())
+
+  return hostPath ? normalizeOrLocalPreviewTarget(hostPath, cwd) : null
+}
+
 export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
   cwd?: string | null
@@ -317,7 +325,11 @@ export async function normalizeOrLocalPreviewTarget(
       // machine, so remote mode keeps the fabricated fallback the gateway
       // read resolves later.
       if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
-        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd)) : null
+        if (isDesktopFsRemoteMode()) {
+          return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
+        }
+
+        return normalized.previewKind === 'missing' ? agentHostPreviewTarget(rawTarget, cwd) : null
       }
 
       return enrichPreviewTarget(normalized)
@@ -330,7 +342,7 @@ export async function normalizeOrLocalPreviewTarget(
     // preview tab (#101683). Remote-backend paths, and a dev server without
     // the bridge, keep it.
     if (!isDesktopFsRemoteMode() && normalized === null) {
-      return null
+      return agentHostPreviewTarget(rawTarget, cwd)
     }
   } catch {
     // Running Electron may still have the old HTML-only preview IPC. Fall

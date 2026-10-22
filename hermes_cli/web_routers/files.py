@@ -949,6 +949,23 @@ async def fs_read_data_url(
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
+@router.get("/api/fs/resolve-agent-path")
+async def fs_resolve_agent_path(path: str, request: Request = None, profile: Optional[str] = None):
+    """Host path of a file the agent named by its container path (#143098).
+
+    The local Desktop reads files through Electron, which cannot see docker mounts, so
+    a ``/workspace/...`` path misses there. It asks here and retries with the host
+    path. Same translation and guards as the fs reads; only regular files resolve.
+    An SSH workspace has no host path, so it is a plain 404."""
+    if await asyncio.to_thread(_fs_backend, profile) is not None:
+        raise HTTPException(status_code=404, detail="File not found")
+    profile_home = _fs_profile_home(profile)
+    target = _agent_fs_path(path, profile_home=profile_home)
+    _hosted_fs_read_guard(target, request)
+    target, _st = _fs_regular_file(target, profile_home)
+    return {"path": str(target)}
+
+
 @router.get("/api/fs/download")
 async def fs_download(
     path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,

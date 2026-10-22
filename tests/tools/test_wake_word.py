@@ -392,7 +392,7 @@ def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
 # ── openWakeWord engine (pyopen-wakeword; bundled model, no runtime fetch) ──
 
 
-def test_openwakeword_custom_model_path_used(monkeypatch):
+def test_openwakeword_custom_model_path_used(monkeypatch, tmp_path):
     # A custom ``model`` path passes through to pyopen-wakeword as-is. The
     # shared feature models come from the wheel (from_builtin) — there is no
     # download_models step to regress.
@@ -435,11 +435,41 @@ def test_openwakeword_custom_model_path_used(monkeypatch):
     mod.OpenWakeWordFeatures = _FakeFeatures
     monkeypatch.setitem(sys.modules, "pyopen_wakeword", mod)
     monkeypatch.setattr(pm, "ensure_import", lambda *a, **k: None)
+    model_path = tmp_path / "hey_hermes.tflite"
+    model_path.write_bytes(b"test model")
     eng = ww._OpenWakeWordEngine(
-        {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.tflite"}}
+        {"provider": "openwakeword", "openwakeword": {"model": str(model_path)}}
     )
-    assert captured["path"] == "/models/hey_hermes.tflite"
+    assert captured["path"] == str(model_path)
     assert eng._labels == ["hey_hermes"]
+
+
+def test_openwakeword_rejects_missing_model_before_native_construction(monkeypatch):
+    """A bare unknown model name must not reach TFLite's unsafe file loader."""
+    calls = []
+
+    class _FakeModel:
+        @staticmethod
+        def from_model(model_path, libtensorflowlite_c_path=None):
+            calls.append(model_path)
+            return object()
+
+    class _FakeFeatures:
+        @staticmethod
+        def from_builtin(models_dir=None, libtensorflowlite_c_path=None):
+            return _FakeFeatures()
+
+    mod = types.ModuleType("pyopen_wakeword")
+    mod.OpenWakeWord = _FakeModel
+    mod.OpenWakeWordFeatures = _FakeFeatures
+    monkeypatch.setitem(sys.modules, "pyopen_wakeword", mod)
+    monkeypatch.setattr(pm, "ensure_import", lambda *a, **k: None)
+
+    with pytest.raises(ValueError, match="wake word model not found: hey_jarvis"):
+        ww._OpenWakeWordEngine(
+            {"provider": "openwakeword", "openwakeword": {"model": "hey_jarvis"}}
+        )
+    assert calls == []
 
 
 def test_bundled_hey_hermes_model_ships_on_disk():

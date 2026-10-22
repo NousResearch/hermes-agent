@@ -192,7 +192,7 @@ export function rebindPaneToResumedRuntime({
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
 /** Canonical admission receipt; `user_row_id` binds the optimistic bubble to its durable row. */
-type SubmitReceipt = Pick<PromptSubmitResult, 'forwarded' | 'user_row_id'> & {
+type SubmitReceipt = Pick<PromptSubmitResult, 'forwarded' | 'user_row_id' | 'user_timestamp'> & {
   admission_id?: string
   submission_id?: string
   session_id?: string
@@ -209,7 +209,7 @@ function isPreAdmissionRefusal(error: unknown): boolean {
 
   const { code, message } = error as { code?: unknown; message?: unknown }
 
-  return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
+  return code === 4094 || (code === 4000 && typeof message === 'string' && /\b(submission_id|submitted_at)\b/.test(message))
 }
 
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
@@ -1084,6 +1084,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           session_id: targetId,
           text,
           submission_id: submissionId,
+          // The user's send time (unix seconds): the gateway persists it as the row timestamp so a
+          // hydrated transcript keeps this bubble where the user saw it, not at receipt time.
+          submitted_at: submittedAt,
           ...(imageAttachments.length && { attachments: imageAttachments }),
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user
@@ -1169,7 +1172,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
                   prepared.legacyAttempted = true
                   await writePreparedSubmission(retryKey, prepared)
-                  const { submission_id: _id, ...legacyParams } = params
+                  const { submission_id: _id, submitted_at: _submittedAt, ...legacyParams } = params
 
                   const result = await requestGateway<SubmitReceipt>(
                     'prompt.submit',
@@ -1281,8 +1284,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             }
 
             const rowId = result?.user_row_id
+            const userTimestamp = result?.user_timestamp
+            const validRowId = typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0
+            // The persisted row's timestamp: our submittedAt when the gateway accepted it, else its receipt time.
+            const validTimestamp = typeof userTimestamp === 'number' && Number.isFinite(userTimestamp) && userTimestamp > 0
 
-            if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
+            if (validRowId || validTimestamp) {
               // The worker may finish before this acknowledgement arrives. Bind
               // only this send's optimistic occurrence; never reset live state or
               // assume the newest user row still belongs to this RPC.
@@ -1291,13 +1298,25 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   message => message.id === optimisticId && message.role === 'user'
                 )
 
-                if (index < 0 || state.messages[index].rowId === rowId) {
+                if (index < 0) {
+                  return state
+                }
+
+                const current = state.messages[index]
+
+                const acknowledged = {
+                  ...current,
+                  ...(validRowId ? { rowId } : {}),
+                  ...(validTimestamp ? { timestamp: userTimestamp } : {})
+                }
+
+                if (acknowledged.rowId === current.rowId && acknowledged.timestamp === current.timestamp) {
                   return state
                 }
 
                 return {
                   ...state,
-                  messages: state.messages.map((message, i) => (i === index ? { ...message, rowId } : message))
+                  messages: state.messages.map((message, i) => (i === index ? acknowledged : message))
                 }
               })
             }

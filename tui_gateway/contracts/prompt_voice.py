@@ -38,6 +38,10 @@ class PromptSubmitParams(SessionParams):
     voice_turn: bool | None = None  # a spoken voice-conversation turn: runs on auxiliary.voice_chat
     # Desktop-generated large-paste preview (first ~1000 chars); TITLE input only, never the model turn.
     title_preview: str | None = None
+    # Client send time (unix seconds): persisted as the user row's timestamp so hydration shows when
+    # the user sent it, not when the gateway received it. Loose so a malformed value falls back at
+    # the handler boundary instead of rejecting an otherwise valid prompt.
+    submitted_at: JsonValue | None = None
     truncate_before_user_ordinal: int | None = None
     truncate_before_row_id: int | None = None
     truncate_before_message_id: str | None = None
@@ -70,6 +74,8 @@ class PromptSubmitResult(Result):
     # The row written for THIS accepted input, captured before the worker can consume it.
     # Absent on queued/steered/redirected inputs and whenever persistence is not yet proven.
     user_row_id: int | None = None
+    # The timestamp that row was written with: the client's ``submitted_at`` when valid, else receipt time.
+    user_timestamp: float | None = None
     survivor_user_row_ids: list[int | None] | None = None
     survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None

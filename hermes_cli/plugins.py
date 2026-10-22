@@ -130,7 +130,7 @@ VALID_HOOKS: set[str] = {
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset", "on_session_delete",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
-    "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    "on_skill_lifecycle", "subagent_start", "subagent_stop", "pre_subagent_route",  # plugins_subagent_route.py
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
@@ -203,7 +203,7 @@ VALID_HOOKS: set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification", "pre_subagent_route"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

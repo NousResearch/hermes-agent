@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -25,7 +25,7 @@ import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { GroupChatWorkspace } from './group-chat-view'
 const originalDesktop = window.hermesDesktop
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
-afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop; vi.useRealTimers() })
 
 it('preserves the unsent draft when only the room display name changes', async () => {
   request.mockImplementation(async (_route, method) => method === 'groups.state'
@@ -228,4 +228,32 @@ it.each([
   expect(Boolean(screen.queryByRole('button', { name: 'Discard' }))).toBe(offered)
   expect(Boolean(screen.queryByRole('button', { name: 'Attach files' }))).toBe(offered)
   expect((screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(!offered)
+})
+
+it('reads only new log events, and the whole log again when the room authority changes', async () => {
+  // The room polls every two seconds; the test moves the clock instead of waiting.
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] })
+  const nextPoll = () => act(() => vi.advanceTimersByTimeAsync(2_000))
+  const message = (seq: number, text: string) => ({ seq, kind: 'message.member', actor: { kind: 'member', id: 'ops' }, payload: { text } })
+  let epoch = 1
+  let log = [message(1, 'First reply')]
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room', authority_epoch: epoch, latest_seq: log.at(-1)!.seq }, driver_status: {} }
+    : method === 'groups.log' ? { events: log.filter(event => event.seq > params.since_seq), has_more: false } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'long' }} />)
+  await screen.findByText('First reply')
+  log = [...log, message(2, 'Second reply')]
+  await nextPoll()
+  await screen.findByText('Second reply')
+  const since = () => request.mock.calls.filter(call => call[1] === 'groups.log').map(call => call[2].since_seq)
+  expect(since()).toEqual([0, 1])
+  expect(screen.getAllByText(/reply$/).map(node => node.textContent)).toEqual(['First reply', 'Second reply'])
+
+  // The new authority's log is as long as the one read: only its epoch says to read it all again.
+  epoch = 2
+  log = [message(1, 'Reply after a takeover'), message(2, 'Second reply after a takeover')]
+  await nextPoll()
+  await screen.findByText('Reply after a takeover')
+  expect(since().at(-1)).toBe(0)
+  expect(screen.queryByText('First reply')).toBeNull()
 })

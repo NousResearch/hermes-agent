@@ -1367,3 +1367,174 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# Content lock (#25083, #140332) — `hermes curator lock <name>` makes skill_manage refuse
+# AUTONOMOUS mutations (review fork / curator pass) of that one skill: whole directory,
+# single-op and batch paths. Foreground user-directed writes are not gated; unlocked
+# siblings keep learning; an unreadable sidecar fails closed for autonomous writes only.
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _background_origin():
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        yield
+    finally:
+        reset_current_write_origin(token)
+
+
+class TestLockedGuard:
+    _PATCH = dict(action="patch", old_string="Do the thing.", new_string="Do the new thing.")
+    _MUTATIONS = (
+        _PATCH,
+        dict(action="patch", file_path="references/notes.md", old_string="Keep this.", new_string="Changed."),
+        dict(action="edit", content=VALID_SKILL_CONTENT_2),
+        dict(action="write_file", file_path="references/new.md", file_content="# New\n"),
+        dict(action="remove_file", file_path="references/notes.md"),
+        dict(action="delete", absorbed_into="umbrella"),
+    )
+
+    @staticmethod
+    def _profile(tmp_path, monkeypatch, name="default"):
+        """Isolated HERMES_HOME whose skills/ dir doubles as the patched SKILLS_DIR, so the lock
+        sidecar (<home>/skills/.usage.json) and the skill files share one profile root."""
+        skills = tmp_path / name / ".hermes" / "skills"
+        skills.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(skills.parent))
+        return skills
+
+    @staticmethod
+    def _make(skills, name, category=None):
+        from tools.skill_manager_tool import _write_file
+        assert _create_skill(name, VALID_SKILL_CONTENT, category)["success"]
+        assert _write_file(name, "references/notes.md", "# Notes\n\nKeep this.\n")["success"]
+        return skills / (f"{category}/{name}" if category else name)
+
+    @staticmethod
+    def _bg(skill_dir, **op):
+        """skill_manage from the review fork with read-before-write satisfied for every file of
+        *skill_dir*, so the lock is the only guard that can refuse."""
+        from tools.skill_manager_guards import mark_background_review_skill_read
+        with _background_origin():
+            for f in skill_dir.rglob("*"):
+                if f.is_file():
+                    mark_background_review_skill_read(f)
+            return json.loads(skill_manage(**op))
+
+    @staticmethod
+    def _tree(skill_dir):
+        return {p.relative_to(skill_dir).as_posix(): p.read_text() for p in skill_dir.rglob("*") if p.is_file()}
+
+    def test_locked_skill_refuses_every_autonomous_mutation(self, tmp_path, monkeypatch):
+        from tools import skill_usage
+        skills = self._profile(tmp_path, monkeypatch)
+        with _skill_dir(skills):
+            d = self._make(skills, "locked-skill")
+            _create_skill("umbrella", VALID_SKILL_CONTENT)
+            assert skill_usage.set_locked("locked-skill", True)
+            before = self._tree(d)
+            results = [self._bg(d, name="locked-skill", **op) for op in self._MUTATIONS]
+            after = self._tree(d)
+        for op, res in zip(self._MUTATIONS, results):
+            assert res["success"] is False, (op, res)
+            assert "locked" in res["error"], (op, res)
+            assert "hermes curator unlock locked-skill" in res["error"], (op, res)
+        assert after == before
+
+    def test_unlocked_sibling_keeps_learning_and_unlock_lifts_refusal(self, tmp_path, monkeypatch):
+        from tools import skill_usage
+        skills = self._profile(tmp_path, monkeypatch)
+        with _skill_dir(skills):
+            locked = self._make(skills, "locked-skill")
+            sibling = self._make(skills, "sibling-skill")
+            assert skill_usage.set_locked("locked-skill", True)
+            sib = self._bg(sibling, name="sibling-skill", **self._PATCH)
+            refused = self._bg(locked, name="locked-skill", **self._PATCH)
+            assert skill_usage.set_locked("locked-skill", False)
+            lifted = self._bg(locked, name="locked-skill", **self._PATCH)
+        assert sib["success"] is True, sib
+        assert refused["success"] is False and "locked" in refused["error"], refused
+        assert lifted["success"] is True, lifted
+        assert "Do the new thing." in (locked / "SKILL.md").read_text()
+
+    def test_foreground_write_to_locked_skill_goes_through(self, tmp_path, monkeypatch):
+        """Documented: the lock gates autonomous origins only. A user-directed edit still lands."""
+        from tools import skill_usage
+        skills = self._profile(tmp_path, monkeypatch)
+        with _skill_dir(skills):
+            d = self._make(skills, "locked-skill")
+            assert skill_usage.set_locked("locked-skill", True)
+            res = json.loads(skill_manage(name="locked-skill", **self._PATCH))
+        assert res["success"] is True, res
+        assert "Do the new thing." in (d / "SKILL.md").read_text()
+
+    def test_batch_refuses_before_any_sibling_op_is_applied(self, tmp_path, monkeypatch):
+        from tools import skill_usage
+        skills = self._profile(tmp_path, monkeypatch)
+        with _skill_dir(skills):
+            d = self._make(skills, "locked-skill")
+            assert skill_usage.set_locked("locked-skill", True)
+            res = self._bg(d, action="", name="", operations=[
+                {"name": "sibling", "action": "create", "content": VALID_SKILL_CONTENT},
+                {"name": "locked-skill", **self._PATCH}])
+            sibling_created = _find_skill("sibling") is not None
+        assert res["success"] is False and "locked" in res["error"], res
+        assert not sibling_created
+        assert "Do the thing." in (d / "SKILL.md").read_text()
+
+    def test_create_is_not_gated_and_cannot_shadow_a_locked_name(self, tmp_path, monkeypatch):
+        from tools import skill_usage
+        skills = self._profile(tmp_path, monkeypatch)
+        with _skill_dir(skills):
+            d = self._make(skills, "locked-skill")
+            assert skill_usage.set_locked("locked-skill", True)
+            fresh = self._bg(d, action="create", name="brand-new", content=VALID_SKILL_CONTENT)
+            shadow = self._bg(d, action="create", name="locked-skill", content=VALID_SKILL_CONTENT_2)
+        assert fresh["success"] is True, fresh
+        assert shadow["success"] is False and "already exists" in shadow["error"], shadow
+        assert "Do the thing." in (d / "SKILL.md").read_text()
+
+    def test_categorized_and_frontmatter_names_resolve_to_the_lock(self, tmp_path, monkeypatch):
+        from tools import skill_usage
+        skills = self._profile(tmp_path, monkeypatch)
+        with _skill_dir(skills):
+            d = self._make(skills, "locked-cat", category="ops")
+            assert skill_usage.set_locked("locked-cat", True)  # keyed by directory name, as the CLI does
+            by_path = self._bg(d, name="ops/locked-cat", **self._PATCH)
+            by_frontmatter = self._bg(d, name="test-skill", **self._PATCH)  # the frontmatter name
+        assert by_path["success"] is False and "locked" in by_path["error"], by_path
+        assert by_frontmatter["success"] is False and "locked" in by_frontmatter["error"], by_frontmatter
+        assert "Do the thing." in (d / "SKILL.md").read_text()
+
+    def test_lock_is_per_profile(self, tmp_path, monkeypatch):
+        from tools import skill_usage
+        work = self._profile(tmp_path, monkeypatch, "work")
+        with _skill_dir(work):
+            self._make(work, "shared-name")
+            assert skill_usage.set_locked("shared-name", True)
+            assert skill_usage.is_locked("shared-name") is True
+        home = self._profile(tmp_path, monkeypatch, "home")
+        with _skill_dir(home):
+            d = self._make(home, "shared-name")
+            assert skill_usage.is_locked("shared-name") is False
+            res = self._bg(d, name="shared-name", **self._PATCH)
+        assert res["success"] is True, res
+        assert "Do the new thing." in (d / "SKILL.md").read_text()
+
+    def test_corrupt_sidecar_fails_closed_for_autonomous_writes_only(self, tmp_path, monkeypatch):
+        skills = self._profile(tmp_path, monkeypatch)
+        with _skill_dir(skills):
+            d = self._make(skills, "any-skill")
+            (skills / ".usage.json").write_text("{not json", encoding="utf-8")
+            autonomous = self._bg(d, name="any-skill", **self._PATCH)
+            foreground = json.loads(skill_manage(name="any-skill", **self._PATCH))
+        assert autonomous["success"] is False, autonomous
+        assert "could not be verified" in autonomous["error"], autonomous
+        assert foreground["success"] is True, foreground

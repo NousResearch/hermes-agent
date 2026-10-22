@@ -74,6 +74,9 @@ class StreamConsumerConfig:
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
     chat_type: str = ""  # originating chat type; gates platform-specific drafts
+    # Keep an edit-based preview alive across tool boundaries. The gateway enables this
+    # only for Telegram with text tool-progress disabled.
+    single_message_per_turn: bool = False
 
 
 @dataclass
@@ -914,7 +917,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _deliver_commentary(self, commentary_text: str) -> None:
         """Post commentary as its own message.  Cumulative transports keep the stream going —
         resetting _accumulated would break the append-only invariant / lose text."""
-        cumulative = self._cumulative_transport()
+        cumulative = self._cumulative_transport() or self.cfg.single_message_per_turn
         if not cumulative:
             self._reset_segment_state()
         await self._send_commentary(commentary_text)
@@ -929,7 +932,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         "__no_edit__" (platform never returned a real id — Signal, github_comment webhook)
         must keep its sentinel or every tool boundary posts a new message; the
         continuation goes out once via _send_fallback_final."""
-        if self._cumulative_transport():
+        if self._cumulative_transport() or self.cfg.single_message_per_turn:
             return
         # If the segment-break edit or send didn't land (flood control / fallback mode, or a
         # failed first send of a split tail with no message id yet), _accumulated holds unseen

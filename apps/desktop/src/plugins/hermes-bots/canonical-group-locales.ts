@@ -47,6 +47,7 @@ export interface CanonicalGroupMessages {
   pendingApprovalTitle: string
   pendingRetryTitle: string
   pendingUnknownTitle: string
+  you: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -98,7 +99,8 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Action details are unavailable. Check again before allowing this.',
     pendingApprovalTitle: '{name} needs your approval',
     pendingRetryTitle: '{name} couldn’t start this reply.',
-    pendingUnknownTitle: 'We couldn’t confirm whether {name} finished.'
+    pendingUnknownTitle: 'We couldn’t confirm whether {name} finished.',
+    you: 'You'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -148,7 +150,8 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: '操作の詳細を表示できません。許可する前に、詳細を更新してください。',
     pendingApprovalTitle: '{name}が承認を求めています',
     pendingRetryTitle: '{name}はこの返信を開始できませんでした。',
-    pendingUnknownTitle: '{name}が完了したか確認できませんでした。'
+    pendingUnknownTitle: '{name}が完了したか確認できませんでした。',
+    you: 'あなた'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -198,7 +201,8 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: '无法显示操作详情。请先刷新详情，再允许此操作。',
     pendingApprovalTitle: '{name}需要你的批准',
     pendingRetryTitle: '{name}未能开始此回复。',
-    pendingUnknownTitle: '无法确认{name}是否已经完成。'
+    pendingUnknownTitle: '无法确认{name}是否已经完成。',
+    you: '你'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -248,7 +252,8 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: '無法顯示操作詳細資訊。請先重新整理詳細資訊，再允許此操作。',
     pendingApprovalTitle: '{name}需要你的核准',
     pendingRetryTitle: '{name}未能開始此回覆。',
-    pendingUnknownTitle: '無法確認{name}是否已經完成。'
+    pendingUnknownTitle: '無法確認{name}是否已經完成。',
+    you: '你'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -298,7 +303,8 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'تفاصيل الإجراء غير متاحة. حدّثها قبل السماح بهذا الإجراء.',
     pendingApprovalTitle: 'يحتاج {name} إلى موافقتك',
     pendingRetryTitle: 'لم يتمكن {name} من بدء هذه الإجابة.',
-    pendingUnknownTitle: 'لم نتمكن من تأكيد ما إذا كان {name} قد انتهى.'
+    pendingUnknownTitle: 'لم نتمكن من تأكيد ما إذا كان {name} قد انتهى.',
+    you: 'أنت'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -351,7 +357,8 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Подробности действия недоступны. Обновите их перед тем, как разрешить действие.',
     pendingApprovalTitle: '{name} запрашивает ваше разрешение',
     pendingRetryTitle: '{name} не смог начать этот ответ.',
-    pendingUnknownTitle: 'Не удалось подтвердить, закончил ли {name}.'
+    pendingUnknownTitle: 'Не удалось подтвердить, закончил ли {name}.',
+    you: 'Вы'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -403,7 +410,8 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Les détails de l’action sont indisponibles. Actualisez-les avant d’autoriser cette action.',
     pendingApprovalTitle: '{name} a besoin de votre autorisation',
     pendingRetryTitle: '{name} n’a pas pu commencer cette réponse.',
-    pendingUnknownTitle: 'Nous n’avons pas pu confirmer si {name} a terminé.'
+    pendingUnknownTitle: 'Nous n’avons pas pu confirmer si {name} a terminé.',
+    you: 'Vous'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -456,7 +464,8 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Die Aktionsdetails sind nicht verfügbar. Aktualisieren Sie sie, bevor Sie diese Aktion erlauben.',
     pendingApprovalTitle: '{name} braucht Ihre Freigabe',
     pendingRetryTitle: '{name} konnte diese Antwort nicht beginnen.',
-    pendingUnknownTitle: 'Wir konnten nicht bestätigen, ob {name} fertig ist.'
+    pendingUnknownTitle: 'Wir konnten nicht bestätigen, ob {name} fertig ist.',
+    you: 'Sie'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -508,6 +517,7 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Los detalles de la acción no están disponibles. Actualízalos antes de permitirla.',
     pendingApprovalTitle: '{name} necesita tu aprobación',
     pendingRetryTitle: '{name} no pudo iniciar esta respuesta.',
-    pendingUnknownTitle: 'No pudimos confirmar si {name} terminó.'
+    pendingUnknownTitle: 'No pudimos confirmar si {name} terminó.',
+    you: 'Tú'
   }
 } satisfies Record<string, CanonicalGroupMessages>

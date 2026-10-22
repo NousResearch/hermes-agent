@@ -1289,6 +1289,16 @@ catalog: CatalogTranslations
       appliesTo: string
       editsProfile: (profile: string) => string
     }
+    sectionSync: {
+      action: string
+      description: string
+      selectAll: string
+      apply: string
+      cancel: string
+      saved: (count: number) => string
+      failed: string
+      noTargets: string
+    }
     mcp: {
       loading: string
       invalidJson: string

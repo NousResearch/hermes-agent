@@ -1250,6 +1250,16 @@ export const ruOverrides = {
       appliesTo: 'Применяется к',
       editsProfile: profile => `Изменения на этой странице применяются к профилю «${profile}».`
     },
+    sectionSync: {
+      action: 'Синхронизировать раздел',
+      description: 'Скопируйте настройки этого раздела в другие профили.',
+      selectAll: 'Все профили',
+      apply: 'Применить к выбранным профилям',
+      cancel: 'Отмена',
+      saved: count => `Синхронизировано с ${count} профилями.`,
+      failed: 'Не удалось синхронизировать этот раздел.',
+      noTargets: 'Выберите хотя бы один профиль.'
+    },
     mcp: {
       loading: 'Загрузка MCP-серверов…',
       invalidJson: 'Неверный JSON MCP',

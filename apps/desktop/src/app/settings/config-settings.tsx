@@ -29,7 +29,7 @@ import { $keepAwakeMode, type KeepAwakeMode, setKeepAwakeMode } from '@/store/ke
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsRequestProfile, $settingsScopeProfile } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -57,6 +57,7 @@ import { OnboardingSettings } from './onboarding-settings'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { SectionSync } from './section-sync'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
@@ -73,6 +74,7 @@ export function ConfigSettings({
   // when the target profile changes — the same guarantee useOnProfileSwitch
   // provides for app-wide switches, without hand-clearing each piece.
   const scopeProfile = useStore($settingsRequestProfile)
+  const selectedProfile = useStore($settingsScopeProfile)
   const connectionId = useStore($activeConnectionId)
 
   return (
@@ -82,6 +84,7 @@ export function ConfigSettings({
       key={JSON.stringify([connectionId, scopeProfile ?? '__active__'])}
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
+      selectedProfile={selectedProfile}
       scopeProfile={scopeProfile}
       subpage={subpage}
     />
@@ -103,8 +106,9 @@ function ConfigSettingsInner({
   onConfigSaved,
   onMainModelChanged,
   importInputRef,
+  selectedProfile,
   scopeProfile
-}: ConfigSettingsProps & { scopeProfile: string | undefined }) {
+}: ConfigSettingsProps & { scopeProfile: string | undefined; selectedProfile: string }) {
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwakeMode = useStore($keepAwakeMode)
@@ -458,6 +462,7 @@ function ConfigSettingsInner({
 
   return renderPage(
     <>
+      <SectionSync fields={fields.map(([key]) => key)} profile={selectedProfile} source={config} />
       {/* Device-local desktop prefs (not config.yaml) — they live here since
           keeping the machine awake and the global Quick Entry chord are both
           power-user, this-computer-only knobs. */}

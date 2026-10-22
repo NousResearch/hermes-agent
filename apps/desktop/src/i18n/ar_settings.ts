@@ -681,6 +681,16 @@ export const arSettings = {
       appliesTo: 'ينطبق على',
       editsProfile: profile => `تنطبق التغييرات في هذه الصفحة على الملف الشخصي «${profile}».`
     },
+    sectionSync: {
+      action: 'مزامنة القسم',
+      description: 'انسخ إعدادات هذا القسم إلى ملفات شخصية أخرى.',
+      selectAll: 'كل الملفات الشخصية',
+      apply: 'تطبيق على الملفات المحددة',
+      cancel: 'إلغاء',
+      saved: count => `تمت المزامنة مع ${count} ملفات شخصية.`,
+      failed: 'تعذرت مزامنة هذا القسم.',
+      noTargets: 'حدد ملفًا شخصيًا واحدًا على الأقل.'
+    },
     mcp: {
       loading: 'جار تحميل خوادم MCP...',
       invalidJson: 'JSON الخاص بـ MCP غير صالح',

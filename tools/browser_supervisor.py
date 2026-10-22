@@ -211,7 +211,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return {"ok": True, "dialog": dialog.to_dict()}
 
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0,
+                         route: Optional[dict[str, str]] = None) -> dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
         Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
@@ -225,6 +226,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _fail("supervisor is not active")
         if not session_id:
             return _fail("supervisor has no attached page session")
+        if route is not None:
+            # The route is minted for one selected top page + child document.
+            # A detach, re-focus, or replacement execution context may not
+            # inherit authority from that earlier discovery.
+            with self._state_lock:
+                frame = self._frames.get(route.get("frame_id", ""))
+                if (session_id != route.get("page_session_id") or frame is None
+                        or not frame.is_oopif
+                        or frame.cdp_session_id != route.get("frame_session_id")
+                        or not frame.loader_id
+                        or frame.loader_id != route.get("frame_loader_id")):
+                    return _fail("vault frame route is no longer attached")
+                session_id = frame.cdp_session_id
 
         def _run_eval(by_value: bool) -> dict[str, Any]:
             # userGesture: clipboard / fullscreen APIs need user activation.
@@ -265,13 +279,17 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
-    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
+    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0,
+                   allow_oopif: bool = True) -> dict[str, Any]:
         """Re-attach the supervisor's page session to an open page target on ``origin``
         (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
         ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
         so a login and a checkout tab on one site resolve to the right one. Returns
-        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
+        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays.
+        If a matching control is in an OOPIF belonging to that page, the active
+        session is switched to the child and ``frame_origin`` identifies the
+        origin the caller must use for its synchronous write-time check."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
@@ -301,9 +319,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 if accept:
                     probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
                                             session_id=sid, timeout=timeout)
-                    if not probe.get("result", {}).get("result", {}).get("value"):
+                    if not probe.get("result", {}).get("result", {}).get("value") and not allow_oopif:
                         await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
                         continue
+                    if not probe.get("result", {}).get("result", {}).get("value") and allow_oopif:
+                        selected = await self._select_child_document(sid, accept, timeout=timeout)
+                        if selected is None:
+                            await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
+                            continue
+                        # _page_session_id remains the selected top-level page;
+                        # child execution is always explicit and route-bound.
+                        with self._state_lock:
+                            self._page_session_id = sid
+                        return {"ok": True, "url": url, **selected}
                 with self._state_lock:
                     self._page_session_id = sid
                 return {"ok": True, "url": url}
@@ -313,6 +341,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _schedule(_focus(), loop, timeout=timeout + 1)
         except Exception as exc:
             return _err(exc)
+
+    def focus_top_level_page(self, origin: str, *, accept: Optional[str] = None,
+                             timeout: float = 10.0) -> Dict[str, Any]:
+        """Focus a matching top-level page without probing remote child frames."""
+        return self.focus_page(origin, accept=accept, timeout=timeout, allow_oopif=False)
 
     # ── Supervisor loop internals ────────────────────────────────────────────
 

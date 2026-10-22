@@ -1215,7 +1215,7 @@ class GatewayBusySessionMixin:
             return reply
 
         if self._agent_has_pending_delivery(running_agent):
-            return _queue_fallback("Delivery context arrived — /steer queued for the next turn.")
+            return await _queue_fallback("Delivery context arrived — /steer queued for the next turn.")
         if running_agent is _AGENT_PENDING_SENTINEL:
             return await _queue_fallback(t("gateway.steer.queued_starting"))
         if not running_agent or not hasattr(running_agent, "steer"):

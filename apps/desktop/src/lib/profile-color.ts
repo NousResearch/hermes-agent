@@ -5,6 +5,7 @@
 
 const PROFILE_TAG_SATURATION = 68
 const PROFILE_TAG_LIGHTNESS = 58
+const GOLDEN_ANGLE = 137.508
 
 function hashString(value: string): number {
   let hash = 0
@@ -40,6 +41,19 @@ export function resolveProfileColor(name: null | string | undefined, overrides: 
   }
 
   return overrides[key] ?? profileColor(key)
+}
+
+/** Assign rail defaults from the live roster, so names which share a hash never
+ * share a rail hue. Stored user choices remain authoritative. */
+export function assignProfileColors(names: readonly string[], overrides: Record<string, string>): Record<string, string> {
+  const keys = [...new Set(names.map(name => (name ?? '').trim()).filter(name => name && name !== 'default'))].sort()
+  const assigned: Record<string, string> = {}
+
+  for (const [index, key] of keys.entries()) {
+    assigned[key] = overrides[key] ?? `hsl(${Math.round((index * GOLDEN_ANGLE) % 360)} ${PROFILE_TAG_SATURATION}% ${PROFILE_TAG_LIGHTNESS}%)`
+  }
+
+  return assigned
 }
 
 // Curated swatches for the rail color picker — evenly spaced hues at the same

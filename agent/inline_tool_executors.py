@@ -18,13 +18,18 @@ from tools.arg_coercion import coerce_tool_args
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
-    """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
+    """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``).
+
+    ``platform`` is the same value ``pre_llm_call`` passes (``agent.platform``), so a plugin that
+    gates tool calls can tell an interactive turn from a ``cron`` / ``subagent`` / ``curator`` run.
+    """
     return {
         "task_id": effective_task_id or "",
         "session_id": getattr(agent, "session_id", "") or "",
         "tool_call_id": tool_call_id or "",
         "turn_id": getattr(agent, "_current_turn_id", "") or "",
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+        "platform": getattr(agent, "platform", None) or "",
     }
 
 

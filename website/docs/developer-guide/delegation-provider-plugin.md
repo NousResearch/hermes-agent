@@ -159,7 +159,11 @@ uses:
 | `list_backends() -> list[BackendInfo]` | `default` first, then every registered backend: `name`, `label`, `description`, `available`, `reason` (the fix, when unavailable). |
 | `get_session_backend(session_key) -> str \| None` | The session's override, `None` when it follows `config.yaml`. |
 | `set_session_backend(session_key, name \| None)` | Switch one session (`None` clears). Raises `ValueError` with the reason for a backend that cannot run. |
-| `set_global_backend(name, *, session_key="")` | Write `delegation.backend` to the active profile's `config.yaml` and drop that session's override. |
+| `set_global_backend(name, *, session_key="")` | Write `delegation.backend` to the active profile's `config.yaml` and drop that session's override. Raises `PermissionError` on a package-manager-managed install. |
+
+A plugin command that edits model routes can reuse the interactive model picker under its own heading:
+`hermes_cli.auth_model_picker.prompt_model_selection(model_ids, current_model="", title="Select the model for this route:")`
+returns the chosen model id, or `None` when cancelled.
 
 `session_key` is the `session_key` a plugin command handler receives. A session switch decides routing
 from that session's next `delegate_task` call; the `delegate_task` schema (your parameters) follows

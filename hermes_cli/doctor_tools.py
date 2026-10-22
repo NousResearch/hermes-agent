@@ -519,12 +519,16 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
         check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid), _doctor_tool_availability_detail(tid))
     for status, label, detail in web_rows:
         (check_ok if status == "ok" else check_warn)(label, detail)
-    for item in unavailable:
+    enabled_toolsets = _enabled_cli_toolsets_for_doctor()
+    reported_unavailable = unavailable if enabled_toolsets is None else [
+        item for item in unavailable if str(item.get("name") or "") in enabled_toolsets
+    ]
+    for item in reported_unavailable:
         env_vars = item.get("missing_vars") or item.get("env_vars") or []
         detail = f"(missing {', '.join(env_vars)})" if env_vars else _TOOLSET_SETUP_HINTS.get(item["name"], "(system dependency not met)")
         check_warn(item["name"], detail)
-    # Only toolsets enabled for the CLI count toward the summary; default-off or
-    # disabled toolsets may warn above but must not pollute it.
+    # The registry includes all built-in toolsets, while doctor reports only the
+    # CLI's enabled surface. The summary uses the same enablement rule.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
     if api_disabled or any(status != "ok" for status, _, _ in web_rows):
         f.issues.append("Run 'hermes setup' to configure missing API keys for full tool access")

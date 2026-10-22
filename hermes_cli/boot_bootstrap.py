@@ -23,6 +23,32 @@ LOCK_STALE_SECONDS = 600
 
 
 
+def sudo_invoker_uid_gid() -> tuple[int, int] | None:
+    """The user a sudo-launched bootstrap must leave its records for.
+
+    A normal root-owned service has no sudo invoker and keeps root ownership.
+    For ``sudo hermes update``, however, the update is performed for the
+    invoking user's profile and its bootstrap record must remain removable by
+    that user after the privileged process exits.
+    """
+    if os.name == "nt" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    user = os.environ.get("SUDO_USER", "").strip()
+    if not user or user == "root":
+        return None
+    try:
+        import pwd
+
+        entry = pwd.getpwnam(user)
+        uid = int(os.environ["SUDO_UID"])
+        gid = int(os.environ["SUDO_GID"])
+    except (KeyError, ValueError):
+        return None
+    if uid != entry.pw_uid or gid != entry.pw_gid:
+        return None
+    return uid, gid
+
+
 # ---------------------------------------------------------------------------
 # current identity
 # ---------------------------------------------------------------------------
@@ -129,6 +155,13 @@ def _write_record(path: Path, identity: str, results: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+    owner = sudo_invoker_uid_gid()
+    if owner is not None:
+        for target in (path.parent, path):
+            try:
+                os.chown(target, *owner)
+            except OSError:
+                logger.debug("could not restore sudo invoker ownership for %s", target)
 
 
 def needs_bootstrap(project_root: Path) -> str | None:

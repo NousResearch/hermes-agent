@@ -5043,6 +5043,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if str(entry).strip().isdigit()
         }
 
+    def _discord_group_allow_all(self) -> bool:
+        """Whether this profile explicitly opens guild senders via group_allow_from."""
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        return isinstance(extra, dict) and "*" in self._gate_csv_set(extra.get("group_allow_from"))
+
     def _component_live_auth(self, interaction) -> Optional[bool]:
         """The gateway's live allowlist verdict for a component click (None when no check is wired):
         an out-of-process revoke never reaches the connect-time ``_allowed_user_ids`` snapshot."""
@@ -5713,6 +5718,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
                 allow_session="session" in choices, smart_denied=prompt.smart_denied,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
@@ -5738,6 +5744,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 session_key=session_key, confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             return {"content": content, "embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build)
 
@@ -5779,6 +5786,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
+                view.group_allow_all = self._discord_group_allow_all()
             else:
                 hint = t("platform.discord.prompt.clarify_hint_text")
                 view = None
@@ -5807,6 +5815,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             content = self._self_contained_prompt_content(f"☤ **{update_title}**", f"{prompt}{default_hint}")
             return {"content": content, "embed": embed, "view": view}, view
         result = await self._send_prompt(chat_id, metadata, _build)
@@ -5837,6 +5846,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 session_key=session_key, on_model_selected=on_model_selected,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_model_picker")
 
@@ -5857,6 +5867,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 choices=choices, on_choice_selected=on_choice_selected,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
+            view.group_allow_all = self._discord_group_allow_all()
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_choice_picker")
 
@@ -6357,6 +6368,7 @@ def _define_discord_view_classes() -> None:
             super().__init__(timeout=timeout)
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.group_allow_all = False
             # The adapter's live allowlist check, bound in ``_send_prompt``.
             self.live_auth = None
             self.resolved = False
@@ -6365,7 +6377,8 @@ def _define_discord_view_classes() -> None:
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             from plugins.platforms.discord.adapter_component_auth import _component_check_auth
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids, live_auth=self.live_auth)
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                group_allow_all=self.group_allow_all, live_auth=self.live_auth)
 
         async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str) -> bool:
             """Reject (ephemerally) an already-resolved or unauthorized click; True when it may proceed."""

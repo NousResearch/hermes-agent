@@ -526,7 +526,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     try:
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
+            effective_task_id,
+            build_fill_js(fills, expected_origin=page_origin, nonce=nonce, submit=meta.kind == "login"),
         )
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.
@@ -561,8 +562,17 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
-        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
-                       + (" (a code will be generated automatically)." if meta.has_otp else "."))
+        submission_requested = bool(parsed.get("submissionRequested")) if isinstance(parsed, dict) else False
+        if not filled:
+            out["next"] = "No password field was filled. Re-check the page before attempting to submit it."
+        elif submission_requested:
+            out["submission_requested"] = True
+            out["next"] = ("Login form submission requested. This does not confirm login succeeded. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
+                           + (" (a code will be generated automatically)." if meta.has_otp else "."))
+        else:
+            out["next"] = ("Password filled but the form needs additional interaction before submission. Complete it, then submit. "
+                           "If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
+                           + (" (a code will be generated automatically)." if meta.has_otp else "."))
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
     return json.dumps(out)

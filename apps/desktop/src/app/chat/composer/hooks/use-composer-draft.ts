@@ -1,11 +1,3 @@
-// Register the built-in draft providers with the suggestion bus (side-effect
-// import — the bus itself is provider-agnostic). The repair provider is
-// event-driven and registers through the gateway stream instead.
-import '@/store/suggestion-providers/cron'
-import '@/store/suggestion-providers/github'
-import '@/store/suggestion-providers/mcp'
-import '@/store/suggestion-providers/skill'
-
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -35,7 +27,6 @@ import {
 import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
 import { migrateQueuedPrompts } from '@/store/composer-queue'
-import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
 
 import {
   cloneAttachments,
@@ -222,7 +213,7 @@ export function useComposerDraft({
       }
 
       // 'prefix' puts the value at the START of the draft — slash commands
-      // (the skill-suggestion pill) only route when they lead the message.
+      // only route when they lead the message.
       if (mode === 'prefix') {
         const rest = draftRef.current.trimStart()
 
@@ -459,9 +450,6 @@ export function useComposerDraft({
     const sync = () => {
       const text = composerRuntime.getState().text
       draftRef.current = text
-      // Composer suggestion pills for THIS session's draft (debounced +
-      // change-gated in the bus — this is just a timer reset).
-      sampleComposerDraft(sessionIdRef.current ?? null, text)
 
       const editor = editorRef.current
 
@@ -615,12 +603,6 @@ export function useComposerDraft({
       } else if (!isBrowsingHistory(sessionId)) {
         stashAt(activeQueueSessionKey, latestText)
       }
-
-      // Withdraw the outgoing session's draft suggestions (and any pending
-      // sample timer). The incoming session re-earns its own from the draft
-      // restore above — without this a leaving session's "Add GitHub" pill
-      // lingers in the map and re-appears stale on the way back.
-      clearDraftSuggestions(sessionIdRef.current)
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 

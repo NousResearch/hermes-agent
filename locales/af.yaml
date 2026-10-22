@@ -3604,7 +3604,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo voeg 'n eie GitHub-vaardigheidsbron by."
   t070: "hermes skills snapshot export setup.json voer jou vaardigheidskonfigurasie uit vir rugsteun of deel."
   t071: "hermes mcp add github --command npx voeg MCP-bedieners vanaf die opdraglyn by."
-  t072: "hermes mcp serve laat Hermes self as 'n MCP-bediener vir ander agente loop."
+  t072: "hermes mcp-serve laat Hermes self as 'n MCP-bediener vir ander agente loop."
   t073: "hermes auth add laat jou verskeie API-sleutels byvoeg vir rotasie van die geloofsbriewe-poel."
   t074: "hermes completion bash >> ~/.bashrc aktiveer tab-voltooiing vir alle opdragte en profiele."
   t075: "hermes logs -f volg agent.log intyds. --level WARNING --since 1h filter die uitvoer."

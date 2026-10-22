@@ -53,19 +53,25 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert versions and all(version >= floor for version in versions)
 
 
+CA_TRUST_PACKAGES = {"certifi"}
+
+
 def test_every_dependency_is_held_to_one_three_day_release_age():
     """Hermes's deps must be >= 3 days old when locked, exact pins included (Teknium ruling).
 
     A per-package exemption or date would quietly let a fresh release into the lock; the
     check runs at lock time only, so users never need a mirror that serves upload times.
+    The sole exception is CA trust stores: a CA revocation must ship the day it is released.
     """
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     uv = manifest["tool"]["uv"]
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     assert uv["exclude-newer"] == "3 days"
-    assert "exclude-newer-package" not in uv
+    exempt = uv.get("exclude-newer-package", {})
+    assert set(exempt) <= CA_TRUST_PACKAGES, exempt
+    assert all(value is False for value in exempt.values()), exempt
     assert lock["options"].get("exclude-newer-span") == "P3D"
-    assert "exclude-newer-package" not in lock["options"]
+    assert lock["options"].get("exclude-newer-package", {}) == exempt
 
 
 def test_httpx2_pins_and_lock_exclude_ghsa_7mj9_2mp8_4m2p_family():

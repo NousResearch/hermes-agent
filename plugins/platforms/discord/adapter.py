@@ -2871,7 +2871,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 )
             self._with_discord_recovery_db(_complete)
             return
-        status = "cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed"
+        if outcome == ProcessingOutcome.REJECTED:
+            # Refused before the agent ran. Terminal, but not a response and not a
+            # delivery failure — "failed" would read as retryable and re-dispatch a
+            # message the gateway deliberately dropped (#81440).
+            status = "rejected"
+        else:
+            status = "cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed"
 
         def _op(conn):
             conn.execute(
@@ -3203,6 +3209,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 await self._add_reaction(message, "✅")
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
+            # REJECTED (e.g. authorization refusal): the 👀 is removed above and
+            # no terminal reaction is added, so the message goes visibly
+            # unhandled instead of reading as an acknowledged success (#81440).
 
     @staticmethod
     def _message_reference_from_ids(message_id, channel) -> discord.MessageReference:

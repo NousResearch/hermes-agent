@@ -13,10 +13,11 @@ from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
-from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
+from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
+from tools import mcp_tool_events as _events
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
 
@@ -167,7 +168,7 @@ class MCPServerTransportMixin:
         return caps is None or getattr(caps, "tools", None) is not None
 
     def _session_kwargs(self) -> dict:
-        """ClientSession kwargs: sampling, elicitation, notification + logging callbacks."""
+        """ClientSession kwargs: client identity, sampling, elicitation, notification + logging callbacks."""
         kwargs = {}
         for handler in (self._sampling, self._elicitation):
             if handler:
@@ -176,6 +177,11 @@ class MCPServerTransportMixin:
             kwargs["message_handler"] = self._make_message_handler()
         if _core._MCP_LOGGING_CALLBACK_SUPPORTED:
             kwargs["logging_callback"] = self._make_logging_callback()
+        if _core._client_session_accepts("client_info"):
+            # Servers key logs/behaviour on clientInfo; the SDK default is "mcp"/"0.1.0".
+            from mcp.types import Implementation
+            from hermes_cli.version_info import get_version_info
+            kwargs["client_info"] = Implementation(name="hermes-agent", version=get_version_info().base_version)
         return kwargs
 
     async def _negotiate_session(self, session, connect_timeout: float):
@@ -232,7 +238,7 @@ class MCPServerTransportMixin:
         keeps later requests legacy-shaped (envelope and MCP-Protocol-Version header), the form the
         handshake itself just proved the server accepts. The returned result keeps the server's own
         version for logging/diagnostics."""
-        import mcp.types as types  # late: keeps the SDK import lazy
+        from mcp import types  # late: keeps the SDK import lazy
         offered = _core.LATEST_HANDSHAKE_VERSION
         build_caps = getattr(session, "_build_capabilities", None)
         capabilities = build_caps(offered) if callable(build_caps) else types.ClientCapabilities()
@@ -274,7 +280,12 @@ class MCPServerTransportMixin:
         # recovery isn't gated on a stale consecutive-failure count (#16788).
         # Unproven until keepalive/tool-call success (#62212).
         self._session_proven = False
-        reason = await self._wait_for_lifecycle_event()
+        events_task = _events.start_refresh_task(self)
+        try:
+            reason = await self._wait_for_lifecycle_event()
+        finally:
+            if events_task is not None:
+                events_task.cancel()
         if label and reason == "reconnect":
             logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
         return reason
@@ -291,10 +302,11 @@ class MCPServerTransportMixin:
 
     # ------------------------------------------------------------------ stdio
 
-    def _track_spawned_children(self, new_pids: Set[int]) -> None:
+    def _track_spawned_children(self, new_pids: set[int]) -> None:
         """Ledger the freshly spawned stdio children (pids, pgids, machine spawn ledger). pgids are
         captured while alive (getpgid fails after exit; the sweep needs them for reparented descendants)."""
-        new_pgids: Dict[int, int] = {}
+        new_pgids: dict[int, int] = {}
+        new_starts: dict[int, int] = {}
         for pid in new_pids:
             try:
                 new_pgids[pid] = os.getpgid(pid)
@@ -306,9 +318,15 @@ class MCPServerTransportMixin:
                 new_pgids[pid] = pid
             except (AttributeError, OSError):  # Windows (os.getpgid is POSIX-only)
                 pass
+            # Record the leader's start time so a later sweep can detect PID/PGID
+            # recycling before signalling (see _stdio_starttimes, #43044).
+            start = _leader_start_time(pid)
+            if start is not None:
+                new_starts[pid] = start
         with _core._lock:
             _stdio_pids.update(dict.fromkeys(new_pids, self.name))
             _stdio_pgids.update(new_pgids)
+            _stdio_starttimes.update(new_starts)
         # Machine spawn ledger (startup sweeps reap orphans after an unclean exit); best-effort.
         for _pid in new_pids:
             try:
@@ -322,7 +340,7 @@ class MCPServerTransportMixin:
         # _kill_orphaned_mcp_children) still reap as before; this only covers when they never run.
         _core._update_death_supervisor("register", new_pgids.values())
 
-    def _release_spawned_children(self, new_pids: Set[int]) -> None:
+    def _release_spawned_children(self, new_pids: set[int]) -> None:
         """Drop the ledger entries; a child (or its pgroup) still alive means SDK teardown failed
         (common on mid-way cancel on Linux: setsid() children escape) — mark it orphaned for the sweep."""
         from gateway.status import _pid_exists
@@ -341,6 +359,7 @@ class MCPServerTransportMixin:
                     dropped = _stdio_pgids.pop(pid, None)
                     if dropped is not None:
                         released_pgids.append(dropped)
+                    _stdio_starttimes.pop(pid, None)
         _core._update_death_supervisor("unregister", released_pgids)
 
     async def _run_stdio(self, config: dict):

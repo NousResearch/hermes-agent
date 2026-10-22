@@ -103,7 +103,7 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         # Safety net: a writer in the update's mutation window replaced agent-job prompts
         # with the job NAME while the count stayed identical, so the count-based net above
         # passed it undetected (issue #82990). Restore only the degraded prompt fields.
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         prompt_restore = restore_cron_prompt_fields_if_degraded(pre_update_snapshot_id)
         if prompt_restore:
             print()
@@ -120,7 +120,7 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
             print()
             print(f"  ⚠️  Profile '{_restored['profile']}': {_cron_line(_restored)}")
     with _best_effort('Sibling cron prompt-field auto-restore check failed: %s'):
-        from hermes_cli.backup import restore_cron_prompt_fields_all_profiles
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_all_profiles
         for _prompt_restored in restore_cron_prompt_fields_all_profiles(_LAST_SIBLING_SNAPSHOTS):
             print()
             print(f"  ⚠️  Profile '{_prompt_restored['profile']}': {_prompt_line(_prompt_restored)}")
@@ -182,6 +182,7 @@ def _check_and_apply_config_migration(
         print("     Run 'hermes config migrate' to check manually.")
         return
 
+    owed_error = None
     has_new_options = bool(missing_env or missing_config)
     version_bump_only = not has_new_options and current_ver < latest_ver
     needs_migration = has_new_options or current_ver < latest_ver
@@ -205,6 +206,11 @@ def _check_and_apply_config_migration(
         except Exception as _mig_err:
             print(f"  ⚠️  Config format update failed: {_mig_err}")
             print("     Run 'hermes config migrate' to retry.")
+            # Not a silent success: raised after the sibling migration and snapshot safety nets
+            # below (independent of the active write, and the snapshot id is only in hand now), so
+            # the caller's owed-step guard records ``config_migration`` and keeps the tail pending.
+            owed_error = RuntimeError(f"config format v{current_ver} → v{latest_ver} was not written: {_mig_err}")
+            owed_error.__cause__ = _mig_err
     elif needs_migration:
         print()
         # Show WHAT changed, not just a count, for an informed yes/no.
@@ -241,6 +247,8 @@ def _check_and_apply_config_migration(
             print(f"  ✓ Profile '{_name}': config format updated (v{_from_ver} → v{_to_ver})")
 
     _restore_snapshot_safety_nets(pre_update_snapshot_id)
+    if owed_error is not None:
+        raise owed_error
 
 
 # {profile: snapshot_id} from this run's pre-update backup, consumed by the per-profile

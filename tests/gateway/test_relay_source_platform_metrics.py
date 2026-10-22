@@ -12,7 +12,7 @@ from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from hermes_cli.observability import shared_metrics_gateway as smg
 from tests.gateway.relay.test_relay_adapter import _CaptureTransport, make_desc
-from tests.gateway.test_platform_shared_metrics import rows  # noqa: F401 - fixture
+from tests.gateway.test_platform_shared_metrics import rows
 
 
 def _relay(platform="telegram"):

@@ -102,7 +102,7 @@ def artifact_scope_key(scope: Any) -> str:
     if not principal:
         # Fail closed: only an authenticated principal may mint artifacts.
         raise ArtifactError("artifact scope must carry a resolved principal")
-    return hashlib.sha256(f"{principal}\x00{family}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{principal}\x00{family}".encode()).hexdigest()
 
 
 @dataclass

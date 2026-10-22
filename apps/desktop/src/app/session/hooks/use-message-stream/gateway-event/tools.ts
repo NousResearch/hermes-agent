@@ -1,21 +1,110 @@
+import type { ToolCallMessagePart } from '@assistant-ui/react'
+
 import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-ui/tool/fallback-model'
-import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
+import { leaveIntroOnLayout } from '@/components/onboarding/first-run/intro'
 import { toolCallOwnerMessageId } from '@/lib/chat-messages'
+import { connectorText, recordOf } from '@/lib/connector-tools'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
-import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
-import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
-import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
+import { setupBeatResult } from '@/store/setup-beat'
+import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
+import { clearSessionToolProgress, clearToolProgress, setToolProgress } from '@/store/tool-progress'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 
 import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
 
 import type { GatewayEventContext } from './types'
+
+function recordToolPreview(ctx: GatewayEventContext, sessionId: string, cwd: string, pendingProduction: boolean): void {
+  const { event, payload, occurredAt } = ctx
+
+  if (!payload?.name || payload.result === undefined || event.seq === undefined) {
+    return
+  }
+
+  const { previewTarget, status } = toolPreviewOutcome({
+    type: 'tool-call',
+    toolName: payload.name,
+    args: payload.args ?? {},
+    result: payload.result,
+    toolResultMetadata: payload,
+    completedAt: occurredAt
+  })
+
+  if (status === 'success' && previewTarget && isPreviewableTarget(previewTarget)) {
+    const record = pendingProduction ? reofferPreviewArtifact : recordPreviewArtifact
+    record(sessionId, previewTarget, cwd, storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+  }
+}
+
+/** What a completed tool leaves behind outside its row: a preview target or a committed layout. */
+function noteToolOutcome(ctx: GatewayEventContext, sessionId: string, cwd: string, pendingProduction: boolean): void {
+  if (!ctx.deps.sessionInterrupted(sessionId)) {
+    recordToolPreview(ctx, sessionId, cwd, pendingProduction)
+  }
+
+  if (!ctx.event.replayed && appliedLayout(ctx.payload?.name, ctx.payload?.result)) {
+    leaveIntroOnLayout()
+  }
+}
+
+/** The layout a completed tool applied: the setup_beat layout answer, or a set_theme layout (applied or picked). */
+function appliedLayout(name: string | undefined, result: ToolCallMessagePart['result']): string | undefined {
+  if (name === 'setup_beat') {
+    return setupBeatResult(result).answer?.layout
+  }
+
+  if (name === 'set_theme') {
+    const row = recordOf(result)
+
+    return connectorText(recordOf(row.applied ?? row.picked).layout)
+  }
+
+  return undefined
+}
+
+/** tool.progress (live MCP progress for a running call): a row annotation, never a transcript
+ *  mutation. Retired on tool.complete (which then falls through to handleToolEvent); the dispatcher
+ *  also sweeps a session's leftovers when its turn ends (index.ts). */
+export function handleToolProgressEvent({ deps, event, payload, sessionId }: GatewayEventContext): boolean {
+  const toolId = typeof payload?.tool_id === 'string' ? payload.tool_id : ''
+
+  if (!sessionId) {
+    return event.type === 'tool.progress'
+  }
+
+  if (event.type === 'tool.complete') {
+    clearToolProgress(sessionId, toolId)
+
+    return false
+  }
+
+  if (event.type !== 'tool.progress') {
+    return false
+  }
+
+  if (!deps.sessionInterrupted(sessionId)) {
+    setToolProgress(sessionId, toolId, {
+      message: typeof payload?.message === 'string' && payload.message ? payload.message : null,
+      percent: typeof payload?.percent === 'number' ? payload.percent : null
+    })
+  }
+
+  return true
+}
+
+/** A finished turn retires its live tool progress even if a tool.complete went missing. Runs for every
+ *  event (the dispatcher's finally), because message.complete is consumed by an earlier handler. */
+export function retireTurnToolProgress(eventType: string, sessionId: string): void {
+  if (eventType === 'message.complete' || eventType === 'error') {
+    clearSessionToolProgress(sessionId)
+  }
+}
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
@@ -80,25 +169,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 
-      if (!sessionInterrupted(sessionId) && payload?.name && payload.result !== undefined && event.seq !== undefined) {
-        const { previewTarget, status } = toolPreviewOutcome({
-          type: 'tool-call',
-          toolName: payload.name,
-          args: payload.args ?? {},
-          result: payload.result,
-          toolResultMetadata: payload,
-          completedAt: occurredAt
-        })
-
-        if (status === 'success' && previewTarget && isPreviewableTarget(previewTarget)) {
-          const record = pendingProduction ? reofferPreviewArtifact : recordPreviewArtifact
-          record(sessionId, previewTarget, state?.cwd ?? '', storedSessionIdForRuntimeId(sessionId) ?? sessionId)
-        }
-      }
-
-      // Onboarding's first build paces its check-ins off real work done
-      // (no-op in every other session).
-      reportFirstBuildToolComplete(sessionId)
+      noteToolOutcome(ctx, sessionId, state?.cwd ?? '', pendingProduction)
 
       if (isActiveEvent) {
         setPetActivity({ toolRunning: false })
@@ -118,31 +189,19 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
 
       // terminal/process tool calls are the only things that spawn or reap
-      // background processes — sync the composer status stack right after.
-      if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
+      // background processes — sync the composer status stack right after,
+      // even on an interrupted turn (idempotent re-sync; the 5s poll may be
+      // unarmed when no running row is on screen yet, #81114).
+      if (payload?.name === 'terminal' || payload?.name === 'process') {
         void refreshBackgroundProcesses(sessionId)
       }
     }
 
     // The agent just created/deleted/renamed a skill, which adds or removes
     // its `/name` command. Drop the composer's cached `/` list so the new
-    // skill is offerable now rather than after the hour-long TTL — and the
-    // skill-suggestion provider's index with it.
+    // skill is offerable now rather than after the hour-long TTL.
     if (payload?.name === 'skill_manage') {
       invalidateSlashCompletions()
-      invalidateSkillSuggestionIndex()
-    }
-
-    // MCP tool outcomes feed the connection-repair suggestion provider:
-    // an auth/connection-shaped failure offers a reconnect pill; a later
-    // success against the same server withdraws it.
-    if (sessionId && typeof payload?.name === 'string' && payload.name.startsWith('mcp__')) {
-      reportMcpToolResult(
-        sessionId,
-        payload.name,
-        Boolean(payload.error),
-        [payload.error, payload.result].filter(part => typeof part === 'string').join(' ')
-      )
     }
 
     // A file-mutating tool just finished — nudge the git-mirroring surfaces
@@ -156,7 +215,16 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-    if (sessionId && payload && !sessionInterrupted(sessionId)) {
+    // A Stop interrupts the parent TURN, not the children: a delegation can
+    // still be finishing in the background, and its `subagent.complete` is the
+    // only thing that terminalizes the row. Dropping it leaves a permanently
+    // 'running' spinner (#75505). Terminal completions are accepted past the
+    // interrupt; only live progress keeps the guard, so a stopped turn's
+    // late mid-flight frames still can't repaint its stream. upsertSubagent's
+    // retired-id and terminal-status guards make a stale completion a no-op.
+    const acceptWhileInterrupted = isTerminalSubagentCompletion(event.type, payload)
+
+    if (sessionId && payload && (!sessionInterrupted(sessionId) || acceptWhileInterrupted)) {
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         pruneDelegateFallbackSubagents(sessionId)
       }

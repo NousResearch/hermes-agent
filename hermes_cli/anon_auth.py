@@ -708,6 +708,9 @@ def ensure_portal_identity(
         raise err from exc
     if state is not None:
         _clear_mint_failure()
+        # Adopting a sibling profile's sign-in replaced this profile's guest under the locks above.
+        from hermes_cli.guest_handoff import drain
+        drain()
     return state
 
 

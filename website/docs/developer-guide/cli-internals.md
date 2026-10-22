@@ -141,6 +141,31 @@ promotion poller are renderers over it; a surface that needs the cancel check an
 atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
 is a separate path (`_nous_plain_poller`) and must stay one.
 
+### Guest handoff after a sign-in
+
+When any writer saves a Nous account over a free-tier identity, `hermes_cli/guest_handoff.py` hands
+that identity's connected apps to the account: `POST /api/anonymous/claim {"token": "<anon_...>"}`
+with the account's own Bearer token. Nothing asks the user first; the result is shown afterwards
+(`hermes auth status nous`, `guest_handoff.handoff_status()` for the desktop). Sign-in code does not
+call it:
+
+- `note_replacement` runs at the two lowest write seams (`auth._store_provider_state` and
+  `auth_nous._write_shared_nous_state`) under the caller's auth-store locks and only writes a pending
+  record. Records live in `guest_handoff.json` beside the shared Nous store, keyed by a hash of the
+  `anon_` credential and bound to the destination account, so profiles sharing one free-tier
+  identity share one record and one claim.
+- `drain` runs the claim outside every lock, bounded to about 10 s: after a shared-store write, when a
+  `guest_handoff.deferred()` block exits (a surface that saves under its own lock, such as the
+  desktop poller, wraps the save in it), after a free-tier reconcile, and on every Nous keepalive tick,
+  which resumes a retry an earlier process left. It also runs `settle_after_upgrade` once per
+  replacement, so every replacing writer settles.
+
+Answers: `claimed` records what moved (and refreshes the account token only when
+`cohort_carried`); `unknown_token` is Gone, read as "probably moved" after an earlier attempt (a lost
+success); `already_retired` is Gone too; busy, rate-limited, gate and transport failures retry with
+backoff (Retry-After honoured, capped attempts); a 401 refreshes the account token once; the other
+refusals are Failed and keep the credential. A Claimed record is never reopened.
+
 ## Process identity: never infer it from argv substrings
 
 The bug class behind ~10 fleet-update issues (#90778, #87594, #78089, #76129, #91964, ...):

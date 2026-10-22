@@ -302,7 +302,7 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
     """
     from hermes_cli.web_server_profiles import _profile_scope
     from hermes_cli.auth import _poll_for_token, persist_nous_credentials, refresh_nous_oauth_from_state
-    from hermes_cli import anon_auth
+    from hermes_cli import guest_handoff
     import httpx
     portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
 
@@ -346,16 +346,17 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
     with _profile_scope(sess.get("profile")):
         full_state = refresh_nous_oauth_from_state(auth_state, timeout_seconds=15.0, force_refresh=False)
         # The final cancellation check and the save share the session lock, so a cancel cannot
-        # land between them.
-        with _oauth_sessions_lock:
-            if sess.get("cancelled"):
-                sess["status"] = "cancelled"
-                return
-            persist_nous_credentials(full_state)
+        # land between them. The guest handoff runs after that lock is released.
+        with guest_handoff.deferred() as handoff:
+            with _oauth_sessions_lock:
+                if sess.get("cancelled"):
+                    sess["status"] = "cancelled"
+                    return
+                persist_nous_credentials(full_state)
         # A config left on the free tier's route by a retired identity still has to move.
-        settled = anon_auth.settle_after_upgrade(full_state)
+        settled = handoff.settle(full_state)
     with _oauth_sessions_lock:
-        sess["account_email"] = None
+        sess["account_email"] = handoff.account_email
         sess["model"] = settled.get("model") or None
 
 

@@ -25,6 +25,7 @@ from hermes_cli.auth_constants import (
     DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     WELCOME_CLAIM_FLAG, _nous_err, httpx)
+from hermes_cli.guest_handoff import drain, note_replacement
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
     from hermes_cli.auth import ProviderConfig
@@ -466,12 +467,15 @@ def _write_shared_nous_state(state: dict[str, Any]) -> None:
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
+            note_replacement(_read_shared_nous_state(), state)
             _save_private_json(path, shared, sort_keys=True)
         _oauth_trace(
             "nous_shared_store_written", path=str(path),
             refresh_token_fp=_token_fingerprint(refresh_token))
     except Exception as exc:
         logger.debug("Failed to write shared Nous auth store: %s", exc)
+    # The account is saved everywhere now: hand the replaced guest over (a no-op under a lock).
+    drain()
 
 
 def _read_shared_nous_state() -> Optional[dict[str, Any]]:

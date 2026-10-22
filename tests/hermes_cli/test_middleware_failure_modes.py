@@ -5,7 +5,8 @@ from __future__ import annotations
 import textwrap
 
 import pytest
-import yaml
+
+import hermes_yaml as yaml
 
 from hermes_cli.middleware import (
     LLMStreamMiddlewareRefusal,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import inspect
 import json
 import logging
 import os

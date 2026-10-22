@@ -125,7 +125,7 @@ def _reasoning_is_shared(role: Any, reasoning: Any, reasoning_content: Any) -> b
             and reasoning == reasoning_content)
 
 
-def _restore_shared_reasoning(msg: Dict[str, Any]) -> None:
+def _restore_shared_reasoning(msg: dict[str, Any]) -> None:
     """Read-side inverse of the write-side dedup: swap the marker back for ``reasoning_content``."""
     if msg.get("reasoning") == _SHARED_REASONING:
         msg["reasoning"] = msg.get("reasoning_content")

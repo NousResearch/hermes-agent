@@ -242,3 +242,17 @@ class TestResolveToolsetMemo:
         assert get_toolset_calls["n"] == 2, (
             "generation bump must invalidate the memo and re-resolve"
         )
+
+
+class TestSkillSearchToolsetCoverage:
+    """``skill_search`` travels with ``skills_list`` so every bundle that can list skills can search them."""
+
+    def test_hermes_cli_and_skills_toolsets_include_skill_search(self):
+        assert "skill_search" in resolve_toolset("hermes-cli")
+        assert "skill_search" in resolve_toolset("skills")
+
+    def test_no_toolset_exposes_skills_list_without_skill_search(self):
+        listing = [name for name in TOOLSETS if "skills_list" in resolve_toolset(name)]
+        assert "hermes-cli" in listing  # positive control: the walk reaches the bundles
+        missing = [name for name in listing if "skill_search" not in resolve_toolset(name)]
+        assert missing == []

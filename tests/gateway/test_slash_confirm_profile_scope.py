@@ -125,11 +125,14 @@ async def test_always_approve_writes_the_profiles_own_config(tmp_path, monkeypat
     resolved = await _slash_confirm_mod.resolve(session_key, pending["confirm_id"], "always")
     assert resolved is not None
 
-    profile_cfg = yaml.safe_load((profile_home / "config.yaml").read_text(encoding="utf-8"))
+    profile_cfg = yaml.safe_load((profile_home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert profile_cfg["approvals"]["destructive_slash_confirm"] is False, (
         "the opt-out must be written to the profile that was asked")
     launch_cfg_path = launch_home / "config.yaml"
-    launch_cfg = yaml.safe_load(launch_cfg_path.read_text(encoding="utf-8")) if launch_cfg_path.exists() else {}
+    launch_cfg = (
+        yaml.safe_load(launch_cfg_path.read_text(encoding="utf-8-sig"))
+        if launch_cfg_path.exists() else {}
+    )
     assert "approvals" not in (launch_cfg or {}), (
         "the launch home's config must not be rewritten by a routed profile's opt-out")
     _slash_confirm_mod.clear(session_key)
@@ -167,6 +170,64 @@ async def test_always_approve_keeps_writing_the_home_the_gate_read(tmp_path, mon
     assert pending is not None
     await _slash_confirm_mod.resolve(session_key, pending["confirm_id"], "always")
 
-    launch_cfg = yaml.safe_load((launch_home / "config.yaml").read_text(encoding="utf-8"))
+    launch_cfg = yaml.safe_load((launch_home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert launch_cfg["approvals"]["destructive_slash_confirm"] is False
+    _slash_confirm_mod.clear(session_key)
+
+
+@pytest.mark.asyncio
+async def test_the_opt_out_is_per_profile_across_an_a_b_a_round_trip(tmp_path, monkeypatch):
+    """A -> B -> A: the opt-out belongs to the profile that was asked, and no other.
+
+    The contributing rubric asks a profile-scope change to exercise two homes with real imports
+    and the A->B->A round trip. Here: profile A opts out, profile B is still asked (A's opt-out
+    did not leak), and A is still opted out when the round trip comes back to it.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools import slash_confirm as _slash_confirm_mod
+
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    for home in (home_a, home_b):
+        home.mkdir()
+        (home / "config.yaml").write_text("display:\n  theme: dark\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+
+    async def _ask(home):
+        """Raise the gate in *home*'s scope; return the pending confirm (or None)."""
+        _slash_confirm_mod.clear(session_key)
+        token = set_hermes_home_override(str(home))
+        try:
+            await runner._maybe_confirm_destructive_slash(
+                event=_make_event("/new"),
+                command="new",
+                title="/new",
+                detail="Discards history.",
+                execute=AsyncMock(return_value="fresh"),
+            )
+        finally:
+            reset_hermes_home_override(token)
+        return _slash_confirm_mod.get_pending(session_key)
+
+    # A is asked, and opts out.
+    pending = await _ask(home_a)
+    assert pending is not None, "the gate did not ask for confirmation in A"
+    await _slash_confirm_mod.resolve(session_key, pending["confirm_id"], "always")
+    a_cfg = yaml.safe_load((home_a / "config.yaml").read_text(encoding="utf-8-sig"))
+    assert a_cfg["approvals"]["destructive_slash_confirm"] is False
+
+    # B is a different profile: A's opt-out must not have leaked into it.
+    pending = await _ask(home_b)
+    assert pending is not None, "A's opt-out leaked into B"
+    b_cfg = yaml.safe_load((home_b / "config.yaml").read_text(encoding="utf-8-sig"))
+    assert "approvals" not in (b_cfg or {}), "B's config was rewritten by A's opt-out"
+    await _slash_confirm_mod.resolve(session_key, pending["confirm_id"], "cancel")
+
+    # Back in A: the opt-out still stands, so the gate does not ask again.
+    pending = await _ask(home_a)
+    assert pending is None, "A's opt-out did not survive the round trip"
     _slash_confirm_mod.clear(session_key)

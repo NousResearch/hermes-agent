@@ -297,15 +297,39 @@ Note that the pin is global: with the default strategy `delegate_task` has no pe
 
 `delegation.backend` selects how each task becomes a subagent. `default` (the default) is everything above. Strategy plugins can let the model choose per task, from options you define:
 
-- a **profile per subagent**: each child runs as one of your Hermes profiles, with that profile's model, credentials, skills and persona;
-- a **named model map**: you list titled options (`fast`, `deep`, ...) with a description and a provider/model each, and the model picks one per task.
+- a **profile per subagent** (`profile_routes`, from the `delegation-profiles` plugin): each child runs as one of your Hermes profiles, with that profile's model, credentials, skills and persona;
+- a **named model map** (`model_map`, from the `delegation-model-map` plugin): you list titled options (`fast`, `deep`, ...) with a description and a provider/model each, and the model picks one per task.
+
+Each strategy's settings live under `delegation.backends.<backend name>`:
 
 ```yaml
 delegation:
-  backend: model-map          # the plugin's backend name
+  backend: model_map
+  backends:
+    model_map:
+      options:
+        - name: fast
+          description: Cheap and quick; lookups, summaries, simple edits.
+          provider: openrouter
+          model: google/gemini-3-flash-preview
+        - name: deep
+          description: Slow and careful; hard debugging and design work.
+          provider: anthropic
+          model: claude-opus-5
+          reasoning_effort: high
+          service_tier: fast            # optional; refused at spawn if this route has no fast tier
+      default: fast                     # optional: option for tasks that set none
+    profile_routes:                     # read when backend: profile_routes
+      profiles:
+        - name: coder
+          description: Writes and refactors code; runs tests.
 ```
 
-The model only ever sees the names and descriptions you configured, never raw provider, model or key fields. If the selected plugin is missing or disabled, delegation falls back to `default`. Writing your own: [Delegation Provider Plugins](../../developer-guide/delegation-provider-plugin.md).
+The model only ever sees the names and descriptions you configured, never raw provider, model or key fields. A route's `service_tier` is checked like `/fast`: a tier the route does not offer, or an unknown `reasoning_effort`, fails the spawn with a tool error instead of silently running at another level. Each result of a routed task carries `route` (the option or profile name plus the provider, model, reasoning effort and speed tier the child actually ran on). If the selected plugin is missing or disabled, delegation falls back to `default`. Writing your own: [Delegation Provider Plugins](../../developer-guide/delegation-provider-plugin.md).
+
+:::note Profile routes share credentials
+Listing a profile in `delegation.backends.profile_routes` lets this profile's subagents use that profile's credentials, credential pool, `SOUL.md` and terminal policy. Only list profiles whose keys and terminal access you are happy for this profile's agent to use.
+:::
 
 ## The `/review` Command
 

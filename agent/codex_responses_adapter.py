@@ -1218,15 +1218,15 @@ class _OutputScan:
         ))
 
 
-def _dedupe_function_call_items(output: List[Any]) -> List[Any]:
+def _dedupe_function_call_items(output: list[Any]) -> list[Any]:
     """Keep the populated twin of a function call without merging distinct identities.
 
     Work on raw Responses items: normalization erases the distinction between a real
     call_id and a fallback item ID. Streamed and non-streamed responses both reach this
     through _normalize_codex_response.
     """
-    positions: Dict[tuple[str, str, str], int] = {}
-    result: List[Any] = []
+    positions: dict[tuple[str, str, str], int] = {}
+    result: list[Any] = []
     for item in output:
         # Only scannable, executable calls may claim or replace an identity.
         item_type = getattr(item, "type", None)
@@ -1293,7 +1293,7 @@ def _normalize_codex_response(
     tool_calls, reasoning_parts = scan.tool_calls, scan.reasoning_parts
     # A provider may reuse an item id for distinct stable calls. Do not persist that
     # ambiguous alias: history sanitization treats shared aliases as duplicate calls.
-    alias_owners: Dict[str, set[str]] = {}
+    alias_owners: dict[str, set[str]] = {}
     for call in tool_calls:
         alias_owners.setdefault(call.response_item_id, set()).add(call.id)
     reserved_ids = {variant for call in tool_calls for variant in tool_call_id_variants(call)}

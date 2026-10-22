@@ -193,7 +193,7 @@ def test_expanded_call_id_alias_search_terminates_through_next_request(streamed)
     """)
     result = subprocess.run(
         [sys.executable, "-c", code, __file__, str(streamed)],
-        capture_output=True, text=True, timeout=8,
+        capture_output=True, text=True, timeout=8, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

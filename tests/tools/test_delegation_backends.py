@@ -227,6 +227,21 @@ def test_a_session_backend_switch_routes_that_session_only_and_global_persists(t
         manager.unload()
 
 
+def test_a_global_backend_switch_is_refused_on_a_managed_install(tmp_path, monkeypatch):
+    """Like every other config writer: a package-manager-managed install's config.yaml is never written."""
+    home, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options"})
+    try:
+        from agent.delegation_backends import set_global_backend
+
+        before = (home / "config.yaml").read_bytes()
+        monkeypatch.setenv("HERMES_MANAGED", "nixos")
+        with pytest.raises(PermissionError, match="managed by nixos"):
+            set_global_backend("default")
+        assert (home / "config.yaml").read_bytes() == before
+    finally:
+        manager.unload()
+
+
 def test_plugin_parameters_never_redefine_core_or_route_fields(tmp_path, monkeypatch):
     from agent.delegation_provider import DelegationProvider
     from tools.delegate_tool_routes import schema_extension

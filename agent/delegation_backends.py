@@ -74,8 +74,14 @@ def set_session_backend(session_key: str, name: Optional[str]) -> None:
 
 def set_global_backend(name: str, *, session_key: str = "") -> None:
     """Persist ``delegation.backend`` to the active profile's config.yaml (raw user config, never merged
-    defaults) and drop ``session_key``'s override, which would otherwise shadow it."""
-    from hermes_cli.config import atomic_config_write, get_config_path, read_user_config_raw
+    defaults) and drop ``session_key``'s override, which would otherwise shadow it. Raises ``PermissionError``
+    on a package-manager-managed install (its config.yaml is not ours to write) and ``ValueError`` for a backend
+    that cannot run."""
+    from hermes_cli.config import (
+        atomic_config_write, format_managed_message, get_config_path, is_managed, read_user_config_raw,
+    )
+    if is_managed():
+        raise PermissionError(format_managed_message("set delegation.backend"))
     key = lower_key(name)
     info = _info(key)
     if not info.available:

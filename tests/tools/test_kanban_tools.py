@@ -553,6 +553,26 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
         conn.close()
 
 
+def test_block_goal_mode_allows_defect_kind(monkeypatch, tmp_path):
+    """A broken test/CI/infra is an external blocker the worker can't fix,
+    so goal_mode must let ``defect`` exit the loop (schema + gate agree)."""
+    from tools import kanban_tools as kt
+    from tools.kanban_tools_schemas import KANBAN_BLOCK_SCHEMA
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    assert "defect" in KANBAN_BLOCK_SCHEMA["parameters"]["properties"]["kind"]["enum"]
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    d = json.loads(kt._handle_block({"reason": "DEFECT: CI runner down", "kind": "defect"}))
+    assert "error" not in d, d
+    conn = kbc.connect()
+    try:
+        t = kb.get_task(conn, tid)
+        assert (t.status, t.block_kind) == ("blocked", "defect")
+    finally:
+        conn.close()
+
+
 def test_schedule_goal_mode_refused(monkeypatch, tmp_path):
     """``scheduled`` ends the goal loop like ``blocked``, so a goal_mode worker
     must not use kanban_schedule to exit without the completion judge."""

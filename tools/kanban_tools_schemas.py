@@ -190,11 +190,13 @@ KANBAN_BLOCK_SCHEMA = _schema(
         )),
         "kind": {
             "type": "string",
-            "enum": ["dependency", "needs_input", "capability", "transient"],
+            "enum": ["dependency", "needs_input", "capability", "transient", "defect"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
                 "resumes automatically when an incomplete parent finishes; "
                 "if no parent is open it is recorded as needs_input instead. "
+                "'defect' means the tests, CI or infra are broken (not your "
+                "code); put the failing command and its output in reason. "
                 "The others surface to a human. Omit only if none apply."
             ),
         },

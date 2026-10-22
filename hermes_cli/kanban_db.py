@@ -107,7 +107,9 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+# ``defect``: tests/CI/infra are broken, not the worker's code -- sticky like
+# ``needs_input`` (only an explicit unblock clears it).
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "defect"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).

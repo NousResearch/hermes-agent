@@ -198,3 +198,16 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
 # ---------------------------------------------------------------------------
 
 
+def test_defect_block_is_sticky_until_explicit_unblock(kanban_home: Path) -> None:
+    """``defect`` (broken tests/CI/infra) parks in ``blocked`` like
+    ``needs_input``: ``recompute_ready`` never clears it, only ``unblock_task``."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        assert kb.block_task(conn, tid, reason="DEFECT: pytest exit 2 ImportError", kind="defect")
+        t = kb.get_task(conn, tid)
+        assert (t.status, t.block_kind) == ("blocked", "defect")
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+

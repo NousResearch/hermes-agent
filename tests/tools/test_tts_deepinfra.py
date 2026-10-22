@@ -24,14 +24,24 @@ def _isolation(monkeypatch):
 
 def test_raises_when_no_model_resolvable(monkeypatch, tmp_path):
     """No-fallback contract: empty config + unreachable catalog → ValueError."""
-    import urllib.request
-    monkeypatch.setattr(
-        urllib.request, "urlopen",
-        lambda *a, **kw: (_ for _ in ()).throw(Exception("offline")),
-    )
+    from hermes_cli import models
+
+    observed = {"attempts": 0, "escaped": 0}
+
+    def offline_catalog(*args, **kwargs):
+        observed["attempts"] += 1
+        raise OSError("offline")
+
+    def reject_transport(*args, **kwargs):
+        observed["escaped"] += 1
+        raise OSError("unexpected catalogue transport")
+
+    monkeypatch.setattr(models, "open_credentialed_url", reject_transport)
+    monkeypatch.setattr(models, "_urlopen_model_catalog_request", offline_catalog)
     from tools.tts_tool import _generate_deepinfra_tts
     with pytest.raises(ValueError, match="No DeepInfra TTS model available"):
         _generate_deepinfra_tts("hi", str(tmp_path / "out.mp3"), {})
+    assert observed == {"attempts": 1, "escaped": 0}
 
 
 def test_requirements_follow_explicit_deepinfra_provider(monkeypatch):

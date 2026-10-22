@@ -9,6 +9,7 @@ through :func:`_origin` at call time.
 from __future__ import annotations
 
 import logging
+from tools.tts_prepared_types import SpeechResolution
 import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import urljoin
@@ -38,13 +39,13 @@ def _managed_openai_audio_route() -> Optional[tuple]:
     return gateway.nous_user_token, urljoin(f"{gateway.gateway_origin.rstrip('/')}/", "v1"), True
 
 
-def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
+def _resolve_openai_audio_client_config(*, tts_config: Optional[dict[str, Any]] = None) -> tuple[str, str, bool]:
     """``(api_key, base_url, is_managed)`` for the OpenAI audio client (``is_managed`` = the restricted
     Nous proxy, so callers coerce the request). Strict on the stored ``tts`` selection: ``"nous"``
     → managed ONLY (error if unavailable); any other → direct credentials ONLY (``tts.openai.api_key``
     then ``VOICE_TOOLS_OPENAI_KEY``/``OPENAI_API_KEY``); unset → config key → env key → managed."""
     origin = _origin()
-    openai_cfg = _section(origin._load_tts_config(), "openai")
+    openai_cfg = _section(origin._load_tts_config() if tts_config is None else tts_config, "openai")
     selected = read_selection("tts")
     if selected == NOUS_MANAGED_PROVIDER:
         route = _managed_openai_audio_route()
@@ -94,7 +95,7 @@ def _openai_extra_body(oai_config: dict[str, Any]) -> dict[str, Any]:
 def _generate_openai_tts(
     text: str, output_path: str, tts_config: dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
-    speed: Optional[float] = None, instructions: Optional[str] = None) -> str:
+    speed: Optional[float] = None, instructions: Optional[str] = None, prepared_resolution: SpeechResolution | None = None) -> str:
     """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
 
     Explicit kwargs let OpenAI-compatible backends (DeepInfra) supply credentials/model/voice
@@ -105,7 +106,10 @@ def _generate_openai_tts(
     is_managed = False
     explicit_base_url = base_url is not None
     if api_key is None:
-        api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
+        if prepared_resolution is None:
+            api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
+        else:
+            api_key, fallback_base, is_managed = _resolve_openai_audio_client_config(tts_config=tts_config)
     oai_config = _section(tts_config, "openai")
     if model is None:
         model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
@@ -136,6 +140,9 @@ def _generate_openai_tts(
         create_kwargs["instructions"] = instructions
     if extra_body := _openai_extra_body(oai_config):
         create_kwargs["extra_body"] = extra_body
+    if prepared_resolution is not None:
+        from tools.tts_prepared_policy import _validate_openai_submission
+        _validate_openai_submission(prepared_resolution, base_url, model, voice, speed)
     client = _origin()._import_openai_client()(api_key=api_key, base_url=base_url)
     try:
         client.audio.speech.create(**create_kwargs).stream_to_file(output_path)
@@ -146,7 +153,7 @@ def _generate_openai_tts(
             close()
 
 
-def _generate_deepinfra_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
+def _generate_deepinfra_tts(text: str, output_path: str, tts_config: dict[str, Any], *, prepared_resolution: SpeechResolution | None = None) -> str:
     """Resolve DeepInfra credentials/model (live ``hermes_cli.models`` catalog, no hardcoded ids), then
     delegate to the OpenAI-compatible handler."""
     api_key = _origin()._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
@@ -166,4 +173,5 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: dict[str, A
     return _origin()._generate_openai_tts(
         text, output_path, tts_config, api_key=api_key, base_url=deepinfra_base_url(di_config),
         model=model, voice=di_config.get("voice", DEFAULT_DEEPINFRA_TTS_VOICE),
-        speed=float(di_config.get("speed", tts_config.get("speed", 1.0))))
+        speed=float(di_config.get("speed", tts_config.get("speed", 1.0))),
+        **({"prepared_resolution": prepared_resolution} if prepared_resolution is not None else {}))

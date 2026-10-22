@@ -363,7 +363,8 @@ def _media_tag(paths: list[str], voice_compatible: bool) -> str:
 def _tool_failure(prefix: str, provider: str, exc: BaseException) -> str:
     """Log and wrap a synthesis failure as the standard error envelope (traceback except for config errors)."""
     error_msg = f"{prefix} ({provider}): {exc}"
-    logger.error("%s", error_msg, exc_info=not isinstance(exc, ValueError))
+    trace = (type(exc), exc, exc.__traceback__) if not isinstance(exc, ValueError) else False
+    logger.error("%s", error_msg, exc_info=trace)
     return tool_error(error_msg, success=False)
 
 
@@ -376,29 +377,17 @@ def _text_to_speech_single(
     Command providers resolve BEFORE built-in dispatch, but built-in names short-circuit so
     ``tts.providers.openai.command`` can't shadow OpenAI. Plugins fire only for names that are
     neither; a None return falls through to built-in dispatch (unknown -> Edge default)."""
-    try:
-        if command_provider_config is not None:
-            logger.info("Generating speech with command TTS provider '%s'...", provider)
-            file_str = _generate_command_tts(
-                text, file_str, provider, command_provider_config, tts_config)
-        # Plugin-registered TTS backend (issue #30398). Fires when the configured provider is neither a
-        # built-in nor a command-type entry, AND a plugin is registered under that name. The walrus binds
-        # `_plugin_path` only when the dispatcher returns a path (i.e. a plugin was actually found); a None
-        # return falls through to the built-in elif chain so unknown names hit the Edge TTS default at the
-        # bottom. The dispatcher itself enforces built-ins-always-win + command-wins-over-plugin
-        # defensively.
-        elif provider not in BUILTIN_TTS_PROVIDERS and (
-            _plugin_path := _dispatch_to_plugin_provider(text, file_str, provider, tts_config)
-        ) is not None:
-            file_str = _plugin_path
-        else:
-            provider, error = _select_builtin_engine(provider)
-            if error:
-                return error
-            _synthesize_builtin(provider, text, file_str, tts_config, instructions)
-        if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
-            return _error_json(f"TTS generation produced no output (provider: {provider})")
+    from tools.tts_tool_synthesis import _SpeechDispatch, _synthesize_single
 
+    attempt = _SpeechDispatch(file_str, provider, provider)
+    try:
+        attempt = _synthesize_single(
+            text, file_str, provider=provider, tts_config=tts_config,
+            command_provider_config=command_provider_config, instructions=instructions, attempt=attempt,
+        )
+        provider, file_str = attempt.provider, attempt.path
+        if attempt.diagnostic is not None:
+            return attempt.diagnostic
         # Sniff once for every provider: MP3/WAV bytes in a .ogg path render as 0-second bubbles.
         file_str = _repair_ogg_container(file_str)
         file_str, voice_compatible = _finalize_voice_delivery(
@@ -409,11 +398,11 @@ def _text_to_speech_single(
             "provider": provider, "voice_compatible": voice_compatible,
         }, ensure_ascii=False)
     except ValueError as e:
-        return _tool_failure("TTS configuration error", provider, e)
+        return _tool_failure("TTS configuration error", attempt.provider, e)
     except FileNotFoundError as e:
-        return _tool_failure("TTS dependency missing", provider, e)
+        return _tool_failure("TTS dependency missing", attempt.provider, e)
     except Exception as e:
-        return _tool_failure("TTS generation failed", provider, e)
+        return _tool_failure("TTS generation failed", attempt.provider, e)
 
 
 class _ChunkFailed(Exception):

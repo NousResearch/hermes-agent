@@ -7,30 +7,60 @@ import time
 import psutil
 
 
-def owner_reclaim_paused(conn, task_id):
-    """Missing/ambiguous owner receipts never authorize another attempt."""
+def _owner_receipt(conn, task_id):
+    """The parsed ``owner_admitted`` receipt of the task's CURRENT run, or None.
+
+    The receipt is the owner's pointer to its own admission ledger. No receipt means the run
+    never reached an owner (a plain dispatcher worker): nothing about it is ambiguous.
+    """
     marker = conn.execute(
         "SELECT e.payload FROM task_events e JOIN tasks t ON t.current_run_id=e.run_id "
         "WHERE t.id=? AND e.task_id=t.id AND e.kind='owner_admitted' ORDER BY e.id DESC LIMIT 1",
         (task_id,)).fetchone()
     if marker is None:
+        return None
+    try:
+        receipt = json.loads(marker['payload'])
+    except (ValueError, TypeError):
+        return {}
+    return receipt if isinstance(receipt, dict) else {}
+
+
+def _admission_row(receipt):
+    """``(status, outcome)`` from the owner ledger ``receipt`` names, or None when unreadable.
+
+    None is "the owner said nothing we can read" — never "the owner said the attempt ended".
+    """
+    if not receipt:
+        return None
+    try:
+        with closing(sqlite3.connect(Path(receipt['db']).as_uri() + '?mode=ro', uri=True)) as owner:
+            row = owner.execute('SELECT status,outcome FROM session_admissions WHERE target_session_id=? AND request_id=?',
+                                (receipt['session_id'], receipt['request_id'])).fetchone()
+    except (OSError, KeyError, sqlite3.Error):
+        return None
+    return (row[0], row[1]) if row is not None else None
+
+
+def owner_reclaim_paused(conn, task_id):
+    """Missing/ambiguous owner receipts never authorize another attempt."""
+    receipt = _owner_receipt(conn, task_id)
+    if receipt is None:
         return False
     try:
-        binding = json.loads(marker['payload'])
-        with closing(sqlite3.connect(Path(binding['db']).as_uri() + '?mode=ro', uri=True)) as owner:
-            row = owner.execute('SELECT status,outcome FROM session_admissions WHERE target_session_id=? AND request_id=?',
-                                (binding['session_id'], binding['request_id'])).fetchone()
+        row = _admission_row(receipt)
         if row is not None and row[0] == 'terminal':
             # Discard acknowledges uncertainty, not permission to repeat effects.
             return row[1] == 'interrupted'
         if row is None or row[0] in {'queued', 'unknown'}:
             return True
         from hermes_cli.process_identity import process_birth
-        return process_birth(psutil.Process(binding['pid'])) != binding['birth']
+        return process_birth(psutil.Process(receipt['pid'])) != receipt['birth']
     except (OSError, ValueError, KeyError, sqlite3.Error):
         return True
     except psutil.Error:
         return True
+
 
 
 def _latest_run_event(conn, task_id, kind):
@@ -111,23 +141,49 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     runs in exactly that shape. This asks the question that matters — can anything still be
     executing this attempt? — from evidence the board already keeps:
 
-      * the claim is host-local and EXPIRED (a live claim is the owner still working);
-      * no heartbeat inside ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS``;
-      * the receipt's own process is gone or recycled;
-      * every worker pid recorded for the run (``tasks.worker_pid``, its ``spawned`` and
-        ``worker_bound`` events) is dead or recycled.
+      * no worker pid recorded for the run is alive (``tasks.worker_pid``, its ``spawned``
+        and ``worker_bound`` events);
+      * and the attempt is over by the owner's own verdict — the admission it recorded is
+        SETTLED (``status='terminal'``) — or, when the owner left no readable verdict, the
+        host-local claim has EXPIRED with no heartbeat inside
+        ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` and the owner's own process is gone.
 
-    Missing evidence is never proof: no recorded worker pid, a live pid whose identity
-    cannot be compared, or an unreadable clock all return False and the pause holds.
+    The last clause used to demand the owner process be gone even when the owner had
+    already settled the admission. On a live install the owner is the long-lived gateway,
+    which is alive by design, so a manager-worker loss that settled the admission
+    ``terminal/interrupted`` could never be reclaimed: 2026-10-22, card t_f5fad63f held
+    ``running`` for 49 minutes after its managed worker died at ``worker.adopt`` 24 s in
+    (claim expired 34 minutes earlier, ``last_heartbeat_at`` NULL, every recorded pid dead).
+    A settled admission is the owner stating the attempt ended; it outranks the liveness of
+    the process that recorded it.
+
+    Missing evidence is never proof: no receipt, no live-or-dead pid evidence, a live pid whose
+    identity cannot be compared, or an unreadable clock all return False and the pause holds.
     """
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_dispatch import _worker_alive
-    if _latest_run_event(conn, task_id, 'worker_bound'):
-        return False  # a bound run is the crash sweep's to book (bound_interpreter_gone)
+    receipt = _owner_receipt(conn, task_id)
+    if receipt is None:
+        return False  # no receipt: this pause did not come from an owner attempt
     row = conn.execute(
         "SELECT claim_lock, claim_expires, worker_pid, worker_started_at, last_heartbeat_at "
         "FROM tasks WHERE id=?", (task_id,)).fetchone()
     if row is None or not _host_local_lock(row['claim_lock']):
+        return False
+    pids = _run_worker_pids(conn, row, task_id)
+    if any(_worker_alive(pid, fingerprint) for pid, fingerprint in pids):
+        return False  # a recorded interpreter is still live: it may still be executing
+    # Nothing recorded can still be executing. A SETTLED admission (the owner's own verdict that
+    # the attempt ended) is proof on its own — the owner process is a gateway, alive by design,
+    # and the claim may still be inside its TTL simply because nothing extended it.
+    try:
+        admission = _admission_row(receipt)
+    except (OSError, ValueError, KeyError, sqlite3.Error):
+        admission = None
+    if admission is not None and admission[0] == 'terminal':
+        return True
+    # Without an owner verdict, only an expired, unprogressing claim plus a gone owner proves it.
+    if not pids:
         return False
     now = int(time.time())
     expires = kb._to_epoch(row['claim_expires'])
@@ -136,12 +192,30 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     heartbeat = kb._to_epoch(row['last_heartbeat_at'])
     if heartbeat is not None and now - heartbeat <= kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS:
         return False
-    if not _owner_process_gone(_latest_run_event(conn, task_id, 'owner_admitted')):
-        return False
-    pids = _run_worker_pids(conn, row, task_id)
-    if not pids:
-        return False
-    return not any(_worker_alive(pid, fingerprint) for pid, fingerprint in pids)
+    return _owner_process_gone(receipt)
+
+
+def owner_attempt_note(conn, task_id) -> str:
+    """One clause naming WHY a provably-over attempt ended, or ``""``.
+
+    The reclaim paths record this beside the pid/claim evidence so the board says what
+    happened instead of a bare ``stale_lock=``: a managed worker that died (its owner
+    recorded ``worker_lost``) is a different fault from a worker that never started.
+    """
+    lost = str(_latest_run_event(conn, task_id, 'worker_lost').get('reason') or '')
+    if lost:
+        return f"managed worker lost: {lost[:80]}"
+    receipt = _owner_receipt(conn, task_id)
+    if receipt is None:
+        return ""
+    try:
+        admission = _admission_row(receipt)
+    except (OSError, ValueError, KeyError, sqlite3.Error):
+        return ""
+    if admission is not None and admission[0] == 'terminal':
+        return f"owner admission settled {admission[1] or 'terminal'}"
+    return ""
+
 
 
 def owner_reclaim_blocked(conn, task_id, *, crash_sweep=False) -> bool:

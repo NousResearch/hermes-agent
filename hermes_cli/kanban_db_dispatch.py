@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- the lost-managed-worker fix (2026-10-22 stall) adds the run-scoped worker_lost fold (_apply_attempt_note) plus the absent-pid kill-step branch at this existing chokepoint; the topic split of this module is a separate refactor
 """Dispatcher: crash/stale/orphan detection, failure accounting and the respawn circuit breaker, memory-aware concurrency caps, the one-shot ``dispatch_once`` pass, worker spawning (``_default_spawn``), worker-log rotation and the long-lived ``run_daemon`` loop.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
@@ -485,6 +486,14 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     except OSError:
+        # Windows reports an ABSENT pid as a bare OSError (WinError 87 from OpenProcess),
+        # not ProcessLookupError, so reading every OSError as "termination not proven" made
+        # the reclaim hold the claim and defer every tick for a worker that was already gone:
+        # 2026-10-22 t_f5fad63f kept its card ``running`` with ``claim_expires`` 2067 s past.
+        # Ask liveness again: gone is the outcome the reclaim wanted, alive stays unproven.
+        if not _kb._pid_alive(pid):
+            info["terminated"] = True
+            info["already_gone"] = True
         return info
 
     if _poll_worker_exit(pid, started_at):
@@ -1163,6 +1172,32 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
+def _apply_attempt_note(conn, task_id, pid, dead: _DeadWorker) -> None:
+    """Fold the owner's own record of how the attempt ended into ONE dead worker's booking.
+
+    A managed worker that dies during ``worker.adopt`` writes no ``worker_result``, so the
+    exit trailer alone can read as a clean protocol violation. The owner's ``worker_lost``
+    evidence outranks it: the attempt was lost, and it must charge the breaker like any other
+    crash instead of riding the protocol-violation budget (run 730 showed
+    ``consecutive_failures = 0`` after exactly this loss).
+    """
+    from hermes_cli.kanban_owner_recovery import _latest_run_event, owner_attempt_note
+    note = owner_attempt_note(conn, task_id)
+    if not note:
+        return
+    dead.error_text = f"{dead.error_text} [{note}]"
+    dead.event_payload["attempt_note"] = note
+    lost = _latest_run_event(conn, task_id, "worker_lost")
+    if lost:
+        dead.event_payload["worker_lost"] = lost
+        dead.protocol_violation = False
+        dead.rate_limited = False
+        if dead.kind == "clean_exit":
+            # A worker whose managed execution was lost never proved the turn finished.
+            dead.kind = "worker_lost"
+            dead.error_text = f"pid {pid} exited cleanly after its managed worker was lost [{note}]"
+
+
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
@@ -1194,6 +1229,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
             dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
+            _apply_attempt_note(conn, row["id"], pid, dead)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(

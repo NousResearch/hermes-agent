@@ -545,6 +545,23 @@ def _stopped_before_spawn(authority, ref, row):
     return True
 
 
+async def _record_lost_attempt(policy, reason, scope):
+    """Leave a BOARD disposition for a lost attempt, not only the log line above.
+
+    ``worker.adopt`` precedes ``bind_worker_context``, so a worker that dies in the handshake
+    never writes ``worker_bound``/``worker_result`` and the card's run learns nothing
+    (2026-10-22: 49 minutes of "in progress" on a corpse). A deliberate Stop or a superseded
+    generation is not a loss, and a turn with no board has nowhere to write.
+    """
+    if not getattr(policy, 'kanban_json', None):
+        return
+    if reason in ('managed_worker_stopped', 'stale_generation', 'CancelledError'):
+        return
+    from gateway.session_kanban import record_worker_loss
+    await asyncio.to_thread(record_worker_loss, policy, reason,
+                            pid=(scope or {}).get('pid'), bound=scope is not None)
+
+
 async def _spawn_registered_worker(authority, ref, row):
     """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
     interrupted result is already recorded). The generation stays marked spawning until registration."""
@@ -674,8 +691,9 @@ async def execute_managed(authority, ref, row, policy):
             raise RuntimeStoreError('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:
         import logging
-        logging.getLogger(__name__).warning('Managed worker lost: %s',
-            exc.reason if isinstance(exc, RuntimeStoreError) else type(exc).__name__)
+        reason = exc.reason if isinstance(exc, RuntimeStoreError) else type(exc).__name__
+        logging.getLogger(__name__).warning('Managed worker lost: %s', reason)
+        await _record_lost_attempt(policy, reason, scope)
         if scope is None:
             if isinstance(exc, asyncio.CancelledError) or (
                     isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped'):

@@ -2,7 +2,7 @@
 name: tool-audit
 description: "Report per-tool call counts and error rates for a session."
 version: 2.0.0
-author: nankingjing + Hermes Agent
+author: 黄云龙 (nankingjing), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -87,7 +87,7 @@ attributed to a tool.
   key are provable. Plain-text failure prose is not counted — say "provable
   errors", not "all errors".
 - Legacy `~/.hermes/**/*.jsonl` transcripts are dead: no longer written or
-  read. Never grep them; only `state.db` is canonical.
+  read. Never search them; only `state.db` is canonical.
 - The script opens the store with SQLite `mode=ro` — never "fix" it to a
   writable connection, and do not run schema queries against a live gateway
   store outside the script.

@@ -53,6 +53,20 @@ def test_optional_transport_failure_does_not_restore_a_completed_model_job(clien
     assert client.get("/api/local-models/jobs").json()["jobs"] == []
 
 
+def test_saved_optional_role_survives_catalog_change(client, draft_plan):
+    lm, entry, plan, failures = draft_plan
+    failures.add("/optional")
+    job = lm._job("model-download", entry.display_name, model_id=entry.id)
+    job["optional_files"] = [str(plan[1][1])]
+    lm._spawn_job(job, "test-saved-draft-role",
+                  lambda: lm._run_download_plan(job, plan, entry.display_name, replace(entry, draft=None)),
+                  resumable=True)
+    settled = poll(client, job["job_id"])
+    assert settled["status"] == "done", settled
+    assert plan[0][1].read_bytes() == b"main" and not plan[1][1].exists()
+    assert not list(lm.download_plans._root().glob("*.json"))
+
+
 def test_draft_download_keeps_full_identity_and_restores_optional_intent(client, draft_plan, monkeypatch):
     lm, entry, plan, failures = draft_plan
     failures.add("/required")

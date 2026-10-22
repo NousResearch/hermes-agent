@@ -65,6 +65,7 @@ def _run_setup(job):
             intent["variant"] = variant.model_id
             plan = lm._download_plan(entry, variant)
             job["download_plan"] = plan
+            job["optional_files"] = lm._optional_plan_files(entry, plan)
             download_plans.save_plan(job, plan)
         if any(not destination.is_file() for _, destination, _ in plan):
             if job["phase"] not in lm._MODEL_DOWNLOAD_PHASES:
@@ -131,6 +132,7 @@ def begin(body, profile):
         _, backend = lm._runtime_target()
         need_runtime = lm.binaries.installed_engine(backend) is None
         plan = lm._download_plan(entry, variant)
+        optional_files = lm._optional_plan_files(entry, plan)
     need_download = any(not destination.is_file() for _, destination, _ in plan)
     if not lm._QUICKSTART_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Setup is already running")
@@ -143,6 +145,7 @@ def begin(body, profile):
                         "requested_model_id": body.model_id}
         job["download_key"] = download_plans.plan_key(plan)
         job["download_plan"] = plan
+        job.setdefault("optional_files", optional_files)
         job["plan_key"] = download_plans.plan_key(plan, job["setup"])
     except Exception:
         lm._QUICKSTART_LOCK.release()

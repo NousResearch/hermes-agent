@@ -13,6 +13,35 @@ from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- py
 from tests.waiting import wait_until
 
 
+def test_engine_interruption_preserves_draft_role_without_catalog_on_restart(client, draft_plan, monkeypatch):
+    lm, entry, plan, _ = draft_plan
+    monkeypatch.setattr(lm, "_QUICKSTART_LOCK", threading.Lock())
+    monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: None)
+    monkeypatch.setattr(lm, "_quickstart_target", lambda *_: (entry, entry.variants[0]))
+    monkeypatch.setattr(lm, "_runtime_target", lambda requested=None: ("test", "cpu"))
+    monkeypatch.setattr(lm.binaries, "installed_engine", lambda _: None)
+
+    def unavailable(job, backend):
+        source = "https://example.invalid/engine"
+        raise lm.DownloadTransportError(source, HTTPError(source, 503, "Unavailable", {}, None))
+
+    monkeypatch.setattr(lm, "_install_engine_job", unavailable)
+    response = client.post("/api/local-models/quickstart", json={"model_id": entry.id})
+    assert response.status_code == 200, response.text
+    job = lm._JOBS[response.json()["job_id"]]
+    assert wait_until(lambda: job["status"] == "paused", timeout=5)
+    saved = list(lm.download_plans.pending_plans())
+    assert len(saved) == 1 and saved[0][2] == plan
+    monkeypatch.setattr(lm, "_JOBS", {})
+    monkeypatch.setattr(lm, "_RUNNING", {})
+    monkeypatch.setattr(lm, "_QUICKSTART_LOCK", threading.Lock())
+    monkeypatch.setattr(lm.catalog, "catalog_by_id", dict)
+    lm._restore_download_plans()
+    restored = next(iter(lm._JOBS.values()))
+    assert restored["optional_files"] == [str(plan[1][1])]
+    assert restored["download_plan"] == plan and restored["setup_stage"] == "engine"
+
+
 @pytest.mark.parametrize("restart", [False, True])
 def test_quickstart_adopts_a_catalog_download_with_a_draft(client, draft_plan, monkeypatch, restart):
     lm, entry, plan, failures = draft_plan

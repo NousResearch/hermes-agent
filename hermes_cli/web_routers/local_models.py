@@ -504,6 +504,11 @@ def _download_plan(entry, variant) -> list:
     return plan
 
 
+def _optional_plan_files(entry, plan) -> list[str]:
+    draft = bootstrap.assets_dir() / entry.draft.local_name if entry.draft else None
+    return [str(dest) for _, dest, _ in plan if dest == draft]
+
+
 def _missing_drafts(engine_tag: str) -> list:
     """Download-plan rows for the DFlash drafts of downloaded models that ``engine_tag`` can load
     but that aren't on disk: models downloaded before their draft joined the catalog."""
@@ -527,8 +532,7 @@ def _missing_drafts(engine_tag: str) -> list:
 def _run_download_plan(job: dict[str, Any], plan: list, label: str, entry=None) -> None:
     """Own one complete operation; optional drafts never acquire a subset identity."""
     if entry is not None:
-        draft = bootstrap.assets_dir() / entry.draft.local_name if entry.draft else None
-        job["optional_files"] = [str(dest) for _, dest, _ in plan if dest == draft]
+        job.setdefault("optional_files", _optional_plan_files(entry, plan))
     key = download_plans.plan_key(plan)
     job["download_key" if job.get("setup") else "plan_key"] = key
     pause = _RUNNING.get(job["job_id"], {}).get("pause")
@@ -1024,7 +1028,7 @@ def _quickstart_job(entry, plan) -> dict:
             # continuation. Stale Resume handles must never run beside it.
             previous = job
             job = _job("quickstart", entry.display_name, model_id=entry.id)
-            job.update({key: previous[key] for key in ("phase", "detail", "done_bytes", "total_bytes", "ranges", "plan_saved") if key in previous})
+            job.update({key: previous[key] for key in ("phase", "detail", "done_bytes", "total_bytes", "ranges", "plan_saved", "optional_files") if key in previous})
             job["plan_key"] = download_plans.plan_key(plan)
         return job
 

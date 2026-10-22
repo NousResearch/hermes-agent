@@ -42,6 +42,12 @@ export function revealAction(windowVisible: boolean): 'showInactive' | 'none' {
  */
 export function shouldFocusToTakeKeyboard(window: FocusPolicyWindow): boolean {
   // Call it as a method: BrowserWindow.isFocused reads its native handle from
-  // `this`, and a detached call throws "Object has been destroyed".
-  return !window.isFocused()
+  // `this`, and a detached call throws "Object has been destroyed". The
+  // native handle can also disappear after a caller's isDestroyed() check;
+  // in that race there is no window left to focus.
+  try {
+    return !window.isFocused()
+  } catch {
+    return false
+  }
 }

@@ -11,8 +11,12 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
   const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
+  const { ConfirmDialog } = await import('@/components/ui/confirm-dialog')
+  const { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } = await import('@/components/ui/dialog')
+  const { Input } = await import('@/components/ui/input')
 
   return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
+    ConfirmDialog, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, Input,
     useI18n: () => ({ t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
@@ -706,4 +710,16 @@ it('names the Bot behind each pending action and shows what an approval would al
   expect(request.mock.calls.filter(call => call[1] === 'groups.approve')[1][2]).toEqual({
     room_id: 'approvals', member_id: 'guard', task_id: 'pwd', execution_generation: 4, request_id: 'r-pwd', choice: 'once', profile: 'team'
   })
+})
+
+it.each([
+  ['Rename', 'groups.rename', 'End group chat'],
+  ['End group chat', 'groups.disband', 'Rename']
+])('offers %s only when the gateway lists its method', async (hidden, method, shown) => {
+  request.mockImplementation(async (_route, called) => called === 'groups.capabilities'
+    ? { ...CANONICAL_GROUP_CAPABILITIES, methods: CANONICAL_GROUP_CAPABILITIES.methods.filter(name => name !== method) }
+    : called === 'groups.state' ? { room: { name: 'Narrow' }, driver_status: {} } : called === 'groups.log' ? { events: [] } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'narrow' }} />)
+  await screen.findByRole('button', { name: shown })
+  expect(screen.queryByRole('button', { name: hidden })).toBeNull()
 })

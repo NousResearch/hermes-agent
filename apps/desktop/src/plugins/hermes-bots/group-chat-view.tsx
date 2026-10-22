@@ -47,6 +47,8 @@ import {
   $canonicalGroupBindings,
   canonicalGroupBindingFor,
   canonicalGroupKeyRoute,
+  canonicalGroupTabLabel,
+  openCanonicalGroupName,
   publishCanonicalGroup,
   registerCanonicalGroup,
   resolveCanonicalGroup
@@ -1756,6 +1758,7 @@ export function openGroupChat(group: string, origin: CanonicalGroupOrigin): void
     [group]: false
   })
   recordGroupOpenOrigin(group, origin)
+  openCanonicalGroupName(group, origin)
   const ownerKey = groupWorkspaceOwnerKey(group)
   setBotsWorkspaceOwner(ownerKey, null, 'New group conversations start in the group composer.')
   // #93813: what reached the members' room sessions while nobody drove them
@@ -1765,11 +1768,8 @@ export function openGroupChat(group: string, origin: CanonicalGroupOrigin): void
 
   if (typeof host.openWorkspace === 'function') {
     try {
-      const route = { connectionId: host.state.connectionId.get() ?? '', profile: host.state.profile.get() }
-      const title = canonicalGroupBindingFor($canonicalGroupBindings.get(), route, group, origin)?.roomName || group
-
       const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
-        title,
+        ...canonicalGroupTabLabel(group, origin),
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} origin={origin} />,
         onClose: () => {

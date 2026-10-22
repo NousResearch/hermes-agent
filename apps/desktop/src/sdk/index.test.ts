@@ -237,6 +237,23 @@ describe('host workspace scope', () => {
   })
 })
 
+describe('host.openWorkspace', () => {
+  it('hands a live tab label to the tab strip, so the label changes without reopening the tab', async () => {
+    const { registry } = await import('@/contrib/registry')
+    const { paneChrome } = await import('@/components/pane-shell/tree/renderer/track-model')
+    const tabTitle = () => 'Live name'
+    const tabTitleText = () => 'Live name'
+    const close = host.openWorkspace('label-test', { render: () => null, tabTitle, tabTitleText, title: 'Opening name' })
+    const pane = () => registry.getArea('panes').find(entry => entry.id === 'plugin-workspace:label-test')
+
+    expect(pane()?.title).toBe('Opening name')
+    expect(paneChrome(pane())).toMatchObject({ tabTitle, tabTitleText })
+
+    close()
+    expect(pane()).toBeUndefined()
+  })
+})
+
 describe('host.composer draft facade', () => {
   afterEach(() => {
     setActiveSessionId(null)

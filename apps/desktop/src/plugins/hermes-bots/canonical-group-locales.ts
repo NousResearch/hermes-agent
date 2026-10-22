@@ -46,6 +46,11 @@ export interface CanonicalGroupMessages {
   pendingApprovalTitle: string
   pendingRetryTitle: string
   pendingUnknownTitle: string
+  rename: string
+  roomName: string
+  disband: string
+  disbandWarning: string
+  disbandUnconfirmed: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -96,7 +101,12 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Action details are unavailable. Check again before allowing this.',
     pendingApprovalTitle: '{name} needs your approval',
     pendingRetryTitle: '{name} couldn’t start this reply.',
-    pendingUnknownTitle: 'We couldn’t confirm whether {name} finished.'
+    pendingUnknownTitle: 'We couldn’t confirm whether {name} finished.',
+    rename: 'Rename',
+    roomName: 'Room name',
+    disband: 'End group chat',
+    disbandWarning: 'End this group chat permanently? The Bots will be asked to stop. Actions already taken won’t be undone.',
+    disbandUnconfirmed: 'We couldn’t confirm that the group chat ended. Check its status before trying again.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -145,7 +155,12 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: '操作の詳細を表示できません。許可する前に、詳細を更新してください。',
     pendingApprovalTitle: '{name}が承認を求めています',
     pendingRetryTitle: '{name}はこの返信を開始できませんでした。',
-    pendingUnknownTitle: '{name}が完了したか確認できませんでした。'
+    pendingUnknownTitle: '{name}が完了したか確認できませんでした。',
+    rename: '名前を変更',
+    roomName: 'ルーム名',
+    disband: 'グループチャットを終了',
+    disbandWarning: 'このグループチャットを完全に終了しますか？Botに停止を要求します。すでに行われた操作は元に戻りません。',
+    disbandUnconfirmed: 'グループチャットの終了を確認できませんでした。再試行する前に状態を確認してください。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -194,7 +209,12 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: '无法显示操作详情。请先刷新详情，再允许此操作。',
     pendingApprovalTitle: '{name}需要你的批准',
     pendingRetryTitle: '{name}未能开始此回复。',
-    pendingUnknownTitle: '无法确认{name}是否已经完成。'
+    pendingUnknownTitle: '无法确认{name}是否已经完成。',
+    rename: '重命名',
+    roomName: '群组名称',
+    disband: '结束群聊',
+    disbandWarning: '永久结束此群聊？系统会请求Bot停止。已经执行的操作不会被撤销。',
+    disbandUnconfirmed: '无法确认群聊是否已经结束。请先检查其状态，再重试。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -243,7 +263,12 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: '無法顯示操作詳細資訊。請先重新整理詳細資訊，再允許此操作。',
     pendingApprovalTitle: '{name}需要你的核准',
     pendingRetryTitle: '{name}未能開始此回覆。',
-    pendingUnknownTitle: '無法確認{name}是否已經完成。'
+    pendingUnknownTitle: '無法確認{name}是否已經完成。',
+    rename: '重新命名',
+    roomName: '群組名稱',
+    disband: '結束群聊',
+    disbandWarning: '永久結束此群聊？系統會要求Bot停止。已經執行的操作不會被復原。',
+    disbandUnconfirmed: '無法確認群聊是否已經結束。請先檢查其狀態，再重試。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -292,7 +317,12 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'تفاصيل الإجراء غير متاحة. حدّثها قبل السماح بهذا الإجراء.',
     pendingApprovalTitle: 'يحتاج {name} إلى موافقتك',
     pendingRetryTitle: 'لم يتمكن {name} من بدء هذه الإجابة.',
-    pendingUnknownTitle: 'لم نتمكن من تأكيد ما إذا كان {name} قد انتهى.'
+    pendingUnknownTitle: 'لم نتمكن من تأكيد ما إذا كان {name} قد انتهى.',
+    rename: 'إعادة التسمية',
+    roomName: 'اسم الغرفة',
+    disband: 'إنهاء محادثة المجموعة',
+    disbandWarning: 'إنهاء محادثة المجموعة نهائيًا؟ سيُطلب من البوتات التوقف. لن يتم التراجع عن الإجراءات التي نُفّذت بالفعل.',
+    disbandUnconfirmed: 'لم نتمكن من تأكيد انتهاء محادثة المجموعة. تحقّق من حالتها قبل إعادة المحاولة.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -344,7 +374,12 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Подробности действия недоступны. Обновите их перед тем, как разрешить действие.',
     pendingApprovalTitle: '{name} запрашивает ваше разрешение',
     pendingRetryTitle: '{name} не смог начать этот ответ.',
-    pendingUnknownTitle: 'Не удалось подтвердить, закончил ли {name}.'
+    pendingUnknownTitle: 'Не удалось подтвердить, закончил ли {name}.',
+    rename: 'Переименовать',
+    roomName: 'Название комнаты',
+    disband: 'Завершить групповой чат',
+    disbandWarning: 'Завершить этот групповой чат навсегда? Ботам будет отправлен запрос на остановку. Уже выполненные действия не будут отменены.',
+    disbandUnconfirmed: 'Не удалось подтвердить завершение чата. Проверьте его состояние перед повторной попыткой.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -395,7 +430,12 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Les détails de l’action sont indisponibles. Actualisez-les avant d’autoriser cette action.',
     pendingApprovalTitle: '{name} a besoin de votre autorisation',
     pendingRetryTitle: '{name} n’a pas pu commencer cette réponse.',
-    pendingUnknownTitle: 'Nous n’avons pas pu confirmer si {name} a terminé.'
+    pendingUnknownTitle: 'Nous n’avons pas pu confirmer si {name} a terminé.',
+    rename: 'Renommer',
+    roomName: 'Nom du salon',
+    disband: 'Terminer la discussion',
+    disbandWarning: 'Terminer définitivement cette discussion ? Il sera demandé aux Bots de s’arrêter. Les actions déjà effectuées ne seront pas annulées.',
+    disbandUnconfirmed: 'La fin de la discussion n’a pas pu être confirmée. Vérifiez son état avant de réessayer.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -447,7 +487,12 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Die Aktionsdetails sind nicht verfügbar. Aktualisieren Sie sie, bevor Sie diese Aktion erlauben.',
     pendingApprovalTitle: '{name} braucht Ihre Freigabe',
     pendingRetryTitle: '{name} konnte diese Antwort nicht beginnen.',
-    pendingUnknownTitle: 'Wir konnten nicht bestätigen, ob {name} fertig ist.'
+    pendingUnknownTitle: 'Wir konnten nicht bestätigen, ob {name} fertig ist.',
+    rename: 'Umbenennen',
+    roomName: 'Raumname',
+    disband: 'Gruppenchat beenden',
+    disbandWarning: 'Diesen Gruppenchat endgültig beenden? Die Bots werden gebeten, anzuhalten. Bereits ausgeführte Aktionen werden nicht rückgängig gemacht.',
+    disbandUnconfirmed: 'Das Ende des Gruppenchats konnte nicht bestätigt werden. Prüfen Sie seinen Status, bevor Sie es erneut versuchen.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -498,6 +543,11 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing: 'Los detalles de la acción no están disponibles. Actualízalos antes de permitirla.',
     pendingApprovalTitle: '{name} necesita tu aprobación',
     pendingRetryTitle: '{name} no pudo iniciar esta respuesta.',
-    pendingUnknownTitle: 'No pudimos confirmar si {name} terminó.'
+    pendingUnknownTitle: 'No pudimos confirmar si {name} terminó.',
+    rename: 'Renombrar',
+    roomName: 'Nombre de la sala',
+    disband: 'Finalizar chat de grupo',
+    disbandWarning: '¿Finalizar este chat de forma permanente? Se pedirá a los Bots que se detengan. Las acciones ya realizadas no se desharán.',
+    disbandUnconfirmed: 'No pudimos confirmar que el chat haya terminado. Comprueba su estado antes de reintentarlo.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

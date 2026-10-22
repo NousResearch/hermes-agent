@@ -1338,10 +1338,10 @@ DEFAULT_CONFIG = {
         # hindsight, supermemory, mem0, openviking, holographic). Empty = built-in only.
         "provider": "",
     },
-    # Subagent delegation. `backend` = the strategy plugin routing each delegate_task task ("default": the keys
-    # below, else the parent's route); the provider:model pin uses the CLI/gateway runtime provider resolution.
+    # Subagent delegation: `backend` = task-routing strategy ("default": keys below), `backends.<name>` = its settings.
     "delegation": {
         "backend": "default",
+        "backends": {},
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
         # Fallback chain for delegated children (same entry format as the top-level list).

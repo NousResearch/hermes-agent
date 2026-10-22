@@ -22,7 +22,7 @@ class Options(DelegationProvider):
         return "probe-options"
 
     def task_parameters(self, config):
-        opts = config.get("probe_options") or []
+        opts = self.settings(config).get("options") or []
         return {"option": {"type": "string", "enum": [o["name"] for o in opts],
                            "description": "; ".join(f"{o['name']}: {o['description']}" for o in opts)}}
 
@@ -32,7 +32,7 @@ class Options(DelegationProvider):
     def route_task(self, task, config):
         if task.get("option") == "refused":
             raise DelegationRouteError("that option is reserved for humans")
-        for o in config.get("probe_options") or []:
+        for o in self.settings(config).get("options") or []:
             if o["name"] == task.get("option"):
                 return {"base_url": o["base_url"], "api_key": "k-" + o["name"], "model": o["model"],
                         "reasoning_effort": o.get("reasoning_effort"), "label": o["name"]}
@@ -100,7 +100,7 @@ def _parent():
 
 
 def test_selected_plugin_backend_extends_schema_and_routes_each_task(tmp_path, monkeypatch, recorded):
-    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "probe_options": OPTIONS})
+    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "backends": {"probe-options": {"options": OPTIONS}}})
     try:
         from agent.delegation_registry import get_active_provider
         from tools.delegate_tool import delegate_task
@@ -132,7 +132,7 @@ def test_selected_plugin_backend_extends_schema_and_routes_each_task(tmp_path, m
 
 
 def test_model_supplied_parameters_are_enforced_before_any_child_is_built(tmp_path, monkeypatch, recorded):
-    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "probe_options": OPTIONS})
+    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "backends": {"probe-options": {"options": OPTIONS}}})
     try:
         from tools.delegate_tool import delegate_task
 
@@ -236,5 +236,16 @@ def test_backend_key_reads_through_the_real_loader(tmp_path, monkeypatch):
     _, manager = _home(tmp_path / "set", monkeypatch, {"backend": " Probe-Options "})
     try:
         assert configured_backend(_load_config()) == "probe-options"
+    finally:
+        manager.unload()
+
+
+def test_backend_settings_come_from_its_own_backends_block(tmp_path, monkeypatch):
+    """A backend's settings are ``delegation.backends.<its name>``: the same keys beside the core delegation keys
+    or under another backend's name are not its settings."""
+    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "options": OPTIONS,
+                                               "backends": {"model_map": {"options": OPTIONS}}})
+    try:
+        assert _task_props(_definition())["option"]["enum"] == []
     finally:
         manager.unload()

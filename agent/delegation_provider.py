@@ -23,6 +23,9 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
   scope helpers a multiplexed gateway uses for a routed turn. A profile route ignores the other
   route keys; the profile's own config decides them.
 * ``label`` - short text shown with the child's progress and result (e.g. the option title).
+
+A backend's own settings live under ``delegation.backends.<backend name>`` (:meth:`DelegationProvider.settings`),
+never beside the core ``delegation`` keys.
 """
 
 from __future__ import annotations
@@ -56,9 +59,15 @@ class DelegationProvider(ProviderBase):
     """Abstract base class for a pluggable delegation strategy.
 
     :attr:`name` is the ``delegation.backend`` value. Every method receives ``config``, the
-    ``delegation`` section of the active profile's config.yaml (read-only), so provider settings
-    live next to the other delegation knobs (``delegation.model_map``, ``delegation.profiles``).
+    ``delegation`` section of the active profile's config.yaml (read-only): ``dict(config)`` is the
+    default route, and :meth:`settings` is this backend's own block, ``delegation.backends.<name>``.
     """
+
+    def settings(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
+        """This backend's settings: ``delegation.backends.<name>`` (empty when unset or not a mapping)."""
+        backends = config.get("backends") if isinstance(config, Mapping) else None
+        own = backends.get(self.name) if isinstance(backends, Mapping) else None
+        return own if isinstance(own, Mapping) else {}
 
     def is_available(self) -> bool:
         """Whether this provider can run here. MUST NOT make network calls; False -> ``default``."""

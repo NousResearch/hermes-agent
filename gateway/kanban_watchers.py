@@ -13,7 +13,7 @@ import asyncio
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
@@ -49,13 +49,15 @@ class GatewayKanbanWatchersMixin:
         self._kanban_dispatcher_lock_handle = None
         _release_singleton_lock(handle)
 
-    async def _sleep_between_ticks(self, interval: float) -> None:
-        """Sleep *interval* (floored to 1s) in 1s slices so stop() never waits a full interval."""
+    async def _sleep_between_ticks(self, interval: float, wake_check: Optional[Callable[[], bool]] = None) -> None:
+        """Sleep in 1s slices, stopping early on shutdown or a committed release."""
         interval = max(interval, 1.0)
         slept = 0.0
         while slept < interval and self._running:
             await asyncio.sleep(min(1.0, interval - slept))
             slept += 1.0
+            if wake_check is not None and self._running and await _to_thread_process_service(wake_check):
+                return
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -255,7 +257,7 @@ class GatewayKanbanWatchersMixin:
         return _load_config, _kb, kanban_cfg
 
     async def _kanban_dispatcher_watcher(self) -> None:
-        """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
+        """Embedded dispatcher: periodic ticks, woken early by committed task releases.
 
         Gated by `kanban.dispatch_in_gateway` (default True); when false the
         loop exits and an external `hermes kanban daemon` is expected. Each
@@ -280,6 +282,7 @@ class GatewayKanbanWatchersMixin:
         last_warn_at = 0
         results: Optional[list] = None
         dispatcher = _KanbanDispatcher(_kb, settings)
+        await _to_thread_process_service(dispatcher.released_tasks_changed)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
@@ -327,6 +330,6 @@ class GatewayKanbanWatchersMixin:
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
 
-            await self._sleep_between_ticks(interval)
+            await self._sleep_between_ticks(interval, wake_check=dispatcher.released_tasks_changed)
 
         self._release_kanban_dispatcher_lock()

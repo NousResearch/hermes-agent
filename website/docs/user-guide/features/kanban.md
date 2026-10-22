@@ -315,7 +315,12 @@ When the dispatcher picks up `t_abcd` and spawns the `researcher` profile, the v
 
 The dispatcher runs inside the gateway process. Nothing to install, no
 separate service to manage — if the gateway is up, ready tasks get picked
-up on the next tick (60s by default).
+up on the next tick (60s by default). Between ticks, the gateway checks for
+committed task completion, blocking, dependency-wait, and review-handoff events
+once per second and wakes the same dispatcher early. This reduces the gap
+between jobs without changing pause, capacity, dependency, or review rules.
+If an event check fails, the normal timed tick remains the fallback. Standalone
+daemons and external timers retain their configured intervals.
 
 ```yaml
 # config.yaml
@@ -983,7 +988,7 @@ hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events 
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
-hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
+hermes kanban dispatch [<task-id>] [--dry-run] [--max N]           # one-shot pass
         [--failure-limit N] [--json]
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
         [--failure-limit N] [--pidfile PATH] [-v]
@@ -1035,6 +1040,16 @@ hermes kanban create "nightly backup audit" \
 ### Respawn guard
 
 The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). Two cooldowns hold a card without ever counting against it: `rate_limit_cooldown` after a quota-wall requeue and `infrastructure_cooldown` after the host refused to place the worker (no restart-safe systemd scope — see [Workers and systemd cgroups](#workers-and-systemd-cgroups)); both share the `HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS` window (default 300 s). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
+
+To start one specific task, use `hermes kanban dispatch <task-id> --json`.
+Only that task may be spawned; a missing, blocked, dependency-gated, or otherwise
+ineligible target never causes another task to start. The same dispatcher applies
+normal board/host/profile capacity limits, pause, review settings, and worker guards.
+The command exits 1 when the target cannot start and returns `requested_task_id`
+and `requested_task_reason` alongside the usual dispatch details. Omit the task ID
+for the normal board-wide pass. `--dry-run` previews selection without claiming or
+spawning the target; as with an ordinary dry-run tick, board reclaim/readiness
+bookkeeping still runs.
 
 To see why a ready card is not spawning, run `hermes kanban dispatch --dry-run` — the output lists `Guarded (<reason>): <task id>` per held card (and `respawn_guarded`, `rate_limited`, `skipped_locked`, `memory_pressure` with `--json`). The gateway's and the standalone daemon's "dispatcher stuck" warning also names what the last tick held back, e.g. `Last tick held back: active_pr=1`.
 

@@ -24,6 +24,41 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# A warning must be high confidence: it is advisory because deciding whether
+# related facts belong in one memory entry is semantic, not lexical.
+_NEAR_DUPLICATE_MIN_SHARED_TOKENS = 6
+_NEAR_DUPLICATE_CONTAINMENT = 0.45
+_NEAR_DUPLICATE_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_NEAR_DUPLICATE_STOP_WORDS = frozenset({
+    "about", "after", "also", "and", "are", "because", "been", "being", "but", "for",
+    "from", "has", "have", "into", "its", "not", "of", "or", "that", "the", "their",
+    "then", "this", "to", "was", "were", "with", "you", "your",
+})
+
+
+def _near_duplicate_warning(entries: list[str], content: str) -> Optional[str]:
+    """Return an advisory only for high-confidence lexical restatements."""
+    content_tokens = {
+        token.casefold() for token in _NEAR_DUPLICATE_TOKEN_RE.findall(content)
+        if len(token) > 2 and token.casefold() not in _NEAR_DUPLICATE_STOP_WORDS
+    }
+    if len(content_tokens) < _NEAR_DUPLICATE_MIN_SHARED_TOKENS:
+        return None
+    for entry in entries:
+        entry_tokens = {
+            token.casefold() for token in _NEAR_DUPLICATE_TOKEN_RE.findall(entry)
+            if len(token) > 2 and token.casefold() not in _NEAR_DUPLICATE_STOP_WORDS
+        }
+        shared = len(content_tokens & entry_tokens)
+        if (len(entry_tokens) >= _NEAR_DUPLICATE_MIN_SHARED_TOKENS
+                and shared >= _NEAR_DUPLICATE_MIN_SHARED_TOKENS
+                and shared / min(len(content_tokens), len(entry_tokens)) >= _NEAR_DUPLICATE_CONTAINMENT):
+            return (
+                "This entry may restate an existing memory entry. It was saved, but consider using "
+                "replace to merge overlapping facts into one concise entry."
+            )
+    return None
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
@@ -384,7 +419,9 @@ class MemoryStore:
                     f"would exceed the limit by {new_total - limit:,} chars. Retry as ONE 'operations' batch that "
                     f"removes or shortens (patch) stale entries from current_entries below to free at least "
                     f"{new_total - limit:,} chars AND adds this entry — the limit is checked only on the batch result."))
-            return entries + [content], "Entry added."
+            warning = _near_duplicate_warning(entries, content)
+            extra = {"near_duplicate_warning": warning} if warning else {}
+            return entries + [content], "Entry added.", extra
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
@@ -567,11 +604,16 @@ class MemoryStore:
             working = list(entries)  # only committed if the whole batch validates
             matched = []  # per op, the entry a replace/patch/remove selected (None for add)
             produced = {}  # 1-based op index -> the entry a patch produced
+            near_duplicate_warnings = []
             for i, op in enumerate(ops):
                 act = op.get("action")
                 content, old_text = op.get("content") or op.get("new_text") or "", op.get("old_text") or ""
                 if act != "patch":  # whole-entry actions; a patch span keeps its whitespace
                     content, old_text = content.strip(), old_text.strip()
+                if act == "add" and content and content not in working:
+                    warning = _near_duplicate_warning(working, content)
+                    if warning:
+                        near_duplicate_warnings.append(warning)
                 msg, previous_content, failure_class, after = self._apply_batch_op(
                     working, act, content, old_text, f"Operation {i + 1} ({act or 'unknown'})",
                     op.get("matched_entry"))
@@ -612,6 +654,8 @@ class MemoryStore:
                 replaced_fields["patched_entries_after"] = produced
             if removed:
                 replaced_fields["removed_entries"] = removed
+            if near_duplicate_warnings:
+                replaced_fields["near_duplicate_warning"] = near_duplicate_warnings[0]
             return working, f"Applied {len(operations)} operation(s).", replaced_fields
         return self._mutate(target, _apply, skip_drift=not commit)
 

@@ -8,6 +8,7 @@ locks are released. Driven against the fake portal ``hermes auth upgrade`` is te
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -23,7 +24,8 @@ __all__ = ["free_account", "portal"]
 def _account() -> dict:
     return {"access_token": _jwt(sub="nas_user:9", client_id="hermes-cli", account_tier="free", email=EMAIL),
             "refresh_token": REFRESH_TOKEN, "portal_base_url": PORTAL, "inference_base_url": INFERENCE,
-            "client_id": "hermes-cli", "scope": "inference:invoke billing:manage", "expires_in": 900}
+            "client_id": "hermes-cli", "expires_in": 900,
+            "expires_at": (datetime.now(UTC) + timedelta(minutes=15)).isoformat()}
 
 
 def _terminal_login(monkeypatch):
@@ -71,3 +73,20 @@ def test_the_sign_in_settles_the_config_once_after_its_locks_are_released(
     model_cfg = _model_config()
     assert model_cfg["default"] == FREE_PICK
     assert model_cfg["base_url"] == INFERENCE.rstrip("/")
+
+
+@pytest.mark.parametrize("surface", [_terminal_login, _auth_add, _tool_login],
+                         ids=["hermes model / login", "auth add nous", "tool setup login"])
+def test_the_terminal_sign_in_prints_what_moved(portal, free_account, monkeypatch, capsys, surface):
+    from hermes_cli import auth
+    anon_auth.ensure_portal_identity(explicit=True)
+    portal.claim_reply = {**portal.claim_reply, "connectors": {
+        "kind": "moved", "moved_toolkits": ["gmail"], "dropped_toolkits": ["slack"]}}
+    monkeypatch.setattr(auth, "_nous_device_code_login", lambda **kw: _account())
+    monkeypatch.setattr(auth_nous, "_nous_device_code_login", lambda **kw: _account())
+
+    surface(monkeypatch)
+
+    out = capsys.readouterr().out
+    assert f"Your apps moved to {EMAIL}: gmail." in out
+    assert f"Reconnect in {EMAIL}: slack." in out

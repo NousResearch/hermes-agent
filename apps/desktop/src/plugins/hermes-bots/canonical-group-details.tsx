@@ -2,6 +2,7 @@ import { atom, Button, Codicon, Tip } from '@hermes/plugin-sdk'
 import { type ReactNode, useLayoutEffect, useRef } from 'react'
 
 import { canonicalMemberName } from './canonical-group-activity'
+import { type GroupMethods, offersGroupMethod } from './canonical-group-capabilities'
 import type { CanonicalGroupRoute, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
 import type { MemberStatus } from './group-room-status'
 import { AvatarStack, fill, memberStatusText, type RoomStatusLabels } from './group-room-ui'
@@ -92,21 +93,24 @@ const PENDING_COPY: Record<string, keyof PendingLabels> = {
   discard: 'pendingDiscard'
 }
 
+const ACTION_METHODS: Record<string, string> = { discard: 'groups.discard', retry: 'groups.retry', approval: 'groups.approve' }
+
 /** A decision the room is waiting on, named by the bot that needs it. */
-export function CanonicalPendingCard({ action, avatar, busy, labels, name, onAct, onDiscard }: {
-  action: CanonicalPendingAction; avatar: ReactNode; busy: boolean; labels: PendingLabels; name: string
+export function CanonicalPendingCard({ action, avatar, busy, labels, methods, name, onAct, onDiscard }: {
+  action: CanonicalPendingAction; avatar: ReactNode; busy: boolean; labels: PendingLabels; methods: GroupMethods; name: string
   onAct: (action: CanonicalPendingAction, choice?: 'deny' | 'once') => unknown; onDiscard: () => void
 }) {
   const copy = PENDING_COPY[action.kind]
+  const offered = Object.hasOwn(ACTION_METHODS, action.kind) && offersGroupMethod(methods, ACTION_METHODS[action.kind])
 
   return <div className="mx-3 my-1 flex items-start gap-2.5 rounded-xl bg-(--chrome-action-hover) px-3 py-2" data-pending-action={action.kind}>
     <div className="mt-0.5 shrink-0">{avatar}</div>
     <div className="grid min-w-0 flex-1 gap-1.5">
       <p className="text-xs text-foreground">{copy ? fill(labels[copy], { name }) : name}</p>
       <div className="flex flex-wrap gap-1.5">
-        {action.kind === 'discard' && <Button disabled={busy} onClick={onDiscard} size="sm" variant="secondary">{labels.discard}</Button>}
-        {action.kind === 'retry' && <Button disabled={busy} onClick={() => void onAct({ ...action })} size="sm" variant="secondary">{labels.retry}</Button>}
-        {action.kind === 'approval' && <>
+        {offered && action.kind === 'discard' && <Button disabled={busy} onClick={onDiscard} size="sm" variant="secondary">{labels.discard}</Button>}
+        {offered && action.kind === 'retry' && <Button disabled={busy} onClick={() => void onAct({ ...action })} size="sm" variant="secondary">{labels.retry}</Button>}
+        {offered && action.kind === 'approval' && <>
           <Button disabled={busy} onClick={() => void onAct({ ...action }, 'once')} size="sm">{labels.allowOnce}</Button>
           <Button disabled={busy} onClick={() => void onAct({ ...action }, 'deny')} size="sm" variant="secondary">{labels.deny}</Button>
         </>}

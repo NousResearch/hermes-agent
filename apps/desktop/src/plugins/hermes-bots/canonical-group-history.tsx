@@ -28,6 +28,8 @@ interface CanonicalGroupHistoryProps {
   events: CanonicalGroupEvent[]
   members?: CanonicalRoomMember[]
   disabled?: boolean
+  /** Whether the room gateway offers file downloads and inline previews. */
+  downloads?: boolean
   /** Hover Reply on a member's message: address the composer to that member. */
   onReply?: (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => void
   /** A member's face; the workspace passes the Bot Mode avatar. */
@@ -169,7 +171,7 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
 }
 
-export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, onReply, pause }: CanonicalGroupHistoryProps) {
+export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, downloads = true, onReply, pause }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
   const maxContinues = pause?.maxContinues
@@ -202,7 +204,7 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
         : event.kind === CONTINUED_EVENT_KIND ? <CanonicalGroupContinuedRow />
           : pause && pauses && isBoundedActivity(event)
             ? <CanonicalGroupPausedRow busy={pause.busy} event={event} onContinue={pause.onContinue} onStop={pause.onStop} paused={pauses.get(event.seq) ?? { count: 0, actionable: false }} />
-            : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} notices={notices} onReply={onReply} roster={roster} />}
+            : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled || !downloads} event={event} notices={notices} onReply={onReply} roster={roster} />}
     {handoffsAfter.get(event.seq)?.map(handoff =>
       <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}
   </Fragment>)}</>

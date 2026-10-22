@@ -285,6 +285,10 @@ What they do:
   tick never starts one. With no gateway up, agent jobs are skipped with a logged reason
   (`hermes cron list` shows it) and fire on the next tick after `hermes gateway start`; their
   schedule is not advanced or penalised. `no_agent` script jobs still run from a bare tick.
+  A tick waits for the jobs it started but holds the tick lock only while it scans and
+  dispatches, so a long run never makes the gateway's ticker skip. With
+  `cron.headless_defer_agent_jobs: true` a tick leaves agent jobs to a live gateway's own ticker,
+  so `cron.max_parallel_jobs` stays the single host-wide limit on concurrent agent runs.
 
 **Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob_manage` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
@@ -391,7 +395,9 @@ On each tick Hermes:
 6. delivers the final response
 7. updates run metadata and the next scheduled time
 
-A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
+A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch. The lock covers the scan and dispatch only; each run's own fire claim keeps a job from running twice at once while other ticks continue.
+
+`cron.max_parallel_jobs` limits concurrent runs. Set `cron.max_parallel_scripts` (env `HERMES_CRON_MAX_PARALLEL_SCRIPTS`; `0` = unbounded) to give `no_agent` script jobs their own pool, so a short script never queues behind a long agent run when `max_parallel_jobs` is `1`. Unset, scripts share the `max_parallel_jobs` pool.
 
 ### Restart-safe workers under systemd
 

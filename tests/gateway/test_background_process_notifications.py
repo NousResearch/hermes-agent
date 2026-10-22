@@ -380,6 +380,46 @@ async def test_inject_watch_notification_drops_stale_trigger_reply_anchor(monkey
 
 
 @pytest.mark.asyncio
+async def test_inject_watch_notification_keeps_feishu_topic_reply_anchor(monkeypatch, tmp_path):
+    """Feishu topic completions need a real message anchor for reply-in-thread."""
+    from gateway.platforms.base import _reply_anchor_for_event
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AdmittingHandler())
+    runner.adapters[Platform.FEISHU] = adapter
+    session_key = "agent:main:feishu:group:oc_chat:omt_topic"
+    runner.session_store._entries[session_key] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            chat_type="forum",
+            thread_id="omt_topic",
+            user_id="ou_user",
+            user_name="Jingtao",
+            message_id="om_trigger",
+        )
+    )
+
+    await runner._inject_watch_notification(
+        "[SYSTEM: Background process matched]",
+        {
+            "session_id": "proc_watch",
+            "session_key": session_key,
+            "message_id": "om_trigger",
+        },
+    )
+
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.source.message_id is None
+    assert synth_event.reply_to_message_id is None
+    assert synth_event.reply_anchor_override == "om_trigger"
+    assert _reply_anchor_for_event(synth_event) == "om_trigger"
+    assert synth_event.source.thread_id == "omt_topic"
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_loads_session_store_off_loop(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 

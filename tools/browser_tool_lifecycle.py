@@ -210,6 +210,30 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
         _bt.logger.debug("Could not write owner_pid file for %s: %s", session_name, exc)
 
 
+def _runs_selected_agent_browser(image: str) -> bool:
+    """True when the process image ``image`` is the very file selected as the agent-browser daemon
+    binary (PM's exact binary, else the PATH install). Process name and argv[0] are caller-chosen
+    and never count; a PATH shim that is not itself the daemon image cannot be proven — fail closed.
+    Selection is read-only (``validate=False``): nothing is installed or executed."""
+    if not image:
+        return False
+    try:
+        selected = _install._find_agent_browser(validate=False)
+    except FileNotFoundError:
+        return False
+    except Exception as exc:  # health: allow BLE001 -- PM failure keeps daemon state
+        _bt.logger.warning(
+            "Could not resolve selected agent-browser binary; refusing daemon cleanup: %s",
+            exc,
+            exc_info=True,
+        )
+        return False
+    try:
+        return os.path.samefile(image, selected)
+    except (OSError, ValueError):
+        return False
+
+
 def _argv_token_is_path(token: str, path: str) -> bool:
     """True when ``token`` (or its ``--flag=VALUE`` value) names exactly ``path``."""
     want = os.path.normpath(path).lower()
@@ -223,7 +247,7 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
 
     The ``.pid`` file sits in a world-writable temp dir: a planted or recycled PID
     would turn the tree-kill into an arbitrary-process DoS. Both must pass:
-    (1) identity — ``agent-browser`` in name/cmdline; (2) binding — the socket dir in
+    (1) identity — the process image is the selected agent-browser binary; (2) binding — the socket dir in
     the cmdline or ``AGENT_BROWSER_SOCKET_DIR`` in its environ (the real spoof defense).
     """
     def refuse(reason: str, *args) -> bool:
@@ -238,16 +262,24 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
 
     try:
         proc = psutil.Process(daemon_pid)
-        name = (proc.name() or "").lower()
+        name = proc.name() or ""
+        # The public psutil.Process.exe() guesses from caller-controlled cmdline[0]
+        # when the native image lookup is denied or empty. Read the backend's native
+        # image query directly; if that API is unavailable, fail closed.
+        native_proc = getattr(proc, "_proc", None)
+        native_exe = getattr(native_proc, "exe", None)
+        if not callable(native_exe):
+            return refuse("could not read native process image (psutil backend unavailable)")
+        image_value = native_exe()
+        image = image_value if isinstance(image_value, str) else ""
         argv = list(proc.cmdline() or [])
-        cmdline = " ".join(argv).lower()
     except psutil.NoSuchProcess:
         return False  # vanished between the liveness check and now
     except (psutil.AccessDenied, OSError) as exc:
         return refuse("could not read process identity (%s)", exc)
 
-    if "agent-browser" not in name and "agent-browser" not in cmdline:
-        return refuse("not an agent-browser process (name=%r)", name)
+    if not _runs_selected_agent_browser(image):
+        return refuse("not the selected agent-browser binary (name=%r, image=%r)", name, image)
 
     # Binding must be the FULL socket-dir path as an argv token (bare or `--flag=path`),
     # never a substring: the dir basename is predictable (`agent-browser-<session>`), so a
@@ -287,11 +319,13 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
 
 
 def _read_pid_file(path: str) -> Optional[int]:
-    """Integer PID from ``path``; None when missing or corrupt."""
+    """Positive, signed-32-bit PID from ``path``; None when missing or invalid."""
     try:
-        return int(Path(path).read_text(encoding="utf-8-sig").strip())
+        pid = int(Path(path).read_text(encoding="utf-8-sig").strip())
     except (ValueError, OSError):
         return None
+    # Native PID APIs may overflow for larger integers and abort the reaper sweep.
+    return pid if 0 < pid < (1 << 31) else None
 
 
 def _owner_pid_alive(socket_dir: str, session_name: str) -> tuple[Optional[int], Optional[bool]]:
@@ -304,19 +338,72 @@ def _owner_pid_alive(socket_dir: str, session_name: str) -> tuple[Optional[int],
     return owner_pid, _pid_exists(owner_pid)
 
 
-def _terminate_verified_daemon(daemon_pid: int, session_name: str, log) -> bool:
-    """Tree-kill ``daemon_pid`` if it has a start-time fingerprint (so a PID swapped
-    between check and kill is refused); False (logged via ``log``) when no fingerprint.
-    Raises on OS errors."""
+def _verified_daemon_start(daemon_pid: int, socket_dir: str, session_name: str) -> Optional[int]:
+    """Start-time fingerprint of the process that passed identity verification; None (fail closed)
+    when unreadable, unverified, or the PID was recycled mid-check. Read on both sides of the
+    verification so the fingerprint handed to the kill names the process that was verified."""
     from gateway.status import get_process_start_time
-    from tools.process_registry import ProcessRegistry
     daemon_start = get_process_start_time(daemon_pid)
     if daemon_start is None:
-        log("Refusing to reap browser daemon PID %d (session %s): no start-time fingerprint available",
-            daemon_pid, session_name)
+        _bt.logger.warning("Refusing to reap browser daemon PID %d (session %s): no start-time fingerprint available",
+                           daemon_pid, session_name)
+        return None
+    if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
+        return None
+    if get_process_start_time(daemon_pid) != daemon_start:
+        _bt.logger.warning("Refusing to reap browser daemon PID %d (session %s): PID changed identity during verification",
+                           daemon_pid, session_name)
+        return None
+    return daemon_start
+
+
+def _daemon_still_running(daemon_pid: int) -> bool:
+    """True until ``daemon_pid`` is read back as gone. A live PID counts as running whatever its
+    start time: a changed or unreadable one cannot prove the fingerprinted daemon exited (the PID
+    may have been reused), so only an absent PID confirms the stop."""
+    from gateway.status import _pid_exists
+    return _pid_exists(daemon_pid)
+
+
+def _terminate_verified_daemon(daemon_pid: int, daemon_start: int, session_name: str) -> bool:
+    """Tree-kill the fingerprinted daemon; True only once it is read back as gone.
+
+    ``_terminate_host_pid`` returns nothing and can no-op (fingerprint mismatch, access denied,
+    zero grace), so the caller must keep its retry record unless this confirms the stop.
+    """
+    try:
+        from tools.process_registry import ProcessRegistry
+        try:
+            ProcessRegistry._terminate_host_pid(daemon_pid, daemon_start)
+        except OSError as exc:
+            _bt.logger.debug(
+                "Terminating browser daemon PID %d (session %s) raised: %s",
+                daemon_pid,
+                session_name,
+                exc,
+            )
+        deadline = time.monotonic() + ProcessRegistry._KILL_SETTLE_SECONDS
+        while _daemon_still_running(daemon_pid):
+            if time.monotonic() >= deadline:
+                _bt.logger.warning(
+                    "Browser daemon PID %d (session %s) still running after termination; "
+                    "keeping its socket dir for a later sweep",
+                    daemon_pid,
+                    session_name,
+                )
+                return False
+            time.sleep(0.05)
+        return True
+    except Exception as exc:  # health: allow BLE001 -- preserve daemon state
+        _bt.logger.warning(
+            "Could not confirm stopping browser daemon PID %d (session %s): %s; "
+            "keeping its socket dir",
+            daemon_pid,
+            session_name,
+            exc,
+            exc_info=True,
+        )
         return False
-    ProcessRegistry._terminate_host_pid(daemon_pid, daemon_start)
-    return True
 
 
 def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> bool:
@@ -326,7 +413,8 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
     here and idle past ``BROWSER_ORPHAN_GRACE_SECONDS`` (owner-alive alone made leaked
     daemons immortal); no owner_pid (legacy) falls back to this process's tracking. A
     pidless dir is only stale after the grace period (deleting it immediately races the
-    creator's first stdout open). The PID is identity-verified before any tree-kill.
+    creator's first stdout open). The PID is identity-verified before any tree-kill, and
+    the dir is removed only once the daemon is read back as gone.
     """
     owner_pid, owner_alive = _owner_pid_alive(socket_dir, session_name)
     if owner_alive is True:
@@ -353,24 +441,22 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
 
     daemon_pid = _read_pid_file(pid_file)
     from gateway.status import _pid_exists
-    if daemon_pid is None or not _pid_exists(daemon_pid):
+    if daemon_pid is None:
+        return False  # corrupt/unreadable pid file — fail closed, keep the dir
+    if not _pid_exists(daemon_pid):
         shutil.rmtree(socket_dir, ignore_errors=True)
         return False
 
-    if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
+    daemon_start = _verified_daemon_start(daemon_pid, socket_dir, session_name)
+    if daemon_start is None:
         return False  # leave process and dir for a later sweep once the imposter PID is gone
 
     # Tree-kill so Chromium children (renderer, GPU, ...) go too.
-    reaped = False
-    try:
-        if not _terminate_verified_daemon(daemon_pid, session_name, _bt.logger.warning):
-            return False
-        _bt.logger.info("Reaped orphaned browser daemon PID %d (session %s)", daemon_pid, session_name)
-        reaped = True
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    if not _terminate_verified_daemon(daemon_pid, daemon_start, session_name):
+        return False
+    _bt.logger.info("Reaped orphaned browser daemon PID %d (session %s)", daemon_pid, session_name)
     shutil.rmtree(socket_dir, ignore_errors=True)
-    return reaped
+    return True
 
 
 def _reap_orphaned_browser_sessions():
@@ -405,8 +491,19 @@ def _reap_orphaned_browser_sessions():
     reaped = 0
     for socket_dir in socket_dirs:
         session_name = os.path.basename(socket_dir).removeprefix("agent-browser-")
-        if session_name and _reap_socket_dir(socket_dir, session_name, tracked_names):
-            reaped += 1
+        if not session_name:
+            continue
+        try:
+            if _reap_socket_dir(socket_dir, session_name, tracked_names):
+                reaped += 1
+        except Exception as exc:  # health: allow BLE001 -- preserve this dir and continue the sweep
+            _bt.logger.warning(
+                "Could not safely inspect browser session %s; keeping its state and continuing "
+                "the orphan sweep: %s",
+                session_name,
+                exc,
+                exc_info=True,
+            )
 
     if reaped:
         _bt.logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
@@ -631,24 +728,33 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     _drop_last_active_binding(task_id)
 
 
-def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
-    """Tree-kill the daemon in ``<socket_dir>/<session>.pid`` if verifiably ours; True when
-    a kill was issued. Never raises."""
-    pid_file = os.path.join(socket_dir, f"{session_name}.pid")
-    if not os.path.isfile(pid_file):
-        return False
+def _stop_session_daemon(socket_dir: str, session_name: str) -> bool:
+    """Tree-kill the daemon in ``<socket_dir>/<session>.pid`` if verifiably ours; True only when
+    none is left running (a read PID confirmed dead, or a confirmed stop). An absent pid file is
+    unconfirmed (an in-flight daemon may not have written it yet), and one that exists but cannot
+    be read names nothing we can confirm stopped, so both are False. Never raises."""
     try:
-        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
-        if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
-            _bt.logger.debug("Skipped daemon kill for %s: pid %s failed identity verification", session_name, daemon_pid)
+        pid_file = os.path.join(socket_dir, f"{session_name}.pid")
+        if not os.path.isfile(pid_file):
             return False
-        if not _terminate_verified_daemon(daemon_pid, session_name, lambda *_a: _bt.logger.debug(
-                "Skipped daemon kill for %s: no start-time fingerprint for pid %s", session_name, daemon_pid)):
+        daemon_pid = _read_pid_file(pid_file)
+        if daemon_pid is None:
+            _bt.logger.debug("Unreadable daemon pid file for %s; leaving its socket dir", session_name)
+            return False
+        if not _pid_exists(daemon_pid):
+            return True
+        daemon_start = _verified_daemon_start(daemon_pid, socket_dir, session_name)
+        if daemon_start is None or not _terminate_verified_daemon(daemon_pid, daemon_start, session_name):
             return False
         _bt.logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
         return True
-    except (ProcessLookupError, ValueError, PermissionError, OSError):
-        _bt.logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
+    except Exception as exc:  # health: allow BLE001 -- preserve daemon state
+        _bt.logger.warning(
+            "Could not confirm stopping browser daemon for %s: %s; keeping its socket dir",
+            session_name,
+            exc,
+            exc_info=True,
+        )
         return False
 
 
@@ -679,8 +785,8 @@ def _release_session_backend(task_id: str, session_info: dict[str, Any]) -> None
     session_name = session_info.get("session_name", "")
     if session_name:
         socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
-        if os.path.exists(socket_dir):
-            _kill_verified_daemon(socket_dir, session_name)
+        # An unconfirmed stop keeps the dir: its pid/owner_pid files are the orphan reaper's retry record.
+        if os.path.exists(socket_dir) and _stop_session_daemon(socket_dir, session_name):
             shutil.rmtree(socket_dir, ignore_errors=True)
 
 

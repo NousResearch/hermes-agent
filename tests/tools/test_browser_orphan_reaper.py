@@ -3,7 +3,8 @@ daemons whose Python parent exited without cleaning up."""
 
 import os
 import time
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 from tools import browser_tool_lifecycle as bt_lifecycle
@@ -46,6 +47,18 @@ def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
     return d
 
 
+def _killable(*pids):
+    """``_pid_exists`` / ``_terminate_host_pid`` fakes where each PID stays alive until terminated."""
+    alive = set(pids)
+    calls = []
+
+    def terminate(pid, expected_start=None):
+        calls.append(pid)
+        alive.discard(pid)
+
+    return (lambda pid: pid in alive), terminate, calls
+
+
 class TestReapOrphanedBrowserSessions:
     """Tests for the orphan reaper function."""
 
@@ -84,22 +97,17 @@ class TestReapOrphanedBrowserSessions:
         because ``os.kill(pid, 0)`` is a footgun on Windows — bpo-14484).
         With no owner_pid file and no tracked-name entry, the reaper
         terminates the daemon (and its process tree) and removes its socket
-        dir regardless of whether termination succeeded (best-effort
-        semantics).
+        dir once the daemon is read back as gone.
         """
         from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_perm1234567", pid=12345)
+        pid_exists, terminate, terminate_calls = _killable(12345)
 
-        terminate_calls = []
-
-        def mock_terminate(pid, expected_start=None):
-            terminate_calls.append(pid)
-
-        with patch("gateway.status._pid_exists", return_value=True), \
+        with patch("gateway.status._pid_exists", side_effect=pid_exists), \
              patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=terminate):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in terminate_calls
@@ -113,16 +121,12 @@ class TestReapOrphanedBrowserSessions:
         from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, bt._REAL_PROFILE_SESSION, pid=4242, owner_pid=99999)
-        terminate_calls = []
+        pid_exists, terminate, terminate_calls = _killable(4242)  # daemon alive, owning hermes gone
 
-        def _pid_exists(pid):
-            return pid == 4242  # daemon alive, owning hermes gone
-
-        with patch("gateway.status._pid_exists", side_effect=_pid_exists), \
+        with patch("gateway.status._pid_exists", side_effect=pid_exists), \
              patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
-                   side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=terminate):
             _reap_orphaned_browser_sessions()
 
         assert terminate_calls == [4242]
@@ -151,14 +155,61 @@ class TestReapOrphanedBrowserSessions:
         assert terminate_calls == []
 
 
-    def test_corrupt_pid_file_is_cleaned(self, fake_tmpdir):
-        """PID file with non-integer content is cleaned up."""
+    @pytest.mark.parametrize("content", [b"not-a-number", b"", b"\xff\xfe\x00", b"0", b"-1", b"2147483648", b"99999999999"],
+                             ids=["non_integer", "empty", "undecodable", "zero", "negative", "pid_t_max_plus_one", "overflow"])
+    @pytest.mark.parametrize("idle_s", [0.0, 10_000], ids=["fresh", "stale"])
+    def test_corrupt_pid_file_is_retained(self, fake_tmpdir, content, idle_s):
+        """Malformed, non-positive, or out-of-range PID data cannot prove the daemon is gone: the dir and
+        PID file stay and nothing is signalled, even long past the grace window."""
         from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_corrupt1234")
-        (d / "h_corrupt1234.pid").write_text("not-a-number")
+        pid_file = d / "h_corrupt1234.pid"
+        pid_file.write_bytes(content)
+        terminate_calls = []
 
-        _reap_orphaned_browser_sessions()
+        with patch("tools.browser_tool_lifecycle._socket_dir_idle_seconds", return_value=idle_s), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
+            _reap_orphaned_browser_sessions()
+
+        assert terminate_calls == []
+        assert pid_file.read_bytes() == content
+
+    def test_reaper_continues_after_one_directory_error(self, fake_tmpdir):
+        """An uninspectable directory must stay fail-closed without starving later dirs."""
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        _make_socket_dir(fake_tmpdir, "h_first1234")
+        _make_socket_dir(fake_tmpdir, "h_second1234")
+        calls = []
+
+        def reap_one(socket_dir, session_name, tracked_names):
+            calls.append(session_name)
+            if len(calls) == 1:
+                raise RuntimeError("unreadable process metadata")
+            return False
+
+        with patch("tools.browser_tool_lifecycle._best_effort", return_value=None), \
+             patch("tools.browser_tool_lifecycle._reap_socket_dir", side_effect=reap_one):
+            _reap_orphaned_browser_sessions()
+
+        assert len(calls) == 2
+        assert set(calls) == {"h_first1234", "h_second1234"}
+
+    def test_dead_daemon_pid_dir_is_removed(self, fake_tmpdir):
+        """A valid PID confirmed dead releases its dir without a kill."""
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, "h_dead1234567", pid=12345)
+        terminate_calls = []
+
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
+            _reap_orphaned_browser_sessions()
+
+        assert terminate_calls == []
         assert not d.exists()
 
 
@@ -211,16 +262,43 @@ class TestReaperIdentityGuard:
     recycled PIDs that would otherwise become an arbitrary same-user DoS.
     """
 
+    @pytest.fixture(autouse=True)
+    def _selected_binary(self, tmp_path):
+        """PM's selected daemon binary (a real file, never executed) and the image a fake
+        process runs by default — the identity the guard must verify."""
+        self.selected = tmp_path / "pm" / "bin" / "agent-browser-linux-x64"
+        self.selected.parent.mkdir(parents=True)
+        self.selected.write_bytes(b"not a real binary")
+        self.imposter = tmp_path / "python3"
+        self.imposter.write_bytes(b"some other image")
+        with patch("pm.installed_package",
+                   side_effect=lambda name: SimpleNamespace(binary=self.selected) if name == "agent-browser" else None), \
+             patch("pm.ensure", side_effect=AssertionError("identity check must never install")), \
+             patch("tools.browser_tool_install._is_termux_environment", return_value=False):
+            yield
+
     class _FakeProc:
         def __init__(self, name="agent-browser", cmdline=None, environ=None,
-                     raise_environ=False):
+                     raise_environ=False, exe=None, raise_exe=False):
             self._name = name
             self._cmdline = cmdline if cmdline is not None else []
             self._environ = environ or {}
             self._raise_environ = raise_environ
+            self._exe = exe
+            self._raise_exe = raise_exe
+            self._proc = SimpleNamespace(exe=self._native_exe)
 
         def name(self):
             return self._name
+
+        def exe(self):
+            if self._raise_exe:
+                import psutil
+                raise psutil.AccessDenied()
+            return self._exe
+
+        def _native_exe(self):
+            return self.exe()
 
         def cmdline(self):
             return self._cmdline
@@ -235,6 +313,9 @@ class TestReaperIdentityGuard:
              daemon_pid=12345, no_such=False, access_denied=False):
         import psutil
         from tools.browser_tool_lifecycle import _verify_reapable_browser_daemon
+
+        if fake_proc._exe is None:
+            fake_proc._exe = str(self.selected)  # runs PM's selected binary unless a test says otherwise
 
         def _factory(pid):
             if no_such:
@@ -255,6 +336,190 @@ class TestReaperIdentityGuard:
                      "--socket-dir", socket_dir],
         )
         assert self._run(proc, socket_dir) is True
+
+    def test_chrome_argument_with_our_socket_dir_is_refused(self):
+        """Socket-dir arguments must not double as executable identity.
+
+        Ordinary Chrome can have a user-data-dir under a path whose predictable
+        basename contains ``agent-browser-<session>``.  That proves path binding,
+        but it must never establish that the process is agent-browser.
+        """
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(
+            name="chrome",
+            cmdline=["/usr/bin/chrome", f"--user-data-dir={socket_dir}"],
+            exe=str(self.imposter),
+        )
+        assert self._run(proc, socket_dir) is False
+
+    _AGENT_BROWSER_NAMES = pytest.mark.parametrize("name,argv0", [
+        ("agent-browser", "agent-browser"),
+        ("agent-browser-l", "/opt/npm/node_modules/agent-browser/bin/agent-browser-linux-x64"),
+        ("agent-browser-linux-musl-arm64", "agent-browser-linux-musl-arm64"),
+        ("agent-browser-darwin-arm64", "/usr/local/lib/node_modules/agent-browser/bin/agent-browser-darwin-arm64"),
+        ("agent-browser-win32-x64.exe", r"C:\npm\node_modules\agent-browser\bin\agent-browser-win32-x64.exe"),
+    ])
+
+    @_AGENT_BROWSER_NAMES
+    def test_process_running_the_selected_binary_is_reapable(self, name, argv0):
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(name=name, cmdline=[argv0, "daemon"],
+                              environ={"AGENT_BROWSER_SOCKET_DIR": socket_dir})
+        assert self._run(proc, socket_dir) is True
+
+    @_AGENT_BROWSER_NAMES
+    def test_agent_browser_name_or_argv0_on_another_image_is_refused(self, name, argv0):
+        """Process name and argv[0] are caller-chosen: a Python (or any) process can claim
+        ``agent-browser`` while its real image is something else entirely."""
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(name=name, cmdline=[argv0, "daemon"], exe=str(self.imposter),
+                              environ={"AGENT_BROWSER_SOCKET_DIR": socket_dir})
+        assert self._run(proc, socket_dir) is False
+
+    def test_selected_binary_reached_through_a_symlink_is_reapable(self, tmp_path):
+        link = tmp_path / "agent-browser"
+        link.symlink_to(self.selected)
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(cmdline=["agent-browser", "daemon"], exe=str(link),
+                              environ={"AGENT_BROWSER_SOCKET_DIR": socket_dir})
+        assert self._run(proc, socket_dir) is True
+
+    def test_external_shim_that_is_not_the_daemon_image_is_refused(self, tmp_path):
+        """A PATH install selects a launcher shim; the daemon runs a different native binary
+        that cannot be proven to be the selected one — fail closed."""
+        shim = tmp_path / "npm" / "bin" / "agent-browser"
+        shim.parent.mkdir(parents=True)
+        shim.write_text("#!/usr/bin/env node\n")
+        shim.chmod(0o755)
+        native = tmp_path / "npm" / "lib" / "agent-browser-linux-x64"
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b"native")
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(name="agent-browser-linux-x64", cmdline=[str(native), "daemon"], exe=str(native),
+                              environ={"AGENT_BROWSER_SOCKET_DIR": socket_dir})
+        with patch("pm.installed_package", return_value=None), \
+             patch("tools.browser_tool_install.shutil.which", return_value=str(shim)):
+            assert self._run(proc, socket_dir) is False
+
+    def test_no_selected_binary_is_refused_without_installing(self):
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(cmdline=["agent-browser", f"--socket-dir={socket_dir}"])
+        ensure = Mock()
+        with patch("pm.installed_package", return_value=None), \
+             patch("tools.browser_tool_install.shutil.which", return_value=None), \
+             patch("pm.ensure", ensure):
+            assert self._run(proc, socket_dir) is False
+        ensure.assert_not_called()
+
+    def test_unreadable_process_image_is_refused(self):
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(cmdline=["agent-browser", f"--socket-dir={socket_dir}"], raise_exe=True)
+        assert self._run(proc, socket_dir) is False
+
+    def test_psutil_argv0_fallback_is_not_treated_as_process_image(self):
+        """psutil's public exe() guesses from an executable absolute argv[0] when the native
+        image query is denied. That caller-controlled guess cannot authorize daemon cleanup."""
+        import psutil
+        from tools.browser_tool_lifecycle import _verify_reapable_browser_daemon
+
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        self.selected.chmod(0o755)  # psutil's fallback checks only isfile + X_OK; it never executes it
+        pid = 12345
+
+        def denied_native_exe():
+            raise psutil.AccessDenied(pid=pid)
+
+        native_proc = SimpleNamespace(
+            exe=denied_native_exe,
+            name=lambda: "agent-browser",
+            cmdline=lambda: [str(self.selected), "--socket-dir", socket_dir],
+            environ=lambda: {"AGENT_BROWSER_SOCKET_DIR": socket_dir},
+        )
+        wrapped_proc = psutil.Process(os.getpid())
+        object.__setattr__(wrapped_proc, "_proc", native_proc)
+        object.__setattr__(wrapped_proc, "_exe", None)
+
+        # Exercise the installed psutil public wrapper: it incorrectly reports argv[0] as exe.
+        assert wrapped_proc.exe() == str(self.selected)
+        with patch("psutil.Process", return_value=wrapped_proc):
+            assert _verify_reapable_browser_daemon(pid, socket_dir, "h_sess123456") is False
+
+    def test_pm_binary_lookup_error_keeps_daemon_state(self, fake_tmpdir):
+        """A broken PM lookup fails closed without propagating or deleting session state."""
+        session_name = "h_lookup1234"
+        d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
+        pid_file = d / f"{session_name}.pid"
+        socket_dir = str(d)
+        proc = self._FakeProc(
+            cmdline=["agent-browser", "daemon"],
+            environ={"AGENT_BROWSER_SOCKET_DIR": socket_dir},
+            exe=str(self.selected),
+        )
+
+        with patch("gateway.status._pid_exists", return_value=True), patch(
+            "gateway.status.get_process_start_time", return_value=777
+        ):
+            with patch("psutil.Process", return_value=proc), patch(
+                "tools.browser_tool_install._find_agent_browser",
+                side_effect=RuntimeError("PM metadata is unreadable"),
+            ), patch(
+                "tools.process_registry.ProcessRegistry._terminate_host_pid"
+            ) as terminate:
+                stopped = bt_lifecycle._stop_session_daemon(socket_dir, session_name)
+
+        assert stopped is False
+        assert d.exists()
+        assert pid_file.read_text() == "12345"
+        terminate.assert_not_called()
+
+    def test_process_registry_error_keeps_daemon_state(self, fake_tmpdir):
+        """Unexpected termination API errors are unconfirmed and preserve the PID/socket state."""
+        session_name = "h_registry1234"
+        d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
+        pid_file = d / f"{session_name}.pid"
+        socket_dir = str(d)
+        proc = self._FakeProc(
+            cmdline=["agent-browser", "daemon"],
+            environ={"AGENT_BROWSER_SOCKET_DIR": socket_dir},
+            exe=str(self.selected),
+        )
+
+        with patch("gateway.status._pid_exists", return_value=True), patch(
+            "gateway.status.get_process_start_time", return_value=777
+        ):
+            with patch("psutil.Process", return_value=proc), patch(
+                "tools.process_registry.ProcessRegistry._terminate_host_pid",
+                side_effect=RuntimeError("termination API failed"),
+            ) as terminate:
+                stopped = bt_lifecycle._stop_session_daemon(socket_dir, session_name)
+
+        assert stopped is False
+        assert d.exists()
+        assert pid_file.read_text() == "12345"
+        terminate.assert_called_once_with(12345, 777)
+
+    def test_unexpected_verification_error_keeps_daemon_state(self, fake_tmpdir):
+        """Unexpected stop-verification errors must not escape or erase the retry state."""
+        session_name = "h_verifyerr1234"
+        d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
+        pid_file = d / f"{session_name}.pid"
+        socket_dir = str(d)
+
+        with patch("gateway.status._pid_exists", return_value=True), patch(
+            "tools.browser_tool_lifecycle._verified_daemon_start",
+            side_effect=RuntimeError("verification failed"),
+        ):
+            stopped = bt_lifecycle._stop_session_daemon(socket_dir, session_name)
+
+        assert stopped is False
+        assert d.exists()
+        assert pid_file.read_text() == "12345"
+
+    def test_agent_browser_only_in_later_argv_is_refused(self):
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(name="python3", exe=str(self.imposter),
+                              cmdline=["python3", "/tmp/agent-browser", f"--socket-dir={socket_dir}"])
+        assert self._run(proc, socket_dir) is False
 
     def test_daemon_bound_via_environ_is_reapable(self):
         socket_dir = "/tmp/agent-browser-h_sess123456"
@@ -408,13 +673,12 @@ class TestLeakedDaemonWithLiveOwner:
             fake_tmpdir, "h_leaked_owner", pid=12345, owner_pid=os.getpid()
         )
         _age_socket_dir(d, BROWSER_ORPHAN_GRACE_SECONDS + 600)
-        kill_calls = []
+        pid_exists, terminate, kill_calls = _killable(12345, os.getpid())
 
-        with patch("gateway.status._pid_exists", return_value=True), \
+        with patch("gateway.status._pid_exists", side_effect=pid_exists), \
              patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
-                   side_effect=lambda pid, expected_start=None: kill_calls.append(pid)):
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=terminate):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in kill_calls

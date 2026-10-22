@@ -482,22 +482,11 @@ def _discard_timed_out_browser_session(task_id: str, session_info: dict[str, Any
             _bt._last_active_session_key.pop(bare_task_id, None)
 
     session_name = str(session_info.get("session_name") or "")
-    if session_name and os.path.isfile(os.path.join(task_socket_dir, f"{session_name}.pid")):
-        daemon_pid = _read_browser_daemon_pid(task_socket_dir, session_name)
-        if daemon_pid is None:  # corrupt pid file
-            _bt.logger.debug("Could not kill timed-out browser daemon for %s", session_name)
-            return
-        if not _lifecycle._verify_reapable_browser_daemon(daemon_pid, task_socket_dir, session_name):
-            return
-        try:
-            # Tree-kill: terminating only the daemon PID leaks the Chromium tree.
-            # See #68139.
-            from agent import deadline as _deadline
-
-            _deadline.kill_process_tree(daemon_pid)
-        except (ProcessLookupError, PermissionError, OSError):
-            _bt.logger.debug("Could not kill timed-out browser daemon for %s", session_name)
-            return
+    # Tree-kill: terminating only the daemon PID leaks the Chromium tree (#68139). An unconfirmed
+    # stop keeps the dir: its pid/owner_pid files are the orphan reaper's retry record.
+    if session_name and not _lifecycle._stop_session_daemon(task_socket_dir, session_name):
+        _bt.logger.debug("Could not stop timed-out browser daemon for %s", session_name)
+        return
     shutil.rmtree(task_socket_dir, ignore_errors=True)
 
 

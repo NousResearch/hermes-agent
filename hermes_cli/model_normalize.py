@@ -199,6 +199,63 @@ def suggest_prefixed_model_id(provider: str, model_name: str) -> Optional[str]:
     return repaired if repaired != name else None
 
 
+def _named_custom_provider_model_ids(provider: str) -> Optional[frozenset[str]]:
+    """Lower-cased model ids declared by a *named* custom provider (``custom:<name>``), else ``None``.
+
+    Bare ``custom`` is a catch-all bucket rather than a provider entry and declares no catalogue, so
+    it keeps the pass-through behaviour ``_strip_matching_provider_prefix`` documents.
+    """
+    target = _normalize_provider_alias(provider)
+    if not target.startswith("custom:") or not target[len("custom:"):].strip():
+        return None
+    try:
+        from hermes_cli.config_providers import get_compatible_custom_providers
+        from hermes_cli.runtime_provider_custom import custom_provider_aliases
+
+        entries = get_compatible_custom_providers()
+    except Exception:
+        return None
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        display_name = entry.get("name")
+        if not isinstance(display_name, str) or not display_name.strip():
+            continue
+        if target not in custom_provider_aliases(display_name, str(entry.get("provider_key") or "")):
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict) or not models:
+            return None
+        ids = frozenset(k.strip().lower() for k in models if isinstance(k, str) and k.strip())
+        return ids or None
+    return None
+
+
+def _strip_foreign_vendor_prefix_for_named_custom_provider(model_name: str, provider: str) -> str:
+    """Drop a foreign ``vendor/`` prefix for a named custom provider — by lookup, never by shape.
+
+    A ``custom:<name>`` endpoint declares its own catalogue (``models:`` in config.yaml). When that
+    catalogue holds the bare id and not the prefixed one, the prefix is an aggregator spelling the
+    endpoint will 404 on — the mirror of :func:`_repair_prefix_from_catalogue`, which restores a
+    *dropped* prefix for the providers that need one. Both are lookups against the provider's own
+    declared ids: an id the provider does not declare is returned untouched, so a genuine endpoint
+    problem keeps its own classification instead of being silently rewritten.
+    """
+    if "/" not in model_name:
+        return model_name
+    ids = _named_custom_provider_model_ids(provider)
+    if not ids:
+        return model_name
+    prefix, remainder = model_name.split("/", 1)
+    # An empty side is not a vendor prefix — the same guard ``_strip_matching_provider_prefix`` applies.
+    if not prefix.strip() or not remainder.strip():
+        return model_name
+    bare = remainder.strip()
+    if bare.lower() in ids and model_name.strip().lower() not in ids:
+        return bare
+    return model_name
+
+
 def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     """Translate a model name (bare, vendor-prefixed or native) into what the target provider's API
     expects. ``target_provider`` should already be canonical. Never raises."""
@@ -256,6 +313,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     # Unknown names (a local NIM container, a proxied model) pass through untouched.
     if provider in _CATALOGUE_PREFIX_REPAIR_PROVIDERS:
         return _repair_prefix_from_catalogue(name, provider)
+
+    # A *named* custom provider declares its own catalogue, so a foreign ``vendor/`` prefix is
+    # provably an aggregator spelling when that catalogue holds the bare id and not the prefixed one
+    # — a lookup, never a guess. Bare ``custom`` is excluded on purpose: there a ``vendor/`` prefix
+    # may be the routing prefix a LiteLLM-style proxy requires (#93980, #93983).
+    if provider.startswith("custom:"):
+        return _strip_foreign_vendor_prefix_for_named_custom_provider(name, provider)
 
     # Authoritative native providers, custom and all others: pass through as-is.
     return name

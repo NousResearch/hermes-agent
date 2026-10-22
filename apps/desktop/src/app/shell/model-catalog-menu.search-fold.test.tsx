@@ -61,14 +61,12 @@ function renderMenu() {
 
 it('matches and highlights separator-equivalent queries without revealing unrelated models', async () => {
   renderMenu()
-  await screen.findByText('Qwen3.8')
+  await screen.findByText(/Qwen3\.8/)
 
-  // The `-flash` suffix renders as the row's variant tag, so an id-style
-  // query still finds the row through the id fold even though the label no
-  // longer spells the word — nothing is marked, the row stays visible.
+  // An id-style query finds the row through the id fold; the row stays visible.
   fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'qwen3.8-flash' } })
   await vi.waitFor(() => {
-    expect(screen.getByText('Qwen3.8')).toBeDefined()
+    expect(screen.getByText(/Qwen3\.8 Flash/)).toBeDefined()
     expect(screen.queryByText(/GPT-5\.1/i)).toBeNull()
   })
 

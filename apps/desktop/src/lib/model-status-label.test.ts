@@ -4,14 +4,13 @@ import {
   currentPickerSelection,
   displayModelName,
   formatModelPillLabel,
-  modelDisplayParts,
-  modelVariantTag
+  modelDisplayParts
 } from './model-status-label'
 
 describe('model-status-label', () => {
-  it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {
-    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
-    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+  it('keeps trailing date-pin snapshots as text and dots hyphenated Anthropic versions', () => {
+    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5 2025-11-01')
+    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5 2025-10-01')
     expect(displayModelName('claude-fable-5-1')).toBe('Fable 5.1')
   })
 
@@ -29,8 +28,13 @@ describe('model-status-label', () => {
     })
     expect(modelDisplayParts('Qwen3-4B-Instruct-2507-UD-Q8_K_XL')).toEqual({ name: 'Qwen3 4B', tag: 'Q8' })
     expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
-    // Cloud ids keep their existing behavior.
-    expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
+  })
+
+  it('places the quant in a tag and the variant word in the name in either order', () => {
+    expect(modelDisplayParts('Qwen3.6-27B-flash-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B Flash', tag: 'Q4' })
+    expect(modelDisplayParts('Qwen3.6-27B-Q4_K_XL-flash')).toEqual({ name: 'Qwen3.6 27B Flash', tag: 'Q4' })
+    // Quant-only ids keep the quant as their only tag.
+    expect(modelDisplayParts('Qwen3.6-27B-Q8_0')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q8' })
   })
 
   it('keeps the vendor casing the model id does not carry (#85849)', () => {
@@ -59,27 +63,22 @@ describe('model-status-label', () => {
     expect(displayModelName('google/gemini-2.5-flash-lite')).toBe('Gemini 2.5 Flash Lite')
   })
 
-  it('distinguishes the deepseek-flash alias from its deepseek-v4.1-flash sibling (#118083)', () => {
+  it('keeps identity words in the name, so distinct ids render distinctly (#118083)', () => {
     // models.dev carries both ids for the provider: `deepseek-flash` (alias)
-    // and `deepseek-v4.1-flash` (full id). Two distinct ids must never render
-    // as near-identical tagless rows the user reads as one model listed twice.
-    // The `-flash` variant tag splits the pair the same way `-fast` splits
-    // `…-4.8` vs `…-4.8-fast`, and the vendor casing closes the gap that made
-    // the alias read "DeepSeek" while its sibling read "Deepseek".
-    expect(modelDisplayParts('deepseek-flash')).toEqual({ name: 'DeepSeek', tag: 'Flash' })
-    expect(modelDisplayParts('deepseek-v4.1-flash')).toEqual({ name: 'DeepSeek V4.1', tag: 'Flash' })
-    // Non-flash siblings stay tagless and distinct from their flash variant.
-    expect(modelDisplayParts('deepseek-v4.1')).toEqual({ name: 'DeepSeek V4.1', tag: '' })
+    // and `deepseek-v4-flash`. Their names are distinct without chips.
+    expect(modelDisplayParts('deepseek-flash')).toEqual({ name: 'DeepSeek Flash', tag: '' })
+    expect(modelDisplayParts('deepseek-v4-flash')).toEqual({ name: 'DeepSeek V4 Flash', tag: '' })
+    expect(displayModelName('deepseek-flash')).not.toBe(displayModelName('deepseek-v4-flash'))
   })
 
-  it('keeps the variant tag in the display name so distinct ids never collapse (#88597)', () => {
+  it('keeps tier and stage words in the display name so distinct ids never collapse', () => {
     expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 Fast')
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('DeepSeek V4 Pro Thinking')
     expect(displayModelName('gpt-5.5-preview')).toBe('GPT-5.5 Preview')
     expect(displayModelName('claude-opus-5')).toBe('Opus 5')
     // A base model and its variant must NEVER share a display label.
     expect(displayModelName('claude-opus-5')).not.toBe(displayModelName('claude-opus-5-thinking'))
-    // The quant/contextWindow tags ride along the same way.
+    // The quant and context-window tags ride along the same way.
     expect(displayModelName('Qwen3.6-27B-UD-Q4_K_XL')).toBe('Qwen3.6 27B Q4')
     expect(displayModelName('claude-sonnet-5[1m]')).toBe('Sonnet 5 1M')
   })
@@ -89,42 +88,12 @@ describe('model-status-label', () => {
     expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true, serviceTier: 'ultrafast' })).toBe(
       'GPT-5.5 · Ultrafast'
     )
-    expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
+    // The model's own words stay in the name — a `…-fast` id is not "fast mode".
+    expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 Fast')
+    expect(formatModelPillLabel('gemini-2.5-flash')).toBe('Gemini 2.5 Flash')
+    expect(formatModelPillLabel('deepseek-v4.1-flash')).toBe('DeepSeek V4.1 Flash')
     expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
     expect(formatModelPillLabel('')).toBe('No model')
-  })
-
-  it('rides the same variant tags on the pill as the catalog rows (#118083)', () => {
-    // A `-flash` id must render its tag on the composer pill too: without it,
-    // `gemini-2.5-flash` and `gemini-2.5` produce identical pill text, so a
-    // model switch reads as a no-op — the exact look-alike collapse the
-    // catalog-row split exists to prevent, one screen over.
-    expect(formatModelPillLabel('gemini-2.5-flash')).toBe('Gemini 2.5 · Flash')
-    expect(formatModelPillLabel('deepseek-v4.1-flash')).toBe('DeepSeek V4.1 · Flash')
-    expect(formatModelPillLabel('qwen3.8-flash')).toBe('Qwen3.8 · Flash')
-    // The bare models stay tagless — and distinct from their flash variants.
-    expect(formatModelPillLabel('gemini-2.5')).toBe('Gemini 2.5')
-    expect(formatModelPillLabel('deepseek-v4.1')).toBe('DeepSeek V4.1')
-  })
-
-  it('agrees with the catalog rows on the variant for local ids that carry both a variant and a quant', () => {
-    // A local GGUF id can carry the variant and the quant in either order —
-    // `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model. The row
-    // used to split only on whichever suffix it saw first (quant soup in the
-    // name for one order, no variant tag for the other), while the pill
-    // re-derived the variant from the raw id, so the two screens disagreed
-    // (#118083 review).
-    expect(modelVariantTag('Qwen3.6-27B-flash-Q4_K_XL')).toBe('Flash')
-    expect(modelVariantTag('Qwen3.6-27B-Q4_K_XL-flash')).toBe('Flash')
-    // Both orders decompose identically: clean name, variant + quant tag.
-    expect(modelDisplayParts('Qwen3.6-27B-flash-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Flash Q4' })
-    expect(modelDisplayParts('Qwen3.6-27B-Q4_K_XL-flash')).toEqual({ name: 'Qwen3.6 27B', tag: 'Flash Q4' })
-    // The pill rides the variant and keeps the quant as picker-row detail.
-    expect(formatModelPillLabel('Qwen3.6-27B-flash-Q4_K_XL')).toBe('Qwen3.6 27B · Flash')
-    expect(formatModelPillLabel('Qwen3.6-27B-Q4_K_XL-flash')).toBe('Qwen3.6 27B · Flash')
-    // Quant-only ids are unchanged: quant stays off the pill.
-    expect(modelDisplayParts('Qwen3.6-27B-Q8_0')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q8' })
-    expect(formatModelPillLabel('Qwen3.6-27B-Q8_0')).toBe('Qwen3.6 27B')
   })
 
   describe('currentPickerSelection', () => {

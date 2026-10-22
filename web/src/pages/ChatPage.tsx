@@ -84,6 +84,7 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
+import { installTerminalLongPress } from "@/lib/terminal-long-press";
 import { installTerminalTouchScroll } from "@/lib/terminal-touch-scroll";
 import { uploadChatImage } from "@/lib/chatImagePaste";
 import { attachChatImageDropListeners } from "@/lib/chat-image-drop";
@@ -930,92 +931,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
     term.open(host);
 
-    // Touch scrolling (iOS Safari/Firefox): xterm's viewport doesn't pan on
-    // touch, so the gesture falls through to the page (pull-to-refresh /
-    // rubber-band). Claim vertical swipes and scroll the transcript instead.
-    host.style.touchAction = "none";
-    host.style.overscrollBehavior = "contain";
+    // Mobile long-press → native-selectable text overlay (xterm's canvas can't
+    // do touch selection). Drag scrolling stays owned by
+    // installTerminalTouchScroll above; this only watches for a still hold.
+    // Suppress the iOS callout so it doesn't race the overlay.
     host.style.setProperty("-webkit-touch-callout", "none");
-    let touchY: number | null = null;
-    let touchRemainder = 0;
-    // Long-press (no movement) → open the native-selectable text overlay;
-    // the canvas renderer can't do touch selection itself.
-    let longPressTimer = 0;
-    let longPressCleanup: (() => void) | null = null;
-    let touchStartX = 0;
-    let touchStartY = 0;
-    const cancelLongPress = () => {
-      if (longPressTimer) {
-        window.clearTimeout(longPressTimer);
-        longPressTimer = 0;
-      }
-    };
-    const onTouchStart = (ev: TouchEvent) => {
-      touchY = ev.touches.length === 1 ? ev.touches[0].clientY : null;
-      touchRemainder = 0;
-      cancelLongPress();
-      if (ev.touches.length === 1) {
-        touchStartX = ev.touches[0].clientX;
-        touchStartY = ev.touches[0].clientY;
-        longPressTimer = window.setTimeout(() => {
-          longPressTimer = 0;
-          touchY = null;
-          openSelectModeRef.current?.();
-        }, 450);
-      }
-    };
-    const onTouchMove = (ev: TouchEvent) => {
-      if (
-        longPressTimer &&
-        (ev.touches.length !== 1 ||
-          Math.hypot(ev.touches[0].clientX - touchStartX, ev.touches[0].clientY - touchStartY) > 10)
-      ) {
-        cancelLongPress();
-      }
-      if (touchY === null || ev.touches.length !== 1) return;
-      const y = ev.touches[0].clientY;
-      const lineHeight = Math.max(10, host.clientHeight / Math.max(1, term.rows));
-      touchRemainder += (touchY - y) / lineHeight;
-      touchY = y;
-      const lines = Math.trunc(touchRemainder);
-      if (lines !== 0) {
-        term.scrollLines(lines);
-        touchRemainder -= lines;
-      }
-      ev.preventDefault();
-    };
-    const onTouchEnd = () => {
-      touchY = null;
-      cancelLongPress();
-    };
-    host.addEventListener("touchstart", onTouchStart, { passive: true });
-    host.addEventListener("touchmove", onTouchMove, { passive: false });
-    host.addEventListener("touchend", onTouchEnd, { passive: true });
-    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    // Mobile browsers turn a long-press into `contextmenu` (and then cancel
-    // the touch), which xterm would treat as a right-click. On touch input,
-    // claim it and open the selectable-text overlay instead.
-    let lastTouchAt = 0;
-    const noteTouch = () => {
-      lastTouchAt = Date.now();
-    };
-    host.addEventListener("touchstart", noteTouch, { passive: true, capture: true });
-    const onContextMenu = (ev: MouseEvent) => {
-      const fromTouch =
-        Date.now() - lastTouchAt < 2000 ||
-        (ev as PointerEvent).pointerType === "touch";
-      if (!fromTouch) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      cancelLongPress();
-      touchY = null;
+    const cleanupLongPress = installTerminalLongPress(host, () => {
       openSelectModeRef.current?.();
-    };
-    host.addEventListener("contextmenu", onContextMenu, true);
-    longPressCleanup = () => {
-      host.removeEventListener("touchstart", noteTouch, true);
-      host.removeEventListener("contextmenu", onContextMenu, true);
-    };
+    });
 
     // IME composition guard (fixes #52111).
     //
@@ -1785,8 +1708,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();
-      cancelLongPress();
-      longPressCleanup?.();
+      cleanupLongPress();
       compositionForwarder.dispose();
       cleanupTouchScroll();
       handleBrowserDropCleanup();

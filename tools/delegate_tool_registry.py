@@ -6,6 +6,8 @@ import logging
 import json
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
 from tools.registry import tool_error
@@ -65,7 +67,7 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         sid = record.get("subagent_id")
         if not sid:
             return
-        _recent_subagents[sid] = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")}
+        _recent_subagents[sid] = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id", "owner_db_path")}
         while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
             _recent_subagents.pop(next(iter(_recent_subagents)), None)
 
@@ -103,6 +105,41 @@ def interrupt_subagent(subagent_id: str) -> bool:
     except Exception as exc:
         logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
         return False
+
+def request_session_subagent_stop(subagent_id: str, session_id: str, db: Any) -> Optional[str]:
+    """Admit a single cooperative stop only for the owning profile DB and session lineage.
+
+    The registry record owns idempotency, so it expires with the child. A recent owned
+    completion returns 'finished'; unknown and foreign children are indistinguishable.
+    Acceptance never claims that the worker already exited or rewrites its manifest.
+    """
+    db_path = getattr(db, "db_path", None)
+    if not isinstance(db_path, (str, Path)):
+        return None
+    owner = SimpleNamespace(session_id=session_id, _session_db=db)
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id) or _recent_subagents.get(subagent_id)
+        if record is None or not _owns_subagent_record(record, owner):
+            return None
+        path = record.get("owner_db_path")
+        if not isinstance(path, (str, Path)) or Path(path).resolve() != Path(db_path).resolve():
+            return None
+        agent = record.get("agent")
+        if agent is None:
+            return "finished"
+        if record.get("api_stop_requested"):
+            return "stopping"
+        record["api_stop_requested"] = True
+    try:
+        if request_hard_interrupt(agent, "Stop requested via session API", tool_reason="subagent stop"):
+            return "stopping"
+    except Exception:
+        logger.exception("session subagent stop failed")
+    with _active_subagents_lock:
+        if _active_subagents.get(subagent_id) is record:
+            record.pop("api_stop_requested", None)
+    return "failed"
+
 
 def _subagent_transport_matches(record, transport) -> bool:
     """Authority follows the owning session's LIVE transport slot, read at check time.
@@ -168,7 +205,7 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
+_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer", "owner_db_path", "api_stop_requested"})
 
 def list_active_subagents() -> list[dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,

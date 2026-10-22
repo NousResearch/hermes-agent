@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    （僅下一輪有效 — 回應一次後即還原）"
     switch_cancelled: "🟡 已取消切換模型。目前模型不變（{model}）。"
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_文字備援：回覆 `{prefix}approve` 以切換，或 `{prefix}cancel` 以保留目前模型。_"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **作用中的代理與任務**"
     active_agents: "**作用中代理：** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
     share_hint: "請將這些連結分享給 Hermes 團隊以取得支援。"
     report_label: "報告"
+    local_refused: "`/debug local` 會把報告留在執行 Hermes 的機器上，因此無法在聊天中使用。傳送 `/debug` 可上傳摘要報告。"
   deny:
     stale: "❌ 指令已拒絕（批准已過期）。"
     no_pending: "沒有待拒絕的指令。"
@@ -443,6 +446,9 @@ gateway:
     state_no: "否"
     queued: "**排隊中的後續：** {count}"
     platforms: "**已連線平台：** {platforms}"
+  discard:
+    nothing: "沒有可捨棄的內容：此聊天沒有在重新啟動時遺失的回合。"
+    done: "🗑️ 已捨棄 {count} 個遺失的回合；未重新執行。現在會回覆你已儲存的訊息。"
   stop:
     stopped_pending: "⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。"
     stopped: "⚡ 已停止。你可以繼續此工作階段。"
@@ -685,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ 發生錯誤，我無法完成這則回覆。{hint}\n請使用 /retry 重試，或使用 /new 開始新的對話。技術細節請見閘道日誌（`hermes logs`）。"
     history_unavailable: "⚠️ 此工作階段的歷史紀錄暫時無法使用，因此這則訊息未被處理。請管理者檢查 state.db，恢復正常後再重新傳送。只有在你確實想開始新對話時才使用 /reset。"
     no_credentials: "⚠️ 我無法連上 AI 模型服務，因此這則訊息未被處理。請使用 /login 重新登入，或使用 /model 選擇其他模型。若持續失敗，請在主機上執行 `hermes doctor`。"
+    cron_session_read_only: "⚠️ 此聊天屬於一個排程工作，只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。"
   skills:
     disabled: "**{name}** 技能已安裝但已停用。\n啟用方式：`hermes skills config`"
     not_installed: "**{name}** 技能可用但尚未安裝。\n安裝方式：`hermes skills install {install_name}`"
@@ -1528,6 +1535,8 @@ slash:
     description: "將分享的設定檔封存檔匯入為新設定檔"
   stop:
     description: "終止所有執行中的背景程序"
+  discard:
+    description: "捨棄 Hermes 重新啟動時遺失的回合，讓此聊天的佇列繼續執行"
   pause:
     description: "全域暫停新工作（緊急停止）；'/pause off' 恢復"
   deny:
@@ -1681,6 +1690,21 @@ slash:
   quit:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
+  modern:
+    thought_for: "思考了 {seconds} 秒"
+    thought: "思考"
+    working: "工作中…"
+    preparing: "正在準備 {what}…"
+    hint_steer: "引導"
+    hint_queue: "排隊"
+    hint_interrupt: "中斷"
+    hint_stop: "停止"
+    hint_commands: "指令"
+    hint_files: "檔案"
+    hint_shell: "終端"
+    placeholder_busy_steer: "輸入以引導本輪 · Tab 排到之後"
+    placeholder_busy_interrupt: "輸入以改變本輪方向 · Tab 排到之後"
+    placeholder_busy_queue: "輸入以排隊一則本輪結束後的訊息"
   billing:
     load_failed: "{label}：{error}"
     load_failed_label: "無法載入帳務資訊"
@@ -1966,6 +1990,7 @@ cli:
     desc_switch_anyway: "在目前的 Hermes 工作階段使用此模型。"
     choice_cancel: "取消"
     desc_keep_current_model: "保留目前的模型。"
+    confirm_choice_prompt: "選擇 [1/2]："
     switch_cancelled: "已取消切換模型。"
     selection_failed: "✗ 選擇模型失敗：{error}"
     switch_failed: "⚠ 切換至模型 {model} 失敗（{error}）；維持使用 {old_model}。"
@@ -2223,6 +2248,7 @@ cli:
     queue_heading: "佇列 · {count} 個排隊中 · /queue list{controls}"
     more_queued: "還有 {count} 個"
     transcript_unavailable: "即時逐字稿尚未可用。"
+    control_pending: "傳送中…"
     steer_prompt: "引導："
     roster_empty: "沒有進行中的子代理或背景程序。結果會出現在對話中。"
     entry_gone: "此項目已不再進行中。"
@@ -2361,6 +2387,14 @@ cli:
     move_out_of_range: "佇列移動超出範圍。目前佇列長度：{size}"
     moved: "已將佇列項目 {source} 移至 {destination}。"
     usage_add: "用法：/queue add <prompt>"
+    gateway_refused: "閘道未將其加入佇列：{error}。未加入任何內容；請在本輪結束後重新傳送。"
+    submit_unknown: "閘道未回應（{error}），提示可能已在佇列中。重新傳送前請先查看 /queue list。"
+    move_gateway_fifo: "閘道依傳送順序執行佇列中的提示；請改為編輯或刪除其中一則。"
+    remove_refused: "無法移除佇列項目 {index}：{error}"
+    edit_refused: "無法編輯佇列項目 {index}：{error}"
+    already_started: "佇列項目 {index} 已開始執行；將依原樣執行。"
+    started_stopped: "佇列項目 {index} 已開始執行；閘道已將其停止。"
+    change_unknown: "閘道未回應佇列項目 {index}（{error}）；請先查看 /queue list 再重試。"
   reload:
     env_reloaded: "已重新載入 .env（更新了 {count} 個變數）"
   steer:
@@ -3001,6 +3035,10 @@ cli:
       usage_disconnect: "disconnect   還原為預設瀏覽器後端"
       usage_status: "status       顯示目前的瀏覽器模式"
       usage_use: "use [off]    切換至 Browser Use 模式（CLI 3.0）／切回內建工具"
+      remote_gateway: "/browser connect 與 /browser disconnect 管理閘道主機上的 Chromium 系瀏覽器 — 僅在連線至本機閘道時可用。"
+      checking: "正在檢查 {url} 的 Chromium 系瀏覽器遠端偵錯..."
+      new_sessions_only: "套用於新工作階段 — 此工作階段保留目前工具（/new 開始新的）。"
+      status_gateway_default: "🌐 瀏覽器：閘道的預設瀏覽器後端（無即時 CDP 連線）"
     heartbeat:
       label: "心跳"
       paused: "⏸ 心跳已暫停：{prompt}"
@@ -3109,6 +3147,10 @@ cli:
     loaded: "（已載入）"
     not_found: "（找不到）"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "未設定！"
     value_not_set: "未設定"
     section_model: "模型"
@@ -3290,8 +3332,22 @@ cli:
     next_session_deepens: "下一次 `hermes -w` 工作階段會加深複製並自動清理已合併的工作樹。"
     unpushed_keeping: "⚠ 工作樹有未推送的提交，保留：{path}"
     uncommitted_keeping: "⚠ 工作樹有未提交的變更，保留：{path}"
+    kept_reason: "⚠ 保留工作樹（{reason}）：{path}"
     clean_up_manually: "手動清理方式：git worktree remove --force {path}"
     cleaned_up: "✓ 工作樹已清理：{path}"
+    exit_question_dirty: "此工作樹有未提交的變更：{path}"
+    exit_question_unpushed: "此工作樹有未推送的提交：{path}"
+    exit_choice_keep: "保留工作樹（預設）"
+    exit_choice_archive: "封存並移除（可還原）"
+    exit_choice_discard: "移除並捨棄變更"
+    archiving: "正在封存 {path} …(大型工作樹可能需要一些時間)"
+    archived: "✓ 工作樹已封存至 {ref} 並移除：{path}"
+    restore_hint: "還原方式：hermes worktree restore {name}"
+    archive_failed: "✗ 無法封存 {path}，保留：{error}"
+    archived_kept: "✓ 工作樹已封存至 {ref}，但已保留（{reason}）：{path}"
+    sweep_archived_removed: "已封存並移除 → {ref}"
+    sweep_archived_kept: "已封存，保留（{reason}）→ {ref}"
+    discarded: "工作樹已移除，變更已捨棄：{path}"
 display:
   verb:
     web_search: "搜尋網頁中"
@@ -3720,7 +3776,7 @@ tips:
   t241: "閘道會為每個工作階段快取 AIAgent 實例 — 清除這個快取會破壞 Anthropic 的提示快取。"
   t242: "任何網站都可以透過 /.well-known/skills/index.json 公開技能 — 技能中心會自動發現它們。"
   t243: "~/.hermes/skills/.hub/audit.log 的技能稽核日誌會記錄每一次安裝與移除操作。"
-  t244: "過期的 git 工作樹會在啟動時自動清理：乾淨且已完全合併的樹會被移除；有未提交或未推送的工作則一律保留。"
+  t244: "過期的 git 工作樹會自動清理：乾淨且已合併的樹會被移除；閒置且有未提交或未推送工作的樹會先封存，可用 hermes worktree restore 還原。"
   t245: "設定檔透過 HERMES_HOME 隔離 Hermes 狀態；除非 terminal.home_mode 設為 profile，主機工具子程序會保留你真正的 HOME。"
   t246: "HERMES_HOME_MODE 環境變數（八進位，例如 0701）可設定自訂目錄權限，供網頁伺服器穿越存取。"
   t247: "容器模式：在 HERMES_HOME 放置 .container-mode，主機 CLI 就會自動 exec 進入容器。"

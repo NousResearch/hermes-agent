@@ -116,7 +116,7 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, *, report_ownership_refusal: bool = True) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -130,7 +130,8 @@ def _admit_prompt_turn(
         with session["history_lock"]:
             session["running"] = False
             session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
-        _emit("error", sid, {"message": str(ownership_refusal)})
+        if report_ownership_refusal:
+            _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
         if session.get("_closing") or (
@@ -462,15 +463,17 @@ def _run_post_turn_followups(
         from tools.process_registry import process_registry
         # _release_turn_scopes / _post_turn_housekeeping have released the worker's runtime scopes. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
-        with _session_profile_runtime_scope(session):
-            drained = process_registry.drain_notifications(
-                session_key=session.get("session_key", ""),
-                owns_event=lambda e: _session_owns_notification_event(sid, session, e),
-                skip_poll_observed=False)
-            from tools.process_registry_notifications import format_process_notification
+        from tools.process_registry_awaiting import drained_for
+        from tools.process_registry_notifications import format_process_notification, should_surface_notification
+        key = session.get("session_key", "")
+        owns = lambda e: process_registry._owns_event(
+            e, key, lambda evt: _session_owns_notification_event(sid, session, evt), e.get("type") == "async_delegation")
+        # Every dequeued event's owner — this session's and any other session's — stays held until the foreign events
+        # are requeued and ours are routed, so the reapers never see an owner whose notice is in nobody's hands.
+        with _session_profile_runtime_scope(session), drained_for(process_registry, owns) as mine:
             deferred = []
             _notif_handle_ready(
-                sid, session, [event for event, _text in drained],
+                sid, session, [evt for evt in mine if should_surface_notification(evt)],
                 session.setdefault("_notification_emitted", set()), process_registry,
                 format_process_notification, deferred, owned=True)
             for event in deferred:
@@ -878,50 +881,20 @@ def _absorb_turn_result(
 
 
 def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
-    """Report committed row addresses, never a text/timestamp search for a matching turn.
-
-    The agent's persistence cursor is re-anchored during compaction. A partial receipt can
-    address its surviving rows, but cannot retire a client's entire streamed turn. Full coverage
-    additionally requires the unchanged pre-turn prefix and no redirected user boundary.
-    """
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    """Committed row addresses of this turn (``agent.persisted_turn_receipt``); the pre-turn
+    prefix is unchanged when every history row kept its committed row id."""
+    from agent.persisted_turn_receipt import committed_row_id, persisted_turn_receipt
 
     messages = st.result.get("messages")
-    start = getattr(st.agent, "_persist_user_message_idx", None)
-    if (not isinstance(messages, list) or type(start) is not int or not 0 <= start < len(messages)
-            or messages[start].get("role") != "user"):
-        return None
-
-    def committed_id(message):
-        row_id = message.get("_row_id")
-        return row_id if message.get(_DB_PERSISTED_MARKER) and type(row_id) is int and row_id > 0 else None
-
-    tail = messages[start:]
-    anchor_id = committed_id(tail[0])
-    if any(before is tail[0] or (anchor_id is not None and anchor_id == committed_id(before))
-           for before in st.history):
-        return None  # preflight returned the old transcript, not a new turn
-    row_ids = [rid for message in tail if (rid := committed_id(message)) is not None]
-    if not row_ids:
-        return None
-    receipt = {"row_ids": row_ids, "complete": False}
-    if (user_row_id := committed_id(tail[0])) is not None:
-        receipt["user_row_id"] = user_row_id
-    last = tail[-1]
-    # Equality only verifies the structurally selected final row's body: it never selects an identity.
-    if (status == "complete" and last.get("role") == "assistant" and not last.get("tool_calls")
-            and last.get("content") == raw and (final_id := committed_id(last)) is not None):
-        receipt["final_assistant_row_id"] = final_id
-    prefix_unchanged = start == len(st.history) and all(
-        committed_id(before) is not None and committed_id(before) == committed_id(after)
-        for before, after in zip(st.history, messages[:start]))
-    receipt["complete"] = bool(
-        prefix_unchanged and type(st.compression_count) is int
-        and st.compression_count == getattr(getattr(st.agent, "context_compressor", None), "compression_count", None)
-        and len(row_ids) == len(tail)
-        and sum(message.get("role") == "user" for message in tail) == 1
-        and "final_assistant_row_id" in receipt)
-    return receipt
+    if not isinstance(messages, list):
+        return None  # no turn suffix to address (failed/preflight turns never staged history)
+    return persisted_turn_receipt(
+        messages, getattr(st.agent, "_persist_user_message_idx", None), st.history,
+        raw, status,
+        compression_unchanged=type(st.compression_count) is int and st.compression_count == getattr(
+            getattr(st.agent, "context_compressor", None), "compression_count", None),
+        prefix_row_matches=lambda before, after: (
+            committed_row_id(before) is not None and committed_row_id(before) == committed_row_id(after)))
 
 
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
@@ -1121,7 +1094,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1131,7 +1104,8 @@ def _run_prompt_submit(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+        report_ownership_refusal=report_ownership_refusal)
     if admitted is None:
         return False
     images, agent = admitted

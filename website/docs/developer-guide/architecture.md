@@ -117,13 +117,14 @@ hermes-agent/
 │   ├── mirror.py             # Cross-session message mirroring
 │   ├── status.py             # Token locks, profile-scoped process tracking
 │   ├── builtin_hooks/        # Extension point for always-registered hooks (none shipped)
-│   └── platforms/            # Built-in adapters: signal, weixin, bluebubbles,
-│                             #   qqbot, whatsapp_cloud, yuanbao, webhook, api_server
+│   └── platforms/            # Core ingress adapters: api_server, webhook,
+│                             #   msgraph_webhook
 │
 ├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
 │                             #   whatsapp, matrix, mattermost, email, sms, dingtalk,
 │                             #   feishu, wecom, irc, line, teams, google_chat,
-│                             #   buzz, ntfy, photon, raft, simplex
+│                             #   buzz, ntfy, photon, raft, simplex, whatsapp_cloud,
+│                             #   signal, weixin, bluebubbles, qqbot, yuanbao
 │                             #   (Home Assistant: `homeassistant` catalog plugin)
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)

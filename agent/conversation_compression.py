@@ -43,6 +43,7 @@ from agent.session_activity import ActivityProvenance, normalize_activity_proven
 from agent.usage_anchor import set_usage_anchor
 from hermes_state_ids import new_session_id as mint_session_id
 from hermes_state_pidns import holder_namespace_token
+from agent.conversation_compression_watermark import held_archive_watermark
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +503,13 @@ class CompressionCommitFence:
             raise ValueError("total compression ceiling must be positive")
         self._deadline = time.monotonic() + seconds
 
+    def set_precommit_deadline_monotonic(self, deadline: float) -> None:
+        """Arm one absolute pre-commit deadline shared across route attempts (primary + stall retry)."""
+        deadline = float(deadline)
+        if deadline <= 0:
+            raise ValueError("compression deadline must be positive")
+        self._deadline = deadline
+
     def extend_deadline(self, seconds: float) -> bool:
         """Push the armed deadline back by *seconds* (time llama-server spent reading the prompt). A cancelled
         attempt or a passed deadline stays final, so a late progress chunk can't revive it; while a commit or a
@@ -918,6 +926,7 @@ def request_exceeds_model_window(agent: Any, request_tokens: Any) -> Optional[bo
 def _retry_compression_on_fallback_chain(
     *, worker: Callable[[CompressionCommitFence], tuple[list, str]], messages: list,
     system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,
+    precommit_deadline_monotonic: float,
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     on_timeout_cause: Optional[Callable[[bool, bool], None]] = None, telemetry_agent: Any = None,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None, escalate_deterministic: bool = False,
@@ -929,10 +938,12 @@ def _retry_compression_on_fallback_chain(
     before. The entry's ``timeout`` sets the idle window. Re-runs the whole worker, so pre-compression
     callbacks must be idempotent.
 
-    The retry is bounded the same way the primary was: silence for one idle window ends it, while a fallback
-    that is streaming keeps its ceiling. The entry's own ``timeout`` (when declared) sets that idle window,
-    so a fallback tuned for a slower-but-healthy backend is not held to a deadline the stalled primary
-    defined (#62452 semantics, applied to the stall path).
+    A summary-model retry spends only the primary's REMAINING pre-commit budget
+    (``precommit_deadline_monotonic``, shared with the primary attempt), so a stalled primary plus a
+    stalled fallback cannot each burn a full ceiling; when the budget is spent the retry is skipped. The
+    entry's own ``timeout`` (when declared) still sets the retry's idle window (#62452), clamped to that
+    remaining budget. The deterministic route makes no provider call, so it keeps its own budget: it is
+    the over-window last resort (#114594) and must not be starved by the routes that stalled before it.
     Known limitation (accepted, #96634 review): the retry re-runs the COMPLETE worker, which repeats
     memory/plugin pre-compression callbacks. Built-in callbacks are idempotent (re-reads and overwrites of
     attempt-scoped state); third-party plugin callbacks are advised to be. Splitting the worker to resume
@@ -947,6 +958,7 @@ def _retry_compression_on_fallback_chain(
         recovered = _run_pinned_compression_retry(
             route, worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
             idle_timeout_seconds=idle_timeout_seconds, total_ceiling_seconds=total_ceiling_seconds,
+            precommit_deadline_monotonic=precommit_deadline_monotonic,
             on_commit_overrun=on_commit_overrun, on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent,
             new_fence=new_fence,
         )
@@ -958,10 +970,17 @@ def _retry_compression_on_fallback_chain(
 def _run_pinned_compression_retry(
     route: dict, *, worker: Callable[[CompressionCommitFence], tuple[list, str]], messages: list,
     system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,
+    precommit_deadline_monotonic: float,
     on_commit_overrun: Optional[Callable[[float, float], None]], on_timeout_cause: Optional[Callable[[bool, bool], None]],
     telemetry_agent: Any, new_fence: Optional[Callable[[], CompressionCommitFence]],
 ) -> Optional[tuple[list, str]]:
     """One bounded re-run of ``worker`` with ``route`` pinned; ``None`` when it produced no compression."""
+    deterministic = route.get("deterministic") is True
+    if not deterministic and time.monotonic() >= precommit_deadline_monotonic:
+        logger.info(
+            "Skipping compression stall fallback on %s: the shared pre-commit ceiling is spent", route["label"],
+        )
+        return None
     # The aborted fence refuses all commits; mint a fresh one via the host factory
     # so a /stop during the retry serializes against THIS attempt's commit boundary.
     retry_fence = None
@@ -981,8 +1000,19 @@ def _run_pinned_compression_retry(
         )
         retry_fence = CompressionCommitFence()
     idle = float(route.get("timeout") or idle_timeout_seconds)
-    ceiling = max(float(total_ceiling_seconds), idle)
-    deterministic = route.get("deterministic") is True
+    if deterministic:
+        # No provider call to stall on: its own budget, not the leftover the stalled routes left.
+        ceiling, deadline = max(float(total_ceiling_seconds), idle), None
+    else:
+        ceiling, deadline = precommit_deadline_monotonic - time.monotonic(), precommit_deadline_monotonic
+        if ceiling <= 0:
+            retry_fence.revoke_commit_admission()
+            logger.info(
+                "Skipping compression stall fallback on %s: its setup spent the shared pre-commit ceiling",
+                route["label"],
+            )
+            return None
+        idle = min(idle, ceiling)
     if deterministic:
         logger.warning(
             "Context compression stalled on every summary route — committing the %s (no summary model) "
@@ -991,7 +1021,8 @@ def _run_pinned_compression_retry(
     else:
         logger.warning(
             "Context compression stalled on the configured summary route — "
-            "retrying once on %s (%s) before continuing without compression", route["label"], route["model"],
+            "retrying once on %s (%s) within %.1fs of the shared pre-commit budget before continuing "
+            "without compression", route["label"], route["model"], ceiling,
         )
     compressor = getattr(telemetry_agent, "context_compressor", None)
     streak_before = getattr(compressor, "_fallback_compression_streak", 0)
@@ -1002,7 +1033,7 @@ def _run_pinned_compression_retry(
                 worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
                 idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, fence=retry_fence, telemetry_agent=telemetry_agent,
-                stall_fallback=False,
+                stall_fallback=False, precommit_deadline_monotonic=deadline,
             )
     except Exception:
         # The primary already failed; a failing fallback must degrade, never
@@ -1149,6 +1180,7 @@ def run_compress_context_with_progress_timeout(
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
     fallback_worker: Optional[Callable[[CompressionCommitFence], tuple[list, str]]] = None,
     request_exceeds_window: bool = False,
+    precommit_deadline_monotonic: Optional[float] = None,
 ) -> tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware (idle + ceiling) timeout.
     Budgets bound the PRE-commit phase only: an admitted commit always completes (overrun logged, surfaced
@@ -1156,7 +1188,9 @@ def run_compress_context_with_progress_timeout(
     callable), detaching the worker; a stall first retries the chain once on ``new_fence``, then on_timeout.
     ``request_exceeds_window``: the request this compaction must shrink is above the model's context
     window, so "continue without compression" is not an option — a stall escalates to the deterministic
-    fallback summary on the FIRST timeout instead of waiting for a prior stall in the session (#114594)."""
+    fallback summary on the FIRST timeout instead of waiting for a prior stall in the session (#114594).
+    ``precommit_deadline_monotonic``: an absolute deadline inherited from an earlier attempt (the stall
+    retry passes the primary's), clamping this attempt's ceiling so the attempts share one budget."""
     if idle_timeout_seconds <= 0:
         raise ValueError(
             "run_compress_context_with_progress_timeout requires "
@@ -1175,8 +1209,18 @@ def run_compress_context_with_progress_timeout(
     # the Desktop for 10 minutes per turn).
     if request_exceeds_window:
         ceiling = idle
+    wait_started = time.monotonic()
+    if precommit_deadline_monotonic is None:
+        precommit_deadline_monotonic = wait_started + ceiling
+    else:
+        ceiling = min(ceiling, float(precommit_deadline_monotonic) - wait_started)
+        if ceiling <= 0:
+            if fence is not None:
+                fence.revoke_commit_admission()
+            return messages, _resolve_fallback_prompt()
+        idle = min(idle, ceiling)
     fence = fence if fence is not None else CompressionCommitFence()
-    fence.set_total_ceiling_seconds(ceiling)
+    fence.set_precommit_deadline_monotonic(precommit_deadline_monotonic)
     # Read BEFORE this attempt runs: the host's ``stalled`` record and the cancelled worker's
     # ``stall_interrupted`` record both land during the unwind below, and this stall must not count as
     # One prior timeout-class failure = the route already burned a full idle window. An over-window request
@@ -1227,7 +1271,6 @@ def run_compress_context_with_progress_timeout(
         _release_compression_admission()
         raise
     future.add_done_callback(_release_compression_admission)
-    wait_started = time.monotonic()
     # EVERY host unwind must revoke commit admission or a detached worker could
     # later mutate durable state; handled_exit marks paths that settle it themselves
     handled_exit = False
@@ -1249,7 +1292,10 @@ def run_compress_context_with_progress_timeout(
         if stall_fallback:
             recovered = _retry_compression_on_fallback_chain(
                 worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
-                idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
+                idle_timeout_seconds=idle, total_ceiling_seconds=ceiling,
+                # Prompt reading moves the fence deadline after the primary armed it.
+                precommit_deadline_monotonic=fence.deadline_monotonic or precommit_deadline_monotonic,
+                on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
                 escalate_deterministic=escalate_deterministic,
             )
@@ -1329,82 +1375,7 @@ def run_compress_context_with_progress_timeout(
             fence.revoke_commit_admission()
 
 
-class CompressionCheckpointUnavailable(RuntimeError):
-    """Raised when required durable pre-compress checkpointing is unavailable."""
-
-
-# Shared by the startup warning and compress-time block so operators see the
-# same recovery path: disable the fail-closed flag, or switch providers.
-_CHECKPOINT_REQUIRED_REMEDIATION = (
-    "set compression.checkpoint_required: false, or switch to a memory "
-    "provider that implements checkpoint API v2"
-)
-
-
-def _active_memory_provider_label(agent: Any) -> str:
-    """Human-readable active provider name, or an explicit none sentinel."""
-    memory_manager = getattr(agent, "_memory_manager", None)
-    if memory_manager is None:
-        return "no active provider"
-    providers = getattr(memory_manager, "providers", None)
-    names: list[str] = []
-    if providers is not None:
-        try:
-            iterable = list(providers)
-        except TypeError:
-            iterable = []
-        for provider in iterable:
-            name = getattr(provider, "name", None)
-            if isinstance(name, str) and name.strip():
-                names.append(name.strip())
-    return ", ".join(names) if names else "no active provider"
-
-
-def _checkpoint_blocked(reason: str) -> CompressionCheckpointUnavailable:
-    return CompressionCheckpointUnavailable(
-        f"BLOCKED_MISSING_PREREQUISITE: required pre-compress checkpoint unavailable: {reason}"
-    )
-
-
-def _checkpoint_incapable(reason: str) -> CompressionCheckpointUnavailable:
-    """Capability refusal: the gate can never pass with this provider set, so the
-    message carries the config-level way out. Transient checkpoint failures keep
-    the plain form — there the provider is capable and the right move is a retry."""
-    return _checkpoint_blocked(f"{reason}. Recover by {_CHECKPOINT_REQUIRED_REMEDIATION}")
-
-
-def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
-    """Startup warning when fail-closed compress will block (init itself must not refuse).
-
-    Capability-probe exceptions are suppressed so a broken provider cannot crash
-    agent construction — same fail-open style as the micro-compact warning.
-    Probe failures log at DEBUG so a flaky probe can be diagnosed without
-    refusing init or emitting the incapable-provider WARNING.
-    """
-    if getattr(agent, "compression_checkpoint_required", False) is not True:
-        return
-    memory_manager = getattr(agent, "_memory_manager", None)
-    if memory_manager is not None:
-        supports_checkpoint = getattr(memory_manager, "supports_pre_compress_checkpoint", None)
-        if callable(supports_checkpoint):
-            try:
-                if bool(supports_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION)):
-                    return
-            except Exception as exc:
-                logger.debug(
-                    "checkpoint-required capability probe failed; init continues: %s",
-                    exc,
-                    exc_info=True,
-                )
-                return
-    logger.warning(
-        "compression.checkpoint_required is enabled but the active memory "
-        "provider (%s) does not implement checkpoint API v%s. Compress will "
-        "fail closed. Recover by %s.",
-        _active_memory_provider_label(agent),
-        PRE_COMPRESS_CHECKPOINT_API_VERSION,
-        _CHECKPOINT_REQUIRED_REMEDIATION,
-    )
+from agent.conversation_compression_checkpoint import _checkpoint_blocked, _checkpoint_incapable
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -3246,18 +3217,9 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     is carried unchanged (renumbering per rotation made one session look like many); its provenance is read BEFORE the
     transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable.
     """
-    with _swallow('Could not migrate goal on compression: %s'):
-        # Carry a persistent /goal onto the continuation session. Compression mints a fresh child id;
-        # load_goal does a flat per-session lookup with no parent walk, so without this an active goal
-        # silently dies at the boundary (#33618).
-        from hermes_cli.goals import migrate_goal_to_session
-        migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
-    with _swallow('Could not migrate heartbeat on compression: %s'):
-        from hermes_cli.heartbeat import migrate_heartbeat_to_session
-        migrate_heartbeat_to_session(old_session_id, agent.session_id)
-    with _swallow('Could not migrate loop on compression: %s'):
-        from hermes_cli.loops import migrate_loop_to_session
-        migrate_loop_to_session(old_session_id, agent.session_id, reason="compression")
+    # /goal, /heartbeat, /loop: carried locally, or atomically by the owner on a RuntimeSessionStore.
+    from agent.compression_automation import carry_compression_automation
+    carry_compression_automation(agent, old_session_id)
     with _swallow('Could not carry rejected thinking on compression: %s'):
         from agent.anthropic_thinking_replay import carry_rejected_thinking_to_session
         carry_rejected_thinking_to_session(agent, old_session_id)
@@ -3593,63 +3555,6 @@ class _CommitOutcome:
 def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbatim_tail: Optional[list]) -> Optional[int]:
     """The in-place commit's cap; see :func:`held_archive_watermark`."""
     return held_archive_watermark(agent._session_db, agent.session_id, watermark, messages, verbatim_tail)
-
-
-def held_archive_watermark(
-    session_db: Any, session_id: str, watermark: Optional[int], messages: list, verbatim_tail: Optional[list] = None,
-    *, stale_raises: bool = False,
-) -> Optional[int]:
-    """The in-place archive watermark, capped at the newest durable row the compressor was handed.
-
-    The lease watermark is the newest row in state.db, but a surface compacts the history it holds, and that
-    can be older: a Desktop/TUI or CLI ``/compress`` does not hold turns another surface appended to the same
-    session since it loaded. Archived under the watermark, those rows would leave every surface's
-    history and search, and the summary never saw them. Above the cap they take the concurrent-append path
-    instead (cloned after the compacted set).
-
-    Only while the held history is a live prefix of the session: its LAST row names an exact ``_row_id``, and
-    that row is still active (after another surface compacted, the held rows are archived and every live row
-    would be cloned beside the new summary). An id is exact while its dict is unchanged since it was loaded: a
-    dict loaded from the DB is born carrying both the id and the persist marker, and a pass that rewrote its
-    content drops the marker and keeps the id (the user/assistant merges in ``repair_message_sequence``, or a
-    context engine that rewrites in place). Such a row absorbed later durable rows whose ids are gone from the
-    held set, so its id no longer names what the summary covered: capped there, those rows would be cloned
-    live beside a summary that already contains them. A trailing row of unknown provenance may be durable
-    under the lease watermark without any stamp (the TUI model-switch marker, written with a bare
-    ``append_message``); capped below it, the clone would land beside its own carried copy. A ``here N`` tail
-    is marker-swept copies, so ``compress_now`` keeps a copy's id only when its source still carried the
-    marker; their ids are trusted as given.
-
-    *stale_raises*: the newest exact held row being inactive means another compaction already committed.
-    Under the in-place lease that cannot overlap a live compaction, so the lease watermark is returned; a
-    lease-less caller (prune, micro-compaction) passes ``True`` and gets :class:`StaleHeldHistory` instead,
-    because for it the fallback would publish a stale generation beside the winner.
-    """
-    if watermark is None:
-        return None
-    from agent.context_compressor import _DB_PERSISTED_MARKER, StaleHeldHistory
-
-    def _exact_id(m: dict, copied: bool) -> Optional[int]:
-        rid = m.get("_row_id")
-        if not isinstance(rid, int) or isinstance(rid, bool) or rid <= 0:
-            return None
-        return rid if copied or m.get(_DB_PERSISTED_MARKER) else None
-
-    ids = [_exact_id(m, False) for m in messages if isinstance(m, dict)]
-    ids += [_exact_id(m, True) for m in (verbatim_tail or ()) if isinstance(m, dict)]
-    held = [rid for rid in ids if rid is not None]
-    if not ids or ids[-1] is None:
-        return watermark
-    newest_held = max(held)
-    # A lease-less caller checks liveness even when nothing was appended: a commit-time re-check against a
-    # watermark read before the slow step never sees newest_held < watermark, yet the winner may have landed.
-    if newest_held >= watermark and not stale_raises:
-        return watermark
-    if session_db.get_message_role(session_id, newest_held) is None:
-        if stale_raises:
-            raise StaleHeldHistory(f"held row {newest_held} of session {session_id} is no longer active")
-        return watermark
-    return min(newest_held, watermark)
 
 
 _ATTEMPT_TELEMETRY_FIELDS = (

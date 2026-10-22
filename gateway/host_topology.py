@@ -66,7 +66,7 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
     # turn a leftover record into a permanent "running" lie on every surface. A record with no
     # recorded createTime is exactly that — ``_same_incarnation`` treats ``None`` as "matches", so
     # liveness_is_proven() would bless ANY process that happens to hold the recorded PID today.
-    if record.create_time is None or not hr.liveness_is_proven(record):
+    if record.create_time is None or not hr.record_names_live_owner(record):
         return None
     from gateway.host_attach import launched_by_other_tenant, record_home
     from hermes_constants import get_hermes_home

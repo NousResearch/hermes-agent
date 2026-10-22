@@ -358,6 +358,43 @@ class TestBuildApiKwargsNousPortal:
         extra = kwargs.get("extra_body", {})
         assert extra.get("tags") == nous_portal_tags(session_id=agent.session_id)
 
+    @pytest.mark.parametrize("data_use,provider", [
+        (None, None),
+        (["no_training"], {"data_collection": "deny"}),
+        (["zero_retention"], {"data_collection": "deny", "zdr": True}),
+    ])
+    def test_connector_data_use_asks_for_a_no_training_route_and_never_reaches_the_wire(
+            self, monkeypatch, data_use, provider):
+        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1", model="gpt-5")
+        tool = {"role": "tool", "tool_call_id": "c1", "content": "inbox"}
+        messages = [
+            {"role": "user", "content": "read my mail"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": "{}"}}]},
+            {**tool, **({"data_use": data_use} if data_use else {})},
+        ]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"].get("provider") == provider
+        assert kwargs["messages"][-1] == tool
+
+    def test_connector_data_use_is_not_sent_to_other_providers(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        messages = [{"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "provider" not in kwargs.get("extra_body", {})
+        assert "data_use" not in kwargs["messages"][-1]
+
+    def test_auxiliary_nous_call_carrying_a_connector_result_asks_for_a_no_training_route(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        messages = [{"role": "user", "content": "title this"},
+                    {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]}]
+        kwargs = _build_call_kwargs(provider="nous", model="hermes-4", messages=messages)
+        assert kwargs["extra_body"]["provider"] == {"data_collection": "deny"}
+
 
 
 class TestBuildApiKwargsCustomEndpoint:

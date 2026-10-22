@@ -16,7 +16,7 @@ export const zhHantAssistant = {
       hideNames: '隱藏名稱',
       skill: name => `技能 ${name}`,
       kind: { plugin: '外掛', skill: '技能' },
-      tier: { official: '官方', community: '社群' },
+      tier: { official: '官方', verified: '已驗證', community: '社群' },
       targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
       sendFailed: '無法傳送你的回覆，請再試一次。',
       commitLabel: '提交',
@@ -96,6 +96,10 @@ export const zhHantAssistant = {
         ssl_cert_verification: {
           title: '安全連線失敗',
           body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
+        },
+        cron_session_read_only: {
+          title: '此聊天屬於一個排程工作',
+          body: '它只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。'
         }
       },
       errorLayers: {

@@ -37,6 +37,7 @@ LAYER_DISK = "disk"
 _REASON_TO_LAYER = {
     "auth": LAYER_AUTH, "auth_permanent": LAYER_AUTH, "billing": LAYER_BILLING, "billing_unverified": LAYER_BILLING,
     "loop_error": LAYER_GATEWAY, "interpreter_shutdown": LAYER_GATEWAY, "session_busy": LAYER_GATEWAY,
+    "gateway_connection": LAYER_GATEWAY, "host_error": LAYER_GATEWAY,
     "truncated": LAYER_PROVIDER, "empty_response": LAYER_PROVIDER, "invalid_response": LAYER_PROVIDER,
     "context_overflow": LAYER_PROVIDER,  # a bigger-window model IS the fix, so Switch provider applies
 }
@@ -53,7 +54,7 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 # Kept in sync with ``classify_api_error``'s retryable=False verdicts.
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
-    "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
+    "provider_policy_blocked", "data_policy_denied", "model_not_found", "format_error", "ssl_cert_verification",
     "context_overflow", "interpreter_shutdown", "upstream_blocked",
 }
 

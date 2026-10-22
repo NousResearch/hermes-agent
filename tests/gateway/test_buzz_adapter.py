@@ -2873,11 +2873,11 @@ class TestBuzzAdapterLifecycle:
     @pytest.mark.asyncio
     async def test_disconnect_releases_scoped_lock(self, monkeypatch):
         """The identity lock taken in connect() must be released on disconnect."""
-        import gateway.status as gateway_status
+        import gateway.status_scoped_locks as scoped_locks
 
         released = []
         monkeypatch.setattr(
-            gateway_status,
+            scoped_locks,
             "release_scoped_lock",
             lambda platform, key: released.append((platform, key)),
         )

@@ -302,7 +302,7 @@ export const zhHantChat = {
       heartbeatEveryHours: hours => `每 ${hours} 小時`,
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
-      heartbeatDueWaitingForIdle: '已到期 — 等待會話閒置',
+      dueWaitingForIdle: '已到期 — 等待會話閒置',
       heartbeatActions: '活動訊號操作',
       pauseHeartbeat: '暫停活動訊號',
       resumeHeartbeat: '繼續活動訊號',

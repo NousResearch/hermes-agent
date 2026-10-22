@@ -8,10 +8,12 @@ stdin/stdout as pipes". Each spawn-per-call backend has a local argv prefix that
 (``docker exec -i``, ``ssh``, ``apptainer exec``); this module is the one place that knows it.
 
 SDK backends (modal, daytona, vercel) have no argv prefix: ``exec_prefix`` returns None there and
-the desktop stays on the gateway host (or refuses, per ``bot_desktop.placement``).
+the desktop stays on the gateway host (or refuses, per ``bot_desktop.placement``). Plugin backends
+that declare ``supports_streams`` supply the prefix from their environment's own ``exec_prefix()``.
 """
 from __future__ import annotations
 
+import logging
 import shlex
 import socket
 import subprocess
@@ -19,6 +21,8 @@ import threading
 from typing import Optional, Sequence
 
 from tools.environments.base import BaseEnvironment
+
+logger = logging.getLogger(__name__)
 
 
 def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive: bool = True) -> Optional[list[str]]:
@@ -47,7 +51,34 @@ def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive
         if not getattr(env, "_instance_started", False):
             return None
         return [env.executable, "exec", f"instance://{env.instance_id}"]
-    return None
+    return _plugin_exec_prefix(env, user=user, interactive=interactive)
+
+
+def _plugin_exec_prefix(env: BaseEnvironment, *, user: Optional[str], interactive: bool) -> Optional[list[str]]:
+    """A plugin environment's own ``exec_prefix()`` (``TerminalEnvironmentProvider.supports_streams``)."""
+    hook = getattr(env, "exec_prefix", None)
+    if not callable(hook):
+        return None
+    try:
+        prefix = hook(user=user, interactive=interactive)
+    except Exception:
+        logger.warning("%s.exec_prefix() failed; treating the backend as unable to stream",
+                       type(env).__name__, exc_info=True)
+        return None
+    if not prefix:
+        return None
+    if not isinstance(prefix, (list, tuple)):
+        # A plain string would be split into one-character argv words.
+        logger.warning("%s.exec_prefix() returned %s, not a list of argv words; treating the backend as unable "
+                       "to stream", type(env).__name__, type(prefix).__name__)
+        return None
+    return [str(part) for part in prefix]
+
+
+def sandbox_temp_dir(env: BaseEnvironment) -> str:
+    """``env.get_temp_dir()``, or ``/tmp`` for a plugin environment that doesn't subclass ``BaseEnvironment``."""
+    get_temp_dir = getattr(env, "get_temp_dir", None)
+    return str(get_temp_dir()) if callable(get_temp_dir) else "/tmp"  # no-tmp: ok — sandbox-side temp dir
 
 
 def supports_streams(env: BaseEnvironment) -> bool:

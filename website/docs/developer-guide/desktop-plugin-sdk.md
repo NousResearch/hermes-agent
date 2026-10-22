@@ -624,6 +624,7 @@ host.composer: {
   insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
   submit(sessionId: string | null, text: string): boolean
   focus(sessionId: string | null): void
+  setSpellcheck(sessionId: string | null, enabled: boolean): boolean
 }
 ```
 
@@ -660,6 +661,30 @@ and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
 
+### Composer spell check — `host.composer.setSpellcheck` {#composer-spellcheck}
+
+The composer inputs have Chromium's spell check **off**: browser spellcheck
+flagged code, paths and slash commands, which was more annoying than the
+squiggles were useful. That is the default, and `setSpellcheck` does not
+change it for anyone.
+
+It is there for a plugin that ships its own dictionary and rules. The user
+installed that plugin precisely to get spell checking, and the plugin can
+leave code and paths alone because it knows what they are — which the core
+inputs cannot, having no dictionary of their own.
+
+```ts
+// Turn spell check on for the active composer.
+const applied = host.composer.setSpellcheck(null, true)
+```
+
+Addressing matches the other composer verbs: `null` for the active composer,
+a session id for a specific one, `'new'` for the fresh draft. The setting is
+per-surface, so a plugin can spell check the primary composer and leave a
+tile alone. It returns `false` when no live composer answers for the address
+— fail-closed, like the rest of `host.composer`.
+
+ 
 ### Session rows — decorations + the session list API
 
 `SESSION_ROW_AREAS` (`leading`, `trailing`) let a plugin decorate sidebar

@@ -75,6 +75,7 @@ import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerScreenshot } from './hooks/use-composer-screenshot'
+import { useComposerSpellcheck } from './hooks/use-composer-spellcheck'
 import { useComposerSubmit } from './hooks/use-composer-submit'
 import { triggerKeyUpHandler, useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUndo } from './hooks/use-composer-undo'
@@ -1077,6 +1078,9 @@ export function ChatBar({
   // Global Esc-to-cancel when the chat (not the composer input) has focus.
   // Same explicit-halt semantics as the Stop button: park the queue.
   useComposerEscCancel({ awaitingInput, busy, onCancel: haltRun, target: scope.target })
+  // A plugin that ships its own dictionary can turn Chromium's spell
+  // check on for this composer. The default stays off (#44415).
+  useComposerSpellcheck({ target: scope.target, editorRef })
 
   const {
     conversation,

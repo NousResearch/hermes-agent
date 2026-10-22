@@ -5,6 +5,7 @@ import {
   requestComposerGetDraft,
   requestComposerInsertAcked,
   requestComposerSetDraft,
+  requestComposerSpellcheck,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
@@ -140,5 +141,31 @@ export const composerHost = {
     if (target !== null) {
       requestComposerFocus(target)
     }
+  },
+
+  /** Turn Chromium's spell check (the red squiggles) on or off for one
+   *  composer.
+   *
+   *  The inputs have spell check OFF by default (#44415) -- browser
+   *  spellcheck flagged code, paths and slash commands. This does not change
+   *  that for anyone: it is an opt-in for a plugin that ships its own
+   *  dictionary, where the user installed the plugin precisely to get
+   *  spell checking, and the plugin can leave code and paths alone because
+   *  it knows what they are.
+   *
+   *  Fail-closed like the rest of this surface: an address that resolves to
+   *  no live composer returns false and changes nothing. Addressing is the
+   *  same as every other verb -- `null` for the active composer, a session
+   *  id for a specific one, `'new'` for the fresh draft. */
+  setSpellcheck: (sessionId: null | string, enabled: boolean): boolean => {
+    const { target } = resolveComposerAddress(sessionId)
+
+    if (target === null) {
+      return false
+    }
+
+    requestComposerSpellcheck(enabled, target)
+
+    return true
   }
 }

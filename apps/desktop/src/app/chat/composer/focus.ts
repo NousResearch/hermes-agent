@@ -63,6 +63,7 @@ const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
+const SPELLCHECK_EVENT = 'hermes:composer-spellcheck'
 const DICTATION_EVENT = 'hermes:composer-dictation'
 const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
 
@@ -680,6 +681,34 @@ export const requestComposerDictation = (target: ComposerTarget | 'active' = 'ac
 
 export const onComposerDictationRequest = (handler: (target: ComposerTarget) => void) =>
   subscribe<{ target: ComposerTarget }>(DICTATION_EVENT, ({ target }) => handler(target))
+
+/**
+ * Turn Chromium's spell check on or off for ONE composer.
+ *
+ * The composer inputs have spell check OFF (#44415): browser spellcheck
+ * flagged code, paths and slash commands, which was more annoying than the
+ * squiggles were useful. That stays the default -- this verb does not change
+ * it for anyone.
+ *
+ * It exists for a plugin that provides its own dictionary and rules, where
+ * the user installed the plugin precisely to get spell checking. Such a
+ * plugin knows which of its suggestions are code or paths and can leave them
+ * alone; the core inputs cannot, because the core has no dictionary of its
+ * own.
+ *
+ * The setting is per-surface, like the other verbs on this bus: it addresses
+ * ONE composer, so a plugin can spell check the primary composer and leave a
+ * tile alone. A request addressed to a surface that is not mounted is
+ * dropped.
+ */
+export const requestComposerSpellcheck = (
+  enabled: boolean,
+  target: ComposerTarget | 'active' = 'active'
+) => dispatch<{ enabled: boolean; target: ComposerTarget }>(SPELLCHECK_EVENT, { enabled, target: resolve(target) })
+
+export const onComposerSpellcheckRequest = (
+  handler: (detail: { enabled: boolean; target: ComposerTarget }) => void
+) => subscribe<{ enabled: boolean; target: ComposerTarget }>(SPELLCHECK_EVENT, handler)
 
 /** The chat surface inside the zone the pointer is over, if any. Mirrors the
  *  tab verbs' hover-first targeting (`tabTargetGroupId`, #74447): the model

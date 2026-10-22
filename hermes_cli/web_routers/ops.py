@@ -540,14 +540,16 @@ async def reset_memory(body: MemoryReset, profile: Optional[str] = None):
     profile = destructive_profile(profile, "POST /api/memory/reset")
 
     def _run():
+        from tools.memory_tool_store import MemoryStore
+
         mem_dir = get_hermes_home() / "memories"
         deleted = []
         for fname, key in _MEMORY_FILES:
             path = mem_dir / fname
-            if target in {"all", key} and path.exists():
+            if target in {"all", key}:
                 try:
-                    path.unlink()
-                    deleted.append(fname)
+                    if MemoryStore.reset_file(path):
+                        deleted.append(fname)
                 except OSError as exc:
                     raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
         return {"ok": True, "deleted": deleted}

@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import threading
 import pytest
 from pathlib import Path
 
@@ -147,6 +148,54 @@ class TestMemoryFileLockPermissions:
                 pass
 
         assert outside.read_text(encoding="utf-8") == "do not touch"
+
+
+class TestMemoryStoreResetAndImportLocking:
+    def test_reset_waits_for_an_inflight_add_before_deleting(self, store, tmp_path, monkeypatch):
+        """A reset after an add's read cannot let that add recreate the old snapshot."""
+        store.add("memory", "before reset")
+        path = tmp_path / "MEMORY.md"
+        original_write = MemoryStore._write_file
+        add_ready = threading.Event()
+        allow_add_publish = threading.Event()
+        reset_finished = threading.Event()
+
+        def pause_add_publish(write_path, entries):
+            if entries == ["before reset", "concurrent add"]:
+                add_ready.set()
+                assert allow_add_publish.wait(timeout=5)
+            original_write(write_path, entries)
+
+        monkeypatch.setattr(MemoryStore, "_write_file", staticmethod(pause_add_publish))
+        add_thread = threading.Thread(target=lambda: store.add("memory", "concurrent add"))
+        add_thread.start()
+        assert add_ready.wait(timeout=5)
+
+        def reset():
+            assert MemoryStore.reset_file(path)
+            reset_finished.set()
+
+        reset_thread = threading.Thread(target=reset)
+        reset_thread.start()
+        assert not reset_finished.wait(timeout=0.1)
+        allow_add_publish.set()
+        add_thread.join(timeout=5)
+        reset_thread.join(timeout=5)
+
+        assert reset_finished.is_set()
+        assert not path.exists()
+
+    def test_import_merge_rereads_a_committed_memory_mutation(self, store, tmp_path):
+        """An import publishes against the current store, not an earlier preview snapshot."""
+        store.add("memory", "existing entry")
+        store.add("memory", "committed while import was pending")
+
+        stats = MemoryStore.merge_file(
+            tmp_path / "MEMORY.md", ["imported entry"], 500, lambda value: value.lower())
+
+        assert stats == {"existing": 2, "added": 1, "duplicates": 0, "overflowed": 0}
+        assert MemoryStore._read_file(tmp_path / "MEMORY.md") == [
+            "existing entry", "committed while import was pending", "imported entry"]
 
 
 class TestMemoryStoreAdd:

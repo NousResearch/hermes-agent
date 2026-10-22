@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import hermes_yaml as yaml
 
-from utils import atomic_write_text, atomic_yaml_write
+from utils import atomic_yaml_write
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +381,7 @@ class AgentImporter:
                 self.record(kind, source, destination, "skipped", "No importable entries found")
             return
         existing = parse_existing_memory_entries(destination)
-        merged, stats = merge_entries(existing, incoming, MEMORY_CHAR_LIMIT)
+        _merged, stats = merge_entries(existing, incoming, MEMORY_CHAR_LIMIT)
         details = {"existing_entries": stats["existing"], "added_entries": stats["added"],
                    "duplicate_entries": stats["duplicates"],
                    "overflowed_entries": stats["overflowed"]}
@@ -390,19 +390,26 @@ class AgentImporter:
             return
 
         def write() -> Optional[str]:
+            from tools.memory_tool_store import MemoryStore
+
             destination.parent.mkdir(parents=True, exist_ok=True)
             # Snapshot first (``<name>.bak.<unix_ts>``, as MemoryStore does); never rewrite the
             # store when the safety net failed.
-            step = "back up existing"
             try:
-                if destination.exists():
-                    backup = destination.with_suffix(f"{destination.suffix}.bak.{int(time.time())}")
-                    shutil.copy2(destination, backup)
-                    details["backup"] = str(backup)
-                step = "write merged"
-                atomic_write_text(destination, ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""))
-            except OSError as exc:
-                return f"Could not {step} memory file: {exc}"
+                def backup() -> None:
+                    if destination.exists():
+                        backup = destination.with_suffix(f"{destination.suffix}.bak.{int(time.time())}")
+                        shutil.copy2(destination, backup)
+                        details["backup"] = str(backup)
+
+                current_stats = MemoryStore.merge_file(
+                    destination, incoming, MEMORY_CHAR_LIMIT, normalize_text, before_write=backup)
+                details.update(existing_entries=current_stats["existing"],
+                               added_entries=current_stats["added"],
+                               duplicate_entries=current_stats["duplicates"],
+                               overflowed_entries=current_stats["overflowed"])
+            except (OSError, RuntimeError) as exc:
+                return f"Could not merge memory file: {exc}"
             return None
 
         self.apply(kind, source, destination, "Would merge entries", write, details)

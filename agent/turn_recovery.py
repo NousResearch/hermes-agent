@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.fallback_cooldown import billing_failover_enabled
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
@@ -615,6 +616,37 @@ def _clamp_to_affordable_budget(agent: Any, api_error: Exception, classified: An
 def _reject_all_turns(agent: Any, api_error: Exception) -> bool:
     reject = getattr(agent._get_transport(), "reject_all_turns", None)
     return bool(reject(api_error)) if callable(reject) else False
+
+
+def _should_eager_fallback(
+    classified: Any,
+    *,
+    retry_count: int,
+    is_rate_limited: bool,
+    is_transport_failure: bool,
+    wrapped_output_cap_budget: Optional[int],
+) -> bool:
+    """Eager cross-provider fallback decision (used by ``recover_after_classification``).
+
+    Rate limits and transport failures are the historical triggers. A hard billing
+    exhaustion (HTTP 402 ``Insufficient Balance`` / ``insufficient_quota``) is added
+    behind the opt-in ``fallback.on_billing`` (default false, #143148): switching
+    providers moves spend to another account, so the operator opts in. The default
+    keeps the terminal billing path and the credential pool's billing latch.
+    ``billing_unverified`` 402s never jump providers: an ambiguous signal must not
+    switch routes.
+    """
+    if is_rate_limited and wrapped_output_cap_budget is None:
+        return True
+    if is_transport_failure and retry_count >= 2:
+        return True
+    if (
+        classified.reason == FailoverReason.billing
+        and not getattr(classified, "billing_unverified", False)
+        and billing_failover_enabled()
+    ):
+        return True
+    return False
 
 
 def recover_after_classification(
@@ -1888,9 +1920,12 @@ def route_classified_error(
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
-    _should_fallback = (
-        (is_rate_limited and _wrapped_output_cap_budget is None)
-        or (_is_transport_failure and retry_count >= 2)
+    _should_fallback = _should_eager_fallback(
+        classified,
+        retry_count=retry_count,
+        is_rate_limited=is_rate_limited,
+        is_transport_failure=_is_transport_failure,
+        wrapped_output_cap_budget=_wrapped_output_cap_budget,
     )
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an

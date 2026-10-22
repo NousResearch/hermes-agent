@@ -17,7 +17,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Literal
+from typing import Any, Callable, Iterable, Iterator, Literal
 from urllib.parse import urlsplit
 
 from hermes_platform.resolver import known_dirs
@@ -204,6 +204,69 @@ def _in_dirs(dirs: Callable[[], tuple[str, ...]]) -> _Locator:
     return hits
 
 
+_MSIX_REPOSITORY = (
+    r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion"
+    r"\AppModel\Repository\Packages"
+)
+
+
+def _msix_roots(family: str, entries: Iterable[tuple[str, str]]) -> list[str]:
+    """Install roots for *family*, newest version first, from ``(PackageFullName, PackageRootFolder)``.
+
+    A full name is ``<Name>_<Version>_<Arch>_<ResourceId>_<PublisherId>`` and a family is
+    ``<Name>_<PublisherId>``, so several versions of one family can be installed side by side;
+    the highest wins and the rest stay as fallbacks.
+    """
+    matched: list[tuple[str, str]] = []
+    wanted = family.casefold()
+    for full_name, root_folder in entries:
+        if not root_folder:
+            continue
+        parts = full_name.split("_")
+        # Package family names are case-insensitive on Windows; the registry keeps the casing the
+        # installer chose, so a manifest that spells it differently must still match.
+        if len(parts) != 5 or f"{parts[0]}_{parts[4]}".casefold() != wanted:
+            continue
+        matched.append((parts[1], root_folder))
+    matched.sort(key=lambda item: _version_order(item[0]), reverse=True)
+    return [root for _, root in matched]
+
+
+def _msix_packages(family: str) -> Iterator[str]:
+    """``PackageRootFolder`` of every installed copy of *family*, newest first (per-user repository).
+
+    A Store app lives under ``C:\\Program Files\\WindowsApps``, which the user cannot list, and
+    registers no classic uninstall entry; the per-user AppModel repository is the read-only index
+    meant for this. Never installs, launches or lists the package directory itself.
+    """
+    import winreg
+
+    entries: list[tuple[str, str]] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _MSIX_REPOSITORY) as root:
+            for index in range(winreg.QueryInfoKey(root)[0]):
+                try:
+                    full_name = winreg.EnumKey(root, index)
+                except OSError:
+                    continue
+                try:
+                    with winreg.OpenKey(root, full_name) as key:
+                        root_folder, _ = winreg.QueryValueEx(key, "PackageRootFolder")
+                except OSError:
+                    continue
+                entries.append((full_name, str(root_folder)))
+    except OSError:
+        return
+    yield from _msix_roots(family, entries)
+
+
+def _msix_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+    if sys.platform != "win32":
+        return []
+    return [_hit(d, f"app:{d.app_id}:{loc.kind}", os.path.join(root, loc.file))
+            for root in _msix_packages(loc.value)]
+
+
 @dataclass(frozen=True)
 class LocationSpec:
     """A location kind a declaration names in a mapping. `only_on` is the one OS family it is valid
@@ -220,6 +283,7 @@ class LocationSpec:
 LOCATION_KINDS: dict[str, LocationSpec] = {
     "command": LocationSpec(None, "name", "executable", _command_hits),
     "uninstall_registry": LocationSpec("win32", "display_name_prefix", "executable", _uninstall_hits, needs_file=True),
+    "msix_package": LocationSpec("win32", "package_family_name", "executable", _msix_hits, needs_file=True),
     "app_bundle": LocationSpec("darwin", "name", "bundle", _in_dirs(known_dirs.mac_application_dirs)),
     "flatpak": LocationSpec("linux", "app_id", "executable", _in_dirs(known_dirs.flatpak_export_dirs)),
     "snap": LocationSpec("linux", "name", "executable", _in_dirs(known_dirs.snap_bin_dirs)),

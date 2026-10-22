@@ -7,13 +7,15 @@ import { offersGroupMethod, useGroupMethods } from './canonical-group-capabiliti
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
-import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
+import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, replaceCanonicalGroupSend, retireCanonicalGroupSend, withdrawCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
+interface Words { text: string; attachments: Attachment[] }
+interface SendRun { stopped: boolean; posted: boolean; settled: Promise<boolean> }
 interface RoomState {
   room: CanonicalRoom & { authority_epoch?: number; latest_seq?: number }
   driver_status?: CanonicalDriverStatus<CanonicalPendingAction>
@@ -21,6 +23,22 @@ interface RoomState {
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
+
+// Both groups.send dispatchers mark a refusal raised before the user event committed (and only
+// that) `admitted: false`: proof that this request posted nothing. A reason or code alone is not:
+// the same `invalid_params` or 4111 can follow a committed event.
+const admittedNothing = (error: unknown) =>
+  (error as { data?: { admitted?: unknown } } | null)?.data?.admitted === false
+
+/** A Send is delivered only by a receipt for this exact intent. */
+function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
+  const receipt = result as { accepted?: unknown; client_event_id?: unknown } | null
+
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
+    (Object.hasOwn(receipt, 'accepted') && receipt.accepted !== true) || receipt.client_event_id !== eventId) {
+    throw new Error(unconfirmed)
+  }
+}
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
@@ -53,9 +71,16 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   // One cancellation intent survives uncertain replies; a confirmed Stop lets the next one start fresh.
   const stopIntent = useRef<string | null>(null)
   const [notice, setNotice] = useState('')
+  const [sendHint, setSendHint] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
-  const heldDraft = useRef<{ text: string; attachments: Attachment[] } | null>(null)
+  const heldDraft = useRef<Words | null>(null)
+  // An intent handed back for editing (nothing of it admitted): the next Send replaces it.
+  const editing = useRef<string | null>(null)
+  // A delivered intent whose journal cleanup failed: retired before the next Send may prepare.
+  const delivered = useRef<string | null>(null)
+  // The Send in progress, which a Stop pressed now must cover; `settled` says whether it may have posted.
+  const sending = useRef<SendRun | null>(null)
   // The log is append-only within one authority epoch: each poll reads only what is new.
   const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
 
@@ -142,49 +167,148 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     }
   }
 
-  const send = () => {
-    if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
-    void mutate(async () => {
-      const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
-
-      if (!alive.current) {return}
-
-      // Another window won the room's slot: send its intent first, keep this window's words.
-      if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments)) {
-        heldDraft.current = { text: draft, attachments }
-      }
-
-      setPending(exact)
-      setDraft(String(exact.params.payload.text ?? ''))
-      setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
-      await canonicalGroupRequest(exact.binding, 'groups.send', exact.params)
-      await retireCanonicalGroupSend(exact.binding, exact.params.event_id)
-
-      if (alive.current) {
-        const held = heldDraft.current
-        heldDraft.current = null
-        setPending(null)
-        setDraft(held?.text ?? '')
-        setAttachments(held?.attachments ?? [])
-      }
-    })
+  // The room's intent is finished with: this window's own words come back, else nothing.
+  const releaseComposer = () => {
+    const next = heldDraft.current
+    heldDraft.current = null
+    setPending(null)
+    setDraft(next?.text ?? '')
+    setAttachments(next?.attachments ?? [])
   }
 
-  // Stop has its own busy state: it stays available while a Send is in flight.
+  // Another window finished with this intent: resending it could post it twice, and so could
+  // offering its words as a new message.
+  const finishedElsewhere = () => {
+    releaseComposer()
+    setSendHint(labels.sendSettledElsewhere)
+  }
+
+  // A request of the intent provably posted nothing (`left`: requests that still may have, null when
+  // another window finished with it). With none left its words come back for editing while the
+  // journal keeps them, until a Send replaces them; this window's own held words wait until then.
+  const settleUnsent = (exact: PreparedCanonicalGroupSend, words: Words, left: null | number | undefined, hint: string) => {
+    if (left === null) {finishedElsewhere()}
+    else if (left === 0) {
+      editing.current = exact.params.event_id
+      setPending(null)
+      setDraft(words.text)
+      setAttachments(words.attachments)
+      setSendHint(hint)
+    } else {setSendHint(labels.sendMaybe)}
+  }
+
+  const sendIntent = async (run: SendRun) => {
+    if (!pending && delivered.current) {
+      await retireCanonicalGroupSend(binding, delivered.current)
+      delivered.current = null
+    }
+
+    const typed = { text: draft, attachments }
+    const replacing = pending ? null : editing.current
+    const exact = pending ?? (replacing ? await replaceCanonicalGroupSend(binding, replacing, typed) : await prepareCanonicalGroupSend(binding, typed))
+    editing.current = null
+
+    if (!alive.current) {return}
+
+    if (!exact) {
+      // Another window finished with the intent being edited: these words may already be posted.
+      setSendHint(labels.sendSettledElsewhere)
+
+      return
+    }
+
+    // Another window won the room's slot: send its intent first, keep this window's words.
+    if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments)) {
+      heldDraft.current = typed
+    }
+
+    const words = { text: String(exact.params.payload.text ?? ''), attachments: (exact.params.payload.attachments as Attachment[] | undefined) ?? [] }
+    setPending(exact)
+    setDraft(words.text)
+    setAttachments(words.attachments)
+
+    if (await attemptCanonicalGroupSend(exact.binding, exact.params.event_id) === null) {
+      if (alive.current) {finishedElsewhere()}
+
+      return
+    }
+
+    if (run.stopped) {
+      // Stop came first: this request never leaves.
+      const left = await withdrawCanonicalGroupSend(exact.binding, exact.params.event_id)
+
+      if (alive.current) {settleUnsent(exact, words, left, labels.sendStopped)}
+
+      return
+    }
+
+    run.posted = true
+
+    try {
+      confirmSend(await canonicalGroupRequest(exact.binding, 'groups.send', exact.params), exact.params.event_id, labels.unconfirmedSend)
+    } catch (error) {
+      // Without the gateway's proof the request may have posted: Retry resends this exact intent,
+      // which the gateway recognizes, so it is never posted twice.
+      run.posted = !admittedNothing(error)
+      const left = run.posted ? undefined : await withdrawCanonicalGroupSend(exact.binding, exact.params.event_id).catch(() => undefined)
+
+      if (alive.current) {settleUnsent(exact, words, left, labels.sendRefused)}
+
+      throw error
+    }
+
+    // A valid receipt is authoritative: a failed cleanup only defers it to this window's next Send.
+    await retireCanonicalGroupSend(exact.binding, exact.params.event_id).catch(error => {
+      delivered.current = exact.params.event_id
+      console.warn('[canonical-group-send]', error)
+    })
+
+    if (alive.current) {releaseComposer()}
+  }
+
+  const send = () => {
+    if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    setSendHint('')
+    setNotice('')
+    let settle!: (mayHavePosted: boolean) => void
+    const run: SendRun = { stopped: false, posted: false, settled: new Promise<boolean>(resolve => { settle = resolve }) }
+    sending.current = run
+    void mutate(() => sendIntent(run).finally(() => {
+      if (sending.current === run) {sending.current = null}
+      settle(run.posted)
+    }))
+  }
+
+  const requestStop = async (fresh = false) => {
+    if (fresh) {stopIntent.current = null}
+    const cancelId = stopIntent.current ??= crypto.randomUUID()
+    const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: cancelId })
+    const cancelled = result?.cancelled
+
+    if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
+
+    if (stopIntent.current === cancelId) {stopIntent.current = null}
+
+    return cancelled
+  }
+
+  // Stop has its own busy state: it stays available while a Send is in flight, and covers it. A
+  // Send not yet sent is held back; one on the wire may post after this fence, so once it settles
+  // (unless it provably posted nothing) a fresh cancel_id fences again behind it.
   const stop = async () => {
     if (stopPending.current) {return}
     stopPending.current = true
-    stopIntent.current ??= crypto.randomUUID()
+    const covered = sending.current
+
+    if (covered) {covered.stopped = true}
     setStopping(true)
     setNotice('')
     setError('')
 
     try {
-      const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: stopIntent.current })
-      const cancelled = result?.cancelled
-
-      if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
-      stopIntent.current = null
+      const first = requestStop()
+      first.catch(() => undefined)
+      const cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
 
       if (alive.current) {
         setNotice(cancelled ? labels.stopped : labels.nothingRunning)
@@ -231,6 +355,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <Button onClick={() => setDiscard(null)}>{labels.cancel}</Button>
     </div>}
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
+    {sendHint && <p aria-live="polite">{sendHint}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
       <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} downloads={offersGroupMethod(methods, 'groups.attachment.download')}
         onChange={setAttachments} onUploadingChange={setUploading} uploads={offersGroupMethod(methods, 'groups.attachment.upload')} />

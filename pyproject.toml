@@ -266,7 +266,10 @@ piper = [
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
-google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
+google-meet = [
+  "playwright==1.62.0; sys_platform == 'linux' or sys_platform == 'darwin'",
+  "websockets==15.0.1; sys_platform == 'linux' or sys_platform == 'darwin'",
+]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",
@@ -593,6 +596,8 @@ wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') an
 # Gate the extra that carries only faster-whisper; [voice] also has ungated deps (sounddevice,
 # numpy) and stays installable, see test_declared_extra_gates_match_dependency_selection.
 stt-whisper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')"
+# Match the google-meet plugin's Linux/macOS contract; Playwright has no Android wheels.
+google-meet = "sys_platform == 'linux' or sys_platform == 'darwin'"
 # NeuTTS excludes Python 3.14.
 neutts = "python_version < '3.14'"
 # KittenTTS: onnxruntime has no Intel macOS wheel; misaki[en]'s torch has no

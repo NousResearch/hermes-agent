@@ -789,6 +789,97 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
     assert env == original_env
 
 
+def test_plugin_generation_refreshes_compatible_member_dependency(locked_project, tmp_path, monkeypatch):
+    """A new generation must not retain a compatible plugin dependency from its predecessor (#138322)."""
+    import tomllib
+
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+    from pm.packages import Venv
+    import pm.paths
+
+    source, uv, env = locked_project
+    metadata = source / "pyproject.toml"
+    metadata.write_text(metadata.read_text(encoding="utf-8-sig").replace(
+        '[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
+    _run([str(uv), "lock", "--python", sys.executable], cwd=source, env=env)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "isolated-home")
+    monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: source)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (uv, Path(sys.executable)))
+
+    plugin = source / "member"
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="member"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=["member-dep>=1,<2"]\n', encoding="utf-8")
+    _wheel(tmp_path / "wheels", "member_dep", "1.0")
+    first = Venv().apply([], plugin_dirs=[plugin])
+    Facts(runtime_facts_path(source)).record_state("venv", "fixture-stamp", [], **first)
+
+    _wheel(tmp_path / "wheels", "member_dep", "1.1")
+    second = Venv().apply([], plugin_dirs=[plugin])
+    packages = tomllib.loads(second["resolved_lock"].read_text(encoding="utf-8"))["package"]
+    assert next(item["version"] for item in packages if item["name"] == "member-dep") == "1.1"
+
+
+def test_plugin_generation_migrates_manifest_only_member(locked_project, tmp_path, monkeypatch):
+    """Changing only a member's declaration must not read its predecessor's stale path."""
+    import tomllib
+
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+    from pm.packages import Venv
+    import pm.paths
+
+    source, uv, env = locked_project
+    metadata = source / "pyproject.toml"
+    metadata.write_text(metadata.read_text(encoding="utf-8-sig").replace(
+        '[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
+    _run([str(uv), "lock", "--python", sys.executable], cwd=source, env=env)
+    shipped_lock = (source / "uv.lock").read_bytes()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "isolated-home")
+    monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: source)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (uv, Path(sys.executable)))
+
+    plugin = source / "migrating-plugin"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text(
+        'name: migrating-plugin\nversion: "1.0.0"\npython_dependencies: ["member-dep==1.0"]\n',
+        encoding="utf-8")
+    # The sibling stays identical: a changed requirement could force a full resolution
+    # and hide uv's attempt to validate the old virtual member path.
+    members = [plugin, source / "member"]
+    first = Venv().apply([], plugin_dirs=members)
+    Facts(runtime_facts_path(source)).record_state("venv", "fixture-stamp", [], **first)
+    recorded = first["resolved_lock"].parent
+    before = {path.relative_to(recorded): path.read_bytes()
+              for path in recorded.rglob("*") if path.is_file()}
+    [old_member] = (recorded / "plugin-deps").iterdir()
+    old_metadata = tomllib.loads((old_member / "pyproject.toml").read_text(encoding="utf-8"))
+    # Reuse the generated name, version, Python range and requirements verbatim.
+    # Only the member's workspace path changes from plugin-deps to plugin-sources.
+    (plugin / "pyproject.toml").write_bytes((old_member / "pyproject.toml").read_bytes())
+
+    second = Venv().apply([], plugin_dirs=members)
+    workspace = second["resolved_lock"].parent
+    migrated = workspace / "plugin-sources" / old_member.name
+    assert tomllib.loads((migrated / "pyproject.toml").read_text(encoding="utf-8")) == old_metadata
+    assert not (workspace / "plugin-deps" / old_member.name).exists()
+    packages = tomllib.loads(second["resolved_lock"].read_text(encoding="utf-8"))["package"]
+    member = next(item for item in packages if item["name"] == old_metadata["project"]["name"])
+    assert member["source"] == {"virtual": migrated.relative_to(workspace).as_posix()}
+    executable = second["environment"] / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    assert _run([str(executable), "-I", "-c",
+                 "import base_dep, member_dep; print(member_dep.__version__)"],
+                cwd=tmp_path, env=env) == "1.0"
+    assert (source / "uv.lock").read_bytes() == shipped_lock
+    assert {path.relative_to(recorded): path.read_bytes()
+            for path in recorded.rglob("*") if path.is_file()} == before
+
+
 def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
     """no_config must isolate the pinned runtime builder from ambient INDEX
     redirection: --no-config covers config files, but PM's pip-mirror bridge
@@ -820,3 +911,66 @@ def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
     bridged = run()
     assert bridged.returncode == 1, "default path must keep the bridge"
     assert "UV_INDEX_URL" in bridged.stderr, bridged.stderr
+
+
+def test_plugin_generation_refreshes_with_android_resolution(locked_project, tmp_path, monkeypatch):
+    """Plugin refresh must exclude unsupported extras from the Android graph (#135440)."""
+    import tomllib
+
+    import tomli_w
+    from packaging.markers import Marker, default_environment
+
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+    from pm.packages import Venv
+    import pm.paths
+
+    source, uv, env = locked_project
+    shipped = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text())
+    metadata = source / "pyproject.toml"
+    document = tomllib.loads(metadata.read_text())
+    document["tool"]["uv"].pop("workspace")
+    document["tool"]["uv"]["environments"] = shipped["tool"]["uv"]["environments"]
+    # Fork Android and desktop versions as core does for psutil. Playwright
+    # stays desktop-only while both Android and plugin dependencies resolve.
+    document["project"]["dependencies"].extend([
+        "android-dep==1.0; sys_platform == 'android'",
+        "android-dep==2.0; sys_platform != 'android'",
+    ])
+    metadata.write_text(tomli_w.dumps(document), encoding="utf-8")
+    _wheel(tmp_path / "wheels", "android_dep")
+    _wheel(tmp_path / "wheels", "android_dep", "2.0")
+    _wheel(tmp_path / "wheels", "websockets", "15.0.1")
+    for tag in ("macosx_11_0_universal2", "manylinux_2_17_x86_64", "manylinux_2_17_aarch64", "win_amd64"):
+        wheel = _wheel(tmp_path / "wheels", "playwright", "1.62.0")
+        wheel.rename(wheel.with_name(wheel.name.replace("py3-none-any", f"py3-none-{tag}")))
+    _run([str(uv), "lock", "--python", sys.executable], cwd=source, env=env)
+    document["project"]["optional-dependencies"]["google-meet"] = (
+        shipped["project"]["optional-dependencies"]["google-meet"])
+    metadata.write_text(tomli_w.dumps(document), encoding="utf-8")
+    shipped_lock = (source / "uv.lock").read_bytes()
+    monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: source)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (uv, Path(sys.executable)))
+    plugin = source / "member"
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="member"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=["member-dep>=1,<2"]\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    first = Venv().apply([], plugin_dirs=[plugin])
+    Facts(runtime_facts_path(source)).record_state("venv", "fixture-stamp", [], **first)
+    _wheel(tmp_path / "wheels", "member_dep", "1.1")
+    second = Venv().apply([], plugin_dirs=[plugin])
+    packages = tomllib.loads(second["resolved_lock"].read_text())["package"]
+    assert next(item["version"] for item in packages if item["name"] == "member-dep") == "1.1"
+    assert {item["version"] for item in packages if item["name"] == "android-dep"} == {"1.0", "2.0"}
+    android = {**default_environment(), "sys_platform": "android", "extra": "google-meet"}
+    core = next(item for item in packages if item["name"] == "construction-root")
+    dependencies = core["optional-dependencies"]["google-meet"]
+    assert not any(not item.get("marker") or Marker(item["marker"]).evaluate(android)
+                   for item in dependencies)
+    for system in ("linux", "darwin"):
+        desktop = {**android, "sys_platform": system}
+        assert {item["name"] for item in dependencies
+                if not item.get("marker") or Marker(item["marker"]).evaluate(desktop)} == {"playwright", "websockets"}
+    assert (source / "uv.lock").read_bytes() == shipped_lock

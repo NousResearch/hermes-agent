@@ -252,3 +252,15 @@ def test_runtime_marker_evaluation_answers_for_the_given_environment():
                           text=True, timeout=60, check=True).stdout.strip()
            for marker in ("sys_platform == 'linux'", "sys_platform == 'win32'")]
     assert out == ["1", "0"]
+
+
+@pytest.mark.parametrize("system, supported", [
+    ("android", False), ("linux", True), ("darwin", True), ("win32", False),
+])
+def test_google_meet_platform_support(system, supported, monkeypatch):
+    from packaging.markers import default_environment
+
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", None)
+    environment = {**default_environment(), "sys_platform": system}
+    assert extras.extra_supported("google-meet", environment=environment,
+                                  importable=lambda _: False) is supported

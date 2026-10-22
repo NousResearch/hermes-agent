@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import urllib.parse
@@ -1100,10 +1101,51 @@ def _mutate_engines(build: Callable[[dict], dict], *, restart: bool) -> dict:
 
 
 def _restart_for_engines() -> None:
+    restarted = False
     try:
-        bootstrap.refresh_local_runtime()
+        restarted = bool(bootstrap.refresh_local_runtime())
     except Exception:
         logger.debug("post-engine-edit runtime restart failed", exc_info=True)
+    _announce_engine_change(restarted)
+
+
+def _loaded_tui_gateway_server():
+    """``tui_gateway.server`` iff it is already imported in this process, else ``None``.
+
+    Deliberately never imports it: it is a heavy module with a known circular
+    import, and pulling it from an engine-mutation thread can leave a partially
+    initialised entry in ``sys.modules`` for the next test's autouse gateway
+    fixture (``tests/conftest.py`` snapshots ``mod._methods``) to crash on. With
+    the gateway running, the module is long since loaded — a gateway process
+    imports it at startup — so a load-only lookup loses nothing.
+    """
+    return sys.modules.get("tui_gateway.server")
+
+
+def _announce_engine_change(restarted: bool) -> None:
+    """Re-broadcast ``setup.ready`` after an engine registry mutation.
+
+    The dashboard's status surfaces (the desktop's bottom-left backend
+    indicator above all) refresh their verdict from ``setup.status`` +
+    ``setup.runtime_check`` only when a ``setup.ready`` event lands. A
+    silent runtime bounce would leave every open client painting the
+    previous engine's verdict until the next ambient tick; this announce
+    makes an engine switch visible immediately, including the failure
+    case (``runtime_restarted: false`` means the bounce itself errored).
+
+    A process that never loaded the TUI gateway has no event hub to
+    notify, so this is a load-only lookup — see ``_loaded_tui_gateway_server``.
+    """
+    try:
+        server = _loaded_tui_gateway_server()
+        if server is None:
+            return
+        from hermes_cli.free_tier_bootstrap import SETUP_READY_EVENT
+
+        server._broadcast_global_event(SETUP_READY_EVENT, {
+            "reason": "engine_mutation", "runtime_restarted": restarted})
+    except Exception:
+        logger.debug("engine-change announce failed", exc_info=True)
 
 
 @router.get("/api/local-models/engines")

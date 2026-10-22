@@ -369,7 +369,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             vd = vd.get("items")
         return _first_str(vd[0].get("version")) if isinstance(vd, list) and vd and isinstance(vd[0], dict) else None
 
-    def _fetch_owner_handle(self, slug: str) -> Optional[str]:
+    def _fetch_owner_handle(self, slug: str, deadline: Optional[float] = None) -> Optional[str]:
         """Owner handle from the detail API (the listing API lacks it), or None.
 
         Bounded retry: 3 attempts total. 429 honours ``Retry-After`` else
@@ -379,9 +379,12 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         url = f"{self.BASE_URL}/skills/{slug}"
         max_attempts = 3
         for attempt in range(max_attempts):
+            remaining = deadline - time.monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                return None
             delay = 2.0 * (2 ** attempt)
             try:
-                resp = hub()._skills_hub_http_get(url, timeout=20)
+                resp = hub()._skills_hub_http_get(url, timeout=min(20, remaining) if remaining is not None else 20)
             except (httpx.HTTPError, OSError):
                 reason = "transport error"
             else:
@@ -402,6 +405,11 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                     return None  # 4xx (non-429): doesn't exist / bad request
             if attempt >= max_attempts - 1:
                 return None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                delay = min(delay, remaining)
             logger.debug("_fetch_owner_handle(%s): %s on attempt %d/%d, retrying in %.1fs",
                          slug, reason, attempt + 1, max_attempts, delay)
             time.sleep(delay)
@@ -427,41 +435,63 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         max_consecutive_failures = 50
         deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(self._fetch_owner_handle, s.identifier): s for s in needs_enrichment}
-            for future in as_completed(futures):
-                meta = futures[future]
-                processed += 1
-                if deadline is not None and time.monotonic() > deadline:
+        from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+        pending = {}
+        skills_iter = iter(needs_enrichment)
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+
+        def submit_next() -> bool:
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            try:
+                meta = next(skills_iter)
+            except StopIteration:
+                return False
+            pending[pool.submit(self._fetch_owner_handle, meta.identifier, deadline)] = meta
+            return True
+
+        try:
+            for _ in range(max_workers):
+                if not submit_next():
+                    break
+            while pending:
+                remaining = deadline - time.monotonic() if deadline is not None else None
+                if remaining is not None and remaining <= 0:
                     logger.warning("ClawHub owner enrichment: budget of %.0fs exhausted after %d/%d "
                                    "(%d enriched) — shipping the rest without owner handles.",
                                    budget_seconds, processed, len(needs_enrichment), enriched)
-                    for f in futures:
-                        f.cancel()
                     break
-                try:
-                    handle = future.result()
-                except Exception:
-                    handle = None
-                consecutive_failures = 0 if handle else consecutive_failures + 1
-                if handle:
-                    meta.extra = meta.extra or {}
-                    meta.extra["owner"] = handle
-                    enriched += 1
-                if processed % 1000 == 0:
-                    logger.info("ClawHub owner enrichment: %d/%d processed, %d enriched",
-                                processed, len(needs_enrichment), enriched)
-                if consecutive_failures >= max_consecutive_failures:
-                    logger.warning(
-                        "ClawHub owner enrichment: %d consecutive failures — "
-                        "aborting early (%d/%d processed, %d enriched). "
-                        "The ClawHub API may be down or rate-limited.",
-                        max_consecutive_failures, processed, len(needs_enrichment), enriched,
-                    )
-                    for f in futures:
-                        f.cancel()
-                    break
+                done, _ = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
+                for future in done:
+                    meta = pending.pop(future)
+                    processed += 1
+                    try:
+                        handle = future.result()
+                    except Exception:
+                        handle = None
+                    consecutive_failures = 0 if handle else consecutive_failures + 1
+                    if handle:
+                        meta.extra = meta.extra or {}
+                        meta.extra["owner"] = handle
+                        enriched += 1
+                    if processed % 1000 == 0:
+                        logger.info("ClawHub owner enrichment: %d/%d processed, %d enriched",
+                                    processed, len(needs_enrichment), enriched)
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.warning(
+                            "ClawHub owner enrichment: %d consecutive failures — "
+                            "aborting early (%d/%d processed, %d enriched). "
+                            "The ClawHub API may be down or rate-limited.",
+                            max_consecutive_failures, processed, len(needs_enrichment), enriched,
+                        )
+                        return enriched
+                    submit_next()
+        finally:
+            for future in pending:
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
         return enriched
 
     def _extract_files(self, version_data: dict[str, Any]) -> dict[str, str]:

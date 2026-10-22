@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "dashboard" / "plugin_api.py"
 spec = importlib.util.spec_from_file_location("plugin_api", MODULE_PATH)
@@ -158,6 +159,12 @@ class AgentSummaryTests(unittest.TestCase):
 
 
 class AgentSummaryFileTests(unittest.TestCase):
+    def test_write_failure_is_logged_without_breaking_the_scan(self):
+        with patch.object(plugin_api, "_write_json", side_effect=OSError("test-only write failure")):
+            with self.assertLogs(plugin_api.__name__, level="WARNING") as captured:
+                plugin_api._write_agent_summary(sample_data())
+        self.assertIn("agent_summary.json", captured.output[0])
+
     def test_write_agent_summary_persists_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous = os.environ.get("HERMES_HOME")
@@ -166,7 +173,8 @@ class AgentSummaryFileTests(unittest.TestCase):
             plugin_api.get_hermes_home = lambda: Path(tmp)
             try:
                 plugin_api._write_agent_summary(sample_data())
-                path = Path(tmp) / "plugins" / "hermes-achievements" / "agent_summary.json"
+                # Follow the plugin data-directory contract, not its historical layout.
+                path = plugin_api._data_file(plugin_api.AGENT_SUMMARY_FILE)
                 self.assertTrue(path.exists())
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["top_tier"], "Gold")

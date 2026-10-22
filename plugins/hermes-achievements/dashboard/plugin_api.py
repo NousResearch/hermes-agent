@@ -7,11 +7,12 @@ Cold scans run on a background thread; ``/achievements`` serves the last snapsho
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from xml.sax.saxutils import escape as xml_escape
@@ -20,6 +21,8 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -776,9 +779,9 @@ def _set_cache(snapshot: dict[str, Any], at: int) -> None:
 
 
 def filter_and_sort_achievements(
-    items: List[Dict[str, Any]],
+    items: list[dict[str, Any]],
     state: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Filter achievements by badge state.
 
     Minimal seam for the filtering/sorting workstream in #18472: the export
@@ -792,7 +795,7 @@ def filter_and_sort_achievements(
     return selected
 
 
-def export_json(data: Dict[str, Any], state: Optional[str] = None) -> str:
+def export_json(data: dict[str, Any], state: Optional[str] = None) -> str:
     """Export achievements as structured JSON."""
     items = filter_and_sort_achievements(data.get("achievements", []), state=state)
     export = {
@@ -806,12 +809,12 @@ def export_json(data: Dict[str, Any], state: Optional[str] = None) -> str:
 
 def _scan_date(generated_at: Any) -> str:
     try:
-        return datetime.fromtimestamp(int(generated_at), tz=timezone.utc).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(int(generated_at), tz=UTC).strftime("%Y-%m-%d")
     except (TypeError, ValueError, OverflowError, OSError):
         return "unknown"
 
 
-def export_markdown(data: Dict[str, Any], state: Optional[str] = None) -> str:
+def export_markdown(data: dict[str, Any], state: Optional[str] = None) -> str:
     """Export achievements as markdown with progress bars and shields.io badges."""
     items = filter_and_sort_achievements(data.get("achievements", []), state=state or "unlocked")
     unlocked = data.get("unlocked_count", 0)
@@ -824,7 +827,7 @@ def export_markdown(data: Dict[str, Any], state: Optional[str] = None) -> str:
         "",
     ]
 
-    categories: Dict[str, List[Dict[str, Any]]] = {}
+    categories: dict[str, list[dict[str, Any]]] = {}
     for item in items:
         categories.setdefault(str(item.get("category", "Other")), []).append(item)
 
@@ -852,7 +855,7 @@ def export_markdown(data: Dict[str, Any], state: Optional[str] = None) -> str:
     return "\n".join(lines)
 
 
-def export_svg(data: Dict[str, Any], state: Optional[str] = None) -> str:
+def export_svg(data: dict[str, Any], state: Optional[str] = None) -> str:
     """Export achievements as an SVG badge sheet (unlocked badges by default)."""
     items = filter_and_sort_achievements(data.get("achievements", []), state=state or "unlocked")
 
@@ -888,7 +891,7 @@ def export_svg(data: Dict[str, Any], state: Optional[str] = None) -> str:
     return "\n".join(svg_parts)
 
 
-def _build_agent_summary(data: Dict[str, Any]) -> Dict[str, Any]:
+def _build_agent_summary(data: dict[str, Any]) -> dict[str, Any]:
     """Build the compact agent-consumable profile from evaluated data.
 
     Small enough to inject as context without eating token budget:
@@ -898,14 +901,14 @@ def _build_agent_summary(data: Dict[str, Any]) -> Dict[str, Any]:
     items = data.get("achievements", [])
     aggregate = data.get("aggregate", {})
 
-    cat_unlocks: Dict[str, int] = {}
+    cat_unlocks: dict[str, int] = {}
     for item in items:
         if item.get("unlocked"):
             cat = str(item.get("category", "Other"))
             cat_unlocks[cat] = cat_unlocks.get(cat, 0) + 1
     strengths = sorted(cat_unlocks, key=lambda cat: (-cat_unlocks[cat], cat))[:5]
 
-    cat_progress: Dict[str, float] = {}
+    cat_progress: dict[str, float] = {}
     for item in items:
         if not item.get("unlocked"):
             cat = str(item.get("category", "Other"))
@@ -932,12 +935,12 @@ def _build_agent_summary(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _write_agent_summary(data: Dict[str, Any]) -> None:
+def _write_agent_summary(data: dict[str, Any]) -> None:
     """Persist agent_summary.json for context injection. Best-effort."""
     try:
         _write_json(AGENT_SUMMARY_FILE, _build_agent_summary(data))
     except Exception:
-        pass  # Non-critical: the summary is a best-effort context artifact.
+        logger.warning("Could not write agent_summary.json; the scan will continue", exc_info=True)
 
 
 def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:

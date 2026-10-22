@@ -281,7 +281,7 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 |---|---|
 | `GET /achievements` | Full catalog with per-badge unlock state (returns a pending placeholder while the first cold scan is running) |
 | `GET /achievements/summary` | Compact achievement profile for agent context injection: strengths, gaps, top tier, and unlocked IDs |
-| `GET /export?format=json\|markdown\|svg&state=unlocked\|discovered\|secret` | Export the current snapshot as JSON, a Markdown badge table, or an SVG badge sheet; defaults to JSON and all states |
+| `GET /export?format=json\|markdown\|svg&state=unlocked\|discovered\|secret` | Export the current snapshot as JSON, a Markdown badge table, or an SVG badge sheet; defaults to JSON (all states), while Markdown/SVG default to unlocked badges |
 | `GET /scan-status` | State of the background scanner: `idle` / `running` / `failed`, last duration, run count |
 | `GET /recent-unlocks` | Twenty most recently unlocked badges, newest first |
 | `GET /sessions/{id}/badges` | Badges earned primarily in one specific session |

@@ -28,12 +28,15 @@ async def test_skip_after_new_in_the_onboarding_chat_ends_the_run(tmp_path, monk
     from agent.onboarding_record import open_session_ids
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.onboarding_run import _root_config
+    from hermes_state_runtime import list_session_admissions
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
     try:
         stored = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
         await async_wait_until(lambda: turns, timeout=10)
         await _settled(desktop, stored)
+        # The opening turn's admission is terminal: a reset refuses a started turn as session_busy.
+        await async_wait_until(lambda: not list_session_admissions(desktop.db, session_id=stored), timeout=10)
 
         reset = await _mutate(desktop, 2, stored, "reset")
         assert "result" in reset, reset

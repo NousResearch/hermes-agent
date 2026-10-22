@@ -103,11 +103,12 @@ _DEFAULT_PAYLOADS = {
     "pre_tool_call": {
         "tool_name": "terminal", "args": {"command": "echo hello"},
         "session_id": "test-session", "task_id": "test-task", "tool_call_id": "test-call",
+        "platform": "cli",
     },
     "post_tool_call": {
         "tool_name": "terminal", "args": {"command": "echo hello"},
         "session_id": "test-session", "task_id": "test-task", "tool_call_id": "test-call",
-        "result": '{"output": "hello"}', "duration_ms": 42,
+        "result": '{"output": "hello"}', "duration_ms": 42, "platform": "cli",
     },
     "pre_llm_call": {
         "session_id": "test-session", "user_message": "What is the weather?",

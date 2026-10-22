@@ -51,10 +51,12 @@ test('product outputs exclude the source tree except supported generated destina
   const base = fixture()
   const source = path.join(base, 'source')
   mkdirSync(source)
-  for (const name of ['new-source-file', 'pm/generated', 'hermes_cli/web_dist-copy', 'apps/desktop/dist-copy', 'apps/desktop/build/native-deps-copy', 'hermes_cli/web_dist/assets']) {
+  for (const name of ['new-source-file', 'pm/generated', 'hermes_cli/web_dist-copy', 'apps/desktop/dist-copy', 'apps/desktop/build/native-deps-copy', 'hermes_cli/web_dist/assets',
+    'apps/desktop/build/native-deps-win32-x64/nested', 'apps/desktop/build/native-deps-freebsd-x64', 'apps/desktop/build/native-deps-win32-ia32']) {
     expect(() => productOutput(source, path.join(source, name), inputs), name).toThrow(/output/i)
   }
-  for (const name of ['hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps', 'apps/desktop/build/products/tui', 'apps/desktop/build/products/web', '.build/web', '.build/termux/tui']) {
+  for (const name of ['hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps', 'apps/desktop/build/native-deps-win32-x64',
+    'apps/desktop/build/native-deps-darwin-arm64', 'apps/desktop/build/products/tui', 'apps/desktop/build/products/web', '.build/web', '.build/termux/tui']) {
     const out = path.join(source, name)
     expect(productOutput(source, out, inputs).out).toBe(out)
     expect(existsSync(out)).toBe(false)

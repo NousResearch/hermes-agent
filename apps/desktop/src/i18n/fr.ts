@@ -1,7 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
@@ -9,8 +8,10 @@ import { frConnectorCard } from './fr_connector_card'
 import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
+import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
+import { frPluginUpdate } from './fr_plugin_update'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
@@ -493,14 +494,6 @@ export const frOverrides = {
     }
   },
   ...frNotices,
-  billingBlock: {
-    titleNous: 'Plus de crédits Nous',
-    titleProvider: provider => `Plus de crédits — ${provider}`,
-    fallbackMessage: 'Votre compte est à court de crédits. Ajoutez-en pour continuer.',
-    openBilling: 'Ouvrir la facturation',
-    addCredits: 'Ajouter des crédits',
-    dismiss: 'Fermer'
-  },
   sendDiagnostics: {
     title: 'Envoyer les diagnostics à Nous',
     privacyNotice:
@@ -1946,71 +1939,7 @@ export const frOverrides = {
       deepLinkErrorUrl: 'Seules les URL de serveur http:// et https:// sont autorisées.',
       deepLinkErrorTooLarge: 'La configuration dépasse la limite de 32 Ko.'
     },
-    model: {
-      setupProviderFallback: 'fournisseur',
-      setUpProvider: name => `Configurer ${name}`,
-      staleAuxBefore: (count, names) =>
-        count > 1
-          ? `${count} tâches auxiliaires (${names}) s'exécutent encore sur `
-          : `${count} tâche auxiliaire (${names}) s'exécute encore sur `,
-      staleAuxAfter: ', et non sur votre modèle principal.',
-      staleAuxOtherProviders: "d'autres fournisseurs",
-      moaEnabled: 'Activé',
-      moaSetDefault: 'Définir par défaut',
-      moaNewPresetPlaceholder: 'nouveau préréglage',
-      moaAddPreset: 'Ajouter un préréglage',
-      customModel: 'Modèle personnalisé…',
-      customModelPlaceholder: 'ID du modèle',
-      chooseFromList: 'Choisir dans la liste',
-      moaDefault: 'Par défaut :',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Désactiver' : 'Activer'} la référence ${index}`,
-      moaReferenceTitle: index => `Référence ${index}`,
-      moaAddReference: 'Ajouter un modèle de référence',
-      loading: 'Chargement de la configuration du modèle...',
-      appliesDesc:
-        "S'applique aux nouvelles sessions. Utilisez le sélecteur de modèle dans le compositeur pour changer à chaud la conversation active.",
-      provider: 'Fournisseur',
-      model: 'Modèle',
-      applying: 'Application...',
-      mainAppliedTitle: 'Modèle principal mis à jour',
-      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
-      defaultsLabel: 'Par défaut',
-      reasoning: 'Raisonnement',
-      reasoningOff: 'Désactivé',
-      speed: 'Vitesse',
-      speedStandard: 'Standard',
-      defaultsFailed: "Échec de l'enregistrement des modèles par défaut",
-      loadFailed: 'Impossible de charger les modèles',
-      restartRequired:
-        "Ce backend exécute encore l'ancien code après une mise à jour. Redémarrez-le pour charger le nouveau code.",
-      restartBackend: 'Redémarrer le backend',
-      restartingBackend: 'Redémarrage du backend...',
-      restartFailed: 'Impossible de redémarrer le backend',
-      auxiliaryTitle: 'Modèles auxiliaires',
-      resetAllToMain: 'Tout réinitialiser au principal',
-      staleAuxDismiss: 'Ne plus afficher',
-      auxiliaryDesc:
-        "Les tâches d'assistance s'exécutent sur le modèle principal par défaut. Attribuez un modèle dédié à toute tâche pour remplacer.",
-      setToMain: 'Définir comme principal',
-      change: 'Modifier',
-      autoUseMain: 'auto · utiliser le modèle principal',
-      inheritMainEffort: 'hériter · effort du modèle principal',
-      inheritsFrom: task => `hérite de ${task}`,
-      followTask: task => `Suivre ${task}`,
-      providerDefault: '(par défaut du fournisseur)',
-      fallbackAdd: 'Ajouter un secours',
-      fallbackEmpty: "Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d'échec.",
-      notInCatalog:
-        "n'est pas dans la liste des modèles de ce fournisseur — les appels peuvent basculer sur un secours.",
-      moaTitle: "Mélange d'agents",
-      moaPreset: 'Préréglage',
-      moaDescription:
-        "Configurez des préréglages nommés qui apparaissent comme modèles chez le fournisseur Mélange d'agents. L'agrégateur est le modèle actif : il exécute chaque étape de la boucle d'outils et son fournisseur facture presque tout le coût de l'exécution. Par défaut, les modèles de référence ne donnent qu'un avis par tour utilisateur.",
-      moaAggregator: 'Agrégateur',
-      moaAggregatorBilled: "modèle actif · facturé pour l'exécution",
-      moaReferenceHint: 'donne un avis une fois par tour par défaut',
-      tasks: frAuxTasks
-    },
+    model: frModelSettings,
     localModels: frLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mois`,
@@ -2583,25 +2512,13 @@ export const frOverrides = {
         unsupported_gpu: 'GPU non prise en charge',
         unknown: 'état inconnu'
       },
-      catalogTitle: 'Catalogue de plugins',
-      catalogBrowse: 'Parcourir',
-      catalogHide: 'Masquer le catalogue',
-      catalogHint:
-        'Utilisez « + Ajouter à cet agent » sur un plugin : les entrées vérifiées sont installées depuis leur commit épinglé dans le profil sélectionné.',
       alreadyInstalled: (name: string) => `${name} est déjà installé dans ce profil.`,
       catalogProvenance: (sha: string) =>
         `Installé depuis le catalogue Hermes${sha ? ` au commit épinglé ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
-      updateToPin: (sha: string) => `Mettre à jour vers ${sha}`,
-      updateFailed: (name: string) => `Impossible de mettre à jour ${name}`,
-      updated: (name: string) =>
-        `${name} mis à jour vers l’épinglage actuel du catalogue. Redémarrez le gateway pour l’appliquer.`,
-      updateConsentTitle: (name: string) => `${name} demande davantage`,
-      updateConsentBody: (name: string, sha: string) =>
-        `Le nouvel épinglage de ${name} dans le catalogue (${sha}) ajoute des surfaces que la version installée n’a pas. Appliquez-le uniquement si vous leur faites confiance :`,
-      updateConsentConfirm: 'Appliquer la mise à jour',
+      ...frPluginUpdate,
       uninstall: 'Désinstaller',
       uninstallTip: (name: string, profile: string) => `Désinstaller ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `Désinstaller ${name} ?`,
@@ -4020,43 +3937,6 @@ export const frOverrides = {
     snippetsDesc: 'Choisissez une invite de démarrage à insérer dans le compositeur.',
     dropFiles: 'Déposez des fichiers pour les attacher',
     dropSession: 'Déposez pour lier cette conversation',
-    mcpSuggestions: {
-      label: server => `Ajouter ${server}`,
-      tip: keyword => `Suggéré car vous avez mentionné « ${keyword} » — cliquez pour vous connecter`,
-      connecting: server => `Connexion à ${server}…`,
-      cancelTip: 'Cliquez pour annuler',
-      added: server => `${server} ajouté`,
-      addedTip: 'Connecté — ses outils sont prêts dans cette conversation',
-      connectFailed: server => `Impossible de se connecter à ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Utiliser le skill : ${skill}`,
-      tip: skill => `Vous avez mentionné « ${skill} » — cliquez pour commencer avec ce skill`,
-      done: skill => `/${skill} ajouté`,
-      doneTip: "Le skill se charge lors de l'envoi"
-    },
-    githubSuggestions: {
-      label: 'Configurer GitHub',
-      tip: 'GitHub fonctionne ici grâce aux skills de la CLI gh ; cliquez pour connecter votre compte',
-      done: 'Ajout de /github-auth',
-      doneTip: "Envoyez le message et l'agent vous guidera dans la connexion à GitHub"
-    },
-    repairSuggestions: {
-      label: server => `Reconnecter ${server}`,
-      tip: server => `Un appel à ${server} vient d'échouer à cause d'une erreur de connexion`,
-      working: server => `Reconnexion à ${server}…`,
-      workingTip: 'Cliquez pour annuler',
-      done: server => `${server} reconnecté`,
-      doneTip: 'Les nouveaux identifiants sont actifs dans cette conversation',
-      failed: server => `Impossible de reconnecter ${server}`
-    },
-    cronSuggestions: {
-      label: 'Planifier ceci',
-      tip: phrase => `« ${phrase} » semble récurrent — exécutez-le plutôt selon une planification`,
-      prefix: 'Configurer ceci comme tâche planifiée :',
-      done: 'Marqué pour planification',
-      doneTip: "Envoyez-le pour que l'agent crée la tâche"
-    },
     snippets: {
       codeReview: {
         label: 'Revue de code',
@@ -5133,6 +5013,10 @@ export const frOverrides = {
         loop_error: {
           title: 'Hermes est resté bloqué dans une boucle',
           body: 'La réponse répétait les mêmes étapes ; Hermes l’a donc arrêtée. Réessayez ou démarrez une nouvelle conversation.'
+        },
+        cron_session_read_only: {
+          title: 'Cette conversation appartient à une tâche planifiée',
+          body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
         },
         SESSION_NOT_OWNED: {
           title: 'Cette conversation est ouverte ailleurs',

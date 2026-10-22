@@ -1,28 +1,21 @@
 import { Button, Textarea } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { type CanonicalDriverActivity, CanonicalGroupRoster, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: CanonicalRoom; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
+interface RoomState { room: CanonicalRoom; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
-
-function CanonicalGroupRoster({ members = [], label }: { members?: CanonicalRoomMember[]; label: string }) {
-  if (!members.length) {return null}
-
-  return <ul aria-label={label} className="flex flex-wrap gap-x-2 text-xs text-(--ui-text-tertiary)">
-    {members.map(member => <li key={member.member_id}>{member.display_name || member.handle || member.member_id}</li>)}
-  </ul>
-}
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
@@ -163,13 +156,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     mutate(() => actCanonicalGroup(binding, action, choice))
 
   const composerLocked = !restored || busy || !!pending
+  const phases = canonicalMemberPhases(state?.driver_status)
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <header className="flex items-center gap-2">
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
       <div className="min-w-0">
         <h2 className="text-sm font-medium">{state?.room.name || labels.loadingGroup}</h2>
-        <CanonicalGroupRoster label={labels.members} members={state?.room.members} />
+        <CanonicalGroupRoster label={labels.members} labels={labels} members={state?.room.members} phases={phases} />
       </div>
       <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
     </header>
@@ -178,6 +172,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
     <div className="min-h-0 flex-1 overflow-auto" role="log">
       <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={state?.room.members} />
+      <CanonicalGroupWorkingLine driver={state?.driver_status} labels={labels} members={state?.room.members} phases={phases} />
     </div>
     {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
       <span>{action.member_id}</span>

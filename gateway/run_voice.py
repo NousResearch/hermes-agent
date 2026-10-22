@@ -318,7 +318,8 @@ class GatewayVoiceMixin:
         from gateway.session_identity import clear_identity
         clear_identity(source)
         if self._canonicalize(source, transport_profile=getattr(adapter, "_owner_profile", None)) is None:
-            logger.warning("Dropping voice input: its profile route targets an unserved profile")
+            from gateway.parked_route_refusal import drop_rejected_route
+            drop_rejected_route(adapter, source)  # a parked target is refused in the voice text channel
             return
         # Validate the session owner against the current allowlist before auto-resuming. A session created
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
@@ -381,6 +382,10 @@ class GatewayVoiceMixin:
         # attachment." — the peer sees the failure instead of the text reply the
         # agent already produced (#90103). Keep /voice scoped to human platforms.
         if getattr(event.source.platform, "value", None) == "a2a":
+            return False
+        # A local session's speech plays in its own client: LocalSessionAdapter has no audio delivery,
+        # so an owner-side synthesis would be a paid provider call nobody hears.
+        if event.source.platform == Platform.LOCAL:
             return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))

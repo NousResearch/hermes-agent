@@ -105,7 +105,19 @@ def _cmd_repair(args):
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
+    from hermes_state_reconcile import repair_declarative_schema, schema_drift_reason
+    # A missing canonical sessions table is not additive upgrade drift: creating
+    # an empty one could hide lost history. Preserve corruption/recovery routing.
     reason = _db_opens_cleanly(db_path)
+    # Opens cleanly but lags SCHEMA_SQL: additive drift (snapshot reconcile), not corruption surgery.
+    drift_only = reason is None
+    if drift_only:
+        try:
+            reason = schema_drift_reason(db_path)
+        except (sqlite3.Error, OSError) as exc:
+            print(f"✗ Could not check session schema: {exc}")
+            return 1
+    repair = repair_declarative_schema if drift_only else repair_state_db_schema
     if reason is None:
         print(f"✓ {db_path} opens cleanly — no repair needed.")
         return
@@ -113,19 +125,23 @@ def _cmd_repair(args):
     if getattr(args, "check_only", False):
         return 1
     print("Repairing (a backup copy is made first)…")
-    report = repair_state_db_schema(db_path, backup=not getattr(args, "no_backup", False))
+    report = repair(db_path, backup=not getattr(args, "no_backup", False))
     if report.get("repaired"):
         if report.get("backup_path"):
             print(f"  backup: {report['backup_path']}")
         print(f"  strategy: {report.get('strategy')}")
         try:
-            with SessionDB() as _repair_db:
+            with SessionDB(db_path=db_path, read_only=drift_only) as _repair_db:
                 n = _repair_db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             print(f"✓ Repaired — {n} sessions recovered.")
         except Exception:
             print("✓ Repaired.")
         return
     print(f"✗ Repair failed: {report.get('error')}")
+    if drift_only:
+        if report.get('backup_path'):
+            print(f"  A backup is preserved at: {report['backup_path']}")
+        return 1
     if report.get("backup_path"):
         print(f"  A backup is preserved at: {report['backup_path']}")
     # Without this pointer the user is at a dead end; lead with --inspect-only before writing.
@@ -262,12 +278,18 @@ def _default_exclude(args):
     return None if getattr(args, "source", None) else ["tool"]
 
 
+def _surface_reader(db):
+    """``--source cli`` also matches a gateway row stored as ``local`` with that created surface."""
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+    return SurfaceLabelReader(db)
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
     limit = args.limit
-    sessions = db.list_sessions_rich(
+    sessions = _surface_reader(db).list_sessions_rich(
         source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
     )
     truncated = limit > 0 and len(sessions) > limit
@@ -902,7 +924,7 @@ def _cmd_retitle_skills(db, args):
 
 def _cmd_browse(db, args):
     limit = getattr(args, "limit", 500) or 500
-    sessions = db.list_sessions_rich(
+    sessions = _surface_reader(db).list_sessions_rich(
         source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit
     )
     if not sessions:
@@ -1204,9 +1226,10 @@ def _cmd_repair_prompts(db, args):
 
 
 def _cmd_stats(db, args):
+    reader = _surface_reader(db)
     print(f"Total sessions: {db.session_count()}\nTotal messages: {db.message_count()}")
     for src in ("cli", "telegram", "discord", "whatsapp", "slack"):
-        if (c := db.session_count(source=src)) > 0:
+        if (c := reader.session_count(source=src)) > 0:
             print(f"  {src}: {c} sessions")
     if db.db_path.exists():
         print(f"Database size: {_size_mb(db.db_path):.1f} MB")

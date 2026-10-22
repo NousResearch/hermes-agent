@@ -1,12 +1,13 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { ruAuxTasks } from './ru_aux_tasks'
 import { ruBoot } from './ru_boot'
+import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruFirstRun } from './ru_first_run'
 import { ruModelMenu } from './ru_model_menu'
+import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
@@ -37,6 +38,8 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+
+  catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
   firstRun: ruFirstRun,
@@ -189,15 +192,6 @@ export const ruOverrides = {
     }
   },
   ...ruNotices,
-
-  billingBlock: {
-    titleNous: 'Кредиты Nous закончились',
-    titleProvider: provider => `Кредиты закончились — ${provider}`,
-    fallbackMessage: 'В вашем аккаунте закончились кредиты. Пополните баланс, чтобы продолжить.',
-    openBilling: 'Открыть биллинг',
-    addCredits: 'Пополнить кредиты',
-    dismiss: 'Скрыть'
-  },
 
   titlebar: {
     hideSidebar: 'Скрыть боковую панель',
@@ -1301,59 +1295,7 @@ export const ruOverrides = {
       deepLinkErrorUrl: 'Разрешены только URL серверов http:// и https://.',
       deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.'
     },
-    model: {
-      moaPreset: 'Пресет',
-      moaDescription:
-        'Настройте именованные пресеты, которые появятся как модели провайдера Mixture of Agents. Модель-агрегатор выполняет каждый шаг цикла инструментов; почти вся стоимость запуска списывается у её провайдера. По умолчанию референсные модели дают совет один раз на сообщение пользователя.',
-      moaAggregator: 'Модель-агрегатор',
-      moaAggregatorBilled: 'исполняющая модель · на неё приходится стоимость запуска',
-      moaReferenceHint: 'по умолчанию советует один раз за ход',
-      setupProviderFallback: 'провайдер',
-      setUpProvider: name => `Настроить ${name}`,
-      staleAuxBefore: (count, names) => `Вспомогательные задачи (${count}: ${names}) по-прежнему используют `,
-      staleAuxAfter: ', а не основную модель.',
-      staleAuxOtherProviders: 'других провайдеров',
-      moaEnabled: 'Включено',
-      moaSetDefault: 'Сделать основным',
-      moaNewPresetPlaceholder: 'новый пресет',
-      moaAddPreset: 'Добавить пресет',
-      customModel: 'Своя модель…',
-      customModelPlaceholder: 'ID модели',
-      chooseFromList: 'Выбрать из списка',
-      moaDefault: 'По умолчанию:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Отключить' : 'Включить'} референс ${index}`,
-      moaReferenceTitle: index => `Референс ${index}`,
-      moaAddReference: 'Добавить референсную модель',
-      loading: 'Загрузка конфигурации модели…',
-      appliesDesc:
-        'Применяется к новым сеансам. Для горячей смены модели в активном чате используйте выборщик модели в композере.',
-      provider: 'Провайдер',
-      model: 'Модель',
-      applying: 'Применение…',
-      defaultsLabel: 'По умолчанию',
-      reasoning: 'Рассуждения',
-      reasoningOff: 'Выкл',
-      speed: 'Скорость',
-      speedStandard: 'Стандартная',
-      defaultsFailed: 'Не удалось сохранить модель по умолчанию',
-      auxiliaryTitle: 'Вспомогательные модели',
-      resetAllToMain: 'Сбросить всё на основную',
-      staleAuxDismiss: 'Больше не показывать',
-      auxiliaryDesc:
-        'Вспомогательные задачи по умолчанию выполняются основной моделью. Назначьте отдельную модель любой задаче, чтобы переопределить.',
-      setToMain: 'На основную',
-      change: 'Изменить',
-      autoUseMain: 'авто · использовать основную модель',
-      inheritMainEffort: 'наследовать · усилие основной модели',
-      inheritsFrom: task => `наследует ${task}`,
-      followTask: task => `Как ${task}`,
-      providerDefault: '(по умолчанию провайдера)',
-      fallbackAdd: 'Добавить запасную',
-      fallbackEmpty: 'Запасных моделей нет — используется модель по умолчанию, если она не падает.',
-      notInCatalog: 'нет в списке моделей этого провайдера — вызовы могут уходить на запасную.',
-      moaTitle: 'Смесь агентов',
-      tasks: ruAuxTasks
-    },
+    model: ruModelSettings,
     providers: {
       connectAccount: 'Подключить аккаунт',
       haveApiKey: 'Ввести API-ключ вместо этого?',
@@ -1504,17 +1446,7 @@ export const ruOverrides = {
       }
     }
   },
-  skillDeepLink: {
-    installTitle: (name: string) => `Установить «${name}»?`,
-    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
-    installTo: 'Установить в',
-    thisComputer: 'Этот компьютер',
-    installing: 'Установка…',
-    installComplete: (name: string) => `«${name}» установлен`,
-    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-    installed: 'Установленные',
-    source: 'Источник'
-  },
+  skillDeepLink: ruSkillDeepLink,
   skills: {
     plugins: {
       pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
@@ -2806,43 +2738,6 @@ export const ruOverrides = {
     snippetsDesc: 'Выберите стартовый промпт, чтобы вставить в композер.',
     dropFiles: 'Перетащите файлы, чтобы прикрепить',
     dropSession: 'Перетащите, чтобы связать этот чат',
-    mcpSuggestions: {
-      label: server => `Добавить ${server}`,
-      tip: keyword => `Предложено, потому что вы упомянули «${keyword}» — нажмите, чтобы подключить`,
-      connecting: server => `Подключаем ${server}…`,
-      cancelTip: 'Нажмите, чтобы отменить',
-      added: server => `Добавлен ${server}`,
-      addedTip: 'Подключено — его инструменты готовы в этом чате',
-      connectFailed: server => `Не удалось подключить ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Использовать навык: ${skill}`,
-      tip: skill => `Вы упомянули «${skill}» — нажмите, чтобы начать с этого навыка`,
-      done: skill => `Добавлено /${skill}`,
-      doneTip: 'Навык загрузится при отправке'
-    },
-    githubSuggestions: {
-      label: 'Настроить GitHub',
-      tip: 'GitHub работает через навыки gh CLI здесь — нажмите, чтобы подключить аккаунт',
-      done: 'Добавлено /github-auth',
-      doneTip: 'Отправьте сообщение, и агент проведёт вас через вход в GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Переподключить ${server}`,
-      tip: server => `Недавний вызов ${server} завершился ошибкой соединения`,
-      working: server => `Переподключаем ${server}…`,
-      workingTip: 'Нажмите, чтобы отменить',
-      done: server => `Переподключено ${server}`,
-      doneTip: 'Свежие учётные данные активны в этом чате',
-      failed: server => `Не удалось переподключить ${server}`
-    },
-    cronSuggestions: {
-      label: 'Запланировать это',
-      tip: phrase => `«${phrase}» звучит как повторяющееся — запланируйте выполнение по расписанию`,
-      prefix: 'Настроить это как запланированную задачу:',
-      done: 'Отмечено для планирования',
-      doneTip: 'Отправьте, и агент создаст задачу'
-    },
     snippets: {
       codeReview: {
         label: 'Рецензия кода',
@@ -3652,6 +3547,12 @@ export const ruOverrides = {
       branchNewChat: 'Ветка в новый чат',
       react: 'Реакция',
       dismissError: 'Скрыть ошибку',
+      errorCodes: {
+        cron_session_read_only: {
+          title: 'Этот чат относится к запланированной задаче',
+          body: 'Он только выполняет эту задачу, поэтому ваше сообщение не было выполнено. Начните новый чат, чтобы отправить его.'
+        }
+      },
       filesChanged: count => `${count} ${RU_PLURAL(count, 'файл изменён', 'файла изменено', 'файлов изменено')}`,
       reviewChanges: 'Проверить',
       readAloudFailed: 'Не удалось зачитать вслух',

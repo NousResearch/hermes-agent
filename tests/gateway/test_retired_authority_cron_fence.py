@@ -26,6 +26,16 @@ def _relay(operation, params):
     return call
 
 
+async def _settle(authority, receipt):
+    await session_bot.settle(SimpleNamespace(authority=authority, actor=CRON),
+                             {'id': 'e' * 64, 'profile': 'default', 'message': 'ping'})
+
+
+def _no_receipt(db, home):
+    from tools.bot_live_delivery import read_delivery_result
+    return read_delivery_result(home, 'e' * 64) is None
+
+
 def _outbox(home):
     box = home / 'bot_relay' / 'outbox'
     box.mkdir(parents=True)
@@ -61,6 +71,7 @@ SITES = {
                         lambda db, home: not (home / 'bot_relay').exists()),
     'bot_relay.roster.sync': (_relay('roster', {'agents': []}), None,
                               lambda db, home: not (home / 'bot_relay').exists()),
+    'bot_relay.settle': (_settle, None, _no_receipt),
 }
 
 

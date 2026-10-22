@@ -8,6 +8,18 @@ import { createDashboardSessionMutations } from "./session-mutations";
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse } from "./api-aux";
+import type { AgentPluginUpdateResponse } from "./api-plugins";
+import type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartRequest,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+export type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
 import type {
   ManagedFileReadResponse,
   ManagedFilesResponse,
@@ -1003,10 +1015,7 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
-  startWhatsAppOnboarding: (body: {
-    mode?: "bot" | "self-chat";
-    allowed_users?: string;
-  }) =>
+  startWhatsAppOnboarding: (body: WhatsAppOnboardingStartRequest) =>
     fetchJSON<WhatsAppOnboardingStartResponse>(
       "/api/messaging/whatsapp/onboarding/start",
       {
@@ -1093,13 +1102,16 @@ export const api = {
       method: "POST",
     }),
 
-  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
+  updateAgentPlugin: (
+    name: string,
+    { acceptCapabilities = false, force = false }: { acceptCapabilities?: boolean; force?: boolean } = {},
+  ) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
       },
     ),
 
@@ -2180,38 +2192,6 @@ export interface TelegramOnboardingApplyResponse {
   restart_error?: string;
 }
 
-export interface WhatsAppOnboardingStartResponse {
-  pairing_id: string;
-  status:
-    | "starting"
-    | "installing"
-    | "waiting"
-    | "connected"
-    | "error"
-    | "expired"
-    | "cancelled";
-  qr_payload?: string | null;
-  expires_at: string;
-  mode: "bot" | "self-chat";
-  allowed_users: string;
-  account_id?: string | null;
-  account_name?: string | null;
-  account_phone?: string | null;
-  error?: string | null;
-}
-
-export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
-
-export interface WhatsAppOnboardingApplyResponse {
-  ok: boolean;
-  platform: "whatsapp";
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
@@ -2533,6 +2513,7 @@ export interface ModelInfoResponse {
 export type { ModelOptionProvider, ModelOptionsResult };
 
 export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type { AgentPluginScanFinding, AgentPluginUpdateResponse } from "./api-plugins";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2790,19 +2771,6 @@ export interface CatalogResponse {
   entries: CatalogEntry[];
   removed: CatalogRemovedEntry[];
   generated_at: string;
-}
-
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
-  /** The new catalog pin widens the plugin; nothing changed until the client
-   *  retries with `accept_capabilities`. */
-  consent_required?: boolean;
-  sha?: string;
-  delta_lines?: string[];
 }
 
 export interface PluginProvidersPutRequest {

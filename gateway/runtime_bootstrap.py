@@ -12,6 +12,9 @@ _PURPOSE_CAPABILITIES = {
     'native-http': frozenset({'http:owner'}),
     # Same-user host operation, not permission to read or mutate another profile.
     'native-profile-create': frozenset({'profiles:create'}),
+    # Rename/delete of the ONE profile it is minted for (#140345): a registry write on that home,
+    # never a read of it or any other route.
+    'native-profile-registry': frozenset({'profiles:registry'}),
     'exposure': frozenset({'transport:delegate'}),
     'worker-adoption': frozenset({'worker:adopt'}),
 }

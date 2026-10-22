@@ -326,3 +326,21 @@ def test_a_linked_profile_is_refused_by_name_until_groups_support_it(tmp_path, m
         # Its home never answers to another name: default still seats the rest.
         seated = desktop('default', 'groups.create', room_id='crew', name='Crew', members=_members('default', 'alpha'))
         assert 'result' in seated, seated
+
+
+def test_capabilities_name_exactly_the_profiles_this_caller_can_seat(tmp_path, monkeypatch):
+    """#141178: the New Group Chat picker offered every bot on the connection, and groups.create
+    then refused the ones the caller cannot seat. groups.capabilities now names that roster, and
+    each name it lists is one create accepts."""
+    with _gateway(tmp_path, monkeypatch, served=('alpha', 'beta'), unserved=('gamma',)) as (runner, homes, call):
+        host = _desktop(runner, call)
+        assert host('default', 'groups.capabilities')['result']['seatable_profiles'] == ['alpha', 'beta', 'default']
+        # A profile-bound socket seats only its own profile (plus its entries), as create rules.
+        bound = _desktop(runner, call, scope='profile')
+        assert bound('default', 'groups.capabilities')['result']['seatable_profiles'] == ['default']
+        # A sibling being torn down runs nothing, so it drops out before create would refuse it.
+        runner.session_authorities.require(homes['beta']).retiring = True
+        seatable = host('default', 'groups.capabilities')['result']['seatable_profiles']
+        assert seatable == ['alpha', 'default']
+        created = host('default', 'groups.create', room_id='crew', name='Crew', members=_members(*seatable))
+        assert 'result' in created, created

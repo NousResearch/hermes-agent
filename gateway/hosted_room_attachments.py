@@ -10,6 +10,7 @@ room's frozen recipient roster.
 from __future__ import annotations
 
 from gateway.hosted_rooms import EventAttachmentConflictError
+from hermes_dir_acl import make_user_dir
 
 import base64
 import binascii
@@ -343,8 +344,8 @@ class HostedRoomAttachmentStore:
         return str(self.db_path.resolve()), str(self.root.resolve()), info.st_dev, info.st_ino
 
     def _prepare_private_root(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.blob_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_user_dir(self.root, parents=True, exist_ok=True, mode=0o700)
+        make_user_dir(self.blob_root, parents=True, exist_ok=True, mode=0o700)
         for path in (self.root, self.blob_root):
             try:
                 os.chmod(path, 0o700)

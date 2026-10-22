@@ -68,8 +68,8 @@
     "tar": "7.5.22",
     "source-map-js": "1.2.2",
     "yaml": "2.9.1",
-    "vitest": "4.1.11",
-    "@vitest/mocker": "4.1.11"
+    "vitest": "4.1.12",
+    "@vitest/mocker": "4.1.12"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
@@ -80,7 +80,7 @@
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
+    "electron@42.11.3": true,
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true,

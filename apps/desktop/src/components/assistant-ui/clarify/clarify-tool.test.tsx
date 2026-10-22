@@ -253,6 +253,29 @@ describe('ClarifyTool live card stays mounted across settle', () => {
 })
 
 describe('ClarifyTool choice selection', () => {
+  it('gives Arabic questions and mixed-language choices their own automatic bidi direction', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    setClarifyRequest({
+      questions: [
+        {
+          choices: ['استخدم Hermes Desktop', 'استخدم CLI'],
+          multiSelect: false,
+          qid: 'q0',
+          question: 'هل تريد استخدام Hermes Desktop؟'
+        }
+      ],
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+
+    renderClarify(<ClarifyTool {...liveClarifyProps(['استخدم Hermes Desktop', 'استخدم CLI'])} />)
+
+    expect(screen.getByText('هل تريد استخدام Hermes Desktop؟').getAttribute('dir')).toBe('auto')
+    expect(screen.getByText('استخدم Hermes Desktop').getAttribute('dir')).toBe('auto')
+    expect(screen.getByPlaceholderText('Other (type your answer)').getAttribute('dir')).toBe('auto')
+  })
+
   it('labels single-select vs multi-select before the user clicks', () => {
     const { rerender } = renderLiveClarify()
 

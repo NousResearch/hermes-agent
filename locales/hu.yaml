@@ -3621,7 +3621,7 @@ tips:
   t069: "A hermes skills tap add myorg/skills-repo egyedi GitHub skill-forrást ad hozzá."
   t070: "A hermes skills snapshot export setup.json exportálja a skill-konfigurációdat biztonsági mentéshez vagy megosztáshoz."
   t071: "A hermes mcp add github --command npx parancssorból ad hozzá MCP-szervereket."
-  t072: "A hermes mcp serve magát a Hermest futtatja MCP-szerverként más ügynökök számára."
+  t072: "A hermes mcp-serve magát a Hermest futtatja MCP-szerverként más ügynökök számára."
   t073: "A hermes auth add több API-kulcsot is felvehet a hitelesítőadat-készlet rotálásához."
   t074: "A hermes completion bash >> ~/.bashrc bekapcsolja a Tab-kiegészítést minden parancshoz és profilhoz."
   t075: "A hermes logs -f valós időben követi az agent.log fájlt. A --level WARNING --since 1h szűri a kimenetet."

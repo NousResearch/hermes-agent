@@ -33809,7 +33809,7 @@
       },
       "RoomDriverStatus": {
         "additionalProperties": false,
-        "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``\nor the driver's approval action (``kind: approval`` + run/session/approval context).",
+        "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``\nor the driver's approval action (``kind: approval`` + run/session/approval context).\n``member_activity`` lists live tasks in admission order (absent from older gateways).",
         "properties": {
           "running": {
             "title": "Running",
@@ -33836,6 +33836,13 @@
               "type": "object"
             },
             "title": "Pending Actions",
+            "type": "array"
+          },
+          "member_activity": {
+            "items": {
+              "$ref": "#/components/schemas/RoomMemberActivity"
+            },
+            "title": "Member Activity",
             "type": "array"
           },
           "peer_routes": {
@@ -34207,6 +34214,26 @@
           }
         },
         "title": "RoomMember",
+        "type": "object"
+      },
+      "RoomMemberActivity": {
+        "additionalProperties": false,
+        "description": "One live room task: ``status`` is ``queued``, ``running`` or ``stopping``.",
+        "properties": {
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "member_id",
+          "status"
+        ],
+        "title": "RoomMemberActivity",
         "type": "object"
       },
       "RoomMemberInput": {

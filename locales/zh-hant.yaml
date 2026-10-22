@@ -3604,7 +3604,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo 會新增自訂的 GitHub 技能來源。"
   t070: "hermes skills snapshot export setup.json 會匯出你的技能設定，供備份或分享。"
   t071: "hermes mcp add github --command npx 可從命令列新增 MCP 伺服器。"
-  t072: "hermes mcp serve 會將 Hermes 本身作為 MCP 伺服器執行，供其他代理使用。"
+  t072: "hermes mcp-serve 會將 Hermes 本身作為 MCP 伺服器執行，供其他代理使用。"
   t073: "hermes auth add 讓你新增多個 API 金鑰，用於憑證池輪替。"
   t074: "hermes completion bash >> ~/.bashrc 會為所有指令與設定檔啟用 Tab 自動完成。"
   t075: "hermes logs -f 會即時追蹤 agent.log。--level WARNING --since 1h 可篩選輸出。"

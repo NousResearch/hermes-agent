@@ -23,7 +23,6 @@ export const frNotices = {
       "Ce serveur n'a pas pu confirmer l'envoi précédent de ce message ; il a peut-être déjà été exécuté. Vérifiez la conversation avant de le renvoyer.",
     mcpReloadDeferred:
       'Cette discussion est occupée : la modification MCP s’applique à la fin de son tour et au prochain rechargement MCP, ou à la réouverture de la discussion',
-    mcpReloadNotInChat: server => `${server} n’est pas activé dans cette discussion`,
     mcpReloadUnavailable: servers => `Connexion impossible : ${servers}`,
     compactedTurnUnavailable:
       'Ce message a été résumé lors de la compression de la conversation : il ne peut plus être restauré ni modifié.',

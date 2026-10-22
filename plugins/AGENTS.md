@@ -36,7 +36,10 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   once the plugin dir exists): a later `hermes plugins remove` sticks, a failed install retries.
   Core special cases become `PlatformEntry` seams the plugin sets (`trusted_inbound`,
   `display_tier`, `shared_env_prefixes`), never a name check. A core `hermes auth <name>` login
-  becomes the plugin's own `hermes <name>` command (row field `cli`; the old spelling prints the new one).
+  becomes the plugin's own `hermes <name>` command (row field `cli`; the old spelling prints the new one),
+  and a nested core command becomes a top-level plugin command (`command` + `old_command`:
+  `hermes mcp serve` → `hermes mcp-serve`). A feature with no in-home signal (MCP clients live
+  outside Hermes) gets an `in_use` that is always False: hint only, never an automatic install.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
   connectors, analytics dashboards, paid-service tie-ins ship as standalone plugin repos
   (`~/.hermes/plugins/` or pip entry point) promoted in Discord `#plugins-skills-and-skins`. Reason:

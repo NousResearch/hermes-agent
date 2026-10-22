@@ -1905,14 +1905,42 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def _max_spawn_exempt_profiles() -> frozenset[str]:
+    """Assignees exempt from the per-board ``max_spawn`` cap.
+
+    Thin-dispatcher profiles (e.g. Cursor cloud delegation) run their real work
+    in external infra and only park a lightweight local worker while waiting, so
+    they must not starve real coding workers. Configured via
+    ``kanban.max_spawn_exempt_profiles``.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = (load_config_readonly() or {}).get("kanban") or {}
+        val = cfg.get("max_spawn_exempt_profiles")
+        if isinstance(val, (list, tuple, set)):
+            return frozenset(str(x) for x in val if str(x).strip())
+    except Exception:
+        pass
+    return frozenset()
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
-    """Number of tasks in ``status='running'``.
+    """Number of tasks in ``status='running'``, excluding ``max_spawn``-exempt
+    profiles (see :func:`_max_spawn_exempt_profiles`).
 
     Used by the multi-board sweep to count OTHER boards' workers against the
     host-level budget — the memory-derived cap bounds the machine, not the
     board. Fails open to 0 so a broken board doesn't brick dispatch on healthy ones.
     """
     try:
+        exempt = _max_spawn_exempt_profiles()
+        if exempt:
+            ph = ",".join("?" for _ in exempt)
+            sql = (
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running' "
+                f"AND (assignee IS NULL OR assignee NOT IN ({ph}))"
+            )
+            return int(conn.execute(sql, tuple(exempt)).fetchone()[0])
         return int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
@@ -2259,9 +2287,12 @@ def _tick_spawn_budget(
 
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
-        if running_count >= max_spawn:
-            return False, None
+        # Exempt profiles (thin dispatchers) may still spawn when the cap is
+        # reached — the spawn loops let them through without consuming budget,
+        # so do NOT early-return False here. Clamp to 0; exempt spawns bypass it.
         spawn_budget = max_spawn - running_count
+        if spawn_budget < 0:
+            spawn_budget = 0
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
@@ -2425,9 +2456,8 @@ def _dispatch_once_locked(
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
+    exempt_profiles = _max_spawn_exempt_profiles()
     for row in ready_rows:
-        if ready_budget is not None and spawned >= ready_budget:
-            break
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee so an unassigned task doesn't
@@ -2439,21 +2469,27 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
+        is_exempt = bool(row_assignee) and row_assignee in exempt_profiles
+        if not is_exempt and ready_budget is not None and spawned >= ready_budget:
+            break
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
-            spawned += 1
+            if not is_exempt:
+                spawned += 1
 
     # A review agent (sdlc-review) approves (→ done) or requests changes
     # (→ ready/todo). Review spawns share max_spawn with ready tasks. The loop
     # checks the FULL shared ``spawn_budget`` — the reservation above caps the
     # ready lane, it grants no extra capacity here.
     for row in review_rows:
-        if spawn_budget is not None and spawned >= spawn_budget:
-            break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        is_exempt = row["assignee"] in exempt_profiles
+        if not is_exempt and spawn_budget is not None and spawned >= spawn_budget:
+            break
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
-            spawned += 1
+            if not is_exempt:
+                spawned += 1
     return result
 
 

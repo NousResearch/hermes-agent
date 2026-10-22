@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agent.error_classifier import _extract_status_code
 from agent.turn_retry_state import TurnRetryState
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
     ``encrypted_content`` blob with this auth signature, so a persisted session loops on "sign
     in again" while a fresh session on the same bearer works. The caller treats it like
     ``invalid_encrypted_content`` — but only while cached reasoning items remain to strip."""
-    if getattr(api_error, "status_code", None) != 401:
+    if _extract_status_code(api_error) != 401:
         return False
     reason = agent._extract_api_error_context(api_error).get("reason")
     return isinstance(reason, str) and reason.strip().lower() == "token_expired"

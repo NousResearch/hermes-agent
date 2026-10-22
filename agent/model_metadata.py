@@ -873,16 +873,34 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
     }
-    for mapping in _iter_nested_dicts(payload):
+
+    def rates(mapping: dict[str, Any]) -> dict[str, Any]:
         normalized = {str(key).lower(): value for key, value in mapping.items()}
-        pricing: dict[str, Any] = {}
+        result: dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
                 if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
+                    result[target] = normalized[alias]
                     break
+        return _normalize_token_rates(result, normalized.get("unit"))
+
+    for mapping in _iter_nested_dicts(payload):
+        pricing = rates(mapping)
         if pricing:
-            return _normalize_token_rates(pricing, normalized.get("unit"))
+            overrides = mapping.get("overrides")
+            if isinstance(overrides, list):
+                tiers = []
+                for override in overrides:
+                    if not isinstance(override, dict):
+                        continue
+                    tier = rates(override)
+                    if "min_prompt_tokens" in override:
+                        tier["min_prompt_tokens"] = override["min_prompt_tokens"]
+                    if tier:
+                        tiers.append(tier)
+                if tiers:
+                    pricing["overrides"] = tiers
+            return pricing
     return {}
 
 

@@ -384,8 +384,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <CanonicalGroupWorkingLine driver={state?.driver_status} labels={labels} members={state?.room.members} phases={phases} />
     </div>
     {(state?.driver_status?.pending_actions || []).map(action => <CanonicalPendingActionRow action={action} busy={busy}
-      key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} methods={methods}
-      onAct={(exact, choice) => void act(exact, choice)} onDiscard={setDiscard} />)}
+      key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} members={state?.room.members} methods={methods}
+      onAct={(exact, choice) => void act(exact, choice)} onDiscard={setDiscard}
+      onRefresh={() => void refresh().catch(e => setReadError(String(e)))} />)}
     {discard && <div aria-label={labels.discardUnknown} role="alertdialog">
       <p>{labels.discardWarning}</p>
       <Button disabled={busy} onClick={() => { const exact = discard; setDiscard(null); void act(exact) }}>{labels.confirmDiscard}</Button>

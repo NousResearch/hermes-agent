@@ -23,7 +23,7 @@ interface ActivityLabels {
   memberWorking: string
 }
 
-const memberName = (member: CanonicalRoomMember) => member.display_name || member.handle || member.member_id
+export const memberName = (member: CanonicalRoomMember) => member.display_name || member.handle || member.member_id
 
 /** One phase per member: a running (or stopping) task outranks one still queued behind it. */
 export function canonicalMemberPhases(driver?: CanonicalDriverActivity): Map<string, CanonicalMemberPhase> {

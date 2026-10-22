@@ -41,6 +41,12 @@ export interface CanonicalGroupMessages {
   sendSettledElsewhere: string
   journalLoadFailed: string
   journalReload: string
+  approvalAction: string
+  approvalCommand: string
+  approvalDetailsMissing: string
+  pendingApprovalTitle: string
+  pendingRetryTitle: string
+  pendingUnknownTitle: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -86,7 +92,13 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: 'This message may already have been sent. Retry sends the same message; it will not be posted twice.',
     sendSettledElsewhere: 'Another Desktop window already finished with this message. Check the conversation before sending it again.',
     journalLoadFailed: 'Saved messages couldn’t be loaded. Sending is paused so that a saved message is never sent twice.',
-    journalReload: 'Try loading again'
+    journalReload: 'Try loading again',
+    approvalAction: 'Action',
+    approvalCommand: 'Command',
+    approvalDetailsMissing: 'Action details are unavailable. Check again before allowing this.',
+    pendingApprovalTitle: '{name} needs your approval',
+    pendingRetryTitle: '{name} couldn’t start this reply.',
+    pendingUnknownTitle: 'We couldn’t confirm whether {name} finished.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -130,7 +142,13 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: 'このメッセージは既に送信された可能性があります。再試行しても同じメッセージが二重に投稿されることはありません。',
     sendSettledElsewhere: 'このメッセージは別の Desktop ウィンドウで処理済みです。もう一度送信する前に会話を確認してください。',
     journalLoadFailed: '保存済みメッセージを読み込めませんでした。保存済みメッセージを重複して送信しないよう、送信を一時停止しています。',
-    journalReload: 'もう一度読み込む'
+    journalReload: 'もう一度読み込む',
+    approvalAction: '操作',
+    approvalCommand: 'コマンド',
+    approvalDetailsMissing: '操作の詳細を表示できません。許可する前に、詳細を更新してください。',
+    pendingApprovalTitle: '{name}が承認を求めています',
+    pendingRetryTitle: '{name}はこの返信を開始できませんでした。',
+    pendingUnknownTitle: '{name}が完了したか確認できませんでした。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -174,7 +192,13 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: '这条消息可能已经发送。重试会发送同一条消息，不会重复发布。',
     sendSettledElsewhere: '另一个 Desktop 窗口已处理完这条消息。再次发送前请先查看对话。',
     journalLoadFailed: '无法加载已保存的消息。发送已暂停，以免重复发送已保存的消息。',
-    journalReload: '重新加载'
+    journalReload: '重新加载',
+    approvalAction: '操作',
+    approvalCommand: '命令',
+    approvalDetailsMissing: '无法显示操作详情。请先刷新详情，再允许此操作。',
+    pendingApprovalTitle: '{name}需要你的批准',
+    pendingRetryTitle: '{name}未能开始此回复。',
+    pendingUnknownTitle: '无法确认{name}是否已经完成。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -218,7 +242,13 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: '這則訊息可能已經傳送。重試會傳送同一則訊息，不會重複張貼。',
     sendSettledElsewhere: '另一個 Desktop 視窗已處理完這則訊息。再次傳送前請先查看對話。',
     journalLoadFailed: '無法載入已儲存的訊息。傳送已暫停，以免重複傳送已儲存的訊息。',
-    journalReload: '重新載入'
+    journalReload: '重新載入',
+    approvalAction: '操作',
+    approvalCommand: '命令',
+    approvalDetailsMissing: '無法顯示操作詳細資訊。請先重新整理詳細資訊，再允許此操作。',
+    pendingApprovalTitle: '{name}需要你的核准',
+    pendingRetryTitle: '{name}未能開始此回覆。',
+    pendingUnknownTitle: '無法確認{name}是否已經完成。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -262,7 +292,13 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: 'ربما أُرسلت هذه الرسالة بالفعل. تعيد إعادة المحاولة إرسال الرسالة نفسها دون نشرها مرتين.',
     sendSettledElsewhere: 'انتهت نافذة Desktop أخرى من هذه الرسالة بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.',
     journalLoadFailed: 'تعذّر تحميل الرسائل المحفوظة. توقف الإرسال مؤقتًا لمنع إرسال رسالة محفوظة مرتين.',
-    journalReload: 'إعادة التحميل'
+    journalReload: 'إعادة التحميل',
+    approvalAction: 'الإجراء',
+    approvalCommand: 'الأمر',
+    approvalDetailsMissing: 'تفاصيل الإجراء غير متاحة. حدّثها قبل السماح بهذا الإجراء.',
+    pendingApprovalTitle: 'يحتاج {name} إلى موافقتك',
+    pendingRetryTitle: 'لم يتمكن {name} من بدء هذه الإجابة.',
+    pendingUnknownTitle: 'لم نتمكن من تأكيد ما إذا كان {name} قد انتهى.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -309,7 +345,13 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: 'Сообщение, возможно, уже отправлено. Повтор отправит то же сообщение, дважды оно не появится.',
     sendSettledElsewhere: 'Другое окно Desktop уже завершило работу с этим сообщением. Проверьте беседу, прежде чем отправлять его снова.',
     journalLoadFailed: 'Не удалось загрузить сохранённые сообщения. Отправка приостановлена, чтобы не отправить сохранённое сообщение дважды.',
-    journalReload: 'Загрузить ещё раз'
+    journalReload: 'Загрузить ещё раз',
+    approvalAction: 'Действие',
+    approvalCommand: 'Команда',
+    approvalDetailsMissing: 'Подробности действия недоступны. Обновите их перед тем, как разрешить действие.',
+    pendingApprovalTitle: '{name} запрашивает ваше разрешение',
+    pendingRetryTitle: '{name} не смог начать этот ответ.',
+    pendingUnknownTitle: 'Не удалось подтвердить, закончил ли {name}.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -355,7 +397,13 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: 'Ce message a peut-être déjà été envoyé. Réessayer renvoie le même message, sans le publier deux fois.',
     sendSettledElsewhere: 'Une autre fenêtre Desktop a déjà traité ce message. Vérifiez la conversation avant de le renvoyer.',
     journalLoadFailed: 'Impossible de charger les messages enregistrés. L’envoi est suspendu pour éviter d’envoyer deux fois un message enregistré.',
-    journalReload: 'Réessayer le chargement'
+    journalReload: 'Réessayer le chargement',
+    approvalAction: 'Opération',
+    approvalCommand: 'Commande',
+    approvalDetailsMissing: 'Les détails de l’action sont indisponibles. Actualisez-les avant d’autoriser cette action.',
+    pendingApprovalTitle: '{name} a besoin de votre autorisation',
+    pendingRetryTitle: '{name} n’a pas pu commencer cette réponse.',
+    pendingUnknownTitle: 'Nous n’avons pas pu confirmer si {name} a terminé.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -402,7 +450,13 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: 'Diese Nachricht wurde möglicherweise schon gesendet. Erneut versuchen sendet dieselbe Nachricht, ohne sie doppelt zu posten.',
     sendSettledElsewhere: 'Ein anderes Desktop-Fenster hat diese Nachricht bereits abgeschlossen. Prüfen Sie die Unterhaltung, bevor Sie sie erneut senden.',
     journalLoadFailed: 'Gespeicherte Nachrichten konnten nicht geladen werden. Das Senden ist pausiert, damit eine gespeicherte Nachricht nicht doppelt gesendet wird.',
-    journalReload: 'Erneut laden'
+    journalReload: 'Erneut laden',
+    approvalAction: 'Aktion',
+    approvalCommand: 'Befehl',
+    approvalDetailsMissing: 'Die Aktionsdetails sind nicht verfügbar. Aktualisieren Sie sie, bevor Sie diese Aktion erlauben.',
+    pendingApprovalTitle: '{name} braucht Ihre Freigabe',
+    pendingRetryTitle: '{name} konnte diese Antwort nicht beginnen.',
+    pendingUnknownTitle: 'Wir konnten nicht bestätigen, ob {name} fertig ist.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -448,6 +502,12 @@ export const CANONICAL_GROUP_LOCALES = {
     sendMaybe: 'Es posible que este mensaje ya se haya enviado. Reintentar envía el mismo mensaje sin publicarlo dos veces.',
     sendSettledElsewhere: 'Otra ventana de Desktop ya terminó con este mensaje. Revisa la conversación antes de volver a enviarlo.',
     journalLoadFailed: 'No se pudieron cargar los mensajes guardados. El envío está en pausa para evitar enviar un mensaje guardado dos veces.',
-    journalReload: 'Volver a cargar'
+    journalReload: 'Volver a cargar',
+    approvalAction: 'Acción',
+    approvalCommand: 'Comando',
+    approvalDetailsMissing: 'Los detalles de la acción no están disponibles. Actualízalos antes de permitirla.',
+    pendingApprovalTitle: '{name} necesita tu aprobación',
+    pendingRetryTitle: '{name} no pudo iniciar esta respuesta.',
+    pendingUnknownTitle: 'No pudimos confirmar si {name} terminó.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

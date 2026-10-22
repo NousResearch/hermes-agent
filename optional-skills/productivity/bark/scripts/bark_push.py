@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Send a Bark push notification.
 
-Standard library only. The device key comes from ``--device-key`` or the
-``BARK_TOKEN`` environment variable. The server comes from ``--server`` and
-defaults to ``https://api.day.app``; a self-hosted address is the skill's
-``skills.config.bark.server`` setting, passed in by the caller. No server
-environment variable is read.
+Standard library only. The device key is read from the ``BARK_TOKEN``
+environment variable only — there is no command-line flag for it, so the key
+never lands in shell history, a process list or a tool transcript. The server
+comes from ``--server`` and defaults to ``https://api.day.app``; a self-hosted
+address is the skill's ``skills.config.bark.server`` setting, passed in by the
+caller. No server environment variable is read.
 
 The device key is part of the request URL, so every message this script prints
 is redacted before it reaches stdout or stderr.
@@ -20,6 +21,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -46,8 +48,8 @@ def redact(text: str, token: str) -> str:
     return text.replace(token, REDACTED)
 
 
-def resolve_token(explicit: str | None = None) -> str:
-    token = (explicit or os.environ.get("BARK_TOKEN") or "").strip()
+def resolve_token() -> str:
+    token = (os.environ.get("BARK_TOKEN") or "").strip()
     if not token:
         raise SystemExit(TOKEN_HELP)
     return token
@@ -76,14 +78,17 @@ def build_payload(
     delete: bool = False,
 ) -> dict:
     """Build the JSON body Bark accepts, dropping unset fields."""
+    if delete:
+        if not push_id:
+            raise ValueError("--delete needs --id")
+        # Bark deletes by id alone; body, title and the rest are irrelevant.
+        return {"id": push_id, "delete": "1"}
     if markdown:
         body = None
     if not body and not markdown:
         raise ValueError("a push needs --body or --markdown")
     if level is not None and level not in LEVELS:
         raise ValueError(f"unsupported level {level!r}; use one of {', '.join(LEVELS)}")
-    if delete and not push_id:
-        raise ValueError("--delete needs --id")
 
     payload: dict = {
         "title": title,
@@ -132,6 +137,15 @@ def send_push(
         ) from None
     except urllib.error.URLError as exc:
         raise BarkError(redact(f"cannot reach {server}: {exc.reason}", token)) from None
+    except (TimeoutError, OSError) as exc:
+        # A read timeout arrives as TimeoutError, not URLError; report it without a traceback.
+        raise BarkError(
+            redact(f"cannot reach {server}: {exc or type(exc).__name__}", token)
+        ) from None
+    except http.client.HTTPException as exc:
+        raise BarkError(
+            redact(f"invalid response from {server}: {type(exc).__name__}: {exc}", token)
+        ) from None
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -158,7 +172,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--call", action="store_true", help="repeat the ringtone for 30 seconds")
     parser.add_argument("--id", dest="push_id", help="notification id; reusing it replaces the push")
     parser.add_argument("--delete", action="store_true", help="withdraw the push with this --id")
-    parser.add_argument("--device-key", help="Bark device key (defaults to BARK_TOKEN)")
     parser.add_argument(
         "--server",
         help="Bark server base URL (default https://api.day.app; self-hosted: skills.config.bark.server)",
@@ -194,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    token = resolve_token(args.device_key)
+    token = resolve_token()
     try:
         result = send_push(payload, token, resolve_server(args.server), args.timeout)
     except BarkError as exc:

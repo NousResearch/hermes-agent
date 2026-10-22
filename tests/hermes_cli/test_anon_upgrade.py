@@ -174,6 +174,14 @@ class TestUpgrade:
         assert shared.get("refresh_token") == REFRESH_TOKEN
         assert "anon_token" not in shared
 
+    def test_completed_promotion_is_the_handoff_and_sends_no_claim(self, portal):
+        from hermes_cli import guest_handoff
+        anon_auth.ensure_portal_identity(explicit=True)
+        assert anon_auth.upgrade_guest(_args()) == 0
+        assert ("POST", "/api/anonymous/claim") not in portal.calls
+        status = guest_handoff.handoff_status()
+        assert status["state"] == "claimed" and status["account_email"] == EMAIL
+
 
 FREE_PICK = "upstage/solar-pro4:free"
 

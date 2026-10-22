@@ -157,6 +157,9 @@ def refresh_nous_auth_keepalive_once(
     from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
     with launch_profile_scope_if_multiplexed():
+        # A free-tier handoff an earlier run left retrying resumes here (next boot, then each tick).
+        from hermes_cli.guest_handoff import drain
+        drain()
         pool_result = _refresh_selected_pool_entry(
             min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
         )

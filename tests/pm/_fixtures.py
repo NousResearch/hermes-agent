@@ -19,13 +19,14 @@ import zipfile
 import pytest
 
 
-def _wheel(directory: Path, name: str, version: str = "1.0", requirements=()) -> Path:
+def _wheel(directory: Path, name: str, version: str = "1.0", requirements=(), extra=None) -> Path:
     metadata = f"{name}-{version}.dist-info"
     entries = {
         f"{name}/__init__.py": f"__version__ = {version!r}\n",
         f"{metadata}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
         + "".join(f"Requires-Dist: {requirement}\n" for requirement in requirements),
         f"{metadata}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        **(extra or {}),
     }
     entries[f"{metadata}/RECORD"] = "".join(f"{path},,\n" for path in entries)
     wheel = directory / f"{name}-{version}-py3-none-any.whl"

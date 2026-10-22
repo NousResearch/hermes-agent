@@ -43,10 +43,54 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="is thinking...",
+            status="processing",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_agent_sessions_status_maps_free_text_to_processing(self):
+        """The rendered status is free text; the sessions API takes only its lifecycle enum.
+
+        Passing "is thinking..." straight through is rejected with `invalid_arguments`
+        ("must be a valid enum value [status]"), so no loading indicator ever appeared.
+        """
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        a.set_status_text("C123", "is reading docs/api.md…")
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="processing",
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_sessions_status_passes_lifecycle_values_through(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        await a._set_thread_status("C123", "T123", "parent_ts", "suspended", "test")
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="suspended",
+        )
+
+    @pytest.mark.asyncio
+    async def test_legacy_api_still_gets_the_rendered_status_text(self):
+        """Without the sessions API there is no enum to satisfy — free text stays free text."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is thinking...",
+        )
+        a._app.client.agents_sessions_setStatus.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_typing_clears_via_agent_sessions(self):
@@ -60,7 +104,7 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="",
+            status="active",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 

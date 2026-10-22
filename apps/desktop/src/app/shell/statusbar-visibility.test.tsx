@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { StatusbarControls, type StatusbarItem } from '@/app/shell/statusbar-controls'
 import {
   $statusbarHiddenIds,
+  $statusbarItemOrder,
   $statusbarVisible,
   STATUSBAR_HIDDEN_BY_DEFAULT,
   toggleStatusbarVisible
@@ -19,6 +20,7 @@ beforeAll(() => {
 afterEach(() => {
   cleanup()
   $statusbarHiddenIds.set([...STATUSBAR_HIDDEN_BY_DEFAULT])
+  $statusbarItemOrder.set({ left: [], right: [] })
   $statusbarVisible.set(true)
 })
 
@@ -47,6 +49,15 @@ function openContextMenu(target: HTMLElement) {
 }
 
 describe('statusbar item visibility', () => {
+  it('uses the saved right-cluster order while keeping an unknown item in its shipped position', () => {
+    $statusbarHiddenIds.set([])
+    $statusbarItemOrder.set({ left: [], right: ['gateway', 'cron'] })
+    const statusbar = bar([item('workspace', 'Workspace'), item('cron', 'Cron'), item('gateway', 'Gateway')])
+
+    const labels = Array.from(statusbar.querySelectorAll('button')).map(button => button.textContent)
+    expect(labels).toEqual(['Workspace', 'Gateway', 'Cron'])
+  })
+
   it('shows an item once the user enables it from the bar context menu', async () => {
     const statusbar = bar([item('cron', 'Cron'), item('gateway-health', 'Gateway')])
 
@@ -92,6 +103,7 @@ describe('reset to defaults', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: /reset to defaults/i }))
 
     expect($statusbarHiddenIds.get()).toEqual([...STATUSBAR_HIDDEN_BY_DEFAULT])
+    expect($statusbarItemOrder.get()).toEqual({ left: [], right: [] })
     expect(within(statusbar).getByText('Gateway')).toBeTruthy()
     // Scoped to the bar: the menu stays open after a reset, so an unscoped query
     // matches its still-listed 'Cron' checkbox row rather than a bar item.
@@ -161,5 +173,44 @@ describe('whole-bar visibility', () => {
 
     expect(await screen.findByRole('menuitem', { name: /hide status bar/i })).toBeTruthy()
     expect(screen.queryByRole('menuitemcheckbox')).toBeNull()
+  })
+})
+
+describe('statusbar menu reordering', () => {
+  it('persists an actual pointer drop without toggling visibility', async () => {
+    const statusbar = bar([item('alpha', 'Alpha'), item('beta', 'Beta')])
+    openContextMenu(statusbar)
+    const handle = await screen.findByRole('button', { name: 'Reorder Alpha' })
+
+    const measure = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const rows = Array.from(document.querySelectorAll('[role="menuitemcheckbox"]'))
+      const index = rows.indexOf(this)
+
+      return new DOMRect(0, Math.max(0, index) * 24, 200, 24)
+    })
+
+    try {
+      await act(async () => {
+        fireEvent.pointerDown(handle, { button: 0, isPrimary: true, pointerId: 1, clientX: 10, clientY: 12 })
+        await Promise.resolve()
+      })
+      await act(async () => {
+        fireEvent.pointerMove(document, { pointerId: 1, clientX: 10, clientY: 36 })
+        await Promise.resolve()
+      })
+      await act(async () => {
+        fireEvent.pointerUp(document, { pointerId: 1, clientX: 10, clientY: 36 })
+        await Promise.resolve()
+      })
+      await waitFor(() => expect($statusbarItemOrder.get().right).toEqual(['beta', 'alpha']))
+      expect($statusbarItemOrder.get().left).toEqual([])
+      expect(Array.from(statusbar.querySelectorAll('button')).map(button => button.textContent)).toEqual([
+        'Beta',
+        'Alpha'
+      ])
+      expect($statusbarHiddenIds.get()).toEqual([...STATUSBAR_HIDDEN_BY_DEFAULT])
+    } finally {
+      measure.mockRestore()
+    }
   })
 })

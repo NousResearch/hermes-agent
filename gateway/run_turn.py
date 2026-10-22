@@ -23,7 +23,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, reply_expected_metadata,
@@ -313,7 +313,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
-            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
+            await self._hmwa_post_turn_hooks(
+                hook_ctx, agent_result, response,
+                adapter=self._delivery_adapter_for(source), session_key=session_key,
+                run_generation=run_generation,
+            )
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
@@ -2049,8 +2053,25 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
+    def _record_streamed_post_delivery_receipt(self, source, session_key, stream_consumer) -> None:
+        """Record a confirmed streamed final for this processing task's observer. Best-effort:
+        receipt bookkeeping must never break the delivery-suppression path it rides on."""
+        resolve = getattr(self, "_delivery_adapter_for", None)
+        if not session_key or not callable(resolve):
+            return
+        try:
+            record = getattr(resolve(source), "record_post_delivery_receipt", None)
+            if not callable(record):
+                return
+            message_id = getattr(stream_consumer, "message_id", None)
+            record(session_key, SendResult(
+                success=True, message_id=message_id if message_id and message_id != "__no_edit__" else None))
+        except Exception:
+            logger.debug("Recording streamed post-delivery receipt failed", exc_info=True)
+
     async def _run_agent_edit_streamed_message(
-        self, _sc, source, response, content, *, _sk, ok, fail_result: str, fail_exc: str,
+        self, _sc, source, response, content, *, session_key, _sk, ok,
+        fail_result: str, fail_exc: str,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
         ``response["already_sent"]`` and log ``ok``. A returned failure logs ``fail_result`` as
@@ -2067,6 +2088,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
+        self._record_streamed_post_delivery_receipt(source, session_key, _sc)
         logger.info(*ok)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
@@ -2114,6 +2136,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
+            self._record_streamed_post_delivery_receipt(source, session_key, _sc)
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.
@@ -2125,7 +2148,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 )
             elif _sc_msg_id and _sc_msg_id != "__no_edit__" and getattr(_sc, "adapter", None) is not None:
                 await self._run_agent_edit_streamed_message(
-                    _sc, source, response, _final, _sk=_sk,
+                    _sc, source, response, _final, session_key=session_key, _sk=_sk,
                     ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
@@ -2139,7 +2162,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             # Transformed after streaming: edit the streamed message instead of sending a duplicate.
             if _sc.message_id:
                 await self._run_agent_edit_streamed_message(
-                    _sc, source, response, response["final_response"], _sk=_sk,
+                    _sc, source, response, response["final_response"],
+                    session_key=session_key, _sk=_sk,
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
                     fail_exc="Failed to edit streamed message for session %s: %s",

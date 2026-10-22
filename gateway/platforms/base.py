@@ -1949,6 +1949,7 @@ class BasePlatformAdapter(ABC):
         # Post-delivery one-shots per session_key: bare callback (legacy) or ``(generation,
         # callback)`` so a stale run can't clear a fresher run's callback.
         self._post_delivery_callbacks: dict[str, Any] = {}
+        self._post_delivery_receipts: dict[str, SendResult] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
@@ -3444,6 +3445,15 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks[session_key] = (
             callback if generation is None else (int(generation), callback))
 
+    def record_post_delivery_receipt(self, session_key: str, result: SendResult) -> None:
+        """Record the final text delivery result for the callback that owns this processing task."""
+        if session_key and result is not None:
+            self._post_delivery_receipts[session_key] = result
+
+    def get_post_delivery_receipt(self, session_key: str) -> Optional[SendResult]:
+        """Return this processing task's final text delivery result, when one was attempted."""
+        return self._post_delivery_receipts.get(session_key) if session_key else None
+
     @staticmethod
     def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
         """Async wrapper running ``callbacks`` in order with per-callback exception isolation;
@@ -4198,7 +4208,7 @@ class BasePlatformAdapter(ABC):
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
     async def _play_tts_file(
-        self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
+        self, event: MessageEvent, session_key: str, text_content: str, tts_path: str, first: bool,
         metadata: dict[str, Any], record_delivery: Callable) -> bool:
         """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
         along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
@@ -4208,6 +4218,8 @@ class BasePlatformAdapter(ABC):
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
+        if caption:
+            self.record_post_delivery_receipt(session_key, tts_result)
         return bool(caption and getattr(tts_result, "success", False))
 
     async def _record_delivery_obligation(
@@ -4383,6 +4395,7 @@ class BasePlatformAdapter(ABC):
         result, delivery_adapter = await self.send_final_ledgered(
             event, session_key, text_content, metadata,
             reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
+        self.record_post_delivery_receipt(session_key, result)
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
@@ -4530,6 +4543,7 @@ class BasePlatformAdapter(ABC):
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
+        self._post_delivery_receipts.pop(session_key, None)
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
 
         def _record_delivery(result):
@@ -4576,7 +4590,7 @@ class BasePlatformAdapter(ABC):
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
+                            event, session_key, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
                             _record_delivery)
                     finally:
                         with contextlib.suppress(OSError):
@@ -4646,6 +4660,7 @@ class BasePlatformAdapter(ABC):
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
+            self._post_delivery_receipts.pop(session_key, None)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)

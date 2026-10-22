@@ -220,12 +220,30 @@ class GatewayTurnPersistenceMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
-    async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
+    async def _hmwa_post_turn_hooks(
+        self, hook_ctx, agent_result, response, *, adapter=None, session_key="", run_generation=None,
+    ):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
             **hook_ctx, "response": (response or "")[:500], "model": agent_result.get("model", ""),
             "provider": agent_result.get("provider", ""),
         })
+
+        if adapter is not None and session_key and hasattr(adapter, "register_post_delivery_callback"):
+            async def _post_delivery_observer():
+                receipt = adapter.get_post_delivery_receipt(session_key)
+                if not (receipt and receipt.success):
+                    return
+                await self.hooks.emit("agent:post_delivery", {
+                    "platform": hook_ctx["platform"], "user_id": hook_ctx["user_id"],
+                    "chat_id": hook_ctx["chat_id"], "thread_id": hook_ctx["thread_id"],
+                    "session_id": hook_ctx["session_id"],
+                    "message_id": getattr(receipt, "message_id", None),
+                    "response": response or "", "model": agent_result.get("model", ""),
+                    "provider": agent_result.get("provider", ""), "delivery_confirmed": True,
+                })
+            adapter.register_post_delivery_callback(
+                session_key, _post_delivery_observer, generation=run_generation)
 
         # Pending process watchers (check_interval on background processes)
         try:

@@ -61,6 +61,28 @@ class TestReadManifestInfo:
         d.mkdir()
         assert _read_manifest_info(d, "") is None
 
+    def test_dashboard_manifest_is_a_frontend_only_plugin_identity(self, tmp_path):
+        from hermes_cli.plugins_cmd import _read_manifest_info
+
+        d = tmp_path / "document-attach"
+        dashboard = d / "dashboard"
+        dashboard.mkdir(parents=True)
+        (dashboard / "manifest.json").write_text(
+            json.dumps({
+                "name": "document-attach",
+                "version": "1.2.3",
+                "description": "Sends uploaded documents to Chat",
+            }),
+            encoding="utf-8",
+        )
+
+        assert _read_manifest_info(d, "") == (
+            "document-attach",
+            "1.2.3",
+            "Sends uploaded documents to Chat",
+            "document-attach",
+        )
+
     def test_yml_extension(self, tmp_path):
         from hermes_cli.plugins_cmd import _read_manifest_info
 
@@ -79,6 +101,52 @@ class TestReadManifestInfo:
 
 
 class TestDiscoverAllPlugins:
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_frontend_only_dashboard_plugin_is_discovered(
+        self, mock_user_dir, mock_bundled_dir, tmp_path
+    ):
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        dashboard = tmp_path / "document-attach" / "dashboard"
+        dashboard.mkdir(parents=True)
+        (dashboard / "manifest.json").write_text(
+            json.dumps({
+                "name": "document-attach",
+                "version": "1.2.3",
+                "description": "Sends uploaded documents to Chat",
+            }),
+            encoding="utf-8",
+        )
+        mock_user_dir.return_value = tmp_path
+        mock_bundled_dir.return_value = tmp_path / "nonexistent"
+
+        entries = _discover_all_plugins()
+        assert entries == [
+            (
+                "document-attach",
+                "1.2.3",
+                "Sends uploaded documents to Chat",
+                "user",
+                tmp_path / "document-attach",
+                "document-attach",
+            )
+        ]
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_flat_plugins_still_discovered(self, mock_user_dir, mock_bundled_dir, tmp_path):
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        _make_plugin_dir(tmp_path, "disk-cleanup", {
+            "name": "disk-cleanup", "version": "1.0.0"
+        })
+        mock_user_dir.return_value = tmp_path
+        mock_bundled_dir.return_value = tmp_path / "nonexistent"
+
+        entries = _discover_all_plugins()
+        keys = [e[5] for e in entries]
+        assert "disk-cleanup" in keys
 
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")

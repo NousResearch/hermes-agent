@@ -95,6 +95,19 @@ export interface HermesPluginSDK {
   /** Contract version of this SDK surface (see SDK_CONTRACT_VERSION). */
   readonly sdkVersion: string;
 
+  /** Narrow host actions. These never expose the underlying PTY or DOM. */
+  host: {
+    chat: {
+      /** Submit text plus Return through the current active Chat input path. */
+      submitText: (text: string) =>
+        | { ok: true }
+        | {
+            ok: false;
+            reason: "inactive" | "disconnected" | "input_blocked" | "invalid_text";
+          };
+    };
+  };
+
   /** React core — use instead of importing/bundling react. */
   React: typeof import("react").default;
   hooks: {

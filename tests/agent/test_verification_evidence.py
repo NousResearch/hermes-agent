@@ -1,5 +1,8 @@
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
@@ -229,6 +232,71 @@ def test_masked_verifier_does_not_clear_edited_ledger_state(tmp_path, monkeypatc
     assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "stale"
 
 
+
+
+@pytest.mark.parametrize("exit_code, expected", [(0, "passed"), (1, "failed")])
+def test_contained_temp_dir_records_real_ad_hoc_run(tmp_path, monkeypatch, exit_code, expected):
+    """A home-root workspace must accept the same disposable verifier its nudge requests."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    scratch = tmp_path / "cache" / "scratch"
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    fd, raw = tempfile.mkstemp(prefix="hermes-verify-", suffix=".py", dir=scratch)
+    os.close(fd)
+    script = Path(raw)
+    script.write_text(
+        "from pathlib import Path\n"
+        "Path(__file__).unlink()\n"
+        "print('focused ad-hoc check')\n"
+        f"raise SystemExit({exit_code})\n",
+        encoding="utf-8",
+    )
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[str(tmp_path / "changed.py")])
+    try:
+        run = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
+        evidence = record_terminal_result(
+            command=f"{sys.executable} {script}", cwd=tmp_path, session_id="s1",
+            exit_code=run.returncode, output=run.stdout,
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert evidence is not None
+    assert evidence["kind"] == "ad_hoc"
+    assert evidence["scope"] == "targeted"
+    assert evidence["status"] == expected
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == expected
+    assert not script.exists()
+
+
+@pytest.mark.parametrize("case", ["project_inside_temp", "temp_is_project", "outside_temp", "symlink_escape", "canonical", "masked", "not_interpreter"])
+def test_contained_temp_exception_preserves_verification_boundaries(tmp_path, monkeypatch, case):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    root = scratch / "project" if case == "project_inside_temp" else scratch if case == "temp_is_project" else tmp_path
+    root.mkdir(exist_ok=True)
+    (root / "package.json").write_text("{}", encoding="utf-8")
+    script = scratch / "hermes-verify-boundary.py"
+    if case in {"project_inside_temp", "temp_is_project"}:
+        script = root / script.name
+    elif case == "outside_temp":
+        script = tmp_path / script.name
+    elif case == "symlink_escape":
+        target = tmp_path / "outside.py"
+        target.write_text("print('not a temp verifier')\n", encoding="utf-8")
+        script.symlink_to(target)
+    elif case == "canonical":
+        _python_project(root)
+    command = f"{sys.executable} {script}"
+    if case == "masked":
+        command += " || true"
+    elif case == "not_interpreter":
+        command = f"rm -f {script}"
+
+    assert classify_verification_command(command, cwd=root, session_id="s1", exit_code=0) is None
 
 
 def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, monkeypatch):

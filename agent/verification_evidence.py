@@ -303,12 +303,20 @@ def _is_under(token: str, base: str | Path | None) -> bool:
 
 
 def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
-    """An ad-hoc verify script: prefixed name, under the temp dir, outside the repo."""
+    """Recognize disposable verifiers without rejecting a workspace containing temp."""
     try:
         name = Path(token).expanduser().name
     except Exception:
         return False
-    return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
+    temp_dir = tempfile.gettempdir()
+    # A broad home/workspace root can contain the configured scratch directory.
+    # Keep excluding scripts in projects rooted inside (or at) the temp directory.
+    workspace_contains_temp = _is_under(temp_dir, root) and not _is_under(str(root), temp_dir)
+    return (
+        name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES)
+        and _is_under(token, temp_dir)
+        and (not _is_under(token, root) or workspace_contains_temp)
+    )
 
 
 def _is_interpreter_token(token: str) -> bool:

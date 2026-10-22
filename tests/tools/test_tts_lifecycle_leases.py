@@ -329,8 +329,8 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
     ran: list = []
     done = threading.Event()
 
-    def _fake_run(command, timeout, env_passthrough=None):
-        ran.append(command)
+    def _fake_run(command, timeout, env_passthrough=None, *, keep_children=False):
+        ran.append((command, keep_children))
         done.set()
 
     monkeypatch.setattr(tts_command_provider, "run_command_provider", _fake_run)
@@ -356,7 +356,7 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
     # shlex.quote elsewhere) — compute the expectation the same way.
     quote = subprocess.list2cmdline([cfg["providers"]["srv"]["model"]]) if os.name == "nt" \
         else shlex.quote(cfg["providers"]["srv"]["model"])
-    assert ran == [f"curl -s localhost:5002/load?model={quote}", "curl -s localhost:5002/unload"]
+    assert ran == [(f"curl -s localhost:5002/load?model={quote}", True), ("curl -s localhost:5002/unload", False)]
 
 
 def test_command_hook_thread_resolves_passthrough_under_the_callers_scope(monkeypatch, timers):
@@ -369,7 +369,7 @@ def test_command_hook_thread_resolves_passthrough_under_the_callers_scope(monkey
     seen: list = []
     done = threading.Event()
 
-    def _fake_run(command, timeout, env_passthrough=None):
+    def _fake_run(command, timeout, env_passthrough=None, *, keep_children=False):
         try:
             seen.extend(resolve_passthrough_value(k, None) for k in env_passthrough)
         except Exception as exc:

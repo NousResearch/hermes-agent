@@ -8,6 +8,8 @@ import-light: callers gate on config before importing so disabled sessions never
 from __future__ import annotations
 
 from contextlib import contextmanager, suppress
+from functools import wraps
+import threading
 import logging
 import os
 import time
@@ -17,6 +19,18 @@ from hermes_cli.local_runtime.binaries import runtimes_root
 from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
 
 logger = logging.getLogger(__name__)
+
+
+_LIFECYCLE_LOCK = threading.RLock()
+
+
+def _serialized_lifecycle(fn):
+    """One transaction across all boot/stop/refresh callers, not just the GPU route."""
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with _LIFECYCLE_LOCK:
+            return fn(*args, **kwargs)
+    return locked
 
 _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
 # The engine that singleton runs (or is booting). Budgets price ITS devices: the server is shared by
@@ -186,6 +200,7 @@ def _stop_state_server() -> None:
         logger.warning("could not stop the incumbent llama-server (pid=%s): %s", proc.pid, exc)
 
 
+@_serialized_lifecycle
 def refresh_local_runtime() -> bool:
     """Restart the managed server so it rescans the models directory. The router's model list is
     SPAWN-ONLY: a GGUF added after start is invisible to GET /models and 400s on completion, so
@@ -407,6 +422,7 @@ def _cross_process_boot_lock(timeout_s: float = 130.0):
         os.close(fd)
 
 
+@_serialized_lifecycle
 def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
@@ -498,6 +514,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             return None
 
 
+@_serialized_lifecycle
 def shutdown_local_runtime() -> None:
     global _SUPERVISOR, _SERVING_ENGINE, _SERVING_GPU
     if _SUPERVISOR is not None:

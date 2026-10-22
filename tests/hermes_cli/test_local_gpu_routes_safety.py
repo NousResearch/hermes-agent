@@ -92,3 +92,46 @@ def test_real_supervisor_loading_and_queue_block_gpu_restart(client, monkeypatch
     response = client.post('/api/local-models/gpu', json={'gpu': '1'})
     assert response.status_code == 409, response.text
     assert config_mod.load_config_readonly()['local_runtime']['gpu'] == before
+
+
+
+def test_refresh_serializes_non_picker_callers_too(monkeypatch):
+    import threading
+    from hermes_cli.local_runtime import bootstrap
+    entered = threading.Event()
+    release = threading.Event()
+    duplicate_stop = threading.Event()
+    second_started = threading.Event()
+    calls = []
+    def stop_old():
+        calls.append('old-stop')
+        if len(calls) > 1: duplicate_stop.set()
+        entered.set()
+        assert release.wait(5)
+    monkeypatch.setattr(bootstrap, '_SUPERVISOR', SimpleNamespace(stop=stop_old))
+    monkeypatch.setattr(config_mod, 'load_config', dict)
+    replacements = []
+    def ensure(*args, **kwargs):
+        replacement = SimpleNamespace(stop=lambda: None)
+        replacements.append(replacement)
+        bootstrap._SUPERVISOR = replacement
+        return replacement
+    monkeypatch.setattr(bootstrap, 'ensure_local_runtime', ensure)
+    first = threading.Thread(target=bootstrap.refresh_local_runtime)
+    def second_call():
+        second_started.set()
+        bootstrap.refresh_local_runtime()
+    second = threading.Thread(target=second_call)
+    first.start()
+    assert entered.wait(3)
+    second.start()
+    assert second_started.wait(3)
+    try:
+        assert not duplicate_stop.wait(1), 'a download/other refresh raced the GPU transaction'
+    finally:
+        release.set()
+        first.join(5); second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert calls == ['old-stop']
+    assert len(replacements) == 2
+    assert bootstrap.get_supervisor() is replacements[-1]

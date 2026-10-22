@@ -29,7 +29,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
-from agent.chat_completion_helpers import looks_like_provider_error_envelope
+from agent.chat_completion_helpers import (
+    looks_like_provider_error_envelope,
+    _could_be_provider_error_envelope_prefix,
+    _StreamEnvelopeBuffer,
+    interruptible_streaming_api_call,
+)
 from gateway.config import Platform
 from gateway.run import (
     _looks_like_gateway_provider_error,
@@ -44,6 +49,17 @@ OVERLOAD_ENVELOPE = (
 def _mock_response(content="Hello", finish_reason="stop"):
     msg = SimpleNamespace(content=content, tool_calls=None)
     choice = SimpleNamespace(message=msg, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+def _mock_chunk(content=None, finish_reason=None, tool_calls=None):
+    delta = SimpleNamespace(
+        content=content,
+        tool_calls=tool_calls,
+        reasoning_content=None,
+        reasoning=None,
+    )
+    choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
@@ -345,3 +361,288 @@ class TestProviderErrorEnvelopeGatewayDefense:
         assert "try again later" not in sanitized
         # ...and the rewrite must be the safe provider-failure reply.
         assert "model provider" in sanitized
+
+
+# ---------------------------------------------------------------------------
+# Streaming unit and integration — prefix detection and buffering (_StreamEnvelopeBuffer)
+# ---------------------------------------------------------------------------
+
+
+class TestProviderErrorEnvelopePrefix:
+    @pytest.mark.parametrize("empty", ["", "   ", None])
+    def test_empty_and_none_prefix_is_candidate(self, empty):
+        assert _could_be_provider_error_envelope_prefix(empty) is True
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "[",
+            "[e",
+            "[E",
+            "[err",
+            "[Error]",
+            "[ERROR]",
+            "* [Error]",
+            "> [error]",
+            "— [error]",
+            "   [error]",
+        ],
+    )
+    def test_valid_error_prefixes_are_candidates(self, candidate):
+        assert _could_be_provider_error_envelope_prefix(candidate) is True
+
+    @pytest.mark.parametrize(
+        "divergent",
+        [
+            "Hello",
+            "Sure, I can help you with that.",
+            "[Info] Starting task...",
+            "[Warning] High memory usage.",
+            "The error occurred in line 4.",
+        ],
+    )
+    def test_divergent_prefixes_are_rejected(self, divergent):
+        assert _could_be_provider_error_envelope_prefix(divergent) is False
+
+    def test_too_long_or_too_many_newlines_rejected(self):
+        long_prefix = "[" + "e" * 405
+        assert _could_be_provider_error_envelope_prefix(long_prefix) is False
+
+        multiline_prefix = "[\n\n\n\n\nerror]"
+        assert _could_be_provider_error_envelope_prefix(multiline_prefix) is False
+
+
+class TestStreamEnvelopeBufferUnit:
+    def test_divergent_stream_flushes_all_and_fires_first_delta(self):
+        first_fired = []
+        stream_deltas = []
+        flag = {"yes": False}
+        buf = _StreamEnvelopeBuffer(
+            lambda: first_fired.append(True),
+            stream_deltas.append,
+            flag,
+        )
+
+        # Feed "[" which matches prefix -> buffering continues
+        buf.feed("[")
+        assert first_fired == []
+        assert stream_deltas == []
+        assert flag["yes"] is False
+
+        # Feed "He" -> combined is "[He" which diverges from "[error]"!
+        buf.feed("He")
+        assert len(first_fired) == 1
+        assert stream_deltas == ["[", "He"]
+        assert flag["yes"] is True
+
+        # Subsequent deltas pass through directly
+        buf.feed("llo")
+        assert stream_deltas == ["[", "He", "llo"]
+
+    def test_exact_envelope_drops_buffer_on_finish(self):
+        first_fired = []
+        stream_deltas = []
+        flag = {"yes": False}
+        buf = _StreamEnvelopeBuffer(
+            lambda: first_fired.append(True),
+            stream_deltas.append,
+            flag,
+        )
+
+        buf.feed("[Error] Our servers are ")
+        buf.feed("currently overloaded. ")
+        buf.feed("Please try again later.")
+
+        assert first_fired == []
+        assert stream_deltas == []
+
+        buf.finish()
+        # Full envelope was matched; buffer is dropped, never delivered!
+        assert first_fired == []
+        assert stream_deltas == []
+        assert flag["yes"] is False
+
+    def test_non_envelope_error_tag_flushes_on_finish(self):
+        first_fired = []
+        stream_deltas = []
+        flag = {"yes": False}
+        buf = _StreamEnvelopeBuffer(
+            lambda: first_fired.append(True),
+            stream_deltas.append,
+            flag,
+        )
+
+        buf.feed("[Error] The file ")
+        buf.feed("does not exist.")
+
+        assert first_fired == []
+        assert stream_deltas == []
+
+        buf.finish()
+        # Not a service failure envelope -> flushes completely on finish
+        assert len(first_fired) == 1
+        assert stream_deltas == ["[Error] The file ", "does not exist."]
+        assert flag["yes"] is True
+
+    def test_tool_call_flushes_buffer(self):
+        first_fired = []
+        stream_deltas = []
+        buf = _StreamEnvelopeBuffer(
+            lambda: first_fired.append(True),
+            stream_deltas.append,
+        )
+
+        buf.feed("[")
+        assert first_fired == []
+        assert stream_deltas == []
+
+        buf.flush()
+        assert len(first_fired) == 1
+        assert stream_deltas == ["["]
+
+
+class TestStreamingProviderOverloadEnvelopeIntegration:
+    def test_streaming_multi_chunk_overload_envelope_not_leaked(self, agent):
+        """Reviewer finding: multi-chunk provider overload envelope must not leak into stream callbacks."""
+        _setup_agent(agent)
+        stream_deltas = []
+        first_delta_calls = []
+
+        agent.stream_delta_callback = stream_deltas.append
+
+        chunks = [
+            _mock_chunk(content="[Error] Our servers are "),
+            _mock_chunk(content="currently overloaded. Please try again later.", finish_reason="stop"),
+        ]
+
+        class _MockStream:
+            final_response = None
+            output_modified = False
+
+            def __iter__(self):
+                return iter(chunks)
+
+            def close(self):
+                pass
+
+        with (
+            patch("agent.chat_completion_helpers.should_use_direct_api_call", return_value=False),
+            patch("agent.relay_llm.stream", return_value=_MockStream()),
+        ):
+            resp = interruptible_streaming_api_call(
+                agent,
+                {"messages": [{"role": "user", "content": "hi"}]},
+                on_first_delta=lambda: first_delta_calls.append(True),
+            )
+
+        assert stream_deltas == []
+        assert first_delta_calls == []
+        assert resp.choices[0].message.content == OVERLOAD_ENVELOPE
+
+    def test_completed_response_overload_envelope_not_leaked(self, agent):
+        """Completed-response-instead-of-stream branch must not emit overload envelope."""
+        _setup_agent(agent)
+        stream_deltas = []
+        first_delta_calls = []
+
+        agent.stream_delta_callback = stream_deltas.append
+
+        completed_resp = _mock_response(content=OVERLOAD_ENVELOPE)
+
+        class _MockCompletedStream:
+            final_response = completed_resp
+            output_modified = False
+
+            def __iter__(self):
+                return iter([])
+
+            def close(self):
+                pass
+
+        with (
+            patch("agent.chat_completion_helpers.should_use_direct_api_call", return_value=False),
+            patch("agent.relay_llm.stream", return_value=_MockCompletedStream()),
+        ):
+            resp = interruptible_streaming_api_call(
+                agent,
+                {"messages": [{"role": "user", "content": "hi"}]},
+                on_first_delta=lambda: first_delta_calls.append(True),
+            )
+
+        assert stream_deltas == []
+        assert first_delta_calls == []
+        assert resp.choices[0].message.content == OVERLOAD_ENVELOPE
+
+    def test_streaming_normal_content_emits_deltas(self, agent):
+        """Normal multi-chunk stream emits deltas and fires on_first_delta."""
+        _setup_agent(agent)
+        stream_deltas = []
+        first_delta_calls = []
+
+        agent.stream_delta_callback = stream_deltas.append
+
+        chunks = [
+            _mock_chunk(content="Hello "),
+            _mock_chunk(content="world!", finish_reason="stop"),
+        ]
+
+        class _MockNormalStream:
+            final_response = None
+            output_modified = False
+
+            def __iter__(self):
+                return iter(chunks)
+
+            def close(self):
+                pass
+
+        with (
+            patch("agent.chat_completion_helpers.should_use_direct_api_call", return_value=False),
+            patch("agent.relay_llm.stream", return_value=_MockNormalStream()),
+        ):
+            resp = interruptible_streaming_api_call(
+                agent,
+                {"messages": [{"role": "user", "content": "hi"}]},
+                on_first_delta=lambda: first_delta_calls.append(True),
+            )
+
+        assert stream_deltas == ["Hello ", "world!"]
+        assert len(first_delta_calls) == 1
+        assert resp.choices[0].message.content == "Hello world!"
+
+    def test_streaming_error_tag_without_marker_emits_deltas(self, agent):
+        """Legitimate error tag without service marker must flush and emit deltas."""
+        _setup_agent(agent)
+        stream_deltas = []
+        first_delta_calls = []
+
+        agent.stream_delta_callback = stream_deltas.append
+
+        chunks = [
+            _mock_chunk(content="[Error] The file "),
+            _mock_chunk(content="does not exist.", finish_reason="stop"),
+        ]
+
+        class _MockErrorStream:
+            final_response = None
+            output_modified = False
+
+            def __iter__(self):
+                return iter(chunks)
+
+            def close(self):
+                pass
+
+        with (
+            patch("agent.chat_completion_helpers.should_use_direct_api_call", return_value=False),
+            patch("agent.relay_llm.stream", return_value=_MockErrorStream()),
+        ):
+            resp = interruptible_streaming_api_call(
+                agent,
+                {"messages": [{"role": "user", "content": "hi"}]},
+                on_first_delta=lambda: first_delta_calls.append(True),
+            )
+
+        assert stream_deltas == ["[Error] The file ", "does not exist."]
+        assert len(first_delta_calls) == 1
+        assert resp.choices[0].message.content == "[Error] The file does not exist."

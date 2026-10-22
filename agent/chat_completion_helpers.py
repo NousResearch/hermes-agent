@@ -123,6 +123,85 @@ def looks_like_provider_error_envelope(text) -> bool:
     return any(marker in lowered for marker in _PROVIDER_ERROR_ENVELOPE_MARKERS)
 
 
+def _could_be_provider_error_envelope_prefix(text: str) -> bool:
+    """Return True if text could still become a provider error envelope.
+
+    Used by streaming helpers to buffer only the short initial prefix while
+    it can still become a provider envelope, flushing immediately once it
+    diverges.
+    """
+    if not text:
+        return True
+    body = str(text)
+    if len(body) > 400 or body.count("\n") > 4:
+        return False
+    # Strip leading whitespace and optional symbol prefix: [*>#-–—~•·]
+    s = body.lstrip("*>#-–—~•· \t\r\n")
+    if not s:
+        # Only symbols or whitespace so far; could still be followed by [error]
+        return True
+    target = "[error]"
+    prefix_len = min(len(s), len(target))
+    return s[:prefix_len].lower() == target[:prefix_len]
+
+
+class _StreamEnvelopeBuffer:
+    """Buffer short initial stream deltas while text could be a provider error envelope.
+
+    Prevents leaking inline provider failure envelopes (issue #82662) like
+    "[Error] Our servers are currently overloaded. Please try again later."
+    to live consumers before the turn has had a chance to detect, retry, or fallback.
+
+    If the text diverges from an envelope prefix, buffered deltas are flushed
+    immediately to the downstream callbacks. If the stream finishes and the
+    complete text matches a provider error envelope, the buffer is dropped and
+    never delivered to live callbacks.
+    """
+
+    def __init__(self, fire_first_delta, fire_stream_delta, deltas_sent_flag=None):
+        self._fire_first_delta = fire_first_delta
+        self._fire_stream_delta = fire_stream_delta
+        self._deltas_sent_flag = deltas_sent_flag
+        self._buffering = True
+        self._buffer: list[str] = []
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        if not self._buffering:
+            self._fire_stream_delta(text)
+            return
+
+        self._buffer.append(text)
+        combined = "".join(self._buffer)
+        if not _could_be_provider_error_envelope_prefix(combined):
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._buffering:
+            return
+        self._buffering = False
+        if not self._buffer:
+            return
+        buffered = list(self._buffer)
+        self._buffer.clear()
+        self._fire_first_delta()
+        for chunk in buffered:
+            self._fire_stream_delta(chunk)
+        if self._deltas_sent_flag is not None:
+            self._deltas_sent_flag["yes"] = True
+
+    def finish(self) -> None:
+        if not self._buffering:
+            return
+        combined = "".join(self._buffer)
+        if looks_like_provider_error_envelope(combined):
+            self._buffer.clear()
+            self._buffering = False
+            return
+        self.flush()
+
+
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
     context = contextvars.copy_context()
@@ -2904,12 +2983,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         raise
                     return raw_response.get("stream", [])
 
+                envelope_buffer = _StreamEnvelopeBuffer(
+                    _fire_first,
+                    agent._fire_stream_delta,
+                    deltas_were_sent,
+                )
+
                 def _on_text(text):
-                    _fire_first()
-                    agent._fire_stream_delta(text)
-                    deltas_were_sent["yes"] = True
+                    envelope_buffer.feed(text)
 
                 def _on_tool(name):
+                    envelope_buffer.flush()
                     _fire_first()
                     agent._fire_tool_gen_started(name)
 
@@ -2966,6 +3050,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     on_interrupt_check=lambda: agent._interrupt_requested,
                     on_event=lambda: _bedrock_last_event.__setitem__("t", time.time()),
                 )
+                envelope_buffer.finish()
                 result["response"] = stream.final_response or streamed_response
             except Exception as e:
                 result["error"] = e
@@ -3451,6 +3536,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Hermes interrupts the managed stream; Relay retains sole
             # ownership of closing the underlying provider stream.
             _set_request_stream_handle(stream)
+        envelope_buffer = _StreamEnvelopeBuffer(
+            _fire_first_delta,
+            agent._fire_stream_delta,
+            deltas_were_sent,
+        )
         for chunk in stream:
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
@@ -3532,9 +3622,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if delta and delta.content:
                 content_parts.append(delta.content)
                 if not tool_calls_acc:
-                    _fire_first_delta()
-                    agent._fire_stream_delta(delta.content)
-                    deltas_were_sent["yes"] = True
+                    envelope_buffer.feed(delta.content)
                 # Tool calls suppress regular content streaming (avoids
                 # displaying chatty "I'll use the tool..." text alongside
                 # tool calls).  But reasoning tags embedded in suppressed
@@ -3555,6 +3643,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate tool call deltas — notify display on first name
             if delta and delta.tool_calls:
+                envelope_buffer.flush()
                 for tc_delta in delta.tool_calls:
                     raw_idx = tc_delta.index if tc_delta.index is not None else 0
                     delta_id = tc_delta.id or ""
@@ -3638,6 +3727,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage_obj = chunk.usage
 
         _close_managed_stream()
+        envelope_buffer.finish()
 
         if _stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(
@@ -3673,8 +3763,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     agent._fire_reasoning_delta(reasoning_text)
                 content = getattr(message, "content", None)
                 if isinstance(content, str) and content:
-                    _fire_first_delta()
-                    agent._fire_stream_delta(content)
+                    if not looks_like_provider_error_envelope(content):
+                        _fire_first_delta()
+                        agent._fire_stream_delta(content)
             return final_response
 
         # Build mock response matching non-streaming shape
@@ -3924,6 +4015,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 defer_logical_completion=True,
             )
         )
+        envelope_buffer = _StreamEnvelopeBuffer(
+            _fire_first_delta,
+            agent._fire_stream_delta,
+            deltas_were_sent,
+        )
         try:
             for event in stream:
                 saw_stream_event = True
@@ -3944,6 +4040,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
                         has_tool_use = True
+                        envelope_buffer.flush()
                         tool_name = getattr(block, "name", None)
                         if tool_name:
                             _fire_first_delta()
@@ -3955,15 +4052,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         if delta_type == "text_delta":
                             text = getattr(delta, "text", "")
                             if text and not has_tool_use:
-                                _fire_first_delta()
-                                agent._fire_stream_delta(text)
-                                deltas_were_sent["yes"] = True
+                                envelope_buffer.feed(text)
                         elif delta_type == "thinking_delta":
                             thinking_text = getattr(delta, "thinking", "")
                             if thinking_text:
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
             if not agent._interrupt_requested:
+                envelope_buffer.finish()
                 raw_stream = _stream_context["stream"]
                 if raw_stream is not None:
                     try:

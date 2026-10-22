@@ -897,7 +897,9 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
-async def _fs_download_path(path: str, profile: Optional[str], session_id: Optional[str]) -> Path:
+async def _fs_download_path(
+    request: Request, path: str, profile: Optional[str], session_id: Optional[str]
+) -> Path:
     # Resolve container paths in the requested profile's sandbox, not the active one's.
     profile_home = _fs_profile_home(profile)
     if session_id is not None:
@@ -905,7 +907,7 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
 
         if not session_id.strip():
             raise HTTPException(status_code=404, detail="Session not found")
-        session = await get_session_detail(session_id, profile)
+        session = await get_session_detail(request, session_id, profile)
         # Validate ownership even for absolute paths; never trust a client cwd.
         return _agent_fs_path(path, cwd=session.get("cwd") or "", profile_home=profile_home)
     return _agent_fs_path(path, profile_home=profile_home)
@@ -938,7 +940,7 @@ async def fs_read_data_url(
             _raise_fs_backend_error(exc)
         encoded = base64.b64encode(data).decode("ascii")
         return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
-    target = await _fs_download_path(path, profile, session_id)
+    target = await _fs_download_path(request, path, profile, session_id)
     _hosted_fs_read_guard(target, request)
     target, st = _fs_regular_file(target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
@@ -968,7 +970,7 @@ async def fs_download(
             media_type=_fs_mime_type(target_path),
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
         )
-    target = await _fs_download_path(path, profile, session_id)
+    target = await _fs_download_path(request, path, profile, session_id)
     _hosted_fs_read_guard(target, request)
     target, _st = _fs_regular_file(target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)

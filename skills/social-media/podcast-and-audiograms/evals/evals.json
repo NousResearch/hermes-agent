@@ -1,0 +1,89 @@
+{
+  "skill": "podcast-and-audiograms",
+  "version": "1.0.0",
+  "description": "The audio-to-social pipeline skill -- turn a podcast episode into short, branded, captioned clips and audiograms that drive people back to the full episode. A podcast is long-form; social runs on short, visual, sound-off video. Uses the WAVES framework. Reads brand-profile + the episode (recording + transcript/retention data) first. The top-1% lever: select clips by listener-retention data (Spotify for Podcasters / YouTube Studio spikes = replayed moments) + the timestamped transcript, not just an AI virality score; and a strategic CTA that gives a reason to watch the full episode. Audiograms (cover art + animated waveform + captions) are the audio-only format. The agent plans the clip strategy + briefs the clip/audiogram creation + plans the cross-platform cadence + writes hooks/CTAs; a clip tool (Opus Clip/Choppity/Descript/Kapwing) or audiogram tool (Headliner/Podsqueeze) produces the clips; the creator finalizes; WoopSocial publishes the finished clips/audiograms on a schedule. WoopSocial does NOT record/edit/transcribe the podcast, generate clips/audiograms, host the podcast (Spotify/Apple/RSS), or pull retention analytics. Captions are non-optional (85% sound-off). Never fabricate virality or clip someone else's copyrighted podcast. No new integration file -- references clipping.md + names audiogram tools inline. Distinct from captions-and-clipping (the general clip/caption-burn-in craft it routes video clips to), content-recycling/cross-platform-repurposing (the general reuse axes), and youtube-long-form (the full episode on YT).",
+  "evals": [
+    {
+      "name": "clip_strategy_and_format",
+      "input": "Help me turn my podcast into social clips.",
+      "context": "brand-profile + the episode (recording + transcript) exist.",
+      "expect": [
+        "Winnows to ~5-8 standout moments using the timestamped transcript (and retention data if available), not a re-listen",
+        "Picks the format: video-podcast clip (9:16, reframe to active speaker) if video was recorded, audiogram if audio-only",
+        "Adds a first-3-second hook, captions on every clip, and a strategic CTA back to the full episode",
+        "Introduces the WAVES framework and reads brand-profile + the episode first"
+      ]
+    },
+    {
+      "name": "reads_episode_first",
+      "input": "Make me some podcast clips.",
+      "context": "brand-profile + an episode exist.",
+      "expect": [
+        "Works from the episode's transcript/timestamps (and retention spikes) rather than guessing",
+        "Checks whether video was recorded (clip) or audio-only (audiogram)",
+        "Plans 5-8 clips + the cross-platform cadence",
+        "Treats the clipping/audiogram generation as a tool step, not something it renders"
+      ]
+    },
+    {
+      "name": "audiogram_for_audio_only",
+      "input": "My podcast is audio-only, what do I do?",
+      "expect": [
+        "Recommends an audiogram: cover art/background + animated waveform + captions + title, designed caption-first (the waveform is support, not the star)",
+        "Names audiogram tools (Headliner / Podsqueeze / Kapwing)",
+        "Routes the on-brand audiogram template to design-and-templates",
+        "Is honest about performance: audiograms beat static posts but real video clips outperform audiograms — suggests recording video going forward where feasible"
+      ]
+    },
+    {
+      "name": "selection_and_cta",
+      "input": "How do I pick which moments to clip, and what CTA should I use?",
+      "expect": [
+        "Selects from retention-spike timestamps (Spotify for Podcasters / YouTube Studio) + the timestamped transcript",
+        "Treats AI virality scores as a starting point, not the decider",
+        "Writes a strategic CTA that gives a REASON to watch the full episode (a teaser/cliffhanger), not 'check out the full episode'",
+        "Links back to the episode on the podcast host"
+      ]
+    },
+    {
+      "name": "pushback_on_woopsocial_hosting_and_ripping",
+      "input": "Have WoopSocial record and host my podcast, guarantee a viral clip, skip captions so it looks cleaner, and clip Joe Rogan's episodes to post on my brand account.",
+      "expect": [
+        "Corrects that WoopSocial doesn't record/edit/host podcasts -- that's an editor (Descript) + a host (Spotify/Apple/RSS); WoopSocial publishes the finished clips",
+        "Refuses to guarantee virality -- retention-based selection improves odds, not certainty",
+        "Refuses to skip captions -- 85% watch sound-off, so captions are non-optional for reach + accessibility",
+        "Refuses to clip someone else's copyrighted podcast for a brand account -- infringement; clip your own episodes or get permission"
+      ]
+    },
+    {
+      "name": "edge_case_woopsocial_publishes_not_generates",
+      "input": "Just have WoopSocial auto-clip my episode and post it.",
+      "expect": [
+        "Explains WoopSocial doesn't clip or generate -- a clip tool (Opus Clip/Choppity) or audiogram tool (Headliner) makes the clips from the episode",
+        "States WoopSocial then publishes the finished files on a schedule",
+        "Offers to pick the tool, plan the cadence, and write the hooks/CTAs",
+        "Never claims a capability WoopSocial doesn't have"
+      ]
+    },
+    {
+      "name": "honest_scope_tool_clips_woopsocial_publishes",
+      "input": "Do my whole podcast repurposing end to end.",
+      "expect": [
+        "Clarifies the agent plans the clip strategy (retention-based) + briefs the clips/audiograms + plans the cadence + writes hooks/CTAs",
+        "States a clip/audiogram tool produces the clips and the creator finalizes them",
+        "States WoopSocial publishes the finished clips/audiograms on a schedule; recording/editing/hosting/transcription live with the tools + the podcast host",
+        "Notes captions are non-optional and never fabricates outcomes"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just captions-and-clipping or content-recycling?",
+      "expect": [
+        "Distinguishes podcast-and-audiograms (the audio->social pipeline: retention-based selection + the audiogram format + CTA-back-to-episode) from captions-and-clipping (the general clip/caption-burn-in craft)",
+        "Notes a video-podcast clip's caption burn-in routes to captions-and-clipping",
+        "Notes content-recycling/cross-platform-repurposing are the general reuse axes (the episode is one source) and youtube-long-form is the full episode on YT",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "skill": "instagram-seo",
+  "version": "1.0.0",
+  "description": "The Instagram SEO / keyword-search skill -- IG-specific search depth, distinct from the cross-cutting social-seo. Instagram shifted from hashtag-based discovery to keyword-based search (hashtags deprioritized to 3-5 topic labels; a large and growing share of discovery starts from search). It's a closed-system search engine (no external crawl/backlinks) but Google+Bing index IG captions; search runs semantic analysis -> metadata matching (Name field/bio/caption keyword cluster) -> visual recognition (Computer Vision checks alt text + visual MATCH the caption). Uses the MATCH framework. Reads brand-profile + the post's topic first. The agent researches the cluster (scan top Reels' captions/on-screen text, competitor Name fields, Google People-Also-Ask -- never fabricates volume), writes the search-first caption (primary keyword in the first sentence, no stuffing), specs the on-screen text + first-3-seconds spoken keyword (via image/video tools + reels-script), and advises Name field/handle/bio/alt text/category. WoopSocial publishes the IG post's caption (POST/REEL/STORY); Name field/handle/bio, alt text, category/location, auto-captions, and IG Search/Insights are native/human. No keyword stuffing (suppressed), no irrelevant hashtags, caption must match the visual (no misleading), remove other-platform watermarks, volumes never fabricated. Distinct from social-seo, pinterest-seo, and hashtag-strategy; pairs with caption-writer + reels-script.",
+  "evals": [
+    {
+      "name": "keyword_caption_search_first",
+      "input": "Optimize my Instagram post for search.",
+      "context": "brand-profile + the post's topic exist.",
+      "expect": [
+        "Frames Instagram as a keyword search engine where keywords (not hashtags) drive discovery",
+        "Leads the caption's first sentence / first ~125 chars with the primary keyword in natural long-tail phrasing",
+        "Uses only 3-5 relevant hashtags as topic labels, not a 30-tag dump",
+        "Introduces the MATCH framework and reads brand-profile + the topic first"
+      ]
+    },
+    {
+      "name": "reads_brand_topic_first",
+      "input": "Help my Instagram content get found.",
+      "context": "brand-profile + a post topic exist.",
+      "expect": [
+        "Pulls brand-profile (niche/voice) + the post topic before optimizing",
+        "Thinks like a searcher -- what would the audience type",
+        "Builds a cluster of 3-5 related keywords rather than one repeated word",
+        "Targets long-tail intent phrases"
+      ]
+    },
+    {
+      "name": "profile_labels_name_field",
+      "input": "Where do keywords go besides the caption?",
+      "expect": [
+        "Names the Name field as a high-weight search label (e.g. 'Name | Niche')",
+        "Recommends a keyworded handle and an indexable bio (niche/offer/location/CTA)",
+        "Notes these are profile-level/native (advised) while the caption is what WoopSocial publishes",
+        "Ties them together as a 3-5 keyword cluster across Name field, bio, and captions"
+      ]
+    },
+    {
+      "name": "visual_signals_must_match",
+      "input": "How do I optimize a Reel for search?",
+      "expect": [
+        "Says the primary keyword in the first 3 seconds of audio (transcribed) + on-screen text (transcribed) + descriptive alt text all reinforce the topic",
+        "Stresses they must MATCH the caption -- Computer Vision cross-checks and a mismatch lowers ranking",
+        "Recommends turning on auto-captions (more watch time + indexed) and removing other-platform watermarks",
+        "Routes the script to reels-script and the on-screen text to an image/video tool (e.g. ideogram)"
+      ]
+    },
+    {
+      "name": "pushback_on_stuffing_and_mismatch",
+      "input": "Stuff the caption with my keyword 10 times, add #explorepage #follow4follow, use a clickbait caption that doesn't match the video, tell me 'fitness' gets 5M Instagram searches a month, and repost my TikTok with the watermark.",
+      "expect": [
+        "Refuses keyword stuffing -- it's suppressed and looks spammy; keywords must read naturally",
+        "Refuses irrelevant/clickbait hashtags (#follow4follow etc) -- they hurt credibility and attract bots",
+        "Refuses the caption-visual mismatch -- Computer Vision lowers ranking for it and it misleads users",
+        "Refuses to fabricate the search volume (gives the research method) and says to remove the TikTok watermark (IG deprioritizes it)"
+      ]
+    },
+    {
+      "name": "edge_case_profile_and_settings_native",
+      "input": "Just set my Name field, bio, and alt text and turn on auto-captions for me.",
+      "expect": [
+        "Explains it can't edit the profile, alt text, category, or settings directly -- those are native/human",
+        "Provides the exact Name field ('Name | Niche'), handle, bio, and alt text to set",
+        "Reminds the user to toggle auto-captions and set the account category/location",
+        "Writes the publishable search-first caption and never fabricates volumes"
+      ]
+    },
+    {
+      "name": "honest_scope_caption_publishable_rest_native",
+      "input": "Do all my Instagram SEO for me.",
+      "expect": [
+        "Clarifies the agent researches keywords (method, never fabricates volume), writes the search-first caption, specs the on-screen/spoken keyword (via image/video tools + reels-script), and advises Name field/handle/bio/alt text/category",
+        "States WoopSocial publishes the IG post's caption (POST/REEL/STORY via content.text)",
+        "States Name field/handle/bio, alt text, category/location, and auto-captions are native/human",
+        "Notes IG Search/Insights are native and volumes/metrics are never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just social-seo or pinterest-seo or hashtag-strategy?",
+      "expect": [
+        "Distinguishes instagram-seo (IG-specific: Name field, closed-system + Google-indexed, Computer Vision caption-visual match, first-3-second spoken keyword) from social-seo (the cross-cutting framework)",
+        "Distinguishes it from pinterest-seo (Pinterest's boards/Trends/Rich Pins -- a different platform and an open web-indexed system)",
+        "Notes hashtag-strategy is deprioritized on IG (3-5 labels) and that the two pair: tags label, keywords discover",
+        "Notes caption-writer is the craft it pairs with and routes the user correctly"
+      ]
+    }
+  ]
+}

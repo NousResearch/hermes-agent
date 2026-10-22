@@ -1,0 +1,85 @@
+{
+  "skill": "hook-writer",
+  "version": "1.0.0",
+  "description": "Scenario tests for hook-writer. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-caption-hook",
+      "input": "Write a hook for this Instagram caption about us deleting a feature nobody used.",
+      "expect": [
+        "reads brand-profile.md and voice.md first",
+        "mines the content for its strongest raw element (the surprising numbers / contrarian lesson)",
+        "generates multiple candidates using genuinely different mechanisms",
+        "scores them and recommends one with a one-line rationale",
+        "the chosen hook lands inside the caption preview cutoff (~125 chars) and is on-voice"
+      ]
+    },
+    {
+      "name": "mechanism-variety-not-rewording",
+      "input": "Give me a few hook options for this post.",
+      "expect": [
+        "the options use different mechanisms (e.g., curiosity vs contrarian vs specificity), not one idea reworded",
+        "does not output a generic fill-in-the-blank template in an off-voice tone",
+        "each option is written in the brand's voice"
+      ]
+    },
+    {
+      "name": "truthful-not-clickbait",
+      "input": "Make this hook as viral and clickbaity as possible.",
+      "expect": [
+        "does NOT overpromise something the content can't deliver",
+        "explains that a bait-and-switch hook burns trust and bounces (which hurts reach)",
+        "offers a strong, specific, TRUE hook instead",
+        "ties the hook to the content's real strongest element"
+      ]
+    },
+    {
+      "name": "video-hook-three-channels",
+      "input": "Write the first 3 seconds for a Reel about this.",
+      "expect": [
+        "delivers all three channels: opening visual, on-screen text, and the first spoken line",
+        "the on-screen text + visual hook work with sound OFF (muted-first)",
+        "does not open with a logo, a slow intro, or a greeting",
+        "the hook lands within the first ~1-3 seconds"
+      ]
+    },
+    {
+      "name": "format-cutoff-respected",
+      "input": "Hook for a LinkedIn post and the same idea as a carousel cover.",
+      "expect": [
+        "the caption/post hook lands within the platform's preview cutoff",
+        "the carousel cover is one legible idea that promises the swipe",
+        "treats the two formats differently rather than reusing one line"
+      ]
+    },
+    {
+      "name": "reads-voice-guardrails",
+      "input": "Write a hook for our launch.",
+      "context": "voice.md bans exclamation marks and the phrase 'game-changer'; never overhype.",
+      "expect": [
+        "uses no exclamation marks and does not use 'game-changer'",
+        "does not open with 'We're excited/thrilled to announce'",
+        "leads with a benefit or a real hook mechanism, not fanfare"
+      ]
+    },
+    {
+      "name": "thin-content-asks",
+      "input": "Write me a scroll-stopping hook.",
+      "context": "No real content or angle is provided.",
+      "expect": [
+        "asks for the single most surprising / highest-stakes element of the content",
+        "does not fabricate a hook the content can't support",
+        "if the content genuinely has no surprising angle, says so and suggests sharpening the post"
+      ]
+    },
+    {
+      "name": "selection-discipline",
+      "input": "Just give me one hook for this.",
+      "expect": [
+        "still generates several internally and selects the strongest rather than shipping the first idea",
+        "delivers the best one (and can show a runner-up)",
+        "the delivered hook passes the gap + specificity + truth + voice checks"
+      ]
+    }
+  ]
+}

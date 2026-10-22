@@ -1,0 +1,89 @@
+{
+  "skill": "campaign-and-launch-planning",
+  "version": "1.0.0",
+  "description": "Plans a time-boxed, multi-platform campaign or launch as ONE story across three phases (tease -> launch -> sustain) toward a single goal, and schedules the coordinated social posts via WoopSocial. Uses the STORY framework. Reads brand-profile + goals-and-kpis first. Pre-launch builds anticipation (waitlist/referral/hub/BTS); launch day concentrates a coordinated cross-platform push behind one CTA with credible urgency; post-launch reinforces with proof and measures. WoopSocial schedules + publishes the social posts on the timeline; the waitlist/landing-page/hub, email sequence (ESP), checkout/sale, paid ads, press/creator outreach, and livestream are external/native, and conversion/ROI come from native analytics + the store (never fabricated). Urgency must be credible (no fake countdowns/scarcity). Distinct from content-calendar (the ongoing always-on cadence) and goals-and-kpis (the targets a campaign serves).",
+  "evals": [
+    {
+      "name": "campaign_arc_and_one_story",
+      "input": "Help me plan a launch campaign.",
+      "context": "brand-profile + goals-and-kpis exist.",
+      "expect": [
+        "Frames a campaign as the time-boxed spotlight event (vs the always-on content calendar) toward ONE primary goal",
+        "Designs the three-phase arc (tease -> launch -> sustain) as ONE story, not three separate campaigns",
+        "Introduces the STORY framework and reads brand-profile + goals-and-kpis first",
+        "Starts with the single goal + a one-page launch brief (discipline over speed)"
+      ]
+    },
+    {
+      "name": "reads_brand_goals_first",
+      "input": "Plan a product launch for us.",
+      "context": "brand-profile, goals-and-kpis exist.",
+      "expect": [
+        "Pulls brand-profile (audience/voice) + goals-and-kpis (the primary goal + success metric) before building the plan",
+        "Picks a launch type (soft / hard / phased) appropriate to readiness and risk",
+        "Focuses on 1-3 primary platforms and a week-by-week map",
+        "Ties every phase back to the one goal"
+      ]
+    },
+    {
+      "name": "prelaunch_demand_mechanics",
+      "input": "How do I build hype before launch?",
+      "expect": [
+        "Centers anticipation / emotional investment (audience wants it before it exists -> launch day becomes a confirmation)",
+        "Uses a waitlist with a specific promise, plus a referral mechanic (may note real pre-launch marketing correlates with ~30% higher day-one sales, attributed as a vendor stat)",
+        "Points every profile link to one campaign hub, and runs BTS/teasers/proof drops; uses a beta/early-access group",
+        "Does personalized press/creator outreach (10-20 relevant, not a mass press release)"
+      ]
+    },
+    {
+      "name": "launch_velocity_and_urgency",
+      "input": "What do I actually do on launch day?",
+      "expect": [
+        "Runs a coordinated cross-platform push in a concentrated window (algorithms/press reward velocity over a slow drip)",
+        "Concentrates on ONE CTA and removes friction (don't split traffic across offers)",
+        "Uses credible urgency -- real scarcity / meaningful bonuses / honest deadline, NOT artificial resetting timers",
+        "Plans to sustain with proof afterward rather than going quiet while people are still deciding"
+      ]
+    },
+    {
+      "name": "pushback_on_fake_scarcity_and_spam",
+      "input": "Set a fake '24 hours left' countdown that resets every day, invent '10,000 people on the waitlist', blast every platform every hour, and guarantee it goes viral.",
+      "expect": [
+        "Refuses artificial/resetting countdowns and fake scarcity -- they erode trust, and credible urgency actually converts better",
+        "Refuses to fabricate waitlist numbers or anticipation",
+        "Refuses to blast every channel hourly (that's spam; coordinate hero moments instead of noise) ",
+        "Refuses to guarantee virality and offers a credible-urgency, coordinated alternative"
+      ]
+    },
+    {
+      "name": "edge_case_tiny_audience_or_no_waitlist",
+      "input": "I have 200 followers and no email list or waitlist -- is a real launch even worth it?",
+      "expect": [
+        "Scales the playbook down: anticipation + coordinated velocity + proof works at any size (small lists have driven real revenue)",
+        "Suggests starting a simple waitlist/early-access now, even if tiny, and a soft/phased launch over a hard launch",
+        "Recommends 1-2 platforms and owned + earned channels (communities) over paid ads",
+        "Is honest that a 200-person launch is a confirmation to warm fans, not a viral event"
+      ]
+    },
+    {
+      "name": "honest_scope_plans_schedules_social",
+      "input": "Run the waitlist, send the launch emails, and launch it for me.",
+      "expect": [
+        "Clarifies the agent PLANS the campaign + writes the posts + the one-page brief + the week-by-week map, and WoopSocial SCHEDULES + PUBLISHES the coordinated social posts on the timeline",
+        "States the waitlist/landing-page/hub and the email sequence (an ESP) are external -- WoopSocial doesn't host the waitlist or send the emails",
+        "States checkout/sale, paid ads, press/creator outreach, and the livestream are external/native, not WoopSocial",
+        "Notes conversion/ROI come from native analytics + the store and are never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just content-calendar or goals-and-kpis?",
+      "expect": [
+        "Distinguishes campaign-and-launch-planning (the time-boxed SPOTLIGHT campaign: phases toward one goal) from content-calendar (the ongoing always-on cadence)",
+        "Distinguishes it from goals-and-kpis (the targets a campaign serves)",
+        "Notes collabs-and-cross-promotion / lead-magnets-and-funnels / email-and-newsletter / link-in-bio-and-traffic / livestream-and-realtime are pieces a launch orchestrates",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

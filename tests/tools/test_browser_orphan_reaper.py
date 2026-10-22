@@ -99,7 +99,7 @@ class TestReapOrphanedBrowserSessions:
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid", side_effect=mock_terminate):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in terminate_calls
@@ -121,7 +121,7 @@ class TestReapOrphanedBrowserSessions:
         with patch("gateway.status._pid_exists", side_effect=_pid_exists), \
              patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid",
                    side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
             _reap_orphaned_browser_sessions()
 
@@ -144,7 +144,7 @@ class TestReapOrphanedBrowserSessions:
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("gateway.status.get_process_start_time", return_value=None), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid",
                    side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
             _reap_orphaned_browser_sessions()
 
@@ -190,7 +190,7 @@ class TestOwnerPidCrossProcess:
 
         # Owner alive → reaper skips without ever probing the daemon.
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid", side_effect=mock_terminate):
             _reap_orphaned_browser_sessions()
 
         assert 12345 not in kill_calls
@@ -320,7 +320,7 @@ class TestReaperIdentityGuard:
 
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("psutil.Process", return_value=proc), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid",
                    side_effect=lambda pid: terminate_calls.append(pid)):
             _reap_orphaned_browser_sessions()
 
@@ -392,7 +392,7 @@ class TestLeakedDaemonWithLiveOwner:
 
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid",
                    side_effect=kill_calls.append):
             _reap_orphaned_browser_sessions()
 
@@ -413,7 +413,7 @@ class TestLeakedDaemonWithLiveOwner:
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid",
                    side_effect=lambda pid, expected_start=None: kill_calls.append(pid)):
             _reap_orphaned_browser_sessions()
 
@@ -439,7 +439,7 @@ class TestLeakedDaemonWithLiveOwner:
 
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid",
                    side_effect=kill_calls.append):
             _reap_orphaned_browser_sessions()
 
@@ -458,7 +458,7 @@ class TestLeakedDaemonWithLiveOwner:
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("tools.browser_tool_lifecycle._socket_dir_idle_seconds", return_value=None), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid",
                    side_effect=kill_calls.append):
             _reap_orphaned_browser_sessions()
 
@@ -482,7 +482,7 @@ class TestLeakedDaemonWithLiveOwner:
 
         with patch("gateway.status._pid_exists", return_value=True), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=False), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid",
                    side_effect=kill_calls.append):
             _reap_orphaned_browser_sessions()
 

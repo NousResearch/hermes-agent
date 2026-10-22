@@ -315,7 +315,7 @@ def _terminate_verified_daemon(daemon_pid: int, session_name: str, log) -> bool:
         log("Refusing to reap browser daemon PID %d (session %s): no start-time fingerprint available",
             daemon_pid, session_name)
         return False
-    ProcessRegistry._terminate_host_pid(daemon_pid, daemon_start)
+    ProcessRegistry.terminate_host_pid(daemon_pid, daemon_start)
     return True
 
 
@@ -547,7 +547,7 @@ def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
         # a bare proc.kill() would leave them holding the capture pipe's write
         # end open (the #68915 communicate() hang). The snapshot must precede
         # the parent kill: once the parent exits, children reparent and psutil
-        # can no longer find them (process_registry._terminate_host_pid).
+        # can no longer find them (process_registry.terminate_host_pid).
         try:
             import psutil
 

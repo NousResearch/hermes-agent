@@ -20,13 +20,14 @@ import type { RosterRow } from './types'
 const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), activation: { epoch: 1 } }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
   const { en } = await import('@/i18n/en')
 
   return {
     ...sdk,
     gatewayActivationEpoch: () => activation.epoch,
     host: {
-      ...sdk.host, requestProfile: request, notify, openWorkspace,
+      ...sdk.host, requestProfile: captureGroupRequests(request).request, notify, openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
       connections: vi.fn(async () => []),
       state: {

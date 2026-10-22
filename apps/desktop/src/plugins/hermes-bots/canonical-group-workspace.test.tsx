@@ -10,12 +10,13 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const gateway = createGroupGateway()
   const { en } = await import('@/i18n/en')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
 
   return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
     useI18n: () => ({ t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
-    host: { ...gateway.host, requestProfile: request } }
+    host: { ...gateway.host, requestProfile: captureGroupRequests(request).request } }
 })
 import { registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'

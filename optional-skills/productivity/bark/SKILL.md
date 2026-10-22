@@ -111,8 +111,9 @@ When the skill config sets a non-default server, pass it through: `--server http
   all (it needs bark-server 2.1.9+). Test before relying on it; self-host for volume.
 - **The key sits in the URL path.** It ends up in proxy and server logs; treat it as a secret and
   never paste a real key into a shared transcript.
-- **Self-hosted servers need HTTPS.** The iOS app rejects a plain-HTTP address, and the server
-  address configured in the app must match `skills.config.bark.server`.
+- **Use HTTPS for a self-hosted server.** Bark's privacy page recommends HTTPS, and iOS App
+  Transport Security may reject a plain-HTTP address; the server address configured in the app
+  must match `skills.config.bark.server`.
 
 ## Verification
 
@@ -123,4 +124,4 @@ python3 scripts/bark_push.py --title "Hermes" --body "Bark is configured"
 ```
 
 A successful push returns `{"code":200,"message":"success"}` and the notification appears on the
-device. `{"code":400,...}` means the key is wrong or the device never registered with that server.
+device. A non-200 `code` means the push was rejected; check the key and the server address.

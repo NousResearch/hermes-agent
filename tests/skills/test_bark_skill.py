@@ -7,6 +7,7 @@ No network: every request goes through an injected opener or a monkeypatched
 from __future__ import annotations
 
 import email.message
+import http.client
 import importlib.util
 import io
 import json
@@ -132,17 +133,31 @@ def test_withdrawing_requires_an_id():
         bark.build_payload(body="x", delete=True)
 
 
-def test_call_and_delete_use_bark_string_flags():
-    payload = bark.build_payload(body="x", call=True, push_id="build-42", delete=True)
-    assert payload["call"] == "1"
-    assert payload["delete"] == "1"
-    assert payload["id"] == "build-42"
+def test_call_uses_the_bark_string_flag():
+    assert bark.build_payload(body="x", call=True)["call"] == "1"
+
+
+def test_withdraw_payload_carries_only_id_and_delete():
+    assert bark.build_payload(push_id="build-42", delete=True) == {
+        "id": "build-42",
+        "delete": "1",
+    }
+
+
+def test_withdraw_dry_run_succeeds_without_a_body(capsys):
+    assert bark.main(["--id", "build-42", "--delete", "--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"id": "build-42", "delete": "1"}
 
 
 def test_token_comes_from_the_environment(monkeypatch):
     monkeypatch.setenv("BARK_TOKEN", "abc123")
     assert bark.resolve_token() == "abc123"
-    assert bark.resolve_token("explicit") == "explicit"
+
+
+def test_there_is_no_device_key_flag():
+    """A key on the command line would land in history, the process list and transcripts."""
+    with pytest.raises(SystemExit):
+        bark.build_parser().parse_args(["--device-key", "abc123", "--body", "x"])
 
 
 def test_missing_token_names_the_fix(monkeypatch):
@@ -269,6 +284,35 @@ def test_unexpected_responses_never_print_the_device_key(monkeypatch, capsys):
     assert bark.main(["--body", "hello"]) == 1
     captured = capsys.readouterr()
     assert SECRET not in captured.out
+    assert SECRET not in captured.err
+    assert bark.REDACTED in captured.err
+
+
+def test_read_timeouts_are_reported_without_a_traceback(monkeypatch, capsys):
+    monkeypatch.setenv("BARK_TOKEN", SECRET)
+
+    def opener(request, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(bark.urllib.request, "urlopen", opener)
+    assert bark.main(["--body", "hello"]) == 1
+    captured = capsys.readouterr()
+    assert "timed out" in captured.err
+    assert "Traceback" not in captured.err
+    assert SECRET not in captured.err
+
+
+def test_http_protocol_errors_are_reported_without_a_traceback(monkeypatch, capsys):
+    monkeypatch.setenv("BARK_TOKEN", SECRET)
+
+    def opener(request, timeout):
+        raise http.client.BadStatusLine(f"bad status for {request.full_url}")
+
+    monkeypatch.setattr(bark.urllib.request, "urlopen", opener)
+    assert bark.main(["--body", "hello"]) == 1
+    captured = capsys.readouterr()
+    assert "BadStatusLine" in captured.err
+    assert "Traceback" not in captured.err
     assert SECRET not in captured.err
     assert bark.REDACTED in captured.err
 

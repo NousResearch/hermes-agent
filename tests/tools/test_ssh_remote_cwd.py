@@ -5,6 +5,7 @@ relative path against it and sending the result over SSH names a directory the
 remote machine does not have (writes fail, ``cd`` exits 126).
 """
 
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -69,3 +70,41 @@ def test_ssh_paths_resolve_on_the_remote_and_stay_guarded(monkeypatch):
 def test_ssh_cwd_never_names_the_host_subprocess_home(cwd, env_type, expected):
     with patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME):
         assert coerce_ssh_remote_cwd(cwd, env_type) == expected
+
+
+def test_ssh_command_cwd_rewrites_the_hermes_home():
+    """The official image's data dir is the parent of the subprocess home, so the
+    relative rewrite leaves it alone. The SSH wrapper then cds to /opt/data."""
+    with ExitStack() as stack:
+        stack.enter_context(patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME))
+        stack.enter_context(patch("hermes_constants.get_hermes_home", return_value="/opt/data"))
+        stack.enter_context(patch("hermes_constants.get_real_home", return_value="/root"))
+        assert coerce_ssh_remote_cwd("/opt/data", "ssh") == "~"
+        assert coerce_ssh_remote_cwd("/opt/data/", "ssh") == "~"
+        assert coerce_ssh_remote_cwd("/opt/data/homework", "ssh") == "/opt/data/homework"
+        assert coerce_ssh_remote_cwd("/opt/data/proj", "ssh") == "/opt/data/proj"
+        assert terminal_tool._resolve_command_cwd(
+            workdir="/opt/data", default_cwd="~", env_type="ssh",
+        ) == "~"
+        terminal_tool.record_session_cwd("ssh-home", "/opt/data")
+        try:
+            assert terminal_tool._resolve_command_cwd(
+                workdir=None, default_cwd="~", session_key="ssh-home", env_type="ssh",
+            ) == "~"
+        finally:
+            terminal_tool.clear_session_cwd("ssh-home")
+
+
+def test_ssh_cwd_rewrites_the_hermes_home_without_a_subprocess_home():
+    with patch("hermes_constants.get_subprocess_home", return_value=None), \
+         patch("hermes_constants.get_hermes_home", return_value="/opt/data"), \
+         patch("hermes_constants.get_real_home", return_value="/root"):
+        assert coerce_ssh_remote_cwd("/opt/data", "ssh") == "~"
+        assert coerce_ssh_remote_cwd("/opt/data/proj", "ssh") == "/opt/data/proj"
+
+
+def test_ssh_cwd_keeps_a_hermes_home_that_is_the_real_home():
+    with patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME), \
+         patch("hermes_constants.get_hermes_home", return_value="/opt/data"), \
+         patch("hermes_constants.get_real_home", return_value="/opt/data"):
+        assert coerce_ssh_remote_cwd("/opt/data", "ssh") == "/opt/data"

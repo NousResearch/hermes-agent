@@ -1244,14 +1244,19 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     approval_callback, is_cli, is_gateway, is_ask = _presence()
     # No user is present to approve arbitrary code in -q / cron / unattended
     # sessions: the first active context resolves instantly from its mode.
-    for ctx in _unattended_contexts():
-        if ctx.mode() == "deny":
-            return _denied(
-                "BLOCKED: execute_code runs arbitrary local Python (including "
-                "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
-                pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
-            )
-        return _approved()
+    # The presence gate matches check_all_command_guards: an unattended PLATFORM
+    # session whose client registered an approval notifier keeps is_ask (#100532),
+    # so execute_code reaches the same one-shot card terminal() shows instead of
+    # resolving from unattended_mode before the human path (#137712).
+    if not is_cli and not is_gateway and not is_ask:
+        for ctx in _unattended_contexts():
+            if ctx.mode() == "deny":
+                return _denied(
+                    "BLOCKED: execute_code runs arbitrary local Python (including "
+                    "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
+                    pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
+                )
+            return _approved()
 
     # Only gateway/ask contexts get the one-shot whole-script approval. In an interactive CLI the script's terminal()
     # calls are guarded per-call (context propagates into the RPC thread, #33057), so a whole-script prompt would fire

@@ -219,3 +219,79 @@ def test_unconfigured_rows_empty_excluded_is_noop():
     empty = {r["slug"].lower() for r in _append_unconfigured_rows([], _picker_ctx(excluded=[]))}
     none = {r["slug"].lower() for r in _append_unconfigured_rows([], _picker_ctx(excluded=None))}
     assert base == empty == none
+
+
+# ─── user-defined providers: / custom_providers: shapes (#142961) ─────────────
+# ``providers:`` entries (section 3) never consulted ``excluded_providers`` and
+# ``custom_providers:`` entries (section 4) surface as ``custom:<name>``, which
+# never string-matches a bare config entry like ``back1``. Both shapes leaked
+# into ``/model`` even when explicitly excluded.
+
+
+@pytest.fixture
+def _offline_picker(monkeypatch):
+    """No network / no built-in catalog: only the user-defined rows below."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda *a, **k: [])
+
+
+def _user_defined_slugs(excluded):
+    from hermes_cli.model_switch_providers import list_authenticated_providers
+
+    rows = list_authenticated_providers(
+        current_provider="com",
+        current_model="deepseek-flash",
+        user_providers={
+            "com": {"base_url": "http://127.0.0.1:56673/v1", "model": "deepseek-flash",
+                    "discover_models": False},
+            "back1": {"base_url": "http://127.0.0.1:52718/v1", "model": "some-model",
+                      "discover_models": False},
+            "back2": {"base_url": "https://example.internal/v1", "model": "other-model",
+                      "discover_models": False},
+        },
+        custom_providers=[
+            {"name": "back3", "base_url": "http://127.0.0.1:52719/v1",
+             "model": "third-model", "discover_models": False},
+        ],
+        excluded_providers=excluded,
+        probe_custom_providers=False,
+    )
+    return {str(r["slug"]).lower() for r in rows if r.get("is_user_defined")}
+
+
+def test_user_defined_providers_baseline_listed(_offline_picker):
+    slugs = _user_defined_slugs(None)
+    assert {"com", "back1", "back2", "custom:back3"} <= slugs, (
+        f"sanity: user-defined rows should list without exclusion; got {slugs}"
+    )
+
+
+def test_excluded_hides_providers_dict_entries(_offline_picker):
+    slugs = _user_defined_slugs(["back1", "back2"])
+    assert "back1" not in slugs and "back2" not in slugs, (
+        f"excluded providers: entries must be hidden; got {slugs}"
+    )
+    assert "com" in slugs and "custom:back3" in slugs, (
+        f"non-excluded rows must survive; got {slugs}"
+    )
+
+
+def test_excluded_bare_name_hides_custom_prefixed_row(_offline_picker):
+    slugs = _user_defined_slugs(["back3"])
+    assert "custom:back3" not in slugs, (
+        f"bare 'back3' must hide the custom:back3 row; got {slugs}"
+    )
+
+
+def test_excluded_custom_spelling_and_case_insensitive(_offline_picker):
+    slugs = _user_defined_slugs(["custom:back1", "BACK2"])
+    assert "back1" not in slugs and "back2" not in slugs, (
+        f"'custom:back1' / 'BACK2' spellings must also hide rows; got {slugs}"
+    )
+    assert _user_defined_slugs([]) == _user_defined_slugs(None), (
+        "empty excluded_providers must be a no-op"
+    )

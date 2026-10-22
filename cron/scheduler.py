@@ -1622,6 +1622,37 @@ class _CronJobConfig:
     cron_default_provider: str
 
 
+#: ``cron.model`` may name this instead of a model id: the provider's CURRENT default.
+#: It is an explicit opt-in, because the default is a model the operator did not choose
+#: (and it may be a paid one) - a scheduled job must never silently start running on it.
+#: The point of the sentinel is that a model id does not have to be pinned in config.yaml:
+#: an id goes stale the day the provider retires that SKU, and the job then fails with
+#: HTTP 404 instead of following the provider.
+PROVIDER_DEFAULT_MODEL = "provider-default"
+
+
+def _provider_default_model(job: dict, model_cfg: Any, cron_default_provider: str) -> str:
+    """The provider's current default model, or ``""`` when it cannot be resolved.
+
+    Provider precedence mirrors ``_resolve_job_runtime``: per-job pin > cron.model_provider >
+    the persisted global config. The default itself comes from the provider's own catalog
+    (the manifest's silent-default label), which is rebuilt from the live catalog, so it
+    follows the provider instead of pinning an id a retirement would break.
+    """
+    provider = str(job.get("provider") or "").strip() or cron_default_provider
+    if not provider and isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "").strip()
+    if not provider:
+        return ""
+    try:
+        from hermes_cli.models import get_default_model_for_provider
+
+        return str(get_default_model_for_provider(provider) or "").strip()
+    except Exception:
+        logger.exception("Could not resolve the provider's current default model for %r", provider)
+        return ""
+
+
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
     the main agent model (config ``model:``, then HERMES_MODEL). Re-read every tick (no cache) so
@@ -1654,6 +1685,10 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
+    if isinstance(model, str) and model.strip() == PROVIDER_DEFAULT_MODEL:
+        # The operator asked for the provider's current default; resolve it now.
+        model = _provider_default_model(job, _model_cfg, _cron_default_provider)
+
     # Fail fast: an empty model otherwise reaches the provider as an opaque 400.
     # See #23979.
     if not (isinstance(model, str) and model.strip()):
@@ -1664,7 +1699,9 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
             "config.yaml model.default missing or empty). "
             f"Set a per-job model via "
             f"`hermes cron edit {job_id} --model <name>` or set a "
-            "default with `hermes model <name>`."
+            "default with `hermes model <name>`. "
+            f"Set cron.model to {PROVIDER_DEFAULT_MODEL!r} to follow the provider's "
+            "current default instead of pinning a model id."
         )
 
     with contextlib.suppress(Exception):

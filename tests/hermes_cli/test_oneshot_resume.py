@@ -12,6 +12,8 @@ must run on the session's stored model/provider runtime and on a reopened sessio
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from hermes_state import SessionDB
@@ -265,6 +267,19 @@ class TestRunAgentResumeRuntime:
 
 
 class TestRunOneshotForwardsResume:
+    def test_default_oneshot_does_not_enable_yolo(self, monkeypatch):
+        captured = {}
+
+        def _fake_run_agent(_prompt, **_kwargs):
+            captured["yolo"] = os.environ.get("HERMES_YOLO_MODE")
+            return "ok", {"final_response": "ok"}
+
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setattr("hermes_cli.oneshot._run_agent", _fake_run_agent)
+
+        assert run_oneshot("hello") == 0
+        assert captured["yolo"] is None
+
     def test_resume_kwarg_reaches_run_agent(self, monkeypatch):
         captured = {}
 

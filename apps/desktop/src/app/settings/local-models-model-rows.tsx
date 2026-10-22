@@ -2,7 +2,7 @@ import { type ReactElement, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
-import { Check, CheckCircle2, Cpu, Download, Eject, Loader2, Trash2 } from '@/lib/icons'
+import { Check, CheckCircle2, Cpu, Download, Eject, Loader2, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { runningDownloadFor } from '@/store/local-runtime-jobs'
 import type { LocalCatalogModel, LocalModelPlacement, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
@@ -15,6 +15,7 @@ import {
   ejectModel,
   isActiveStatus,
   type LocalModelsActionScope,
+  runQuickstart,
   useLocalModelsActionScope
 } from './local-models-actions'
 import { ListRow, Pill } from './primitives'
@@ -134,9 +135,27 @@ export interface CatalogModelRowProps {
   jobs: readonly LocalRuntimeJob[]
 }
 
+function catalogDownloadActions(
+  scope: LocalModelsActionScope,
+  model: LocalCatalogModel,
+  job: LocalRuntimeJob
+): ReactElement {
+  return (
+    <>
+      <LocalModelDownloadActions job={job} owner={scope.owner} />
+      {job.status === 'paused' && model.recommended && model.fits && (
+        <Button onClick={() => void runQuickstart(scope, model.id)} size="sm" variant="outline">
+          <Zap />
+          {scope.copy.quickstartAction}
+        </Button>
+      )}
+    </>
+  )
+}
+
 export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): ReactElement {
   const scope: LocalModelsActionScope = useLocalModelsActionScope()
-  const { copy, owner } = scope
+  const { copy } = scope
   const dJob: LocalRuntimeJob | null = runningDownloadFor(jobs, model.id)
 
   const anyDownloadRunning = jobs.some(j => j.kind === 'model-download' && isActiveStatus(j.status))
@@ -150,7 +169,9 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
   return (
     <ListRow
       action={
-        model.downloaded ? (
+        dJob ? (
+          catalogDownloadActions(scope, model, dJob)
+        ) : model.downloaded ? (
           <div className="flex items-center justify-end gap-2">
             <ResidencyPills residency={residency} />
 
@@ -177,8 +198,6 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
 
             <DeleteModelButton modelId={model.downloaded_model_id ?? model.id} />
           </div>
-        ) : dJob ? (
-          <LocalModelDownloadActions job={dJob} owner={owner} />
         ) : (
           <Button
             disabled={!model.fits || anyDownloadRunning || !status.runtime_installed}

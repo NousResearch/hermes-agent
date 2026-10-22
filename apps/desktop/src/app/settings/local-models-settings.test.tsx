@@ -204,6 +204,60 @@ afterEach(async () => {
 })
 
 describe('LocalModelsSettings', () => {
+  it('keeps draft recovery and setup available after the required model is downloaded', async () => {
+    const modelId = 'Qwen3.6-27B-Q4_K_XL'
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      models: [{ id: modelId, size_bytes: FITTING_MODEL.size_bytes, size_label: FITTING_MODEL.size_label }]
+    })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...FITTING_MODEL, downloaded: true, downloaded_model_id: modelId }]
+    })
+
+    const job: LocalRuntimeJob = {
+      job_id: 'paused-draft',
+      kind: 'model-download',
+      target: FITTING_MODEL.display_name,
+      model_id: FITTING_MODEL.id,
+      status: 'paused',
+      phase: 'interrupted',
+      detail: 'Draft download paused',
+      total_bytes: 100,
+      done_bytes: 30,
+      percent: 30,
+      error: null,
+      can_resume: true,
+      can_discard: true
+    }
+
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [job])
+    mocked.resumeLocalDownload.mockResolvedValue({ ok: true, resumed: true })
+    mocked.discardLocalDownload.mockResolvedValue({ ok: true, discarded: true })
+    await renderFullPane()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up for me' }))
+    await waitFor(() =>
+      expect(mocked.quickstartLocalModels).toHaveBeenCalledWith(FITTING_MODEL.id, {
+        connectionId: null,
+        profile: 'default'
+      })
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }))
+    await waitFor(() =>
+      expect(mocked.resumeLocalDownload).toHaveBeenCalledWith(job.job_id, { connectionId: null, profile: 'default' })
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Discard' }).hasAttribute('disabled')).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    await waitFor(() =>
+      expect(mocked.discardLocalDownload).toHaveBeenCalledWith(job.job_id, { connectionId: null, profile: 'default' })
+    )
+    await act(async () => {
+      queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
+    })
+    expect(await screen.findByRole('button', { name: 'Use' })).toBeDefined()
+  })
+
   it.each(['quickstart', 'runtime-install', 'model-download'] as const)(
     'keeps %s recovery usable while machine metadata is unavailable',
     async kind => {
@@ -235,9 +289,7 @@ describe('LocalModelsSettings', () => {
       await waitFor(() =>
         expect(mocked.resumeLocalDownload).toHaveBeenCalledWith(job.job_id, { connectionId: null, profile: 'default' })
       )
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: 'Discard' }).hasAttribute('disabled')).toBe(false)
-      )
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Discard' }).hasAttribute('disabled')).toBe(false))
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
       await waitFor(() =>
         expect(mocked.discardLocalDownload).toHaveBeenCalledWith(job.job_id, { connectionId: null, profile: 'default' })

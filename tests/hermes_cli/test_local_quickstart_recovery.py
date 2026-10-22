@@ -107,6 +107,30 @@ def test_quickstart_adopts_restored_plan_and_keeps_its_setup_continuation(client
     assert not lm._QUICKSTART_LOCK.locked()
 
 
+def test_paused_handover_keeps_the_adopted_plan_until_discard_owns_it(client, monkeypatch, dl_server):
+    lm, entries, plans, _ = _routes(monkeypatch, dl_server)
+    entry = entries[0]
+    plan = plans[entry.id]
+    key = lm.download_plans.save_plan({"target": entry.display_name, "model_id": entry.id}, plan)
+    lm._restore_download_plans()
+    with lm.download_plans.plan_lock(key):
+        response = client.post("/api/local-models/quickstart", json={"model_id": entry.id})
+        assert response.status_code == 200, response.text
+        job_id = response.json()["job_id"]
+        job = lm._JOBS[job_id]
+        assert wait_until(lambda: job["phase"] == "waiting", timeout=5)
+        assert client.post("/api/local-models/download/pause", json={"job_id": job_id}).json()["paused"]
+        assert wait_until(lambda: job["status"] == "paused", timeout=5)
+        lm._restore_download_plans()
+        assert job_id in lm._JOBS and lm.download_plans.has_plan(key)
+        assert not client.post("/api/local-models/download/discard", json={"job_id": job_id}).json()["discarded"]
+    resume = lm._RUNNING[job_id]["resume"]
+    assert client.post("/api/local-models/download/discard", json={"job_id": job_id}).json()["discarded"]
+    assert not resume() and not lm._QUICKSTART_LOCK.locked()
+    lm._restore_download_plans()
+    assert not lm._JOBS and not list(lm.download_plans._root().glob("*.json"))
+
+
 def test_discard_interrupted_quickstart_allows_another_model_and_retires_old_resume(client, monkeypatch, dl_server):
     lm, entries, plans, calls = _routes(monkeypatch, dl_server)
     first, second = entries

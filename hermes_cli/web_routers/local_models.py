@@ -296,7 +296,7 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             try:
                 # Plain downloads finalize under their full-plan lock in
                 # _run_download_plan; setup owns its plan until resources close.
-                if owned and job.get("setup") and job.get("plan_saved"):
+                if owned and job.get("setup") and job.get("plan_saved") and not job.get("adopted_plan"):
                     if status == "paused":
                         download_plans.checkpoint(job)
                     else:
@@ -341,7 +341,7 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
         if not guard.acquire(blocking=False):
             return False
         try:
-            key = job.get("plan_key")
+            key = job.get("adopted_plan", job.get("plan_key"))
             if _JOBS.get(job["job_id"]) is not job or job["status"] != "paused":
                 return False
             if remove_plan and key and not download_plans.discard_plan(key):
@@ -623,7 +623,7 @@ def _restore_download_plans() -> None:
         with _JOBS_LOCK:
             parked = [job for job in _JOBS.values() if job["status"] == "paused"]
         for job in parked:
-            key = job.get("plan_key")
+            key = job.get("adopted_plan", job.get("plan_key"))
             discard = _RUNNING.get(job["job_id"], {}).get("discard")
             if job.get("plan_saved") and key and not download_plans.has_plan(key) and discard:
                 discard()

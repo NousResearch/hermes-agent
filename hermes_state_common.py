@@ -885,6 +885,22 @@ CREATE INDEX IF NOT EXISTS idx_messages_active_null
 -- Logical-identity recovery (agent.transcript_repair._active_logical_message_row) runs inside the write lock.
 CREATE INDEX IF NOT EXISTS idx_messages_session_uid
     ON messages(session_id, message_uid) WHERE active = 1;
+-- Idempotency guard: a UNIQUE index on (session_id, message_uid) prevents the
+-- message-duplication defect (#860, #110123) where the same logical message dict
+-- (same stamp_message_uid outcome) gets INSERTed more than once. Scoped to
+-- ``active = 1``: archive_and_compact() soft-archives originals (active=0,
+-- compacted=1) and re-inserts the compressor's held dicts — which carry the SAME
+-- uids — as fresh active rows. An unscoped index makes every compaction/prune
+-- commit collide with the rows it just archived, so the whole transaction rolls
+-- back and transcripts are never pruned (2026-10-12 regression). Two LIVE copies
+-- of one logical message are still rejected; archived originals release the claim.
+-- Partial on IS NOT NULL so legacy rows from older builds pick up an auto-minted
+-- uid before the constraint fires; the trigger on ``messages_message_uid_insert``
+-- handles that backfill without conflict. Legacy installs get the scoped
+-- definition via _migrate_uid_dedup_index_scope() (IF NOT EXISTS never updates
+-- an existing index).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_uid_dedup
+    ON messages(session_id, message_uid) WHERE message_uid IS NOT NULL AND active = 1;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer

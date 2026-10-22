@@ -18,9 +18,11 @@ interface CanonicalGroupHeaderProps {
   onStop: () => void
   phases: Map<string, CanonicalMemberPhase>
   room?: CanonicalRoom
+  /** Stop's own pending state: Stop stays available while a Send is in flight. */
+  stopping: boolean
 }
 
-export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, driver, onBack, onDisband, onRename, onStop, phases, room }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, driver, onBack, onDisband, onRename, onStop, phases, room, stopping }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
   const [renaming, setRenaming] = useState<string | null>(null)
   const [ending, setEnding] = useState(false)
@@ -39,7 +41,7 @@ export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, dri
         <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} phases={phases} />
         <CanonicalGroupAttention driver={driver} labels={labels} />
       </div>
-      <Button disabled={busy || !canStop} onClick={onStop}>{labels.stop}</Button>
+      <Button disabled={stopping || !canStop} onClick={onStop}>{labels.stop}</Button>
       {canRename && <Button disabled={busy || !room} onClick={() => setRenaming(room?.name ?? '')}>{labels.rename}</Button>}
       {canDisband && <Button disabled={busy || !room} onClick={() => setEnding(true)}>{labels.disband}</Button>}
     </header>

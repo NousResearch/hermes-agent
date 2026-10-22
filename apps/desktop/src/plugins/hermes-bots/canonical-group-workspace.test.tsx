@@ -562,3 +562,45 @@ it('says what the room waits on beside the live work, never instead of it', asyn
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'stopped' }} />)
   await screen.findByText('Group driver unavailable. Update or reconnect the owning gateway.')
 })
+
+it('stops the room while a message is still sending, and keeps one cancellation intent until Stop is confirmed', async () => {
+  let deliver!: (value: unknown) => void
+  let stops = 0
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { working: true } }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.send') {return new Promise(resolve => { deliver = resolve })}
+
+    if (method === 'groups.stop') {
+      stops += 1
+
+      if (stops === 1) {throw new Error('request timed out: groups.stop')}
+
+      return { cancelled: stops === 2 ? 2 : 0 }
+    }
+
+    return params
+  })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'busy-send' }} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Long task' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
+
+  const stop = screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement
+  expect(stop.disabled).toBe(false)
+  fireEvent.click(stop)
+  await screen.findByText('request timed out: groups.stop')
+  fireEvent.click(stop)
+  await screen.findByText('Stop requested')
+  fireEvent.click(stop)
+  await screen.findByText('No new replies were cancelled.')
+
+  const cancelIds = request.mock.calls.filter(call => call[1] === 'groups.stop').map(call => call[2].cancel_id)
+  expect(cancelIds).toHaveLength(3)
+  expect(cancelIds[1]).toBe(cancelIds[0])
+  expect(cancelIds[2]).not.toBe(cancelIds[0])
+  deliver({ accepted: true })
+})

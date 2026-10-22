@@ -32,6 +32,9 @@ export interface CanonicalGroupMessages {
   statusBlocked: string
   statusApprovals: string
   statusAttention: string
+  stopped: string
+  nothingRunning: string
+  pendingActionUnconfirmed: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -68,7 +71,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: 'The group is working…',
     statusBlocked: 'Blocked',
     statusApprovals: '{count} waiting for approval',
-    statusAttention: 'Needs attention: {count}'
+    statusAttention: 'Needs attention: {count}',
+    stopped: 'Stop requested',
+    nothingRunning: 'No new replies were cancelled.',
+    pendingActionUnconfirmed: 'We couldn’t confirm this action. Refresh the group chat to check its status.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -103,7 +109,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: 'グループが作業中です…',
     statusBlocked: 'ブロック中',
     statusApprovals: '承認待ち {count} 件',
-    statusAttention: '要対応 {count} 件'
+    statusAttention: '要対応 {count} 件',
+    stopped: '停止を要求しました',
+    nothingRunning: '新たに取り消された返信はありません。',
+    pendingActionUnconfirmed: 'この操作を確認できませんでした。グループチャットを更新して状態を確認してください。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -138,7 +147,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: '群组正在处理…',
     statusBlocked: '已阻塞',
     statusApprovals: '{count} 项等待批准',
-    statusAttention: '{count} 项需要处理'
+    statusAttention: '{count} 项需要处理',
+    stopped: '已请求停止',
+    nothingRunning: '没有取消新的回复。',
+    pendingActionUnconfirmed: '无法确认此操作。请刷新群聊以检查其状态。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -173,7 +185,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: '群組正在處理…',
     statusBlocked: '已封鎖',
     statusApprovals: '{count} 項等待核准',
-    statusAttention: '{count} 項需要處理'
+    statusAttention: '{count} 項需要處理',
+    stopped: '已要求停止',
+    nothingRunning: '沒有取消新的回覆。',
+    pendingActionUnconfirmed: '無法確認此操作。請重新整理群聊以檢查其狀態。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -208,7 +223,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: 'المجموعة تعمل…',
     statusBlocked: 'محظور',
     statusApprovals: '{count} بانتظار الموافقة',
-    statusAttention: '{count} تحتاج إلى انتباه'
+    statusAttention: '{count} تحتاج إلى انتباه',
+    stopped: 'طُلب الإيقاف',
+    nothingRunning: 'لم يتم إلغاء أي ردود جديدة.',
+    pendingActionUnconfirmed: 'لم نتمكن من تأكيد هذا الإجراء. حدّث محادثة المجموعة للتحقق من حالته.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -246,7 +264,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: 'Группа работает…',
     statusBlocked: 'Заблокировано',
     statusApprovals: 'Ждут подтверждения: {count}',
-    statusAttention: 'Требуется внимание: {count}'
+    statusAttention: 'Требуется внимание: {count}',
+    stopped: 'Остановка запрошена',
+    nothingRunning: 'Новые ответы не были отменены.',
+    pendingActionUnconfirmed: 'Не удалось подтвердить это действие. Обновите групповой чат, чтобы проверить его состояние.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -283,7 +304,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: 'Le groupe travaille…',
     statusBlocked: 'Bloqué',
     statusApprovals: '{count} en attente d’approbation',
-    statusAttention: '{count} à traiter'
+    statusAttention: '{count} à traiter',
+    stopped: 'Arrêt demandé',
+    nothingRunning: 'Aucune nouvelle réponse n’a été annulée.',
+    pendingActionUnconfirmed: 'Cette action n’a pas pu être confirmée. Actualisez la discussion pour vérifier son état.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -321,7 +345,10 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: 'Die Gruppe arbeitet…',
     statusBlocked: 'Blockiert',
     statusApprovals: '{count} warten auf Freigabe',
-    statusAttention: 'Aufmerksamkeit erforderlich: {count}'
+    statusAttention: 'Aufmerksamkeit erforderlich: {count}',
+    stopped: 'Stopp angefordert',
+    nothingRunning: 'Keine neuen Antworten wurden abgebrochen.',
+    pendingActionUnconfirmed: 'Diese Aktion konnte nicht bestätigt werden. Aktualisieren Sie den Gruppenchat, um ihren Status zu prüfen.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -358,6 +385,9 @@ export const CANONICAL_GROUP_LOCALES = {
     groupWorking: 'El grupo está trabajando…',
     statusBlocked: 'Bloqueado',
     statusApprovals: '{count} esperando aprobación',
-    statusAttention: 'Atención necesaria: {count}'
+    statusAttention: 'Atención necesaria: {count}',
+    stopped: 'Parada solicitada',
+    nothingRunning: 'No se cancelaron nuevas respuestas.',
+    pendingActionUnconfirmed: 'No pudimos confirmar esta acción. Actualiza el chat para comprobar su estado.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

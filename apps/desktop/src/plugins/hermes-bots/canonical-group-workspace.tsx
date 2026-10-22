@@ -1,7 +1,7 @@
 import { Button, host, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverActivity, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
@@ -25,7 +25,7 @@ interface RoomReply { member?: CanonicalRoomMember; name: string; quote: string;
 interface RoomState {
   room: CanonicalRoom & { authority_epoch?: number; latest_seq?: number }
   context?: CanonicalRoomContext | null
-  driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] }
+  driver_status?: CanonicalDriverStatus<CanonicalPendingAction>
 }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[], thread?: string) =>
@@ -256,7 +256,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
-        canStop={!!driver && offersGroupMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
+        canStop={!!driver && offersGroupMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
         onDisband={end} onRename={rename} onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} working={working} />
       {readError && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-destructive" role="alert">{readError}

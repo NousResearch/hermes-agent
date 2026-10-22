@@ -76,6 +76,9 @@ export interface CanonicalGroupMessages {
   leadBadge: string
   assignment: string
   assignmentFallback: string
+  statusBlocked: string
+  statusApprovals: string
+  statusAttention: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -156,7 +159,10 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'The lead picks who takes it; @mentions and @everyone still go straight to those members.',
     leadBadge: 'Lead',
     assignment: '{lead} gave this to {names}',
-    assignmentFallback: '{lead} is taking this'
+    assignmentFallback: '{lead} is taking this',
+    statusBlocked: 'Blocked',
+    statusApprovals: '{count} waiting for approval',
+    statusAttention: 'Needs attention: {count}'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -235,7 +241,10 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'リーダーが担当者を選びます。@メンションと @everyone はそのまま宛先のメンバーに届きます。',
     leadBadge: 'リーダー',
     assignment: '{lead} が {names} に割り当てました',
-    assignmentFallback: '{lead} が担当します'
+    assignmentFallback: '{lead} が担当します',
+    statusBlocked: 'ブロック中',
+    statusApprovals: '承認待ち {count} 件',
+    statusAttention: '要対応 {count} 件'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -314,7 +323,10 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: '由负责人决定谁来处理；@提及和 @everyone 仍直接发给对应成员。',
     leadBadge: '负责人',
     assignment: '{lead} 把这条交给了 {names}',
-    assignmentFallback: '{lead} 亲自处理'
+    assignmentFallback: '{lead} 亲自处理',
+    statusBlocked: '已阻塞',
+    statusApprovals: '{count} 项等待批准',
+    statusAttention: '{count} 项需要处理'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -393,7 +405,10 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: '由負責人決定誰來處理；@提及和 @everyone 仍直接送給對應成員。',
     leadBadge: '負責人',
     assignment: '{lead} 把這則交給了 {names}',
-    assignmentFallback: '{lead} 親自處理'
+    assignmentFallback: '{lead} 親自處理',
+    statusBlocked: '已封鎖',
+    statusApprovals: '{count} 項等待核准',
+    statusAttention: '{count} 項需要處理'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -472,7 +487,10 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'يختار القائد من يتولاها؛ الإشارات @ و@everyone تصل مباشرة إلى أصحابها.',
     leadBadge: 'القائد',
     assignment: 'أسند {lead} هذه الرسالة إلى {names}',
-    assignmentFallback: 'يتولى {lead} هذه الرسالة'
+    assignmentFallback: 'يتولى {lead} هذه الرسالة',
+    statusBlocked: 'محظور',
+    statusApprovals: '{count} بانتظار الموافقة',
+    statusAttention: '{count} تحتاج إلى انتباه'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -554,7 +572,10 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Ведущий выбирает, кому передать сообщение; @упоминания и @everyone по-прежнему идут прямо адресатам.',
     leadBadge: 'Ведущий',
     assignment: '{lead} передал(а) это: {names}',
-    assignmentFallback: '{lead} берёт это на себя'
+    assignmentFallback: '{lead} берёт это на себя',
+    statusBlocked: 'Заблокировано',
+    statusApprovals: 'Ждут подтверждения: {count}',
+    statusAttention: 'Требуется внимание: {count}'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -635,7 +656,10 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Le responsable choisit qui s\'en charge ; les @mentions et @everyone vont toujours directement aux membres visés.',
     leadBadge: 'Responsable',
     assignment: '{lead} a confié ceci à {names}',
-    assignmentFallback: '{lead} s\'en charge'
+    assignmentFallback: '{lead} s\'en charge',
+    statusBlocked: 'Bloqué',
+    statusApprovals: '{count} en attente d’approbation',
+    statusAttention: '{count} à traiter'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -717,7 +741,10 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Die Leitung wählt, wer übernimmt; @Erwähnungen und @everyone gehen weiterhin direkt an diese Mitglieder.',
     leadBadge: 'Leitung',
     assignment: '{lead} hat das an {names} gegeben',
-    assignmentFallback: '{lead} übernimmt das'
+    assignmentFallback: '{lead} übernimmt das',
+    statusBlocked: 'Blockiert',
+    statusApprovals: '{count} warten auf Freigabe',
+    statusAttention: 'Aufmerksamkeit erforderlich: {count}'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -798,6 +825,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'El líder elige quién se encarga; las @menciones y @everyone siguen yendo directamente a esos miembros.',
     leadBadge: 'Líder',
     assignment: '{lead} se lo dio a {names}',
-    assignmentFallback: '{lead} se encarga'
+    assignmentFallback: '{lead} se encarga',
+    statusBlocked: 'Bloqueado',
+    statusApprovals: '{count} esperando aprobación',
+    statusAttention: 'Atención necesaria: {count}'
   }
 } satisfies Record<string, CanonicalGroupMessages>

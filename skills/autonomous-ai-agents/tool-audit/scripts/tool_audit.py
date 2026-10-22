@@ -104,7 +104,7 @@ def resolve_session(conn: sqlite3.Connection, session_arg: Optional[str]) -> str
     return row["id"]
 
 
-def fetch_messages(conn: sqlite3.Connection, session_id: str) -> List[Dict[str, Any]]:
+def fetch_messages(conn: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
     """Load active messages in insertion order (mirrors SessionDB.get_messages)."""
     sql = "SELECT role, content, tool_call_id, tool_calls, tool_name FROM messages WHERE session_id = ?{} ORDER BY id"
     try:
@@ -144,14 +144,14 @@ def result_error(content: Any) -> Optional[str]:
     return None
 
 
-def audit_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+def audit_messages(messages: list[dict[str, Any]]) -> dict[str, Any]:
     """Correlate tool calls with results by ``tool_call_id`` and aggregate."""
-    call_id_to_tool: Dict[str, str] = {}
-    stats: Dict[str, Dict[str, int]] = {}
-    samples: Dict[str, List[str]] = {}
+    call_id_to_tool: dict[str, str] = {}
+    stats: dict[str, dict[str, int]] = {}
+    samples: dict[str, list[str]] = {}
     uncorrelated_results = 0
 
-    def _tool_stats(name: str) -> Dict[str, int]:
+    def _tool_stats(name: str) -> dict[str, int]:
         return stats.setdefault(name, {"calls": 0, "results": 0, "orphaned": 0, "errors": 0})
 
     for msg in messages:
@@ -205,7 +205,7 @@ def audit_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"tools": tools, "totals": totals, "uncorrelated_results": uncorrelated_results}
 
 
-def _session_header(conn: sqlite3.Connection, session_id: str) -> Dict[str, Any]:
+def _session_header(conn: sqlite3.Connection, session_id: str) -> dict[str, Any]:
     row = conn.execute(
         "SELECT id, source, title, started_at, message_count, tool_call_count"
         " FROM sessions WHERE id = ?",
@@ -221,7 +221,7 @@ def _session_header(conn: sqlite3.Connection, session_id: str) -> Dict[str, Any]
     return header
 
 
-def render_text(header: Dict[str, Any], report: Dict[str, Any]) -> str:
+def render_text(header: dict[str, Any], report: dict[str, Any]) -> str:
     lines = [
         f"Tool audit — session {header.get('id')}",
         "  source: {}  started: {}  messages: {}".format(
@@ -247,7 +247,7 @@ def render_text(header: Dict[str, Any], report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only per-tool audit of a Hermes session.")
     parser.add_argument("--session", help="session id or unique prefix (default: $HERMES_SESSION_ID, else latest)")
     parser.add_argument("--db", type=Path, help="path to state.db (default: <hermes home>/state.db)")

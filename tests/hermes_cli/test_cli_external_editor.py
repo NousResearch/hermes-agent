@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from cli import HermesCLI
+from prompt_toolkit.key_binding import KeyBindings
 
 
 class _FakeBuffer:
@@ -48,6 +49,15 @@ def test_open_external_editor_rejects_when_no_tui():
 
     assert mock_cprint.called
     assert "interactive cli" in str(mock_cprint.call_args).lower()
+
+
+def test_ctrl_x_ctrl_e_opens_external_editor():
+    cli_obj = _make_cli()
+    key_bindings = KeyBindings()
+
+    cli_obj._tui_bind_editor_and_stash(key_bindings)
+
+    assert any(tuple(binding.keys) == ("c-x", "c-e") for binding in key_bindings.bindings)
 
 
 

@@ -161,6 +161,18 @@ def _profile_model_request(cfg: Mapping[str, Any]) -> dict[str, Any]:
     return request
 
 
+def _refuse_under_worker_snapshot(home: Path) -> None:
+    """A managed worker (kanban, safe mode, managed sessions) runs on the session config frozen at creation:
+    every config reader returns that snapshot and the process never opens profile files, so another profile's
+    config.yaml is unreachable here. Refuse rather than pair the launch profile's model with the target's keys."""
+    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_constants import get_hermes_home, hermes_home_key
+    if worker_config_snapshot() is not None and hermes_home_key(home) != hermes_home_key(get_hermes_home()):
+        raise DelegationRouteError(
+            f"Profile routes are unavailable in a managed worker session (its config is frozen at creation): "
+            f"cannot run as the profile at {home}. Delegate without a profile.")
+
+
 def _profile_route(home: Path, label: Optional[str]) -> TaskRoute:
     """The profile's own primary route, resolved inside its scope (its config.yaml + secrets). The
     child never borrows the launching profile's key, pool, fallback chain or reasoning level."""
@@ -168,6 +180,7 @@ def _profile_route(home: Path, label: Optional[str]) -> TaskRoute:
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_constants import resolve_reasoning_config
     from tools.delegate_tool_config import ResolvedReasoning, _credential_bundle
+    _refuse_under_worker_snapshot(home)
     with delegated_profile_scope(home):
         cfg = load_config_readonly() or {}
         request = _profile_model_request(cfg)

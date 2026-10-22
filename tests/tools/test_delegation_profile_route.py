@@ -254,3 +254,40 @@ def test_profile_scope_that_fails_to_enter_leaves_the_parent_in_its_own_profile(
         with delegated_profile_scope(coder):
             pass
     assert (_snapshot(), current_secret_scope_home(), is_multiplex_active()) == before
+
+
+class _ProfileProvider:
+    """A backend that routes every task to the ``coder`` profile."""
+    name = "profile_routes"
+
+    def task_parameters(self, config):
+        return {}
+
+    def route_task(self, task, config):
+        return {"profile": "coder"}
+
+
+def _resolve_coder_task():
+    from tools.delegate_tool_routes import resolve_task_routes
+    with patch("tools.delegate_tool_routes._active_provider", return_value=_ProfileProvider()):
+        return resolve_task_routes([{"goal": "work as coder"}], {}, _parent())
+
+
+def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_profiles, monkeypatch):
+    """A managed worker's config readers all return its frozen session config, so the target profile's
+    config.yaml is unreachable there: refuse instead of pairing the launch model with the target's keys."""
+    import os
+
+    from agent import safe_worker_policy
+    from agent.delegation_provider import DelegationRouteError
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    launch, _ = two_profiles
+    frozen = yaml.safe_load((launch / "config.yaml").read_text(encoding="utf-8"))
+    monkeypatch.setattr(safe_worker_policy, "_policy", safe_worker_policy._SafeWorkerPolicy(
+        os.getpid(), False, False, json.dumps(frozen)))
+
+    routes, error = _resolve_coder_task()
+    assert routes == [] and "managed worker" in (error or "")
+    with pytest.raises(DelegationRouteError):
+        _route_to_task_route({"profile": "coder"}, _parent(), {})

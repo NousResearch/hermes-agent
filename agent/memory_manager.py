@@ -139,6 +139,30 @@ def _redact_messages_for_egress(messages: Optional[list[Any]]) -> Optional[list[
     return None if messages is None else list(_redact_for_provider(messages))
 
 
+
+_DATA_URI_RE = re.compile(r"data:[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+")
+
+
+def _strip_data_uris(text: str) -> str:
+    """Strip base64 data URIs from text before provider persistence."""
+    if not isinstance(text, str) or "data:" not in text:
+        return text if isinstance(text, str) else ""
+    return _DATA_URI_RE.sub("[embedded data]", text)
+
+
+def _strip_data_uris_from_value(value: Any) -> Any:
+    """Copy JSON-like provider input while replacing data URIs in every nested string value."""
+    if isinstance(value, str):
+        return _strip_data_uris(value)
+    if isinstance(value, list):
+        return [_strip_data_uris_from_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_data_uris_from_value(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _strip_data_uris_from_value(item) for key, item in value.items()}
+    return value
+
+
 class _StuckCallGate:
     """Process-wide admission for one kind of external provider call, keyed by (Hermes home, provider).
 
@@ -457,6 +481,9 @@ class MemoryManager:
             return
         clean_user_content, assistant_content, redacted_messages = _redact_for_provider(
             clean_user_content, assistant_content, messages)
+        clean_user_content = _strip_data_uris(clean_user_content)
+        assistant_content = _strip_data_uris(assistant_content)
+        redacted_messages = _strip_data_uris_from_value(redacted_messages)
         optional_kwargs = {"messages": redacted_messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
@@ -626,7 +653,7 @@ class MemoryManager:
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         if not self._owner_allows("on_session_end"):
             return
-        messages = _redact_messages_for_egress(messages or [])
+        messages = _strip_data_uris_from_value(_redact_messages_for_egress(messages or []))
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
 
@@ -706,6 +733,8 @@ class MemoryManager:
         parts = []
         checkpoint_succeeded = False
         messages, evidence_messages = _redact_for_provider(messages or [], evidence_messages)
+        messages = _strip_data_uris_from_value(messages)
+        evidence_messages = _strip_data_uris_from_value(evidence_messages)
         for provider in self._providers:
             version = self._checkpoint_api_version(provider)
             if version is None:

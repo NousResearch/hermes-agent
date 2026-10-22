@@ -2386,7 +2386,7 @@ class TestMatrixClockSkewWarning:
                 )
                 await self.adapter._on_room_message(ev)
 
-        # Backfill drops are silent — no clock-skew warning fired.
+        # Backfill drops never fire the clock-skew warning (the initial-sync summary is separate).
         assert self.adapter._clock_skew_warned is False
         skew_warnings = [
             r for r in caplog.records

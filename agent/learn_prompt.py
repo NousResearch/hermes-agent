@@ -112,7 +112,10 @@ Record the sources you actually read in the skill's frontmatter, under
 - "This conversation" and pasted text record NO source entry — there is nothing
   to cite. Never invent a source you did not read.
 - Updating an existing skill: merge the new entries into its existing `sources`
-  list rather than replacing it."""
+  list rather than replacing it. When you re-read a source that is already
+  listed, update that entry's `retrieved` date (and its `revision` for a
+  `repo`) instead of keeping the old values: the date marks the skill as
+  refreshed from that source."""
 
 
 # book-to-skill layout (MIT): lean always-loaded index + per-chapter files on

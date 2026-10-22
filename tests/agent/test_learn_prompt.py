@@ -62,6 +62,15 @@ class TestSourceRecording:
         assert "leave `revision` out" in prompt
         assert "invented sha" in prompt
 
+    def test_re_reading_a_listed_source_updates_its_entry(self):
+        # A refresh that keeps the old `retrieved` date looks like no refresh at all to
+        # anything comparing the date, so a stale-source warning would never clear.
+        prompt = " ".join(build_learn_prompt("refresh the deploy skill").split()).lower()
+
+        assert "already listed" in prompt
+        assert "update that entry's `retrieved`" in prompt
+        assert "`revision` for a `repo`" in prompt
+
     def test_revision_is_only_attached_to_a_repo_source(self):
         """The revision rule, asserted from the example's shape rather than its wording."""
         lines = build_learn_prompt("https://github.com/owner/project").splitlines()

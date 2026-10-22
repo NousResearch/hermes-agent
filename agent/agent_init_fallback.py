@@ -40,7 +40,7 @@ def _init_fallback_chain(agent, fallback_model):
             print(f"🔄 Fallback chain ({len(chain)} providers): " + " → ".join(labels))
 
 
-def recompute_init_fallback_api_mode(agent, fb_client) -> None:
+def recompute_init_fallback_api_mode(agent, fb_client, fallback_entry: dict[str, Any]) -> None:
     """Give an init-time fallback its own api_mode instead of the unreachable primary's.
 
     A Nous primary configured with ``api_mode: codex_responses`` otherwise leaves a Copilot
@@ -50,10 +50,21 @@ def recompute_init_fallback_api_mode(agent, fb_client) -> None:
     ``_primary_runtime`` snapshot so ``restore_primary_runtime`` replays the recomputed mode.
     A detection failure keeps the primary's mode and never blocks the fallback itself.
     """
-    from agent.chat_completion_helpers import _fallback_api_mode_resolved
+    from agent.chat_completion_helpers import _fallback_api_mode_hint, _fallback_api_mode_resolved
+    from hermes_cli.providers import is_actual_route
     try:
-        agent.api_mode = _fallback_api_mode_resolved(
-            agent, agent.provider, agent.model, str(getattr(fb_client, "base_url", "") or ""))
+        provider = str(agent.provider or "").strip().lower()
+        base_url_hint = str(fallback_entry.get("base_url") or "").strip() or None
+        explicit, api_mode = _fallback_api_mode_hint(fallback_entry, provider, base_url_hint)
+        base_url = str(getattr(fb_client, "base_url", "") or base_url_hint or "")
+        if explicit:
+            agent.api_mode = api_mode
+        elif is_actual_route(provider, base_url):
+            agent.api_mode = "chat_completions"
+        elif api_mode == "chat_completions":
+            agent.api_mode = _fallback_api_mode_resolved(agent, provider, agent.model, base_url)
+        else:
+            agent.api_mode = api_mode
     except Exception:
         logger.debug("Init-time fallback api_mode detection failed for %s", agent.provider, exc_info=True)
         return

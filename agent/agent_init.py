@@ -875,10 +875,18 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         _fb_provider = str(_fb["provider"])
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
+            from agent.chat_completion_helpers import _fallback_api_mode_hint
+
+            _fb_provider = str(_fb["provider"]).strip().lower()
+            _fb_base_url_hint = str(_fb.get("base_url") or "").strip() or None
+            _fb_api_mode_explicit, _fb_api_mode = _fallback_api_mode_hint(
+                _fb, _fb_provider, _fb_base_url_hint
+            )
             _fb_explicit_key = resolve_entry_api_key(_fb)
             _fb_client, _fb_model = resolve_provider_client(
                 _fb["provider"], model=_fb["model"], raw_codex=True,
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
+                **({"api_mode": _fb_api_mode} if _fb_api_mode_explicit else {}),
             )
         except Exception as _fb_exc:
             logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc)
@@ -903,7 +911,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             return None
         agent.provider = agent.requested_provider = _fb["provider"]
         agent.model = _fb_model or _fb["model"]
-        recompute_init_fallback_api_mode(agent, _fb_client)
+        recompute_init_fallback_api_mode(agent, _fb_client, _fb)
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.

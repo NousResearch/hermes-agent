@@ -57,6 +57,9 @@ metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
+    sources:                            # Optional — where this skill came from
+      - url: https://example.com/docs/guide
+        retrieved: 2026-10-22
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
@@ -97,6 +100,27 @@ Known failure modes and how to handle them.
 ## Verification
 How the agent confirms it worked.
 ```
+
+### Recorded Sources
+
+A skill can record where it came from under `metadata.hermes.sources`. It is optional, and it works for hand-written skills as well as ones authored by `/learn` (which writes it for you).
+
+```yaml
+metadata:
+  hermes:
+    sources:
+      - url: https://example.com/docs/guide          # a web page or document
+        retrieved: 2026-10-22
+      - repo: https://github.com/owner/project       # a git repository
+        revision: 0123456789abcdef0123456789abcdef01234567
+        retrieved: 2026-10-22
+      - path: ~/projects/app/docs/setup.md           # a local file
+        retrieved: 2026-10-22
+```
+
+Each entry has exactly one of `url`, `repo` or `path`; `revision` is only valid with `repo` and holds the full commit SHA that was read. `retrieved` is the date the source was read (`YYYY-MM-DD`). Write local paths under your home directory with `~`, never the expanded path — skills get shared.
+
+Readers skip entries they cannot parse, so a missing, partial or malformed `sources` list never breaks skill loading, listing or `skill_view`.
 
 ### Platform-Specific Skills
 

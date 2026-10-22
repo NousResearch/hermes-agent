@@ -81,6 +81,38 @@ Quality bar:
   templates in `templates/`."""
 
 
+# Where a skill came from. Nothing records this for learned skills today: the
+# hub lock file covers hub installs only (``check_for_skill_updates``), so a
+# skill authored here cannot be re-checked against the material it was distilled
+# from. The schema is shared with the reader that reports staleness, so it is
+# written exactly as documented — keep the two in step.
+_SOURCE_RECORDING = """\
+Record the sources you actually read in the skill's frontmatter, under
+`metadata.hermes` next to `tags`:
+
+  sources:
+    - url: https://example.com/docs/guide      # a web page or document
+      retrieved: 2026-10-22                    # the date you read it
+    - repo: https://github.com/owner/project   # a git repository
+      revision: 0123456789abcdef0123456789abcdef01234567
+      retrieved: 2026-10-22
+    - path: ~/projects/app/docs/setup.md       # a local file
+      retrieved: 2026-10-22
+
+- Each entry has exactly one of `url`, `repo` or `path`; `revision` only goes
+  with `repo`. Record the commit you actually read (`git rev-parse HEAD` through
+  the `terminal` tool, or the revision the host showed you) — a branch name is
+  not a revision.
+- Write a local path under the home directory as `~/...`, never the expanded
+  path: skills get shared, so a learned skill must not carry your home layout.
+- "This conversation" and pasted text record NO source entry — there is nothing
+  to cite. Never invent a source you did not read.
+- Updating an existing skill: merge the new entries into its existing `sources`
+  list rather than replacing it.
+- The block is optional. Readers skip entries they cannot parse, so a missing or
+  partial `sources` list never breaks the skill."""
+
+
 # book-to-skill layout (MIT): lean always-loaded index + per-chapter files on
 # demand, so query cost tracks the answer, not the source.
 _KNOWLEDGE_SKILL_STANDARDS = """\
@@ -190,6 +222,7 @@ def build_learn_prompt(user_request: str) -> str:
         "reference file you wrote.\n\n"
         f"{_SOURCE_HYGIENE}\n\n"
         f"{_AUTHORING_STANDARDS}\n\n"
+        f"{_SOURCE_RECORDING}\n\n"
         f"{_KNOWLEDGE_SKILL_STANDARDS}\n\n"
         "When done, tell the user the skill name, its category, a one-line "
         "summary of what it captured, and — for a knowledge-base skill — the "

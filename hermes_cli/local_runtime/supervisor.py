@@ -505,8 +505,15 @@ class LlamaServerSupervisor:
         for activity — that resets the idle clock and pins the model's VRAM. A model that
         isn't loaded is idle: the router answers 400 for it (the reads don't autoload)."""
         try:
-            loaded = ([model_id] if model_id is not None
-                      else [m for m, status in self.models().items() if status in _RESIDENT])
+            if model_id is None:
+                states = self.models()
+                # A queued first request may still be waiting for its model to load;
+                # it has no slots/metrics endpoint yet, but must not be interrupted.
+                if "loading" in states.values():
+                    return False
+                loaded = [m for m, status in states.items() if status in _RESIDENT]
+            else:
+                loaded = [model_id]
             for mid in loaded:
                 try:
                     slots = self._request(f"/slots?{child_query(mid)}")
@@ -519,7 +526,7 @@ class LlamaServerSupervisor:
                 with self._open(f"/metrics?{child_query(mid)}", timeout_s=10, json_type=False) as r:
                     text = r.read().decode()
                 for line in text.splitlines():
-                    if (line.startswith("llamacpp:requests_processing")
+                    if (line.startswith(("llamacpp:requests_processing", "llamacpp:requests_deferred"))
                             and float(line.split()[-1]) != 0.0):
                         return False
             return True

@@ -73,3 +73,22 @@ def test_hardware_identity_and_utilisation_follow_selection(client, monkeypatch)
     assert data['gpu_util_percent'] == 0
     assert data['vram_used_bytes'] == 0
     assert data['gpus'][0]['id'] == UUID
+
+@pytest.mark.parametrize('state,deferred', [('loading', 0), ('loaded', 1)])
+def test_real_supervisor_loading_and_queue_block_gpu_restart(client, monkeypatch, state, deferred):
+    from io import BytesIO
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    # Exercise the real idle methods, not a replacement is_idle callback.
+    sup = object.__new__(LlamaServerSupervisor)
+    monkeypatch.setattr(sup, 'models', lambda: {'gemma': state})
+    monkeypatch.setattr(sup, '_request', lambda *a, **k: [{'is_processing': False}])
+    monkeypatch.setattr(sup, '_open', lambda *a, **k: BytesIO(
+        f'llamacpp:requests_processing 0\nllamacpp:requests_deferred {deferred}\n'.encode()))
+    monkeypatch.setattr(routes.bootstrap, 'get_supervisor', lambda: sup)
+    monkeypatch.setattr(routes.bootstrap, 'refresh_local_runtime',
+                        lambda: pytest.fail('must not interrupt loading or queued inference'))
+    before = config_mod.load_config_readonly()['local_runtime']['gpu']
+    response = client.post('/api/local-models/gpu', json={'gpu': '1'})
+    assert response.status_code == 409, response.text
+    assert config_mod.load_config_readonly()['local_runtime']['gpu'] == before

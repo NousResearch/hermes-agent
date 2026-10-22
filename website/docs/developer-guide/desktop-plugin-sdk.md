@@ -239,6 +239,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
+| Context menu | `CONTEXT_MENU_AREA` | `data: ContextMenuContribution` — extra rows in the app's own text context menu |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
@@ -565,6 +566,50 @@ and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
+
+### Context menu — extra rows in the app's own menu {#context-menu-area}
+
+The app's text context menu (Cut / Copy / Paste / Select All, and the
+spell-check suggestions Chromium supplies) is a React tree the app owns. A
+plugin that wants a row there used to have to reach into the menu's DOM and
+inject an element — which fights the menu's focus trap and its keyboard
+handling, and reaches into app markup the plugin surface does not cover.
+
+`CONTEXT_MENU_AREA` is the supported door. Register a **data** contribution;
+the menu resolves your rows against the click's context and renders them with
+its own row component, so they look and behave exactly like built-in ones.
+
+```ts
+import { CONTEXT_MENU_AREA, type ContextMenuContribution } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'my-suggestions',
+  area: CONTEXT_MENU_AREA,
+  data: {
+    position: 'top',
+    rows: ({ editable, word }) =>
+      editable && word
+        ? [{ icon: 'edit', label: `Look up "${word}"`, onSelect: () => lookup(word) }]
+        : []
+  } satisfies ContextMenuContribution
+})
+```
+
+The `rows` callback receives the context of the click that opened the menu:
+
+| field | meaning |
+|---|---|
+| `editable` | the click landed on an editable field |
+| `word` | the word under the caret, or `null` when the caret was not on one |
+| `selectedText` | the current selection in the field |
+
+A row is `{ label, onSelect, icon?, disabled? }`. `position` is `'top'`
+(default — above the app's own rows, where spell-check suggestions sit) or
+`'bottom'` (after them). Rows are resolved when the menu opens.
+
+Your `rows` callback runs inside the app's error boundary: a plugin that
+throws contributes nothing rather than taking the menu down. A plugin that
+returns an empty array contributes nothing, so decide from the context.
 
 ### Session rows — decorations + the session list API
 
@@ -2033,8 +2078,8 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `CONTEXT_MENU_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ContextMenuContribution` (+ `ContextMenuContext`, `ContextMenuRow`), `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

@@ -16,6 +16,8 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useContributions } from '@/contrib/react/use-contributions'
+import type { Contribution } from '@/contrib/types'
 import { type Translations, useI18n } from '@/i18n'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -23,6 +25,13 @@ import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openPreview } from '@/store/preview'
 
+import {
+  CONTEXT_MENU_AREA,
+  type ContextMenuContext,
+  type ContextMenuContribution,
+  type ContextMenuRow,
+  wordUnderCaret
+} from './contrib'
 import { ShellMenuItems } from './shell-menu-items'
 import {
   $contextMenu,
@@ -120,7 +129,52 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
   ]
 }
 
-function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Translations): ReactNode[][] {
+/**
+ * The rows plugins contribute to this menu.
+ *
+ * A contribution is DATA ({@link ContextMenuContribution}), resolved against
+ * the menu's context, and rendered by the menu's own `Item` — so a plugin's
+ * row behaves exactly like a built-in one (same styling, same focus trap,
+ * same keyboard navigation) instead of fighting the menu from the outside.
+ */
+function pluginRowsFor(
+  contributions: readonly Contribution[],
+  context: ContextMenuContext
+): { top: ContextMenuRow[]; bottom: ContextMenuRow[] } {
+  const top: ContextMenuRow[] = []
+  const bottom: ContextMenuRow[] = []
+
+  for (const contribution of contributions) {
+    const payload = contribution.data as ContextMenuContribution | undefined
+
+    if (!payload || typeof payload.rows !== 'function') {
+      continue
+    }
+
+    let rows: ContextMenuRow[]
+
+    try {
+      rows = payload.rows(context) ?? []
+    } catch {
+      // A plugin that throws must not take the menu down with it.
+      continue
+    }
+
+    if (!rows.length) {
+      continue
+    }
+
+    ;(payload.position === 'bottom' ? bottom : top).push(...rows)
+  }
+
+  return { top, bottom }
+}
+
+function domSections(
+  open: Extract<OpenContextMenu, { kind: 'dom' }>,
+  t: Translations,
+  pluginRows: { top: ContextMenuRow[]; bottom: ContextMenuRow[] }
+): ReactNode[][] {
   const copy = t.contextMenu
   const { spellcheck, target } = open
   const sections: ReactNode[][] = []
@@ -269,6 +323,23 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     )
   }
 
+  // A plugin's rows go FIRST, above the app's own -- the same place the
+  // built-in spell-check suggestions sit, so a suggestion reads as the top
+  // item of the menu.
+  if (pluginRows.top.length) {
+    sections.push(
+      pluginRows.top.map((row, index) => (
+        <Item
+          disabled={row.disabled}
+          icon={row.icon}
+          key={`plugin-${index}-${row.label}`}
+          label={row.label}
+          onSelect={row.onSelect}
+        />
+      ))
+    )
+  }
+
   if (target.editable) {
     if (spellcheck) {
       sections.push([
@@ -355,6 +426,21 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         onSelect={() => void writeClipboardText(target.selectionText)}
       />
     ])
+  }
+
+  // A plugin's 'bottom' rows go last, after the app's own sections.
+  if (pluginRows.bottom.length) {
+    sections.push(
+      pluginRows.bottom.map((row, index) => (
+        <Item
+          disabled={row.disabled}
+          icon={row.icon}
+          key={`plugin-bottom-${index}-${row.label}`}
+          label={row.label}
+          onSelect={row.onSelect}
+        />
+      ))
+    )
   }
 
   return sections
@@ -543,6 +629,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
 export function AppContextMenu() {
   const { t } = useI18n()
   const open = useStore($contextMenu)
+  const contributions = useContributions(CONTEXT_MENU_AREA)
 
   useEffect(() => {
     // stopPropagation beats other renderer handlers; preventDefault is never
@@ -622,12 +709,22 @@ export function AppContextMenu() {
     return null
   }
 
+  const pluginContext: ContextMenuContext = {
+    editable: open.kind === 'dom' ? Boolean(open.target.editable) : false,
+    selectedText: open.kind === 'dom' ? open.target.selectionText : '',
+    word: open.kind === 'dom' ? wordUnderCaret(open.target.editable) : null
+  }
+
+  const pluginRows = pluginRowsFor(contributions, pluginContext)
+
   const sections =
     open.kind === 'terminal'
       ? terminalSections(open, t)
       : open.kind === 'guest'
         ? guestSections(open, t)
-        : (list => (list.length ? list : [[<ShellMenuItems key="shell" kit={DROPDOWN_KIT} />]]))(domSections(open, t))
+        : (list => (list.length ? list : [[<ShellMenuItems key="shell" kit={DROPDOWN_KIT} />]]))(
+            domSections(open, t, pluginRows)
+          )
 
   return (
     <DropdownMenu

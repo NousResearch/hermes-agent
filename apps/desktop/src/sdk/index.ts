@@ -1624,6 +1624,12 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+export {
+  CONTEXT_MENU_AREA,
+  type ContextMenuContext,
+  type ContextMenuContribution,
+  type ContextMenuRow
+} from '@/app/context-menu/contrib'
 /** Page-owned header control (the kanban board switcher): projected into the
  *  workspace page header when the page renders in the workspace pane, and
  *  rendered inline, in place, anywhere else (a split route tile). Prefer it
@@ -1635,6 +1641,7 @@ export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
  *  that prints a next run switches its label on this (`t.cron.next` →
  *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
 export { nextRunOverdueMs } from '@/app/cron/job-state'
+
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
  *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
  *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
@@ -1661,7 +1668,6 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
-
 export {
   type ProfileGroupHeaderContribution,
   type ProfileGroupRoute,

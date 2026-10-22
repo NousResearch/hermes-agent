@@ -967,3 +967,26 @@ def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
     monkeypatch.setattr('hermes_cli.plugins.get_plugin_context_engine', lambda: candidate)
     assert _select_context_engine({'context': {'engine': 'compressor'}}) is None
     assert _select_context_engine({'context': {'engine': 'offered'}}).name == 'offered'
+
+
+def test_scan_on_install_is_a_declared_config_key_and_respects_user_override(tmp_path, monkeypatch):
+    """#135032: the scan-block error message points users at plugins.scan_on_install, so the
+    key must live in the config schema — ``hermes config get`` resolves it and the known-key
+    validation stops calling it a phantom the runtime never reads — while still honouring
+    the user's config.yaml override."""
+    from hermes_cli import plugins_cmd as pc
+    from hermes_cli.config import _validate_config_key, cfg_get, load_config
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["plugins"]["scan_on_install"] is True
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    assert cfg_get(load_config(), "plugins", "scan_on_install") is True
+    assert _validate_config_key("plugins.scan_on_install") == (True, None)
+    assert pc._scan_on_install_enabled() is True
+
+    (home / "config.yaml").write_text("plugins:\n  scan_on_install: false\n", encoding="utf-8")
+    assert pc._scan_on_install_enabled() is False

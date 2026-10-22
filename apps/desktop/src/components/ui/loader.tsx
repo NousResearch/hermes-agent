@@ -371,7 +371,12 @@ export function Loader({
       className={cn('inline-grid size-10 place-items-center text-primary', className)}
       role={role}
     >
-      <svg aria-hidden="true" className="size-full overflow-visible" fill="none" viewBox="0 0 100 100">
+      {/* `overflow-visible` let the animated trail paint past the 100x100 box. Inside a
+          centred flex column (update overlay, CenteredStatus) that paint overflowed the
+          SVG's layout box and pushed the sibling title off-centre, where the dialog's
+          `overflow-hidden` body clipped it. Clip to the box the loader already owns; the
+          curves are drawn inside it, so nothing visible is lost. */}
+      <svg aria-hidden="true" className="size-full overflow-hidden" fill="none" viewBox="0 0 100 100">
         <g ref={groupRef}>
           <path
             opacity="0.1"

@@ -551,6 +551,13 @@ def public_view(record: dict[str, Any]) -> dict[str, Any]:
         "updated_at": record.get("updated_at")}
 
 
+def _status_of(record: dict[str, Any]) -> dict[str, Any]:
+    view = public_view(record)
+    if _retryable(record):
+        view["state"] = RETRYING if _account_bound_to(record) else PAUSED
+    return view
+
+
 def handoff_status() -> dict[str, Any]:
     """This profile's latest handoff, or ``{"state": "idle"}``. A pure read (no lock, no network). An
     active move bound to an account this profile no longer holds reads as ``paused``."""
@@ -562,11 +569,18 @@ def handoff_status() -> dict[str, Any]:
     mine = [r for r in records if home in r.get("profiles", ())]
     if not mine:
         return {"state": IDLE}
-    latest = max(mine, key=lambda r: str(r.get("updated_at") or ""))
-    view = public_view(latest)
-    if _retryable(latest):
-        view["state"] = RETRYING if _account_bound_to(latest) else PAUSED
-    return view
+    return _status_of(max(mine, key=lambda r: str(r.get("updated_at") or "")))
+
+
+def record_status(anon_token: str) -> Optional[dict[str, Any]]:
+    """The handoff of one free-tier credential (as :func:`handoff_status` reads it), or None when no
+    record exists. A pure read: what a sign-in reports when its own run attempted nothing (another
+    process held the claim, or the budget ran out first)."""
+    try:
+        record = _load(_records_path())["records"].get(_token_key(anon_token))
+    except RuntimeError:
+        return None
+    return _status_of(record) if record else None
 
 
 def wire_status(status: dict[str, Any]) -> dict[str, Any]:

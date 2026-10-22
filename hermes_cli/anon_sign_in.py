@@ -236,6 +236,19 @@ def _handoff_lines(results: list[dict[str, Any]]) -> tuple[str, ...]:
     return tuple(line for view in results for line in result_lines(view))
 
 
+def _handoff_status(results: list[dict[str, Any]], replaced: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The handoff a completed sign-in reports (``guest_handoff.wire_status`` form): the latest record its
+    own run attempted, else the replaced free tier's saved record (another process held the claim, or
+    the run's budget ran out first), else None when it replaced no free tier. Read under the scope."""
+    from hermes_cli import anon_auth as _core
+    from hermes_cli.guest_handoff import record_status, wire_status
+    if results:
+        return wire_status(results[-1])
+    anon_token = replaced.get("anon_token") if _core.is_guest_state(replaced) else None
+    status = record_status(anon_token) if isinstance(anon_token, str) and anon_token else None
+    return wire_status(status) if status else None
+
+
 def run_sign_in(
     *,
     timeout_seconds: float = 15.0,
@@ -270,7 +283,7 @@ def run_sign_in(
     from hermes_cli.auth_device_flow import DeviceFlowCancelled, _request_device_code
     from hermes_cli.auth_error_copy import is_device_code_expired
     from hermes_cli.auth_nous import _nous_http_client, _nous_portal_base_url
-    from hermes_cli.guest_handoff import deferred, wire_status
+    from hermes_cli.guest_handoff import deferred
 
     is_cancelled = cancelled or (lambda: False)
     open_scope = scope or contextlib.nullcontext
@@ -338,6 +351,7 @@ def run_sign_in(
                         _core.persist_nous_credentials(account_state)
             if may_persist:
                 settled = _core.settle_after_upgrade(account_state)
+                handoff_status = _handoff_status(handoff.results, state)
     except Exception as exc:
         # persist_nous_credentials takes the auth-store lock, writes auth.json, takes the shared
         # store's file lock and reseeds the credential pool: a lock timeout or a read-only home
@@ -353,4 +367,4 @@ def run_sign_in(
         model=str(settled.get("model") or ""),
         model_changed=bool(settled.get("changed")),
         handoff=_handoff_lines(handoff.results),
-        handoff_status=wire_status(handoff.results[-1]) if handoff.results else None)
+        handoff_status=handoff_status)

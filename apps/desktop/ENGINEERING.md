@@ -164,5 +164,6 @@ older backend that answers at once is not hammered). On completion it reports `r
 backend's own copy in `lines`); a move still retrying is followed through the
 `/api/providers/oauth/nous/handoff` long-poll until it settles or the dialog closes. Every entry
 point (Billing, status chip, ready screen) opens the one free-tier sign-in dialog, and a Nous sign-in
-from the onboarding picker that moved apps shows the same result screen. Never branch on
+from the onboarding picker that moved apps shows the same result screen once onboarding leaves the
+screen (onboarding paints above every dialog). Never branch on
 provider display names: the picker row carries `free_tier_row`, status cards carry `free_tier`.

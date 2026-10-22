@@ -14,7 +14,7 @@ import {
   DialogTitle,
   preventCloseButtonAutoFocus
 } from '@/components/ui/dialog'
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions, type ProfileScope } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, Loader2 } from '@/lib/icons'
 import {
@@ -304,7 +304,7 @@ function SignedInScreen({
   finish: (model: null | string, after?: () => void) => void
   state: Extract<FreeTierSignInState, { status: 'completed' }>
 }) {
-  const { email, handoff, model } = state
+  const { email, handoff, model, scope } = state
 
   return (
     <>
@@ -333,8 +333,13 @@ function SignedInScreen({
         </div>
       )}
       <Actions>
-        {connectorsTarget(handoff) ? (
-          <Button onClick={() => finish(model, () => openConnectors(handoff))} size="sm" type="button" variant="text">
+        {connectorsTarget(handoff, scope) ? (
+          <Button
+            onClick={() => finish(model, () => openConnectors(handoff, scope))}
+            size="sm"
+            type="button"
+            variant="text"
+          >
             {handoff?.state === 'claimed' ? copy.reconnect : copy.openConnectors}
           </Button>
         ) : null}
@@ -368,8 +373,10 @@ function HandoffResult({ handoff }: { handoff: AppHandoffStatus }) {
 
 /** Where the completed screen's connectors button goes: the one app to
  *  reconnect, the whole list for several, or the list to check when the apps
- *  probably moved already. Null when there is nothing to do there. */
-export function connectorsTarget(handoff: AppHandoffStatus | null): null | string {
+ *  probably moved already. Null when there is nothing to do there. A sign-in
+ *  made for another profile names it (and its connection), the same way a
+ *  chat's connector links do, so the page acts in that profile only. */
+export function connectorsTarget(handoff: AppHandoffStatus | null, scope?: ProfileScope): null | string {
   const dropped = handoff?.state === 'claimed' ? (handoff.dropped_toolkits ?? []) : []
   const checkMoved = handoff?.state === 'gone' && handoff.probably_moved === true
 
@@ -377,13 +384,28 @@ export function connectorsTarget(handoff: AppHandoffStatus | null): null | strin
     return null
   }
 
-  const list = `${CAPABILITIES_ROUTE}?tab=connectors`
+  const params = new URLSearchParams({ tab: 'connectors' })
 
-  return dropped.length === 1 ? `${list}&connector=${encodeURIComponent(dropped[0])}` : list
+  if (dropped.length === 1) {
+    params.set('connector', dropped[0])
+  }
+
+  const profile = (typeof scope === 'object' ? scope?.profile : scope)?.trim()
+  const connectionId = typeof scope === 'object' ? scope?.connectionId?.trim() : null
+
+  if (profile) {
+    params.set('profile', profile)
+
+    if (connectionId) {
+      params.set('connection', connectionId)
+    }
+  }
+
+  return `${CAPABILITIES_ROUTE}?${params.toString()}`
 }
 
-function openConnectors(handoff: AppHandoffStatus | null) {
-  const target = connectorsTarget(handoff)
+function openConnectors(handoff: AppHandoffStatus | null, scope?: ProfileScope) {
+  const target = connectorsTarget(handoff, scope)
 
   if (target) {
     window.location.hash = `#${target}`

@@ -52,6 +52,22 @@ def test_a_sign_in_that_replaced_no_free_tier_reports_no_handoff(portal, free_ac
     assert body["handoff_status"] is None and body["handoff"] == []
 
 
+def test_a_move_no_attempt_reached_still_reports_the_waiting_record(portal, free_account, monkeypatch):
+    """Another process holds the claim, so this sign-in's own run attempts nothing: the poll still
+    reports the replaced free tier's record (still moving) instead of no handoff at all."""
+    anon_auth.ensure_portal_identity(explicit=True)
+    monkeypatch.setattr(guest_handoff, "_run_one", lambda *a, **kw: None)
+
+    start = client.post("/api/providers/oauth/nous/start", headers=HEADERS).json()
+    body = _poll(start["session_id"], wait=25)
+
+    assert body["status"] == "approved"
+    # A move bound to this account and not yet attempted reads as retrying (handoff_status's rule).
+    assert body["handoff_status"]["state"] == "retrying"
+    assert body["handoff_status"]["lines"] == guest_handoff.result_lines({"state": "retrying"})
+    assert not portal.claims
+
+
 def test_a_long_poll_answers_pending_once_its_wait_runs_out(portal):
     anon_auth.ensure_portal_identity(explicit=True)
     portal.token_pending = True

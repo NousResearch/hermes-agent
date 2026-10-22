@@ -10,13 +10,13 @@ import {
   type ProfileScope,
   startOAuthLogin
 } from '@/hermes'
-import { restOfLongPollGap } from '@/lib/long-poll'
+import { LONG_POLL_MIN_GAP_MS, pause, restOfLongPollGap } from '@/lib/long-poll'
 import { gatewayActivationEpoch } from '@/store/gateway'
 import type { AppHandoffStatus, FreeTierStatus, OAuthPollResponse } from '@/types/hermes'
 
 import { $freeTierStatus, type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
 import { $localModelOfferPending } from './local-model-offer'
-import { onboardingSurfaceActive } from './onboarding-presence'
+import { afterOnboardingSurfaceClear, onboardingSurfaceActive } from './onboarding-presence'
 
 /** Why a sign-in ended without tokens. Each maps to one ruled screen:
  *  `busy` (the account service asked for a short wait — a busy account, a
@@ -40,7 +40,15 @@ export type FreeTierSignInState =
   | { status: 'offer' }
   // `handoff`: the free tier's apps moving to this account (null when the
   // sign-in replaced no free tier). Followed while it is still retrying.
-  | { email: null | string; handoff: AppHandoffStatus | null; model: null | string; status: 'completed' }
+  // `scope`: the profile the sign-in ran for when it is not the active one,
+  // so Reconnect opens that profile's apps.
+  | {
+      email: null | string
+      handoff: AppHandoffStatus | null
+      model: null | string
+      scope?: ProfileScope
+      status: 'completed'
+    }
   // `retryAfter`: the seconds the backend asked us to wait before trying
   // again (0 when it named none); only `busy` screens read it.
   | { kind: FreeTierSignInFailure; message: null | string; retryAfter: number; status: 'failed' }
@@ -428,36 +436,56 @@ export function handoffStillMoving(handoff: AppHandoffStatus): boolean {
 }
 
 /** A Nous sign-in that finished in the onboarding picker and replaced the free
- *  tier: show the same result screen this dialog shows. Never over a sign-in
- *  already on screen. `scope` is the profile the sign-in ran for. */
+ *  tier: show the same result screen this dialog shows. Onboarding paints above
+ *  every dialog, so the result waits until it leaves the screen; never over a
+ *  sign-in already on screen. `scope` is the profile the sign-in ran for. */
 export function showFreeTierSignInResult(result: OAuthPollResponse, scope?: ProfileScope) {
   const handoff = result.handoff_status
 
-  if (!handoff || $freeTierSignIn.get().status !== 'closed') {
+  if (!handoff) {
     return
   }
 
-  const mine = ++attempt
-  clearTimers()
-  set({ email: result.account_email ?? null, handoff, model: null, status: 'completed' })
+  afterOnboardingSurfaceClear(() => {
+    if ($freeTierSignIn.get().status !== 'closed') {
+      return
+    }
 
-  if (handoffStillMoving(handoff)) {
-    void followHandoff(handoff, mine, scope)
-  }
+    const mine = ++attempt
+    clearTimers()
+    set({ email: result.account_email ?? null, handoff, model: null, scope, status: 'completed' })
+
+    if (handoffStillMoving(handoff)) {
+      void followHandoff(handoff, mine, scope)
+    }
+  })
 }
+
+// Failed handoff reads in a row before the result stops following the move. The note on screen stays
+// true either way: the move continues in the background whether or not this window hears about it.
+const HANDOFF_READ_RETRIES = 4
 
 // Keep the completed screen's handoff current while the move is retried, until it settles or the
 // dialog closes. A failed read leaves the last answer on screen: it already says the move continues.
 async function followHandoff(shown: AppHandoffStatus, mine: number, scope?: ProfileScope) {
   let current = shown
+  let failures = 0
 
   while (mine === attempt && handoffStillMoving(current)) {
     const askedAt = Date.now()
 
     try {
       current = await getNousHandoffStatus(current.updated_at ?? null, scope)
+      failures = 0
     } catch {
-      return
+      if (++failures > HANDOFF_READ_RETRIES) {
+        return
+      }
+
+      // Back off: 4 s, 8 s, 16 s, 32 s.
+      await pause(LONG_POLL_MIN_GAP_MS * 2 ** failures)
+
+      continue
     }
 
     const screen = $freeTierSignIn.get()

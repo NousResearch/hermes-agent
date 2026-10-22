@@ -1268,9 +1268,26 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
 
 @router.post("/dispatch")
 def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
-    """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
+    """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick.
+
+    Honour kanban.max_in_progress and kanban.max_in_progress_per_profile so a
+    UI nudge cannot bypass the caps the gateway enforces (see skill note).
+    """
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        _max_per_profile = kbd._positive_int(_kanban_cfg.get("max_in_progress_per_profile"), None)
+        _max_in_progress = kbd.resolve_max_in_progress(kbd._positive_int(_kanban_cfg.get("max_in_progress"), None))
+    except Exception:
+        _max_per_profile = None
+        _max_in_progress = None
     with _board_conn(board) as (board, conn):
-        result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board)
+        result = kbd.dispatch_once(
+            conn, dry_run=dry_run, max_spawn=max_n, board=board,
+            max_in_progress=_max_in_progress,
+            max_in_progress_per_profile=_max_per_profile,
+        )
         try:
             return asdict(result)  # DispatchResult is a dataclass
         except TypeError:

@@ -10,17 +10,11 @@ import type { ReactNode } from 'react'
  * fences get promoted whether or not the model asked), directives are
  * addressed (nothing renders unless a plugin claimed the name).
  *
- * The product parser requires the entire paragraph to be one directive, so
- * mid-prose text and malformed or unclaimed directives stay prose.
- *
- * For the guided chat segmenter, the guard is the CLAIM, not its position:
- * a name nobody registered — and a malformed one — stays exactly the text it
+ * The guard is the CLAIM, not its position: a name nobody registered — and a malformed one — stays exactly the text it
  * always was. Position used to be the guard too (a directive had to be the
  * whole paragraph), and that cost more than it bought: a model that wrote the
- * directive at the end of its sentence instead of alone under it put raw
- * `::onboarding{step="look"}` in front of the user AND swallowed the card,
- * which on a step whose card is the only way forward stops the conversation
- * dead. So a directive is recognised wherever it starts a word, and the
+ * directive at the end of its sentence instead of alone under it put the raw
+ * directive in front of the user AND swallowed the card. So a directive is recognised wherever it starts a word, and the
  * paragraph around it keeps rendering as prose.
  *
  * Attributes are untrusted model output: plugins validate their own fields.
@@ -57,74 +51,131 @@ export interface ParsedTranscriptDirective {
 export type TranscriptParagraphSegment =
   { kind: 'prose'; text: string } | { kind: 'directive'; directive: ParsedTranscriptDirective }
 
-// The whole paragraph, nothing else on the line: `::name` or `::name{...}`.
-// Length caps bound the attr scan on adversarial input.
-const DIRECTIVE_RE = /^::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?$/
+// Brace-body cap. A signed CDN URL alone runs 500–1,000+ chars (Meshy's are
+// ~520), and a directive must fit two of them plus a title. Still a bound, so
+// the attr scan stays linear on adversarial input.
+export const DIRECTIVE_BODY_MAX = 2048
 
 // `::name` or `::name{...}`, anywhere a word can start — so `std::vector` is
-// never a directive. Length caps bound the attr scan on adversarial input.
-const SEGMENT_RE = /(?<=^|\s)::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?/g
+// never a directive.
+const SEGMENT_RE = new RegExp(
+  String.raw`(?<=^|\s)::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,${DIRECTIVE_BODY_MAX}})\})?`,
+  'g'
+)
+
+/** A directive with a brace body on one line: the span markdown preprocessing
+ *  must hand to the parser untouched (its attributes are data, not prose). */
+export const DIRECTIVE_WITH_BODY_RE = new RegExp(
+  String.raw`(?<=^|\s)::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,${DIRECTIVE_BODY_MAX}}\}`,
+  'g'
+)
+
+// A text node that opens a directive brace it never closes.
+const OPEN_DIRECTIVE_RE = /(?<=^|\s)::[a-z][a-z0-9-]{0,63}\{[^{}]*$/
+
+interface MdNode {
+  children?: MdNode[]
+  type: string
+  value?: string
+}
+
+function inlineText(node: MdNode): string | null {
+  if (node.type === 'text') {
+    return node.value ?? ''
+  }
+
+  // A GFM literal autolink keeps its source verbatim, backslash escapes
+  // included (preprocess escapes `_`/`&`/`~` inside directives); a URL never
+  // holds a literal `\`, so drop the CommonMark escapes to get it as written.
+  // Only a literal autolink (its text IS its URL) folds: an explicit
+  // `[label](url)` is the author's link and stays clickable.
+  if (node.type === 'link' && node.children?.every(child => child.type === 'text')) {
+    // GFM keeps the escapes in both the literal's text and its url, so compare them raw.
+    const raw = node.children.map(child => child.value ?? '').join('')
+    const url = (node as MdNode & { url?: string }).url ?? ''
+
+    if (raw !== url && `http://${raw}` !== url && `mailto:${raw}` !== url) {
+      return null
+    }
+
+    return raw.replace(/\\([!-/:-@[-`{-~])/g, '$1')
+  }
+
+  return null
+}
+
+function foldDirectiveRuns(node: MdNode) {
+  const kids = node.children
+
+  if (!kids) {
+    return
+  }
+
+  const out: MdNode[] = []
+
+  for (let i = 0; i < kids.length; i += 1) {
+    const child = kids[i]
+
+    if (child.type === 'text' && OPEN_DIRECTIVE_RE.test(child.value ?? '')) {
+      let merged = child.value ?? ''
+      let closed = -1
+
+      for (let j = i + 1; j < kids.length && merged.length <= 4800; j += 1) {
+        const piece = inlineText(kids[j])
+
+        if (piece === null) {
+          break
+        }
+
+        merged += piece
+
+        if (piece.includes('}')) {
+          closed = j
+
+          break
+        }
+      }
+
+      if (closed !== -1) {
+        // Re-scan the folded node: its tail may open the next directive.
+        kids[closed] = { type: 'text', value: merged }
+        i = closed - 1
+
+        continue
+      }
+    }
+
+    foldDirectiveRuns(child)
+    out.push(child)
+  }
+
+  node.children = out
+}
+
+/**
+ * remark plugin. GFM links every bare URL in a text node — including one
+ * inside a directive attribute (`url="https://…"`) — and that link element
+ * splits the paragraph, so it is no longer text-only and the card is never
+ * claimed. Fold a run that opens a directive brace in a text node and closes
+ * it within text/link siblings back into one text node; the link's text is
+ * the URL as written, so the directive comes back byte-for-byte.
+ */
+export function remarkTranscriptDirectives() {
+  return (tree: MdNode) => foldDirectiveRuns(tree)
+}
 
 // `key="value"` pairs; single quotes accepted for model sloppiness.
 const ATTR_RE = /([a-z][\w-]{0,63})=(?:"([^"]*)"|'([^']*)')/gi
-
-/**
- * Parse a paragraph as a transcript directive. Returns null unless the ENTIRE
- * trimmed text is one directive — prose containing `::` stays prose.
- * Pure and synchronous — safe to call during render.
- */
-export function parseTranscriptDirective(text: string): ParsedTranscriptDirective | null {
-  const trimmed = text.trim()
-
-  // Cheap reject before the regex: directives are short single lines.
-  if (!trimmed.startsWith('::') || trimmed.length > 1200 || trimmed.includes('\n')) {
-    return null
-  }
-
-  const match = DIRECTIVE_RE.exec(trimmed)
-
-  if (!match) {
-    return null
-  }
-
-  const attrs: Record<string, string> = {}
-
-  if (match[2]) {
-    for (const pair of match[2].matchAll(ATTR_RE)) {
-      attrs[pair[1].toLowerCase()] = pair[2] ?? pair[3] ?? ''
-    }
-  }
-
-  return { name: match[1], attrs, source: trimmed }
-}
 
 function parseAttrs(body: string | undefined): ParsedTranscriptDirective['attrs'] {
   const attrs: Record<string, string> = {}
 
   for (const pair of (body ?? '').matchAll(ATTR_RE)) {
-    attrs[pair[1].toLowerCase()] = pair[2] ?? pair[3] ?? ''
+    // Models copy the `<https://…>` autolink form into attributes too.
+    attrs[pair[1].toLowerCase()] = (pair[2] ?? pair[3] ?? '').replace(/^<(https?:\/\/[^<>\s]+)>$/i, '$1')
   }
 
   return attrs
-}
-
-/**
- * True when a STILL-STREAMING paragraph should be withheld as a directive in
- * progress. Deltas land ~3 chars at a time, and `::ask{question="Wha` cannot
- * parse until the final `}` lands — exactly the window where raw directive
- * text used to flash. A lone `:` is the same line one delta earlier. The
- * check covers the paragraph-leading case (the authored shape for onboarding
- * cards); a directive a model appends mid-sentence streams as prose until it
- * completes, which reads as ordinary typing rather than leaked markup.
- *
- * Only ever consult this while the message is streaming: a SETTLED paragraph
- * that starts with `::` but doesn't parse is an authoring bug the user should
- * see as text, and callers must keep that behavior.
- */
-export function isDirectiveInProgress(text: string): boolean {
-  const trimmed = text.trimStart()
-
-  return trimmed === ':' || trimmed.startsWith('::')
 }
 
 /**

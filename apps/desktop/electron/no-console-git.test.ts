@@ -33,8 +33,11 @@ function hangingTreeFixture() {
     const { spawn } = require('node:child_process');
     const worker = String.raw\`const fs = require('node:fs');
       const server = require('node:net').createServer(socket => socket.end());
-      server.listen(0, '127.0.0.1', () => fs.writeFileSync(process.argv[1],
-        JSON.stringify({ pids: [Number(process.argv[2]), process.pid], port: server.address().port })));\`;
+      server.listen(0, '127.0.0.1', () => {
+        fs.writeFileSync(process.argv[1] + '.tmp',
+          JSON.stringify({ pids: [Number(process.argv[2]), process.pid], port: server.address().port }));
+        fs.renameSync(process.argv[1] + '.tmp', process.argv[1]);
+      });\`;
     spawn(process.execPath, ['-e', worker, process.argv[2], String(process.pid)], { stdio: 'inherit' });
     setInterval(() => {}, 1000);
   `

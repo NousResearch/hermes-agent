@@ -38,9 +38,12 @@ tool_describe(names)           load the full schemas for one or more tools
 tool_call(calls)               invoke deferred tools; `calls` is an array of {name, arguments}
 ```
 
-`calls` takes one entry per invocation; a single local call is an array of
-one. Only `connectors__` names may be batched together; mixed and
-multi-local batches are rejected.
+`calls` takes one entry per invocation; a single call is an array of one.
+Independent calls may be batched (up to 10 entries). The agent splits a
+batch containing local tools into one tool call per entry, so each entry
+gets its own scope check, schema validation, hooks, approval and result,
+and runs under that tool's normal concurrency policy. A batch of only
+`connectors__` names goes to the hosted connector gateway as one dispatch.
 
 A typical interaction looks like:
 
@@ -114,6 +117,7 @@ tools:
       - todo_list
       - process_manage
       - cronjob_manage
+      - manage_catalog
 ```
 
 The default `defer` list also includes the selected desktop GUI helpers listed
@@ -153,8 +157,8 @@ tools:
 
 ## Connectors (remote tools)
 
-When you are signed in to the Nous Portal, the bridge additionally reaches
-**connectors** — remote tools served by the managed tool gateway. They are
+The bridge also reaches **connectors**: remote tools served by the managed tool
+gateway. They are
 never registered locally: `tool_search` sends each query to the gateway, adds
 the gateway's hits to the local catalog as documents (tagged
 `source: "connectors"`, named `connectors__<connector>__<tool>`), and ranks
@@ -178,9 +182,22 @@ tools:
                     # behaves exactly as if the feature didn't exist
 ```
 
-Signed out (or when the gateway does not serve connectors for your
-account), everything above is invisible: local search behaves exactly as
-described in the rest of this page, with no errors shown to the model.
+Connectors need a Nous identity. You do not have to sign in for one: if you
+have no Nous account, the first `manage_connections` action (or opening the
+desktop Connectors page) creates a free Nous identity for you, on every
+surface. It does not change your model provider: outside builds that ship
+the Nous free tier it is used for connectors and managed tools only. Until it exists, `tool_search` sends nothing to the
+gateway and its result says that hosted connectors are not set up yet and
+that `manage_connections` sets them up. To opt out, set:
+
+```yaml
+nous:
+  guest: false
+```
+
+With that setting, or when the gateway does not serve connectors for a
+signed-in account, everything above is invisible: local search behaves exactly
+as described in the rest of this page, with no errors shown to the model.
 
 A connector call that needs an account you haven't linked returns a
 `CONNECTION_REQUIRED` error. The `manage_connections` tool lists connectors and
@@ -188,9 +205,17 @@ their connection state and starts an authorization: in the desktop app the call
 shows a card, blocks until each app is connected or skipped, and reports the
 outcomes; elsewhere it returns a connect link per app for the user to open.
 Disconnecting an account is done by the user in the Portal. The same tool also installs, enables and authorizes
-local MCP servers from the catalog (targets with `mcp: true`), so it is
-present whether or not you are signed in; only the managed-connector actions
-need the sign-in.
+local MCP servers from the catalog (targets with `mcp: true`); those actions
+never create a Nous identity.
+
+You can link more than one account of the same app, each with its own name
+(see [Multiple connector accounts](./tool-gateway.md#multiple-connector-accounts)).
+Once a connector has two or more active accounts, each of its tools takes a
+`connector_alias` argument whose allowed values are your account names, and the
+tool description lists them (`Accounts: home, work.`), so `tool_search` and
+`tool_describe` show them. A connector result entry carries `account`, the
+name the call ran under, when that account is named; the field is absent for
+an unnamed account.
 
 The desktop backend's account-list and disconnect APIs use the Portal's
 account-management service, including its organization membership checks and

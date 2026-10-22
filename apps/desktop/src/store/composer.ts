@@ -70,6 +70,8 @@ export interface ComposerAttachment {
   /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
   path?: string
+  /** Validated MIME returned by canonical owner staging. */
+  mime?: string
   /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
   titlePreview?: string
   attachedSessionId?: string
@@ -272,7 +274,9 @@ export const rotateFreshDraftKey = (): string => {
 // A draft key belongs to a fresh-chat lifecycle when it is the legacy shared
 // bucket or one of its per-instance successors (`__new__:<uuid>`, #66662).
 export const isFreshDraftScope = (key: string | null | undefined): boolean =>
-  typeof key === 'string' && (key === NEW_SESSION_DRAFT_KEY || (key.startsWith(NEW_SESSION_DRAFT_KEY) && key.length > NEW_SESSION_DRAFT_KEY.length))
+  typeof key === 'string' &&
+  (key === NEW_SESSION_DRAFT_KEY ||
+    (key.startsWith(NEW_SESSION_DRAFT_KEY) && key.length > NEW_SESSION_DRAFT_KEY.length))
 
 // A null/empty scope IS the current fresh-chat lifecycle — resolve it to that
 // lifecycle's own key so every stash/read/migrate consumer below addresses the
@@ -511,6 +515,15 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
 
 /**
+ * Stored draft scopes that hold content, excluding the new-chat key. The
+ * dead-session prune sweeps these to discard drafts whose sessions no longer
+ * exist on the backend; the new-chat draft is never a session reference.
+ */
+export function stashedDraftScopes(): string[] {
+  return [...draftsBySession.keys()].filter(key => key !== NEW_SESSION_DRAFT_KEY)
+}
+
+/**
  * Move a stashed composer draft from one session key onto another.
  *
  * Auto-compression rotates the live stored tip id (root → continuation) while
@@ -562,12 +575,20 @@ export function announceNewSessionDraftKey(toKey: string | null | undefined): vo
   announcedNewSessionDraftKey = toKey?.trim() || null
 }
 
-/** Consume the announcement; move the `__new__` draft when it names `toKey`. */
+/** Consume the announcement; move the `__new__` draft when it names `toKey`.
+ *  True when the announcement named `toKey` (the caller hands the rest of the
+ *  pre-session chat over), even if there was no draft text to move. */
 export function adoptNewSessionDraft(toKey: string | null | undefined): boolean {
   const announced = announcedNewSessionDraftKey
   announcedNewSessionDraftKey = null
 
-  return !!announced && announced === toKey?.trim() && migrateSessionDraft(null, toKey)
+  if (!announced || announced !== toKey?.trim()) {
+    return false
+  }
+
+  migrateSessionDraft(null, toKey)
+
+  return true
 }
 
 /**
@@ -739,6 +760,11 @@ function terminalLabelsFromDraft(draft: string) {
   return labels
 }
 
+/** True when the draft still carries `@terminal:` chips (not already-frozen transport). */
+export function draftHasTerminalChips(draft: string): boolean {
+  return terminalLabelsFromDraft(draft).length > 0
+}
+
 export function setComposerTerminalSelection(label: string, text: string) {
   const nextLabel = label.trim()
   const nextText = text.trim()
@@ -780,6 +806,76 @@ export function reconcileComposerTerminalSelections(draft: string) {
   }
 }
 
+function terminalFence(text: string) {
+  return `\`\`\`terminal\n${text}\n\`\`\``
+}
+
+function stripTerminalRefTokens(draft: string) {
+  return draft
+    .replace(new RegExp(TERMINAL_REF_RE.source, 'g'), '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .trim()
+}
+
+export interface ComposerTransportPayload {
+  /** Model-facing text: fenced selection blocks with `@terminal:` chips stripped. */
+  transportText: string
+  /** UI-facing text: original chip form, when it differs from transport. */
+  displayText: string
+  /** Chip labels whose selection text is missing from the in-memory map. */
+  missingLabels: string[]
+}
+
+/**
+ * Freeze `@terminal:` chips into transport text at the moment a message
+ * crosses a send/steer/enqueue boundary. The selection map is memory-only and
+ * label-colliding — later resolve against it can inject a different pane's
+ * output (#77078). Callers that cannot resolve every chip must fail closed.
+ *
+ * Idempotent: already-frozen transport (no chips) is returned unchanged.
+ */
+export function freezeComposerTransportPayload(
+  draft: string,
+  selections: Record<string, string> = $composerTerminalSelections.get()
+): ComposerTransportPayload {
+  const labels = terminalLabelsFromDraft(draft)
+
+  if (labels.length === 0) {
+    return { transportText: draft, displayText: draft, missingLabels: [] }
+  }
+
+  const missingLabels = labels.filter(label => !selections[label]?.trim())
+
+  if (missingLabels.length > 0) {
+    return { transportText: draft, displayText: draft, missingLabels }
+  }
+
+  const existingFences = new Set(draft.match(/```terminal\n[\s\S]*?\n```/g) ?? [])
+  const fences: string[] = []
+
+  for (const label of labels) {
+    const text = selections[label]?.trim()
+
+    if (!text) {
+      continue
+    }
+
+    const fence = terminalFence(text)
+
+    if (!existingFences.has(fence)) {
+      fences.push(fence)
+      existingFences.add(fence)
+    }
+  }
+
+  const remainder = stripTerminalRefTokens(draft)
+  const transportText = [...fences, remainder].filter(Boolean).join('\n\n')
+
+  return { transportText, displayText: draft, missingLabels: [] }
+}
+
 export function terminalContextBlocksFromDraft(draft: string) {
   const labels = terminalLabelsFromDraft(draft)
 
@@ -796,7 +892,7 @@ export function terminalContextBlocksFromDraft(draft: string) {
       return []
     }
 
-    return `\`\`\`terminal\n${text}\n\`\`\``
+    return terminalFence(text)
   })
 }
 

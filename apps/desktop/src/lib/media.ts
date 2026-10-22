@@ -3,7 +3,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
-import { desktopFsCacheKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
@@ -118,7 +118,13 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   // Keep the native reader and its configured size cap; the backend preview
   // endpoint has a separate fixed limit.
   if (owner?.connectionId === LOCAL_CONNECTION_ID && window.hermesDesktop?.readFileDataUrl) {
-    return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+    const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+
+    if (isReadFileErrorResult(dataUrl)) {
+      throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)
+    }
+
+    return dataUrl
   }
 
   // A tile can belong to a different gateway than the foreground. Pin both
@@ -141,7 +147,13 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
     return mediaExternalUrl(path)
   }
 
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+
+  if (isReadFileErrorResult(dataUrl)) {
+    throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)
+  }
+
+  return dataUrl
 }
 
 export interface MediaImageDimensions {

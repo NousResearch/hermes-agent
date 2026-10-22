@@ -239,6 +239,7 @@ def test_truncation_persists_to_the_profile_db(server, launch_db, profile_db, mo
             "truncate_before_row_id": user_row_ids[1],
             "truncate_before_user_ordinal": 1,
             "confirm_truncate": True,
+            "confirm_deep_truncate": True,  # cuts 2 of 3 user turns (#133716)
         },
     )
 
@@ -279,6 +280,7 @@ def test_truncation_does_not_copy_rows_into_the_launch_profile(
             "truncate_before_row_id": user_row_ids[1],
             "truncate_before_user_ordinal": 1,
             "confirm_truncate": True,
+            "confirm_deep_truncate": True,  # cuts 2 of 3 user turns (#133716)
         },
     )
 
@@ -314,6 +316,7 @@ def test_truncation_surfaces_the_profile_dbs_live_row_ids(
             "truncate_before_row_id": user_row_ids[1],
             "truncate_before_user_ordinal": 1,
             "confirm_truncate": True,
+            "confirm_deep_truncate": True,  # cuts 2 of 3 user turns (#133716)
         },
     )
 
@@ -343,6 +346,7 @@ def test_truncation_without_a_profile_uses_the_shared_handle(server, launch_db, 
             "truncate_before_row_id": user_row_ids[1],
             "truncate_before_user_ordinal": 1,
             "confirm_truncate": True,
+            "confirm_deep_truncate": True,  # cuts 2 of 3 user turns (#133716)
         },
     )
 

@@ -20,7 +20,7 @@ import pytest
 
 from pm.lock import Lockfile
 from pm.store import current_target
-from tests.pm._fixtures import _wheel, make_tar, served  # noqa: F401 -- shared HTTP fixture
+from tests.pm._fixtures import _wheel, make_tar, served
 
 
 pytestmark = pytest.mark.platforms("posix")
@@ -60,7 +60,9 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
         "LANG": "C.UTF-8", "PYTHONNOUSERSITE": "1", "UV_OFFLINE": "1",
         "UV_CACHE_DIR": str(home / ".cache" / "uv"), "UV_PYTHON_DOWNLOADS": "never",
     }
-    for name in ("activate", "setup-hermes.sh", "hermes_constants.py", "hermes_yaml.py", "utils.py"):
+    for name in ("activate", "setup-hermes.sh", "hermes_constants.py", "hermes_yaml.py", "utils.py",
+                 "scripts/_activation.sh"):
+        (core / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / name, core / name)
     for name in ("pm", "hermes_cli"):
         shutil.copytree(REPO / name, core / name, ignore=shutil.ignore_patterns("__pycache__"))
@@ -97,6 +99,7 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
     locked = subprocess.run(
         [uv, "lock", "--offline", "--python", interpreter], cwd=core, env=env,
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert locked.returncode == 0, locked.stdout + locked.stderr
     dependency_lock = (core / "uv.lock").read_bytes()
@@ -117,6 +120,7 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
          "project=Path(sys.argv[1]) / 'pm', offline=False)",
          str(core), uv, interpreter, str(seed)],
         cwd=tmp_path, env=seed_env, capture_output=True, text=True, timeout=180,
+        check=False,
     )
     assert seeded.returncode == 0, seeded.stdout + seeded.stderr
     shutil.rmtree(seed)
@@ -182,6 +186,7 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
         result = subprocess.run(
             [bash, "--noprofile", "--norc", "-c", script, "activation-test", str(core)],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90,
+            check=False,
         )
         assert _snapshot(protected) == untouched, result.stdout + result.stderr
         assert (result.returncode == 0) is succeeds, result.stdout + result.stderr

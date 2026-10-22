@@ -46,7 +46,7 @@ class CLIChatTurnMixin:
             return
         GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(self, message, images: list | None = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
@@ -71,11 +71,18 @@ class CLIChatTurnMixin:
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
             _retire_agent(self)
-        if self.agent is None:
-            _cprint(f"{_DIM}{t('cli.chat.initializing_agent')}{_RST}")
-        if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
-                                request_overrides=turn_route.get("request_overrides")):
-            return None
+        # A first-turn agent build shows in the live spinner (the spinner thread repaints it), never
+        # as a scrollback line.
+        initializing = t("cli.chat.initializing_agent") if self.agent is None else ""
+        if initializing:
+            self._spinner_text = initializing
+        try:
+            if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
+                                    request_overrides=turn_route.get("request_overrides")):
+                return None
+        finally:
+            if initializing and getattr(self, "_spinner_text", "") == initializing:
+                self._spinner_text = ""
         agent = self.agent
         if agent is None:
             return None
@@ -83,9 +90,7 @@ class CLIChatTurnMixin:
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):
-            message, blocked = self._chat_expand_context_references(message)
-            if blocked is not None:
-                return blocked
+            # ``@`` references are expanded once, by the gateway, against this session's cwd.
             # Lone surrogates (rich-text clipboard paste) crash the OpenAI SDK's JSON serialization.
             from agent.message_sanitization import _sanitize_surrogates
             message = _sanitize_surrogates(message)
@@ -94,8 +99,9 @@ class CLIChatTurnMixin:
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        _cprint("")
+        if not getattr(self, "_modern_layout", False):
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            _cprint("")
 
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
@@ -148,35 +154,6 @@ class CLIChatTurnMixin:
             turn.stop_event.set()
         if turn.tts_thread is not None and turn.tts_thread.is_alive():
             turn.tts_thread.join(timeout=5)
-
-    def _chat_expand_context_references(self, message: str):
-        """Expand ``@file:``/``@diff``/``@folder:`` references.
-
-        Returns ``(message, blocked)``; ``blocked`` is the refusal text to return instead
-        of running the turn when injection was refused, else None.
-        """
-        from cli import _DIM, _RST, _cprint
-        if "@" not in message:
-            return message, None
-        try:
-            from agent.context_references import preprocess_context_references
-            from agent.model_metadata import get_model_context_length
-            _ctx_len = get_model_context_length(
-                self.model, base_url=self.base_url or "", api_key=self.api_key or "",
-                provider=self.provider or "",
-                config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)
-            _ctx_result = preprocess_context_references(message, cwd=os.getcwd(), context_length=_ctx_len)
-            if _ctx_result.expanded or _ctx_result.blocked:
-                if _ctx_result.references:
-                    _cprint(f"  {_DIM}{t('cli.chat.context_refs', count=len(_ctx_result.references), tokens=_ctx_result.injected_tokens)}{_RST}")
-                for w in _ctx_result.warnings:
-                    _cprint(f"  {_DIM}⚠ {w}{_RST}")
-                if _ctx_result.blocked:
-                    return message, ("\n".join(_ctx_result.warnings) or t("cli.chat.context_injection_refused"))
-                message = _ctx_result.message
-        except Exception as e:
-            logging.debug("@ context reference expansion failed: %s", e)
-        return message, None
 
     def _chat_route_images(self, message, images):
         """Attach images natively (vision model) or pre-describe them as text; returns the message to send.
@@ -257,14 +234,18 @@ class CLIChatTurnMixin:
             threading.Thread(target=self._voice_full_duplex_listener, daemon=True).start()
 
         # Streaming TTS: any working provider speaks sentence-by-sentence as tokens arrive.
+        # Availability is check_tts_requirements() ALONE: the speaker side picks its own
+        # output route per platform (PortAudio stream where usable, tempfile -> afplay on
+        # macOS — sounddevice is deliberately never imported for output on Darwin, see
+        # tts_tool_speaker._device_usable), so probing it here disabled streaming TTS on
+        # macOS via the bare except below (#84046).
         if self._voice_tts:
             try:
-                from tools.tts_tool import _import_sounddevice, check_tts_requirements
+                from tools.tts_tool import check_tts_requirements
                 from tools.tts_tool_speaker import stream_tts_to_speaker
-                _import_sounddevice()
                 turn.use_streaming_tts = check_tts_requirements()
             except Exception:
-                pass
+                logging.debug("streaming TTS arm check failed", exc_info=True)
 
         if turn.use_streaming_tts:
             turn.text_queue = queue.Queue()
@@ -273,6 +254,10 @@ class CLIChatTurnMixin:
             # display_callback only when token streaming is off: with streaming on,
             # _stream_delta already renders the text and this would print it twice.
             def display_callback(sentence: str):
+                if not turn.box_opened and getattr(self, "_modern_layout", False):
+                    from hermes_cli.cli_modern_layout import answer_label
+                    turn.box_opened = True
+                    _cprint(answer_label())
                 if not turn.box_opened:
                     turn.box_opened = True
                     label = " ☤ Hermes "
@@ -327,6 +312,7 @@ class CLIChatTurnMixin:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
         agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
         for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):
@@ -375,7 +361,10 @@ class CLIChatTurnMixin:
                 "completed": False, "failed": True, "error": _summary,
             }
         finally:
-            if _one_turn_model_restore:
+            if _one_turn_model_restore and (turn.result or {}).get("failure_reason") == "session_busy":
+                # The owner admitted nothing: the resend is still the one turn the pick was for.
+                self._pending_one_turn_model_restore = _one_turn_model_restore
+            elif _one_turn_model_restore:
                 self._restore_model_runtime_snapshot(_one_turn_model_restore)
             # Credit notices paint cleanly above the prompt here, not behind streamed output.
             self._flush_credit_notices()
@@ -444,8 +433,7 @@ class CLIChatTurnMixin:
                     _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
                              f"children={len(self.agent._active_children)}, "
                              f"parent._interrupt={self.agent._interrupt_requested}\n")
-                    for _ci, _ch in enumerate(self.agent._active_children):
-                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
+                    _f.writelines(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n" for _ci, _ch in enumerate(self.agent._active_children))
             except Exception:
                 pass
             break
@@ -502,7 +490,8 @@ class CLIChatTurnMixin:
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)
                 and self.agent.session_id != self.session_id):
-            self._transfer_session_yolo(self.session_id, self.agent.session_id)
+            from tools.approval_yolo import transfer_session_yolo
+            transfer_session_yolo(self.session_id, self.agent.session_id)
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()
             self._pending_title = None
@@ -647,7 +636,11 @@ class CLIChatTurnMixin:
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
-            if reasoning:
+            if reasoning and getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import thought_rows
+                for line in thought_rows(None, reasoning, self.reasoning_full):
+                    _cprint(line)
+            elif reasoning:
                 w = self._scrollback_box_width()
                 r_label = f" {t('cli.chat.reasoning_label')} "
                 r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
@@ -690,15 +683,26 @@ class CLIChatTurnMixin:
             already_streamed = (
                 (self._stream_started and self._stream_box_opened) or _interrupted_streamed
             ) and not is_error_response
+            modern = getattr(self, "_modern_layout", False)
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
-                _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
+                if modern:
+                    from hermes_cli.cli_modern_layout import closing_separator
+                    _cprint(closing_separator(True))
+                else:
+                    _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
             elif already_streamed:
                 # _flush_stream() already closed the streamed box; a post-stream transform
                 # hook shows a suffix for append-only changes, else the full replacement.
                 _post_stream_text = _post_stream_transform_output(response, turn.result)
                 if _post_stream_text.strip():
                     _cprint(_post_stream_text)
+            elif modern:
+                from hermes_cli.cli_modern_layout import answer_label, closing_separator
+                _cprint(answer_label())
+                ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
+                                    style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
+                _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(
                     _render_final_assistant_content(response, mode=self.final_response_markdown),

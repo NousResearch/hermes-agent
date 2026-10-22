@@ -20,6 +20,7 @@ def test_arbitrary_user_uid_rejected(
         ["docker", "run", "--rm", "--user", "1000:1000",
          built_image, "echo", "should_not_reach"],
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert r.returncode != 0, (
         f"container started with arbitrary --user UID unexpectedly: {r.stdout}"
@@ -47,6 +48,7 @@ def test_user_pinned_to_hermes_uid_works(
         ["docker", "run", "--rm", "--user", "10000:10000",
          built_image, "sh", "-c", "echo OK"],
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert r.returncode == 0, (
         f"--user 10000:10000 (hermes UID) was rejected: {r.stderr[-500:]}"

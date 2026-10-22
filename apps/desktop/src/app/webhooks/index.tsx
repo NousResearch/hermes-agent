@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -33,7 +33,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Globe, Plus, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileScope } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { runGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -77,13 +77,40 @@ interface WebhooksViewProps {
   onClose: () => void
 }
 
+interface ProfileOwnedWebhooksViewProps extends WebhooksViewProps {
+  backendProfile: string
+}
+
 export function WebhooksView({ onClose }: WebhooksViewProps) {
+  const backendProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+
+  // Profile-owned draft/dialog/secret state must disappear at the same
+  // boundary as its backend owner: the key unmounts the old operation scope
+  // synchronously on switch, including while the profile rail stays in All
+  // profiles mode (#71352). AGENTS.md: a live profile swap is a re-home —
+  // the previous context must not leak into the next one.
+  return <ProfileOwnedWebhooksView backendProfile={backendProfile} key={backendProfile} onClose={onClose} />
+}
+
+function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebhooksViewProps) {
   const { t } = useI18n()
   const w = t.webhooks
-  // Re-load when the active profile changes so REST routes to the right backend.
-  const profileScope = useStore($profileScope)
   const queryClient = useQueryClient()
-  const queryKey = useMemo(() => ['webhooks', profileScope] as const, [profileScope])
+  const queryKey = useMemo(() => ['webhooks', backendProfile] as const, [backendProfile])
+  const ownerActive = useRef(true)
+
+  // StrictMode rehearses this effect as mount → cleanup → mount; setting the
+  // flag in setup (not only clearing it in cleanup) keeps ordinary completions
+  // working after the rehearsal. The guard drops late completions from an
+  // already-unmounted profile owner.
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle ownership flag, not an atom mirror
+  useEffect(() => {
+    ownerActive.current = true
+
+    return () => {
+      ownerActive.current = false
+    }
+  }, [])
 
   const [query, setQuery] = useState('')
   const [enabling, setEnabling] = useState(false)
@@ -113,7 +140,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     refetch
   } = useQuery({
     queryKey,
-    queryFn: getWebhooks
+    queryFn: () => getWebhooks(backendProfile)
   })
 
   // React Query v5 dropped useQuery onError; surface a load failure toast once
@@ -134,7 +161,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
       try {
         await queryClient.invalidateQueries({ queryKey })
       } catch (err) {
-        if (!silent) {
+        if (!silent && ownerActive.current) {
           notifyError(err, w.loadFailed)
         }
       }
@@ -149,20 +176,28 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
 
     // runGatewayRestart never rejects (it toasts its own failure); the boolean
     // is the only signal that the receiver actually came back.
-    const ok = await runGatewayRestart()
+    const ok = await runGatewayRestart(backendProfile)
+
+    if (!ownerActive.current) {
+      return
+    }
 
     if (ok) {
       setRestartNeeded(false)
       setRestartError(null)
       // Give the receiver a moment to bind before re-reading state.
-      window.setTimeout(() => void reload(true), 4000)
+      window.setTimeout(() => {
+        if (ownerActive.current) {
+          void reload(true)
+        }
+      }, 4000)
     } else {
       setRestartNeeded(true)
       setRestartError(w.restartFailed(''))
     }
 
     setRestarting(false)
-  }, [reload, w])
+  }, [backendProfile, reload, w])
 
   const handleEnable = useCallback(async () => {
     setEnabling(true)
@@ -170,12 +205,20 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     setRestartError(null)
 
     try {
-      const result = await enableWebhooks()
+      const result = await enableWebhooks(backendProfile)
       await reload(true)
+
+      if (!ownerActive.current) {
+        return
+      }
 
       if (result.restart_started) {
         notify({ kind: 'success', message: w.enabledRestarting })
-        window.setTimeout(() => void reload(true), 4000)
+        window.setTimeout(() => {
+          if (ownerActive.current) {
+            void reload(true)
+          }
+        }, 4000)
       } else {
         const detail = result.restart_error ? `: ${result.restart_error}` : '.'
         setRestartNeeded(true)
@@ -183,11 +226,15 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
         notify({ kind: 'error', message: w.restartFailed(detail) })
       }
     } catch (err) {
-      notifyError(err, w.restartFailed(''))
+      if (ownerActive.current) {
+        notifyError(err, w.restartFailed(''))
+      }
     } finally {
-      setEnabling(false)
+      if (ownerActive.current) {
+        setEnabling(false)
+      }
     }
-  }, [reload, w])
+  }, [backendProfile, reload, w])
 
   const resetForm = useCallback(() => {
     setName('')
@@ -228,26 +275,37 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
         .map(s => s.trim())
         .filter(Boolean)
 
-      const res = await createWebhook({
-        deliver,
-        deliver_only: deliverOnly,
-        description: description.trim() || undefined,
-        events: eventsList.length ? eventsList : undefined,
-        name: name.trim(),
-        prompt: prompt.trim() || undefined,
-        skills: skillsList.length ? skillsList : undefined
-      })
+      const res = await createWebhook(
+        {
+          deliver,
+          deliver_only: deliverOnly,
+          description: description.trim() || undefined,
+          events: eventsList.length ? eventsList : undefined,
+          name: name.trim(),
+          prompt: prompt.trim() || undefined,
+          skills: skillsList.length ? skillsList : undefined
+        },
+        backendProfile
+      )
+
+      if (!ownerActive.current) {
+        return
+      }
 
       notify({ kind: 'success', message: w.created })
       setCreated({ secret: res.secret, url: res.url })
       resetForm()
       void reload(true)
     } catch (err) {
-      notifyError(err, w.createFailed(''))
+      if (ownerActive.current) {
+        notifyError(err, w.createFailed(''))
+      }
     } finally {
-      setCreating(false)
+      if (ownerActive.current) {
+        setCreating(false)
+      }
     }
-  }, [deliver, deliverOnly, description, events, name, prompt, reload, resetForm, skills, w])
+  }, [backendProfile, deliver, deliverOnly, description, events, name, prompt, reload, resetForm, skills, w])
 
   const handleToggle = useCallback(
     async (subName: string, nextEnabled: boolean) => {
@@ -262,15 +320,24 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
       )
 
       try {
-        await setWebhookEnabled(subName, nextEnabled)
+        await setWebhookEnabled(subName, nextEnabled, backendProfile)
+
+        if (!ownerActive.current) {
+          return
+        }
+
         notify({ kind: 'success', message: nextEnabled ? w.enabled(subName) : w.disabled(subName) })
         void reload(true)
       } catch (err) {
+        if (!ownerActive.current) {
+          return
+        }
+
         await reload(true)
         notifyError(err, w.toggleFailed(subName, nextEnabled))
       }
     },
-    [queryClient, queryKey, reload, w]
+    [backendProfile, queryClient, queryKey, reload, w]
   )
 
   // ConfirmDialog owns the pending→done→close beat; throw to surface its inline
@@ -282,14 +349,23 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     }
 
     try {
-      await deleteWebhook(pendingDelete)
+      await deleteWebhook(pendingDelete, backendProfile)
+
+      if (!ownerActive.current) {
+        return
+      }
+
       notify({ kind: 'success', title: w.deleted, message: pendingDelete })
       void reload(true)
     } catch (err) {
+      if (!ownerActive.current) {
+        return
+      }
+
       notifyError(err, w.deleteFailed(pendingDelete))
       throw err
     }
-  }, [pendingDelete, reload, w])
+  }, [backendProfile, pendingDelete, reload, w])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()

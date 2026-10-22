@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
-import { sessionClarifyRequest } from '@/store/clarify'
+import { $settledClarifyResults, sessionClarifyRequest } from '@/store/clarify'
 
 import { selectMessageRunning } from '../tool/fallback-model'
 
@@ -24,6 +24,13 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   return <ClarifyToolLive {...props} />
 }
 
+// The request each tool row asked, remembered past its clearing and past a
+// remount (a session switch, a stopped turn): a skip or a typed answer settles
+// it in the store before (or without) `tool.complete`. Keyed by session,
+// message and call: some providers name every call "call_0", and a bare call id
+// would show a later card the answer of an earlier one.
+const requestIdByToolCall = new Map<string, string>()
+
 function ClarifyToolLive(props: ToolCallMessagePartProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
@@ -32,11 +39,25 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   const request = useStore($request)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
   const messageRunning = useAuiState(selectMessageRunning)
+  const messageId = useAuiState(s => s.message.id)
+  const rowKey = `${sessionId ?? ''}:${messageId}:${props.toolCallId}`
   // Answering clears the request a beat before `tool.complete` swaps in the
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
   // the request and must still collapse an unanswered card.
   const [answered, setAnswered] = useState(false)
-  const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered)
+  const settledResults = useStore($settledClarifyResults)
+  const requestId = requestIdByToolCall.get(rowKey)
+  const settledResult = requestId && request?.requestId !== requestId ? settledResults[requestId] : undefined
+
+  if (request && !settledResult && request.requestId !== requestId) {
+    requestIdByToolCall.set(rowKey, request.requestId)
+  }
+
+  const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered && !settledResult)
+
+  if (settledResult) {
+    return <ClarifyToolSettled {...props} result={settledResult} />
+  }
 
   // Stopped mid-prompt with no result — don't leave a dead interactive panel.
   // `session.info` reports running=false while clarify is blocking, so the

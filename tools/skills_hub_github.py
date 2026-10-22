@@ -342,14 +342,20 @@ class GitHubSource(SkillSource):
         silently dropped support files under non-canonical dirs (``reference/``, ``agents/``, root
         LICENSE); everything still goes through quarantine + scan, and the scanner sees MORE this way.
         Returns None (bundle rejected) on an unsafe path or a SKILL.md-linked path that exists in the
-        tree as a symlink/non-blob — that shape is an escape attempt. A linked path that is simply absent
+        tree as a symlink or unsupported entry — that shape is an escape attempt. Ordinary directory
+        references are valid; their files are collected below. A linked path that is simply absent
         is a dangling link (repo-only dev tool, prose over-match): warn and install without it. Returns
         False when a blob fetch failed (installed with a gap the next update check must be able to fill).
         An empty ``skill_path`` is the repo-root skill layout, so the whole repo root is its directory."""
         prefix = f"{skill_path}/" if skill_path else ""
+        directories = {entry["path"][len(prefix):] for entry in entries
+                       if entry.get("type") == "tree" and entry.get("mode") == "040000"
+                       and entry.get("path", "").startswith(prefix)}
         symlinked: set = set()
         complete = True
         for rel_path, item_path, regular in _tree_members(entries, prefix):
+            if rel_path in directories:
+                continue
             if not regular:
                 symlinked.add(rel_path)
                 continue
@@ -366,12 +372,12 @@ class GitHubSource(SkillSource):
             # tool, prose over-match, or a file the author forgot to push. Warn and install without it
             # rather than aborting the whole install (#66760/#90081): the skill body still works, and the
             # gap is visible in the log. A referenced path that IS in the tree but as a symlink (or any
-            # non-regular entry) stays a hard rejection — that shape is an escape attempt, not a forgotten
+            # unsupported entry) stays a hard rejection — that shape is an escape attempt, not a forgotten
             # file.
             if rel_path in symlinked:
                 logger.warning("Rejected non-regular referenced file in skill bundle: %s%s", prefix, rel_path)
                 return None
-            if rel_path not in files:
+            if rel_path not in files and rel_path not in directories:
                 logger.warning(
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)
         return complete

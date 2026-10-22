@@ -134,6 +134,7 @@ def _preprocess_failure_fallback(content: str) -> str:
     except Exception:
         # Token detection itself failing must not mask the skill content;
         # serve it raw rather than guessing about a banner.
+        logger.debug("Could not inspect skill content for preprocessable tokens", exc_info=True)
         return content
     return _PREPROCESS_FAILURE_WARNING + content
 

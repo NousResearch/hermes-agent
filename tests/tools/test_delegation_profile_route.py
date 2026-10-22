@@ -238,3 +238,19 @@ def test_profile_child_lease_and_schema_retry_run_inside_the_target_profile(two_
     assert seen["lease"]["home"] == str(coder) and seen["lease"]["model"] == "coder-model"
     assert seen["retry"] == {"home": str(coder), "secret": "coder-secret", "model": "coder-model"}
     assert _snapshot() == {"home": str(launch), "secret": "launch-secret", "model": "launch-model"}
+
+
+@pytest.mark.parametrize("failing", ["agent.secret_scope.set_secret_scope",
+                                     "tools.terminal_scope.install_profile_terminal_scope"])
+def test_profile_scope_that_fails_to_enter_leaves_the_parent_in_its_own_profile(two_profiles, failing):
+    """A step of the scope binding that raises unwinds the steps already bound: the parent never stays
+    inside the child's profile (home override, secret scope, multiplex flag)."""
+    from agent.secret_scope import current_secret_scope_home, is_multiplex_active
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    _, coder = two_profiles
+    before = (_snapshot(), current_secret_scope_home(), is_multiplex_active())
+    with patch(failing, side_effect=RuntimeError("scope step failed")), pytest.raises(RuntimeError):
+        with delegated_profile_scope(coder):
+            pass
+    assert (_snapshot(), current_secret_scope_home(), is_multiplex_active()) == before

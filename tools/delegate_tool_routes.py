@@ -121,18 +121,15 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
 
     routed = hermes_home_key(home) != hermes_home_key(get_routing_process_hermes_home())
     hydrate_profile_secret_sources(home)
-    home_token = set_hermes_home_override(str(home))
-    secret_token = set_secret_scope(owner_secret_scope(home), profile_home=str(home))
-    mux_token = set_multiplex_context(True) if routed else None
-    terminal_token = install_profile_terminal_scope(home)
-    try:
+    # Each step is entered inside the stack, so one that raises unwinds the ones already bound and the
+    # parent never stays in the child's profile (same discipline as the gateway's routed-turn scope).
+    with contextlib.ExitStack() as stack:
+        stack.callback(reset_hermes_home_override, set_hermes_home_override(str(home)))
+        stack.callback(reset_secret_scope, set_secret_scope(owner_secret_scope(home), profile_home=str(home)))
+        if routed:
+            stack.callback(reset_multiplex_context, set_multiplex_context(True))
+        stack.callback(reset_terminal_scope, install_profile_terminal_scope(home))
         yield
-    finally:
-        reset_terminal_scope(terminal_token)
-        if mux_token is not None:
-            reset_multiplex_context(mux_token)
-        reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
 
 
 def child_profile_scope(child: Any) -> contextlib.AbstractContextManager:

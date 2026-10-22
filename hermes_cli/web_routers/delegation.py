@@ -151,6 +151,7 @@ def _check_default(default: Optional[str], names: list[str], what: str) -> Optio
 
 
 def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dict[str, Any]:
+    from agent.delegation_provider import ROUTE_KEYS
     from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
     from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 
@@ -182,10 +183,17 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
         row["service_tier"] = tier
     if isinstance(entry.get("fallback_providers"), list):
         row["fallback_providers"] = entry["fallback_providers"]
+    # Route fields the editor never touches (request_overrides, label, profile) round-trip as stored.
+    validated = {*_OPTION_TEXT_KEYS, "api_key", "reasoning_effort", "service_tier", "fallback_providers"}
+    for field in sorted(ROUTE_KEYS - validated):
+        if entry.get(field) not in (None, "", [], {}):
+            row[field] = entry[field]
     key = entry.get("api_key")
     if is_redacted_credential_preview(key):
-        # The renderer only ever saw a preview: keep the stored key of the route it came from.
-        key = stored.get(_text(entry, "original_name") or row["name"], {}).get("api_key")
+        # The renderer only ever saw a preview: keep the stored key of the route it came from (a rename names
+        # it in original_name; once that save landed, the route is stored under its new name).
+        source = stored.get(_text(entry, "original_name")) or stored.get(row["name"]) or {}
+        key = source.get("api_key")
     if isinstance(key, str) and key.strip():
         row["api_key"] = key.strip()
     return row

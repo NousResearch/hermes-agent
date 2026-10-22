@@ -70,7 +70,7 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
   effortLabel: '推論強度',
   effortInherit: 'サブエージェントの既定',
   tierLabel: '速度',
-  tierNormal: '標準（既定）',
+  tierNormal: '標準',
   tierFast: '高速',
   tierUltrafast: '超高速',
   tierHint: '対応しているモデルのみ。',

@@ -62,7 +62,7 @@ export const zhHantDelegationRouting: DelegationRoutingTranslations = {
   effortLabel: '推理強度',
   effortInherit: '子代理預設值',
   tierLabel: '速度',
-  tierNormal: '一般（預設）',
+  tierNormal: '一般',
   tierFast: '快速',
   tierUltrafast: '極速',
   tierHint: '僅適用於提供此選項的模型。',

@@ -35,7 +35,7 @@ describe('route editing keeps a default while routes exist', () => {
     })
   })
 
-  it('refuses incomplete or clashing drafts and keeps keys the dialog does not edit', () => {
+  it('refuses incomplete or clashing drafts; an edit keeps keys the dialog does not edit and names its source', () => {
     const draft = { name: 'deep', description: '', provider: '', model: '', reasoning_effort: '', service_tier: '' }
 
     expect(validateRouteDraft(draft, ['deep'])).toEqual({
@@ -54,10 +54,12 @@ describe('route editing keeps a default while routes exist', () => {
       service_tier: 'fast'
     })
 
-    const saved = routeFromDraft({ ...draft, name: 'local', description: 'Private', model: 'qwen' }, stored)
+    // A rename sends the preview key back with the old name, so the server keeps the stored key.
+    const saved = routeFromDraft({ ...draft, name: 'lan', description: 'Private', model: 'qwen' }, stored)
 
     expect(saved).toEqual({
-      name: 'local',
+      name: 'lan',
+      original_name: 'local',
       description: 'Private',
       model: 'qwen',
       base_url: 'http://127.0.0.1:8080/v1',

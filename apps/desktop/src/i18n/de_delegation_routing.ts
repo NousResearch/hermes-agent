@@ -71,7 +71,7 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
   effortLabel: 'Denkanstrengung',
   effortInherit: 'Subagent-Standard',
   tierLabel: 'Geschwindigkeit',
-  tierNormal: 'Normal (Standard)',
+  tierNormal: 'Normal',
   tierFast: 'Schnell',
   tierUltrafast: 'Ultraschnell',
   tierHint: 'Nur bei Modellen, die das anbieten.',

@@ -63,7 +63,7 @@ export const enDelegationRouting: DelegationRoutingTranslations = {
   effortLabel: 'Reasoning effort',
   effortInherit: 'Subagent default',
   tierLabel: 'Speed',
-  tierNormal: 'Normal (default)',
+  tierNormal: 'Normal',
   tierFast: 'Fast',
   tierUltrafast: 'Ultrafast',
   tierHint: 'Only on models that offer it.',

@@ -73,7 +73,7 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
   effortLabel: 'Intensité du raisonnement',
   effortInherit: 'Valeur par défaut des sous-agents',
   tierLabel: 'Vitesse',
-  tierNormal: 'Normale (par défaut)',
+  tierNormal: 'Normale',
   tierFast: 'Rapide',
   tierUltrafast: 'Ultra-rapide',
   tierHint: 'Uniquement sur les modèles qui la proposent.',

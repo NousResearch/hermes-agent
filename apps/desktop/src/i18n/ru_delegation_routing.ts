@@ -70,7 +70,7 @@ export const ruDelegationRouting: DelegationRoutingTranslations = {
   effortLabel: 'Глубина рассуждений',
   effortInherit: 'Как у субагента по умолчанию',
   tierLabel: 'Скорость',
-  tierNormal: 'Обычная (по умолчанию)',
+  tierNormal: 'Обычная',
   tierFast: 'Быстрая',
   tierUltrafast: 'Сверхбыстрая',
   tierHint: 'Только для моделей, которые это поддерживают.',

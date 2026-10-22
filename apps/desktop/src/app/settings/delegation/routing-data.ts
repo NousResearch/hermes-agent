@@ -81,7 +81,14 @@ export function routesOwnSubagentModel(routing: DelegationRouting): boolean {
   return routing.configured !== 'default'
 }
 
-/** Paint `patch` now, persist with `write`, adopt the server's answer; a failed write rolls back and says so. */
+// Writes for one owner run one at a time, in the order the user made them: each body is computed from the page
+// as it stood after the previous edit, so the server must apply them in that order too.
+const saveChains = new Map<string, Promise<unknown>>()
+const latestWrite = new Map<string, number>()
+
+/** Paint `patch` now, persist with `write` after this owner's earlier writes, and adopt the server's answer only
+ *  when no newer edit is queued behind it (an older answer would undo that edit on screen). A failed write
+ *  re-reads the owner's routing instead of restoring a snapshot, which would also undo edits saved since. */
 async function writeThrough(
   scope: ProfileScope,
   patch: (current: DelegationRouting) => DelegationRouting,
@@ -89,23 +96,31 @@ async function writeThrough(
   failMessage: string
 ): Promise<boolean> {
   const key = routingQueryKey(scope)
-  const before = queryClient.getQueryData<DelegationRouting>(key)
+  const id = JSON.stringify(key)
 
-  if (!before) {
+  if (!queryClient.getQueryData<DelegationRouting>(key)) {
     return false
   }
 
-  queryClient.setQueryData(key, patch(before))
+  queryClient.setQueryData<DelegationRouting>(key, current => current && patch(current))
+
+  const generation = (latestWrite.get(id) ?? 0) + 1
+  latestWrite.set(id, generation)
+  const run = (saveChains.get(id) ?? Promise.resolve()).catch(() => undefined).then(write)
+  saveChains.set(id, run)
 
   try {
-    const saved = await write()
+    const saved = await run
 
-    queryClient.setQueryData<DelegationRouting>(key, current => (current ? { ...current, ...saved } : current))
+    if (latestWrite.get(id) === generation) {
+      queryClient.setQueryData<DelegationRouting>(key, current => (current ? { ...current, ...saved } : current))
+    }
 
     return true
   } catch (err) {
-    queryClient.setQueryData(key, before)
     notifyError(err, failMessage)
+    await saveChains.get(id)?.catch(() => undefined)
+    await queryClient.invalidateQueries({ queryKey: key })
 
     return false
   }

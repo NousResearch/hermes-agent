@@ -87,9 +87,10 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
   }
 
   const tierOptions = [
-    { id: INHERIT, label: r.tierNormal },
-    { id: SERVICE_TIERS[0], label: r.tierFast },
-    { id: SERVICE_TIERS[1], label: r.tierUltrafast }
+    { id: INHERIT, label: r.effortInherit },
+    { id: SERVICE_TIERS[0], label: r.tierNormal },
+    { id: SERVICE_TIERS[1], label: r.tierFast },
+    { id: SERVICE_TIERS[2], label: r.tierUltrafast }
   ]
 
   return (

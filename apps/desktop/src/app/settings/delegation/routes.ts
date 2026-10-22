@@ -13,7 +13,8 @@ export interface ModelRouteDraft {
 export type RouteField = keyof ModelRouteDraft
 export type RouteError = 'duplicate' | 'required' | 'spaces'
 
-export const SERVICE_TIERS = ['fast', 'ultrafast'] as const
+/** Saved as written: an explicit `normal` turns a provider's own Fast setting off; no tier leaves it alone. */
+export const SERVICE_TIERS = ['normal', 'fast', 'ultrafast'] as const
 
 export const emptyRouteDraft = (): ModelRouteDraft => ({
   name: '',
@@ -64,9 +65,10 @@ export function validateRouteDraft(
   return errors
 }
 
-/** The stored route for `draft`: edited fields replace, blank optional fields drop, unknown keys stay. */
+/** The stored route for `draft`: edited fields replace, blank optional fields drop, unknown keys stay. An edited
+ *  route names the route it came from (`original_name`), so the server keeps its stored key through a rename. */
 export function routeFromDraft(draft: ModelRouteDraft, previous?: DelegationModelRoute): DelegationModelRoute {
-  const next: Record<string, unknown> = { ...previous }
+  const next: Record<string, unknown> = { ...previous, ...(previous ? { original_name: previous.name } : {}) }
 
   for (const field of Object.keys(draft) as RouteField[]) {
     const value = draft[field].trim()

@@ -63,7 +63,7 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
   effortLabel: 'مستوى الاستدلال',
   effortInherit: 'الافتراضي للوكيل الفرعي',
   tierLabel: 'السرعة',
-  tierNormal: 'عادية (افتراضي)',
+  tierNormal: 'عادية',
   tierFast: 'سريعة',
   tierUltrafast: 'فائقة السرعة',
   tierHint: 'فقط في النماذج التي توفرها.',

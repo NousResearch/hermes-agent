@@ -48,7 +48,8 @@ def homes(tmp_path, monkeypatch):
     (work / "config.yaml").write_text(yaml.safe_dump({
         "plugins": {"enabled": ["routes"]},
         "delegation": {"backend": "model_map", "backends": {"model_map": {"options": [
-            {"name": "fast", "description": "Quick", "provider": "openrouter", "model": "m-fast", "api_key": SECRET},
+            {"name": "fast", "description": "Quick", "provider": "openrouter", "model": "m-fast", "api_key": SECRET,
+             "request_overrides": {"extra_body": {"seed": 7}}},
             {"name": "deep", "description": "Careful", "provider": "anthropic", "model": "m-deep"},
         ], "default": "deep"}}},
     }), encoding="utf-8")
@@ -144,8 +145,10 @@ def test_invalid_model_routes_are_refused_before_anything_is_written(client, hom
 def test_saving_model_routes_replaces_the_block_and_keeps_the_stored_key(client, homes):
     root, work = homes
     shown = client.get("/api/delegation/routing?profile=work").json()["model_map"]["options"][0]
-    # Edit "fast" as the renderer would (preview key sent back), delete "deep", add "local".
-    body = {"options": [{**shown, "model": "m-faster", "reasoning_effort": "low"},
+    # Rename and edit "fast" as the renderer would (preview key and untouched fields sent back, the old name in
+    # original_name), delete "deep", add "local".
+    body = {"options": [{**shown, "name": "speedy", "original_name": "fast", "model": "m-faster",
+                         "reasoning_effort": "low"},
                         {"name": "local", "description": "Private", "base_url": "http://127.0.0.1:8080/v1",
                          "model": "qwen", "service_tier": "fast"}],
             "default": "local"}
@@ -155,9 +158,10 @@ def test_saving_model_routes_replaces_the_block_and_keeps_the_stored_key(client,
 
     block = _delegation(work)["backends"]["model_map"]
     assert block["default"] == "local"
-    assert [o["name"] for o in block["options"]] == ["fast", "local"]
-    assert block["options"][0] == {"name": "fast", "description": "Quick", "provider": "openrouter",
-                                   "model": "m-faster", "reasoning_effort": "low", "api_key": SECRET}
+    assert [o["name"] for o in block["options"]] == ["speedy", "local"]
+    assert block["options"][0] == {"name": "speedy", "description": "Quick", "provider": "openrouter",
+                                   "model": "m-faster", "reasoning_effort": "low", "api_key": SECRET,
+                                   "request_overrides": {"extra_body": {"seed": 7}}}
     assert "backends" not in _delegation(root)
 
 

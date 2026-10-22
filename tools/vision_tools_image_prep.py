@@ -296,13 +296,29 @@ def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
         return False
 
 
+REGION_UPSCALE_MAX_FACTOR = 4.0
+REGION_UPSCALE_MIN_FACTOR = 1.25  # below this the resample costs tokens without adding legibility
+
+
+def _region_upscale_factor(width: int, height: int, target: Optional[int]) -> float:
+    """Factor that grows a crop's long edge toward ``target`` (capped at 4x); 1.0 when not worth it."""
+    if not target or target <= 0:
+        return 1.0
+    factor = min(REGION_UPSCALE_MAX_FACTOR, target / max(width, height, 1))
+    return factor if factor >= REGION_UPSCALE_MIN_FACTOR else 1.0
+
+
 def _crop_image_region(
-    image_path: Path, region: Any, offset_out: Optional[dict] = None
+    image_path: Path, region: Any, offset_out: Optional[dict] = None,
+    upscale_target: Optional[int] = None,
 ) -> tuple[Optional[Path], Optional[str], Optional[str]]:
     """Crop to ``region`` = [x1, y1, x2, y2] (original-image pixels), BEFORE downscaling so the crop
     gets the full resolution budget. Coordinates clamp to the image bounds; a zero-area/inverted
-    region is rejected with an error naming the real dimensions. Returns ``(cropped_temp_path,
-    mime, None)`` — caller owns cleanup — or ``(None, None, error)``.
+    region is rejected with an error naming the real dimensions. With ``upscale_target`` a small
+    crop is LANCZOS-upscaled toward that long edge (max 4x) — zooming into a low-res drawing
+    otherwise hands the model the same few pixels per glyph; the factor lands in ``offset_out``
+    as ``scale``. Returns ``(cropped_temp_path, mime, None)`` — caller owns cleanup — or
+    ``(None, None, error)``.
     Ported from QwenLM/qwen-code zoom-image.ts (Apache-2.0)."""
     try:
         from PIL import Image
@@ -332,6 +348,14 @@ def _crop_image_region(
             out_path = image_path.with_name(f"{image_path.stem}_region_{uuid.uuid4().hex[:8]}.png")
             if cropped.mode not in ("RGB", "RGBA", "L", "LA", "P"):
                 cropped = cropped.convert("RGB")
+            scale = _region_upscale_factor(cx2 - cx1, cy2 - cy1, upscale_target)
+            if scale > 1.0:
+                if cropped.mode not in ("RGB", "RGBA", "L"):  # palette/LA resample only with NEAREST
+                    cropped = cropped.convert("RGBA")
+                new_size = (round((cx2 - cx1) * scale), round((cy2 - cy1) * scale))
+                cropped = cropped.resize(new_size, Image.LANCZOS)
+                if offset_out is not None:
+                    offset_out.update(scale=scale, scaled_width=new_size[0], scaled_height=new_size[1])
             cropped.save(out_path, format="PNG")
             return out_path, "image/png", None
     except Exception as exc:

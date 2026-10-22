@@ -396,6 +396,13 @@ def _build_scale_note(scale_info: Optional[dict], crop_offset: Optional[dict]) -
             f"image starting at offset ({crop_offset['x']}, "
             f"{crop_offset['y']}); coordinates are relative to that crop "
             f"origin — add the offset to map back to the full image.")
+        scale = crop_offset.get("scale")
+        if scale and scale > 1.0:
+            parts.append(
+                f"The {crop_offset['width']}x{crop_offset['height']} crop was upscaled "
+                f"{scale:.2f}x to {crop_offset['scaled_width']}x{crop_offset['scaled_height']} "
+                f"for legibility (no new detail was added); divide crop-local coordinates "
+                f"by {scale:.2f} before adding the offset.")
     return " ".join(parts) if parts else None
 
 
@@ -667,7 +674,8 @@ async def _prepare_image(
                 raise _ImagePrepError(decode_error)
         if region is not None:
             cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
-                _crop_image_region, path, region, offset_out=crop_offset)
+                _crop_image_region, path, region, offset_out=crop_offset,
+                upscale_target=_EMBED_MAX_DIMENSION)
             if crop_err or cropped_path is None:
                 raise _ImagePrepError(crop_err or "Region crop failed.")
             _unlink_quietly(path)
@@ -987,9 +995,10 @@ VISION_ANALYZE_SCHEMA = {
                 "description": (
                     "Optional [x1, y1, x2, y2] crop in ORIGINAL-image pixel "
                     "coordinates, applied before any downscaling — the crop "
-                    "keeps full resolution. Load the full image first, then "
-                    "re-call with a region to zoom into small text or fine "
-                    "detail."
+                    "keeps full resolution and small crops are upscaled (up "
+                    "to 4x) so fine text is legible. Load the full image "
+                    "first, then re-call with a region to zoom into small "
+                    "text or fine detail."
                 )
             }
         },

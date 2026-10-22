@@ -104,7 +104,8 @@ class TestNativePathRegion:
             for p in result["content"]
             if p.get("type") == "image_url"
         )
-        assert _decoded_size(url) == (50, 30)
+        # 50x30 crop is tiny, so it is upscaled by the 4x cap.
+        assert _decoded_size(url) == (200, 120)
 
     def test_no_region_behavior_unchanged(self, tmp_path):
         from tools.vision_tools import _vision_analyze_native
@@ -156,8 +157,65 @@ class TestNativePathRegion:
             for p in result["content"]
             if p.get("type") == "image_url"
         )
-        # Region kept at native resolution — no downscale applied to the crop.
-        assert _decoded_size(url) == (200, 300)
+        # Region kept at (at least) native resolution — no downscale applied to the
+        # crop; it is upscaled 4x instead.
+        assert _decoded_size(url) == (800, 1200)
+
+    def test_region_upscale_disclosed_in_note(self, tmp_path):
+        from tools.vision_tools import _vision_analyze_native
+
+        src = _make_png(tmp_path / "img.png", 100, 50)
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(src), "zoom", region=[10, 10, 60, 40])
+        )
+        text = " ".join(p.get("text", "") for p in result["content"] if p.get("type") == "text")
+        assert "upscaled 4.00x" in text and "divide crop-local coordinates by 4.00" in text
+
+
+class TestRegionUpscale:
+    def test_small_crop_upscaled_toward_target(self, tmp_path):
+        from tools.vision_tools import _crop_image_region
+
+        src = _make_png(tmp_path / "src.png", 1400, 1000)
+        offset = {}
+        path, _mime, err = _crop_image_region(
+            src, [0, 0, 600, 300], offset_out=offset, upscale_target=1568)
+        assert err is None
+        with Image.open(path) as img:
+            assert img.size == (1568, 784)
+        assert offset["scale"] == pytest.approx(1568 / 600)
+        assert (offset["width"], offset["height"]) == (600, 300)
+
+    def test_factor_capped_at_4x(self, tmp_path):
+        from tools.vision_tools import _crop_image_region
+
+        src = _make_png(tmp_path / "src.png", 100, 50)
+        path, _mime, err = _crop_image_region(src, [0, 0, 40, 20], upscale_target=1568)
+        assert err is None
+        with Image.open(path) as img:
+            assert img.size == (160, 80)
+
+    def test_near_target_crop_left_alone(self, tmp_path):
+        from tools.vision_tools import _crop_image_region
+
+        src = _make_png(tmp_path / "src.png", 1400, 1000)
+        offset = {}
+        path, _mime, err = _crop_image_region(
+            src, [0, 0, 1300, 900], offset_out=offset, upscale_target=1568)
+        assert err is None
+        with Image.open(path) as img:
+            assert img.size == (1300, 900)
+        assert "scale" not in offset
+
+    def test_palette_image_upscaled(self, tmp_path):
+        from tools.vision_tools import _crop_image_region
+
+        src = tmp_path / "pal.png"
+        Image.new("RGB", (100, 50), (10, 20, 30)).convert("P").save(src, format="PNG")
+        path, _mime, err = _crop_image_region(src, [0, 0, 50, 25], upscale_target=1568)
+        assert err is None
+        with Image.open(path) as img:
+            assert img.size == (200, 100)
 
 
 # ─── schema + handler wiring ─────────────────────────────────────────────────

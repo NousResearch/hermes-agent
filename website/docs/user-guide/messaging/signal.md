@@ -141,6 +141,28 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
 
+Group senders go through the same sender authorization as DMs (`SIGNAL_ALLOWED_USERS`, pairing, or allow-all) before the bot answers them. To answer only group messages that @mention the bot, set `require_mention: true` under `signal:` in `config.yaml` (or `SIGNAL_REQUIRE_MENTION=true`).
+
+### Observe Group Context
+
+With `require_mention` on, unmentioned group messages are dropped, so when someone finally mentions the bot it has no idea what the group was talking about. Observe mode keeps that chatter as context instead:
+
+```yaml
+group_sessions_per_user: false   # one shared session per group (required)
+
+signal:
+  require_mention: true
+  observe_unmentioned_group_messages: true
+```
+
+Unmentioned messages in allowed groups are appended to the group's session as observed context: no agent turn, reply, typing indicator, or reaction. Attachments are cached and noted by path. The next message that mentions the bot receives that chatter in a separate context-only block ahead of it, so the agent can answer "what did Alice just ask?" without treating earlier chatter as requests.
+
+- Observed context lives in the group's shared session, so this needs `group_sessions_per_user: false`. With per-user group sessions the gateway logs a warning and keeps dropping unmentioned messages.
+- Every member's messages in an allowed group are observed, but only authorized senders can trigger a reply. Only enable it in groups whose content you are comfortable putting in front of the agent.
+- The context grows with the session: `/new` clears it, and gateway session hygiene compresses long transcripts.
+
+Equivalent environment variable: `SIGNAL_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true`.
+
 ---
 
 ## Features
@@ -258,5 +280,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | `SIGNAL_ACCOUNT` | Yes | — | Bot phone number (E.164) |
 | `SIGNAL_ALLOWED_USERS` | No | — | Comma-separated phone numbers/UUIDs |
 | `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
+| `SIGNAL_REQUIRE_MENTION` | No | `false` | Only answer group messages that @mention the bot (`signal.require_mention` in `config.yaml`) |
+| `SIGNAL_OBSERVE_UNMENTIONED_GROUP_MESSAGES` | No | `false` | Keep unmentioned group messages as context for the next mention (`signal.observe_unmentioned_group_messages`; see [Observe Group Context](#observe-group-context)) |
 | `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow any user to interact (skip allowlist) |
 | `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |

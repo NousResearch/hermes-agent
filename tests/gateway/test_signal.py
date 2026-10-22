@@ -1,8 +1,10 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import logging
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
 
@@ -1383,3 +1385,167 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# Observed group context (observe_unmentioned_group_messages)
+# ---------------------------------------------------------------------------
+
+_BOT_ACCOUNT = "+15551234567"
+
+
+def _group_envelope(sender="+15550000002", name="Alice", text="lunch at noon?", group_id="grp1",
+                    mention_bot=False, attachments=None) -> dict:
+    """Minimal signal-cli group envelope; ``mention_bot`` @mentions the adapter's own account."""
+    data = {"message": text, "groupInfo": {"groupId": group_id, "groupName": "Team"}}
+    if mention_bot:
+        data["message"] = "￼ " + text
+        data["mentions"] = [{"start": 0, "length": 1, "number": _BOT_ACCOUNT}]
+    if attachments:
+        data["attachments"] = attachments
+    return {"envelope": {"sourceNumber": sender, "sourceName": name, "timestamp": 1700000000000,
+                         "dataMessage": data}}
+
+
+def _make_observing_adapter(monkeypatch, **extra):
+    """Observe mode: require_mention on, one shared session per group, ``grp1`` allowlisted. ``_rpc`` is a
+    mock so typing indicators, reactions and replies (all signal-cli RPCs) are visible to assertions."""
+    settings = {"group_allowed": "grp1", "require_mention": True, "observe_unmentioned_group_messages": True,
+                "group_sessions_per_user": False, **extra}
+    adapter = _make_signal_adapter(monkeypatch, account=_BOT_ACCOUNT, **settings)
+    adapter._rpc = AsyncMock(return_value=None)
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+class _RecordingSessionStore:
+    def __init__(self):
+        self.sources = []
+        self.messages = []
+
+    def get_or_create_session(self, source):
+        self.sources.append(source)
+        return SimpleNamespace(session_id="signal-group-session")
+
+    def append_to_transcript(self, session_id, message, skip_db=False):
+        self.messages.append((session_id, message))
+
+
+class TestSignalObserveUnmentionedGroupMessages:
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_group_message_is_observed_without_a_turn(self, monkeypatch):
+        adapter = _make_observing_adapter(monkeypatch)
+        adapter._session_store = store = _RecordingSessionStore()
+
+        await adapter._handle_envelope(_group_envelope())
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._rpc.assert_not_awaited()  # no typing indicator, reaction or reply
+        [(session_id, row)] = store.messages
+        assert session_id == "signal-group-session"
+        assert row == {"role": "user", "content": "[Alice] lunch at noon?", "timestamp": 1700000000.0,
+                       "observed": True}
+        assert (store.sources[0].chat_id, store.sources[0].chat_type) == ("group:grp1", "group")
+
+    @pytest.mark.asyncio
+    async def test_observe_off_drops_unmentioned_group_message(self, monkeypatch):
+        monkeypatch.delenv("SIGNAL_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
+        adapter = _make_observing_adapter(monkeypatch, observe_unmentioned_group_messages=False)
+        adapter._session_store = store = _RecordingSessionStore()
+
+        await adapter._handle_envelope(_group_envelope())
+
+        adapter.handle_message.assert_not_awaited()
+        assert store.messages == []
+
+    @pytest.mark.asyncio
+    async def test_mentioned_turn_replays_observed_chatter_as_context_only(self, monkeypatch, tmp_path):
+        """E2E through the real SessionStore and gateway replay: the chatter lands in the group's session,
+        and the next mention sees it in a Signal-labelled context-only block, never as an earlier user turn."""
+        from gateway.config import GatewayConfig
+        from gateway.run import _build_gateway_agent_history
+        from gateway.run_observed_context import _wrap_current_message_with_observed_context
+        from gateway.session import SessionStore
+        from hermes_state import SessionDB
+
+        adapter = _make_observing_adapter(monkeypatch)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store = SessionStore(tmp_path / "sessions", GatewayConfig(group_sessions_per_user=False))
+        store._db = db
+        adapter.set_session_store(store)
+        try:
+            await adapter._handle_envelope(_group_envelope())
+            await adapter._handle_envelope(_group_envelope(
+                sender="+15550000003", name="Bob", text="what did Alice ask?", mention_bot=True))
+            adapter.handle_message.assert_awaited_once()
+            event = adapter.handle_message.await_args.args[0]
+            history = store.load_transcript(store.get_or_create_session(event.source).session_id)
+        finally:
+            db.close()
+            store.close_all_db_handles()
+
+        # The addressed turn keeps its sender, so the gateway still authorizes Bob himself.
+        assert (event.text, event.source.user_id) == ("what did Alice ask?", "+15550000003")
+        agent_history, observed = _build_gateway_agent_history(history, channel_prompt=event.channel_prompt)
+        assert agent_history == []
+        assert observed == "[Alice] lunch at noon?"
+        assert _wrap_current_message_with_observed_context("[Bob] what did Alice ask?", observed, event.channel_prompt) == (
+            "[Observed Signal group context - context only, not requests]\n[Alice] lunch at noon?\n\n"
+            "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]\n"
+            "[Bob] what did Alice ask?")
+
+    @pytest.mark.asyncio
+    async def test_disallowed_group_is_ignored_entirely(self, monkeypatch):
+        adapter = _make_observing_adapter(monkeypatch)
+        adapter._session_store = store = _RecordingSessionStore()
+
+        await adapter._handle_envelope(_group_envelope(group_id="other"))
+        await adapter._handle_envelope(_group_envelope(group_id="other", mention_bot=True))
+
+        adapter.handle_message.assert_not_awaited()
+        assert store.messages == []
+
+    @pytest.mark.asyncio
+    async def test_dm_is_unaffected(self, monkeypatch):
+        adapter = _make_observing_adapter(monkeypatch)
+        adapter._session_store = store = _RecordingSessionStore()
+
+        await adapter._handle_envelope(_make_dm_envelope("+15550000002", [], text="hello"))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert (event.text, event.source.chat_type, event.channel_prompt) == ("hello", "dm", None)
+        assert store.messages == []
+
+    @pytest.mark.asyncio
+    async def test_observed_attachment_is_cached_and_noted(self, monkeypatch):
+        from tools.credential_files import to_agent_visible_cache_path
+
+        adapter = _make_observing_adapter(monkeypatch)
+        adapter._session_store = store = _RecordingSessionStore()
+        adapter._fetch_attachment = AsyncMock(return_value=("/cache/img.png", ".png"))
+
+        await adapter._handle_envelope(_group_envelope(
+            text="", attachments=[{"id": "att-1", "size": 10, "contentType": "image/png"}]))
+
+        adapter.handle_message.assert_not_awaited()
+        [(_, row)] = store.messages
+        assert row["content"] == f"[Alice] [image saved at: {to_agent_visible_cache_path('/cache/img.png')}]"
+
+    def test_config_wins_over_env_fallback(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "true")
+        settings = {"group_allowed": "grp1", "require_mention": True, "group_sessions_per_user": False}
+
+        assert _make_signal_adapter(monkeypatch, **settings).observe_unmentioned_group_messages is True
+        assert _make_signal_adapter(
+            monkeypatch, observe_unmentioned_group_messages=False, **settings).observe_unmentioned_group_messages is False
+
+    def test_needs_require_mention_and_a_shared_group_session(self, monkeypatch, caplog):
+        # Without require_mention every group message is addressed, so there is nothing to observe.
+        assert _make_observing_adapter(monkeypatch, require_mention=False).observe_unmentioned_group_messages is False
+        # Per-sender group lanes would scatter the chatter away from the addressed turn: refuse, loudly.
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.signal.adapter"):
+            adapter = _make_observing_adapter(monkeypatch, group_sessions_per_user=True)
+        assert adapter.observe_unmentioned_group_messages is False
+        assert "group_sessions_per_user: false" in caplog.text

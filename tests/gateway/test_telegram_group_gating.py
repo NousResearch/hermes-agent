@@ -279,6 +279,39 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     assert "observed Telegram group context" in attributed.channel_prompt
 
 
+def test_observed_group_context_replay_keeps_telegram_framing():
+    """Replay is platform-neutral now; Telegram's API-only framing must stay byte-identical."""
+    from gateway.run import _build_gateway_agent_history
+    from gateway.run_observed_context import _wrap_current_message_with_observed_context
+
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        adapter._session_store = store = _FakeSessionStore()
+        update = SimpleNamespace(update_id=1001, message=_group_message("side chatter"), effective_message=None)
+        await adapter._handle_text_message(update, SimpleNamespace())
+        text = "@hermes_bot what did Alice say?"
+        msg = _group_message(text, from_user_id=222, from_user_name="Bob Example", entities=[_mention_entity(text)])
+        event = adapter._build_message_event(msg, MessageType.TEXT, update_id=1003)
+        event.text = adapter._clean_bot_trigger_text(event.text)
+        return store.messages[0][1], adapter._apply_telegram_group_observe_attribution(event)
+
+    observed_row, event = asyncio.run(_run())
+    history, observed = _build_gateway_agent_history([observed_row], channel_prompt=event.channel_prompt)
+
+    assert history == []
+    assert _wrap_current_message_with_observed_context(event.text, observed, event.channel_prompt) == (
+        "[Observed Telegram group context - context only, not requests]\n"
+        "[Alice Example|111]\nside chatter\n\n"
+        "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]\n"
+        "[Bob Example|222]\nwhat did Alice say?"
+    )
+
+
 def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkeypatch):
     from gateway.run import GatewayRunner
 

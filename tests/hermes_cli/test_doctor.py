@@ -114,6 +114,87 @@ class TestDoctorPlatformHints:
         assert "hermes update" not in hint
 
 
+class TestDoctorPlaintextConfigSecrets:
+    def test_flags_nested_case_insensitive_secret_keys_without_echoing_values(self, monkeypatch, tmp_path, capsys):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        secret = "super-secret-value-that-must-not-be-printed"
+        (home / "config.yaml").write_text(
+            "providers:\n"
+            "  example:\n"
+            f"    API_KEY: {secret}\n"
+            "connections:\n"
+            "  - credentials:\n"
+            f"      ToKeN: {secret}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        finding = doctor_config._check_config_plaintext_secrets(False)
+
+        out = capsys.readouterr().out
+        assert "providers.example.API_KEY" in out
+        assert "connections[0].credentials.ToKeN" in out
+        assert secret not in out
+        assert len(finding.manual_issues) == 1
+
+    def test_ignores_safe_keys_and_empty_secret_values(self, monkeypatch, tmp_path, capsys):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "token_count: 4\nsecret_santa: alice\napi_key: ''\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+
+        finding = doctor_config._check_config_plaintext_secrets(False)
+
+        assert finding.manual_issues == []
+        assert "No plaintext credentials in config.yaml" in capsys.readouterr().out
+
+    def test_bounds_cyclic_config_values(self):
+        config = {}
+        config["nested"] = config
+
+        assert doctor_config._plaintext_secret_paths(config) == []
+
+    def test_run_doctor_reports_raw_secrets_using_current_redaction_rules(self, monkeypatch, tmp_path, capsys):
+        config_path = tmp_path / "config.yaml"
+        original = (
+            "mcp_servers:\n"
+            "  example:\n"
+            "    env:\n"
+            "      FOO_API_KEY: opaque-env-credential\n"
+            "      BAR_TOKEN: ${BAR_TOKEN}\n"
+            "    headers:\n"
+            "      X-API-Key: opaque-header-credential\n"
+            "    auth: oauth\n"
+        )
+        config_path.write_text(original, encoding="utf-8")
+        monkeypatch.setenv("BAR_TOKEN", "expanded-credential-must-not-appear")
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", tmp_path)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(tmp_path))
+        monkeypatch.setattr(doctor_mod, "DOCTOR_CHECKS", tuple(
+            entry for entry in doctor_mod.DOCTOR_CHECKS
+            if entry[1].__module__ == "hermes_cli.doctor_config"
+            and entry[1].__name__ == "_check_config_plaintext_secrets"
+        ))
+        monkeypatch.setattr("hermes_cli.doctor_live.maybe_run_live_checks", lambda *args: None)
+
+        assert doctor_mod.run_doctor(Namespace(fix=True)) == 1
+
+        out = capsys.readouterr().out
+        assert "mcp_servers.example.env.FOO_API_KEY" in out
+        assert "mcp_servers.example.headers.X-API-Key" in out
+        assert "BAR_TOKEN" not in out
+        assert "mcp_servers.example.auth" not in out
+        assert "opaque-env-credential" not in out
+        assert "opaque-header-credential" not in out
+        assert "expanded-credential-must-not-appear" not in out
+        assert config_path.read_text(encoding="utf-8") == original
+
+
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"

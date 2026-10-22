@@ -27,6 +27,7 @@ from hermes_cli.doctor_tools import _safe_which
 from hermes_cli.doctor_config import (
     _check_config_drift,
     _check_config_file,
+    _check_config_plaintext_secrets,
     _check_env_file,
     _check_mcp_security,
     _check_relay_plugins,
@@ -114,7 +115,7 @@ DOCTOR_CHECKS = (
     ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
     ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
     ('Configuration Files', _check_env_file),
-    (None, _check_config_file), (None, _check_config_drift),
+    (None, _check_config_file), (None, _check_config_plaintext_secrets), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Auth Providers', _check_auth_providers),

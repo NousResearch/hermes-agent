@@ -4,26 +4,27 @@ import { writeFileSync } from 'node:fs'
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
 import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
-import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
-
-import { localCreationOptions } from '../canonicalGateway.js'
-import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
-import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
-import { introMsg, toTranscriptMessages } from '../domain/messages.js'
-import { ZERO } from '../domain/usage.js'
-import { type GatewayClient } from '../gatewayClient.js'
 import type {
   SessionActivateResponse,
   SessionCloseResponse,
   SessionCreateResponse,
   SessionDetachResponse,
+  SessionInfo,
   SessionTitleResponse,
   SetupStatusResponse
-} from '../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
+
+import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
+import { introMsg, toTranscriptMessages } from '../domain/messages.js'
+import { ZERO } from '../domain/usage.js'
+import { type GatewayClient } from '../gatewayClient.js'
 import { t } from '../i18n/runtime.js'
+import { localCreationOptions } from '../launchOptions.js'
 import { migratePendingInputs } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
-import type { Msg, PanelSection, SessionInfo } from '../types.js'
+import type { Msg, PanelSection } from '../types.js'
 
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'

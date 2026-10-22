@@ -1,9 +1,9 @@
 import type { SessionListRow } from '@hermes/shared/gateway-events'
+import type { SessionDeleteResponse } from '@hermes/shared/gateway-types'
 import { useCallback, useRef, useState } from 'react'
 
 import { mutateCanonical } from '../app/slash/canonicalSessionControls.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionDeleteResponse } from '../gatewayTypes.js'
 import { messages } from '../i18n/runtime.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 

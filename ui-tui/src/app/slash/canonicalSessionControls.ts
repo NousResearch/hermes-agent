@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 
+import { CANONICAL_REASONING_EFFORTS, TUI_SESSION_MODEL_FLAG } from '@hermes/shared/slash-input'
+
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
-import { CANONICAL_REASONING_EFFORTS, TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchOverlayState } from '../overlayStore.js'

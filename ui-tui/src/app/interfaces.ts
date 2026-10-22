@@ -1,39 +1,25 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
 import type { Usage } from '@hermes/shared/gateway-events'
-import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
-
-import type { PasteEvent } from '../components/textInput.js'
-import type { GatewayClient } from '../gatewayClient.js'
 import type {
   BillingCardInfo,
   BillingMutationResponse,
   BillingStateResponse,
   SessionCloseResponse,
+  SessionInfo,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
-} from '../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
+
+import type { PasteEvent } from '../components/textInput.js'
+import type { GatewayClient } from '../gatewayClient.js'
 import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
-import type {
-  ApprovalReq,
-  ClarifyReq,
-  ConfirmReq,
-  DetailsMode,
-  Msg,
-  PanelSection,
-  SecretReq,
-  SectionVisibility,
-  SessionInfo,
-  SlashCatalog,
-  SudoReq,
-  VaultCodeReq,
-  VaultSaveLoginReq,
-  VaultUnlockReq
-} from '../types.js'
+import type { ApprovalReq, ClarifyReq, ConfirmReq, DetailsMode, Msg, PanelSection, SecretReq, SectionVisibility, SlashCatalog, SudoReq, VaultCodeReq, VaultSaveLoginReq, VaultUnlockReq } from '../types.js'
 
 import type { SubmissionDestination } from './submissionDestination.js'
 

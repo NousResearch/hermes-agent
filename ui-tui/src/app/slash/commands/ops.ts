@@ -12,7 +12,8 @@ import type {
   SpawnTreeListResponse,
   SpawnTreeLoadResponse,
   ToolsConfigureResponse
-} from '../../../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+
 import { t } from '../../../i18n/runtime.js'
 import { appendTranscriptMessage } from '../../../lib/messages.js'
 import type { PanelSection } from '../../../types.js'

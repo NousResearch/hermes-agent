@@ -5,8 +5,8 @@
 
 import type { SessionStats } from '@hermes/shared/gateway-events'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { CANONICAL_REASONING_EFFORTS } from '@hermes/shared/slash-input'
 
-import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'

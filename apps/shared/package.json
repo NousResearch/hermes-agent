@@ -9,17 +9,27 @@
     "./billing": "./src/billing-types.ts",
     "./billing-policy": "./src/billing-policy.ts",
     "./charge-settlement": "./src/charge-settlement.ts",
+    "./circular-buffer": "./src/circular-buffer.ts",
     "./color": "./src/color.ts",
     "./format": "./src/format.ts",
     "./fuzzy": "./src/fuzzy.ts",
+    "./gateway-canonical": "./src/gateway-canonical.ts",
+    "./gateway-client": "./src/node/gateway-client.ts",
     "./gateway-events": "./src/gateway-events.ts",
+    "./gateway-text": "./src/gateway-text.ts",
+    "./gateway-types": "./src/gateway-types.ts",
     "./i18n": "./src/i18n.ts",
+    "./interpolation": "./src/interpolation.ts",
     "./json-rpc-channel": "./src/json-rpc-channel.ts",
     "./model-search-text": "./src/model-search-text.ts",
+    "./prompt-history": "./src/node/prompt-history.ts",
+    "./provider-names": "./src/provider-names.ts",
     "./reasoning-effort": "./src/reasoning-effort.ts",
     "./reconnect-backoff": "./src/reconnect-backoff.ts",
     "./skin": "./src/skin.ts",
     "./slash": "./src/slash.ts",
+    "./slash-input": "./src/slash-input.ts",
+    "./slash-score": "./src/slash-score.ts",
     "./theme-presets": "./src/theme-presets.ts",
     "./usage-tick": "./src/usage-tick.ts"
   },
@@ -28,10 +38,13 @@
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "fix": "npm run lint:fix",
-    "typecheck": "tsc -p . --noEmit",
-    "check": "npm run typecheck && npm run lint"
+    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "check": "npm run typecheck && npm run test && npm run lint",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "typescript": "6.0.3"
+    "@types/node": "22.20.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
   }
 }

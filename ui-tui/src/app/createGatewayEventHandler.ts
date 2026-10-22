@@ -4,18 +4,19 @@ import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
 import type { MessageDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
-
-import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
-import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
-import { usageFromTick } from '../domain/usage.js'
 import type {
   AnyGatewayEvent,
   ConfigFullResponse,
   DelegationStatusResponse,
   GatewaySkin,
+  SessionInfo,
   SessionMostRecentResponse
-} from '../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+
+import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
+import { STREAM_BATCH_MS } from '../config/timing.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
+import { usageFromTick } from '../domain/usage.js'
 import { t } from '../i18n/runtime.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
@@ -27,7 +28,7 @@ import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '..
 import { formatAbandonedClarify, formatToolCall } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
-import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
+import type { Msg, SubagentProgress } from '../types.js'
 
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'

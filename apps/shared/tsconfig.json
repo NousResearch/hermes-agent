@@ -11,5 +11,6 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/node"]
 }

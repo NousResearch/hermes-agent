@@ -19,12 +19,12 @@
  * their own useInput); Esc/Enter behave as in production. Ctrl-C to exit.
  */
 import { render } from '@hermes/ink'
+import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption } from '@hermes/shared/gateway-types'
 import React from 'react'
 
 import type { BillingOverlayState, SubscriptionOverlayState, SubscriptionScreen } from '../src/app/interfaces.js'
 import { BillingOverlay } from '../src/components/billingOverlay.js'
 import { SubscriptionOverlay } from '../src/components/subscriptionOverlay.js'
-import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption } from '../src/gatewayTypes.js'
 import { DEFAULT_THEME } from '../src/theme.js'
 
 const t = DEFAULT_THEME
@@ -227,9 +227,11 @@ const arg = process.argv[2]
 if (!arg || arg === '--list' || arg === '-l') {
   const names = Object.keys(FIXTURES)
   process.stdout.write('Billing/Subscription TUI fixtures:\n\n')
+
   for (const name of names) {
     process.stdout.write(`  ${name.padEnd(18)} ${FIXTURES[name]!.desc}\n`)
   }
+
   process.stdout.write(`\n  ${names.length} fixtures. Run:  npx tsx scripts/billing-fixtures.tsx <name>\n`)
   process.exit(0)
 }

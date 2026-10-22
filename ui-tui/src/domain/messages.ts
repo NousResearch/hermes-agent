@@ -1,7 +1,9 @@
+import type { SessionInfo } from '@hermes/shared/gateway-types'
+
 import { LONG_MSG } from '../config/limits.js'
 import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
-import type { Msg, SessionInfo } from '../types.js'
+import type { Msg } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 

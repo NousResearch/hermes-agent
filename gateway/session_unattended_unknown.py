@@ -44,7 +44,7 @@ def settle_recovered_unattended(db, epoch) -> int:
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
     from gateway.session_ingress_media import release_admission_media
     from gateway.session_results import close_discarded_turn
-    from hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input
+    from hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input, transcript_mark
     with db._read_ctx() as conn:
         rows = [_row(r) for r in conn.execute(
             "SELECT * FROM session_admissions WHERE status='unknown' ORDER BY seq").fetchall()]
@@ -53,7 +53,13 @@ def settle_recovered_unattended(db, epoch) -> int:
         try:
             resolve_unknown_session_input(
                 db, epoch=epoch, admission_id=row['admission_id'], generation=row['generation'],
-                _terminal_write=lambda conn, lost: close_discarded_turn(db, conn, lost, AUTOMATION_INTERRUPTED_NOTICE))
+                # The claim's durable transcript mark: the lost turn's own failed-turn boundary is
+                # replaced by this notice instead of stacking a second one. The mark is durable
+                # because the turn was lost to a crash, long after the in-memory claim went with
+                # the dead process (#134889 GW-25).
+                _terminal_write=lambda conn, lost: close_discarded_turn(
+                    db, conn, lost, AUTOMATION_INTERRUPTED_NOTICE,
+                    replace_after=transcript_mark(conn, lost['admission_id'])))
         except RuntimeStoreError as exc:
             logger.warning('Lost automation admission %s left unknown: %s', row['admission_id'], exc.reason)
             continue

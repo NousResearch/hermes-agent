@@ -146,10 +146,13 @@ def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None, disp
     target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
     tail = conn.execute("SELECT role, tool_calls, id, display_kind FROM messages WHERE session_id=? AND active=1 "
                         "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()
-    if (notice is not None and type(replace_after) is int and tail is not None and tail[0] == 'assistant'
+    if (type(replace_after) is int and tail is not None and tail[0] == 'assistant'
             and tail[3] == FAILED_TURN_DISPLAY_KIND and tail[2] > replace_after):
+        # This turn's own failed-turn boundary (written after the claim's mark): it is replaced by
+        # this notice instead of a second boundary stacking on it. A discarded turn has no notice of
+        # its own, so it takes the hedged copy the append path would have written (#134889 GW-25).
         conn.execute("UPDATE messages SET content=?, display_metadata=? WHERE id=?",
-                     (notice, db._encode_display_metadata(display_metadata), tail[2]))
+                     (notice or PARTIAL_FAILED_TURN_NOTICE, db._encode_display_metadata(display_metadata), tail[2]))
         return True
     if notice is None and (tail is None or not (
             tail[0] == 'user' or (tail[0] == 'assistant' and tail[1] not in (None, '', '[]')))):

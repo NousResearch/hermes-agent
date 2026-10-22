@@ -825,13 +825,20 @@ class SessionAuthority:
         # result the answer is normally already the transcript tail, so the closer is a no-op.
         from gateway.session_results import close_discarded_turn
         from gateway.session_runtime_workers import tracked_write
+        from hermes_state_runtime import transcript_mark
         return await tracked_write(self, partial(
             resolve_unknown_session_input, self.db, epoch=self.epoch, admission_id=admission_id,
             generation=generation, _captured=prepared,
             # ``notice`` says the turn was interrupted: only when that is the outcome, never beside a
             # captured result this resolution commits as the turn's own answer.
-            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost, None if (
-                prepared is not None and lost['owner_epoch'] == self.epoch) else notice)),
+            # ``replace_after`` is the claim's durable transcript mark: the lost turn's own
+            # failed-turn boundary (written after the mark) is replaced by this notice instead of
+            # stacking a second one. It is durable because the turn may have been lost to a hard
+            # crash, long after the in-memory claim went with the dead process (#134889 GW-25).
+            _terminal_write=lambda conn, lost: close_discarded_turn(
+                self.db, conn, lost, None if (
+                    prepared is not None and lost['owner_epoch'] == self.epoch) else notice,
+                replace_after=transcript_mark(conn, lost['admission_id']))),
             then=partial(self._resolved_unknown, ref, admission_id, prepared, captured))
 
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):

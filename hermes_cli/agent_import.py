@@ -314,11 +314,8 @@ class AgentImporter:
                     servers.setdefault(name, srv)
         self.import_mcp_servers(servers, kind="mcp-servers")
         self.import_skills(self.source_root / "skills")
-        commands_dir = self.source_root / "commands"
-        if commands_dir.is_dir() and any(commands_dir.glob("*.md")):
-            self.record("slash-commands", commands_dir, None, "skipped",
-                        "Claude slash commands have no direct Hermes equivalent — "
-                        "consider converting them into skills")
+        from hermes_cli.agent_import_commands import import_commands
+        import_commands(self, self.source_root / "commands")
 
     def _run_codex(self) -> None:
         config = self._load_source_mapping("config", self.source_root / "config.toml",

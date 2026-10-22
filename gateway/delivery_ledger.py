@@ -434,7 +434,7 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                        adapter_profile=COALESCE(adapter_profile, 'default'), state='attempting',
                        last_error=CASE WHEN ? THEN NULL ELSE last_error END
                    WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
-                (pid, started, now, 1 if flood_row else 0, oid, owner_pid, owner_pid))
+                (pid, started, now, flood_row, oid, owner_pid, owner_pid))
             if cursor.rowcount:
                 # A never-claimed pending row was never sent: redeliver plainly. Anything else (crashed
                 # mid-await, other rejection, a flood refusal whose earlier chunks the platform may have

@@ -21,7 +21,7 @@ from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_context import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
-from agent.message_content import flatten_message_text
+from agent.message_content import extract_api_content_sidecar, flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
 from agent.plugin_live_notes import pop_plugin_notices
 from agent.skills_index_delta import stage_skills_index_note
@@ -147,13 +147,6 @@ def drop_stale_api_content(msg: dict[str, Any]) -> None:
     (replaying it would resend what the rewrite removed; cost is one cache miss)."""
     msg.pop("api_content", None)
 
-
-def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[Any]:
-    """Extract the ``api_content`` sidecar; ``None`` when absent or not text/content parts."""
-    v = msg.get("api_content")
-    if isinstance(v, str) or (isinstance(v, list) and all(isinstance(part, dict) for part in v)):
-        return v
-    return None
 
 
 def _pop_turn_note(agent: Any, attr: str) -> str:

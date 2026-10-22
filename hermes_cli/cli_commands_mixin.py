@@ -30,7 +30,7 @@ from hermes_constants import display_hermes_home
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
-from agent.turn_context import extract_api_content_sidecar
+from agent.message_content import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,

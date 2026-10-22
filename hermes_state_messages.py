@@ -24,6 +24,7 @@ from hermes_state_common import (
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
+from hermes_state_pending_deliveries import SessionPendingDeliveriesMixin
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
 
@@ -119,7 +120,7 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
-class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
+class SessionMessagesMixin(SessionPendingDeliveriesMixin, SessionDetachedResultsMixin, SessionTodoResultMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
@@ -427,51 +428,6 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
-
-    def append_pending_delivery(self, session_id: str, content: str, *, source: str) -> int:
-        """Durable reference, not an active user turn. Admission coalesces it with a real input.
-
-        Inactive, non-compacted rows survive active flushes without entering compression or
-        changing the model's cached prefix. The source is producer metadata, never inferred
-        from a user-supplied text label.
-        """
-        def _do(conn):
-            self._check_transcript_write_guards(conn, session_id, None)
-            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            params = self._message_row_params(conversation_id, "user", {
-                "content": content, "display_kind": "pending_delivery",
-                "display_metadata": {"source": source, "delivery_session_id": session_id},
-            }, None, time.time(), keep_reasoning=False)
-            row_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
-            conn.execute("UPDATE messages SET active = 0 WHERE id = ?", (row_id,))
-            return row_id
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
-
-    def pending_deliveries(self, session_id: str, *, limit: int = 16) -> List[Dict[str, Any]]:
-        """Bounded references under the existing compression-aware conversation lease key.
-
-        An explicit fork/reset has its own key; compression keeps the old one. Inactive
-        delivery rows need neither copying nor transcript repair when the active tip rotates.
-        """
-        with self._read_ctx() as conn:
-            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            return [dict(row) for row in conn.execute(
-                """SELECT id, substr(content, 1, 32000) AS content, length(content) AS size
-                FROM messages WHERE session_id = ? AND display_kind = 'pending_delivery'
-                AND active = 0 ORDER BY id LIMIT ?""", (conversation_id, limit)).fetchall()]
-
-    def _consume_pending_deliveries(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Acknowledge only with the user carrier's successful commit; failed flushes retry."""
-        for message in messages:
-            metadata = self._decode_display_metadata(message.get("display_metadata")) or {}
-            ids = metadata.get("pending_delivery_ids") if message.get("role") == "user" else None
-            if not isinstance(ids, list) or not ids or not all(type(i) is int for i in ids):
-                continue
-            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            conn.execute(
-                f"""UPDATE messages SET display_kind = 'consumed_delivery'
-                WHERE session_id = ? AND display_kind = 'pending_delivery'
-                AND active = 0 AND id IN ({_placeholders(ids)})""", (conversation_id, *ids))
 
     def append_messages_batch(
         self, session_id: str, messages: list[dict[str, Any]], compression_lock_holder: Optional[str] = None,

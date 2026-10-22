@@ -8,6 +8,7 @@ transport boundaries are offline doubles; no external service is contacted.
 import asyncio
 import copy
 import threading
+from itertools import pairwise
 from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -67,7 +68,7 @@ def conversation(tmp_path, monkeypatch, request):
 
 
 async def deliver(conversation, attach):
-    runner, source, session, adapter, channel, history = conversation
+    runner, source, session, adapter, channel, _history = conversation
     job = {"id": "offline-brief", "name": "Widget briefing", "deliver": "origin", "origin": asdict(source)}
     job["origin"]["platform"] = source.platform.value
     if attach is not None:
@@ -94,7 +95,7 @@ def make_agent(conversation, monkeypatch, respond):
     monkeypatch.setattr("agent.process_bootstrap.OpenAI",
                         lambda **kwargs: SimpleNamespace(chat=SimpleNamespace(completions=Completions())))
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda *args, **kwargs: [])
-    runner, source, session, *_ = conversation
+    runner, _source, session, *_ = conversation
     agent = AIAgent(model="test-model", api_key="offline", base_url="http://localhost:1/v1",
                     platform="discord", session_id=session.session_id, session_db=runner.session_store._db,
                     max_iterations=2, quiet_mode=True, skip_memory=True, skip_context_files=True)
@@ -214,7 +215,7 @@ async def test_idle_followup_observes_only_opted_in_delivery(conversation, attac
 @pytest.mark.parametrize("route", ["normal", "priority", "steer", "priority-steer", "slash-steer"])
 @pytest.mark.parametrize("runtime", ["chat", "native"])
 async def test_active_followup_observes_opted_in_delivery(conversation, route, runtime, monkeypatch):
-    runner, source, session, adapter, channel, history = conversation
+    runner, source, session, adapter, _channel, history = conversation
     entered, finish = threading.Event(), threading.Event()
     requests = []
 
@@ -304,7 +305,7 @@ async def test_active_followup_observes_opted_in_delivery(conversation, route, r
         assert any(m.get("tool_call_id") == "read-1" for m in second)
     assert BRIEF in user_input and FOLLOWUP in user_input
     assert agent._cached_system_prompt == "Offline test system prompt; preserve these bytes."
-    assert all(a["role"] != b["role"] for a, b in zip(second, second[1:]))
+    assert all(a["role"] != b["role"] for a, b in pairwise(second))
     assert not adapter._pending_messages
     reloaded = runner.session_store.load_transcript(session.session_id)
     wire = [m.get("api_content") or m.get("content") or "" for m in reloaded]

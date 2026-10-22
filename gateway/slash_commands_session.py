@@ -15,7 +15,7 @@ import shlex
 from typing import Optional, Union
 
 from agent.i18n import t
-from agent.turn_context import extract_api_content_sidecar
+from agent.message_content import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType

@@ -438,6 +438,17 @@ def carry_unadmitted_user_message(
     append_message(early_result["messages"], deferred_user, timestamp=timestamp)
 
 
+def prepare_pending_delivery_input(agent, lease, user_message, persist_user_message, display_kind, metadata):
+    """Preserve display input while attaching references only after human admission."""
+    if lease is None or display_kind or not isinstance(user_message, (str, list)):
+        return user_message, persist_user_message, metadata
+    original = user_message
+    user_message, metadata = attach_pending_delivery_context(agent, user_message, metadata)
+    if user_message is not original and persist_user_message is None:
+        persist_user_message = original
+    return user_message, persist_user_message, metadata
+
+
 def attach_pending_delivery_context(agent, user_message, metadata):
     """Add bounded references to this admitted user input, never to history or the system.
 

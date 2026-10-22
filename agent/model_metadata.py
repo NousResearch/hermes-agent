@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 import hermes_yaml as yaml
 
+from agent.message_content import extract_api_content_sidecar
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
@@ -2496,8 +2497,6 @@ def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:
     """Count image-like content parts in a message; return their token cost."""
     if not isinstance(msg, dict):
         return 0
-    from agent.turn_context import extract_api_content_sidecar
-
     sidecar = extract_api_content_sidecar(msg)
     content = sidecar if isinstance(sidecar, (str, list)) and sidecar and msg.get("role") in ("user", "assistant") else msg.get("content")
     count = _count_parts(content, _IMAGE_PART_TYPES)
@@ -2534,8 +2533,6 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
       ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
       checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
       prices them, and the usage anchor carries that price forward."""
-    from agent.turn_context import extract_api_content_sidecar
-
     sidecar = extract_api_content_sidecar(msg)
     sidecar_wins = isinstance(sidecar, (str, list)) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     if sidecar_wins:

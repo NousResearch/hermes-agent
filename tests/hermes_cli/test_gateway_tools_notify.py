@@ -148,7 +148,7 @@ def test_idle_tick_without_an_admitted_turn_queues_nothing():
         conn.close()
 
 
-def test_stamp_claim_publishes_the_card_and_an_ordinary_claim_stays_empty():
+def test_stamp_claim_publishes_automation_card_or_ordinary_input():
     from gateway.session_authority import SessionAuthority
     from gateway.session_contract import SessionRef
     from gateway.session_events import SessionEvents
@@ -165,7 +165,7 @@ def test_stamp_claim_publishes_the_card_and_an_ordinary_claim_stays_empty():
     SessionAuthority._stamp_claim(authority, ref, live, {"generation": 10, "admission_id": "adm-10",
                                                          "payload": {"text": "typed"}})
     assert published == [("message.start", {"display_kind": "process_complete", "display_text": DISPLAY,
-                                            "text": MODEL_TEXT}), ("message.start", {})]
+                                            "text": MODEL_TEXT}), ("message.start", {"input": {"text": "typed"}})]
 
 
 def test_claim_stamp_carries_the_automation_card_on_message_start():
@@ -178,7 +178,7 @@ def test_claim_stamp_carries_the_automation_card_on_message_start():
     diagnostic = {"text": "x", "native_text_v1": {"automation": {
         "display_kind": "process_complete", "display_text": DISPLAY, "notification_category": "diagnostic"}}}
     assert admission_display(diagnostic)["notification_category"] == "diagnostic"
-    assert admission_display({"text": "typed by the user"}) == {}
+    assert admission_display({"text": "typed by the user"}) == {"input": {"text": "typed by the user"}}
     assert admission_display({"text": "x", "local_automation_v1": {"identity": "i"}}) == {}
 
 

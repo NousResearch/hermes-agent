@@ -87,6 +87,10 @@ class SessionState:
         # runs for one is painted like a typed turn (``gateway_tools_notify.queue_admitted_turn``).
         self.pending: list = []
         self.queued_inputs: dict = {}
+        self.painted_admissions: set[str] = set()
+        self.admission_cursor: int | None = None
+        self.history_needed = False
+        self.reattach_after = 0.0
         # Started ``/queue`` admissions waiting for their turn (``admission_id -> receipt-like``), and the
         # one whose item the input loop just took (``gateway_tools_notify.arm_adopted``).
         self.adopted: dict = {}
@@ -105,6 +109,15 @@ class SessionState:
         self.gaps = self.attached_gaps = 0
 
     def adopt_snapshot(self, snapshot):
+        from hermes_cli.gateway_remote_turns import remember_input
+        cursor = snapshot.get("admission_cursor")
+        if type(cursor) is int:
+            if self.admission_cursor is None:
+                self.admission_cursor = cursor
+            else:
+                self.history_needed = True
+        for row in snapshot.get("pending") or ():
+            remember_input(self, row.get("admission_id"), row.get("input"))
         self.info = dict(snapshot.get("info") or {})
         self.revision = snapshot.get("revision", self.revision)
         self.subscription_id = snapshot.get("subscription_id", self.subscription_id)

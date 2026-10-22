@@ -68,13 +68,43 @@ not enabled by these read projections.
 committed public `text`, alongside the canonical `admission_id`, sequence and status.
 This includes native messaging inputs and local-client inputs. Snapshots do not expose
 private native routing, source, or authorization envelopes. Submission and receipt
-ACKs retain their existing shape. Clients must use `admission_id` for cancellation
-and receipt queries rather than assuming it equals the original input ID.
+ACKs retain their existing shape. Cancellation uses `admission_id`; it is not the
+original input ID. Receipt queries accept either identity as described below.
 Queue admission, claim, cancellation and settlement also publish `session.info` to
 attached viewers. Its `pending` rows use the same projection as resume. Settlement
 publishes this state before `message.complete`, retaining the terminal event as the
 last event of that turn. Desktop translates both paths into its existing
 `pending_submissions` queue store.
+
+### Durable receipt and viewer recovery
+
+`submission-receipt-v1` advertises `prompt.receipt({session_id, submission_id,
+include_result?})`. Supply exactly one of `admission_id` and `submission_id`.
+Submission lookup uses the authenticated principal, exact profile and session;
+even a controller cannot select another principal's submission identity. The
+existing admission-ID lookup retains its ownership/control checks. Both are
+read-only and work after terminal settlement and an owner restart, independently
+of event replay. A missing receipt is **not** permission to resubmit: deletion,
+retention or a wrong identity may make proof unavailable. Deleted sessions are
+not restored by lookup. A queued receipt proves admission, not execution.
+
+`admission-history-v1` advertises `prompt.history({session_id, after_sequence,
+limit?})`. It returns `{admissions, last_sequence, has_more}`, with at most 64
+entries per page. Each entry contains its receipt and a public `input` or null.
+The cursor is the durable admission sequence, distinct from the event replay
+sequence. `session.resume.admission_cursor` establishes the initial boundary;
+subsequent reconnects read forward from the viewer's saved boundary. Pending
+snapshots also carry public `input`, so already-admitted queued work is observed.
+
+`ordinary-input-events-v1` adds `message.start.payload.input: {text}` for ordinary
+visible local input. Hidden input and private automation text never use this
+projection. Automation retains its own card contract. The classic terminal
+adopts these turns by admission ID, treats their text literally, and renders the
+gateway's result without calling `prompt.submit`. Busy viewers retain missed
+starts; reconnecting viewers recover completed turns from durable history and
+receipts. The existing composer draft and session execution owner are preserved.
+Installing this support requires the new gateway and viewer code; it does not
+hot-patch processes running an older release.
 
 A turn that was `started` when its owning gateway died is recovered by the next owner
 as `unknown`: Hermes cannot prove which side effects happened, so it neither replays

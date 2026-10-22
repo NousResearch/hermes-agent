@@ -132,20 +132,25 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
+class AdmittedInput(Payload):
+    """Public text of an ordinary input already admitted by the session authority."""
+
+    text: str
+
+
 class MessageStartPayload(Payload):
-    """``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;
-    ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card
-    (``session_automation.admission_display``: a background-process completion) and its model
-    text, so a viewer that did not submit the turn paints the same header the submitter would."""
+    """The authority projects ordinary visible input or an automation's async-result card.
+    Standalone TUI emitters may still send an empty payload."""
 
     display_kind: str | None = None
     display_text: str | None = None
     notification_category: str | None = None
     text: str | None = None
+    input: AdmittedInput | None = None
 
 
 event("message.start", MessageStartPayload,
-      doc="A turn began streaming; an automation turn carries its async-result card.")
+      doc="A turn began streaming; ordinary input or an automation card lets observers render it.")
 
 
 class StreamDeltaPayload(Payload):

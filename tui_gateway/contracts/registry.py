@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from typing import get_args
 
 from pydantic import ValidationError
 
@@ -129,10 +130,18 @@ def canonical_param_problems(contract: MethodContract, params: dict) -> list[str
     except ValidationError as exc:
         # Shared methods preserve handler-owned missing-field/permission refusals,
         # while refusing malformed values before the handler indexes them.
-        return [".".join(str(p) for p in err.get("loc", ())) or "params" for err in exc.errors()
+        return [_canonical_param_path(contract, err.get("loc", ())) for err in exc.errors()
                 if (err.get("type") != "missing" if contract.name in METHODS
                     else err.get("type") in ("extra_forbidden", "missing"))]
     return []
+
+
+def _canonical_param_path(contract, location) -> str:
+    root = contract.params.model_fields.get('root') if contract.params.__pydantic_root_model__ else None
+    variants = {variant.__name__ for variant in get_args(root.annotation)} if root else set()
+    if location and location[0] in variants:
+        location = location[1:]
+    return '.'.join(str(part) for part in location) or 'params'
 
 
 def check_params_accepted(contract: MethodContract | ServerRequestContract, params: dict) -> None:

@@ -17,6 +17,8 @@ from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
 from .registry import canonical_method
+from .events import AdmittedInput
+from pydantic import Field, RootModel
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -38,10 +40,21 @@ class AdmissionStatus(Result):
     execution_generation: int | None
 
 
-class PromptReceiptParams(Params):
+class ReceiptOptions(Params):
     session_id: str
-    admission_id: str
     include_result: bool | None = None
+
+
+class AdmissionReceiptParams(ReceiptOptions):
+    admission_id: str = Field(min_length=1, max_length=1024)
+
+
+class SubmissionReceiptParams(ReceiptOptions):
+    submission_id: str = Field(min_length=1, max_length=1024)
+
+
+class PromptReceiptParams(RootModel[AdmissionReceiptParams | SubmissionReceiptParams]):
+    """Exactly one durable identity; generated clients carry the same exclusive union."""
 
 
 class PromptReceiptResult(AdmissionStatus):
@@ -53,7 +66,34 @@ class PromptReceiptResult(AdmissionStatus):
 
 
 canonical_method("prompt.receipt", params=PromptReceiptParams, result=PromptReceiptResult,
-                 doc="Current receipt of one admission the caller submitted (or controls).")
+                 doc="Read a durable receipt by admission_id, or by the calling principal's exact "
+                     "session_id and submission_id after a lost submit reply. Never admits input. "
+                     "Exactly one selector is required; not_found is not proof that input never ran.")
+
+
+ADMISSION_HISTORY_PAGE_SIZE = 64
+
+
+class PromptHistoryParams(Params):
+    session_id: str
+    after_sequence: int = Field(ge=0, strict=True)
+    limit: int = Field(default=ADMISSION_HISTORY_PAGE_SIZE, ge=1, le=ADMISSION_HISTORY_PAGE_SIZE, strict=True)
+
+
+class AdmissionHistoryEntry(Result):
+    receipt: AdmissionStatus
+    input: AdmittedInput | None
+
+
+class PromptHistoryResult(Result):
+    admissions: list[AdmissionHistoryEntry]
+    last_sequence: int
+    has_more: bool
+
+
+canonical_method('prompt.history', params=PromptHistoryParams, result=PromptHistoryResult,
+                 doc='Read admission history after a durable sequence, in FIFO order. Public ordinary '
+                     'input only; hidden and automation input is omitted. Does not replay or admit work.')
 
 
 class PromptCancelParams(Params):

@@ -914,6 +914,20 @@ export function preserveLocalPendingTurnMessages(
       (message.rowId !== undefined || message === newestAuthoritativeUser)
   )
 
+  // A transport-lost optimistic prompt can outlive several later turns. When
+  // the gateway eventually accepts it, its durable row is inserted at its
+  // display position, which may be before the newest shared row. The normal
+  // newly-committed window then starts after the twin and cannot retire the
+  // orphan. A durable row timestamped no earlier than the local bubble is the
+  // narrow proof that this is its delayed acceptance, rather than an older
+  // identical prompt the user deliberately repeated.
+  const delayedAcknowledgedUserCandidates = nextMessages.filter(
+    candidate =>
+      candidate.role === 'user' &&
+      !isGatewaySystemMarker(candidate) &&
+      candidate.rowId !== undefined
+  )
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -1024,7 +1038,7 @@ export function preserveLocalPendingTurnMessages(
 
     if (
       isOptimisticUser &&
-      acknowledgedUserCandidates.some(
+      [...acknowledgedUserCandidates, ...delayedAcknowledgedUserCandidates].some(
         candidate =>
           // #122079: the tolerant arm widens the TEXT compare only — it stays
           // inside the identity gate, so a rowId-bearing optimistic row is
@@ -1032,6 +1046,12 @@ export function preserveLocalPendingTurnMessages(
           // repeat of the same captioned paste). The rowId-less paste from
           // #120978 carries no identity and keeps matching tolerantly.
           !conflictingTranscriptIdentity(message, candidate) &&
+          // Outside the newly committed window, timestamp order prevents an
+          // older identical turn from acknowledging a newer retry.
+          (acknowledgedUserCandidates.includes(candidate) ||
+            (message.timestamp !== undefined &&
+              candidate.timestamp !== undefined &&
+              candidate.timestamp >= message.timestamp)) &&
           (textWithoutReferenceLines(chatMessageText(candidate)) ===
             textWithoutReferenceLines(chatMessageText(message)) ||
             sameAttachmentTurn(candidate, message))

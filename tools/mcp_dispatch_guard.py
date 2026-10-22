@@ -21,9 +21,13 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CALL_IDS = ("task_id", "session_id", "tool_call_id", "turn_id", "api_request_id")
 _DEFAULT_TIMEOUT_SECONDS = 2.0
 _MAX_ARGS_BYTES = 1024 * 1024
+# Compare alphanumeric casefolded keys: the receiving gateway accepts both
+# snake_case and camelCase forms, including nested _meta/context/slack objects.
+# A scheduler call must not smuggle any of those actor aliases.
 _ORIGIN_ARG_KEYS = frozenset({
-    "slack", "actor_slack_id", "slack_user_id", "slack_channel_id", "slack_workspace_id",
-    "slack_message_ts", "slack_thread_ts", "channel_id", "workspace_id", "message_ts", "thread_ts",
+    "slack", "actorslackid", "slackuserid", "slackchannelid", "slackworkspaceid",
+    "slackmessagets", "slackthreadts", "channelid", "workspaceid", "userid",
+    "messagets", "threadts",
 })
 
 
@@ -40,7 +44,7 @@ def _has_origin_fields(value: Any) -> bool:
     """A scheduler call cannot present Slack-like identity in its arguments."""
     if isinstance(value, dict):
         return any(
-            key.lower().replace("-", "_") in _ORIGIN_ARG_KEYS or _has_origin_fields(item)
+            re.sub(r"[^a-z0-9]", "", key.casefold()) in _ORIGIN_ARG_KEYS or _has_origin_fields(item)
             for key, item in value.items()
         )
     if isinstance(value, list):
@@ -132,6 +136,13 @@ def admit_mcp_dispatch(server: str, tool_name: str, args: dict,
         logger.error("Required MCP dispatch policy could not be read for %s/%s", profile, server,
                      exc_info=True)
         return None, "Required MCP dispatch policy is invalid; no call was sent."
+    # Consume at entry for *every* native MCP dispatch, including a scheduler
+    # exception or unconfigured server. Otherwise a nested/queued raw alias
+    # could inherit an unspent plugin scope during the transport call.
+    from hermes_cli.plugins_mcp_dispatch import _take_plugin_mcp_call
+    plugin_call = _take_plugin_mcp_call()
+    if plugin_call is not None and (plugin_call.server != server or plugin_call.tool_name != tool_name):
+        return None, "Required MCP dispatch guard denied mismatched plugin call; no call was sent."
     if policy is None:
         # A registered *required* guard with a missing profile policy is
         # configuration drift, not an opt-out. This also protects a running
@@ -169,6 +180,11 @@ def admit_mcp_dispatch(server: str, tool_name: str, args: dict,
             raise ValueError("invalid required MCP guard timeout")
         ids = {key: call_kwargs[key] for key in _CALL_IDS
                if isinstance(call_kwargs.get(key), str)}
+        # Provenance comes only from PluginContext.call_mcp's execution-local
+        # scope, never from model-supplied MCP args or dispatch kwargs. Pass a
+        # matching immutable record to the guard so it can admit selected
+        # plugin routes while continuing to reject raw model aliases.
+        ids["plugin_call"] = plugin_call
         return _run_callback(entry[1], server=server, tool_name=tool_name, args=canonical,
                              call_ids=ids, timeout=float(raw_timeout)), None
     except Exception:

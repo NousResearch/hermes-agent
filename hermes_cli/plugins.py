@@ -525,8 +525,8 @@ class PluginContext(PluginMCPDispatchContextMixin, PluginOriginContextMixin):
         except (TypeError, ValueError):
             timeout = 30.0
         timeout = max(1.0, min(timeout, 600.0))
-        from tools.mcp_tool_handlers import _make_tool_handler
-        raw = _make_tool_handler(server, tool, timeout)(dict(arguments or {}))
+        from hermes_cli.plugins_mcp_dispatch import call_plugin_mcp
+        raw = call_plugin_mcp(self.plugin_id, server, tool, timeout, dict(arguments or {}))
         logger.debug("Plugin %s called MCP %s/%s (timeout=%ss, %d chars returned)",
                      self.manifest.name, server, tool, timeout, len(raw or ""))
         return self._mcp_envelope(raw)

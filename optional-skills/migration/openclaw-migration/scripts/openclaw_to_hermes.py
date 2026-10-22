@@ -1541,6 +1541,10 @@ class Migrator:
 
         tg_cfg = config.get("channels", {}).get("telegram", {})
         telegram_token = self._get_channel_field(tg_cfg, "botToken") if isinstance(tg_cfg, dict) else None
+        # A channel token may be a SecretRef (or an env template), not a bare string.  Resolve it with the
+        # same resolver the provider-key path uses; without this a SecretRef token is silently dropped even
+        # when --migrate-secrets was requested (#131863).
+        telegram_token = self._resolve_channel_secret(telegram_token) or telegram_token
         if isinstance(telegram_token, str) and telegram_token.strip():
             secret_additions["TELEGRAM_BOT_TOKEN"] = telegram_token.strip()
 
@@ -1579,6 +1583,7 @@ class Migrator:
         discord = config.get("channels", {}).get("discord", {})
         if isinstance(discord, dict):
             token = self._get_channel_field(discord, "token")
+            token = self._resolve_channel_secret(token) or token
             if isinstance(token, str) and token.strip():
                 additions["DISCORD_BOT_TOKEN"] = token.strip()
             allow_from = self._get_channel_field(discord, "allowFrom") or []
@@ -1597,9 +1602,11 @@ class Migrator:
         slack = config.get("channels", {}).get("slack", {})
         if isinstance(slack, dict):
             bot_token = self._get_channel_field(slack, "botToken")
+            bot_token = self._resolve_channel_secret(bot_token) or bot_token
             if isinstance(bot_token, str) and bot_token.strip():
                 additions["SLACK_BOT_TOKEN"] = bot_token.strip()
             app_token = self._get_channel_field(slack, "appToken")
+            app_token = self._resolve_channel_secret(app_token) or app_token
             if isinstance(app_token, str) and app_token.strip():
                 additions["SLACK_APP_TOKEN"] = app_token.strip()
             allow_from = self._get_channel_field(slack, "allowFrom") or []

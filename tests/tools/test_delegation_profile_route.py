@@ -306,3 +306,16 @@ def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profi
     routes, error = _resolve_coder_task()
     assert routes == []
     assert "hermes-test-missing-acp-binary" in (error or "") and "coder" in error
+
+
+def test_one_profile_under_two_labels_resolves_once_and_keeps_each_label(two_profiles):
+    from hermes_cli import runtime_provider
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    cache, parent = {}, _parent()
+    with patch.object(runtime_provider, "resolve_runtime_provider", wraps=runtime_provider.resolve_runtime_provider) as rp:
+        first = _route_to_task_route({"profile": "coder", "label": "reviewer"}, parent, cache)
+        second = _route_to_task_route({"profile": "coder", "label": "fixer"}, parent, cache)
+    assert rp.call_count == 1
+    assert (first.label, second.label) == ("reviewer", "fixer")
+    assert first.creds == second.creds and first.creds["model"] == "coder-model"

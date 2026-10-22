@@ -13,7 +13,7 @@ import contextlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
@@ -173,7 +173,7 @@ def _refuse_under_worker_snapshot(home: Path) -> None:
             f"cannot run as the profile at {home}. Delegate without a profile.")
 
 
-def _profile_route(home: Path, label: Optional[str]) -> TaskRoute:
+def _profile_route(home: Path) -> TaskRoute:
     """The profile's own primary route, resolved inside its scope (its config.yaml + secrets). The
     child never borrows the launching profile's key, pool, fallback chain or reasoning level."""
     from hermes_cli.config import load_config_readonly
@@ -204,22 +204,21 @@ def _profile_route(home: Path, label: Optional[str]) -> TaskRoute:
         command=rt.get("command"), args=list(rt.get("args") or []),
     )
     return TaskRoute(creds, {"fallback_providers": fallback if isinstance(fallback, list) else []},
-                     ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home, label)
+                     ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home)
 
 
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute]) -> TaskRoute:
-    key = json.dumps(route, sort_keys=True, default=str)
-    if key in cache:
-        return cache[key]
     label = route.get("label") if isinstance(route.get("label"), str) else None
-    if route.get("profile"):
-        resolved = _profile_route(_profile_home(route["profile"]), label)
-    else:
-        from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
-        resolved = TaskRoute(_resolve_delegation_credentials(route, parent_agent), route,
-                             route.get("reasoning_effort"), None, label)
-    cache[key] = resolved
-    return resolved
+    # The label is display-only: two labels on one route (or one profile) resolve once.
+    key = json.dumps({k: v for k, v in route.items() if k != "label"}, sort_keys=True, default=str)
+    if key not in cache:
+        if route.get("profile"):
+            cache[key] = _profile_route(_profile_home(route["profile"]))
+        else:
+            from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
+            cache[key] = TaskRoute(_resolve_delegation_credentials(route, parent_agent), route,
+                                   route.get("reasoning_effort"), None, None)
+    return replace(cache[key], label=label)
 
 
 def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]], index: int,

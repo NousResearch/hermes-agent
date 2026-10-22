@@ -328,6 +328,7 @@ import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
 import { applyLaunchProfileOverride } from './launch-profile'
+import { scrubLeakedWorkerEnv } from './leaked-worker-env'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
@@ -1280,6 +1281,16 @@ if (!isPrimaryInstance) {
 if (process.env.HERMES_DESKTOP_TMPDIR) {
   process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
   delete process.env.HERMES_DESKTOP_TMPDIR
+}
+
+// Launched from inside a kanban worker / delegate child: never pass its identity on to the
+// backend, terminals or CLIs this Desktop spawns (see leaked-worker-env.ts).
+{
+  const leaked = scrubLeakedWorkerEnv()
+
+  if (leaked.length) {
+    console.error(`[hermes] dropped inherited worker env: ${leaked.join(', ')}`)
+  }
 }
 
 const HERMES_HOME: string = resolveDesktopHermesHome({

@@ -3444,6 +3444,13 @@ def _default_to_chat(args) -> None:
 
 def main():
     """Main entry point for hermes CLI."""
+    # A Desktop/serve/dashboard/gateway launched from inside a kanban worker must not inherit
+    # the worker's identity env (it fences every chat's kanban tools). Before any fast path.
+    try:
+        from hermes_cli.top_level_env import scrub_for_top_level_launch
+        scrub_for_top_level_launch(sys.argv[1:])
+    except Exception:
+        pass
     _set_process_title()
     _warn_if_unsupervised_pid1()
     _advertise_agent_env()

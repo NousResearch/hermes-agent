@@ -4,8 +4,9 @@
 convention: session-scoped by default, ``--global`` persists); the override decides routing from the
 session's next ``delegate_task`` call. The ``delegate_task`` schema (a backend's per-task parameters)
 is part of the cached prompt and keeps following config.yaml, so a backend's own task parameters
-appear in sessions started after a global switch; a session switch to a backend whose parameters
-the schema lacks routes every task to that backend's default.
+appear in sessions started after a global switch. After a session switch the model may still send the
+previous backend's parameters: each such task is refused (naming the session's backend, the parameter,
+and ``/new`` or ``/delegation <backend>`` as the fix), never run on the new backend's default route.
 
 Session keys are the ``session_key`` a plugin command handler receives: the gateway/TUI route key, or
 the session id on the classic in-process CLI. ``delegate_task`` resolves the same key from the turn's

@@ -268,8 +268,32 @@ def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[
             f"Use none or one of: {', '.join(VALID_REASONING_EFFORTS)}.")
 
 
+def _undeclared_error(provider: DelegationProvider, index: int, names: list[str], config: Mapping[str, Any]) -> str:
+    """Why a task carrying parameters the session's backend does not declare is refused. The schema follows
+    config.yaml for the whole session (cached prompt), so after a ``/delegation`` switch the model can still send
+    the previous backend's parameters; dropping them would run the task on this backend's default route."""
+    from agent.delegation_registry import _registry
+    listed = ", ".join(f"'{name}'" for name in names)
+    owners = sorted({other.name for other in _registry.list_providers() if other.name != provider.name
+                     and set(names) & set(_declared_parameters(other, config))})
+    head = f"Task {index}: this session's delegation backend is '{provider.name}', which does not take {listed}"
+    if owners:
+        back = " or ".join(f"`/delegation {owner}`" for owner in owners)
+        quoted = ", ".join(f"'{owner}'" for owner in owners)
+        return (f"{head} (declared by {quoted}), so this task was not started. Start a "
+                f"new session with /new for a delegate_task tool that matches '{provider.name}', or switch this "
+                f"session back with {back}.")
+    return (f"{head}, and no installed delegation backend does, so this task was not started. Resend it without "
+            f"{listed}; if this session's delegate_task tool offers {listed}, start a new session with /new for a "
+            f"tool that matches '{provider.name}'.")
+
+
 def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]], index: int,
                task: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    undeclared = sorted(name for name, value in task.items()
+                        if value is not None and name not in declared and name not in RESERVED_TASK_PARAMETERS)
+    if undeclared:
+        raise DelegationRouteError(_undeclared_error(provider, index, undeclared, config))
     params = {name: task[name] for name in declared if task.get(name) is not None}
     for name, value in params.items():
         error = _param_error(index, name, value, declared[name])

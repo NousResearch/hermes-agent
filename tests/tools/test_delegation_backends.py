@@ -215,8 +215,17 @@ def test_a_session_backend_switch_routes_that_session_only_and_global_persists(t
         assert [(b.name, b.available) for b in list_backends()] == [("default", True), ("probe-options", True)]
         set_session_backend("chat-a", "default")
         for sid in ("chat-a", "chat-b"):
-            delegate_task(tasks=[{"goal": "route me", "option": "fast"}], parent_agent=_parent(sid))
-        assert [b["model"] for b in recorded] == [None, "fast-model"]
+            delegate_task(tasks=[{"goal": "route me plainly"}, {"goal": "route me on fast", "option": "fast"}],
+                          parent_agent=_parent(sid))
+        # chat-a's schema still offers `option` (it follows config.yaml); its default backend refuses that task
+        # instead of running it on the default route, and a name no backend declares is refused too.
+        assert [b["model"] for b in recorded] == [None, None, "fast-model"]
+        error = json.loads(delegate_task(tasks=[{"goal": "route me on fast", "option": "fast"},
+                                                {"goal": "route me on a tier", "tier": "a"}],
+                                         parent_agent=_parent("chat-a")))["error"]
+        owned, unknown = error.split(" Task 1: ")
+        assert "backend is 'default'" in owned and "`/delegation probe-options`" in owned and "/new" in owned
+        assert "'tier'" in unknown and "no installed delegation backend" in unknown and len(recorded) == 3
         with pytest.raises(ValueError, match="'nope' is not installed"):
             set_session_backend("chat-a", "nope")
 
@@ -224,6 +233,52 @@ def test_a_session_backend_switch_routes_that_session_only_and_global_persists(t
         assert yaml.safe_load((home / "config.yaml").read_text())["delegation"]["backend"] == "default"
         assert get_session_backend("chat-a") is None
     finally:
+        manager.unload()
+
+
+def test_a_session_switch_refuses_a_task_using_the_previous_backends_parameter(tmp_path, monkeypatch, recorded):
+    """The schema keeps the saved backend's parameters for the whole session (cached prompt), so after
+    ``/delegation`` switches to another backend a task sending the old ``option`` is refused alone, naming the
+    session's backend, the parameter and the fix; it never runs on the new backend's default route."""
+    from agent.delegation_provider import DelegationProvider
+    from agent.delegation_registry import _registry
+
+    class Profiles(DelegationProvider):
+        @property
+        def name(self):
+            return "probe-profiles"
+
+        def task_parameters(self, config):
+            return {"target": {"type": "string", "enum": ["work"]}}
+
+        def route_task(self, task, config):
+            return {"model": f"{task.get('target') or 'profile-default'}-model"}
+
+    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options",
+                                               "backends": {"probe-options": {"options": OPTIONS}}})
+    profiles = Profiles()
+    _registry.register(profiles)
+    try:
+        from agent.delegation_backends import set_session_backend
+        from tools.delegate_tool import delegate_task
+
+        assert "option" in _task_props(_definition())
+        set_session_backend("chat-a", "probe-profiles")
+        out = json.loads(delegate_task(tasks=[
+            {"goal": "the quick thing", "option": "fast"},
+            {"goal": "a plain task"},
+            {"goal": "a work task", "target": "work"},
+        ], parent_agent=_parent("chat-a")))
+        refused, plain, work = out["results"]
+        assert refused["status"] == "error" and refused["route"] == {"backend": "probe-profiles", "refused": True}
+        assert refused["error"] == (
+            "Task 0: this session's delegation backend is 'probe-profiles', which does not take 'option' (declared by "
+            "'probe-options'), so this task was not started. Start a new session with /new for a delegate_task tool "
+            "that matches 'probe-profiles', or switch this session back with `/delegation probe-options`.")
+        assert plain["status"] == work["status"] == "completed"
+        assert [b["model"] for b in recorded] == ["profile-default-model", "work-model"]
+    finally:
+        _registry.restore_registration("probe-profiles", profiles, None)
         manager.unload()
 
 

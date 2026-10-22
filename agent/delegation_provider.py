@@ -90,7 +90,8 @@ class DelegationProvider(ProviderBase):
         Called when the tool definitions are built for a session, never mid-conversation, and the
         result must be deterministic for a given ``config`` (same input, same bytes): the schema
         is part of the cached prompt prefix. Names in :data:`RESERVED_TASK_PARAMETERS` are
-        refused. An ``enum`` here is enforced by core before :meth:`route_task` runs.
+        refused. An ``enum`` here is enforced by core before :meth:`route_task` runs, and a task
+        carrying a parameter this method did not declare is refused before it reaches you.
         """
         return {}
 

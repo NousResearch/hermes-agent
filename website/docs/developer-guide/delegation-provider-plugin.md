@@ -128,7 +128,8 @@ A non-profile route without `fallback_providers` of its own gets `delegation.fal
 
 ### Refusals are per task
 
-A `DelegationRouteError` from `route_task`, a value outside your parameter's `enum`, an unknown
+A `DelegationRouteError` from `route_task`, a parameter your backend did not declare, a value outside
+your parameter's `enum`, an unknown
 `reasoning_effort`, a tier the route does not offer, or a credential the route cannot resolve refuses
 **that task only**: no child is built for it, its result entry is
 `{"status": "error", "error": "<your message>", "route": {"backend": "<name>", "refused": true}}`, and
@@ -168,8 +169,18 @@ returns the chosen model id, or `None` when cancelled.
 
 `session_key` is the `session_key` a plugin command handler receives. A session switch decides routing
 from that session's next `delegate_task` call; the `delegate_task` schema (your parameters) follows
-`config.yaml`, because it is part of the cached prompt, so a session switched to a backend whose
-parameters it lacks routes every task to that backend's default.
+`config.yaml`, because it is part of the cached prompt and is never rebuilt mid-conversation. After a
+switch the model can still send the previous backend's parameters, so core refuses each task carrying a
+parameter the session's backend does not declare (fail closed per task, like any other refusal) instead
+of dropping it and running the task on the new backend's default route:
+
+```text
+Task 0: this session's delegation backend is 'profile_routes', which does not take 'option' (declared by
+'model_map'), so this task was not started. Start a new session with /new for a delegate_task tool that
+matches 'profile_routes', or switch this session back with `/delegation model_map`.
+```
+
+A parameter no installed backend declares is refused the same way, with "Resend it without ..." as the fix.
 
 ## Prompt caching
 

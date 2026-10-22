@@ -11,6 +11,7 @@ import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   clearSessionDraft,
   type ComposerAttachment,
+  type ComposerTransportPayload,
   freezeComposerTransportPayload,
   isFreshDraftScope
 } from '@/store/composer'
@@ -35,6 +36,7 @@ interface UseComposerSubmitArgs {
   attachments: ComposerAttachment[]
   busy: boolean
   busyInputMode?: BusyInputMode | null
+  compacting?: boolean
   clearDraft: () => void
   disabled: boolean
   draftScopeRef: RefObject<string | null>
@@ -75,6 +77,7 @@ export function useComposerSubmit({
   attachments,
   busy,
   busyInputMode = 'interrupt',
+  compacting = false,
   clearDraft,
   disabled,
   draftScopeRef,
@@ -247,7 +250,7 @@ export function useComposerSubmit({
   )
 
   // Returns false when the submit was refused and must not refocus the input.
-  const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean) => {
+  const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean, busyModeOverride?: BusyInputMode) => {
     // Slash commands should execute immediately even while the agent is
     // busy — they're client-side operations (/yolo, /skin, /new, /help,
     // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
@@ -274,16 +277,22 @@ export function useComposerSubmit({
       clearDraft()
       dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
     } else if (!blockingPrompt && !attachments.length && text.trim()) {
-      // Busy Send follows the backend busy-input policy: interrupt redirects
-      // the live turn (Cursor-style stop-and-correct), steer injects at the
-      // next tool boundary, queue admits it as the next turn. If the turn
-      // already ended, steerDraft re-queues so nothing is lost. Compaction is
-      // the gateway's call: it answers `queued` under the compression lock.
-      // Unloaded policy (null) must not turn an intended queue into an interrupt.
-      if (busyInputMode === 'queue') {
+      // Queue during compaction, otherwise apply the configured one-message policy.
+      // Slash commands above and parked-card answers retain higher priority.
+      const effectiveMode = busyModeOverride ?? busyInputMode
+
+      if (compacting || effectiveMode === 'queue') {
         queueCurrentDraft()
-      } else if (busyInputMode !== null) {
-        steerDraft(busyInputMode)
+      } else if (effectiveMode === 'steer') {
+        if (onSteerHidden) {
+          steerAtToolBoundary(text)
+        } else {
+          queueCurrentDraft()
+        }
+      } else if (effectiveMode !== null) {
+        steerDraft(effectiveMode, text)
+      } else {
+        return false
       }
     } else if (payloadPresent) {
       // Attachments can't ride a redirect (no tool-result image carriage) —
@@ -364,7 +373,7 @@ export function useComposerSubmit({
     return yielded ? 'yielded' : null
   }
 
-  const submitDraft = () => {
+  const submitDraft = (busyModeOverride?: BusyInputMode) => {
     if (disabled) {
       return
     }
@@ -413,7 +422,7 @@ export function useComposerSubmit({
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
-      if (!submitWhileBusy(text, payloadPresent, blockingPrompt)) {
+      if (!submitWhileBusy(text, payloadPresent, blockingPrompt, busyModeOverride)) {
         return
       }
     } else if (!payloadPresent && queuedPrompts.length > 0) {
@@ -433,15 +442,51 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  // Redirect the live turn with a correction. The gateway either restarts the
-  // active model request with its displayed context or waits for the current
-  // tool boundary. If the turn already ended, queue the words instead.
-  const steerDraft = (mode: 'interrupt' | 'steer' = 'interrupt') => {
-    const text = draftRef.current.trim()
+  // A correction whose RPC rejects (socket dropped, session gone mid-turn)
+  // must not vanish with the already-cleared draft. Capture the target scope at
+  // dispatch time so a late rejection cannot enqueue into a newly focused chat.
+  const queueRejectedCorrection = (
+    frozen: ComposerTransportPayload,
+    queueKey: string | null,
+    restoreScope: string | null
+  ) => {
+    const hasTerminalTransport = frozen.displayText !== frozen.transportText
 
-    // Guard on live editor state, not the render-lagged `canSteer`: a redirect
-    // fired on a fast Enter must not be dropped because state hasn't synced.
+    // A sessionless chat may already have a per-lifecycle __new__: key. It is
+    // a draft bucket, not a queue that a worker will ever drain.
+    if (queueKey && !isFreshDraftScope(queueKey) && serverOwnsComposerQueue(sessionId ?? queueKey)) {
+      dispatchSubmit(frozen.transportText, [], undefined, {
+        ...(hasTerminalTransport ? { displayText: frozen.displayText } : {}),
+        fromQueue: true,
+        sessionId: sessionId ?? null,
+        storedSessionId: queueKey
+      })
+    } else if (queueKey && !isFreshDraftScope(queueKey)) {
+      enqueueQueuedPrompt(queueKey, {
+        text: frozen.displayText,
+        attachments: [],
+        ...(hasTerminalTransport
+          ? { displayText: frozen.displayText, frozenTransport: frozen.transportText }
+          : {})
+      })
+    } else {
+      // Store against the draft that actually supplied the words. A delayed
+      // rejection after navigation must never overwrite another chat's editor.
+      stashAt(restoreScope, frozen.displayText, [])
+
+      if (draftScopeRef.current === restoreScope && activeQueueSessionKeyRef.current === queueKey) {
+        loadIntoComposer(frozen.displayText, [])
+      }
+    }
+  }
+
+  const steerDraft = (mode: 'interrupt' | 'steer' = 'interrupt', text = pathifyRefs(draftRef.current).trim()) => {
     if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+      // A slash command is never a queued model prompt, even if this helper is called directly.
+      if (text && !SLASH_COMMAND_RE.test(text)) {
+        queueCurrentDraft()
+      }
+
       return
     }
 
@@ -459,10 +504,11 @@ export function useComposerSubmit({
       return
     }
 
+    const rejectedQueueKey = activeQueueSessionKeyRef.current
+    const restoreScope = draftScopeRef.current
+
     triggerHaptic('submit')
     clearDraft()
-
-    const submittedScope = activeQueueSessionKeyRef.current
 
     // The draft is already cleared, so a refused or failed redirect must keep
     // the only copy (#68927): the canonical gateway queue when the server owns
@@ -470,38 +516,65 @@ export function useComposerSubmit({
     // queue yet (a new chat is busy before its first session exists). Keep the
     // frozen transport for the queue; restoring to the composer keeps the chip
     // form so the user can re-send it as-is.
-    const hasTerminalTransport = frozen.displayText !== frozen.transportText
-    const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
+    const keep = () => queueRejectedCorrection(frozen, rejectedQueueKey, restoreScope)
 
-    const keep = () => {
-      if (!activeQueueSessionKey) {
-        loadIntoComposer(frozen.displayText, [])
-        stashAt(submittedScope, frozen.displayText, [])
-      } else if (canonical) {
-        // `fromQueue` skips the submit-side freeze, so hand it the frozen transport.
-        dispatchSubmit(frozen.transportText, [], undefined, {
-          ...(hasTerminalTransport ? { displayText: frozen.displayText } : {}),
-          fromQueue: true,
-          sessionId: sessionId ?? null,
-          storedSessionId: activeQueueSessionKey
+    // Also recover callbacks that throw synchronously before returning a promise.
+    try {
+      void Promise.resolve(onSteer(frozen.transportText, mode))
+        .then(accepted => {
+          if (!accepted) {
+            keep()
+          }
         })
-      } else {
-        enqueueQueuedPrompt(activeQueueSessionKey, {
-          text: frozen.displayText,
-          attachments: [],
-          ...(hasTerminalTransport ? { displayText: frozen.displayText, frozenTransport: frozen.transportText } : {})
-        })
-      }
+        .catch(keep)
+    } catch {
+      keep()
+    }
+  }
+
+  const steerAtToolBoundary = (text: string) => {
+    if (!onSteerHidden || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+      queueCurrentDraft()
+
+      return
     }
 
-    void Promise.resolve()
-      .then(() => onSteer(frozen.transportText, mode))
-      .then(accepted => {
-        if (!accepted) {
-          keep()
-        }
+    // Freeze terminal selections at dispatch, exactly like redirect and queue.
+    // Model-facing transport contains the selection; queue fallback persists
+    // only its display chip and holds the frozen transport in the runtime map.
+    const frozen = freezeComposerTransportPayload(text)
+
+    if (frozen.missingLabels.length > 0) {
+      notify({
+        kind: 'warning',
+        title: translateNow('composer.terminalSelectionMissingTitle'),
+        message: translateNow('composer.terminalSelectionMissingBody')
       })
-      .catch(keep)
+
+      return
+    }
+
+    const rejectedQueueKey = activeQueueSessionKeyRef.current
+    const restoreScope = draftScopeRef.current
+
+    triggerHaptic('submit')
+    clearDraft()
+
+    const rejected = () => queueRejectedCorrection(frozen, rejectedQueueKey, restoreScope)
+
+    // Preserve synchronous dispatch while recovering from both sync throws
+    // and async refusals without losing the draft.
+    try {
+      void Promise.resolve(onSteerHidden(frozen.transportText))
+        .then(accepted => {
+          if (!accepted) {
+            rejected()
+          }
+        })
+        .catch(rejected)
+    } catch {
+      rejected()
+    }
   }
 
   const queueDraft = () => {

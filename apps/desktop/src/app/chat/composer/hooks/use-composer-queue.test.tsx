@@ -114,9 +114,22 @@ describe('useComposerQueue park integration', () => {
     setSessionsLoading(true)
   })
 
-  it('admits native Queue through submit and retains an uncertain draft without a local replay', async () => {
+  it('pathifies an uncommitted @path before creating a queue entry', () => {
+    const { hook } = renderQueueHook({ busy: true, draft: 'look at @apps/desktop/' })
+
+    act(() => {
+      expect(hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['look at @folder:`apps/desktop`'])
+  })
+
+  it.each([
+    ['durable queue', 'durable queue'],
+    ['look at @apps/desktop/', 'look at @folder:`apps/desktop`']
+  ])('admits native Queue %s and retains an uncertain draft without a local replay', async (draft, submitted) => {
     $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
-    const draftRef = { current: 'durable queue' }
+    const draftRef = { current: draft }
     const clearDraft = vi.fn(() => { draftRef.current = '' })
     const onSubmit = vi.fn<ChatBarProps['onSubmit']>().mockResolvedValue(false)
 
@@ -128,8 +141,8 @@ describe('useComposerQueue park integration', () => {
 
     try {
       await act(async () => { await hook.result.current.queueCurrentDraft() })
-      expect(onSubmit).toHaveBeenCalledWith('durable queue', expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY }))
-      expect(draftRef.current).toBe('durable queue')
+      expect(onSubmit).toHaveBeenCalledWith(submitted, expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY }))
+      expect(draftRef.current).toBe(draft)
       expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
       onSubmit.mockResolvedValue(true)
       await act(async () => { await hook.result.current.queueCurrentDraft() })

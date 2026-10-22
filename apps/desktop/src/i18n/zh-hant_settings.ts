@@ -425,7 +425,8 @@ export const zhHantSettings = {
       timezone: '時區',
       display: {
         personality: '人格',
-        showReasoning: '推理區塊'
+        showReasoning: '推理區塊',
+        busyInputMode: '執行時按 Enter'
       },
       desktop: {
         repoScanEnabled: '自動探索程式碼儲存庫',
@@ -601,7 +602,9 @@ export const zhHantSettings = {
       fallbackProviders: '預設模型失敗時要嘗試的備用 provider:model 項目。',
       display: {
         personality: '新工作階段的預設助手風格。',
-        showReasoning: '後端提供推理內容時顯示該區塊。'
+        showReasoning: '後端提供推理內容時顯示該區塊。',
+        busyInputMode:
+          '控制代理仍在執行時按 Enter 的行為。中斷（interrupt）會以輸入文字重新導向目前回合，引導（steer）會將其追加至下一個工具結果且不中斷執行，排隊（queue）則在目前回合結束後執行。Cmd/Ctrl+Enter 只對這則訊息使用替代動作：queue 模式下重新導向目前的執行，steer 或 interrupt 模式下排隊。Shift+Enter 一律換行。'
       },
       desktop: {
         repoScanEnabled: '掃描本機資料夾，並在「專案」中顯示 Git 程式碼儲存庫。',

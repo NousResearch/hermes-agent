@@ -321,6 +321,7 @@ export const ruOverrides = {
       'composer.send': 'Отправить сообщение',
       'composer.newline': 'Вставить перенос строки',
       'composer.steer': 'Направить текущий ход',
+      'composer.redirect': 'Перенаправить текущий запуск',
       'composer.queue': 'Поставить сообщение в очередь',
       'composer.sendQueued': 'Отправить следующий ход из очереди',
       'composer.mention': 'Ссылка на файлы, папки, URL',
@@ -330,11 +331,7 @@ export const ruOverrides = {
       'composer.cancel': 'Закрыть поповер · отменить запуск'
     }
   },
-  findInPage: {
-    next: 'Следующее вхождение',
-    previous: 'Предыдущее вхождение'
-  },
-
+  findInPage: { next: 'Следующее вхождение', previous: 'Предыдущее вхождение' },
   language: {
     label: 'Язык',
     description: 'Выберите язык интерфейса приложения.',
@@ -657,7 +654,8 @@ export const ruOverrides = {
       timezone: 'Часовой пояс',
       display: {
         personality: 'Личность',
-        showReasoning: 'Блоки рассуждений'
+        showReasoning: 'Блоки рассуждений',
+        busyInputMode: 'Enter во время работы'
       },
       desktop: {
         repoScanEnabled: 'Автоматическое обнаружение репозиториев',
@@ -828,7 +826,9 @@ export const ruOverrides = {
         'Резервные записи provider:model, которые будут пробоваться, если модель по умолчанию не сработает.',
       display: {
         personality: 'Стиль ассистента по умолчанию для новых сеансов.',
-        showReasoning: 'Показывать блоки рассуждений, когда бэкенд их предоставляет.'
+        showReasoning: 'Показывать блоки рассуждений, когда бэкенд их предоставляет.',
+        busyInputMode:
+          'Действие при нажатии Enter во время работы агента. Interrupt перенаправляет текущий ход вашим текстом, steer добавляет его к следующему результату инструмента без остановки, а queue запускает его после завершения хода. Cmd/Ctrl+Enter только для этого сообщения перенаправляет текущий запуск в режиме queue и ставит сообщение в очередь в режиме steer или interrupt. Shift+Enter всегда вставляет перенос строки.'
       },
       desktop: {
         repoScanEnabled: 'Сканировать локальные папки на Git-репозитории, чтобы показывать их в Проектах.',

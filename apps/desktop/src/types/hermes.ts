@@ -491,8 +491,9 @@ export interface HermesConfig {
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
-    busy_input_mode?: string
     timestamps?: boolean
+    /** `interrupt` | `queue` | `steer` — what a busy Enter does. */
+    busy_input_mode?: string
     tool_progress?: boolean | string
   }
   desktop?: {

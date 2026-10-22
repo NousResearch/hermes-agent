@@ -10,7 +10,7 @@ import {
   type ComposerAttachment,
   setComposerTerminalSelection
 } from '@/store/composer'
-import { $queuedPromptsBySession, clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { $queuedPromptsBySession, clearQueuedPrompts, getFrozenQueuedTransport, getQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
 import { $onboardingPhase } from '@/store/onboarding-phase'
@@ -26,6 +26,7 @@ import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTest
 import { $connection } from '@/store/session'
 import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
 
+import type { BusyInputMode } from '../busy-input-mode'
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
@@ -34,14 +35,17 @@ import { useComposerSubmit } from './use-composer-submit'
 interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
-  busyInputMode?: 'interrupt' | 'queue' | 'steer' | null
+  busyInputMode?: BusyInputMode | null
+  compacting?: boolean
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
+  draftScopeKey?: string | null
   submitOnHide?: boolean
   surfaceId?: string | null
   text?: string
   visible?: boolean
+  withSteerHidden?: boolean
 }
 
 let surfaceSequence = 0
@@ -50,17 +54,21 @@ function renderSubmitHook({
   attachments = [],
   busy = false,
   busyInputMode = 'interrupt',
+  compacting = false,
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
+  draftScopeKey,
   submitOnHide = false,
   surfaceId,
   text = '',
-  visible = true
+  visible = true,
+  withSteerHidden = true
 }: SubmitHarnessOptions = {}) {
   const resolvedSurfaceId = surfaceId === undefined ? `test-surface-${++surfaceSequence}` : surfaceId
   const draftRef = { current: text }
-  const draftScopeRef = { current: sessionKey }
+  const draftScopeRef = { current: draftScopeKey === undefined ? sessionKey : draftScopeKey }
+  const queueKeyRef = { current: sessionKey }
   const editor = window.document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
@@ -110,10 +118,11 @@ function renderSubmitHook({
     () =>
       useComposerSubmit({
         activeQueueSessionKey: sessionKey,
-        activeQueueSessionKeyRef: { current: sessionKey },
+        activeQueueSessionKeyRef: queueKeyRef,
         attachments,
         busy,
         busyInputMode,
+        compacting,
         clearDraft,
         disabled: false,
         draftScopeRef,
@@ -126,7 +135,7 @@ function renderSubmitHook({
         loadIntoComposer,
         onCancel,
         onSteer,
-        onSteerHidden,
+        onSteerHidden: withSteerHidden ? onSteerHidden : undefined,
         onSubmit,
         queueCurrentDraft,
         queueEdit: null,
@@ -139,6 +148,8 @@ function renderSubmitHook({
   )
 
   return {
+    draftScopeRef,
+    queueKeyRef,
     loadIntoComposer,
     stashAt,
     clearDraft,
@@ -166,25 +177,62 @@ describe('useComposerSubmit external request routing', () => {
     vi.restoreAllMocks()
   })
 
+  it.each(['interrupt', 'steer'] as const)('restores a refused %s into the fresh-chat draft, not a phantom queue', async mode => {
+    const freshKey = '__new__:rejected-busy-test'
+    const h = renderSubmitHook({ busy: true, busyInputMode: mode, sessionKey: freshKey, text: 'keep the new draft' })
+    const carrier = mode === 'steer' ? h.onSteerHidden : h.onSteer
+    carrier.mockResolvedValue(false)
+
+    await act(async () => h.hook.result.current.submitDraft())
+
+    expect(getQueuedPrompts(freshKey)).toEqual([])
+    expect(h.stashAt).toHaveBeenCalledWith(freshKey, 'keep the new draft', [])
+    expect(h.loadIntoComposer).toHaveBeenCalledWith('keep the new draft', [])
+  })
+
+  it('does not repaint the next session when a fresh-chat correction rejects after navigation', async () => {
+    const freshKey = '__new__:original'
+    const h = renderSubmitHook({ busy: true, sessionKey: freshKey, text: 'restore only original' })
+    let respond!: (accepted: boolean) => void
+    h.onSteer.mockImplementation(() => new Promise<boolean>(resolve => { respond = resolve }))
+
+    act(() => h.hook.result.current.submitDraft())
+    h.draftScopeRef.current = '__new__:different'
+    h.queueKeyRef.current = '__new__:different'
+    await act(async () => respond(false))
+
+    expect(h.stashAt).toHaveBeenCalledWith(freshKey, 'restore only original', [])
+    expect(h.loadIntoComposer).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(freshKey)).toEqual([])
+  })
+
   it.each(['interrupt', 'steer'] as const)('keeps a rejected %s draft in the local queue without submit admission', async mode => {
     const h = renderSubmitHook({ busy: true, busyInputMode: mode, text: 'keep guidance' })
-    h.onSteer.mockRejectedValue(new Error('correction unsupported'))
+    const carrier = mode === 'steer' ? h.onSteerHidden : h.onSteer
+    carrier.mockRejectedValue(new Error('correction unsupported'))
     act(() => h.hook.result.current.submitDraft())
     await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['keep guidance']))
-    expect(h.onSteer).toHaveBeenCalledWith('keep guidance', mode)
+
+    if (mode === 'steer') {
+      expect(h.onSteerHidden).toHaveBeenCalledWith('keep guidance')
+    } else {
+      expect(h.onSteer).toHaveBeenCalledWith('keep guidance', mode)
+    }
+
     expect(h.onSubmit).not.toHaveBeenCalled()
     expect(h.queueCurrentDraft).not.toHaveBeenCalled()
     clearQueuedPrompts('stored-session')
   })
 
-  it('routes a refused native steer through canonical queue admission', async () => {
+  it.each(['interrupt', 'steer'] as const)('routes a refused native %s through canonical queue admission', async mode => {
     $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
     $queuedPromptsBySession.set({})
-    const h = renderSubmitHook({ busy: true, text: 'keep guidance' })
-    h.onSteer.mockResolvedValue(false)
+    const h = renderSubmitHook({ busy: true, busyInputMode: mode, text: 'keep guidance' })
+    const carrier = mode === 'steer' ? h.onSteerHidden : h.onSteer
+    carrier.mockResolvedValue(false)
 
     try {
-      act(() => h.hook.result.current.steerDraft())
+      act(() => h.hook.result.current.submitDraft())
       await waitFor(() => expect(h.onSubmit).toHaveBeenCalledWith('keep guidance', expect.objectContaining({ fromQueue: true, sessionId: 'runtime-session', storedSessionId: 'stored-session' })))
       expect(getQueuedPrompts('stored-session')).toEqual([])
     } finally { $connection.set(null); $queuedPromptsBySession.set({}) }
@@ -391,6 +439,10 @@ describe('useComposerSubmit busy-turn routing', () => {
           expect(ordinary.clearDraft).not.toHaveBeenCalled()
           expect(ordinary.onSteer).not.toHaveBeenCalled()
           expect(ordinary.queueCurrentDraft).not.toHaveBeenCalled()
+        } else if (mode === 'steer') {
+          await waitFor(() => expect(ordinary.onSteerHidden).toHaveBeenCalledWith('change course'))
+          expect(ordinary.onSteer).not.toHaveBeenCalled()
+          expect(ordinary.queueCurrentDraft).not.toHaveBeenCalled()
         } else {
           await waitFor(() => expect(ordinary.onSteer).toHaveBeenCalledWith('change course', mode))
           expect(ordinary.queueCurrentDraft).not.toHaveBeenCalled()
@@ -409,8 +461,244 @@ describe('useComposerSubmit busy-turn routing', () => {
 
   afterEach(() => {
     cleanup()
+    clearQueuedPrompts('stored-session')
     vi.restoreAllMocks()
     clearComposerTerminalSelections()
+  })
+
+  it('routes a plain busy Enter through queue mode', () => {
+    const { hook, onSteer, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'queue',
+      text: 'wait for it'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSteerHidden).not.toHaveBeenCalled()
+  })
+
+  it('routes a plain busy Enter through non-cancelling steer mode', async () => {
+    const { hook, onSteer, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'after the next tool call'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() => expect(onSteerHidden).toHaveBeenCalledWith('after the next tool call'))
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+
+  it('queues the words when steer mode is rejected by the gateway', async () => {
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'no tool window'
+    })
+
+    onSteerHidden.mockResolvedValue(false)
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteerHidden).toHaveBeenCalledWith('no tool window'))
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['no tool window']))
+    clearQueuedPrompts('stored-session')
+  })
+
+  it('queues the words when the steer RPC throws', async () => {
+    const { hook, onSteer, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'gateway gone'
+    })
+
+    onSteerHidden.mockRejectedValue(new Error('gateway gone'))
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteerHidden).toHaveBeenCalledWith('gateway gone'))
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['gateway gone']))
+    expect(onSteer).not.toHaveBeenCalled()
+    clearQueuedPrompts('stored-session')
+  })
+
+  // The gateway answers 4010 ("agent does not support steer") when the live
+  // model backend cannot inject a tool result. Same rejection path as a dead
+  // socket: the words must land in the queue, not vanish with the cleared draft.
+
+  it('queues the words when the agent cannot steer (4010)', async () => {
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'unsupported backend'
+    })
+
+    onSteerHidden.mockRejectedValue(Object.assign(new Error('agent does not support steer'), { code: 4010 }))
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteerHidden).toHaveBeenCalledWith('unsupported backend'))
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['unsupported backend']))
+    clearQueuedPrompts('stored-session')
+  })
+
+  // An unpromoted Tab-descend reference is inert text unless pathified, so the
+  // steer path must ride the same pathified words as the plain submit — both
+  // the RPC call and the rejection fallback.
+
+  it('pathifies the words before steering them', async () => {
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'look at @apps/desktop/'
+    })
+
+    onSteerHidden.mockResolvedValue(false)
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSteerHidden).toHaveBeenCalledWith('look at @folder:`apps/desktop`')
+    await waitFor(() =>
+      expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['look at @folder:`apps/desktop`'])
+    )
+    clearQueuedPrompts('stored-session')
+  })
+
+  it('queues rather than redirecting or steering during compaction', () => {
+    const { hook, onSteer, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      compacting: true,
+      text: 'after compaction'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSteerHidden).not.toHaveBeenCalled()
+  })
+
+  it('freezes terminal selections before non-cancelling steer', async () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'look at @terminal:`zsh:23-58`'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() =>
+      expect(onSteerHidden).toHaveBeenCalledWith('```terminal\nselected terminal lines\n```\n\nlook at')
+    )
+  })
+
+  it('preserves the frozen selection when a non-cancelling steer is rejected', async () => {
+    setComposerTerminalSelection('zsh:23-58', 'original terminal lines')
+
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'inspect @terminal:`zsh:23-58`'
+    })
+
+    onSteerHidden.mockResolvedValue(false)
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session')).toHaveLength(1))
+    const queued = getQueuedPrompts('stored-session')[0]
+    expect(queued.text).toBe('inspect @terminal:`zsh:23-58`')
+    expect(queued.displayText).toBe('inspect @terminal:`zsh:23-58`')
+    expect(getFrozenQueuedTransport(queued.id)).toBe('```terminal\noriginal terminal lines\n```\n\ninspect')
+  })
+
+  it('refuses to steer an unresolved terminal chip without discarding draft', () => {
+    clearComposerTerminalSelections()
+
+    const { hook, onSteerHidden, clearDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'inspect @terminal:`unavailable`'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(onSteerHidden).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled()
+  })
+
+  it('queues a synchronous steer transport throw instead of losing the text', async () => {
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'retry me'
+    })
+
+    onSteerHidden.mockImplementation(() => {
+      throw new Error('transport unavailable')
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['retry me']))
+  })
+
+  it('lets queue mode redirect one message without steering at a tool boundary', async () => {
+    const { hook, onSteer, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'queue',
+      text: 'redirect this one'
+    })
+
+    act(() => hook.result.current.submitDraft('interrupt'))
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('redirect this one', 'interrupt'))
+    expect(onSteerHidden).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('lets steer mode use a one-message queue override', () => {
+    const { hook, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'queue this one'
+    })
+
+    act(() => hook.result.current.submitDraft('queue'))
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteerHidden).not.toHaveBeenCalled()
+  })
+
+  it('queues instead of interrupting when steer has no hidden carrier', () => {
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'carrier missing',
+      withSteerHidden: false
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
   })
 
   it('treats a payload mid-turn as send (steer), not stop', async () => {
@@ -453,6 +741,19 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['still here']))
     clearQueuedPrompts('stored-session')
+  })
+
+  it('queues a synchronous redirect transport throw instead of dropping the correction', async () => {
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'recover redirect' })
+    onSteer.mockImplementation(() => {
+      throw new Error('transport unavailable')
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() =>
+      expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['recover redirect'])
+    )
   })
 
   it('runs slash commands immediately while busy', async () => {

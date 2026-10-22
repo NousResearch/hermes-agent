@@ -31,6 +31,7 @@ export const jaOverrides = {
   sharedMetrics: jaSharedMetrics,
   firstRun: jaFirstRun,
   intro: introJa,
+  keybinds: { actions: { 'composer.redirect': '現在の実行をリダイレクト' } },
   sessionImport: jaConnectors.sessionImport,
   common: {
     apply: '適用',
@@ -74,7 +75,6 @@ export const jaOverrides = {
     on: 'オン',
     off: 'オフ'
   },
-
   fileMenu: {
     revealFinder: 'Finder で表示',
     revealExplorer: 'エクスプローラーで表示',
@@ -208,7 +208,6 @@ export const jaOverrides = {
       discord: 'Discord'
     }
   },
-
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -224,7 +223,6 @@ export const jaOverrides = {
     openStarmap: 'メモリグラフを開く',
     resetHudLayout: 'HUD のサイズと位置をリセット'
   },
-
   language: {
     label: '言語',
     description: 'デスクトップインターフェイスの言語を選択します。',
@@ -234,7 +232,6 @@ export const jaOverrides = {
     searchPlaceholder: '言語を検索…',
     noResults: '言語が見つかりません'
   },
-
   settings: {
     uninstallSection: {
       dangerZone: '危険ゾーン',
@@ -667,7 +664,8 @@ export const jaOverrides = {
       timezone: 'タイムゾーン',
       display: {
         personality: '人格',
-        showReasoning: '推論ブロック'
+        showReasoning: '推論ブロック',
+        busyInputMode: '実行中の Enter の動作'
       },
       desktop: {
         repoScanEnabled: 'リポジトリの自動検出',
@@ -832,7 +830,9 @@ export const jaOverrides = {
       fallbackProviders: 'デフォルトモデルが失敗したときに試す provider:model 形式のバックアップです。',
       display: {
         personality: '新しいセッションのデフォルトのアシスタントスタイルです。',
-        showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
+        showReasoning: 'バックエンドが推論内容を提供したときに表示します。',
+        busyInputMode:
+          'エージェントの実行中に Enter キーを押したときの動作です。interrupt（中断）は入力テキストで現在のターンをリダイレクトし、steer（誘導）は実行を止めずに次のツール結果へ追加し、queue（キュー）は現在のターン終了後に実行します。Cmd/Ctrl+Enter はそのメッセージだけ代替動作になります。queue モードでは現在の実行をリダイレクトし、steer または interrupt モードではキューに追加します。Shift+Enter は常に改行を挿入します。'
       },
       desktop: {
         repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',

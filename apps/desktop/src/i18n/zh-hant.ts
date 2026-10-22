@@ -144,6 +144,11 @@ export const zhHantOverrides = {
   billingBlock: zhHantCommon.billingBlock,
   sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
   titlebar: zhHantChrome.titlebar,
+  keybinds: {
+    actions: {
+      'composer.redirect': '重新導向目前的執行'
+    }
+  },
   language: zhHantSettings.language,
   settings: zhHantSettings.settings,
   skills: zhHantCapabilities.skills,

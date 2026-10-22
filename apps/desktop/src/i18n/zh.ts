@@ -419,6 +419,7 @@ export const zhOverrides = {
       'composer.send': '发送消息',
       'composer.newline': '插入换行',
       'composer.steer': '引导正在运行的回合',
+      'composer.redirect': '重定向当前运行',
       'composer.queue': '消息排队',
       'composer.sendQueued': '发送下一条排队消息',
       'composer.mention': '引用文件、文件夹、网址',
@@ -428,11 +429,7 @@ export const zhOverrides = {
       'composer.cancel': '关闭弹窗·取消运行'
     }
   },
-
-  findInPage: {
-    next: '下一个匹配',
-    previous: '上一个匹配'
-  },
+  findInPage: { next: '下一个匹配', previous: '上一个匹配' },
 
   language: {
     label: '语言',
@@ -896,7 +893,8 @@ export const zhOverrides = {
       timezone: '时区',
       display: {
         personality: '人格',
-        showReasoning: '推理过程块'
+        showReasoning: '推理过程块',
+        busyInputMode: '运行时按 Enter'
       },
       desktop: {
         repoScanEnabled: '自动发现代码仓库',
@@ -1072,7 +1070,9 @@ export const zhOverrides = {
       fallbackProviders: '默认模型失败时尝试的备用 provider:model 条目。',
       display: {
         personality: '新会话的默认助手风格。',
-        showReasoning: '当后端提供推理内容时予以显示。'
+        showReasoning: '当后端提供推理内容时予以显示。',
+        busyInputMode:
+          '控制智能体运行期间按 Enter 的行为。中断（interrupt）会使用输入文本重定向当前回合，引导（steer）会将其追加到下一个工具结果且不中断运行，排队（queue）则在当前回合结束后执行。Cmd/Ctrl+Enter 仅对当前消息使用替代操作：queue 模式下重定向当前运行，steer 或 interrupt 模式下排队。Shift+Enter 始终换行。'
       },
       desktop: {
         repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',

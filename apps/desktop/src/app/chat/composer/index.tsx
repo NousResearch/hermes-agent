@@ -45,7 +45,8 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
-import { deriveBusySubmitState } from './busy-submit-state'
+import { alternateBusyInputMode, isBusyOverrideChord } from './busy-input-mode'
+import { deriveBusyComposerState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
 import {
   acceptsTriggerCompletion,
@@ -194,9 +195,7 @@ export function ChatBar({
     requestGateway: requestBusyConfig
   })
 
-  // Status items (subagents, background processes) are keyed by the RUNTIME
-  // session id — gateway events and process.list both speak that id. Only the
-  // queue uses the stored-session fallback key (prompts can queue pre-resume).
+  // Status items use the runtime id; only the queue can predate session resume.
   const statusSessionId = sessionId ?? null
 
   // The guide's conversational steps have no use for the model pill and git
@@ -211,12 +210,9 @@ export function ChatBar({
 
   const composerTourMarker = useTourMarker('composer')
 
-  // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
-  // every per-item status mutation or other sessions' churn (see the hook).
+  // Subscribe only to visibility changes, not per-item or other sessions' churn.
   const statusPresent = useSessionStatusPresence(statusSessionId, busy)
 
-  // Publishes contributed micro actions for this session; the status stack
-  // renders them as the pill strip at the top of the overlay lane.
   useComposerMicroActions(statusSessionId, busy)
 
   const composerRef = useRef<HTMLFormElement | null>(null)
@@ -401,25 +397,28 @@ export function ChatBar({
   const hasComposerPayload = hasText || attachments.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
 
-  const { busyAction, canSteer, canSubmit } = deriveBusySubmitState({
+  const { busyAction, canSteer, canSubmit, enterAction: enterHintAction, alternateAction: alternateHintAction } = deriveBusyComposerState({
     attachmentCount: attachments.length,
     blockingPrompt,
     busy,
     busyInputMode,
+    cardWaiting,
     compacting,
     hasComposerPayload,
+    hasHiddenSteerHandler: !!onSteerHidden,
     hasSteerHandler: !!onSteer,
-    isSteerableText
+    hasText,
+    isSteerableText,
+    queueEditing: !!queueEdit
   })
 
-  // The submit engine — the orchestration seam where draft + queue meet. Owns
-  // the submit decision tree, the send-with-restore primitive, and steer.
   const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
-    busyInputMode,
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
     busy,
+    busyInputMode,
+    compacting,
     clearDraft,
     disabled,
     draftScopeRef,
@@ -962,22 +961,22 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
-    // a text-only draft, so both live-turn actions stay reachable by keyboard.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+    // Apply the alternate once; keep the saved mode.
+    if (isBusyOverrideChord(event)) {
       event.preventDefault()
 
       if (busy && !disabled) {
-        // As with plain Enter, source the just-typed content from the DOM so a
-        // fast keypress cannot queue a stale draft.
         const editorText = liveComposerDraft(editorRef.current, draftRef.current)
+        const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
         if (editorText !== draftRef.current) {
           draftRef.current = editorText
           setComposerText(editorText)
         }
 
-        queueDraft()
+        if (hasLivePayload) {
+          submitDraft(alternateBusyInputMode(busyInputMode ?? 'interrupt'))
+        }
       }
 
       return
@@ -1396,7 +1395,9 @@ export function ChatBar({
             }}
             ref={composerRef}
           >
-            {isHelpHint && <HelpHint />}
+            {isHelpHint && (
+              <HelpHint alternateAction={alternateHintAction} busy={busy} enterAction={enterHintAction} />
+            )}
             {trigger && !argStageEmpty && (
               <ComposerTriggerPopover
                 activeIndex={triggerActive}

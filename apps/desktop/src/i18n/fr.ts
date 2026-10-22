@@ -182,7 +182,6 @@ export const frOverrides = {
     },
 
     accounts: frConnectorAccounts,
-
     tools: {
       title: 'Outils',
       notInstalledBody: "Installez-le sur cet appareil pour voir les outils qu'il apporte.",
@@ -651,6 +650,7 @@ export const frOverrides = {
       'composer.send': 'Envoyer le message',
       'composer.newline': 'Insérer un saut de ligne',
       'composer.steer': 'Diriger le tour en cours',
+      'composer.redirect': "Rediriger l'exécution en cours",
       'composer.queue': 'Mettre le message en file',
       'composer.sendQueued': 'Envoyer le tour suivant en file',
       'composer.mention': 'Référencer des fichiers, dossiers, URLs',
@@ -660,10 +660,7 @@ export const frOverrides = {
       'composer.cancel': "Fermer le popover · annuler l'exécution"
     }
   },
-  findInPage: {
-    next: 'Correspondance suivante',
-    previous: 'Correspondance précédente'
-  },
+  findInPage: { next: 'Correspondance suivante', previous: 'Correspondance précédente' },
   language: {
     label: 'Langue',
     description: "Choisissez la langue de l'interface du desktop.",
@@ -1182,7 +1179,8 @@ export const frOverrides = {
       timezone: 'Fuseau horaire',
       display: {
         personality: 'Personnalité',
-        showReasoning: 'Blocs de raisonnement'
+        showReasoning: 'Blocs de raisonnement',
+        busyInputMode: 'Entrée pendant l’exécution'
       },
       desktop: {
         repoScanEnabled: 'Découverte automatique de dépôts',
@@ -1357,7 +1355,9 @@ export const frOverrides = {
       fallbackProviders: 'Entrées fournisseur:modèle de secours à essayer si le modèle par défaut échoue.',
       display: {
         personality: "Style par défaut de l'assistant pour les nouvelles sessions.",
-        showReasoning: 'Afficher les sections de raisonnement quand le backend les fournit.'
+        showReasoning: 'Afficher les sections de raisonnement quand le backend les fournit.',
+        busyInputMode:
+          "Action de la touche Entrée lorsque l’agent est en cours d’exécution. Interrupt redirige le tour actuel avec votre texte, steer l’ajoute au résultat du prochain outil sans s’arrêter et queue l’exécute une fois le tour terminé. Cmd/Ctrl+Entrée redirige l’exécution en cours en mode queue et met le message en file en mode steer ou interrupt, pour ce seul message. Maj+Entrée insère toujours un saut de ligne."
       },
       desktop: {
         repoScanEnabled: 'Analyser les dossiers locaux à la recherche de dépôts Git à afficher dans Projets.',

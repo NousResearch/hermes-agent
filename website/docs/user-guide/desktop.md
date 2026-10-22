@@ -259,6 +259,7 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal. In the terminal backend picker, selecting a backend marked **Needs setup** asks for confirmation first; declining leaves the current backend selected.
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
 - **Reasoning Blocks** — **Settings → Chat → Reasoning Blocks** (`display.show_reasoning` in `config.yaml`) shows or hides the model's thinking in the transcript (off shows answers only). Open chats update as soon as the setting saves. Typing `/reasoning hide` or `/reasoning show` in the composer flips the same setting and the open transcript follows immediately.
+- **Enter While Running** — **Settings → Chat → Behavior → Enter While Running** (`display.busy_input_mode` in `config.yaml`) controls follow-ups while Hermes is still working. **Interrupt** (default) redirects the live turn with your text, **Steer** injects it at the next tool boundary without cancelling the turn, and **Queue** sends it after the turn finishes. **Cmd/Ctrl+Enter** uses an alternate action for one message; see the [busy-input keyboard matrix](#busy-input-keyboard-matrix).
 - **Reopen Last Chat on Launch** — by default the app picks up where you left off on cold start. Turn it off in **Settings → Appearance** (or set `display.resume_last_session: false` in `config.yaml`) to always begin with a fresh chat. Deep links and explicit destinations are never overridden either way.
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **Per-task reasoning effort** — each row under **Settings → Model → Auxiliary models** has a reasoning selector next to its provider/model pick: a level, **Off**, or **inherit · main model effort** (the default, which removes the task's override). It is saved as `auxiliary.<task>.reasoning_effort` in `config.yaml`, the same key `hermes model` writes, and shows in the row's summary when set. Use it to run frequent helpers such as compression or titling at low or no reasoning while the main agent stays at high.
@@ -266,6 +267,20 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). **While working** holds the machine awake only while a turn is in flight and lets it sleep normally once the run finishes or fails; **Always** holds it whenever Hermes is open. **While working** is the default on a computer where nobody has picked a mode. If you turned it **Off** and a timed sleep interrupts a turn, Hermes offers **Keep awake while working** once on wake. Closing the lid or choosing Sleep still sleeps the machine, and on battery Windows may still sleep after its own timeout. This is a per-computer setting.
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
+
+#### Busy-input keyboard matrix
+
+While a turn is running, the composer uses these actions for plain-text follow-ups:
+
+| Enter While Running mode | Enter | Cmd+Enter (macOS) / Ctrl+Enter (Windows/Linux) |
+| --- | --- | --- |
+| **Queue** (`queue`) | Queue | Redirect the current run |
+| **Steer** (`steer`) | Steer at the next tool boundary | Queue |
+| **Interrupt** (`interrupt`, default) | Redirect the current run | Queue |
+
+**Shift+Enter always inserts a newline**, including while Hermes is running. When idle, plain Enter sends the message; Cmd/Ctrl+Enter does nothing. The alternate action applies only to that message and does not change the saved mode.
+
+**Redirect** and **Steer** both pass your text to the live turn: Redirect uses the Interrupt behavior, while Steer waits for the next tool boundary without cancelling the turn. Attachments, compaction, and blocking approval/sudo/secret prompts fall back to Queue, slash commands still run immediately, and rejected corrections are queued rather than dropped.
 
 #### Per-profile settings: the "Applies to" scope
 

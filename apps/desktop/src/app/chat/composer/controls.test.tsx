@@ -147,10 +147,18 @@ describe('ComposerControls shortcut tooltips', () => {
     await expectShortcutTooltip('Steer the current run', '↵')
   })
 
+  it('does not advertise Enter when a session is still loading its busy policy', async () => {
+    renderControls({ busy: true, busyAction: 'queue', canSubmit: false })
+    fireEvent.pointerMove(screen.getByLabelText('Queue message'), { pointerType: 'mouse' })
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip.textContent).toContain('Queue message')
+    expect(tooltip.textContent).not.toContain('↵')
+  })
+
   it('shows Stop only when the composer is empty mid-turn', async () => {
     renderControls({ busy: true, busyAction: 'stop', canSubmit: true, hasComposerPayload: false })
 
-    await expectShortcutTooltip('Stop', '↵')
+    await expectShortcutTooltip('Stop', 'Esc')
   })
 
   it('answers a waiting card with Send when the draft has text, and offers no Queue', () => {

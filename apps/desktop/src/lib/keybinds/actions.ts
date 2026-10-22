@@ -8,6 +8,7 @@
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import { isMacPlatform } from '@/lib/platform'
+import type { BusyInputMode } from '@/store/busy-input-mode'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
@@ -349,6 +350,7 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.send', category: 'composer', keys: ['enter'] },
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
   { id: 'composer.steer', category: 'composer', keys: ['enter'] },
+  { id: 'composer.redirect', category: 'composer', keys: ['enter'] },
   { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
@@ -376,3 +378,25 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // Global OS chord registered in main while HUD mode is up.
   { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]
+
+/** Read-only shortcut hints for the current busy-input setting.
+ * The composer still owns keydown dispatch; this list is for UI affordances.
+ * Keep this resolver compatible with the enter_sends axis in #117752.
+ */
+export function readonlyKeybindsFor(mode: BusyInputMode): readonly KeybindReadonly[] {
+  return KEYBIND_READONLY
+    .filter(entry =>
+      entry.id === 'composer.steer' ? mode === 'steer' : entry.id !== 'composer.redirect' || mode !== 'steer'
+    )
+    .map(entry => {
+      if (entry.id === 'composer.queue') {
+        return { ...entry, keys: mode === 'queue' ? ['enter'] : ['mod+enter'] }
+      }
+
+      if (entry.id === 'composer.redirect') {
+        return { ...entry, keys: mode === 'queue' ? ['mod+enter'] : ['enter'] }
+      }
+
+      return entry
+    })
+}

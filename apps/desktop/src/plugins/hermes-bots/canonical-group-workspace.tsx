@@ -1,7 +1,7 @@
 import { Button, host, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverActivity, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupHeader } from './canonical-group-header'
@@ -19,7 +19,7 @@ type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomState {
   room: CanonicalRoom & { authority_epoch?: number; latest_seq?: number }
-  driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] }
+  driver_status?: CanonicalDriverStatus<CanonicalPendingAction>
 }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
@@ -204,7 +204,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <CanonicalGroupHeader busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
-      canStop={!!state?.driver_status} onBack={onBack} onDisband={end} onRename={rename}
+      canStop={!!state?.driver_status} driver={state?.driver_status} onBack={onBack} onDisband={end} onRename={rename}
       onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))} phases={phases} room={state?.room} />
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}

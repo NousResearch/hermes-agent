@@ -1,7 +1,7 @@
 import { Button, ConfirmDialog, Input } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
-import { CanonicalGroupRoster, type CanonicalMemberPhase } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupRoster, type CanonicalMemberPhase } from './canonical-group-activity'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalRoom } from './canonical-groups'
 
@@ -11,6 +11,7 @@ interface CanonicalGroupHeaderProps {
   canDisband: boolean
   canRename: boolean
   canStop: boolean
+  driver?: CanonicalDriverStatus
   onBack?: () => void
   onDisband: () => Promise<void>
   onRename: (name: string) => void
@@ -19,7 +20,7 @@ interface CanonicalGroupHeaderProps {
   room?: CanonicalRoom
 }
 
-export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, onBack, onDisband, onRename, onStop, phases, room }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, driver, onBack, onDisband, onRename, onStop, phases, room }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
   const [renaming, setRenaming] = useState<string | null>(null)
   const [ending, setEnding] = useState(false)
@@ -36,6 +37,7 @@ export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, onB
       <div className="min-w-0">
         <h2 className="text-sm font-medium">{room?.name || labels.loadingGroup}</h2>
         <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} phases={phases} />
+        <CanonicalGroupAttention driver={driver} labels={labels} />
       </div>
       <Button disabled={busy || !canStop} onClick={onStop}>{labels.stop}</Button>
       {canRename && <Button disabled={busy || !room} onClick={() => setRenaming(room?.name ?? '')}>{labels.rename}</Button>}

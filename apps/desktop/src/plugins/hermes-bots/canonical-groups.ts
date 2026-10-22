@@ -97,6 +97,10 @@ export async function discoverCanonicalGroups(
   return { driver: capabilities.driver === true, rooms }
 }
 
+// A create whose reply was lost may still have made the room. Retrying the same create with the
+// same room_id lets groups.create return that room instead of making a second one.
+const pendingCreateRoomIds = new Map<string, string>()
+
 export async function createCanonicalGroup(
   route: CanonicalGroupRoute,
   name: string,
@@ -137,9 +141,15 @@ export async function createCanonicalGroup(
     }
   })
 
+  const intent = JSON.stringify([route.connectionId, route.profile, name, roster])
+  const roomId = pendingCreateRoomIds.get(intent) ?? crypto.randomUUID()
+  pendingCreateRoomIds.set(intent, roomId)
+
   const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', {
-    room_id: crypto.randomUUID(), name, members: roster
+    room_id: roomId, name, members: roster
   })
+
+  pendingCreateRoomIds.delete(intent)
 
   return { binding: { ...route, roomId: room.room_id }, room }
 }

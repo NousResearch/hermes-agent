@@ -171,7 +171,7 @@ def mirror_skill_write_to_memory_providers(
     agent: Any,
     function_name: str,
     tool_result: Any,
-    tool_args: Dict[str, Any],
+    tool_args: dict[str, Any],
     *,
     task_id: str = "",
     tool_call_id: Optional[str] = None,

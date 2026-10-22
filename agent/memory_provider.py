@@ -224,7 +224,7 @@ class MemoryProvider(ABC):
         action: str,
         name: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """Called when the built-in skill_manage tool writes a skill/file.
 

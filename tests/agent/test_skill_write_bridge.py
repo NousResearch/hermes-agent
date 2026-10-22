@@ -224,7 +224,7 @@ def test_build_metadata_callback_is_merged_with_bridge_metadata():
 
 
 def test_provider_exception_does_not_raise():
-    mgr, _ = _manager_with_provider()
+    _mgr, _ = _manager_with_provider()
 
     class _Exploding(_RecordingProvider):
         @property

@@ -761,7 +761,7 @@ class MemoryManager:
         self._each_provider("on_memory_write failed", _notify, providers=external)
 
     def on_skill_write(self, action: str, name: str, content: str,
-                       metadata: Optional[Dict[str, Any]] = None) -> None:
+                       metadata: Optional[dict[str, Any]] = None) -> None:
         """Notify external providers when the built-in skill_manage tool writes (skips builtin)."""
 
         def _notify(provider: MemoryProvider) -> None:
@@ -847,9 +847,9 @@ class MemoryManager:
     def notify_skill_tool_write(
         self,
         tool_result: Any,
-        tool_args: Dict[str, Any],
+        tool_args: dict[str, Any],
         *,
-        build_metadata: Optional[Callable[[], Dict[str, Any]]] = None,
+        build_metadata: Optional[Callable[[], dict[str, Any]]] = None,
     ) -> None:
         """Mirror a built-in skill_manage tool call to external providers.
 
@@ -911,7 +911,7 @@ class MemoryManager:
                     metadata["old_string"] = str(old_string)
             self.on_skill_write(action, name, content, metadata=metadata)
         except Exception as e:
-            logger.debug("notify_skill_tool_write failed for action %s: %s", action, e)
+            logger.debug("notify_skill_tool_write failed for action %s: %s", action, e, exc_info=True)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         if not self._owner_allows("on_delegation"):

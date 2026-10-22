@@ -11,6 +11,8 @@ export interface KanbanTask {
   assignee?: null | string
   priority?: number
   tenant?: null | string
+  /** First-class Project the task is linked to (hermes_cli/projects_db id). */
+  project_id?: null | string
   created_at?: number
   latest_summary?: null | string
   comment_count?: number

@@ -64,6 +64,14 @@ export const $lanesByProfile = atom<boolean>(false)
  *  auto: empty lanes collapse to a rail, occupied lanes expand. Persisted. */
 export const $collapsedLanes = atom<Record<string, boolean>>({})
 
+/** Which task field splits the board into horizontal swimlanes ('none' =
+ *  flat board). Stored raw; read through `normalizeSwimlaneBy`. Persisted. */
+export const $swimlaneBy = atom<string>('none')
+
+/** Collapsed swimlanes, keyed `${dimension}:${laneKey}` so each grouping
+ *  remembers its own. Absence = expanded. Persisted. */
+export const $collapsedSwimlanes = atom<Record<string, boolean>>({})
+
 /** Cache scope of the local pool — the SDK atom's own spelling. */
 const LOCAL_SCOPE = 'local'
 
@@ -73,6 +81,8 @@ const BOARD_SLUG_KEY = 'boardSlug'
 const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
+const SWIMLANE_BY_KEY = 'swimlaneBy'
+const COLLAPSED_SWIMLANES_KEY = 'collapsedSwimlanes'
 
 // Last frame cursor per (connection, board) this plugin bind. The socket
 // reopens on every board switch and connection change; resuming from the last
@@ -225,6 +235,8 @@ export function bindApi(
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
+  persist($swimlaneBy, SWIMLANE_BY_KEY, 'none')
+  persist($collapsedSwimlanes, COLLAPSED_SWIMLANES_KEY, {})
 
   eventCursorByBoard.clear()
 

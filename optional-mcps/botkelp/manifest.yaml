@@ -1,0 +1,44 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: botkelp
+description: Build app scaffolds that pass CI from a verified component catalog.
+source: https://www.botkelp.com/llms.txt
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Connection is unauthenticated (verified live
+# 2026-10-22: initialize, tools/list and get_help succeed anonymously).
+# Account tools use MCP OAuth 2.1 or a bk_live_ key sent as a transport
+# Bearer header. Keys are never tool arguments.
+
+transport:
+  type: http
+  url: https://www.botkelp.com/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - botkelp
+    - scaffold
+    - nextjs starter
+  hosts:
+    - botkelp.com
+
+post_install: |
+  Do not clone a repo and do not install an npm package. There is no stdio
+  server.
+
+  Connecting needs no auth. Restart the session or run /reload-mcp, then call
+  get_help first: it lists the tools and catalog components. Browsing is free.
+
+  purchase_scaffold and the project tools need a BotKelp account. A scaffold
+  costs 100 credits and is only charged when its build passes. Either create
+  a key at https://www.botkelp.com/dashboard (prefix bk_live_) and add it as a
+  Bearer header via mcp_servers.botkelp.headers in config.yaml, or sign in
+  with OAuth:
+    hermes mcp add botkelp-account --url https://www.botkelp.com/mcp/account --auth oauth
+  Never pass a key as a tool argument.

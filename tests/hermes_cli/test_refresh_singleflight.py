@@ -40,15 +40,22 @@ class Provider(StubAuthProvider):
 
 @pytest.fixture(autouse=True)
 def isolated_registry():
+    # The native refresh endpoint keeps per-credential breaker state and a per-IP storm
+    # table in routes.py. These cases replay one fixed token ~6 times across each of 8
+    # parametrizations, so without a reset the breaker trips inside the first case and every
+    # later one is answered by the tripped breaker instead of reaching the provider. Same
+    # isolation contract as the singleflight tables above.
+    from hermes_cli.dashboard_auth import routes as routes_mod
+
     clear_providers()
-    with replay._guard:
-        replay._cache.clear()
-        replay._flights.clear()
+    routes_mod._reset_native_refresh_breaker()
+    replay._reset_for_tests()
     yield
     clear_providers()
+    routes_mod._reset_native_refresh_breaker()
     with replay._guard:
         assert not replay._flights
-        replay._cache.clear()
+    replay._reset_for_tests()
 
 
 @pytest.mark.parametrize("case", ["hint-fallback", "negative", "outage", "replacement",
@@ -74,7 +81,13 @@ def test_native_http_refresh_boundaries(case, monkeypatch):
                 assert response.status_code == first.status_code
                 if first.status_code == 200:
                     assert response.json() == first.json()
-            assert owner.calls == (6 if case == "outage" else 1)
+            # `outage` is a 503 (provider unreachable), and the native endpoint's
+            # per-credential breaker opens after _BREAKER_FAIL_THRESHOLD consecutive
+            # failures: after the first 3 calls the rest are answered by the breaker without
+            # touching the provider. 6 calls was the pre-breaker fan-out this test used to
+            # pin. The breaker itself is covered by
+            # test_dashboard_auth_native_refresh_breaker.py.
+            assert owner.calls == (3 if case == "outage" else 1)
             assert other.calls == 1
         elif case == "replacement":
             clear_providers()

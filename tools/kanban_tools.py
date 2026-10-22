@@ -20,6 +20,7 @@ from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
+    KANBAN_ARCHIVE_SCHEMA,
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
@@ -1271,6 +1272,28 @@ def _handle_unblock(args: dict, **kw) -> str:
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 
+@_kanban_handler("kanban_archive")
+def _handle_archive(args: dict, **kw) -> str:
+    """Archive a task — the model-callable twin of ``hermes kanban archive``.
+
+    Thin wrapper over ``kanban_db.archive_task()`` (the exact CLI code path, zero
+    new DB logic): any non-archived status transitions to ``archived``, a running
+    task's host-local worker is terminated (#76196 parity — the tool must not be
+    stricter than the CLI it mirrors), the active run is closed as ``reclaimed``,
+    archived parents stop gating children, and the workspace is reaped. An
+    already-archived or unknown id fails the transition CAS and reports the
+    sibling-consistent not-found error.
+    """
+    _reject_delegated_child_mutation("kanban_archive")
+    tid = _require_task_id(args)
+    _enforce_worker_task_ownership(tid)
+    with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, tid)
+        _check(kb.archive_task(conn, tid),
+               f"could not archive {tid} (unknown id or already archived)")
+        return _ok_landed(kb, conn, tid, "archived")
+
+
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact (cycles/self-links/running
@@ -1307,6 +1330,7 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
+    ("kanban_archive", KANBAN_ARCHIVE_SCHEMA, _handle_archive, "🗄"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:

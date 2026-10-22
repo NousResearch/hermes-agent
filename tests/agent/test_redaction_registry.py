@@ -231,3 +231,14 @@ def test_registered_pattern_no_prose_false_positive(tmp_path):
     register_redaction_patterns([demo.NVAPI_PATTERN], source="test")
     prose = "the nvapi-endpoint docs describe rate limits"
     assert redact_sensitive_text(prose, force=True) == prose
+
+
+def test_registered_narrow_body_pattern_masks_underscore_suffix():
+    """A plugin pattern whose body class is narrower than the built-in shared one
+    gets the same per-pattern trailing guard on rebuild (#142852): the token is
+    masked up to its own body's end instead of being missed wholesale."""
+    assert register_redaction_patterns([r"zzkey-[A-Za-z0-9]{10,}"], source="test") == 1
+    token = "zzkey-" + "K" * 12
+    out = redact_sensitive_text(f"failed: {token}_RETRY", force=True)
+    assert token not in out, out
+    assert "_RETRY" in out  # delimiter-joined suffix survives the mask

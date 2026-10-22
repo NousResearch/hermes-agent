@@ -823,8 +823,45 @@ def _is_basic_pair_password(password: str) -> bool:
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
 
+
+def _last_char_class(pattern: str) -> "str | None":
+    """Text of the last ``[...]`` class in ``pattern`` (escape-aware), or None.
+
+    For the built-in shape ``<literal prefix><body class><quantifier>`` this is the
+    pattern's body class.
+    """
+    last = None
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "\\":
+            i += 2
+            continue
+        if pattern[i] == "[":
+            j = i + 1
+            if pattern[j:j + 1] == "^":
+                j += 1
+            if pattern[j:j + 1] == "]":  # a leading "]" is literal
+                j += 1
+            while j < len(pattern) and pattern[j] != "]":
+                j += 2 if pattern[j] == "\\" else 1
+            last = pattern[i:j + 1]
+            i = j + 1
+            continue
+        i += 1
+    return last
+
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
-    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
+    # The trailing guard may only negate a pattern's own body class. One shared
+    # class wider than a body (``_``/``-`` vs ``ghp_…[A-Za-z0-9]{10,}``) fails at
+    # the body's natural end and at every backtrack step alike, so a token
+    # followed by an underscore/dash is not matched at all and ships in cleartext
+    # (#142852). A pattern without a ``[...]`` class falls back to the shared class.
+    branches = []
+    for pattern in patterns:
+        body_class = _last_char_class(pattern)
+        guard = f"(?!{body_class})" if body_class is not None else r"(?![A-Za-z0-9_-])"
+        branches.append(f"(?:{pattern}){guard}")
+    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(branches) + r")")
 
 
 def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:

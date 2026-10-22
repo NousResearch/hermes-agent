@@ -49,8 +49,60 @@ export type MediaPermissionRequestDetails =
   | FilesystemPermissionRequest
   | OpenExternalPermissionRequest
 
+type DisplayMediaRequest = {
+  audioRequested: boolean
+  securityOrigin: string
+  userGesture: boolean
+  videoRequested: boolean
+}
+
+type DisplayMediaSource = { id: string; name: string }
+
+type DisplayMediaStreams = { audio?: 'loopback'; video: DisplayMediaSource } | null
+
 const carriesMediaTypes = (details: unknown): details is MediaCapturePermissionDetails =>
   typeof details === 'object' && details !== null && 'mediaTypes' in details
+
+/**
+ * Display capture exposes the whole screen, so only the application's renderer
+ * may request it and the browser's user-activation requirement remains a hard
+ * gate. Packaged renderers have Electron's `file://` security origin; dev uses
+ * the exact Vite origin supplied by the main process.
+ */
+export function isDisplayMediaRequestAllowed(
+  securityOrigin: string,
+  userGesture: boolean,
+  devServerOrigin: string | undefined
+): boolean {
+  return userGesture && (securityOrigin === 'file://' || securityOrigin === devServerOrigin)
+}
+
+/** Resolve a permitted display request to one screen, denying every other path. */
+export async function resolveDisplayMediaRequest(
+  request: DisplayMediaRequest,
+  devServerOrigin: string | undefined,
+  platform: NodeJS.Platform,
+  getSources: () => Promise<DisplayMediaSource[]>
+): Promise<DisplayMediaStreams> {
+  if (!request.videoRequested || !isDisplayMediaRequestAllowed(request.securityOrigin, request.userGesture, devServerOrigin)) {
+    return null
+  }
+
+  try {
+    const [source] = await getSources()
+
+    if (!source) {
+      return null
+    }
+
+    return {
+      video: source,
+      ...(platform === 'win32' && request.audioRequested ? { audio: 'loopback' as const } : {})
+    }
+  } catch {
+    return null
+  }
+}
 
 // Microphone and camera capture. The voice composer drives mic access and
 // renderer features (e.g. desktop plugins) can drive camera access, both

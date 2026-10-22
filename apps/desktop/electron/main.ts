@@ -21,6 +21,7 @@ import {
   BrowserWindow,
   clipboard,
   crashReporter,
+  desktopCapturer,
   dialog,
   net as electronNet,
   webContents as electronWebContents,
@@ -374,7 +375,7 @@ import {
   waitForManagedUpdateOperations
 } from './managed-ssh-update'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
-import { isMediaCapturePermission } from './media-capture-permission'
+import { isMediaCapturePermission, resolveDisplayMediaRequest } from './media-capture-permission'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createMinimizeToTray } from './minimize-to-tray'
@@ -6849,6 +6850,19 @@ function installMediaPermissions() {
 
     return isMediaCapturePermission(permission, undefined)
   })
+
+  // Electron has no default display-capture picker. Keep its handler beside
+  // the media permission policy, deny foreign/background requests, and let
+  // macOS use its native picker when it is available.
+  const devServerOrigin = DEV_SERVER ? new URL(DEV_SERVER).origin : undefined
+  session.defaultSession.setDisplayMediaRequestHandler(
+    (request, callback) => {
+      void resolveDisplayMediaRequest(request, devServerOrigin, process.platform, () =>
+        desktopCapturer.getSources({ types: ['screen'] })
+      ).then(callback)
+    },
+    process.platform === 'darwin' ? { useSystemPicker: true } : undefined
+  )
 }
 
 // Origin of the frame a permission request came from. The request handler is

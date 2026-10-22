@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { isMediaCapturePermission } from './media-capture-permission'
+import { isDisplayMediaRequestAllowed, isMediaCapturePermission, resolveDisplayMediaRequest } from './media-capture-permission'
 
 describe('isMediaCapturePermission', () => {
   it('allows the fullscreen permissions both handlers can receive', () => {
@@ -45,5 +45,55 @@ describe('isMediaCapturePermission', () => {
     for (const permission of ['media', 'audioCapture', 'videoCapture', 'fullscreen', 'automatic-fullscreen'] as const) {
       expect(isMediaCapturePermission(permission, undefined)).toBe(true)
     }
+  })
+})
+
+describe('isDisplayMediaRequestAllowed', () => {
+  it('allows a user-initiated display request from the packaged renderer or dev server', () => {
+    expect(isDisplayMediaRequestAllowed('file://', true, 'http://127.0.0.1:5174')).toBe(true)
+    expect(isDisplayMediaRequestAllowed('http://127.0.0.1:5174', true, 'http://127.0.0.1:5174')).toBe(true)
+  })
+
+  it('denies background and foreign-origin display requests', () => {
+    expect(isDisplayMediaRequestAllowed('file://', false, 'http://127.0.0.1:5174')).toBe(false)
+    expect(isDisplayMediaRequestAllowed('https://example.com', true, 'http://127.0.0.1:5174')).toBe(false)
+    expect(isDisplayMediaRequestAllowed('http://127.0.0.1:5174.evil.example', true, 'http://127.0.0.1:5174')).toBe(false)
+  })
+
+  it('returns one screen only for an allowed video request and adds loopback only on Windows', async () => {
+    const getSources = vi.fn(async () => [{ id: 'screen:0:0', name: 'Primary display' }])
+    const request = {
+      audioRequested: true,
+      securityOrigin: 'file://',
+      userGesture: true,
+      videoRequested: true
+    }
+
+    await expect(resolveDisplayMediaRequest(request, undefined, 'darwin', getSources)).resolves.toEqual({
+      video: { id: 'screen:0:0', name: 'Primary display' }
+    })
+    await expect(resolveDisplayMediaRequest(request, undefined, 'win32', getSources)).resolves.toEqual({
+      audio: 'loopback',
+      video: { id: 'screen:0:0', name: 'Primary display' }
+    })
+  })
+
+  it('does not enumerate a screen for a denied request and denies an unavailable source', async () => {
+    const getSources = vi.fn(async () => [])
+
+    await expect(resolveDisplayMediaRequest({
+      audioRequested: false,
+      securityOrigin: 'https://example.com',
+      userGesture: true,
+      videoRequested: true
+    }, undefined, 'linux', getSources)).resolves.toBeNull()
+    expect(getSources).not.toHaveBeenCalled()
+
+    await expect(resolveDisplayMediaRequest({
+      audioRequested: false,
+      securityOrigin: 'file://',
+      userGesture: true,
+      videoRequested: true
+    }, undefined, 'linux', getSources)).resolves.toBeNull()
   })
 })

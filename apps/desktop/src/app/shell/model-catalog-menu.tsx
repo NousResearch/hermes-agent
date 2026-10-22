@@ -63,7 +63,7 @@ import {
   seedKnownModels,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
-import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
+import { $collapsedProviders, setCollapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
@@ -396,6 +396,26 @@ export function ModelCatalogMenu({
   // groups but no group rows, and the section must still paint.
   const hasList = !hideCatalog && (groups.length > 0 || shownDownloads.length > 0 || favoriteRows.length > 0)
 
+  // "Collapse all" / "Expand all": one control for the whole picker instead of
+  // clicking every provider header by hand. It speaks about the groups the
+  // user can SEE, so it acts on exactly those slugs — a slug this profile's
+  // catalog does not show keeps whatever state it had.
+  const groupSlugs = useMemo(() => groups.map(group => group.provider.slug), [groups])
+  const allGroupsCollapsed = groupSlugs.length > 0 && groupSlugs.every(slug => collapsedProviders.includes(slug))
+
+  const toggleAllGroups = (): void => {
+    if (allGroupsCollapsed) {
+      // Expand: drop the visible groups from the collapsed set. Entries for
+      // providers this catalog does not show stay as the user left them.
+      const visible = new Set(groupSlugs)
+      setCollapsedProviders(collapsedProviders.filter(slug => !visible.has(slug)))
+
+      return
+    }
+
+    setCollapsedProviders([...collapsedProviders, ...groupSlugs])
+  }
+
   // A typed id no provider lists is still a model to the backend. Offer it as
   // a row per configured provider (the current one first) so a slug the
   // catalog lacks is one Enter away, then remember it as a normal row. While
@@ -717,6 +737,25 @@ export function ModelCatalogMenu({
       />
 
       {!hideCatalog && <DropdownMenuSeparator className="mx-0" />}
+
+      {/* One-click collapse for the whole catalog. Hidden while searching:
+          search spans every model regardless of collapse state, so a
+          "collapse all" button would be a lie there. */}
+      {!hideCatalog && !search && groupSlugs.length > 0 ? (
+        <DropdownMenuItem
+          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+          onSelect={event => {
+            // Keep the menu open: the point of the control is to reshape the
+            // list under the pointer, not to dismiss the picker.
+            event.preventDefault()
+            toggleAllGroups()
+          }}
+          textValue=""
+        >
+          <Codicon className="shrink-0" name={allGroupsCollapsed ? 'expand-all' : 'collapse-all'} size="0.875rem" />
+          {allGroupsCollapsed ? copyPicker.expandAll : copyPicker.collapseAll}
+        </DropdownMenuItem>
+      ) : null}
 
       {hideCatalog ? null : loading ? (
         <DropdownMenuGroup className="py-1">

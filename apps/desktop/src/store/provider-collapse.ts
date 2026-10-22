@@ -26,3 +26,15 @@ export function toggleCollapsedProvider(slug: string): void {
   const current = $collapsedProviders.get()
   $collapsedProviders.set(current.includes(slug) ? current.filter(s => s !== slug) : [...current, slug])
 }
+
+/** Replace the collapsed set outright.
+ *
+ *  Used by the "Collapse all" / "Expand all" control in the model picker:
+ *  collapsing every visible provider group in one click, and expanding them
+ *  back in one click. The caller's set is authoritative — the visible groups
+ *  are what the user is looking at, so the action applies to exactly those
+ *  and not to slugs this profile's catalog happens not to show.
+ */
+export function setCollapsedProviders(slugs: string[]): void {
+  $collapsedProviders.set([...new Set(slugs)])
+}

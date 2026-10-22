@@ -4446,7 +4446,9 @@ export const frOverrides = {
     wasPrice: 'était',
     customModel: 'Modèle personnalisé',
     addCustomModelAction: 'Ajouter un modèle personnalisé…',
-    customModelPlaceholder: 'Saisissez un ID de modèle, p. ex. openai/gpt-5'
+    customModelPlaceholder: 'Saisissez un ID de modèle, p. ex. openai/gpt-5',
+    collapseAll: 'Replier tous les fournisseurs',
+    expandAll: 'Déplier tous les fournisseurs'
   },
   modelVisibility: {
     title: 'Modèles',

@@ -434,6 +434,46 @@ describe('ModelMenuPanel provider collapse', () => {
     expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
   })
 
+  it('collapses every provider group with one "Collapse all" click', async () => {
+    const { content } = renderPanel()
+
+    const collapseAll = await content.findByText('Collapse all providers')
+    fireEvent.click(collapseAll)
+
+    await vi.waitFor(() => {
+      expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
+      expect(content.queryByText('Gemini 3.1 Pro')).toBeNull()
+    })
+    // Both provider groups are in the collapsed set.
+    expect($collapsedProviders.get().sort()).toEqual(['deepseek', 'google'])
+  })
+
+  it('expands every provider group with one "Expand all" click', async () => {
+    $collapsedProviders.set(['deepseek', 'google'])
+    const { content } = renderPanel()
+
+    const expandAll = await content.findByText('Expand all providers')
+    fireEvent.click(expandAll)
+
+    await vi.waitFor(() => {
+      expect(content.queryByText('DeepSeek V4 Pro')).not.toBeNull()
+      expect(content.queryByText('Gemini 3.1 Pro')).not.toBeNull()
+    })
+    expect($collapsedProviders.get()).toEqual([])
+  })
+
+  it('keeps collapse state for providers this catalog does not show', async () => {
+    $collapsedProviders.set(['some-other-profile'])
+    const { content } = renderPanel()
+
+    const collapseAll = await content.findByText('Collapse all providers')
+    fireEvent.click(collapseAll)
+
+    await vi.waitFor(() => {
+      expect($collapsedProviders.get().sort()).toEqual(['deepseek', 'google', 'some-other-profile'])
+    })
+  })
+
   // The collapsed-providers set is a global presentation preference
   // (`hermes.desktop.collapsed-providers`), but the catalog the picker renders
   // is profile-scoped (`getGlobalModelOptions` routes through

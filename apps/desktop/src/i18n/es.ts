@@ -4433,7 +4433,9 @@ export const esOverrides = {
     wasPrice: 'antes',
     customModel: 'Modelo personalizado',
     addCustomModelAction: 'Añadir modelo personalizado…',
-    customModelPlaceholder: 'Escribe un ID de modelo, p. ej., openai/gpt-5'
+    customModelPlaceholder: 'Escribe un ID de modelo, p. ej., openai/gpt-5',
+    collapseAll: 'Contraer todos los proveedores',
+    expandAll: 'Expandir todos los proveedores'
   },
   modelVisibility: {
     title: 'Modelos',

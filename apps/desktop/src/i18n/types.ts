@@ -3445,6 +3445,8 @@ catalog: CatalogTranslations
     customModel: string
     addCustomModelAction: string
     customModelPlaceholder: string
+    collapseAll: string
+    expandAll: string
   }
 
   modelVisibility: {

@@ -4005,7 +4005,9 @@ export const en: Translations = {
     wasPrice: 'was',
     customModel: 'Custom model',
     addCustomModelAction: 'Add custom model…',
-    customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5'
+    customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5',
+    collapseAll: 'Collapse all providers',
+    expandAll: 'Expand all providers'
   },
 
   modelVisibility: {

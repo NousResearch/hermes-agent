@@ -4438,7 +4438,9 @@ export const deOverrides = {
     wasPrice: 'war',
     customModel: 'Eigenes Modell',
     addCustomModelAction: 'Eigenes Modell hinzufügen…',
-    customModelPlaceholder: 'Modell-ID eingeben, z. B. openai/gpt-5'
+    customModelPlaceholder: 'Modell-ID eingeben, z. B. openai/gpt-5',
+    collapseAll: 'Alle Anbieter einklappen',
+    expandAll: 'Alle Anbieter ausklappen'
   },
   modelVisibility: {
     title: 'Modelle',

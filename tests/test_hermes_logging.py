@@ -471,6 +471,54 @@ class TestSetupLogging:
 
 
 
+class TestSessionTagFormatterDefaults:
+    @pytest.mark.parametrize("record_source", ["direct", "make_log_record"])
+    def test_hermes_formatters_accept_records_without_session_tag(
+        self, hermes_home, record_source,
+    ):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_verbose_logging()
+
+        if record_source == "direct":
+            record = logging.LogRecord("test", logging.INFO, "", 0, "message", (), None)
+        else:
+            with patch("logging._logRecordFactory", logging.LogRecord):
+                record = logging.makeLogRecord(
+                    {"name": "test", "levelno": logging.INFO, "msg": "message"}
+                )
+
+        assert not hasattr(record, "session_tag")
+        formatters = [handler.formatter for handler in hermes_logging._queued_file_handlers]
+        formatters.extend(
+            handler.formatter
+            for handler in logging.getLogger().handlers
+            if getattr(handler, "_hermes_verbose", False)
+        )
+
+        assert all("message" in formatter.format(record) for formatter in formatters)
+
+    def test_hermes_formatters_preserve_existing_session_tag(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_verbose_logging()
+        record = logging.makeLogRecord(
+            {
+                "name": "test",
+                "levelno": logging.INFO,
+                "levelname": "INFO",
+                "msg": "message",
+                "session_tag": " [existing]",
+            }
+        )
+        formatters = [handler.formatter for handler in hermes_logging._queued_file_handlers]
+        formatters.extend(
+            handler.formatter
+            for handler in logging.getLogger().handlers
+            if getattr(handler, "_hermes_verbose", False)
+        )
+
+        assert all("INFO [existing]" in formatter.format(record) for formatter in formatters)
+
+
 class TestSetupVerboseLogging:
     """setup_verbose_logging() adds a DEBUG-level console handler."""
 

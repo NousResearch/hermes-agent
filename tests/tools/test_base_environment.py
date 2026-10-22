@@ -4,6 +4,8 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import shutil
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -55,7 +57,7 @@ def test_prepare_command_uses_selected_environment_for_nopasswd(monkeypatch):
 
 @pytest.mark.parametrize(
     ("supported", "returncode", "expected", "probed"),
-    [(True, 0, True, True), (True, 1, False, True), (False, 0, False, False)],
+    [(True, 0, True, True), (True, 1, False, True), (True, 127, True, True), (False, 0, False, False)],
 )
 def test_nopasswd_probe_runs_sudo_n_inside_backend_only_when_supported(
     monkeypatch, supported, returncode, expected, probed
@@ -70,6 +72,27 @@ def test_nopasswd_probe_runs_sudo_n_inside_backend_only_when_supported(
     assert run.called is probed
     if probed:
         assert run.call_args.args[0] == "sudo -n true"
+
+
+def test_backend_without_sudo_binary_neither_prompts_nor_rewrites(monkeypatch, tmp_path):
+    """No sudo binary in the backend (#138514): the probe's bash exits 127, and no password can
+    make a missing binary work, so the command runs untouched instead of stalling on a prompt."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    absent = subprocess.run(
+        [shutil.which("bash"), "-c", "sudo -n true"], env={"PATH": str(tmp_path)}, capture_output=True, check=False
+    )
+    env = _TestableEnv()
+    monkeypatch.setattr(env, "_run_bash", MagicMock(return_value=object()))
+    monkeypatch.setattr(env, "_wait_for_process", MagicMock(return_value={"returncode": absent.returncode}))
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("no sudo binary: a password prompt can never succeed")
+
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
+
+    assert env._prepare_command("(sudo -n true && echo ok) || echo no") == (
+        "(sudo -n true && echo ok) || echo no", None)
 
 
 class TestBoundedOutputCollector:

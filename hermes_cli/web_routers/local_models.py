@@ -217,7 +217,7 @@ def _record_rate(job: dict[str, Any], done: int) -> None:
 
 def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
-    for field in ("plan_saved", "partial_urls", "setup", "download_key", "download_plan", "adopted_plan", "restart_runtime"):
+    for field in ("plan_saved", "partial_urls", "setup", "download_key", "download_plan", "optional_files", "adopted_plan", "restart_runtime"):
         out.pop(field, None)
     running = _RUNNING.get(job["job_id"], {})
     pause = running.get("pause")
@@ -258,7 +258,7 @@ def _finish(job: dict[str, Any], detail: str) -> None:
 def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail_msg: str | None = None,
                on_exit: Callable[[], None] | None = None, download_label: str | None = None,
                resumable: bool = False, start_paused: bool = False, ownership=None) -> None:
-    """One worker per job. Pauses retain ownership; terminal outcomes release it."""
+    """One worker per job; publish its status after releasing transfer resources."""
     guard = threading.Lock()
     pause = threading.Event()
 
@@ -269,9 +269,12 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
     def _run_owned(resources):
         status = "done"
         download = None
+        owned = ownership is None
         try:
             if ownership is not None:
-                resources.enter_context(ownership())
+                owned = resources.enter_context(ownership())
+                if not owned:
+                    raise DownloadPaused("download paused while waiting for its plan")
             body()
             if download_label is not None:
                 _finish(job, f"{download_label} ready")
@@ -290,9 +293,14 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
         finally:
             if status == "paused" and download is not None:
                 job["partial_urls"] = tuple(dict.fromkeys((*job.get("partial_urls", ()), *download.urls)))
-            if status == "paused" and job.get("plan_saved"):
-                download_plans.checkpoint(job)
             try:
+                # Plain downloads finalize under their full-plan lock in
+                # _run_download_plan; setup owns its plan until resources close.
+                if owned and job.get("setup") and job.get("plan_saved"):
+                    if status == "paused":
+                        download_plans.checkpoint(job)
+                    else:
+                        download_plans.remove_plan(job["plan_key"])
                 if status != "paused" and on_exit is not None:
                     on_exit()
             finally:
@@ -338,12 +346,6 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
                 return False
             if remove_plan and key and not download_plans.discard_plan(key):
                 return False
-            if remove_plan and job.get("partial_urls"):
-                from pm.download_state import discard_partial
-                from pm.paths import partials_root
-
-                for url in job["partial_urls"]:
-                    discard_partial(partials_root(), url)
             if on_exit is not None:
                 on_exit()
             with _JOBS_LOCK:
@@ -523,18 +525,44 @@ def _missing_drafts(engine_tag: str) -> list:
 
 
 def _run_download_plan(job: dict[str, Any], plan: list, label: str, entry=None) -> None:
-    """The downloader counts completed files and every part of this plan. A catalog entry's draft
-    downloads last and only speeds generation up, so a draft that fails costs the model nothing."""
-    draft = bootstrap.assets_dir() / entry.draft.local_name if entry is not None and entry.draft else None
-    required = [row for row in plan if row[1] != draft]
-    _step(job, "downloading", f"Downloading {label}")
-    _download_job(job, required)
-    optional = [row for row in plan if row[1] == draft]
-    if optional:
-        with _JOBS_LOCK:
-            job.update(done_bytes=0, total_bytes=None, ranges={})
-        _step(job, "downloading", "Downloading the draft model that speeds up generation")
-        _download_optional(job, optional)
+    """Own one complete operation; optional drafts never acquire a subset identity."""
+    if entry is not None:
+        draft = bootstrap.assets_dir() / entry.draft.local_name if entry.draft else None
+        job["optional_files"] = [str(dest) for _, dest, _ in plan if dest == draft]
+    key = download_plans.plan_key(plan)
+    job["download_key" if job.get("setup") else "plan_key"] = key
+    pause = _RUNNING.get(job["job_id"], {}).get("pause")
+    with download_plans.plan_lock(key, wait=True, cancelled=pause.is_set if pause else None,
+                                  on_wait=lambda: _step(job, "waiting", "Waiting for this model's other download to finish")) as acquired:
+        if not acquired:
+            raise DownloadPaused("download paused while waiting for its plan")
+        if not job.get("setup") and job.get("plan_saved") and not download_plans.has_plan(key):
+            raise RuntimeError("This download was discarded. Start a new download")
+        download_plans.save_plan(job, plan)
+        job["plan_saved"] = True
+        keep = False
+        try:
+            optional = set(job.get("optional_files", ()))
+            _step(job, "downloading", f"Downloading {label}")
+            _download_job(job, [row for row in plan if str(row[1]) not in optional])
+            drafts = [row for row in plan if str(row[1]) in optional]
+            if drafts:
+                with _JOBS_LOCK:
+                    job.update(done_bytes=0, total_bytes=None, ranges={})
+                _step(job, "downloading", "Downloading the draft model that speeds up generation")
+                _download_optional(job, drafts)
+            _check_job_pause(job)
+            if not job.get("setup"):
+                _finish(job, f"{label} ready")
+        except (DownloadPaused, DownloadTransportError) as exc:
+            keep = isinstance(exc, DownloadPaused) or exc.recoverable
+            if keep and not job.get("setup"):
+                job["partial_urls"] = tuple(dict.fromkeys((*job.get("partial_urls", ()), *exc.urls)))
+                download_plans.checkpoint(job)
+            raise
+        finally:
+            if not job.get("setup") and not keep:
+                download_plans.remove_plan(key)
 
 
 def _download_progress_hook(job: dict[str, Any]):
@@ -547,23 +575,13 @@ def _download_progress_hook(job: dict[str, Any]):
 
 def _download_job(job: dict[str, Any], plan) -> None:
     """Model bytes use the same resumable transfer as pinned PM archives."""
-    running = _RUNNING.get(job["job_id"], {})
-    key = download_plans.plan_key(plan)
-    job["download_key" if job.get("setup") else "plan_key"] = key
-    pause = running.get("pause")
-    with download_plans.plan_lock(key, wait=True, cancelled=pause.is_set if pause else None,
-                                  on_wait=lambda: _step(job, "waiting", "Waiting for this model's other download to finish")) as acquired:
-        if not acquired:
-            raise DownloadPaused("download paused while waiting for its plan")
-        _download_owned_plan(job, plan, pause)
-
-
-def _download_owned_plan(job: dict[str, Any], plan, pause) -> None:
-    if not job.get("setup"):
-        download_plans.save_plan(job, plan)
-        job["plan_saved"] = True
-    def state(phase, detail):
-        _step(job, phase, f"Downloading {job['target']}" if phase == "downloading" else detail)
+    pause = _RUNNING.get(job["job_id"], {}).get("pause")
+    def state(phase):
+        details = {"downloading": f"Downloading {job['target']}",
+                   "retrying": "Connection interrupted. Retrying",
+                   "waiting": "Waiting for this file's other download to finish",
+                   "verifying": "Verifying and saving the completed file"}
+        _step(job, phase, details[phase])
 
     dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=pause, state=state)
     tick = _download_progress_hook(job)
@@ -575,26 +593,10 @@ def _download_owned_plan(job: dict[str, Any], plan, pause) -> None:
         if total and total != saved_total:
             # Probed plan sizes survive a restart even for companion files
             # that have not started yet. This is not a per-chunk metadata write.
-            if job.get("setup"):
+            if job.get("plan_saved"):
                 download_plans.checkpoint(job)
-            else:
-                download_plans.save_plan(job, plan)
             saved_total = total
-    try:
-        dl.run(progress=progress)
-    except DownloadPaused:
-        raise
-    except DownloadTransportError as exc:
-        if not exc.recoverable and not job.get("setup"):
-            download_plans.remove_plan(job["plan_key"])
-        raise
-    except Exception:
-        if not job.get("setup"):
-            download_plans.remove_plan(job["plan_key"])
-        raise
-    else:
-        if not job.get("setup"):
-            download_plans.remove_plan(job["plan_key"])
+    dl.run(progress=progress)
 
 
 def _plan_job(target: str, model_id: str, plan, *, kind: str = "model-download") -> tuple[dict, bool]:
@@ -636,14 +638,19 @@ def _restore_download_plan(key, record, plan) -> None:
     if all(dest.is_file() for _, dest, _ in plan):
         download_plans.remove_plan(key)
         return
-    done, total, ranges = download_plans.retained_progress(plan)
-    saved_total = record.get("total_bytes")
+    optional = set(record.get("optional_files", ()))
+    required = [row for row in plan if str(row[1]) not in optional]
+    progress_plan = required if any(not dest.is_file() for _, dest, _ in required) else [
+        row for row in plan if str(row[1]) in optional]
+    done, total, ranges = download_plans.retained_progress(progress_plan)
+    saved_total = record.get("state", {}).get("total_bytes", record.get("total_bytes"))
     if type(saved_total) is int and saved_total > 0:
         total = saved_total
     job, created = _plan_job(record["target"], record.get("model_id"), plan)
     if not created:
         return
     job.update(phase="interrupted", detail=_interrupted_detail(done), plan_saved=True,
+               optional_files=record.get("optional_files", []),
                done_bytes=done, total_bytes=total or None, ranges=ranges)
     _spawn_job(job, "lr-model-recovery",
                lambda: _run_download_plan(job, plan, job["target"]),

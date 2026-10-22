@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from pm.network import edge_block, http_status, is_transient, retry_network
+from pm.download_state import partial_key
 
 # GitHub's release-asset CDN (release-assets.githubusercontent.com, which
 # TUR's pool 302s to) 403s unknown tool UAs from CI runner IP ranges --
@@ -129,7 +130,7 @@ class DownloadPaused(DownloadError):
 
 
 class DownloadTransportError(DownloadError):
-    """An exhausted network request, with its original status and URL."""
+    """An exhausted request: final URL/status and recovery across attempted mirrors."""
 
     def __init__(self, url: str, cause: Exception):
         self.urls = (url,)
@@ -300,7 +301,7 @@ class Download:
         connections: int = CONNECTIONS,
         partials_dir: Optional[Path] = None,
         pause_event: Optional[threading.Event] = None,
-        state: Optional[Callable[[str, str], None]] = None,
+        state: Optional[Callable[[str], None]] = None,
     ):
         self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks)) for s in sources]
         self.resume = resume
@@ -352,7 +353,7 @@ class Download:
             else:
                 source, remote = self._try_sources(source, lambda candidate: self._probe(candidate.url), failures[key])
                 covered = []
-                with partial_lock(self.partials_dir, self._key(source.url), wait=False) as acquired:
+                with partial_lock(self.partials_dir, partial_key(source.url), wait=False) as acquired:
                     if acquired and remote.ranged:
                         covered = self._partial_ranges(source, remote)
                 if not remote.total:
@@ -407,8 +408,8 @@ class Download:
     def _transfer(self, source: Source, tick) -> int:
         from pm.download_state import partial_lock
 
-        with partial_lock(self.partials_dir, self._key(source.url), cancelled=self._paused.is_set,
-                          on_wait=lambda: self._report_state("waiting", "Waiting for this file's other download to finish")) as acquired:
+        with partial_lock(self.partials_dir, partial_key(source.url), cancelled=self._paused.is_set,
+                          on_wait=lambda: self._report_state("waiting")) as acquired:
             if not acquired:
                 raise DownloadPaused(source.url)
             self._check_pause()
@@ -419,7 +420,7 @@ class Download:
             covered = self._partial_ranges(source, remote) if remote.ranged else []
             self._durable_done = sum(end - start for start, end in covered)
             tick(covered, remote.total)
-            self._report_state("downloading", "Downloading model files")
+            self._report_state("downloading")
             resumable = bool(remote.total and remote.ranged and (source.sha256 or remote.etag))
 
             def report(written: _Ranges) -> None:
@@ -441,10 +442,10 @@ class Download:
                 raise
             finally:
                 self.connections = configured_connections
-            partial_key = self._key(source.url)
-            self._report_state("verifying", "Verifying and saving the completed file")
-            self._finalize(source, self.partials_dir / f"{partial_key}.part",
-                           self.partials_dir / f"{partial_key}.ranges")
+            key = partial_key(source.url)
+            self._report_state("verifying")
+            self._finalize(source, self.partials_dir / f"{key}.part",
+                           self.partials_dir / f"{key}.ranges")
             return size
 
     # ── internals ─────────────────────────────────────────────
@@ -453,15 +454,15 @@ class Download:
         if self._paused.is_set():
             raise DownloadPaused("download paused")
 
-    def _report_state(self, phase: str, detail: str) -> None:
+    def _report_state(self, phase: str) -> None:
         if self._state is not None:
-            self._state(phase, detail)
+            self._state(phase)
 
     def _wait_retry(self, delay: float) -> None:
-        self._report_state("retrying", f"Connection interrupted. Retrying in {delay:g}s")
+        self._report_state("retrying")
         if self._paused.wait(delay):
             raise DownloadPaused("download paused during retry backoff")
-        self._report_state("downloading", "Continuing the download from saved progress")
+        self._report_state("downloading")
 
     def _probe(self, url: str) -> _Remote:
         def request():
@@ -489,16 +490,17 @@ class Download:
         except ValueError:
             return _Remote(0, False)
 
-    def _key(self, url: str) -> str:
-        from pm.download_state import partial_key
-
-        return partial_key(url)
-
     def _load_sidecar(self, side: Path, part: Path, remote: _Remote, sha256: str) -> _Ranges:
+        try:
+            data = json.loads(side.read_bytes())
+        except (OSError, ValueError):
+            return []
+        return self._sidecar_ranges(data, part, remote, sha256)
+
+    def _sidecar_ranges(self, data, part: Path, remote: _Remote, sha256: str) -> _Ranges:
         if not self.resume or not (sha256 or remote.etag):
             return []
         try:
-            data = json.loads(side.read_bytes())
             if (data["total"], data["etag"], data["sha256"]) != (remote.total, remote.etag, sha256):
                 return []
             size = part.stat().st_size
@@ -515,7 +517,7 @@ class Download:
             return []
 
     def _partial_ranges(self, source: Source, remote: _Remote) -> _Ranges:
-        key = self._key(source.url)
+        key = partial_key(source.url)
         return self._load_sidecar(self.partials_dir / f"{key}.ranges",
                                   self.partials_dir / f"{key}.part", remote, source.sha256)
 
@@ -530,12 +532,14 @@ class Download:
                 size = source.dest.stat().st_size
                 covered = [(0, size)]
             else:
-                side = self.partials_dir / f"{self._key(source.url)}.ranges"
+                key = partial_key(source.url)
+                side = self.partials_dir / f"{key}.ranges"
                 try:
                     record = json.loads(side.read_bytes())
                     if type(record["total"]) is int and record["total"] > 0:
                         size = record["total"]
-                        covered = self._partial_ranges(source, _Remote(size, True, record["etag"]))
+                        covered = self._sidecar_ranges(record, self.partials_dir / f"{key}.part",
+                                                       _Remote(size, True, record["etag"]), source.sha256)
                 except (OSError, ValueError, KeyError, TypeError):
                     pass  # Preallocation is not evidence of reusable coverage.
             ranges[str(source.dest)] = covered
@@ -555,7 +559,7 @@ class Download:
         durable_write_bytes(side, json.dumps(record).encode("utf-8"))
 
     def _fetch_ranged(self, source: Source, remote: _Remote, tick) -> int:
-        key = self._key(source.url)
+        key = partial_key(source.url)
         part = self.partials_dir / f"{key}.part"
         side = self.partials_dir / f"{key}.ranges"
         covered = self._load_sidecar(side, part, remote, source.sha256)
@@ -701,7 +705,7 @@ class Download:
 
     def _fetch_single(self, source: Source, remote: _Remote, tick) -> int:
         # A stream with no strong validator cannot safely reuse earlier bytes.
-        key = self._key(source.url)
+        key = partial_key(source.url)
         part = self.partials_dir / f"{key}.part"
         side = self.partials_dir / f"{key}.ranges"
         covered: _Ranges = []

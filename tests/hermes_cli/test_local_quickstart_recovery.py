@@ -4,10 +4,48 @@ from __future__ import annotations
 import threading
 from urllib.error import HTTPError
 
+import pytest
+
 from tests.hermes_cli.test_local_download_jobs import client as client  # noqa: PLC0414 -- pytest fixture re-export
+from tests.hermes_cli.test_local_download_recovery import draft_plan as draft_plan  # noqa: PLC0414 -- pytest fixture re-export
 from tests.pm._range_server import RangeHandler, url
 from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- pytest fixture re-export
 from tests.waiting import wait_until
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_quickstart_adopts_a_catalog_download_with_a_draft(client, draft_plan, monkeypatch, restart):
+    lm, entry, plan, failures = draft_plan
+    failures.add("/required")
+    started = client.post("/api/local-models/download", json={"model_id": entry.id}).json()
+    assert wait_until(lambda: lm._JOBS[started["job_id"]]["status"] != "running", timeout=5)
+    if restart:
+        monkeypatch.setattr(lm, "_JOBS", {})
+        monkeypatch.setattr(lm, "_RUNNING", {})
+        lm._restore_download_plans()
+    previous = next(job for job in lm._JOBS.values() if job["status"] == "paused")
+    old_resume = lm._RUNNING[previous["job_id"]]["resume"]
+    monkeypatch.setattr(lm, "_QUICKSTART_LOCK", threading.Lock())
+    monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: None)
+    monkeypatch.setattr(lm, "_quickstart_target", lambda *_: (entry, entry.variants[0]))
+    monkeypatch.setattr(lm, "_runtime_target", lambda requested=None: ("test", "cpu"))
+    monkeypatch.setattr(lm.binaries, "installed_engine", lambda _: object())
+    monkeypatch.setattr(lm, "_set_runtime_enabled", lambda _: {})
+    calls = []
+    monkeypatch.setattr(lm, "_ensure_server", lambda *a, **kw: calls.append("server"))
+    monkeypatch.setattr(lm, "_assign_default", lambda *a: calls.append("default"))
+    failures.clear()
+    response = client.post("/api/local-models/quickstart", json={"model_id": entry.id})
+    assert response.status_code == 200, response.text
+    job_id = response.json()["job_id"]
+    assert wait_until(lambda: lm._JOBS[job_id]["status"] != "running", timeout=5)
+    jobs = client.get("/api/local-models/jobs").json()["jobs"]
+    assert len(jobs) == 1 and jobs[0]["kind"] == "quickstart" and jobs[0]["status"] == "done", jobs
+    assert not old_resume()
+    assert plan[0][1].read_bytes() == b"main" and plan[1][1].read_bytes() == b"draft"
+    assert calls == ["server", "default"]
+    assert not lm._QUICKSTART_LOCK.locked()
+    assert not list(lm.download_plans._root().glob("*.json"))
 
 
 def _routes(monkeypatch, server):

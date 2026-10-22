@@ -1,6 +1,8 @@
 """Durable setup intent; the existing installer and download paths do the work."""
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from fastapi import HTTPException
 
 from hermes_cli.local_runtime import download_plans
@@ -22,12 +24,24 @@ def _engine_urls(backend):
 
 
 def _save(job, plan):
+    from hermes_cli.web_routers import local_models as lm
+
     job["partial_urls"] = tuple(dict.fromkeys((*job.get("partial_urls", ()), *_engine_urls(job["setup"]["backend"]))))
-    download_plans.save_plan(job, plan)
-    job["plan_saved"] = True
-    previous = job.pop("adopted_plan", None)
-    if previous:
-        download_plans.remove_plan(previous)
+    previous = job.get("adopted_plan")
+    ownership = (download_plans.plan_lock(previous, wait=True,
+                    cancelled=lm._RUNNING[job["job_id"]]["pause"].is_set,
+                    on_wait=lambda: lm._step(job, "waiting", "Waiting for this model's other download to finish"))
+                 if previous else nullcontext(True))
+    with ownership as acquired:
+        if not acquired:
+            raise lm.DownloadPaused("setup paused while waiting to adopt its download")
+        if job.get("plan_saved") and not download_plans.has_plan(previous or job["plan_key"]):
+            raise RuntimeError("This setup was discarded. Start a new setup")
+        download_plans.save_plan(job, plan)
+        job["plan_saved"] = True
+        if previous:
+            download_plans.remove_plan(previous)
+            job.pop("adopted_plan")
 
 
 def _run_setup(job):
@@ -96,8 +110,6 @@ def _spawn(job, *, restored=False):
     from hermes_cli.web_routers import local_models as lm
 
     def release():
-        if job.get("plan_saved"):
-            download_plans.remove_plan(job["plan_key"])
         if job["kind"] == "quickstart":
             lm._QUICKSTART_LOCK.release()
 
@@ -105,7 +117,8 @@ def _spawn(job, *, restored=False):
     lm._spawn_job(job, "lr-local-setup", lambda: run(job), fail_msg="local setup failed: %s",
                   on_exit=release, resumable=True, start_paused=restored,
                   ownership=lambda: download_plans.plan_lock(job["plan_key"], wait=True,
-                      cancelled=lm._RUNNING[job["job_id"]]["pause"].is_set))
+                      cancelled=lm._RUNNING[job["job_id"]]["pause"].is_set,
+                      on_wait=lambda: lm._step(job, "waiting", "Waiting for this setup's other operation to finish")))
 
 
 def begin(body, profile):
@@ -175,6 +188,7 @@ def restore(key, record, plan):
     job = lm._job(kind, record["target"], model_id=record["model_id"])
     job.update(setup=record["setup"], plan_key=key, download_plan=plan,
                download_key=download_plans.plan_key(plan), plan_saved=True,
+               optional_files=record.get("optional_files", []),
                partial_urls=tuple(record.get("partial_urls", ())), phase="interrupted",
                detail="Setup interrupted. Resume to finish setup")
     if kind == "quickstart":

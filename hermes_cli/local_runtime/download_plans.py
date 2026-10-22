@@ -35,12 +35,13 @@ def save_plan(job: dict, plan) -> str:
     if job.get("setup"):
         record["setup"] = job["setup"]
     record["partial_urls"] = list(job.get("partial_urls", ()))
+    record["optional_files"] = list(job.get("optional_files", ()))
     durable_write_bytes(_root() / f"{key}.json", json.dumps(record).encode())
     return key
 
 
 def checkpoint(job: dict) -> None:
-    """Save a parked job's display state without changing its operation intent."""
+    """Save display state without changing intent; the caller holds the plan lock."""
     path = _root() / f"{job['plan_key']}.json"
     try:
         record = json.loads(path.read_bytes())
@@ -109,6 +110,9 @@ def pending_plans():
                         or not isinstance(record.get("state", {}), dict)
                         or not isinstance(record.get("partial_urls", []), list)
                         or any(not isinstance(url, str) for url in record.get("partial_urls", []))
+                        or not isinstance(record.get("optional_files", []), list)
+                        or any(not isinstance(dest, str) or dest not in {str(row[1]) for row in plan}
+                               for dest in record.get("optional_files", []))
                         or path.stem != plan_key(plan, setup)):
                     continue
                 yield path.stem, record, plan

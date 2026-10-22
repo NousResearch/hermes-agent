@@ -3,11 +3,116 @@ from __future__ import annotations
 
 import socket
 import urllib.error
+from dataclasses import replace
 
 import pytest
 
 from tests.hermes_cli.test_local_download_jobs import client as client, poll  # noqa: PLC0414 -- pytest fixture re-export
 from tests.pm._range_server import RangeHandler, dl_server as dl_server, url  # noqa: PLC0414 -- pytest fixture re-export
+
+
+@pytest.fixture
+def draft_plan(client, monkeypatch, dl_server):
+    from hermes_cli.local_runtime.catalog import AssetFile
+    from hermes_cli.web_routers import local_models as lm
+
+    entry = replace(lm.catalog.CATALOG[0], draft=AssetFile("optional.gguf", 5))
+    variant = entry.variants[0]
+    plan = [(url(dl_server, "/required"), lm.bootstrap.models_dir() / "required.gguf", 4),
+            (url(dl_server, "/optional"), lm.bootstrap.assets_dir() / "optional.gguf", 5)]
+    RangeHandler.payloads = {"/required": b"main", "/optional": b"draft"}
+    monkeypatch.setattr(lm, "_download_target", lambda _: (entry, variant))
+    monkeypatch.setattr(lm, "_download_plan", lambda *_: plan)
+    monkeypatch.setattr(lm.Download, "_wait_retry", lambda *_: None)
+    original = RangeHandler.do_GET
+    failures = set()
+
+    def respond(handler):
+        if handler.path in failures:
+            handler.send_error(503)
+        else:
+            original(handler)
+
+    monkeypatch.setattr(RangeHandler, "do_GET", respond)
+    return lm, entry, plan, failures
+
+
+def test_optional_transport_failure_does_not_restore_a_completed_model_job(client, draft_plan, monkeypatch):
+    lm, entry, plan, failures = draft_plan
+    failures.add("/optional")
+    started = client.post("/api/local-models/download", json={"model_id": entry.id}).json()
+    settled = poll(client, started["job_id"])
+    assert settled["status"] == "done", settled
+    assert plan[0][1].read_bytes() == b"main" and not plan[1][1].exists()
+    assert not list(lm.download_plans._root().glob("*.json"))
+    lm._restore_download_plans()
+    assert not any(job["status"] == "paused" for job in lm._JOBS.values())
+    monkeypatch.setattr(lm, "_JOBS", {})
+    monkeypatch.setattr(lm, "_RUNNING", {})
+    lm._restore_download_plans()
+    assert client.get("/api/local-models/jobs").json()["jobs"] == []
+
+
+def test_draft_download_keeps_full_identity_and_restores_optional_intent(client, draft_plan, monkeypatch):
+    lm, entry, plan, failures = draft_plan
+    failures.add("/required")
+    started = client.post("/api/local-models/download", json={"model_id": entry.id}).json()
+    parked = poll(client, started["job_id"])
+    assert parked["status"] == "paused", parked
+    key = lm.download_plans.plan_key(plan)
+    assert lm._JOBS[started["job_id"]]["plan_key"] == key
+    duplicate = client.post("/api/local-models/download", json={"model_id": entry.id}).json()
+    assert duplicate["job_id"] == started["job_id"]
+    saved = list(lm.download_plans.pending_plans())
+    assert len(saved) == 1 and saved[0][2] == plan
+    monkeypatch.setattr(lm, "_JOBS", {})
+    monkeypatch.setattr(lm, "_RUNNING", {})
+    lm._restore_download_plans()
+    restored = client.get("/api/local-models/jobs").json()["jobs"]
+    assert len(restored) == 1 and restored[0]["status"] == "paused"
+    # Recovery must use the saved optional role, not require a live catalog entry.
+    monkeypatch.setattr(lm.catalog, "catalog_by_id", dict)
+    failures.clear()
+    resumed = client.post("/api/local-models/download/resume", json={"job_id": restored[0]["job_id"]})
+    assert resumed.json()["resumed"]
+    settled = poll(client, restored[0]["job_id"])
+    assert settled["status"] == "done", settled
+    assert plan[0][1].read_bytes() == b"main" and plan[1][1].read_bytes() == b"draft"
+    assert not list(lm.download_plans._root().glob("*.json"))
+
+
+@pytest.mark.parametrize("optional_available", [False, True])
+def test_pause_during_optional_retry_restores_its_role(client, draft_plan, monkeypatch, optional_available):
+    lm, entry, plan, failures = draft_plan
+    failures.add("/optional")
+    original_wait = lm.Download._wait_retry
+
+    def pause_retry(download, delay):
+        download.pause()
+        download._check_pause()
+
+    monkeypatch.setattr(lm.Download, "_wait_retry", pause_retry)
+    started = client.post("/api/local-models/download", json={"model_id": entry.id}).json()
+    parked = poll(client, started["job_id"])
+    assert parked["status"] == "paused" and parked["error"] is None, parked
+    before = plan[0][1].stat().st_mtime_ns
+    saved = list(lm.download_plans.pending_plans())
+    assert len(saved) == 1 and saved[0][2] == plan
+    monkeypatch.setattr(lm, "_JOBS", {})
+    monkeypatch.setattr(lm, "_RUNNING", {})
+    monkeypatch.setattr(lm.catalog, "catalog_by_id", dict)
+    lm._restore_download_plans()
+    restored = client.get("/api/local-models/jobs").json()["jobs"]
+    assert len(restored) == 1
+    monkeypatch.setattr(lm.Download, "_wait_retry", original_wait)
+    if optional_available:
+        failures.clear()
+    assert client.post("/api/local-models/download/resume", json={"job_id": restored[0]["job_id"]}).json()["resumed"]
+    settled = poll(client, restored[0]["job_id"])
+    assert settled["status"] == "done", settled
+    assert plan[1][1].exists() is optional_available
+    assert plan[0][1].read_bytes() == b"main" and plan[0][1].stat().st_mtime_ns == before
+    assert not list(lm.download_plans._root().glob("*.json"))
 
 
 @pytest.mark.parametrize("outage_kind", ["http", "dns"])

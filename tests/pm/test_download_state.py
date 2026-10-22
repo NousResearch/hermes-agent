@@ -42,20 +42,15 @@ def test_gc_respects_partial_ownership_and_recent_resume(tmp_path, monkeypatch, 
 def test_pause_interrupts_an_owner_wait(tmp_path):
     from threading import Event, Thread
     from pm.downloader import Download, DownloadPaused, Source
+    from pm.download_state import partial_key
 
     destination = tmp_path / "already-present"
     destination.write_bytes(b"complete")
-    download = Download([Source("https://example.invalid/model", destination)], partials_dir=tmp_path / "partials")
     waiting = Event()
+    download = Download([Source("https://example.invalid/model", destination)], partials_dir=tmp_path / "partials",
+                        state=lambda phase: waiting.set() if phase == "waiting" else None)
     finished = Event()
     errors = []
-    original_key = download._key
-
-    def key(url):
-        waiting.set()
-        return original_key(url)
-
-    download._key = key
 
     def run():
         try:
@@ -65,7 +60,7 @@ def test_pause_interrupts_an_owner_wait(tmp_path):
         finally:
             finished.set()
 
-    with partial_lock(download.partials_dir, original_key(download.sources[0].url)):
+    with partial_lock(download.partials_dir, partial_key(download.sources[0].url)):
         worker = Thread(target=run)
         worker.start()
         assert waiting.wait(timeout=5)

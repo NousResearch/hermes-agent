@@ -215,3 +215,21 @@ def test_stage_repin_refuses_a_native_directory_hold_then_recovers(sandbox, monk
         kernel.CloseHandle(handle)
     ensure_mod.stage_only("stage-test", TARGET)
     assert (entry / "bin/tool").read_bytes() == replacement
+
+
+def test_staged_lookup_is_passive_and_requires_the_current_pin(sandbox, monkeypatch):
+    from pm import paths
+
+    payload = b"cross-target fixture"
+    lock = _arm_lock(monkeypatch, [{"url": "https://example.test/tool", "sha256": _sha(payload)}])
+    assert ensure_mod.staged_package("stage-test", TARGET) is None
+    _seed_fetch_cache(sandbox, payload)
+    entry = ensure_mod.stage_only("stage-test", TARGET)
+    monkeypatch.setattr(ensure_mod, "_install", lambda *a, **kw: pytest.fail("passive lookup acquired a package"))
+    selected = ensure_mod.staged_package("stage-test", TARGET)
+    assert selected is not None and selected.path == entry
+    assert not paths.facts_path().exists()
+    lock.set_pin("stage-test", "1.0", {"any": {"url": "https://example.test/replaced", "sha256": "b" * 64}})
+    lock.save()
+    assert ensure_mod.staged_package("stage-test", TARGET) is None
+    assert (entry / "bin/tool").read_bytes() == payload

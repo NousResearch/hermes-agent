@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import ntpath
 import shutil
 import subprocess
 import sys
@@ -97,9 +98,45 @@ def _cua_driver_install_ready() -> bool:
     # On-demand default (#97389): with computer_use.autostart off, a missing
     # cua-driver-serve logon task is intentional, not a repair condition —
     # requiring it here biased every enable flow toward registering it.
-    return (sys.platform != "win32"
-            or _cua_driver_autostart_registered_windows()
+    from tools.computer_use.cua_backend_driver import is_windows_driver
+    return ((sys.platform != "win32" and not is_windows_driver(state.get("binary")))
+            or _cua_driver_autostart_registered_windows(state.get("binary"))
             or not _cua_autostart_opt_in())
+
+
+def _install_wsl_windows_driver(*, upgrade: bool) -> bool:
+    """Explicit host setup stages the same Windows pin; runtime never installs across OSes."""
+    from pm import get_package
+    from pm.client import stage_only
+    from tools.computer_use.cua_backend_driver import _wsl_windows_pm_target
+
+    override = os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
+    if not override:
+        try:
+            target = _wsl_windows_pm_target()
+            entry = stage_only("cua-driver", target)
+            binary = get_package("cua-driver").binary(entry, target)
+            if binary is not None:
+                # Windows archives need no POSIX mode, but WSL interop exec does.
+                binary.chmod(binary.stat().st_mode | 0o111)
+        except Exception as exc:
+            return _fail(f"    Windows cua-driver preparation failed: {exc}")
+    binary = _resolved_cua_driver_cmd()
+    _CUA_DRIVER_CONTRACT_CACHE.clear()
+    if not binary or not _cua_driver_contract_status(binary).get("ready"):
+        return _fail("    The selected Windows cua-driver is not usable; run hermes computer-use doctor.")
+    return _repair_cua_driver_autostart_windows(binary, verbose=False)
+
+
+def _windows_autostart_binary(binary: str) -> str:
+    from hermes_constants import is_wsl
+    if sys.platform == "linux" and is_wsl():
+        converted = _run_text(["wslpath", "-w", os.path.realpath(binary)], timeout=3,
+                              stdin=subprocess.DEVNULL)
+        binary = (converted.stdout or "").strip()
+        if converted.returncode or not binary or "\n" in binary:
+            raise ValueError("Cannot translate the Windows driver path for autostart setup")
+    return binary
 
 
 def install_cua_driver(upgrade: bool = False, show_installer_progress: bool = True) -> bool:
@@ -110,6 +147,15 @@ def install_cua_driver(upgrade: bool = False, show_installer_progress: bool = Tr
     Unattended callers should use PM ensure directly, without interactive host setup.
     """
     from pm import ensure
+    from hermes_constants import is_wsl
+    from tools.computer_use.cua_backend_driver import computer_use_target, is_windows_driver
+
+    try:
+        if sys.platform == "linux" and is_wsl() and (
+                computer_use_target() == "windows" or is_windows_driver(_resolved_cua_driver_cmd())):
+            return _install_wsl_windows_driver(upgrade=upgrade)
+    except ValueError as exc:
+        return _fail(str(exc))
 
     override = os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
     binary = _resolved_cua_driver_cmd()
@@ -170,7 +216,8 @@ def _ps_single_quote(value: str) -> str:
 
 def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bool:
     """A task targeting a previous PM version is not a ready registration."""
-    if sys.platform != "win32":
+    from hermes_constants import is_wsl
+    if sys.platform != "win32" and not is_wsl():
         return False
     from xml.etree import ElementTree
 
@@ -178,6 +225,7 @@ def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bo
     if not binary:
         return False
     try:
+        binary = _windows_autostart_binary(binary)
         result = subprocess.run(
             ["schtasks.exe", "/Query", "/TN", "cua-driver-serve", "/XML"],
             capture_output=True, timeout=10, creationflags=_post_setup_no_window_flags(), check=False)
@@ -186,9 +234,9 @@ def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bo
         # Parse bytes: schtasks' XML declaration carries the output encoding.
         task = ElementTree.fromstring(result.stdout)
         commands = task.findall(".//{*}Exec/{*}Command")
-        return any(os.path.normcase((node.text or "").strip().strip('"')) == os.path.normcase(binary)
+        return any(ntpath.normcase((node.text or "").strip().strip('"')) == ntpath.normcase(binary)
                    for node in commands)
-    except (OSError, subprocess.SubprocessError, ElementTree.ParseError):
+    except (OSError, ValueError, subprocess.SubprocessError, ElementTree.ParseError):
         return False
 
 
@@ -223,7 +271,9 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     nothing, silently — returning True (nothing to repair) keeps callers from
     printing "auto-start was not registered" warnings for an intentional
     absence."""
-    if sys.platform != "win32":
+    from hermes_constants import is_wsl
+    wsl = sys.platform == "linux" and is_wsl()
+    if sys.platform != "win32" and not wsl:
         return True
     if not _cua_autostart_opt_in():
         # On-demand default (#97389): the per-boot cua-driver-serve task is opt-in
@@ -235,8 +285,15 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
         return False
     if _cua_driver_autostart_registered_windows(binary):
         return True
-    ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
-    ps_cmd = _cua_autostart_registration_ps_command(binary)
+    ps = (shutil.which("powershell.exe") if wsl else
+          shutil.which("powershell") or shutil.which("powershell.exe") or "powershell")
+    if not ps:
+        return _fail("    Windows PowerShell is unavailable for autostart setup.")
+    try:
+        windows_binary = _windows_autostart_binary(binary)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return _fail(f"    Cannot translate the Windows driver path: {exc}")
+    ps_cmd = _cua_autostart_registration_ps_command(windows_binary)
     _print_info("    Registering cua-driver auto-start..." if verbose
                 else "    Repairing cua-driver auto-start registration...")
     try:

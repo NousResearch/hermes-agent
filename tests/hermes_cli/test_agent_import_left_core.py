@@ -59,3 +59,41 @@ def test_only_a_home_with_registered_imports_gets_the_plugin(tmp_path):
     assert lcm.migrate_home(synced, install=install, say=said.append) == ["agent-importers"]
     assert calls == ["agent-importers"]
     assert "✓ `hermes import-agent` moved out of core" in said[0]
+
+
+def test_a_scheduled_sync_on_a_home_nothing_migrated_installs_the_plugin_and_runs(tmp_path, monkeypatch, capsys):
+    """An upgrade that ran no `hermes update` (a Docker image swap) leaves a home with sync sources and
+    no plugin; when the scheduled `hermes import-agent --sync` is its only Hermes process, that run
+    installs the plugin and parses as the plugin's own command."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: test\n", encoding="utf-8")
+    (home / "import-sync.json").write_text('{"version": 1, "agents": {}}', encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "import-agent", "--sync"])
+    installs = []
+
+    def install_into(target, consent=None):
+        def install(name):  # what the catalog install leaves behind: the plugin, enabled
+            installs.append((target, name))
+            plugin = target / "plugins" / name
+            plugin.mkdir(parents=True)
+            (plugin / "plugin.yaml").write_text(f"name: {name}\nversion: 1.0.0\n", encoding="utf-8")
+            (plugin / "__init__.py").write_text(
+                "def register(ctx):\n"
+                "    ctx.register_cli_command('import-agent', 'import', "
+                "lambda p: p.add_argument('--sync', action='store_true'), lambda args: 'synced')\n",
+                encoding="utf-8")
+            (target / "config.yaml").write_text(f"model: test\nplugins:\n  enabled: [{name}]\n", encoding="utf-8")
+            return {"ok": True}
+        return install
+    monkeypatch.setattr(lcm, "_install_into", install_into)
+    from hermes_cli.main import _build_cli_parser
+
+    parser, _subparsers = _build_cli_parser()
+    args = parser.parse_args(sys.argv[1:])
+
+    assert installs == [(home, "agent-importers")]
+    assert args.sync is True and args.func(args) == "synced"
+    assert "installed the 'agent-importers' plugin" in capsys.readouterr().err

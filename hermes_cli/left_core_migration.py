@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -636,3 +637,16 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
     except Exception as exc:  # never take agent/gateway start down
         logger.warning("left-core plugin migration failed: %s", exc, exc_info=True)
         return []
+
+
+def recover_for_command(name: Optional[str]) -> None:
+    """``hermes <name>`` names a command a left-core plugin registers, and the active home uses that
+    feature but lacks the plugin: run :func:`recover_at_startup` now, before plugin commands are
+    discovered, so the command it installs runs in this same invocation. A home nothing migrated yet
+    (a Docker image swap runs no ``hermes update``) whose only Hermes process is a scheduled
+    ``hermes import-agent --sync`` never starts an agent or a gateway to do it."""
+    from hermes_constants import get_hermes_home
+    home = Path(get_hermes_home())
+    if any(name and name in (f.cli, f.command, *f.old_cli) and not plugin_present(f.plugin, home)
+           and f.in_use(home) for f in LEFT_CORE):
+        recover_at_startup(say=lambda message: print(message, file=sys.stderr))

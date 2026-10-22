@@ -3259,7 +3259,9 @@ def _register_plugin_cli_commands(subparsers) -> None:
     try:
         from plugins.memory import discover_plugin_cli_commands
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_cli.left_core_migration import recover_for_command
 
+        recover_for_command(_first_positional_argv())
         seen_plugin_commands = set()
         for cmd_info in discover_plugin_cli_commands():
             _attach_plugin_cli_command(subparsers, cmd_info)

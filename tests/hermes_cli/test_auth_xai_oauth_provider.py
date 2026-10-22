@@ -910,3 +910,28 @@ def test_pool_sync_back_preserves_active_provider(tmp_path, monkeypatch):
     state = raw_after["providers"]["xai-oauth"]["tokens"]
     assert state["access_token"] == new_access
     assert state["refresh_token"] == "rt-rotated"
+
+
+@pytest.mark.parametrize("server_interval", [5, 60])
+def test_xai_slow_down_preserves_increased_interval(monkeypatch, server_interval):
+    """The xAI caller shares the RFC slow-down contract with Nous."""
+    import httpx
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth_xai import _xai_oauth_poll_device_token
+
+    token = {"access_token": "access", "refresh_token": "refresh"}
+    responses = iter([{ "error": "slow_down" }, { "error": "authorization_pending" }, token])
+
+    class Client:
+        def post(self, url, **kwargs):
+            payload = next(responses)
+            return httpx.Response(200 if "access_token" in payload else 400, json=payload,
+                                  request=httpx.Request("POST", url))
+
+    sleeps = []
+    monkeypatch.setattr(auth_mod.time, "sleep", sleeps.append)
+    assert _xai_oauth_poll_device_token(
+        Client(), token_endpoint="https://auth.example/token", device_code="device",
+        expires_in=300, poll_interval=server_interval,
+    ) == token
+    assert sleeps == [server_interval + 5, server_interval + 5]

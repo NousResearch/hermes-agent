@@ -2907,12 +2907,12 @@ def legacy_launchd_labels_for_install(exclude=()) -> list[str]:
     enumerates, let alone restarts, another install's fleet (#41403).
     """
     import plistlib
-    import pwd
 
     from hermes_constants import get_default_hermes_root
 
     try:
-        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+        import pwd  # POSIX-only, so inside the guard: a host without it answers "no legacy units"
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — guarded above; POSIX launchd (macOS) helper
         root = get_default_hermes_root().resolve()
     except Exception:
         return []

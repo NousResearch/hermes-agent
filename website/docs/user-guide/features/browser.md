@@ -214,6 +214,30 @@ A pin naming a profile directory that doesn't exist never silently falls back to
 the last-used profile: the agent gets a fresh browser without your logins and a
 message naming the bad pin.
 
+By default Hermes snapshots and launches your **system default** browser. If you
+browse in one Chromium browser (say Brave) and want the agent to use another
+(say Chrome) without changing your OS default, name it:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  use_real_profile: true
+  real_profile_browser: chrome   # chrome | edge | brave | brave-origin | chromium
+```
+
+The agent then uses that browser's profile and logins, and its headless copy no
+longer runs the same app you are using, which on macOS avoids the "clicking the
+app icon does nothing" collision. An unsupported value fails closed with a
+fixable message, never falling back to the default browser. `hermes browser
+close-profile` honours the same setting.
+
+Notes: naming the same browser you already use as your default gains nothing;
+the benefit is pointing the agent at a *different* browser. The agent uses
+that browser's own profile and logins, so sign in to your sites there first.
+The setting is read when a real-profile browser is launched; a browser that is
+already running keeps its previous choice until Hermes restarts. Safari is not
+supported.
+
 When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.

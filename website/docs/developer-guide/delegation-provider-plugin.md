@@ -92,7 +92,7 @@ is the default route, and `self.settings(config)` is your backend's own block,
 | `route_task(task, config)` | yes | Return the route dict for one task. `task` carries `goal`, `context`, `index` and the values the model supplied for your parameters. Raise `DelegationRouteError` to refuse; its message is the tool error the model reads. |
 | `task_parameters(config)` | no | `{name: json_schema}` merged into `tasks.items.properties`. Core enforces `enum` before `route_task` runs and refuses core-owned names (`goal`, `context`, `index`, `output_schema`, `images`, `group`, `role`, `toolsets`, `provider`, `model`, `base_url`, `api_key`, `api_mode`, `acp_command`, `acp_args`). |
 | `description(config)` | no | Guidance appended to the `delegate_task` description. |
-| `is_available()` | no | No network calls. `False` makes delegation use `default`. |
+| `is_available()` | no | No network calls. `False` fails delegation closed while your backend is selected: `delegate_task` returns a tool error naming it and the fix (`/delegation default`, or `hermes config set delegation.backend default`); it never switches to `default` on its own. |
 | `settings(config)` | inherited | `delegation.backends.<name>` as a mapping (empty when unset). Do not override. |
 
 ### Routes
@@ -151,8 +151,9 @@ when a fallback provider took over. The `default` backend's children leave the r
 ## Picker metadata and session switching
 
 `display_name` and `summary` (one user-facing line; never shown to the model) label your backend in
-pickers such as `/delegation`. `agent.delegation_backends` is the public API a picker or slash command
-uses:
+pickers such as `/delegation`. A plugin uses `ctx.delegation_backends` (same methods; `list_backends()` returns
+plain dicts). It is a host remote facade, so under `plugins.isolation: host` it acts on the Hermes process, not
+the plugin host. Core code calls `agent.delegation_backends` directly:
 
 | Call | Does |
 |---|---|

@@ -1844,10 +1844,12 @@ code_execution:
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
   # backend: "default"                        # Strategy routing each delegate_task task: "default" = the keys below,
-                                              # else the parent's route. A plugin backend (model_map, profile_routes)
-                                              # that is missing or disabled falls back to "default" with one warning.
+                                              # else the parent's route. model_map / profile_routes come from the
+                                              # advanced-delegation plugin; a backend that is missing, disabled or
+                                              # unavailable fails closed (tool error naming it; /delegation default or
+                                              # `hermes config set delegation.backend default` restores the default).
   # backends:                                 # Each plugin backend's own settings, keyed by its backend name.
-  #   model_map:                              # delegation-model-map plugin (backend: model_map)
+  #   model_map:                              # backend: model_map (advanced-delegation)
   #     options:
   #       - name: fast
   #         description: "Cheap and quick; lookups, summaries, simple edits."
@@ -1858,9 +1860,10 @@ delegation:
   #         provider: "anthropic"
   #         model: "claude-opus-5"
   #         reasoning_effort: "high"
-  #         service_tier: "fast"              # optional: refused at spawn when the route has no such tier
+  #         service_tier: "fast"              # optional: that task is refused when the route has no such tier
+  #         # fallback_providers: [...]         # optional; absent = delegation.fallback_providers, [] = none
   #     default: fast                         # optional: option for tasks that set none
-  #   profile_routes:                         # delegation-profiles plugin (backend: profile_routes). A listed
+  #   profile_routes:                         # backend: profile_routes (advanced-delegation). A listed
   #     profiles:                             # profile's subagents use ITS credentials, pool, SOUL.md and terminal policy.
   #       - name: coder
   #         description: "Writes and refactors code; runs tests."

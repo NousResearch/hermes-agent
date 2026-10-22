@@ -89,6 +89,9 @@ interface SubmitDetail {
   /** `hidden` types the persisted user row so no bubble renders — the
    *  off-screen path for widget intents. Omit for normal visible sends. */
   displayKind?: 'hidden'
+  /** A message-owned widget needs admission, rather than fire-and-forget delivery. */
+  onResult?: (accepted: boolean) => void
+  claimed?: boolean
 }
 
 let activeTarget: ComposerTarget = 'main'
@@ -663,6 +666,26 @@ subscribePreviewAnnotateHandoff(async request => {
 
 export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void) =>
   subscribe<SubmitDetail>(SUBMIT_EVENT, handler)
+
+/** Submit to the captured visible surface; never redirect to the active chat. */
+export const requestComposerSubmitConfirmed = (
+  text: string,
+  target: ComposerTarget,
+  surfaceId: string
+): Promise<boolean> => {
+  if (!text.trim() || !composerSurfaceIsVisible(target, surfaceId)) {
+    return Promise.resolve(false)
+  }
+
+  return new Promise(resolve => {
+    const detail: SubmitDetail = { text, target, surfaceId, onResult: resolve }
+    dispatchNow(SUBMIT_EVENT, detail)
+
+    if (!detail.claimed) {
+      resolve(false)
+    }
+  })
+}
 
 /** Toggle ONE composer's voice conversation — the `composer.voice` hotkey
  *  reaches the composer that owns voice. Defaults to the active

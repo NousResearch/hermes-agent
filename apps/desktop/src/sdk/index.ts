@@ -1577,6 +1577,8 @@ export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-
 // -- ui: the design language --------------------------------------------------
 
 export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+/** Named directives and message-owned fenced renderers. */
+export * from './transcript'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1635,6 +1637,7 @@ export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
  *  that prints a next run switches its label on this (`t.cron.next` →
  *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
 export { nextRunOverdueMs } from '@/app/cron/job-state'
+
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
  *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
  *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
@@ -1661,7 +1664,6 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
-
 export {
   type ProfileGroupHeaderContribution,
   type ProfileGroupRoute,
@@ -1802,15 +1804,15 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
+
+// -- contracts ----------------------------------------------------------------
+
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
-
-// -- contracts ----------------------------------------------------------------
-
 /** Settings ▸ Plugins entries (`ctx.registerSettingsPage`); `pluginSettingsHref` deep-links one. */
 export { pluginSettingsHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 export type { Contribution } from '@/contrib/types'
@@ -1889,6 +1891,7 @@ export { catalogProviderMatches } from '@/lib/model-options'
  *  hand-picked color still sits with the generated ones; reach for them
  *  instead of literal hex, which can't follow the theme. */
 export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-color'
+
 /** The shared client itself, for invalidation OUTSIDE React (e.g. a
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
@@ -1897,7 +1900,6 @@ export { queryClient } from '@/lib/query-client'
 /** Compact labels for the reasoning levels exported from @hermes/shared, so a
  *  plugin surfacing a thinking depth uses the same spelling as the app. */
 export { reasoningEffortLabel } from '@/lib/reasoning-effort'
-
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
@@ -1916,13 +1918,6 @@ export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'
  *  suffix. `relativeTime` is the bidirectional Intl form ("in 14 hr") — use it
  *  for a scheduled next-run, not for an age. */
 export { type AgoLabels, coarseElapsed, fmtDateTime, fmtDayTime, formatAgo, relativeTime } from '@/lib/time'
-/** The transcript as a contribution area: register a named `::directive{...}`
- *  and the model can render your component inline in assistant messages. */
-export {
-  TRANSCRIPT_DIRECTIVE_AREA,
-  type TranscriptDirectiveContribution,
-  type TranscriptDirectiveProps
-} from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
 export { gatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that

@@ -2,6 +2,7 @@ import {
   type ReasoningMessagePartComponent,
   type TextMessagePartProps,
   type ToolCallMessagePartProps,
+  useAui,
   useAuiState,
   useMessagePartReasoning,
   useMessagePartText
@@ -23,6 +24,7 @@ import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-tim
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
+import { TranscriptCodeBlockScope } from '@/components/assistant-ui/transcript-code-block'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
@@ -201,6 +203,10 @@ type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; time
 
 const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => {
   const { text } = useMessagePartText()
+  const aui = useAui()
+  const messageId = useAuiState(s => s.message.id)
+  const partIndex = aui.part.source === 'message' && aui.part.query.type === 'index' ? aui.part.query.index : -1
+  const role = useAuiState(s => s.message.role)
 
   // assistant-ui adds an empty continuation after a tool starts. It is not
   // prose yet and must not create paragraph spacing above pending approvals.
@@ -211,7 +217,13 @@ const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestam
   return (
     <>
       <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
-      <MarkdownText />
+      {role === 'assistant' ? (
+        <TranscriptCodeBlockScope messageId={messageId} partIndex={partIndex} source={text}>
+          <MarkdownText />
+        </TranscriptCodeBlockScope>
+      ) : (
+        <MarkdownText />
+      )}
     </>
   )
 }

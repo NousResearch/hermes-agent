@@ -72,15 +72,60 @@ class TestCallerIntegration:
 
     @patch("hermes_cli.copilot_auth.resolve_copilot_token", return_value=("gho_raw", "GH_TOKEN"))
     @patch("hermes_cli.copilot_auth.get_copilot_api_token", return_value=("exchanged_jwt", None))
-    def test_auth_resolve_uses_exchange(self, mock_exchange, mock_resolve):
+    @patch("agent.credential_pool.load_pool")
+    def test_auth_resolve_uses_exchange(self, mock_load_pool, mock_exchange, mock_resolve):
         from hermes_cli.auth import _resolve_api_key_provider_secret
 
+        mock_load_pool.return_value.has_credentials.return_value = False
         # Create a minimal pconfig mock
         pconfig = MagicMock()
         token, source = _resolve_api_key_provider_secret("copilot", pconfig)
         assert token == "exchanged_jwt"
         assert source == "GH_TOKEN"
         mock_exchange.assert_called_once_with("gho_raw")
+
+    @patch("hermes_cli.copilot_auth.resolve_copilot_token", return_value=("", ""))
+    @patch("hermes_cli.copilot_auth.get_copilot_api_token", return_value=("exchanged_jwt", None))
+    @patch("agent.credential_pool.load_pool")
+    def test_auth_resolve_exchanges_priority_oauth_pool_credential(
+        self, mock_load_pool, mock_exchange, mock_resolve,
+    ):
+        """Native device-code credentials must work without env or gh CLI tokens."""
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+
+        entry = MagicMock()
+        entry.access_token = "ghu_device_code_token"
+        entry.runtime_api_key = ""
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.peek.return_value = entry
+        pool.entries.return_value = [entry]
+        mock_load_pool.return_value = pool
+
+        token, source = _resolve_api_key_provider_secret("copilot", MagicMock())
+
+        assert token == "exchanged_jwt"
+        assert source == "credential_pool:copilot"
+        mock_exchange.assert_called_once_with("ghu_device_code_token")
+        mock_resolve.assert_not_called()
+
+    @patch(
+        "hermes_cli.auth._resolve_copilot_pooled_api_token",
+        return_value=("enterprise-jwt", "https://api.enterprise.githubcopilot.com"),
+    )
+    @patch("hermes_cli.copilot_auth.resolve_copilot_token")
+    def test_runtime_base_url_uses_selected_pooled_enterprise_endpoint(
+        self, mock_resolve, mock_pool_token,
+    ):
+        """Enterprise JWT and endpoint must come from the same pooled credential."""
+        from hermes_cli.auth import _copilot_runtime_base_url
+
+        base_url = _copilot_runtime_base_url(
+            "enterprise-jwt", "https://api.githubcopilot.com", "",
+        )
+
+        assert base_url == "https://api.enterprise.githubcopilot.com"
+        mock_resolve.assert_not_called()
 
 
 class TestDeriveBaseUrlFromProxyEp:

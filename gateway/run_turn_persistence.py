@@ -54,6 +54,27 @@ def _acp_launch(runner, source) -> bool:
 
 
 class GatewayTurnPersistenceMixin:
+    @staticmethod
+    def _is_intentional_silence(agent_result, response) -> bool:
+        try:
+            from gateway.response_filters import is_intentional_silence_agent_result
+            return is_intentional_silence_agent_result(agent_result, response)
+        except Exception:
+            return False
+
+    def _is_autonomous_webhook_silence(self, source, agent_result, response) -> bool:
+        """Allow successful bare silence markers from the autonomous webhook lane.
+
+        Webhook requests are autonomous work triggers, not user-chat provenance:
+        they deliberately have no machinery ``display_kind``. Keep this exception
+        scoped to the webhook platform so ordinary interactive turns retain their
+        visible fallback.
+        """
+        return (
+            source.platform == Platform.WEBHOOK
+            and self._is_intentional_silence(agent_result, response)
+        )
+
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
@@ -81,14 +102,25 @@ class GatewayTurnPersistenceMixin:
         from gateway.run_turn import _unexpected_silence_reply
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
-        if _intentional_silence and not silence_allowed(_silence_kind, _silence_reply_expected):
+        _autonomous_webhook_silence = self._is_autonomous_webhook_silence(
+            source, agent_result, response,
+        )
+        if (
+            _intentional_silence
+            and not silence_allowed(_silence_kind, _silence_reply_expected)
+            and not _autonomous_webhook_silence
+        ):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
             )
             _intentional_silence = False
             response = _unexpected_silence_reply()
-        elif _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        elif (
+            _intentional_silence
+            and not is_machinery_display_kind(_silence_kind)
+            and not _autonomous_webhook_silence
+        ):
             logger.debug(
                 "silence marker suppressed on an unaddressed turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",

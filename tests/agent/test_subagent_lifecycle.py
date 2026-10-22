@@ -286,6 +286,60 @@ def test_routing_delegation_provider_bundle(routing_lifecycle):
 
 
 @pytest.mark.parametrize("wire", [False, True])
+def test_reasoning_effort_is_a_launch_local_override(routing_lifecycle, wire):
+    from hermes_cli.plugin_host_wire import decode, encode
+    from copy import deepcopy
+
+    service, build, config, _resolve = routing_lifecycle
+    settings = {"reasoning_effort": "low"}
+    config.return_value = settings
+    parent = service._parent_agent_resolver()
+    parent.reasoning_config = {"enabled": True, "effort": "medium"}
+    settings_before = deepcopy(settings)
+    parent_reasoning_before = deepcopy(parent.reasoning_config)
+    request = {"goal": "route", "reasoning_effort": "high"}
+    request = decode(encode(request)) if wire else request
+
+    explicit_handle = service.launch(request)
+    explicit_none_handle = service.launch({"goal": "route", "reasoning_effort": None})
+    inherited_handle = service.launch({"goal": "route"})
+    disabled_handle = service.launch({"goal": "route", "reasoning_effort": False})
+    # These assertions inspect the individual launch records, including an
+    # explicit None and the stock/default path, before any child is awaited.
+    assert [call.kwargs["reasoning_config_override"] for call in build.call_args_list] == [
+        {"enabled": True, "effort": "high"}, None, None, {"enabled": False},
+    ]
+    for handle in (explicit_handle, explicit_none_handle, inherited_handle, disabled_handle):
+        assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert settings == settings_before
+    assert parent.reasoning_config == parent_reasoning_before
+
+    with pytest.raises(SubagentLifecycleError, match="reasoning_effort"):
+        service.launch({"goal": "route", "reasoning_effort": "not-a-real-effort"})
+    assert settings == settings_before
+    assert parent.reasoning_config == parent_reasoning_before
+
+
+@pytest.mark.parametrize("value", [False, "none"])
+def test_reasoning_effort_explicit_disable_is_not_omission(routing_lifecycle, value):
+    service, build, config, _resolve = routing_lifecycle
+    config.return_value = {"reasoning_effort": "high"}
+
+    handle = service.launch({"goal": "route", "reasoning_effort": value})
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert build.call_args.kwargs["reasoning_config_override"] == {"enabled": False}
+
+
+def test_invalid_reasoning_effort_fails_before_child_build(routing_lifecycle):
+    service, build, _config, _resolve = routing_lifecycle
+
+    with pytest.raises(SubagentLifecycleError, match="reasoning_effort"):
+        service.launch({"goal": "route", "reasoning_effort": "not-a-real-effort"})
+
+    build.assert_not_called()
+
+
+@pytest.mark.parametrize("wire", [False, True])
 def test_routing_request_provider_wins_without_mixing_bundles(routing_lifecycle, wire):
     from hermes_cli.plugin_host_wire import decode, encode
 

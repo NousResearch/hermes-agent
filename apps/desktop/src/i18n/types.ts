@@ -879,6 +879,12 @@ catalog: CatalogTranslations
       themeDesc: string
       themeSearchPlaceholder: string
       themeProfileNote: (profile: string) => string
+      themeSharedNote: string
+      themeScopeTitle: string
+      themeScopePerProfile: string
+      themeScopeShared: string
+      themeScopePerProfileDesc: string
+      themeScopeSharedDesc: string
       installTitle: string
       installDesc: string
       installPlaceholder: string

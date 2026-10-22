@@ -1,5 +1,6 @@
 import type { Translations } from '@/i18n'
 import { NATIVE_NOTIFICATION_KINDS } from '@/store/native-notifications'
+import { $profiles } from '@/store/profile'
 import { canUseQuickEntry } from '@/store/quick-entry'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
@@ -68,6 +69,17 @@ export const SETTINGS_MANIFEST = {
     tips: appearanceSetting('general', ['tips', 'hints', 'coach marks', 'onboarding', 'help'], 'tips'),
     tours: appearanceSetting('general', ['tour', 'walkthrough', 'guide', 'onboarding', 'help'], 'tours'),
     theme: appearanceSetting('theme', ['color mode', 'skin', 'light', 'dark'], 'theme'),
+    // The scope row only mounts with more than one profile; a hit that scrolls
+    // to nothing is worse than no hit.
+    themeScope: {
+      subpage: 'theme',
+      keywords: ['theme', 'scope', 'profile', 'shared', 'sync', 'gateway'],
+      available: () => $profiles.get().length > 1,
+      copy: t => ({
+        label: t.settings.appearance.themeScopeTitle,
+        description: t.settings.appearance.themeScopePerProfileDesc
+      })
+    },
     uiScale: appearanceSetting('typography', ['zoom', 'size'], 'uiScale'),
     chatTextScale: appearanceSetting('typography', ['chat', 'text', 'font', 'size', 'scale', 'zoom'], 'chatTextScale'),
     chatFont: appearanceSetting('typography', ['font', 'typeface', 'family', 'text'], 'chatFont'),

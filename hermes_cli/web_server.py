@@ -177,19 +177,6 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
 _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
-def _probe_install_before_state_db() -> None:
-    from hermes_cli.anon_auth import on_local_desktop_backend
-
-    if not on_local_desktop_backend():
-        return
-    try:
-        from hermes_cli.install_state import probe
-
-        probe()
-    except (OSError, ValueError):  # what the probe's own guards leave; onboarding.state probes again
-        _log.warning("first-install check at boot failed", exc_info=True)
-
-
 from hermes_cli.web_server_app import app_lifespan
 
 

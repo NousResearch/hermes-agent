@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 from pathlib import Path
 
 from pm import termux_libs
@@ -540,13 +541,14 @@ def _run_live(cmd: list[str], *, cwd, env, timeout: int = 3600) -> tuple[int, st
     return result.returncode, result.stderr
 
 
-def _resolve_updates(names: list[str], lockfile, only_target: str | None) -> tuple[list, list[str]]:
+def _resolve_updates(names: list[str], lockfile, only_target: str | None,
+                     skip_targets: frozenset[str] = frozenset()) -> tuple[list, list[str]]:
     """Resolve each package's latest; an upstream outage records a failure instead of aborting."""
     resolved = []
     failures = []
     for name in names:
         package = get_package(name)
-        targets = [t for t in ALL_TARGETS if package.missing_reason(t) is None]
+        targets = [t for t in ALL_TARGETS if package.missing_reason(t) is None and t not in skip_targets]
         if only_target:  # cross-target check: only the requested target matters
             targets = [t for t in targets if t == only_target]
         if not targets:
@@ -602,8 +604,12 @@ def _apply_pins(changed: list, lockfile) -> int:
             # One broken pin — a package's resolution bug or one target's upstream
             # pool skew (rolling Termux pool 404 while nodejs.org is ahead) — must
             # not zero out the whole run. Pin the rest, report the failure (#125386).
-            print(f"✗ {d.name} pin failed: {e}")
-            failed[d.name] = f"{type(e).__name__}: {e}"
+            # str(HTTPError) omits the URL, and a bare "404" can't tell you which
+            # upstream (nodejs.org, Termux pool, mirror) is missing the file.
+            url = e.url if isinstance(e, urllib.error.HTTPError) else None
+            detail = f"{e} ({url})" if url else str(e)
+            print(f"✗ {d.name} pin failed: {detail}")
+            failed[d.name] = f"{type(e).__name__}: {detail}"
             continue
         lockfile.set_pin(d.name, d.version, artifacts)
         pinned.append(d.name)
@@ -658,7 +664,7 @@ def _refresh_npm_lock() -> int:
 
 
 def cmd_update(args) -> int:
-    """`hermes pm update [names...] [--check] [--target T] [--uv] [--npm] [--termux]`.
+    """`hermes pm update [names...] [--check] [--target T] [--skip-target T] [--uv] [--npm] [--termux]`.
 
     Resolve each package's latest via its own latest_versions() hook,
     intersect across targets, and (real mode) re-pin the lockfile + install
@@ -679,7 +685,7 @@ def cmd_update(args) -> int:
         print("::warning::--target is a CHECK-only cross-resolution flag; ignoring it for apply (the lockfile pins every target)")
         args.target = None
 
-    resolved, failures = _resolve_updates(names, lockfile, args.target)
+    resolved, failures = _resolve_updates(names, lockfile, args.target, frozenset(args.skip_target))
     changed = [d for d in resolved if d.changed]
     if not resolved:
         print("pm update: nothing to check (no resolvable packages)")
@@ -868,6 +874,9 @@ def main(argv=None) -> int:
     p.add_argument("--check", action="store_true",
                    help="dry-run: print what would change, write nothing (exit 1 if updates exist)")
     p.add_argument("--target", help="resolve for a different target instead of this machine (e.g. win32-arm64)")
+    p.add_argument("--skip-target", action="append", default=[], choices=ALL_TARGETS, metavar="TARGET",
+                   help="leave TARGET's pins as they are, e.g. linux-arm64-bionic while the termux "
+                        "pool lags upstream (repeatable)")
     p.add_argument("--uv", action="store_true", help="also refresh uv.lock + venv (uv update + sync)")
     p.add_argument("--npm", action="store_true", help="also refresh package-lock.json (npm update)")
     p.add_argument("--termux", action="store_true",

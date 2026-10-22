@@ -5,6 +5,7 @@ import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
@@ -18,7 +19,6 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
-
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
@@ -3385,43 +3385,6 @@ export const zhOverrides = {
     snippetsDesc: '选择一个起始提示词放入输入框。',
     dropFiles: '拖放文件以附加',
     dropSession: '拖放以链接此对话',
-    mcpSuggestions: {
-      label: server => `添加 ${server}`,
-      tip: keyword => `因为你提到了“${keyword}”而推荐 — 点击连接`,
-      connecting: server => `正在连接 ${server}…`,
-      cancelTip: '点击取消',
-      added: server => `已添加 ${server}`,
-      addedTip: '已连接 — 其工具已在此对话中可用',
-      connectFailed: server => `无法连接 ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `使用技能: ${skill}`,
-      tip: skill => `你提到了“${skill}” — 点击以该技能开头`,
-      done: skill => `已添加 /${skill}`,
-      doneTip: '发送时将加载该技能'
-    },
-    githubSuggestions: {
-      label: '设置 GitHub',
-      tip: '这里通过 gh CLI 技能使用 GitHub — 点击连接你的账号',
-      done: '已添加 /github-auth',
-      doneTip: '发送消息后，agent 将引导你完成 GitHub 登录'
-    },
-    repairSuggestions: {
-      label: server => `重新连接 ${server}`,
-      tip: server => `${server} 调用刚因连接错误失败`,
-      working: server => `正在重新连接 ${server}…`,
-      workingTip: '点击取消',
-      done: server => `已重新连接 ${server}`,
-      doneTip: '新凭据已在此对话中生效',
-      failed: server => `无法重新连接 ${server}`
-    },
-    cronSuggestions: {
-      label: '定时执行',
-      tip: phrase => `“${phrase}”听起来是周期性任务 — 可以按计划运行`,
-      prefix: '将此设置为定时任务:',
-      done: '已标记为定时任务',
-      doneTip: '发送后由智能体创建任务'
-    },
     snippets: {
       codeReview: {
         label: '代码审查',
@@ -4333,12 +4296,7 @@ export const zhOverrides = {
       react: '回应',
       dismissError: '关闭错误',
       errorGenericProvider: 'AI 服务',
-      errorLayerBodies: {
-        generic: 'Hermes 回复时出现问题。请重试；若问题持续，请复制错误详情。',
-        provider: 'AI 服务无法完成此请求。请稍后重试或切换服务商。',
-        endpoint: 'Hermes 无法连接到你的自定义模型服务器。请确认它正在运行，然后重新发送消息。',
-        streaming: '回复完成前连接已断开。请重试以重新发送。'
-      },
+      ...zhErrorLayers,
       errorCodes: {
         provider_policy_blocked: {
           title: '账户设置阻止了此模型',
@@ -4387,18 +4345,11 @@ export const zhOverrides = {
         cron_session_read_only: {
           title: '此聊天属于一个定时任务',
           body: '它只运行该任务，因此你的消息未被执行。请新建聊天后再发送。'
+        },
+        workspace_unavailable: {
+          title: '此聊天的文件夹已不存在',
+          body: '此聊天使用的文件夹已被移动或删除，因此你的消息未被执行。请重新创建该文件夹，或使用“移动到项目”为聊天指定其他文件夹，然后重试。'
         }
-      },
-      errorLayers: {
-        auth: '认证错误',
-        billing: '额度不足',
-        disk: '磁盘已满',
-        endpoint: '自定义端点错误',
-        gateway: '网关错误',
-        generic: '本轮失败',
-        provider: '模型服务商错误',
-        runtime: '本地运行时错误',
-        streaming: '流式连接错误'
       },
       errorRetry: '重试',
       errorLimitResets: time => `限额将于 ${time} 重置`,

@@ -230,6 +230,8 @@ class AuthorityConnection:
         handlers.update(connection_handlers(self))
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
+        from gateway.session_onboarding import handlers as onboarding_handlers
+        handlers.update(onboarding_handlers(self))
         return handlers
 
     async def dispatch(self, request):
@@ -462,7 +464,8 @@ class AuthorityConnection:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
             # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
             ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
-                                      client_local=self.native_owner)
+                                      client_local=self.native_owner,
+                                      desktop_local=getattr(self.transport, 'desktop_local', False))
             if isinstance(ref, dict):
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).

@@ -471,6 +471,8 @@ class GatewayBusySessionMixin:
             and getattr(existing, "inherit_channel_pin", False) == getattr(event, "inherit_channel_pin", False)
             and getattr(existing, "allow_gateway_control", True)
             == getattr(event, "allow_gateway_control", True)
+            and getattr(existing, "_suppress_unaddressed_reply", False)
+            == getattr(event, "_suppress_unaddressed_reply", False)
             and all(
                 (getattr(existing, "metadata", None) or {}).get(key)
                 == (getattr(event, "metadata", None) or {}).get(key)
@@ -665,6 +667,8 @@ class GatewayBusySessionMixin:
     ) -> GatewayRunner._BusySteerOutcome:
         """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if event._suppress_unaddressed_reply:
+            effective_mode = "queue"
         # Steer injects mid-run via running_agent.steer(), falling back to queue (nothing lost) when
         # the agent isn't running yet, lacks steer(), or the payload is empty. Interrupt is demoted
         # to queue while subagents run (interrupt() would abort them); /stop and /new still cancel all.
@@ -945,6 +949,8 @@ class GatewayBusySessionMixin:
         # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
         if not _steer.steered and not _steer.redirected:
             self._queue_or_replace_pending_event(session_key, event)
+        if event._suppress_unaddressed_reply:
+            return True
         # Store the message so it's processed as the next turn after the current run finishes (or is
         # interrupted). Skip this for a successful steer — the text already landed inside the run and must
         # NOT also be replayed as a next-turn user message. Route through _queue_or_replace_pending_event

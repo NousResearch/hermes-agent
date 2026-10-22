@@ -1250,6 +1250,22 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
             record_gateway_slash_command(event)
+        # A silence-enabled custom wake exists only to notify deterministic hooks. Exit before
+        # session/busy/goal/loop machinery so no model, preprocessing, status, or post-turn work
+        # can occur. BasePlatformAdapter dispatches this lane before typing and queue handling.
+        if event._suppress_unaddressed_reply:
+            hook_ctx = {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "chat_id": source.chat_id or "",
+                "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
+                "chat_type": getattr(source, "chat_type", "") or "",
+                "session_id": str((event.metadata or {}).get("gateway_session_id") or ""),
+                "message": (event.text or "")[:500],
+            }
+            with self._profile_scope_for_source(source):
+                await self.hooks.emit("agent:start", hook_ctx)
+            return None
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel
         # guard, plugin hooks and user authorization all reject events above,

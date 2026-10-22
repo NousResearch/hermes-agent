@@ -175,6 +175,37 @@ async def _run(adapter, event):
 
 
 @pytest.mark.asyncio
+async def test_wake_only_mention_pattern_skips_thread_and_media_enrichment(adapter):
+    adapter.config.extra["mention_patterns"] = [f"<@{OTHER_USER_ID}>"]
+    adapter.config.extra["mention_patterns_allow_silence"] = True
+    event: dict = _event(
+        f"<@{OTHER_USER_ID}> please review",
+        ts="1700000000.000010",
+        thread_ts="1700000000.000001",
+    )
+    event["files"] = [{"id": "F_PRIVATE", "mimetype": "image/png"}]
+
+    with patch.object(adapter, "_apply_bot_mention", wraps=adapter._apply_bot_mention) as apply_mention, patch.object(
+        adapter, "_hydrate_thread_context", new=AsyncMock()
+    ) as hydrate, patch.object(
+        adapter, "_collect_inbound_media", new=AsyncMock()
+    ) as collect_media, patch.object(
+        adapter, "_build_message_event", new=AsyncMock()
+    ) as build_event:
+        await _run(adapter, event)
+
+    apply_mention.assert_not_called()
+    hydrate.assert_not_awaited()
+    collect_media.assert_not_awaited()
+    build_event.assert_not_awaited()
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event._suppress_unaddressed_reply is True
+    assert message_event.media_urls == []
+    assert message_event.channel_context is None
+    assert "1700000000.000001" not in adapter._mentioned_threads
+
+
+@pytest.mark.asyncio
 async def test_wake_only_mention_pattern_allows_silent_hook_owned_turn(adapter):
     adapter.config.extra["mention_patterns"] = [f"<@{OTHER_USER_ID}>"]
     adapter.config.extra["mention_patterns_allow_silence"] = True
@@ -186,6 +217,8 @@ async def test_wake_only_mention_pattern_allows_silent_hook_owned_turn(adapter):
 
     message_event = adapter.handle_message.await_args.args[0]
     assert message_event.reply_expected is False
+    assert message_event._suppress_unaddressed_reply is True
+    assert "1700000000.000002" not in adapter._reacting_message_ids
 
 
 @pytest.mark.asyncio
@@ -241,6 +274,22 @@ async def test_wake_only_setting_preserves_pipe_form_bot_reply_requirement(adapt
 
     message_event = adapter.handle_message.await_args.args[0]
     assert message_event.reply_expected is True
+    assert message_event._suppress_unaddressed_reply is False
+    assert "1700000000.000008" in adapter._reacting_message_ids
+
+
+@pytest.mark.asyncio
+async def test_pipe_form_direct_bot_mention_routes_without_custom_pattern(adapter):
+    await _run(
+        adapter,
+        _event(f"<@{BOT_USER_ID}|hermes> answer normally", ts="1700000000.000009"),
+    )
+
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event.reply_expected is True
+    assert message_event._suppress_unaddressed_reply is False
+    assert message_event.text == "answer normally"
+    assert "1700000000.000009" in adapter._reacting_message_ids
 
 
 @pytest.mark.asyncio

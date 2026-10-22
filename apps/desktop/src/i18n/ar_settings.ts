@@ -1,3 +1,4 @@
+import { arDelegationRouting } from './ar_delegation_routing'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
@@ -854,7 +855,8 @@ export const arSettings = {
           'نقطة نهاية مباشرة مفعّلة ولها الأولوية على الموفّر المحفوظ. يُحتفظ بعنوانها وبيانات اعتمادها ما دام هذا الوضع محددًا.',
         directClear: 'تطبيق هذا المسار يمسح نقطة النهاية المباشرة ومفتاحها المحفوظ. تبقى إعدادات الطلب الأخرى كما هي.',
         catalogFailed: 'كتالوج النماذج غير متاح. أدخل الموفّر والنموذج يدويًا أو أعد المحاولة.',
-        draftHint: 'تبقى التغييرات محلية حتى تطبيقها.'
+        draftHint: 'تبقى التغييرات محلية حتى تطبيقها.',
+        routing: arDelegationRouting
       }
     },
     providers: {

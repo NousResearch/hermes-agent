@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantDelegationRouting } from './zh-hant_delegation_routing'
 import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
@@ -1096,7 +1097,8 @@ export const zhHantSettings = {
         directActive: '直接端點已啟用，優先於已儲存的提供方。選擇此模式時會保留其端點與憑證。',
         directClear: '套用此路由會清除直接端點及其儲存的金鑰。其他請求設定維持不變。',
         catalogFailed: '模型目錄無法使用。請手動輸入提供方與模型，或重試。',
-        draftHint: '套用前，變更只保留在本機。'
+        draftHint: '套用前，變更只保留在本機。',
+        routing: zhHantDelegationRouting
       }
     },
     localModels: {

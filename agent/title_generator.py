@@ -53,11 +53,23 @@ _CONTEXT_FOOTER_RE = re.compile(r"\n+--- (?:Context Warnings|Attached Context) -
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
 MAX_DERIVED_TITLE_CHARS = 48
 # Answer-shaped guard: a tiny model sometimes answers instead of titling; longer is rejected, not truncated.
-# Upper bound on accepted title word count. Titling is a 3-7 word task; a small tiny-model sometimes ignores
+# Upper bound on accepted title word count. Titling is a 2-4 word task; a small tiny-model sometimes ignores
 # the task and answers the user's message instead — that answer must never become the session title (see the
 # answer-shaped output guard in generate_title; port of can1357/oh-my-pi#7306). 12 leaves headroom for
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
+TITLE_TARGET_CHARS = 24
+TITLE_RETRY_ABOVE_CHARS = 28
+# CJK has no spaces, so the word guard sees a whole Chinese reply as a few "words" (#141969).
+_MAX_TITLE_CJK_CHARS = 20
+_CJK_RANGES = (
+    ("\u3000", "\u303f"),
+    ("\u3040", "\u30ff"),
+    ("\u3400", "\u4dbf"),
+    ("\u4e00", "\u9fff"),
+    ("\uac00", "\ud7af"),
+    ("\uff01", "\uff60"),
+)
 # Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
 # thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
 TITLE_MAX_TOKENS = 512
@@ -70,11 +82,12 @@ TITLE_MAX_TOKENS = 512
 # rendered from these constants so the guard set and the prompt cannot drift
 # apart. Port of QwenLM/qwen-code#9709.
 _PROMPT_GOOD_EXAMPLES = (
-    "Fix login button on mobile",
-    "Postgres connection pool exhaustion",
+    "Postgres pool exhaustion",
+    "Desktop onboarding rebase",
     "Friendly greeting",
 )
 _PROMPT_VAGUE_EXAMPLE = "Code changes"
+_PROMPT_VERB_FIRST_EXAMPLE = "Check connected apps"
 
 # "Friendly greeting" is deliberately NOT in the reject set: the prompt
 # instructs the model to produce it for bare greetings, so it is a legitimate
@@ -83,7 +96,7 @@ _PROMPT_VAGUE_EXAMPLE = "Code changes"
 # derived title the guard falls back to is strictly more informative.
 _EXAMPLE_ECHO_REJECT = frozenset(
     t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
-) | {_PROMPT_VAGUE_EXAMPLE.lower()}
+) | {_PROMPT_VAGUE_EXAMPLE.lower(), _PROMPT_VERB_FIRST_EXAMPLE.lower()}
 
 # "Friendly greeting" is what the prompt asks for when the opener has no topic yet, so
 # it is the one model title that must NOT settle the session: it is persisted at
@@ -95,10 +108,12 @@ _PROVISIONAL_GREETING_TITLE = "friendly greeting"
 
 _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
-    "that lets them find this conversation again in a list.\n\n"
+    "that lets them find this conversation again in a narrow sidebar list.\n\n"
     "Rules:\n"
-    "- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n"
-    "- Name what the user wants DONE, not that they asked a question.\n"
+    f"- 2 to 4 words, at most {TITLE_TARGET_CHARS} characters, sentence case "
+    "(capitalize only the first word and proper nouns).\n"
+    "- Lead with the specific subject: the file, feature, command, error, product, or PR number.\n"
+    "- Do not start with a generic verb (Check, Fix, Review, Locate, Investigate, Help, Explain).\n"
     "- Keep technical terms, filenames, numbers, and error codes exact.\n"
     "- Drop filler words: the, this, my, a, an.\n"
     "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
@@ -107,8 +122,8 @@ _TITLE_PROMPT_TEMPLATE = (
     "__LANGUAGE_RULE__\n"
     + "".join(f'Good: {{"title": "{t}"}}\n' for t in _PROMPT_GOOD_EXAMPLES)
     + f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}\n'
-    'Too long: {"title": "Investigate and fix the issue where the login button '
-    'does not respond on mobile devices"}\n\n'
+    + f'Starts with a generic verb: {{"title": "{_PROMPT_VERB_FIRST_EXAMPLE}"}}\n'
+    'Too long: {"title": "Investigate why the Postgres connection pool is exhausted"}\n\n'
     'Reply with JSON only: {"title": "..."}'
 )
 
@@ -468,6 +483,32 @@ def _is_prompt_example_echo(title: str) -> bool:
     return normalized in _EXAMPLE_ECHO_REJECT
 
 
+def _request_title(messages: list, *, timeout: Optional[float], main_runtime: dict | None) -> Optional[str]:
+    """One title request; the cleaned title text or None."""
+    response = call_llm(
+        task="title_generation",
+        messages=messages,
+        # 512, not 64: fenced replies and reasoning models were cut mid-JSON (#83903, #82291).
+        # temperature=None: default-only models reject an explicit value (#72351).
+        max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
+        extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+        # Gemini thinks by default and spends max_tokens before the JSON lands (#91927).
+        reasoning_config={"enabled": False},
+    )
+    message = response.choices[0].message
+    return _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
+
+
+def _cjk_char_count(text: str) -> int:
+    """Characters written with CJK scripts or their punctuation in ``text``."""
+    return sum(1 for ch in text if any(lo <= ch <= hi for lo, hi in _CJK_RANGES))
+
+
+def _is_answer_shaped(title: str) -> bool:
+    """True when the model answered the user instead of titling the session."""
+    return len(title.split()) > _MAX_TITLE_WORDS or _cjk_char_count(title) > _MAX_TITLE_CJK_CHARS
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -506,39 +547,23 @@ def generate_title(
         "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
     )
     try:
-        # Use the provider's default temperature instead of forcing 0.3.
-        # Some models (e.g. GPT-5.6) only accept their server-side default
-        # and reject explicit temperature values, causing the daemon title
-        # thread to fail with "Unsupported value: 'temperature'".
-        # See: #72351, #51083, #51157
-        response = call_llm(
-            task="title_generation",
-            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens, but 64 was cut mid-JSON by fenced/prefixed replies and by
-            # reasoning models whose thinking survives the disable below (#83903, #82291). A model that
-            # honours the JSON contract stops after ~15 tokens regardless, so the ceiling only costs on
-            # replies that would have been garbage anyway. temperature=None: omitted from the wire so
-            # default-only reasoning models accept the first request (#72351).
-            max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-            # The module contract above promises thinking-disabled operation,
-            # but nothing enforced it: with the aux default reasoning_effort
-            # "" (provider default), Gemini enables internal thinking and
-            # bills thought tokens against max_tokens=64 — the JSON payload
-            # never lands, and the prose fallback stores the opening fence
-            # ("```json") as the session title (#91927).
-            reasoning_config={"enabled": False},
-        )
-        message = response.choices[0].message
-        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
-        # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
+        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}]
+        title = _request_title(messages, timeout=timeout, main_runtime=main_runtime)
+        if title is not None and len(title) > TITLE_RETRY_ABOVE_CHARS:
+            shorter = _request_title(messages + [
+                {"role": "assistant", "content": json.dumps({"title": title})},
+                {"role": "user", "content": f"Too long. At most {TITLE_TARGET_CHARS} characters."},
+            ], timeout=timeout, main_runtime=main_runtime)
+            if shorter is not None and len(shorter) < len(title):
+                title = shorter
+        # Answer-shaped output guard: titling is a 2-4 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
         # which is still an assistant blob — reject instead so the caller retries on the next exchange
         # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+        if title is not None and _is_answer_shaped(title):
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
-            logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
+            logger.debug("Rejecting answer-shaped title output (%r)", title)
             return None
         # Example-echo guard: a title that parrots one of the prompt's own
         # examples back verbatim says nothing about the session — reject it so

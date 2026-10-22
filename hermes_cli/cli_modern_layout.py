@@ -141,6 +141,79 @@ def text_block_lines(text: str) -> list[str]:
     return [open_text_block()] + [(text_lead() if i == 0 else TEXT_HANG) + line for i, line in enumerate(lines)]
 
 
+_BATCH_RE = re.compile(r"^Subagent Tasks (?P<outcome>[\w ]+?): (?P<titles>.*) \((?P<count>\d+) tasks\)$", re.DOTALL)
+_SINGLE_RE = re.compile(r"^Subagent Task (?P<outcome>[\w ]+?): (?P<titles>.*)$", re.DOTALL)
+
+
+def notification_row(text: str) -> str:
+    """A background notice (subagents back, a process finished) as one dim ``◈`` row after a
+    blank line: ``◈ 3 subagents completed · api audit; web audit; …``, cut like a tool row."""
+    text = " ".join(str(text or "").split())
+    batch, single = _BATCH_RE.match(text), _SINGLE_RE.match(text)
+    if batch:
+        text = f"{batch['count']} subagents {batch['outcome'].lower()} · {batch['titles']}"
+    elif single:
+        text = f"subagent {single['outcome'].lower()} · {single['titles']}"
+    global _GAP_PENDING
+    _GAP_PENDING = True  # the next row (usually the turn's first tool row) gets its blank line
+    return fit_row(f"{_DIM}◈ ", text, _RST)
+
+
+# ── answer markdown: code blocks and tables (width-independent, no frames) ─────────────────
+
+_FENCE_RE = re.compile(r"^\s*(```+|~~~+)\s*([\w+#.-]*)\s*$")
+
+
+def code_fence(line: str) -> str | None:
+    """The language of a fence line (``""`` when unnamed), or None for any other line."""
+    match = _FENCE_RE.match(line or "")
+    return match.group(2) if match else None
+
+
+def code_line(text: str, lang: str) -> str:
+    """One line of a fenced block: a dim ``▏`` gutter, then the code highlighted with the terminal's
+    own 16 ANSI colours (so it follows the terminal/Omarchy theme). Plain when the language is
+    unknown. Never padded, so a resize cannot re-wrap it."""
+    body = text.rstrip("\n")
+    try:
+        from pygments import highlight
+        from pygments.formatters import TerminalFormatter
+        from pygments.lexers import get_lexer_by_name
+        from pygments.util import ClassNotFound
+        try:
+            lexer = get_lexer_by_name(lang or "text", stripnl=False, ensurenl=False)
+        except ClassNotFound:
+            lexer = None
+        if lexer is not None and body.strip():
+            body = highlight(body, lexer, TerminalFormatter()).rstrip("\n")
+    except Exception:
+        pass
+    return f"{_DIM}▏{_RST} {body}"
+
+
+def code_label(lang: str) -> str:
+    """The row that opens a fenced block: its language, dim, on the gutter."""
+    return f"{_DIM}▏ {lang}{_RST}" if lang else f"{_DIM}▏{_RST}"
+
+
+def table_rows(lines: list[str]) -> list[str]:
+    """An already-aligned markdown table without its pipes: the header bold, a dim ``─`` rule per
+    column under it, cells two spaces apart. Rows that are not ``| … |`` pass through."""
+    out = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            out.append(line)
+            continue
+        cells = stripped[1:-1].split("|")
+        if all(set(c.strip()) <= set("-: ") and c.strip() for c in cells):
+            out.append(_DIM + "  ".join("─" * max(1, len(c) - 2) for c in cells) + _RST)
+            continue
+        text = "  ".join(c[1:-1] if len(c) >= 2 else c.strip() for c in cells).rstrip()
+        out.append(f"{_BOLD}{text}{_RST}" if index == 0 else text)
+    return out
+
+
 def _full_title(text: str) -> str:
     """The reasoning's first ``**bold**`` heading, else its first sentence, whitespace-collapsed."""
     text = (text or "").strip()
@@ -244,9 +317,24 @@ def tool_row(function_name: str, args: dict | None, duration: float, result=None
         if index == len(rows) - 1 and duration >= 0.1:
             tail += f"  {_DIM}{duration:.1f}s{_RST}"
         if suffix:
+            suffix = _exception_suffix(suffix, result)
             tail += f"{_DIM if neutral else _RED} {' '.join(suffix.split())}{_RST}"
         out.append(fit_row(row_head(emoji, verb or function_name, state), compact_detail(detail), tail, width))
     return "\n".join(out)
+
+
+_EXCEPTION_RE = re.compile(r"^\s*([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt))\b")
+
+
+def _exception_suffix(suffix: str, result) -> str:
+    """A failure suffix that opens a Python traceback (``[Traceback (most recent call last): File
+    "/h…]``) names the exception instead: ``[ModuleNotFoundError]``. The preview under the row
+    already shows the exception's line."""
+    if "Traceback" not in suffix:
+        return suffix
+    from hermes_cli.cli_tool_render import result_text
+    names = [m.group(1) for line in result_text(result).splitlines() if (m := _EXCEPTION_RE.match(line))]
+    return f"[{names[-1].rsplit('.', 1)[-1]}]" if names else "[traceback]"
 
 
 VERB_COLUMN = 9  # "Explored" + one space: every row's detail starts in the same column

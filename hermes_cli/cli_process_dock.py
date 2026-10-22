@@ -61,7 +61,8 @@ def process_rows(now: float | None = None) -> list:
             "kind": "process",
             "key": proc.id,
             "id": proc.id,
-            "command": " ".join((proc.command or "").split()) or t("cli.dock.process_goal_label"),
+            "command": " ".join((getattr(proc, "command_summary", "") or proc.command or "").split())
+                       or t("cli.dock.process_goal_label"),
             "status": status,
             "exit_code": proc.exit_code,
             "elapsed": max(0, int(end - proc.started_at)),

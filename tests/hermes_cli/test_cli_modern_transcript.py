@@ -173,3 +173,80 @@ def test_tool_row_keeps_the_neutral_refusal_dim():
     refused = json.dumps({"success": False, "error": "SKILL.md content is 100,193 characters (limit: 100,000)."})
     row = tool_row("skill_manage", {"operations": []}, 0.3, refused)
     assert _plain(row).startswith("✗ ") and _RED not in row
+
+
+# ── answers: code blocks and tables ─────────────────────────────────────────────────────────
+
+def _stream(cli, text):
+    return _run(cli, lambda c: c._stream_delta(text), lambda c: c._flush_stream())
+
+
+def test_fenced_code_streams_behind_a_gutter_with_its_language_and_no_fences():
+    lines = _stream(_cli(), "Intro.\n```python\ndef acquire(self):\n    return True\n```\nAfter.\n")
+    assert not any("```" in line for line in lines), lines
+    at = next(i for i, line in enumerate(lines) if line.strip() == "▏ python")
+    # The block hangs under the answer's text column, past the ☤ glyph.
+    assert lines[at + 1] == "  ▏ def acquire(self):" and lines[at + 2] == "  ▏     return True", lines
+    assert any("After." in line and "▏" not in line for line in lines[at + 3:]), lines
+
+
+def test_fenced_code_is_highlighted_with_the_terminals_own_colours():
+    from hermes_cli.cli_modern_layout import code_line
+    raw = code_line("def acquire(self):", "python")
+    assert "\x1b[3" in raw and "38;2;" not in raw  # 16-colour escapes follow the terminal theme
+    assert _plain(code_line("anything", "no-such-language")) == "▏ anything"
+
+
+def test_an_unclosed_fence_never_swallows_the_next_answer():
+    cli = _cli()
+    _stream(cli, "```\nhalf a block\n")
+    cli._reset_stream_state()
+    lines = _stream(cli, "Next answer.\n")
+    assert any("Next answer." in line and "▏" not in line for line in lines), lines
+
+
+def test_tables_lose_their_pipes_and_keep_their_columns():
+    lines = _stream(_cli(), "| Service | Severity |\n|---|---|\n| api | high |\n| worker | — |\n\nDone.\n")
+    table = [line for line in lines if any(w in line for w in ("Service", "───", "api", "worker"))]
+    assert len(table) == 4 and not any("|" in line for line in table), lines
+    header, rule, api = (line.split("☤ ", 1)[-1].strip() for line in table[:3])
+    assert header.split() == ["Service", "Severity"] and set(rule) <= {"─", " "}
+    assert api.index("high") == header.index("Severity"), table
+
+
+# ── background notices and the live-work footer ─────────────────────────────────────────────
+
+def test_a_subagent_batch_notice_is_one_short_row():
+    from hermes_cli.cli_modern_layout import DETAIL_MAX, notification_row
+    goals = "; ".join(f"Audit the {s} service config for unsafe defaults" for s in ("api", "web", "worker"))
+    row = _plain(notification_row(f"Subagent Tasks Completed: {goals} (3 tasks)"))
+    assert "\n" not in row and row.startswith("◈ 3 subagents completed · Audit the api"), row
+    assert row.endswith("…") and len(row) <= DETAIL_MAX + 4
+    assert _plain(notification_row("Subagent Task Failed: Rotate certs")) == "◈ subagent failed · Rotate certs"
+
+
+def test_the_gateway_summarises_a_process_command_before_cutting_it():
+    from gateway.session_ancillary import _command_summary
+    command = "X=/tmp/" + "deep/" * 50 + " && mkdir -p $X && cd /tmp/work && ./record.sh 3 4 > $X/log 2>&1; tail -3 $X/log"
+    assert len(command) > 200 and _command_summary(command) == "./record.sh 3 4 + 1 command"
+
+
+def test_the_footer_shows_the_gateway_summary_not_the_cut_command(monkeypatch):
+    from hermes_cli import cli_process_dock, gateway_tools
+    from hermes_cli.gateway_tools import _Proc
+    row = {"session_id": "p1", "command": "X=/tmp/" + "deep/" * 40, "command_summary": "./record.sh 3 4 + 1 command",
+           "status": "exited", "exit_code": 0, "started_epoch": 1.0, "exited_at": 2.0}
+    proc = _Proc(row)
+    registry = type("R", (), {"list_sessions": lambda self: [{**row, "uptime_seconds": 1}],
+                              "get": lambda self, pid: proc})()
+    monkeypatch.setattr(gateway_tools, "process_registry", lambda: registry)
+    rows = cli_process_dock.process_rows(now=3.0)
+    assert [r["command"] for r in rows] == ["./record.sh 3 4 + 1 command"]
+
+
+def test_a_traceback_failure_suffix_names_the_exception():
+    error = ("Traceback (most recent call last):\n  File \"/srv/app/run.py\", line 1, in <module>\n"
+             "ModuleNotFoundError: No module named 'ratelimit'")
+    row = _plain(tool_row("execute_code", {"code": "import ratelimit"}, 0.2,
+                          json.dumps({"status": "error", "output": "", "error": error, "exit_code": 1})))
+    assert row.endswith("[ModuleNotFoundError]") and "Traceback" not in row and "/srv" not in row, row

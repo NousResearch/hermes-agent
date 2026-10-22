@@ -34,6 +34,7 @@ class _Proc:
     def __init__(self, row):
         self.id = row.get("session_id") or ""
         self.command = row.get("command") or ""
+        self.command_summary = row.get("command_summary") or ""
         self.exit_code = row.get("exit_code")
         self.started_at = float(row.get("started_epoch") or 0.0)
         self.exited_at = float(row.get("exited_at") or 0.0)

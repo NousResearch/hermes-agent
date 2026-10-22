@@ -273,6 +273,11 @@ class CLIStreamMixin:
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
             from gateway.warning_notifications import render_notification
+            if getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import notification_row
+                render_notification(lambda: _cprint(notification_row(user_input.display_text)),
+                                    platform="cli", diagnostic=user_input.notification_category == "diagnostic")
+                return
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
@@ -479,15 +484,38 @@ class CLIStreamMixin:
                 self._stream_prefilt = self._stream_prefilt[-_MAX_CLOSE_TAG_LEN:]
             return
 
-    def _emit_stream_line(self, printed_line: str) -> None:
-        """Print one response line with the skin's true-color text escape (if any)."""
+    def _emit_stream_line(self, printed_line: str, plain: bool = False) -> None:
+        """Print one response line with the skin's true-color text escape (if any); ``plain``
+        lines carry their own colours (highlighted code, table rules)."""
         from cli import _RST, _STREAM_PAD, _cprint
-        _tc = getattr(self, "_stream_text_ansi", "")
+        _tc = "" if plain else getattr(self, "_stream_text_ansi", "")
         pad = _STREAM_PAD
         if getattr(self, "_modern_layout", False):
             from hermes_cli.cli_modern_layout import TEXT_HANG, text_lead
             pad = text_lead() if self.__dict__.pop("_text_lead_pending", False) else TEXT_HANG
         _cprint(f"{pad}{_tc}{printed_line}{_RST}" if _tc else f"{pad}{printed_line}")
+
+    def _modern_code_block(self, line: str) -> bool:
+        """Glyph layout: a fence line opens or closes a code block (its language shown dim, the
+        fence itself never printed); a line inside one prints highlighted behind the ``▏`` gutter.
+        True when the line was handled here."""
+        from hermes_cli.cli_modern_layout import code_fence, code_label, code_line
+        lang = self.__dict__.get("_stream_code_lang")
+        fence = code_fence(line)
+        if fence is not None:
+            if lang is None:
+                if getattr(self, "_stream_table_buf", None):
+                    self._flush_stream_table_buf()
+                self._stream_code_lang = fence
+                if fence:
+                    self._emit_stream_line(code_label(fence), plain=True)
+            else:
+                self._stream_code_lang = None
+            return True
+        if lang is None:
+            return False
+        self._emit_stream_line(code_line(line, lang), plain=True)
+        return True
 
     def _flush_stream_table_buf(self) -> None:
         """Emit the held table block re-aligned as a whole. Cell-level markdown is stripped FIRST
@@ -503,6 +531,11 @@ class CLIStreamMixin:
         if self.final_response_markdown == "strip":
             joined = _strip_markdown_syntax(joined)
         block = realign_markdown_tables(joined, _terminal_width_for_streaming())
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import table_rows
+            for ln in table_rows(block.split("\n")):
+                self._emit_stream_line(ln, plain=True)
+            return
         for ln in block.split("\n"):
             self._emit_stream_line(ln)
 
@@ -562,8 +595,11 @@ class CLIStreamMixin:
         # tool-call boundaries so an interrupted reply isn't re-rendered as a Panel (#65666).
         self._streamed_text_this_turn = getattr(self, "_streamed_text_this_turn", "") + text
         self._stream_buf += text
+        modern = getattr(self, "_modern_layout", False)
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
+            if modern and self._modern_code_block(line):
+                continue
             # Table rows are held and re-padded as a block once it ends (already-printed rows
             # can't be re-aligned), so a table appears in one batch when the block closes.
             if self._in_stream_table:
@@ -663,6 +699,7 @@ class CLIStreamMixin:
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
         self._stream_buf = ""
+        self._stream_code_lang = None
         self._stream_started = False
         self._stream_box_opened = False
         self._stream_text_ansi = ""

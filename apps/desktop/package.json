@@ -58,7 +58,7 @@
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
     "test:desktop:lifecycle": "node scripts/test-desktop.mjs lifecycle",
     "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit && tsc --ignoreConfig --allowJs --checkJs --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 electron-builder.config.cjs",
-    "lint": "eslint src/ electron/",
+    "lint": "eslint src/ electron/ && node scripts/check-idle-animations.mjs",
     "lint:fix": "eslint src/ electron/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
     "fix": "npm run lint:fix && npm run fmt",

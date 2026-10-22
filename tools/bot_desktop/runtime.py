@@ -581,7 +581,7 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
         socket=str(rfb_socket_path()) if rfb_socket_path() else None,
         geometry=geometry(),
         install_command=install_command() if missing else None,
-        browser=_bd_browser.executable() if is_supported_host() else None,
+        browser=_bd_browser.executable(profile=_bd_browser.profile_dir()) if is_supported_host() else None,
         # A running screen is never "blocked": the check guards the allocation, not the session.
         blocker=None if running or missing or not is_supported_host() else resources.memory_blocker(mem),
         memory_available_mb=mem.available_mb,

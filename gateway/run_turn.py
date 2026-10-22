@@ -264,6 +264,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 # Persist the coherent context+channel pair before execution: a crash during the
                 # human turn may be followed by an internal startup-resume on the next process.
                 await self._persist_prompt_pins(session_key, _run_start_session_id)
+            _replay_native_image_paths = list(
+                self._peek_session_state(session_key).persistent.native_image_paths or []
+            )
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -323,6 +326,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )
+            if self._hmwa_stage_compression_exhaustion_replay(
+                event, session_key, agent_result, message_text, _replay_native_image_paths,
+            ):
+                response = None
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
                 agent_result=agent_result, agent_messages=agent_messages, prepared=prepared,
@@ -1447,35 +1454,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 ),
             )
 
-    @staticmethod
-    def _run_agent_stream_confirmed_final_delivery(consumer, final_text: str, *, previewed: bool = False) -> bool:
-        """True only when the actual final reply reached the user: a finalize call may carry only the
-        last preview snapshot, so reconcile against the recorded payload — a demonstrable mismatch
-        (False) overrides the flag; None keeps legacy trust."""
-        if consumer is None:
-            return False
-        if getattr(consumer, "final_response_sent", False):
-            matcher = getattr(consumer, "delivered_final_matches", None)
-            if callable(matcher):
-                with suppress(Exception):
-                    if matcher(final_text) is False:
-                        return False
-            return True
-        # Exact-text match against what the consumer DURABLY delivered (commentary, segments, and the
-        # visible prefix only once a real send landed) — safe without the ``previewed`` flag. The codex
-        # app-server bridge delivers the final agentMessage through the commentary path and never sets
-        # response_previewed (#74248 / #80519); gating on the flag re-sent every such reply. Mismatching
-        # commentary still returns False, so a distinct final answer is never suppressed (#65919). Draft
-        # frames are ephemeral and must not count: after draft streaming + a failed finalize send this
-        # predicate must stay False so the fallback final send still fires (#51828 / #33793).
-        has_delivered_text = getattr(consumer, "has_durably_delivered_text", None)
-        if callable(has_delivered_text):
-            try:
-                return bool(has_delivered_text(final_text))
-            except Exception:
-                return False
-        return False
-
     def _run_agent_start_turn_worker(self, turn_ctx: TurnContext, run_sync: Callable[[], Any]) -> GatewayRunner._RunAgentWorker:
         """Schedule ``run_sync`` on the executor plus the inactivity watchdog thread.
 
@@ -2077,6 +2055,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         success, not content: a mismatch with the recorded turn-final payload never suppresses."""
         from gateway.session_finite import finite_turn_required
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
+        if isinstance(response, dict):
+            # Replay safety records partial output even when final delivery must still run on failure.
+            response["stream_visible_output"] = (
+                getattr(_sc, "has_visible_output", None) if _sc is not None else False
+            )
         if not isinstance(response, dict) or response.get("failed") or finite_turn_required() is True:
             return
         _final = response.get("final_response") or ""

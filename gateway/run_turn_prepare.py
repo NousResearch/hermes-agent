@@ -705,10 +705,19 @@ class GatewayTurnPrepareMixin:
         if _vc_note:
             turn_sidecar_notes.append(_vc_note)
 
-        # Auto-analyze user images so the model gets a description plus the local path.
-        message_text = await self._prepare_profile_scoped_inbound_message_text(
-            event=event, source=source, history=history, session_key=session_key,
-        )
+        # A compression-exhaustion replay reuses the already-prepared input: STT and image
+        # enrichment may have external effects, while native images must be reattached on the new turn.
+        replay_message = getattr(event, "_gateway_compression_replay_message_text", None)
+        if replay_message is not None:
+            self._session_state(session_key).persistent.native_image_paths = list(
+                getattr(event, "_gateway_compression_replay_native_image_paths", [])
+            )
+            message_text = replay_message
+        else:
+            # Auto-analyze user images so the model gets a description plus the local path.
+            message_text = await self._prepare_profile_scoped_inbound_message_text(
+                event=event, source=source, history=history, session_key=session_key,
+            )
         if message_text is None:
             # A refused local turn answers with its refusal (session_context_refs.turn_references).
             return getattr(event, "_gateway_turn_refusal", None), _session_env_tokens

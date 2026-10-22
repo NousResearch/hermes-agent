@@ -40,6 +40,14 @@ class StreamFallbackMixin:
             logger.error("Stream send chunk error: %s", e)
             return reply_to_id
 
+    @property
+    def has_visible_output(self) -> bool:
+        """Any acknowledged output this turn, including interim commentary and ephemeral drafts."""
+        return bool(
+            self._already_sent or self._visible_prefix().strip()
+            or self._delivered_commentary_texts or self._delivered_segment_texts
+        )
+
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""
         prefix = self._last_sent_text or ""

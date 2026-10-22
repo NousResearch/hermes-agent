@@ -73,6 +73,15 @@ def allow_private_urls(monkeypatch):
     url_safety._reset_allow_private_cache()
 
 
+def reset_website_policy_cache() -> None:
+    """Drop the process-wide website-policy cache so a temp config is actually read."""
+    from tools import website_policy
+
+    website_policy._cached_policy = None
+    website_policy._cached_policy_path = None
+    website_policy._cached_policy_time = 0.0
+
+
 @pytest.fixture
 def site():
     """A real loopback HTTP server whose served body the test can swap."""
@@ -206,10 +215,47 @@ class TestUrlSources:
         third = skill_sources.check_sources()
         assert [row["status"] for row in third] == ["changed"]
 
+        # Sticky: the alert must survive the run that discovered it, or the user is told
+        # "changed" once, misses it, and is then told "unchanged" about a stale skill.
+        fourth = skill_sources.check_sources()
+        assert [row["status"] for row in fourth] == ["changed"]
+
         server.shutdown()
         server.server_close()
-        fourth = skill_sources.check_sources()
-        assert [row["status"] for row in fourth] == ["unreachable"]
+        fifth = skill_sources.check_sources()
+        assert [row["status"] for row in fifth] == ["unreachable"]
+
+    def test_a_changed_url_stays_changed_until_the_skill_is_refreshed(self, monkeypatch, site):
+        url, handler, _server = site
+        allow_private_urls(monkeypatch)
+        write_skill("docs-skill", url_block(url, retrieved="2026-10-22"))
+        skill_sources.check_sources()
+
+        handler.body = b"<html><body><h1>beta</h1></body></html>"
+        assert [row["status"] for row in skill_sources.check_sources()] == ["changed"]
+        assert [row["status"] for row in skill_sources.check_sources()] == ["changed"]
+
+        # The user re-runs /learn: the frontmatter's read date moves on.
+        write_skill("docs-skill", url_block(url, retrieved="2026-10-23"))
+        assert [row["status"] for row in skill_sources.check_sources()] == ["baseline_recorded"]
+
+        # ...and the refreshed baseline is the new content, so it reads as unchanged next.
+        assert [row["status"] for row in skill_sources.check_sources()] == ["unchanged"]
+
+    def test_a_changed_url_does_not_move_the_recorded_baseline(self, monkeypatch, site):
+        url, handler, _server = site
+        allow_private_urls(monkeypatch)
+        write_skill("docs-skill", url_block(url))
+        skill_sources.check_sources()
+        baseline = skill_sources.load_state()["sources"]["docs-skill"][f"url:{url}"]["hash"]
+
+        handler.body = b"<html><body><h1>beta</h1></body></html>"
+        skill_sources.check_sources()
+        skill_sources.check_sources()
+
+        stored = skill_sources.load_state()["sources"]["docs-skill"][f"url:{url}"]
+        assert stored["hash"] == baseline, "the pre-change hash must survive a changed verdict"
+        assert stored["retrieved"] == "2026-10-22"
 
     def test_markup_noise_alone_is_not_a_change(self, monkeypatch, site):
         """Cache-busting ids and re-indented markup must not read as a content change."""
@@ -259,6 +305,11 @@ class TestPathSources:
         target.write_text("second version\n", encoding="utf-8")
         assert [row["status"] for row in skill_sources.check_sources()] == ["changed"]
 
+        # Sticky across runs, cleared only by a refresh.
+        assert [row["status"] for row in skill_sources.check_sources()] == ["changed"]
+        write_skill("notes-skill", f"    sources:\n      - path: {target}\n        retrieved: 2026-10-23\n")
+        assert [row["status"] for row in skill_sources.check_sources()] == ["baseline_recorded"]
+
         target.unlink()
         assert [row["status"] for row in skill_sources.check_sources()] == ["unreachable"]
 
@@ -302,6 +353,7 @@ class TestRepoSources:
 
         rows = skill_sources.check_sources()
         assert [row["status"] for row in rows] == ["changed"]
+        assert "new commits since the recorded revision" in rows[0]["detail"]
 
     def test_a_repo_without_a_revision_is_skipped(self, bare_repo):
         remote, _work = bare_repo
@@ -318,6 +370,98 @@ class TestRepoSources:
         rows = skill_sources.check_sources()
         assert [row["status"] for row in rows] == ["skipped"]
         assert "credentials" in rows[0]["detail"]
+
+
+class TestRepoEgressPolicy:
+    """An http(s) `repo:` must not be an egress path around URL safety and site policy."""
+
+    def _write_repo_skill(self, repo_url):
+        write_skill("repo-skill", f"    sources:\n      - repo: {repo_url}\n        revision: {'a' * 40}\n")
+
+    def test_a_blocklisted_repo_url_is_skipped_and_git_is_never_run(self, monkeypatch, tmp_path):
+        config = skill_sources.get_skills_dir().parent / "config.yaml"
+        config.write_text("security:\n  website_blocklist:\n    enabled: true\n"
+                          "    domains: [blocked.example]\n", encoding="utf-8")
+        reset_website_policy_cache()
+        called = []
+        monkeypatch.setattr(skill_sources, "_ls_remote_head", lambda target: called.append(target) or "b" * 40)
+        self._write_repo_skill("https://blocked.example/owner/project.git")
+
+        rows = skill_sources.check_sources()
+
+        assert [row["status"] for row in rows] == ["skipped"]
+        assert "website policy" in rows[0]["detail"]
+        assert called == [], "git was invoked for a blocklisted repository"
+
+    def test_an_internal_repo_url_is_skipped_and_git_is_never_run(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(skill_sources, "_ls_remote_head", lambda target: called.append(target) or "b" * 40)
+        # Link-local metadata address: the classic SSRF target.
+        self._write_repo_skill("http://169.254.169.254/latest/meta-data.git")
+
+        rows = skill_sources.check_sources()
+
+        assert [row["status"] for row in rows] == ["skipped"]
+        assert "URL safety" in rows[0]["detail"]
+        assert called == []
+
+    def test_an_ext_transport_value_is_rejected_outright(self, tmp_path):
+        self._write_repo_skill("ext::sh -c touch% /tmp/pwned")
+
+        assert skill_sources.read_sources(skill_sources.get_skills_dir() / "repo-skill") == []
+
+    def test_git_transports_are_pinned_on_the_command_line(self, monkeypatch):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            class Done:
+                returncode = 0
+                stdout = f"{'b' * 40}\tHEAD\n"
+            return Done()
+
+        monkeypatch.setattr(skill_sources.subprocess, "run", fake_run)
+        skill_sources._ls_remote_head("/some/local/repo.git")
+
+        argv = seen["argv"]
+        assert argv[:1] == ["git"]
+        assert "protocol.allow=never" in argv
+        for allowed in ("protocol.https.allow=always", "protocol.http.allow=always",
+                        "protocol.file.allow=always"):
+            assert allowed in argv
+
+
+class TestRedirectPolicy:
+    def test_a_redirect_to_a_blocklisted_host_is_not_followed(self, monkeypatch, tmp_path):
+        config = skill_sources.get_skills_dir().parent / "config.yaml"
+        config.write_text("security:\n  website_blocklist:\n    enabled: true\n"
+                          "    domains: [blocked.example]\n", encoding="utf-8")
+        reset_website_policy_cache()
+        allow_private_urls(monkeypatch)
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
+                self.send_response(302)
+                self.send_header("Location", "http://blocked.example/elsewhere")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            write_skill("docs-skill", url_block(f"http://127.0.0.1:{server.server_port}/docs"))
+            rows = skill_sources.check_sources()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        assert [row["status"] for row in rows] == ["skipped"]
+        assert "website policy" in rows[0]["detail"]
 
 
 # ── CLI surface ─────────────────────────────────────────────────────────────

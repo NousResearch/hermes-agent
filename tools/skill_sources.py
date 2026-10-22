@@ -17,12 +17,22 @@ Statuses per source:
 ``unchanged``          the source still matches what was recorded or last checked
 ``changed``            the source moved since it was read or last checked
 ``unreachable``        the source could not be read (network, HTTP error, missing file)
-``baseline_recorded``  first check of a content-checked source; the baseline is now stored
+``baseline_recorded``  first check of a content-checked source, or the first check after the
+                       skill was refreshed; the baseline is now stored
 ``skipped``            deliberately not checked (policy, unsupported form, no revision)
 
-Only local, non-bundled, non-hub, non-protected skills are in scope, and every fetch
-goes through the existing URL safety and website policy code. Nothing here calls a
-model, and nothing writes to a skill.
+A ``changed`` verdict is **sticky**: the pre-change hash stays recorded, so every later check
+keeps reporting ``changed`` until the skill is actually refreshed. Re-baselining is keyed on
+the entry's ``retrieved`` date — the frontmatter's own statement of when that source was last
+read — so refreshing one source clears that source's alert and nothing else's. (Re-keying on
+the SKILL.md hash instead would let any unrelated edit — a typo, a new tag — silently clear
+every alert the skill carries.) The cost of that choice: a same-day refresh, where ``retrieved``
+does not move, keeps showing ``changed``. That direction is deliberate — a stale skill silently
+reading as fresh is the failure this exists to prevent.
+
+Only local, non-bundled, non-hub, non-protected skills are in scope, and every fetch goes
+through the existing URL safety and website policy code. Nothing here calls a model, and
+nothing writes to a skill.
 """
 
 from __future__ import annotations
@@ -235,7 +245,30 @@ def _normalized_body_digest(body: str) -> str:
     return _digest(_WHITESPACE_RE.sub(" ", reflowed).strip().encode("utf-8"))
 
 
-def _check_url(url: str, baseline: dict[str, Any]) -> tuple[str, str, Optional[dict[str, Any]]]:
+class SourceRedirectBlocked(Exception):
+    """A redirect target the website policy refuses (raised from the response hook)."""
+
+
+def _policy_redirect_guard(response: Any) -> None:
+    """Re-check the website policy on every redirect hop.
+
+    The SSRF guard already validates the address each hop connects to, but not the
+    *policy*: a public URL 302ing to a blocklisted domain would otherwise be followed and
+    read. Same shape as ``tools/vision_tools._ssrf_redirect_guard``, for a sync client.
+    """
+    from tools.url_safety import redirect_target_from_response
+    from tools.website_policy import check_website_access
+
+    target = redirect_target_from_response(response)
+    if not target:
+        return
+    blocked = check_website_access(target)
+    if blocked:
+        raise SourceRedirectBlocked(
+            blocked.get("message", f"redirect to {target} blocked by website policy"))
+
+
+def _check_url(url: str, baseline: dict[str, Any], retrieved: Optional[str]) -> tuple[str, str, Optional[dict[str, Any]]]:
     from tools.url_safety import create_ssrf_safe_client, is_safe_url
     from tools.website_policy import check_website_access
 
@@ -245,14 +278,21 @@ def _check_url(url: str, baseline: dict[str, Any]) -> tuple[str, str, Optional[d
     if not is_safe_url(url):
         return "skipped", "url is not permitted by the URL safety policy", None
 
+    known = isinstance(baseline.get("hash"), str) and bool(baseline["hash"])
+    refreshed = known and baseline.get("retrieved") != retrieved
+    # A conditional request only means "unchanged" while the recorded baseline is still the
+    # one it was taken against. After a refresh (or on a first check) the body is needed.
+    conditional = known and not refreshed
     headers = {"User-Agent": f"hermes-skills-check/{STATE_VERSION}"}
-    if isinstance(baseline.get("etag"), str) and baseline["etag"]:
-        headers["If-None-Match"] = baseline["etag"]
-    if isinstance(baseline.get("last_modified"), str) and baseline["last_modified"]:
-        headers["If-Modified-Since"] = baseline["last_modified"]
+    if conditional:
+        if isinstance(baseline.get("etag"), str) and baseline["etag"]:
+            headers["If-None-Match"] = baseline["etag"]
+        if isinstance(baseline.get("last_modified"), str) and baseline["last_modified"]:
+            headers["If-Modified-Since"] = baseline["last_modified"]
 
     try:
-        with create_ssrf_safe_client(timeout=HTTP_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        with create_ssrf_safe_client(timeout=HTTP_TIMEOUT_SECONDS, follow_redirects=True,
+                                     event_hooks={"response": [_policy_redirect_guard]}) as client:
             with client.stream("GET", url, headers=headers) as response:
                 if response.status_code == 304:
                     return "unchanged", "not modified since the last check", {
@@ -262,17 +302,24 @@ def _check_url(url: str, baseline: dict[str, Any]) -> tuple[str, str, Optional[d
                 last_modified = response.headers.get("last-modified", "")
                 if response.status_code >= 400:
                     return "unreachable", f"HTTP {response.status_code}", None
+    except SourceRedirectBlocked as exc:
+        return "skipped", str(exc)[:200], None
     except Exception as exc:  # network, TLS, timeout, policy at connect time
         logger.debug("Source check failed for %s: %s", url, exc)
         return "unreachable", f"{type(exc).__name__}: {exc}"[:200], None
 
-    record = {"hash": _normalized_body_digest(body), "etag": etag,
-              "last_modified": last_modified, "checked_at": _now_iso()}
-    if not baseline.get("hash"):
-        return "baseline_recorded", "first check — baseline recorded", record
-    if baseline["hash"] == record["hash"]:
-        return "unchanged", "", record
-    return "changed", "page content changed since the last check", record
+    digest = _normalized_body_digest(body)
+    fresh = {"hash": digest, "etag": etag, "last_modified": last_modified,
+             "retrieved": retrieved, "checked_at": _now_iso()}
+    if not known:
+        return "baseline_recorded", "first check — baseline recorded", fresh
+    if refreshed:
+        return "baseline_recorded", "re-baselined after the skill was refreshed (retrieved moved on)", fresh
+    if baseline["hash"] == digest:
+        return "unchanged", "", {**fresh, "hash": baseline["hash"]}
+    # Keep the pre-change baseline: the alert has to survive until the skill is refreshed,
+    # and a stored ETag for the new body would turn the very next check into a 304.
+    return "changed", "page content changed since the last check", {**baseline, "checked_at": _now_iso()}
 
 
 def _read_capped(response: Any) -> str:
@@ -299,11 +346,22 @@ def _repo_target(value: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def _ls_remote_head(target: str) -> Optional[str]:
-    """The remote's ``HEAD`` commit, ``""`` when it has none, or None when unreachable."""
+    """The remote's ``HEAD`` commit, ``""`` when it has none, or None when unreachable.
+
+    Transports are pinned: only http(s) and local ``file`` remotes may be spoken, so a
+    recorded value cannot reach a transport we did not reason about (``ext::`` runs a
+    command, and ``protocol.allow=never`` closes anything not named explicitly).
+    """
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    protocol_args = [
+        "-c", "protocol.allow=never",
+        "-c", "protocol.https.allow=always",
+        "-c", "protocol.http.allow=always",
+        "-c", "protocol.file.allow=always",
+    ]
     try:
         completed = subprocess.run(  # fixed argv, no shell
-            ["git", "ls-remote", "--", target, "HEAD"],
+            ["git", *protocol_args, "ls-remote", "--", target, "HEAD"],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS, env=env, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -322,6 +380,18 @@ def _check_repo(value: str, revision: Optional[str]) -> tuple[str, str, Optional
         return "skipped", reason or "unsupported repository", None
     if not revision:
         return "skipped", "no revision recorded for this repository", None
+    if urlparse(value).scheme.lower() in _HTTP_SCHEMES:
+        # `git ls-remote` would otherwise be an egress path around the two policies every
+        # other fetch in Hermes obeys: policy first (a blocklisted host), then safety (an
+        # internal address such as a cloud metadata endpoint).
+        from tools.url_safety import is_safe_url
+        from tools.website_policy import check_website_access
+
+        blocked = check_website_access(value)
+        if blocked:
+            return "skipped", blocked.get("message", "blocked by website policy"), None
+        if not is_safe_url(value):
+            return "skipped", "repository url is not permitted by the URL safety policy", None
     head = _ls_remote_head(target)
     if head is None:
         return "unreachable", "git ls-remote failed", None
@@ -329,10 +399,10 @@ def _check_repo(value: str, revision: Optional[str]) -> tuple[str, str, Optional
         return "unreachable", "remote has no HEAD commit", None
     if head == revision:
         return "unchanged", "", None
-    return "changed", f"HEAD is {head[:12]}, recorded {revision[:12]}", None
+    return "changed", f"new commits since the recorded revision (HEAD {head[:12]}, recorded {revision[:12]})", None
 
 
-def _check_path(value: str, baseline: dict[str, Any]) -> tuple[str, str, Optional[dict[str, Any]]]:
+def _check_path(value: str, baseline: dict[str, Any], retrieved: Optional[str]) -> tuple[str, str, Optional[dict[str, Any]]]:
     path = Path(os.path.expanduser(value))
     if not path.is_absolute():
         return "skipped", "path is not absolute after expanding ~", None
@@ -342,21 +412,27 @@ def _check_path(value: str, baseline: dict[str, Any]) -> tuple[str, str, Optiona
         return "unreachable", f"{type(exc).__name__}: {exc}"[:200], None
     if data is None:
         return "unreachable", "file does not exist", None
-    record = {"hash": _digest(data), "checked_at": _now_iso()}
-    if not baseline.get("hash"):
-        return "baseline_recorded", "first check — baseline recorded", record
-    if baseline["hash"] == record["hash"]:
-        return "unchanged", "", record
-    return "changed", "file content changed since the last check", record
+    digest = _digest(data)
+    known = isinstance(baseline.get("hash"), str) and bool(baseline["hash"])
+    fresh = {"hash": digest, "retrieved": retrieved, "checked_at": _now_iso()}
+    if not known:
+        return "baseline_recorded", "first check — baseline recorded", fresh
+    if baseline.get("retrieved") != retrieved:
+        return "baseline_recorded", "re-baselined after the skill was refreshed (retrieved moved on)", fresh
+    if baseline["hash"] == digest:
+        return "unchanged", "", fresh
+    # Sticky, exactly as for a url: a `changed` file keeps reading as changed until the
+    # skill itself is refreshed.
+    return "changed", "file content changed since the last check", {**baseline, "checked_at": _now_iso()}
 
 
 def _check_entry(entry: dict[str, Any], baseline: dict[str, Any]):
     kind = entry["kind"]
     if kind == "url":
-        return _check_url(entry["value"], baseline)
+        return _check_url(entry["value"], baseline, entry.get("retrieved"))
     if kind == "repo":
         return _check_repo(entry["value"], entry.get("revision"))
-    return _check_path(entry["value"], baseline)
+    return _check_path(entry["value"], baseline, entry.get("retrieved"))
 
 
 # ── Public entry point ──────────────────────────────────────────────────────

@@ -73,8 +73,8 @@ def has_lock_index_override(env: Mapping[str, str]) -> bool:
 
 
 def without_lock_index_overrides(env: Mapping[str, str]) -> dict[str, str]:
-    settings = _LOCK_INDEX_SETTINGS | _PIP_INDEX_SETTINGS
-    return {key: value for key, value in env.items() if key not in settings}
+    return {key: value for key, value in env.items()
+            if not is_index_redirect(key) and key not in _PIP_INDEX_SETTINGS}
 
 
 def pip_config_candidates(env: Mapping[str, str]) -> list[Path]:

@@ -32,9 +32,9 @@ def _wheel(name: str, version: str, modules: dict[str, bytes]) -> tuple[str, byt
             f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\n"
         ).encode(),
         f"{dist_info}/WHEEL": (
-            "Wheel-Version: 1.0\nGenerator: hermes-agent-tests\n"
-            "Root-Is-Purelib: true\nTag: py3-none-any\n"
-        ).encode(),
+            b"Wheel-Version: 1.0\nGenerator: hermes-agent-tests\n"
+            b"Root-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
     }
     rows = []
     for path, body in files.items():
@@ -57,6 +57,7 @@ def _wheel(name: str, version: str, modules: dict[str, bytes]) -> tuple[str, byt
 def package_indexes():
     class Handler(RangeHandler):
         pages: dict[str, bytes] = {}
+        requests: list[str] = []
 
         def _respond(self, body: bytes, *, include_body: bool) -> None:
             self.send_response(200)
@@ -66,13 +67,14 @@ def package_indexes():
             if include_body:
                 self.wfile.write(body)
 
-        def do_GET(self):  # noqa: N802 - http.server API
+        def do_GET(self):
+            self.requests.append(self.path)
             page = self.pages.get(self.path.split("?", 1)[0])
             if page is None:
                 return super().do_GET()
             self._respond(page, include_body=True)
 
-        def do_HEAD(self):  # noqa: N802 - http.server API
+        def do_HEAD(self):
             path = self.path.split("?", 1)[0]
             body = self.pages.get(path) or self.payloads.get(path)
             if body is None:
@@ -107,7 +109,9 @@ def _index(server: ThreadingHTTPServer, handler: type[RangeHandler], prefix: str
     return f"{base}/{prefix}/simple"
 
 
-def _lock_project(uv: str, project: Path, lock_index: str) -> tuple[Path, bytes]:
+def _lock_project(
+    uv: str, project: Path, lock_index: str, *, find_links: Path | None = None,
+) -> tuple[Path, bytes]:
     clean_env = {
         key: value for key, value in os.environ.items()
         if not key.startswith(("PIP_", "UV_"))
@@ -115,9 +119,11 @@ def _lock_project(uv: str, project: Path, lock_index: str) -> tuple[Path, bytes]
     clean_env["PIP_CONFIG_FILE"] = os.devnull
     clean_env["NO_PROXY"] = "127.0.0.1,localhost"
     clean_env["UV_INDEX_URL"] = lock_index
+    if find_links is not None:
+        clean_env["UV_FIND_LINKS"] = str(find_links)
     locked = subprocess.run(
         [uv, "lock", "--python", sys.executable, "--no-config"],
-        cwd=project, env=clean_env, capture_output=True, text=True, timeout=120,
+        cwd=project, env=clean_env, capture_output=True, text=True, timeout=120, check=False,
     )
     assert locked.returncode == 0, locked.stdout + locked.stderr
     lock_path = project / "uv.lock"
@@ -242,6 +248,9 @@ def test_runtime_installs_mirror_artifacts_from_locked_hashes(tmp_path, monkeypa
     )
 
     lock_path, lock_digest = _lock_project(uv, project, lock_index)
+    handler.payloads = {path: body for path, body in handler.payloads.items()
+                        if not path.startswith("/locked/")}
+    handler.requests.clear()
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
@@ -259,10 +268,12 @@ def test_runtime_installs_mirror_artifacts_from_locked_hashes(tmp_path, monkeypa
     checked = subprocess.run(
         [str(python), "-I", "-B", "-c",
          "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, check=False,
     )
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert hashlib.sha256(lock_path.read_bytes()).digest() == lock_digest
+    assert any(path.startswith("/mirror/files/") for path in handler.requests)
+    assert not any(path.startswith("/locked/") for path in handler.requests)
 
     from pm.environment import PythonEnvironment
     from pm.runtime import runtime_environment
@@ -280,9 +291,20 @@ def test_runtime_installs_mirror_artifacts_from_locked_hashes(tmp_path, monkeypa
     checked_sync = subprocess.run(
         [str(environment.executable), "-I", "-B", "-c",
          "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, check=False,
     )
     assert checked_sync.returncode == 0, checked_sync.stdout + checked_sync.stderr
+    assert hashlib.sha256(lock_path.read_bytes()).digest() == lock_digest
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    for filename, body in wheels.values():
+        (wheelhouse / filename).write_bytes(body)
+    requests_before_offline = list(handler.requests)
+    stage_runtime(
+        Path(uv), Path(sys.executable), tmp_path / "offline-runtime",
+        project=project, cache=tmp_path / "offline-cache", wheelhouse=wheelhouse, offline=True,
+    )
+    assert handler.requests == requests_before_offline
 
     bad_packages = dict(wheels)
     bad_packages["packaging"] = _wheel(
@@ -293,8 +315,9 @@ def test_runtime_installs_mirror_artifacts_from_locked_hashes(tmp_path, monkeypa
     with pytest.raises(InstallError, match="(?i)hash"):
         stage_runtime(
             Path(uv), Path(sys.executable), tmp_path / "tampered-runtime",
-            project=project, cache=tmp_path / "uv-cache",
+            project=project, cache=tmp_path / "bad-cache",
         )
+    assert hashlib.sha256(lock_path.read_bytes()).digest() == lock_digest
 
 
 def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypatch, package_indexes):
@@ -311,17 +334,23 @@ def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypat
         "git-dep", "1.0.0", {"git_dep/__init__.py": b"VALUE = 'git dep'\n"},
     )
     packages = {"workspace-dep": workspace_wheel, "git-dep": git_wheel}
+    for name in ("extra-dep", "group-dep", "unselected-dep"):
+        packages[name] = _wheel(name, "1.0.0", {name.replace("-", "_") + ".py": b"VALUE = 1\n"})
     lock_index = _index(server, handler, "locked", packages)
     mirror_index = _index(server, handler, "mirror", packages)
 
     project = tmp_path / "project"
     project.mkdir()
+    local_wheels = tmp_path / "local-wheels"
+    local_wheels.mkdir()
+    filename, body = _wheel("local-dep", "1.0.0", {"local_dep.py": b"VALUE = 'local'\n"})
+    (local_wheels / filename).write_bytes(body)
     _write_buildable_project(
         project / "plugin",
         project_name="workspace-plugin",
         module_name="workspace_plugin",
         value="workspace",
-        dependencies=("workspace-dep==1.0.0",),
+        dependencies=("workspace-dep==1.0.0; python_version >= '3.11'",),
     )
     git_project = tmp_path / "git-fixture"
     _write_buildable_project(
@@ -338,12 +367,12 @@ def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypat
          "commit", "--quiet", "-m", "fixture"],
     ):
         completed = subprocess.run(
-            command, cwd=git_project, capture_output=True, text=True, timeout=30,
+            command, cwd=git_project, capture_output=True, text=True, timeout=30, check=False,
         )
         assert completed.returncode == 0, completed.stdout + completed.stderr
     commit = subprocess.run(
         [git, "rev-parse", "HEAD"], cwd=git_project,
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, check=False,
     )
     assert commit.returncode == 0, commit.stdout + commit.stderr
     git_requirement = f"git-fixture @ git+{git_project.as_uri()}@{commit.stdout.strip()}"
@@ -351,13 +380,18 @@ def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypat
     (project / "pyproject.toml").write_text(
         '[project]\nname = "source-graph-fixture"\nversion = "0.0.0"\n'
         f'requires-python = ">={python_version},<{sys.version_info.major}.{sys.version_info.minor + 1}"\n'
-        f"dependencies = [\"workspace-plugin\", {json.dumps(git_requirement)}]\n"
+        f"dependencies = [\"workspace-plugin\", \"local-dep==1.0.0\", {json.dumps(git_requirement)}]\n"
+        '[project.optional-dependencies]\nchosen = ["extra-dep==1.0.0"]\n'
+        'unchosen = ["unselected-dep==1.0.0"]\n'
+        '[dependency-groups]\nchecks = ["group-dep==1.0.0"]\n'
         "[tool.uv]\npackage = false\n"
         "[tool.uv.sources]\nworkspace-plugin = { workspace = true }\n"
         "[tool.uv.workspace]\nmembers = [\"plugin\"]\n",
         encoding="utf-8",
     )
-    lock_path, lock_digest = _lock_project(uv, project, lock_index)
+    lock_path, lock_digest = _lock_project(uv, project, lock_index, find_links=local_wheels)
+    handler.payloads = {path: body for path, body in handler.payloads.items()
+                        if not path.startswith("/locked/")}
 
     for key in list(os.environ):
         if key.startswith(("PIP_", "UV_")):
@@ -385,21 +419,26 @@ def test_mirror_sync_defers_workspace_and_pinned_git_sources(tmp_path, monkeypat
         cache=tmp_path / "uv-cache", env=runtime_environment(), no_config=True,
     )
     environment.create()
-    environment.sync(project, no_default_groups=True)
+    environment.sync(project, extras=("chosen",), groups=("checks",), no_default_groups=True)
 
     assert len(hashed_requirements) == 1
     requirements = hashed_requirements[0].lower()
     assert "workspace-dep==1.0.0" in requirements
     assert "git-dep==1.0.0" in requirements
+    assert "extra-dep==1.0.0" in requirements
+    assert "group-dep==1.0.0" in requirements
+    assert "unselected-dep" not in requirements
+    assert "local-dep" not in requirements
     assert "--hash=sha256:" in requirements
     assert "workspace-plugin" not in requirements
     assert "git+" not in requirements
     assert hashlib.sha256(lock_path.read_bytes()).digest() == lock_digest
     imported = subprocess.run(
         [str(environment.executable), "-I", "-B", "-c",
-         "import git_dep, git_fixture, workspace_dep, workspace_plugin; "
+         "import extra_dep, git_dep, git_fixture, group_dep, local_dep, workspace_dep, workspace_plugin; "
+         "import importlib.util; assert importlib.util.find_spec('unselected_dep') is None; "
          "assert git_fixture.VALUE == 'git' and workspace_plugin.VALUE == 'workspace'"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, check=False,
     )
     assert imported.returncode == 0, imported.stdout + imported.stderr
 
@@ -426,10 +465,10 @@ def test_hash_only_install_rejects_requirements_without_a_hash(
 
     environment = PythonEnvironment(
         uv=Path(uv), python=Path(sys.executable), destination=tmp_path / "venv",
-        cache=tmp_path / "uv-cache", env=runtime_environment(), no_config=True,
+        cache=tmp_path / "uv-cache", env=runtime_environment(),
     )
     environment.create()
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("unhashed-sentinel==1.0.0\n", encoding="utf-8")
-    with pytest.raises(InstallError, match="(?i)hash"):
+    with pytest.raises(InstallError, match="all requirements must have a hash"):
         environment._install_requirements_file(requirements, require_hashes=True)

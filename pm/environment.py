@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import time
 from typing import TextIO
 
@@ -318,7 +319,8 @@ class PythonEnvironment:
         # Explicit index credentials survive, but cannot redirect the project,
         # interpreter or cache selected by the operation.
         env = _base_environment(self.env)
-        if self.no_config:
+        hash_locked_install = args[:2] == ["pip", "install"] and "--require-hashes" in args
+        if self.no_config and not hash_locked_install:
             # --no-config only removes config files; the pip-mirror bridge
             # (pm.index_config) reaches uv as env vars. The pinned runtime
             # builder asked to be isolated from ambient index configuration:
@@ -327,6 +329,8 @@ class PythonEnvironment:
             # mirror to resolve. Index-REDIRECT settings are dropped; transport
             # knobs (UV_NATIVE_TLS / UV_INSECURE_HOST / UV_HTTP_TIMEOUT) survive
             # — corporate networks need them to reach the pinned URLs at all.
+            # Hash-required installs may use the mirror: the exported lock's
+            # hashes, rather than the index's metadata, adjudicate the bytes.
             from pm.index_config import is_index_redirect
 
             env = {key: value for key, value in env.items() if not is_index_redirect(key)}
@@ -484,6 +488,14 @@ class PythonEnvironment:
                    "--format", "requirements-txt", "--output-file", str(out)]
         if artifact_only:
             command += ["--no-emit-workspace", "--no-emit-local"]
+            with (source / "uv.lock").open("rb") as lock:
+                packages = tomllib.load(lock).get("package", [])
+            for package in packages:
+                registry = package.get("source", {}).get("registry", "")
+                if registry and not registry.startswith(("https://", "http://")):
+                    # Local find-links wheels have no lock hashes and cannot
+                    # be redirected to an index; frozen sync owns their paths.
+                    command += ["--no-emit-package", package["name"]]
         if no_default_groups:
             command.append("--no-default-groups")
         if all_packages:
@@ -566,6 +578,9 @@ class PythonEnvironment:
             command += ["--no-index", "--only-binary", ":all:",
                         "--find-links", str(wheelhouse.absolute())]
         result = self._run(command, cwd=requirements.parent, timeout=timeout)
+        if compile_bytecode and _is_bytecode_compile_failure(result):
+            fallback = [arg for arg in command if arg != "--compile-bytecode"]
+            result = self._run(fallback, cwd=requirements.parent, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("pip", result.returncode, result.stderr or result.stdout)
 

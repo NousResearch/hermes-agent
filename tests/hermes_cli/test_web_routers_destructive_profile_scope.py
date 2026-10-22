@@ -384,7 +384,7 @@ def test_local_models_quickstart_activates_into_the_named_profile(client, homes,
     from hermes_cli.config import get_hermes_home
     from hermes_cli.web_routers import local_models as lm
 
-    entry = type("_Entry", (), {"id": "m1", "display_name": "M One", "min_engine": None})()
+    entry = type("_Entry", (), {"id": "m1", "display_name": "M One", "min_engine": None, "draft": None})()
     variant = type("_Variant", (), {"model_id": "m1-q4"})()
     seen = []
 

@@ -21,10 +21,31 @@ from hermes_cli.agent_import import (
     AgentImporter,
     claude_rule_to_command_pattern,
     detect_agents,
+    dump_yaml_file,
     extract_markdown_entries,
     is_secret_key,
     sanitize_mcp_env,
 )
+
+
+def test_dump_config_rebases_import_delta_over_concurrent_update(tmp_path):
+    """Import-agent config writes must preserve unrelated concurrent changes."""
+    from hermes_cli.config import atomic_config_update
+
+    path = tmp_path / "config.yaml"
+    path.write_text("seed: kept\n", encoding="utf-8")
+    baseline = {"seed": "kept"}
+    intended = {"seed": "kept", "command_allowlist": ["npm test"]}
+    atomic_config_update(
+        path,
+        lambda latest: latest.__setitem__("narrow", "landed"),
+    )
+
+    dump_yaml_file(path, intended, baseline=baseline)
+
+    written = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert written["command_allowlist"] == ["npm test"]
+    assert written["narrow"] == "landed"
 
 
 # ---------------------------------------------------------------------------

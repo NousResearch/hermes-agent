@@ -7,6 +7,7 @@ names (KEY, TOKEN, SECRET, PASSWORD, ...) are stripped and reported so the user 
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -82,10 +83,25 @@ def load_yaml_file(path: Path) -> dict[str, Any]:
     return data
 
 
-def dump_yaml_file(path: Path, data: dict[str, Any]) -> None:
-    """Atomic YAML write; only reached after :func:`load_yaml_file` succeeded on the same path."""
-    atomic_yaml_write(path, data)
+def dump_yaml_file(
+    path: Path,
+    data: Dict[str, Any],
+    *,
+    baseline: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Write YAML atomically, rebasing config imports over concurrent changes."""
+    if baseline is not None and path.name == "config.yaml":
+        from hermes_cli.config import (
+            _rebase_config_mapping_delta,
+            atomic_config_update,
+        )
 
+        atomic_config_update(
+            path,
+            lambda latest: _rebase_config_mapping_delta(baseline, data, latest),
+        )
+    else:
+        atomic_yaml_write(path, data)
 
 def extract_markdown_entries(text: str) -> list[str]:
     """Split markdown into memory entries: headings become context prefixes; bullets and
@@ -435,6 +451,7 @@ class AgentImporter:
         config = self.load_target_config(kind, label, destination)
         if config is None:
             return
+        baseline = copy.deepcopy(config)
         # Walk to the list's parent mapping, materializing missing/invalid levels.
         parent: dict[str, Any] = config
         for part in config_path[:-1]:
@@ -450,7 +467,7 @@ class AgentImporter:
 
         def write() -> None:
             parent[config_path[-1]] = merged
-            dump_yaml_file(destination, config)
+            dump_yaml_file(destination, config, baseline=baseline)
 
         self.apply(kind, label, destination, "Would merge patterns", write,
                    {"added_patterns": added, **unmapped})
@@ -464,6 +481,7 @@ class AgentImporter:
         config = self.load_target_config(kind, None, destination)
         if config is None:
             return
+        baseline = copy.deepcopy(config)
         existing = config.get("mcp_servers")
         existing = existing if isinstance(existing, dict) else {}
         added = 0
@@ -485,7 +503,7 @@ class AgentImporter:
             self.record(kind, name, f"config.yaml mcp_servers.{name}", "imported")
         if added > 0 and self.execute:
             config["mcp_servers"] = existing
-            dump_yaml_file(destination, config)
+            dump_yaml_file(destination, config, baseline=baseline)
 
     def import_skills(self, source_root: Path) -> None:
         """skills/<name>/SKILL.md dirs → HERMES_HOME/skills/<category>/<name>."""

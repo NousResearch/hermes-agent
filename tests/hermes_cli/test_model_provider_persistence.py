@@ -54,8 +54,8 @@ class TestSaveModelChoiceAlwaysDict:
 
 
 class TestProviderPersistsAfterModelSave:
-    def test_update_config_for_provider_uses_atomic_config_replace(self, config_home):
-        """Provider switches delegate config writes to the comment-preserving config writer."""
+    def test_update_config_for_provider_uses_config_transaction(self, config_home):
+        """Provider switches must write through the shared config transaction."""
         from hermes_cli.auth import _update_config_for_provider
 
         config_path = config_home / "config.yaml"
@@ -68,7 +68,9 @@ class TestProviderPersistsAfterModelSave:
             assert data["model"]["default"] == "some-old-model"
             raise OSError("simulated atomic write failure")
 
-        with patch("hermes_cli.auth.atomic_config_replace", side_effect=_boom) as mock_write:
+        with patch(
+            "hermes_cli.config._atomic_config_write_unlocked", side_effect=_boom
+        ) as mock_write:
             with pytest.raises(OSError, match="simulated atomic write failure"):
                 _update_config_for_provider(
                     "nous",
@@ -78,6 +80,56 @@ class TestProviderPersistsAfterModelSave:
 
         assert mock_write.call_count == 1
         assert config_path.read_text(encoding="utf-8") == original_text
+
+    def test_provider_update_preserves_concurrent_config_change(
+        self, config_home, monkeypatch
+    ):
+        """Provider selection must share the config transaction lock."""
+        import threading
+        import yaml
+        import utils
+        import hermes_cli.auth as auth_module
+        import hermes_cli.config as config_module
+
+        config_path = config_home / "config.yaml"
+        writer_at_commit = threading.Event()
+        release_writer = threading.Event()
+        # Instrument upstream's chokepoint writer (see _atomic_config_write_unlocked).
+        original_atomic_yaml_write = utils.atomic_roundtrip_yaml_save
+
+        def paused_write(path, data, **kwargs):
+            if threading.current_thread().name == "provider-writer":
+                writer_at_commit.set()
+                assert release_writer.wait(timeout=5)
+            return original_atomic_yaml_write(path, data, **kwargs)
+
+        monkeypatch.setattr(utils, "atomic_roundtrip_yaml_save", paused_write)
+        monkeypatch.setattr(auth_module, "atomic_roundtrip_yaml_save", paused_write, raising=False)
+
+        provider_writer = threading.Thread(
+            name="provider-writer",
+            target=lambda: auth_module._update_config_for_provider(
+                "nous", "https://inference.example.com/v1"
+            ),
+        )
+        provider_writer.start()
+        assert writer_at_commit.wait(timeout=5)
+
+        concurrent = threading.Thread(
+            target=lambda: config_module.atomic_config_update(
+                config_path,
+                lambda config: config.__setitem__("concurrent", "landed"),
+            )
+        )
+        concurrent.start()
+        concurrent.join(timeout=0.5)
+        release_writer.set()
+        provider_writer.join(timeout=5)
+        concurrent.join(timeout=5)
+
+        written = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert written["model"]["provider"] == "nous"
+        assert written["concurrent"] == "landed"
 
     def test_api_key_provider_saved_when_model_was_string(self, config_home, monkeypatch):
         """_model_flow_api_key_provider must persist the provider even when

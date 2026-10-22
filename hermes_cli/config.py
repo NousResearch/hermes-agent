@@ -70,6 +70,28 @@ def format_unsupported_install_warning(method: str) -> str:
     return ""
 
 
+_CONFIG_UPDATE_LOCKS: dict[str, threading.RLock] = {}
+_CONFIG_UPDATE_LOCKS_GUARD = threading.Lock()
+_CONFIG_TRANSACTION_LOCAL = threading.local()
+_CONFIG_LOCK_PID = os.getpid()
+_CONFIG_LOCK_PLATFORM = os.name
+
+
+def _reset_config_locks_after_fork() -> None:
+    """Discard ownerless inherited thread locks in a forked child."""
+    global _CONFIG_LOCK_PID, _CONFIG_UPDATE_LOCKS, _CONFIG_UPDATE_LOCKS_GUARD
+    global _CONFIG_TRANSACTION_LOCAL, _CONFIG_LOCK
+    current_pid = os.getpid()
+    if current_pid == _CONFIG_LOCK_PID:
+        return
+    _CONFIG_LOCK_PID = current_pid
+    _CONFIG_UPDATE_LOCKS = {}
+    _CONFIG_UPDATE_LOCKS_GUARD = threading.Lock()
+    _CONFIG_TRANSACTION_LOCAL = threading.local()
+    _CONFIG_LOCK = threading.RLock()
+
+
+
 class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
 
@@ -162,6 +184,8 @@ def validate_env_var_name_for_write(key: str) -> None:
 # read_user_config_raw() + save_config()). save_config itself no longer re-enters via
 # read_raw_config; it takes its raw mapping from require_readable_config_before_write.
 _CONFIG_LOCK = threading.RLock()
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_config_locks_after_fork)
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
 _LAST_EXPANDED_CONFIG_BY_PATH: dict[str, Any] = {}
@@ -2064,6 +2088,191 @@ def _write_config_state(
     atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
 
 
+@contextmanager
+def _config_transaction_lock(config_path: Path):
+    """Serialize config transactions across threads and POSIX processes."""
+    _reset_config_locks_after_fork()
+    path = Path(config_path)
+    key = str(path.resolve())
+    with _CONFIG_UPDATE_LOCKS_GUARD:
+        lock = _CONFIG_UPDATE_LOCKS.setdefault(key, threading.RLock())
+    acquired = lock.acquire(blocking=False)
+    contended = not acquired
+    if not acquired:
+        lock.acquire()
+
+    depths = getattr(_CONFIG_TRANSACTION_LOCAL, "depths", None)
+    if depths is None:
+        depths = {}
+        _CONFIG_TRANSACTION_LOCAL.depths = depths
+    depth = depths.get(key, 0)
+    if depth:
+        depths[key] = depth + 1
+        try:
+            yield False
+        finally:
+            depths[key] -= 1
+            lock.release()
+        return
+
+    lock_fd = None
+    file_lock_acquired = False
+    try:
+        if _CONFIG_LOCK_PLATFORM == "nt":
+            import msvcrt
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = path.with_name(f".{path.name}.lock")
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            if os.fstat(lock_fd).st_size == 0:
+                os.write(lock_fd, b"\0")
+            os.lseek(lock_fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+                file_lock_acquired = True
+            except OSError:
+                contended = True
+                os.lseek(lock_fd, 0, os.SEEK_SET)
+                msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+                file_lock_acquired = True
+        else:
+            import fcntl
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = path.with_name(f".{path.name}.lock")
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                file_lock_acquired = True
+            except BlockingIOError:
+                contended = True
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                file_lock_acquired = True
+        depths[key] = 1
+        yield contended
+    finally:
+        depths.pop(key, None)
+        if lock_fd is not None:
+            try:
+                if file_lock_acquired and _CONFIG_LOCK_PLATFORM == "nt":
+                    import msvcrt
+
+                    os.lseek(lock_fd, 0, os.SEEK_SET)
+                    msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+                elif file_lock_acquired:
+                    import fcntl
+
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+        lock.release()
+
+
+def _atomic_config_write_unlocked(
+    config_path: Path, data: Any, **kwargs: Any
+) -> None:
+    """Write after the caller has acquired ``_config_transaction_lock``.
+
+    Delegates to the upstream ``_write_config_state`` writer regime; ``allow_omissions=True``
+    because an ``atomic_config_update`` read-modify-write replacement is deliberate.
+    """
+    _write_config_state(config_path, data, allow_omissions=True, **kwargs)
+
+
+def atomic_roundtrip_config_write(config_path: Path, data: Any) -> Dict[str, Any]:
+    """Comment-preserving config write under the shared transaction lock."""
+    path = Path(config_path)
+    with _config_transaction_lock(path) as contended:
+        if contended:
+            data = _preserve_unmentioned_config_keys(
+                read_user_config_raw(path), data)
+        _write_config_state(path, data, allow_omissions=True)
+    return data
+
+
+def atomic_roundtrip_config_update(
+    config_path: Path, key_path: str, value: Any
+) -> None:
+    """Comment-preserving single-key update under the config transaction."""
+    from utils import atomic_roundtrip_yaml_update
+
+    path = Path(config_path)
+    with _config_transaction_lock(path):
+        require_readable_config_before_write(path)
+        atomic_roundtrip_yaml_update(path, key_path, value)
+
+
+def atomic_config_update(config_path: Path, mutator: Any) -> Dict[str, Any]:
+    """Serialize a raw config read-modify-write across cooperating writers.
+
+    ``atomic_config_write`` protects the replacement itself, but two gateway
+    callbacks can otherwise both read the same old YAML and the later writer
+    erases unrelated keys from the earlier one.  The mutator receives the
+    latest raw user config while a per-path lock is held and may mutate it in
+    place or return a replacement mapping.
+    """
+    path = Path(config_path)
+    with _config_transaction_lock(path):
+        current = read_user_config_raw(path)
+        baseline = copy.deepcopy(current)
+        replacement = mutator(current)
+        if replacement is not None:
+            current = replacement
+        if not isinstance(current, dict):
+            raise TypeError("config mutator must produce a mapping")
+        # Rebase over any non-cooperating/legacy writer that changed the file
+        # while the mutator was running. Cooperating atomic writers are held by
+        # the transaction lock until this replacement is durable.
+        latest = read_user_config_raw(path)
+        if latest != baseline:
+            current = _rebase_config_mapping_delta(baseline, current, latest)
+        _atomic_config_write_unlocked(path, current)
+        return current
+
+
+def _rebase_config_mapping_delta(
+    before: Dict[str, Any], after: Dict[str, Any], latest: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Apply the recursive mapping delta ``before -> after`` onto ``latest``."""
+    result = copy.deepcopy(latest)
+    for key in before.keys() - after.keys():
+        result.pop(key, None)
+    for key, after_value in after.items():
+        if key not in before:
+            result[key] = copy.deepcopy(after_value)
+            continue
+        before_value = before[key]
+        if after_value == before_value:
+            continue
+        latest_value = result.get(key)
+        if (
+            isinstance(before_value, dict)
+            and isinstance(after_value, dict)
+            and isinstance(latest_value, dict)
+        ):
+            result[key] = _rebase_config_mapping_delta(
+                before_value, after_value, latest_value
+            )
+        else:
+            result[key] = copy.deepcopy(after_value)
+    return result
+
+
+def _preserve_unmentioned_config_keys(latest: Any, intended: Any) -> Any:
+    """Preserve unrelated keys when a full writer waited on another writer (carried invariant)."""
+    if not isinstance(latest, dict) or not isinstance(intended, dict):
+        return intended
+    merged = copy.deepcopy(intended)
+    for key, latest_value in latest.items():
+        if key not in merged:
+            merged[key] = copy.deepcopy(latest_value)
+        elif isinstance(latest_value, dict) and isinstance(merged[key], dict):
+            merged[key] = _preserve_unmentioned_config_keys(
+                latest_value, merged[key]
+            )
+    return merged
+
+
 def atomic_config_write(
     config_path: Path, data: dict[str, Any], *, extra_content_on_create: Optional[str] = None,
 ) -> None:
@@ -2072,17 +2281,35 @@ def atomic_config_write(
     Values explicitly present in *data* may change, but every existing mapping path must remain.
     Use ``atomic_config_replace`` for a deliberate full-state replacement where omitted keys are
     meant to be deleted. Both paths retain the unreadable-file guard and ruamel comment preservation.
+
+    Carried invariant: the write runs under the per-path ``_config_transaction_lock``. When the
+    writer WAITED on that lock, keys that appeared on disk while it waited are merged in rather
+    than refusing the write — a contended writer already consented to the file having moved.
     """
-    _write_config_state(
-        config_path, data, allow_omissions=False, extra_content_on_create=extra_content_on_create)
+    path = Path(config_path)
+    with _config_transaction_lock(path) as contended:
+        if contended:
+            data = _preserve_unmentioned_config_keys(
+                read_user_config_raw(path), data)
+        _write_config_state(
+            path, data, allow_omissions=False, extra_content_on_create=extra_content_on_create)
 
 
 def atomic_config_replace(
     config_path: Path, data: dict[str, Any], *, extra_content_on_create: Optional[str] = None,
 ) -> None:
-    """Persist the complete desired config state; omitted mapping keys are deliberately deleted."""
-    _write_config_state(
-        config_path, data, allow_omissions=True, extra_content_on_create=extra_content_on_create)
+    """Persist the complete desired config state; omitted mapping keys are deliberately deleted.
+
+    Runs under the same carried per-path transaction lock as ``atomic_config_write``; the same
+    contended-writer merge applies (keys added while this writer waited are preserved).
+    """
+    path = Path(config_path)
+    with _config_transaction_lock(path) as contended:
+        if contended:
+            data = _preserve_unmentioned_config_keys(
+                read_user_config_raw(path), data)
+        _write_config_state(
+            path, data, allow_omissions=True, extra_content_on_create=extra_content_on_create)
 
 
 def load_config() -> dict[str, Any]:
@@ -3646,7 +3873,18 @@ def unset_config_value(key: str):
     if not removed:
         _exit_invalid(f"Config key not set: {key}")
 
-    _write_user_config(config_path, user_config)
+    ensure_hermes_home()
+    atomic_config_update(
+        config_path,
+        # Both the redirected key and the legacy gateway.platforms source must go (#71047);
+        # upstream v0.22.1 fixed this by writing the pre-mutated config — kept here inside
+        # the carried transactional RMW instead.
+        lambda latest: (
+            (_unset_nested(latest, legacy_key) if legacy_key else False),
+            _unset_nested(latest, key),
+            latest,
+        )[2],
+    )
     print(f"✓ Unset {key} from {config_path}")
 
 

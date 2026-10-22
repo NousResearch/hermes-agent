@@ -277,6 +277,14 @@ DANGEROUS_PATTERNS = [
     # Registry deletion with force flag.
     (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
     (r'\bremove-itemproperty\b[^\n]*\s-force\b', "registry value delete (Remove-ItemProperty -Force)"),
+    # Registry WRITES. The delete side above is gated, the write side was not: on a stock install
+    # `reg add`, `setx` and `Set-ItemProperty` mutated persistent machine state with no prompt at
+    # all, so the guardian never saw them. Each form is its own approval class, and
+    # `hermes approvals suggest` never proposes any of them for a permanent allowlist.
+    (r'\breg(?:\.exe)?\s+(?:add|import|copy|rename|restore)\b', "registry write (reg)"),
+    (r'\bsetx(?:\.exe)?\b\s+\S', "registry write (setx)"),
+    (r'\bset-itemproperty\b', "registry write (Set-ItemProperty)"),
+    (r'\bnew-itemproperty\b', "registry write (New-ItemProperty)"),
     # Windows service/system stop — analogue of systemctl stop.
     (r'\bstop-service\b[^\n]*\s-force\b', "force stop service (Stop-Service -Force)"),
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),

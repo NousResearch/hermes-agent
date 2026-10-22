@@ -5376,6 +5376,23 @@ def test_find_session_by_origin_matching_rules(db):
     ) is None
 
 
+def test_find_session_by_origin_unthreaded_prefers_flat_session(db):
+    db.create_session(
+        "sl-flat", "slack", user_id="u1",
+        session_key="agent:main:slack:group:T:C1", chat_id="C1", chat_type="group",
+    )
+    db.create_session(
+        "sl-thread", "slack", user_id="u1",
+        session_key="agent:main:slack:group:T:C1:100.1", chat_id="C1", chat_type="group", thread_id="100.1",
+    )
+    # A newer thread session must not capture an unthreaded lookup.
+    assert db.find_session_by_origin(platform="slack", chat_id="C1") == "sl-flat"
+    assert db.find_session_by_origin(platform="slack", chat_id="C1", thread_id="100.1") == "sl-thread"
+    # No flat session -> fall back to the thread session.
+    db.end_session("sl-flat", "session_reset")
+    assert db.find_session_by_origin(platform="slack", chat_id="C1") == "sl-thread"
+
+
 
 
 

@@ -441,7 +441,7 @@ class SessionSessionsMixin:
         if not platform or chat_id in (None, ""):
             return None
         query = """
-            SELECT id, user_id, started_at FROM sessions
+            SELECT id, user_id, thread_id, started_at FROM sessions
             WHERE LOWER(source) = LOWER(?)
               AND session_key IS NOT NULL
               AND chat_id = ?
@@ -454,6 +454,9 @@ class SessionSessionsMixin:
         rows = [dict(r) for r in self._read_all(query + " ORDER BY started_at DESC", params)]
         if not rows:
             return None
+        if thread_id is None:
+            # Unthreaded caller: the chat's own session, not whichever thread session started last.
+            rows = [r for r in rows if not (r.get("thread_id") or "")] or rows
         if user_id:
             exact = [r for r in rows if str(r.get("user_id") or "") == str(user_id)]
             if exact:

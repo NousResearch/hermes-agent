@@ -55,3 +55,21 @@ export function auxTaskLabel(
 ): string {
   return auxTaskRows(tasks).find((t) => t.key === key)?.label ?? key;
 }
+
+/**
+ * Label + hint for one task row. Plugin-registered tasks carry their own
+ * (`PluginContext.register_auxiliary_task`); built-ins are labelled from
+ * `BUILTIN_AUX_TASKS`. An unknown key falls back to its title-cased slug so a
+ * newer backend's task still reads as a name rather than `foo_bar`.
+ */
+export function auxTaskMeta(
+  tasks: readonly AuxiliaryTaskAssignment[] | null | undefined,
+  key: string,
+): { label: string; hint: string } {
+  const row = auxTaskRows(tasks).find((t) => t.key === key);
+  if (row && row.label !== row.key) return { label: row.label, hint: row.hint };
+  return {
+    label: key.split("_").map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" "),
+    hint: row?.hint || "Auxiliary model task",
+  };
+}

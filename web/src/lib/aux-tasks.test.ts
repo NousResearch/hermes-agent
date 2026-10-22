@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { auxTaskLabel, auxTaskRows, BUILTIN_AUX_TASKS } from "./aux-tasks";
+import { auxTaskLabel, auxTaskMeta, auxTaskRows, BUILTIN_AUX_TASKS } from "./aux-tasks";
 
 const builtinKeys = BUILTIN_AUX_TASKS.map((t) => t.key);
 
@@ -52,5 +52,25 @@ describe("auxTaskRows", () => {
       },
     ]);
     expect(rows.at(-1)).toEqual({ key: "side_task", label: "Side", hint: "", inheritFrom: "compression" });
+  });
+});
+
+describe("auxTaskMeta", () => {
+  it("labels a built-in from the table and a plugin task from its own metadata", () => {
+    expect(auxTaskMeta([], "vision")).toEqual({ label: "Vision", hint: "Image analysis" });
+    expect(
+      auxTaskMeta(
+        [{ task: "rag", provider: "auto", model: "", base_url: "", label: "RAG", hint: "Retrieval" }],
+        "rag",
+      ),
+    ).toEqual({ label: "RAG", hint: "Retrieval" });
+  });
+
+  it("title-cases an unlabelled key so a newer backend's task still reads as a name", () => {
+    expect(auxTaskMeta([], "custom_rag_task").label).toBe("Custom Rag Task");
+    expect(auxTaskMeta([{ task: "custom_rag", provider: "auto", model: "", base_url: "" }], "custom_rag")).toEqual({
+      label: "Custom Rag",
+      hint: "Auxiliary model task",
+    });
   });
 });

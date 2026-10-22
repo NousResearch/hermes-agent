@@ -1,6 +1,6 @@
 name: advanced-delegation
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: fec72bdc35d6296622c17b1eff5f245cc82e020b
+sha: b3825d097195b5748585b0491fab48c95d105c19
 subdir: advanced-delegation
 title: Advanced Delegation
 description: 'Two extra delegation modes for `delegate_task`, next to the built-in default. Model routes
@@ -22,6 +22,7 @@ tier: official
 category: tools
 requires_hermes: ">=0.22.5"
 version: "1.0.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/b3825d097195b5748585b0491fab48c95d105c19/assets/advanced-delegation.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/advanced-delegation
 platforms: []
 capabilities:

@@ -462,7 +462,7 @@ async def _start_gateway_shutdown_tail(
     _planned_stop_watcher_stop: threading.Event, _planned_stop_watcher_thread: threading.Thread,
     _signal_initiated_shutdown: list) -> bool:
     """Post-``wait_for_shutdown`` teardown; returns the process exit verdict (True = exit 0)."""
-    from gateway.run import (_CRON_SHUTDOWN_DRAIN_TIMEOUT, _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT, _await_thread_exit, _best_effort, _resolve_gateway_exit_verdict, _shutdown_mcp_servers_nonblocking, _stop_cron_provider)
+    from gateway.run import (_CRON_SHUTDOWN_DRAIN_TIMEOUT, _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT, _await_thread_exit, _best_effort, _maybe_arm_process_exit_backstop, _resolve_gateway_exit_verdict, _shutdown_mcp_servers_nonblocking, _stop_cron_provider)
     # Control socket first: once shutdown begins we are no longer a truthful "serving here" answer and a
     # successor must be able to bind. Early-exit paths rely on the atexit cleanup_files hook instead.
     if _control_server is not None:
@@ -485,6 +485,8 @@ async def _start_gateway_shutdown_tail(
     # message was silently dropped (#58818). Awaiting keeps the loop alive so the in-flight delivery
     # finishes before we tear down.
     cron_stop.set()
+    # Cover blocking provider.stop() — the long watchdog is done after runner.stop().
+    await _maybe_arm_process_exit_backstop(runner)
     _stop_cron_provider(cron_provider)
     if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
         logger.warning("Cron ticker did not exit within %.0fs of shutdown — an in-flight "
@@ -504,6 +506,7 @@ async def _start_gateway_shutdown_tail(
 
     # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
     # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
+    await _maybe_arm_process_exit_backstop(runner)
     return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
 
 
@@ -668,7 +671,7 @@ def _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restar
 async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) -> Optional[bool]:
     """MCP discovery, then ``runner.start()``. Returns the exit verdict when the process must end
     before running mode (start failed, clean exit, aborted startup); None to continue into cron."""
-    from gateway.run import (_discover_gateway_mcp_tools, _resolve_gateway_exit_verdict,
+    from gateway.run import (_discover_gateway_mcp_tools, _maybe_arm_process_exit_backstop, _resolve_gateway_exit_verdict,
                              _shutdown_gateway_health_export, _shutdown_mcp_servers_nonblocking)
     # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
     try:
@@ -705,6 +708,7 @@ async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) ->
                 await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
             except Exception:
                 logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
+            await _maybe_arm_process_exit_backstop(runner)
             return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
         finally:
             _shutdown_gateway_health_export(runner)

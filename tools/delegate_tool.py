@@ -12,6 +12,7 @@ tool calls or reasoning.
 """
 
 import logging
+import shlex
 import time
 import weakref
 from pathlib import Path
@@ -437,12 +438,24 @@ def _build_children(
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        # A task-level `cli` runs that child on a different ACP agent CLI instead of the parent's
+        # transport. _resolve_child_runtime validates the executable on PATH and fails the spawn
+        # loudly rather than silently falling back to the parent's transport.
+        _task_overrides = overrides
+        _cli = t.get("cli")
+        if _cli is not None:
+            if not isinstance(_cli, str) or not _cli.strip():
+                return [], f"Task {i} 'cli' must be a non-empty command string, e.g. \"codex acp\"."
+            _argv = shlex.split(_cli)
+            if not _argv:
+                return [], f"Task {i} 'cli' must name a command, e.g. \"codex acp\"."
+            _task_overrides = {**overrides, "override_acp_command": _argv[0], "override_acp_args": _argv[1:]}
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_task_overrides,
             )
         except ValueError as exc:
             # An owner refusal can land mid-batch: the siblings built so far hold reservations.
@@ -754,6 +767,13 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "cli": _p(
+                            "string",
+                            "Optional ACP agent CLI this child runs on instead of your own transport, e.g. "
+                            "\"codex acp\", \"claude-code-acp\", \"opencode acp\", \"hermes acp\". Use it when another "
+                            "installed CLI is better suited to the task; the executable must exist on PATH, and an "
+                            "unknown command fails the spawn instead of falling back to your transport.",
                         ),
                     },
                     "required": ["goal"],

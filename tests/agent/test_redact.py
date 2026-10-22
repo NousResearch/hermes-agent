@@ -500,6 +500,12 @@ class TestAuthHeaders:
         text = "the authorization model is fully open"
         assert redact_sensitive_text(text) == text
 
+    @pytest.mark.parametrize("variable", ("$AT", "${ACCESS_TOKEN}"))
+    def test_pure_shell_variable_in_authorization_header_is_preserved(self, variable):
+        """Regression for #139212: shell expansion is not a secret disclosure."""
+        text = f'curl -H "Authorization: Bearer {variable}" https://api.example.com'
+        assert redact_sensitive_text(text) == text
+
     def test_token_flush_against_double_quote_preserves_quote(self):
         # Regression for #43083: a token sitting flush against a closing
         # double quote must NOT pull that quote into the mask. Greedy \S+

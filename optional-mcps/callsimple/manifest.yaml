@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: callsimple
+description: 'CallSimple: AI phone calls to Indian (+91) numbers in Hindi or English, with the answers back.'
+source: https://github.com/IndianAppGuy/callsimple-agent
+
+# Official vendor-hosted remote MCP (URL-only). Native OAuth 2.1 + Dynamic
+# Client Registration with PKCE (S256): RFC 9728 protected-resource metadata
+# -> AS metadata with registration_endpoint. Same pattern as gamma.
+
+transport:
+  type: http
+  url: https://callsimple.app/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - callsimple
+    - phone call
+    - call in hindi
+  hosts:
+    - callsimple.app
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to CallSimple
+  (or run `hermes mcp login callsimple`). Sign-in is by phone and new
+  accounts get 2 free minutes. Approve access, then restart the session
+  so tools load. Every call is confirmed with you before it is placed.

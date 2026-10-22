@@ -134,6 +134,20 @@ def _relay_info_lines(lines) -> None:
         check_info("\n      ".join(part for part in str(line).strip().splitlines() if part.strip()))
 
 
+def _unusable_managed_config(path) -> str:
+    """Why an EXISTING managed config.yaml contributes nothing ('' when usable or absent): same parse as the overlay."""
+    if not path.is_file():
+        return ""
+    try:
+        from utils import fast_safe_load
+        parsed = fast_safe_load(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:  # noqa: BLE001 — report, never crash doctor
+        return f"unreadable ({type(exc).__name__})"
+    if parsed is None:
+        return "empty"
+    return "" if isinstance(parsed, dict) else f"not a mapping ({type(parsed).__name__})"
+
+
 def managed_scope_check() -> None:
     """Report the active managed scope (resolved dir + pinned key counts); silent when none. A HERMES_MANAGED_DIR
     override is surfaced too — a redirected scope is the documented foot-gun (docs/design/managed-scope.md §7)."""
@@ -143,8 +157,14 @@ def managed_scope_check() -> None:
         managed_dir = managed_scope.get_managed_dir()
     if managed_dir is None:
         return
+    unusable = _unusable_managed_config(managed_dir / "config.yaml")
+    if unusable:
+        # The overlay is fail-open: this file is ignored, so a green "0 config key(s)" would hide that no admin
+        # policy is applied at all.
+        check_fail(f"Managed config.yaml is {unusable} — admin policy is NOT applied", str(managed_dir / "config.yaml"))
     n_cfg, n_env = len(managed_scope.managed_config_keys()), len(managed_scope.load_managed_env())
-    check_ok(f"Managed scope active: {n_cfg} config key(s), {n_env} env key(s) pinned by {managed_dir}")
+    (check_warn if unusable else check_ok)(
+        f"Managed scope active: {n_cfg} config key(s), {n_env} env key(s) pinned by {managed_dir}")
     if os.environ.get("HERMES_MANAGED_DIR", "").strip():
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 

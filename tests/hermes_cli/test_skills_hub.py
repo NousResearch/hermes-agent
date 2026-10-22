@@ -156,8 +156,8 @@ _CONDITIONAL_SKILLS = [
 def conditional_env(monkeypatch, hub_env):
     """Skills carrying each of the four conditional activation fields."""
     import tools.skills_hub as hub
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
+    from tools import skills_sync
+    from tools import skills_tool
     from agent import skill_utils
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
@@ -165,7 +165,7 @@ def conditional_env(monkeypatch, hub_env):
         skills_tool, "_skill_catalog",
         lambda **_kwargs: [dict(s) for s in _CONDITIONAL_SKILLS],
     )
-    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(skills_sync, "_read_manifest", dict)
     monkeypatch.setattr(
         skill_utils, "get_disabled_skill_names", lambda platform=None: set()
     )
@@ -246,8 +246,8 @@ def test_enabled_only_keeps_platform_gated_skill_visible(hub_env, monkeypatch):
     builder applies the same predicate with the real channel and drops it.
     """
     import tools.skills_hub as hub
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
+    from tools import skills_sync
+    from tools import skills_tool
     from agent import skill_utils
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
@@ -255,7 +255,7 @@ def test_enabled_only_keeps_platform_gated_skill_visible(hub_env, monkeypatch):
         skills_tool, "_skill_catalog",
         lambda **_kwargs: [_conditional_skill("telegram-only", session_platforms=["telegram"])],
     )
-    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(skills_sync, "_read_manifest", dict)
     monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda platform=None: set())
 
     output = _capture_enabled_only(monkeypatch, set(), set())
@@ -308,8 +308,8 @@ def test_enabled_only_listing_matches_prompt_index_end_to_end(
     predicate."""
     import hermes_cli.skills_hub as cli_hub
     import tools.skills_hub as hub
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
+    from tools import skills_sync
+    from tools import skills_tool
     from agent import skill_utils
     from agent.prompt_builder import (
         build_skills_system_prompt,
@@ -334,7 +334,7 @@ def test_enabled_only_listing_matches_prompt_index_end_to_end(
 
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
-    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(skills_sync, "_read_manifest", dict)
     monkeypatch.setattr(
         skill_utils, "get_disabled_skill_names", lambda platform=None: set()
     )

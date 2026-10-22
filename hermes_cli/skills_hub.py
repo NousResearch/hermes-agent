@@ -1019,8 +1019,8 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     # runtime path a CLI session uses; passing only toolsets would make
     # _skill_should_show() treat the tool set as empty and misclassify every
     # requires_tools / fallback_for_tools skill.
-    available_tools: "set | None" = None
-    available_toolsets: "set | None" = None
+    available_tools: set | None = None
+    available_toolsets: set | None = None
     if enabled_only:
         from agent.prompt_builder import _skill_should_show
 

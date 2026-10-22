@@ -387,15 +387,32 @@ class SubagentLifecycleService:
         return steer_subagent(record.handle.subagent_id, text.strip())
 
     def _record(self, handle: SubagentHandle | Mapping[str, Any]) -> Optional[_Record]:
-        """Registry record for a well-formed, capability-verified handle owned by the active parent."""
+        """Registry record for a well-formed, capability-verified handle owned by the active parent lineage."""
         handle = _coerce_handle(handle)
         if not _handle_is_well_formed(handle):
             return None
         expected = self._capability(handle.subagent_id, handle.parent_session_id, handle.created_at)
         if not hmac.compare_digest(handle.capability, expected):
             return None
-        if _session_id_of(self._parent_agent_resolver()) != handle.parent_session_id:
+        parent = self._parent_agent_resolver()
+        if parent is None:
             return None
+        parent_session_id = _session_id_of(parent)
+        if parent_session_id != handle.parent_session_id:
+            # Compression rotation changes a session id but not its durable
+            # conversation lineage. Resolve only after authenticating the
+            # capability, and only across explicit compression edges: resume
+            # routing also follows legacy markerless branch children.
+            db = getattr(parent, "_session_db", None)
+            if not parent_session_id or db is None:
+                return None
+            try:
+                owner_tip = db.get_compression_tip(handle.parent_session_id) or handle.parent_session_id
+                parent_tip = db.get_compression_tip(parent_session_id) or parent_session_id
+            except Exception:
+                return None
+            if owner_tip != parent_tip:
+                return None
         with _REGISTRY.lock:
             return _REGISTRY.records.get(handle.subagent_id)
 

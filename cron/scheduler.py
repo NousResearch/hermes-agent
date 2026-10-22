@@ -2171,9 +2171,15 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
         # Never leave the session untitled.
         # Try the next free title in the lineage, then a bare id-stamped title. See #50535.
+        # The lineage lookup shares the proxy's fail-fast state: once a timeout above has
+        # disabled finalization it raises instead of returning a candidate, so it cannot be
+        # evaluated in the loop's iterable (#138160) — the bare fallback still gets its turn.
+        _lineage = None
+        with contextlib.suppress(Exception, KeyboardInterrupt):
+            _lineage = getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}")
         for _fallback in (
-            getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
-            f"cron {job_id} {_final_cron_session_id[-6:]}"):
+                candidate for candidate in (_lineage, f"cron {job_id} {_final_cron_session_id[-6:]}")
+                if candidate):
             try:
                 if _set_cron_session_title(_session_db, _final_cron_session_id, _fallback):
                     break

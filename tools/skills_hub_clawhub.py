@@ -69,6 +69,10 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
     CATALOG_WALK_BUDGET_SECONDS = 12
     ZIP_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
     ZIP_DOWNLOAD_CHUNK_BYTES = 64 * 1024
+    # Extraction holds at most ZIP_DOWNLOAD_MAX_BYTES of text in at most this many members: unbounded, a
+    # 25 MB archive of compressible members inflates ~800x in memory (and quarantine). Far above
+    # skills_guard's informational 50-file / 5 MB skill limits.
+    ZIP_EXTRACT_MAX_MEMBERS = 1000
     _SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")
 
     _query_terms = staticmethod(_query_terms)
@@ -551,6 +555,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                     continue
 
                 with zipfile.ZipFile(archive) as zf:
+                    members = extracted_bytes = 0
                     for info in zf.infolist():
                         if info.is_dir():
                             continue
@@ -562,9 +567,20 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                         if info.file_size > 500_000:  # skip large binaries
                             logger.debug("Skipping large file in ZIP: %s (%d bytes)", name, info.file_size)
                             continue
+                        # zipfile never inflates a member past its declared file_size, so the sum
+                        # bounds what is held before any bytes are decompressed — provided we read
+                        # THIS entry: a by-name read resolves a duplicated name to its last entry.
+                        members += 1
+                        extracted_bytes += info.file_size
+                        if members > self.ZIP_EXTRACT_MAX_MEMBERS or extracted_bytes > self.ZIP_DOWNLOAD_MAX_BYTES:
+                            logger.warning(
+                                "Refusing ClawHub ZIP for %s v%s: over %d members or %d decompressed bytes",
+                                slug, version, self.ZIP_EXTRACT_MAX_MEMBERS, self.ZIP_DOWNLOAD_MAX_BYTES,
+                            )
+                            return {}
                         try:
-                            files[name] = zf.read(info.filename).decode("utf-8")
-                        except (UnicodeDecodeError, KeyError):
+                            files[name] = zf.read(info).decode("utf-8")
+                        except UnicodeDecodeError:
                             logger.debug("Skipping non-text file in ZIP: %s", name)
                 return files
             except zipfile.BadZipFile:

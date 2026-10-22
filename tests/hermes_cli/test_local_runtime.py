@@ -489,8 +489,10 @@ def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime import endpoint as ep
     installed: set[str] = set()
+    # server_binary() reads the engine's binary, so the fake engine carries one.
+    engine = type("Engine", (), {"binary": tmp_path / "llama-server"})()
     monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
-                        lambda backend="auto", **_: object() if backend in installed else None)
+                        lambda backend="auto", **_: engine if backend in installed else None)
 
     enabled = {"local_runtime": {"enabled": True}}
     assert ep._boot_in_flight(enabled) is False
@@ -1005,14 +1007,14 @@ def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
                         lambda: {"local_runtime": {"backend": "cpu"}})  # another profile's config
     priced: list = []
 
-    def _priced(mdir, path, residents=1, engine_tag=None):
+    def _priced(mdir, path, residents=1, engine_tag=None, section=None):
         priced.append((hardware._configured_engine(), engine_tag))
         return path
 
     monkeypatch.setattr(bootstrap, "_generate_presets", _priced)
     capped: list = []
     monkeypatch.setattr(bootstrap, "_admitted_models_max",
-                        lambda mdir, configured, engine_tag=None: capped.append(engine_tag) or configured)
+                        lambda mdir, configured, extra_dirs=(), engine_tag=None: capped.append(engine_tag) or configured)
 
     class _NoStart:
         def __init__(self, *a, **k):

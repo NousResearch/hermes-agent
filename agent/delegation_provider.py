@@ -18,6 +18,9 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
   ``reasoning_effort``, ``fallback_providers`` - shaped exactly like the ``delegation`` config
   section and resolved by the same credential resolver ``delegation.*`` uses (empty route = the
   child inherits the parent's route, like an empty ``delegation`` section).
+* ``service_tier`` - ``normal``, ``fast`` or ``ultrafast``, checked like ``/fast`` against the
+  resolved route (and, for ultrafast, the Codex account); a tier the route does not offer refuses
+  the task, and the tier is re-applied after the child is built.
 * ``profile`` - the name of a Hermes profile. Core runs the child as that profile: its config,
   primary model and credentials, skills, ``SOUL.md`` and terminal policy, bound through the same
   scope helpers a multiplexed gateway uses for a routed turn. A profile route ignores the other
@@ -46,7 +49,7 @@ RESERVED_TASK_PARAMETERS = frozenset({
 #: Keys a route may carry; anything else in a provider's answer is ignored.
 ROUTE_KEYS = frozenset({
     "model", "provider", "base_url", "api_key", "api_mode", "request_overrides",
-    "reasoning_effort", "fallback_providers", "profile", "label",
+    "reasoning_effort", "service_tier", "fallback_providers", "profile", "label",
 })
 
 

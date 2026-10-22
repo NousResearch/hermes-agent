@@ -28,8 +28,8 @@ _PARAM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 @dataclass
 class TaskRoute:
-    """How core builds one child: the credential bundle, the config block owning its fallback
-    policy, an optional reasoning override, and the profile home it runs as (None = this one)."""
+    """How core builds one child: the credential bundle (with a route's speed tier applied), the config block
+    owning its fallback policy, an optional reasoning override, and the profile home it runs as (None = this one)."""
 
     creds: dict[str, Any]
     routing_cfg: dict[str, Any]
@@ -216,8 +216,11 @@ def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[s
             cache[key] = _profile_route(_profile_home(route["profile"]))
         else:
             from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
-            cache[key] = TaskRoute(_resolve_delegation_credentials(route, parent_agent), route,
-                                   route.get("reasoning_effort"), None, None)
+            creds = _resolve_delegation_credentials(route, parent_agent)
+            if route.get("service_tier") not in (None, ""):
+                from tools.delegate_tool_tuning import task_service_tier
+                creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
+            cache[key] = TaskRoute(creds, route, route.get("reasoning_effort"), None, None)
     return replace(cache[key], label=label)
 
 
@@ -243,14 +246,19 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     """One :class:`TaskRoute` per task from the active provider, or ``([], error)``. Identical
     routes resolve credentials once per call (the default provider resolves exactly once, as
     before the seam)."""
+    from agent.delegation_registry import DEFAULT_BACKEND
     provider = _active_provider(config)
     declared = _declared_parameters(provider, config)
+    from_backend = provider.name != DEFAULT_BACKEND
     cache: dict[str, TaskRoute] = {}
     routes: list[TaskRoute] = []
     try:
         for i, task in enumerate(task_list):
-            routes.append(_route_to_task_route(_route_one(provider, declared, i, task, config), parent_agent, cache))
-    except ValueError as exc:  # DelegationRouteError and the credential resolver's refusals
+            route = _route_one(provider, declared, i, task, config)
+            if not from_backend:
+                route.pop("service_tier", None)  # not a delegation-section key: the default route stays today's
+            routes.append(_route_to_task_route(route, parent_agent, cache))
+    except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
         return [], str(exc)
     return routes, None
 

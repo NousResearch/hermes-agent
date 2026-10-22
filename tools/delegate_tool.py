@@ -50,6 +50,7 @@ from tools.delegate_tool_registry import (
 from tools.delegate_tool_tasks import (
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
 )
+from tools.delegate_tool_tuning import pin_child_service_tier
 from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
@@ -228,6 +229,7 @@ def _build_child_agent(
     # effort that beats delegation.reasoning_effort, and the profile home the child runs as.
     override_reasoning_effort: Any = None,
     profile_home: Optional[Path] = None,
+    override_service_tier: Optional[str] = None,  # a route's checked speed tier (tools/delegate_tool_tuning.py)
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
@@ -276,6 +278,8 @@ def _build_child_agent(
             override_acp_args=override_acp_args,
             routing_cfg=routing_cfg, override_reasoning_effort=override_reasoning_effort,
         )
+        if override_service_tier:
+            rt["service_tier"] = override_service_tier
         if override_request_overrides is not None:
             # honored whenever set, incl. the inherit branch where
             # _resolve_delegation_credentials already merged OVER the parent's
@@ -429,6 +433,7 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
         "override_request_overrides": creds.get("request_overrides"),
         "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
+        "override_service_tier": creds.get("service_tier"),
         "routing_cfg": routing_cfg,
     }
 
@@ -470,6 +475,7 @@ def _build_children(
                 _detach_child(parent_agent, built)
                 _close_child(built, "Failed to close child after a refused sibling")
             return [], str(exc)
+        pin_child_service_tier(child, route.creds)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema

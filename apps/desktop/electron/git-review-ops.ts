@@ -666,7 +666,9 @@ function prQueryFor(owner, name, branches, numbers) {
     // A PR recovered from a transcript is known by number, and asking for it
     // directly also tells us its branch — so it lands in the same by-branch map
     // as everything else.
-    ...numbers.map((number, i) => `n${i}: pullRequest(number: ${number}) { ${PR_NODE_FIELDS} }`)
+    ...numbers.map((number, i) => `n${i}: pullRequest(number: ${number}) { ${PR_NODE_FIELDS} }`),
+    // The trunk's name, so a PR opened FROM the trunk never badges a trunk session.
+    'defaultBranchRef { name }'
   ].join('\n')
 
   return `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {\n${fields}\n} }`
@@ -680,6 +682,33 @@ const prPayload = pr => ({
   title: String(pr.title || ''),
   url: String(pr.url || '')
 })
+
+// The PRs one GraphQL answer resolved to. Asked for by number, a PR is ours by
+// construction — a fork PR can't be recovered from our own transcript. Asked for
+// by branch, it has to prove it: fork PRs share our branch namespace, and a
+// contributor's `main` is how a session on trunk ends up badged with a stranger's
+// PR. A PR whose head is the trunk (e.g. main -> a baseline branch) is never a
+// session's PR either: every session on the trunk would carry it, closed or not.
+function prsFromRepository(repository) {
+  const trunk = repository.defaultBranchRef?.name
+  const prs = []
+
+  for (const key of Object.keys(repository)) {
+    if (key === 'defaultBranchRef') {
+      continue
+    }
+
+    const pr = key.startsWith('n')
+      ? repository[key]
+      : (repository[key]?.nodes ?? []).find(node => node && !node.isCrossRepository)
+
+    if (pr?.headRefName && pr.headRefName !== trunk) {
+      prs.push(prPayload(pr))
+    }
+  }
+
+  return prs
+}
 
 // The PR for each of the given branches, keyed by branch. Asks GitHub about the
 // branches we actually have sessions on rather than listing the repo's newest
@@ -729,21 +758,7 @@ async function reviewPrList(repoPath, ghBin, branches, numbers) {
     }
 
     try {
-      const repository = JSON.parse(res.stdout)?.data?.repository ?? {}
-
-      for (const key of Object.keys(repository)) {
-        // Asked for by number, so it's ours by construction — a fork PR can't
-        // be recovered from our own transcript. Asked for by branch, it has to
-        // prove it: fork PRs share our branch namespace, and a contributor's
-        // `main` is how a session on trunk ends up badged with a stranger's PR.
-        const pr = key.startsWith('n')
-          ? repository[key]
-          : (repository[key]?.nodes ?? []).find(node => node && !node.isCrossRepository)
-
-        if (pr?.headRefName) {
-          prs.push(prPayload(pr))
-        }
-      }
+      prs.push(...prsFromRepository(JSON.parse(res.stdout)?.data?.repository ?? {}))
     } catch {
       // A malformed chunk drops its branches; the rest still resolve.
     }

@@ -334,8 +334,7 @@ delegate_task(
 
     Project test command: pytest tests/ -q
     Project structure: [describe relevant files]
-    """,
-    toolsets=['terminal', 'file']
+    """
 )
 ```
 

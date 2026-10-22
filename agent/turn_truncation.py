@@ -262,6 +262,45 @@ def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tu
     return None
 
 
+def _repetition_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
+    """Repetition-loop truncation → fallback. A degenerate loop is model-specific, not
+    content-deterministic like a content filter: the same prompt usually answers cleanly on a
+    different backend, so escalate before ending the turn. Without a fallback the caller keeps
+    its existing end-the-turn copy (never a continuation — re-sending the prompt to the model
+    that just looped only re-enters the loop)."""
+    agent = st.agent
+    if agent._fallback_index >= len(agent._fallback_chain):
+        return None
+    agent._vprint(
+        f"{agent.log_prefix}🔁  Repetition loop detected — activating fallback provider...",
+        force=True, diagnostic=True,
+    )
+    agent._emit_diagnostic_status("Repetition loop detected; switching to fallback...")
+    if not agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  No fallback provider available — ending the turn "
+            f"(re-sending to the same model would only re-enter the loop).",
+            force=True, diagnostic=True,
+        )
+        return None
+    # Roll the looped partial back to the last clean turn so the fallback gets a coherent
+    # continuation point instead of the degenerate fragment (which would re-seed the loop).
+    if st.truncated_response_parts:
+        st.messages = agent._get_messages_up_to_last_assistant(st.messages)
+    for _frag in st.messages:
+        if isinstance(_frag, dict):
+            _frag.pop("_length_continuation_fragment", None)
+            _frag.pop("_length_continuation_nudge", None)
+    agent._session_messages = st.messages
+    st.length_continue_retries = 0
+    st.truncated_response_parts = []
+    st.retry_count = 0
+    st.compression_attempts = 0
+    _retry.primary_recovery_attempted = False
+    _retry.restart_with_rebuilt_messages = True
+    return st.done("break")
+
+
 def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
     """Content-filter stream stall → fallback. ``_content_filter_terminated`` is
     content-deterministic, so escalate before retrying the primary; without a fallback
@@ -466,8 +505,12 @@ def recover_from_truncation(
         compression_attempts=compression_attempts,
     )
     if getattr(response, "_runaway_repetition", False):
-        # The streaming call cut a live repetition loop: a continuation would only re-enter it,
-        # whatever the partial or its tool calls look like.
+        # The streaming call cut a live repetition loop. A continuation would only re-enter it,
+        # so try the fallback chain first — a degenerate loop is model-specific, and the same
+        # prompt usually answers cleanly on a different backend. Without one, end the turn.
+        _rb = _repetition_fallback(st, _retry)
+        if _rb is not None:
+            return _rb
         line, user_response, error = _REPETITION_STREAM_CUT
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         return st.end_turn(user_response, error)
@@ -518,6 +561,12 @@ def recover_from_truncation(
 
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
     if abort is not None:
+        if abort is _REPETITION_DOMINATED:
+            # The budget burned on one echoed fragment (not reasoning exhaustion): the loop is
+            # model-specific, so hand the turn to the fallback chain before giving up on it.
+            _rb = _repetition_fallback(st, _retry)
+            if _rb is not None:
+                return _rb
         line, user_response, error = abort
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         return st.end_turn(user_response, error)

@@ -165,6 +165,7 @@ def _run_bounded_repack(repo_root: str) -> None:
     cmd = ["git", "repack", "-d", "--geometric=2", "--write-midx", "--quiet"]
     if os.name == "posix":
         cmd = ["nice", "-n", "19", *cmd]
+        # detached-spawn: ok — git repack awaited with a timeout that kills its group; atexit reaps it
         group_kw: dict = {"process_group": 0}
     else:
         group_kw = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}

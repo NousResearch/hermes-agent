@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.process_identity import spawn_env
 from hermes_constants import hermes_home_key
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
@@ -189,6 +190,9 @@ def _agent_browser_command_env(socket_dir: str) -> dict[str, str]:
     if executable:
         env["AGENT_BROWSER_EXECUTABLE_PATH"] = executable
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
+    # The daemon a command forks inherits this tag: it is how _own_local_daemon tells a daemon this
+    # process started from one another Hermes started in a shared session.
+    env.update(spawn_env("agent-browser-daemon"))
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
         env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_daemon_idle_timeout_seconds() * 1000)
     return env
@@ -777,6 +781,17 @@ def _browser_command_preflight() -> dict[str, Any]:
     return {"browser_cmd": browser_cmd}
 
 
+# How often a running local command re-checks for the daemon and Chromium its first command starts.
+_OWN_DURING_COMMAND_S = 0.5
+
+
+def _owns_local_daemon(command: str, session_info: dict[str, Any]) -> bool:
+    """Whether ``command`` runs on an agent-browser daemon this process launches locally (not attached
+    to a CDP endpoint or a cloud session), which goes to the owner-death supervisor."""
+    return (command != "close" and bool((session_info.get("features") or {}).get("local"))
+            and not session_info.get("cdp_url") and not session_info.get("bb_session_id"))
+
+
 def _spawn_and_collect(
     task_id: str, session_info: dict[str, Any], cmd_parts: list[str],
     command: str, engine: str, timeout: int, stdin_payload: Optional[bytes] = None,
@@ -809,8 +824,19 @@ def _spawn_and_collect(
     cmd_parts, browser_env = _sandbox_wrap(cmd_parts, browser_env, task_socket_dir)
     proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command, stdin_payload)
 
+    # The first command forks the daemon and Chromium and may run long (navigation): own them as soon
+    # as they publish their pid, so a Hermes killed mid-command takes them along.
+    owning = None
+    if _owns_local_daemon(command, session_info):
+        from agent.periodic_scheduler import schedule
+        owning = schedule(lambda: _lifecycle._own_local_daemon(session_info.get("session_name", "")),
+                          _OWN_DURING_COMMAND_S)
     try:
-        proc.wait(timeout=timeout)
+        try:
+            proc.wait(timeout=timeout)
+        finally:
+            if owning is not None:
+                owning.cancel(wait=5)  # an in-flight check finishes before the caller's own runs
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
@@ -964,6 +990,8 @@ def _run_browser_command(
         # the same way and retry once on the replacement before handing the caller the error.
         # ``close`` is exempt: a dead daemon is already closed, and cleanup must never spawn
         # a fresh session just to close it.
+        if _owns_local_daemon(command, session_info):
+            _lifecycle._own_local_daemon(session_info.get("session_name", ""))
         if attempt == 0 and command != "close" and _is_recoverable_local_backend_failure(session_info, result):
             _bt.logger.warning("browser '%s' failed at the backend level (task=%s, rc=%s); recycling the session "
                                "and retrying once", command, task_id, result.get("returncode"))

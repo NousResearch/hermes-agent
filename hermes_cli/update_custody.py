@@ -361,6 +361,7 @@ def _owner_watch(pid: int):
     read_end, write_end = os.pipe()  # non-inheritable: no other child keeps the owner's end open
     try:
         watcher = subprocess.Popen([sys.executable, "-I", "-S", "-c", _OWNER_WATCH, str(pid)], stdin=read_end,
+                                   # detached-spawn: ok — the owner-death watchdog itself: it must outlive the owner to kill the fetch
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as exc:
         os.close(write_end)

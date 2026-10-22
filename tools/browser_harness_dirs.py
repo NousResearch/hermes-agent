@@ -56,17 +56,32 @@ def fits_socket_budget(resolved_dir: str, budget: Optional[int]) -> bool:
     return budget is None or len(resolved_dir.encode()) <= budget
 
 
+def _harness_home(env: dict) -> str:
+    """browser-harness ``paths.home_dir()``, resolved against the child's ``env``."""
+    root = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
+    if not root:
+        xdg = env.get("XDG_CONFIG_HOME")
+        root = str(Path(xdg) / "browser-harness") if xdg else str(
+            Path(env.get("HOME") or Path.home()) / ".config" / "browser-harness")
+    return str(Path(root).expanduser())
+
+
+def harness_pid_file(env: dict) -> Path:
+    """Where the harness publishes the pid of the daemon a call with ``env`` drives
+    (browser_harness ``_ipc``): ``<runtime dir>/bu-<BU_NAME>.pid``, or ``bu.pid`` in an isolated
+    runtime dir that is not shared between names."""
+    isolated = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
+    runtime = Path(isolated).expanduser() if isolated else Path(_harness_home(env)) / "runtime"
+    shared = not isolated or env.get("BH_RUNTIME_DIR_SHARED") == "1"
+    return runtime / (f"bu-{env.get('BU_NAME', 'default')}.pid" if shared else "bu.pid")
+
+
 def namespace_harness_dirs(env: dict, tag: str) -> None:
     """Give served profile ``tag`` its own harness runtime and tmp dirs in the child ``env``. An empty
     ``tag`` (outside a served-profile scope) leaves ``env`` unchanged."""
     if not tag:
         return
-    root = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
-    if not root:  # browser-harness paths.home_dir(), resolved against the child's env
-        xdg = env.get("XDG_CONFIG_HOME")
-        root = str(Path(xdg) / "browser-harness") if xdg else str(
-            Path(env.get("HOME") or Path.home()) / ".config" / "browser-harness")
-    root = str(Path(root).expanduser())
+    root = _harness_home(env)
     leaf = f"p-{hashlib.sha256(tag.encode()).hexdigest()[:12]}"
     base = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR") or str(Path(root) / "runtime")
     runtime = str(Path(base) / leaf)

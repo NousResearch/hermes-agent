@@ -14,6 +14,8 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from hermes_cli.process_identity import (
+    own_process_groups, register_child, release_process_group_once_empty, spawned_by_this_process)
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
@@ -68,6 +70,16 @@ def _stop_all_lightpanda() -> None:
     stop_all_lightpanda()
 
 
+def _stop_harness() -> None:
+    from tools.browser_use_cli import stop_harness_daemons
+    stop_harness_daemons()
+
+
+def _stop_owned_harness() -> None:
+    from tools.browser_use_cli import stop_owned_harness_daemons
+    stop_owned_harness_daemons()
+
+
 def _emergency_cleanup_all_sessions():
     """atexit: close this process's sessions, then sweep orphans left by crashed
     hermes processes — every clean exit reaps accumulated orphans, not only
@@ -100,6 +112,10 @@ def _emergency_cleanup_all_sessions():
                 _bt._recording_sessions.clear()
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
     _best_effort("Lightpanda cleanup on exit", _stop_all_lightpanda)
+    # Browser Use harness daemons we started: a browser_exec-only process never populates
+    # ``_active_sessions``, so cleanup_all_browsers above never ran for them. Only our own: a daemon
+    # another live Hermes started on the same name keeps serving it.
+    _best_effort("Browser Use harness daemon stop on exit", _stop_owned_harness)
     # Safe even if we never used the browser — owner_pid liveness protects daemons
     # owned by other live hermes processes.
     _best_effort("Orphan reap on exit", _reap_orphaned_browser_sessions)
@@ -379,12 +395,12 @@ def _reap_orphaned_browser_sessions():
     ``agent-browser-*`` socket dirs; safe from any context."""
     import glob
 
-    # Lightpanda servers keep their own records (no socket dir); sweep them with the
-    # same owner-liveness rule BEFORE the daemon scan, which may return early.
+    # Lightpanda servers are owned children now, but a crashed pre-update Hermes left only a record
+    # behind. Sweep those BEFORE the daemon scan, which may return early.
     def _reap_lp():
-        from tools.browser_lightpanda import reap_orphaned_lightpanda
-        reap_orphaned_lightpanda()
-    _best_effort("Lightpanda orphan reap", _reap_lp)
+        from tools.browser_lightpanda import reap_legacy_lightpanda_records
+        reap_legacy_lightpanda_records()
+    _best_effort("Pre-update lightpanda reap", _reap_lp)
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []
@@ -631,6 +647,65 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     _drop_last_active_binding(task_id)
 
 
+# session name -> process groups of its agent-browser daemon and Chromium handed to the
+# owner-death supervisor. The daemon detaches into its own session and Chromium calls setpgid
+# into a group of its own, so neither dies with Hermes: a SIGKILLed / OOM-killed Hermes left both
+# running until a later Hermes's orphan sweep (#62615). Registering both groups makes them die
+# with this process at the moment it dies, by any cause.
+_owned_session_groups: dict[str, set[int]] = {}
+_owned_session_groups_lock = threading.Lock()
+
+
+def _own_local_daemon(session_name: str) -> None:
+    """Hand this session's verified daemon and Chromium groups to the owner-death supervisor.
+
+    Called after every local command, because the daemon starts lazily on the first one and can
+    relaunch Chromium later. A daemon already owned skips the identity and spawn-tag checks and only
+    rescans its children for a relaunched Chromium; a daemon that exited drops the session's entry.
+    Never raises."""
+    if os.name != "posix" or not session_name:
+        return
+    import psutil
+
+    socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+    daemon_pid = _read_pid_file(os.path.join(socket_dir, f"{session_name}.pid"))
+    if daemon_pid is None:
+        _release_owned_daemon(session_name, timeout=0)  # it exited (idle timeout): forget the session
+        return
+    with _owned_session_groups_lock:
+        known = daemon_pid in _owned_session_groups.get(session_name, ())
+    try:
+        if os.getpgid(daemon_pid) != daemon_pid:  # windows-footgun: ok — posix-only, returned above
+            return  # not a group leader (a recycled pid behind a stale pid file, even when known)
+        if not known:
+            if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
+                return
+            if not spawned_by_this_process(daemon_pid):
+                return  # started by another Hermes sharing this session: that Hermes owns it
+        groups = {daemon_pid} | {os.getpgid(c.pid) for c in psutil.Process(daemon_pid).children()}  # windows-footgun: ok — posix-only
+    except (OSError, ValueError, psutil.Error) as exc:
+        _bt.logger.debug("No agent-browser daemon to supervise for %s: %s", session_name, exc)
+        return
+    groups.discard(os.getpgid(0))  # windows-footgun: ok — posix-only; never our own group
+    with _owned_session_groups_lock:
+        owned = _owned_session_groups.setdefault(session_name, set())
+        new = groups - owned
+        owned |= new
+    if new:
+        own_process_groups(sorted(new))
+        if not known:
+            register_child(daemon_pid, "agent-browser-daemon")
+
+
+def _release_owned_daemon(session_name: str, *, timeout: float = 1.0) -> None:
+    """Forget the groups registered for ``session_name`` once its daemon was torn down."""
+    with _owned_session_groups_lock:
+        groups = _owned_session_groups.pop(session_name, None)
+    for pgid in sorted(groups or ()):
+        # A daemon or Chromium the teardown failed to kill keeps its group covered.
+        release_process_group_once_empty(pgid, timeout=timeout)
+
+
 def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
     """Tree-kill the daemon in ``<socket_dir>/<session>.pid`` if verifiably ours; True when
     a kill was issued. Never raises."""
@@ -682,6 +757,7 @@ def _release_session_backend(task_id: str, session_info: dict[str, Any]) -> None
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)
+        _release_owned_daemon(session_name)
 
 
 def _force_reap_browser_session(task_id: str) -> None:
@@ -783,9 +859,6 @@ def cleanup_all_browsers() -> None:
     except Exception:
         pass
 
-    def _stop_harness():
-        from tools.browser_use_cli import stop_harness_daemons
-        stop_harness_daemons()
     _best_effort("Browser Use harness daemon stop", _stop_harness)
 
     _install._discover_homebrew_node_dirs.cache_clear()

@@ -3,7 +3,8 @@
 With ``browser.engine: lightpanda``, Browser Use mode spawns one ``lightpanda serve`` per
 browser session and points ``browser_exec`` at its CDP endpoint (``BU_CDP_URL``); the
 built-in ``browser_*`` tools keep going through ``agent-browser --engine lightpanda``.
-``tools.browser_tool`` owns the session cache, inactivity reaper and atexit sweep.
+``tools.browser_tool`` owns the session cache, inactivity reaper and atexit sweep. Each server is an
+owned child (``spawn_owned``), so it also dies with a SIGKILLed or OOM-killed Hermes.
 """
 
 import functools
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from utils import atomic_json_write
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 logger = logging.getLogger(__name__)
 
@@ -129,17 +130,14 @@ def _binary_supports_http_cache(binary: str) -> bool:
         return False
 
 
-def _record_path(session_name: str) -> Path:
-    return _state_dir() / f"{session_name}.json"
-
-
 def _browser_env() -> dict:
     try:
         from tools.browser_tool import _build_browser_env
         return _build_browser_env()
     except Exception as e:
         logger.debug("credential-scrubbed browser env unavailable: %s", e)
-        return os.environ.copy()
+        from tools.environments.local import build_subprocess_env
+        return build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)  # exact os.environ copy
 
 
 def _cdp_ready(url: str, timeout: float = 0.2) -> bool:
@@ -187,17 +185,6 @@ def _tree_kill(pid: int, expected_start) -> None:
     ProcessRegistry._terminate_host_pid(pid, expected_start=expected_start)
 
 
-def _write_record(server: LightpandaServer) -> None:
-    record = {"pid": server.proc.pid, "port": server.port, "owner_pid": os.getpid(),
-              "start_time": server.start_time, "started_at": time.time()}
-    try:
-        # Temp + rename: an orphan sweep (another Hermes, or a cleanup thread) unlinks a record it
-        # cannot parse, so a torn in-place write would drop a live server's record.
-        atomic_json_write(_state_dir() / f"{server.session_name}.json", record, indent=None)
-    except OSError as e:
-        logger.debug("could not write lightpanda record for %s: %s", server.session_name, e)
-
-
 def launch_lightpanda(session_name: str, *, block_private_networks: bool = False) -> tuple[Optional[LightpandaServer], Optional[str]]:
     """Start ``lightpanda serve`` on a free loopback port; ``(server, None)`` once ``/json/version`` answers,
     else ``(None, error)``. stderr goes to ``<state_dir>/<session>.log`` so a chatty child never blocks on a pipe."""
@@ -218,8 +205,10 @@ def launch_lightpanda(session_name: str, *, block_private_networks: bool = False
     log_path = str(_state_dir() / f"{session_name}.log")
     try:
         with open(log_path, "wb") as log_file:
-            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=log_file, env=_browser_env(), start_new_session=True)
+            # Owned: the server dies with this process however it dies (a SIGKILLed Hermes used to leave
+            # it running until a later Hermes's reap_orphaned_lightpanda happened to sweep it).
+            proc = spawn_owned(argv, purpose="lightpanda-serve", stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=log_file, env=_browser_env())
     except (OSError, subprocess.SubprocessError) as e:
         return None, f"Failed to launch lightpanda serve ({binary}): {e}"
 
@@ -228,19 +217,20 @@ def launch_lightpanda(session_name: str, *, block_private_networks: bool = False
     while True:
         rc = proc.poll()
         if rc is not None:
+            release_process_group_once_empty(proc.pid, proc=proc)
             tail = _read_log_tail(log_path)
             return None, f"lightpanda serve exited with code {rc} before {url}/json/version answered{f': {tail}' if tail else ''}"
         if _cdp_ready(url):
             break
         if time.monotonic() >= deadline:
             _terminate(proc)
+            release_process_group_once_empty(proc.pid, proc=proc)
             tail = _read_log_tail(log_path)
             detail = f" (last stderr line: {tail})" if tail else ""
             return None, f"lightpanda serve did not expose {url}/json/version within {int(_READY_TIMEOUT_S)}s{detail}"
         time.sleep(_POLL_INTERVAL_S)
 
     server = LightpandaServer(session_name, port, proc, log_path, _safe_start_time(proc.pid))
-    _write_record(server)
     with _servers_lock:
         _servers[session_name] = server
     logger.info("Started lightpanda serve (pid %s, port %s) for session %s", proc.pid, port, session_name)
@@ -253,7 +243,7 @@ def get_server(session_name: str) -> Optional[LightpandaServer]:
 
 
 def stop_lightpanda(session_name: str) -> None:
-    """Stop the server for ``session_name`` (tree-kill, plain terminate on failure) and drop its record."""
+    """Stop the server for ``session_name`` (tree-kill, plain terminate on failure) and release its group."""
     with _servers_lock:
         server = _servers.pop(session_name, None)
     if server is not None and server.is_alive():
@@ -266,11 +256,8 @@ def stop_lightpanda(session_name: str) -> None:
             server.proc.wait(timeout=5)
         except Exception:
             _terminate(server.proc)
-    try:
-        (_state_dir() / f"{session_name}.json").unlink(missing_ok=True)
-    except OSError as e:
-        logger.debug("could not remove lightpanda record for %s: %s", session_name, e)
     if server is not None:
+        release_process_group_once_empty(server.proc.pid, proc=server.proc)
         logger.debug("Stopped lightpanda serve for session %s", session_name)
 
 
@@ -286,7 +273,7 @@ def stop_all_lightpanda() -> None:
 
 
 def _is_lightpanda_process(pid: int, port, start_time) -> bool:
-    """True only when ``pid`` is verifiably the ``lightpanda serve`` we recorded."""
+    """True only when ``pid`` is verifiably the ``lightpanda serve`` a record names."""
     try:
         import psutil
         proc = psutil.Process(pid)
@@ -303,22 +290,27 @@ def _is_lightpanda_process(pid: int, port, start_time) -> bool:
     return True
 
 
-def reap_orphaned_lightpanda() -> int:
-    """Kill ``lightpanda serve`` processes whose owning Hermes is gone; return the count. A live owner is
-    never touched; a PID is only signalled after psutil confirms it is still ``lightpanda serve`` on the recorded port."""
+def reap_legacy_lightpanda_records() -> int:
+    """Kill servers a pre-update Hermes left behind; return the count. Each record is then deleted.
+
+    Before servers were owned children, each launch wrote ``<state_dir>/<session>.json`` and an
+    orphan sweep reaped the server once its owner died. Servers are no longer recorded, but one
+    left by a crashed pre-update Hermes has only its record. A live owner is never touched (it may
+    still run old code that uses the server), and a pid is signalled only after psutil confirms it
+    is still ``lightpanda serve`` on the recorded port, with the recorded start time."""
     try:
-        state_dir = _state_dir()
-    except Exception as e:
+        records = sorted(_state_dir().glob("*.json"))
+    except OSError as e:
         logger.debug("lightpanda state dir unavailable: %s", e)
         return 0
-    try:
-        from gateway.status import _pid_exists
-    except Exception:  # pragma: no cover - defensive
+    if not records:
         return 0
+    import psutil
+
+    from gateway.status import _pid_exists
 
     reaped = 0
-    for record_path in sorted(state_dir.glob("*.json")):
-        session_name = record_path.stem
+    for record_path in records:
         try:
             record = json.loads(record_path.read_text(encoding="utf-8-sig"))
             if not isinstance(record, dict):
@@ -326,20 +318,19 @@ def reap_orphaned_lightpanda() -> int:
         except (OSError, ValueError):
             record_path.unlink(missing_ok=True)
             continue
-        owner_pid = record.get("owner_pid")
-        if owner_pid == os.getpid():
-            with _servers_lock:
-                if session_name in _servers:
-                    continue
-        elif owner_pid and _pid_exists(int(owner_pid)):
+        try:
+            owner_pid, pid = int(record.get("owner_pid") or 0), int(record.get("pid") or 0)
+        except (TypeError, ValueError):
+            record_path.unlink(missing_ok=True)
             continue
-        pid = record.get("pid")
-        if pid and _is_lightpanda_process(int(pid), record.get("port"), record.get("start_time")):
+        if owner_pid and owner_pid != os.getpid() and _pid_exists(owner_pid):
+            continue  # a live pre-update Hermes still owns it; its own cleanup (or this sweep later) ends it
+        if pid and _is_lightpanda_process(pid, record.get("port"), record.get("start_time")):
             try:
-                _tree_kill(int(pid), record.get("start_time"))
+                _tree_kill(pid, record.get("start_time"))
                 reaped += 1
-                logger.info("Reaped orphaned lightpanda serve pid %s (session %s)", pid, session_name)
-            except Exception as e:
-                logger.debug("orphan lightpanda kill failed for pid %s: %s", pid, e)
+                logger.info("Reaped pre-update lightpanda serve pid %s (session %s)", pid, record_path.stem)
+            except (OSError, psutil.Error) as e:
+                logger.debug("legacy lightpanda kill failed for pid %s: %s", pid, e)
         record_path.unlink(missing_ok=True)
     return reaped

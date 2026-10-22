@@ -13,9 +13,11 @@ import sys
 import time
 from typing import Optional, Tuple
 from agent.proxy_bypass import loopback_request_kwargs
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_install as _install
+from tools import browser_tool_lifecycle as _lifecycle
 from tools import browser_tool_lightpanda_fallback as _lp
 from tools import browser_tool_session as _session
 
@@ -28,7 +30,9 @@ def _terminate_real_profile_chrome() -> None:
     from tools.browser_lightpanda import _terminate
     _bt = _origin()
     while _bt._real_profile_chrome_procs:
-        _terminate(_bt._real_profile_chrome_procs.pop(), what="real-profile chrome")
+        proc = _bt._real_profile_chrome_procs.pop()
+        _terminate(proc, what="real-profile chrome")
+        release_process_group_once_empty(proc.pid, proc=proc)
 
 
 def _cdp_http_ready(http_cdp: str) -> bool:
@@ -140,6 +144,7 @@ def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
 def _agent_browser_close_session(session_name: str) -> None:
     """Best-effort close of an agent-browser session (stale/wrong-dir cleanup)."""
     _agent_browser_session_cmd(session_name, "close", log_label="session close")
+    _lifecycle._release_owned_daemon(session_name)
 
 
 _REAL_PROFILE_CHROME_FLAGS = (
@@ -208,8 +213,10 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> tuple[Option
     if not (_cloud._is_headed_mode() and (_has_display or not sys.platform.startswith("linux"))):
         chrome_argv.append("--headless=new")
     try:
-        chrome_proc = subprocess.Popen(chrome_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                       stdin=subprocess.DEVNULL, start_new_session=True, env=browser_env)
+        # Owned: this Chrome dies with this process however it dies. It used to be killed only by the
+        # atexit handler, so a SIGKILLed / OOM-killed Hermes left it running on the profile copy.
+        chrome_proc = spawn_owned(chrome_argv, purpose="real-profile-chrome", stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=browser_env)
     except (subprocess.SubprocessError, OSError) as e:
         return None, f"{_RP}the launch failed: {e}"
     _bt._real_profile_chrome_procs.append(chrome_proc)
@@ -251,6 +258,11 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> tuple[Opt
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
         return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"
+    # The attach daemon detaches into its own session like every agent-browser daemon, but this one
+    # never runs through _run_browser_command. The session is shared by every Hermes: _own_local_daemon
+    # owns the daemon only when its spawn tag names this process, so one another live Hermes started
+    # (even concurrently) stays that Hermes's.
+    _lifecycle._own_local_daemon(_bt._REAL_PROFILE_SESSION)
     cdp = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
     our_port = _read_devtools_port(copy_dir)
     if our_port is not None and (m := re.search(r":(\d+)", cdp or "")) and m.group(1) != our_port:

@@ -27,6 +27,7 @@ from pathlib import Path
 from hermes_cli.local_runtime.binaries import runtimes_root
 from hermes_cli.local_runtime.endpoint import child_query
 from hermes_cli.local_runtime.processes import server_child_env, spawn_server
+from hermes_cli.process_identity import stop_owned_group_survivors
 
 logger = logging.getLogger(__name__)
 
@@ -203,8 +204,9 @@ class LlamaServerSupervisor:
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
-        # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
+        # list-args, never a shell: spaced paths (user homes) must survive. owned: the router
+        # tree dies with this process on every OS, however this process dies (#126631).
+        self.proc, self._job = spawn_server(cmd, owned=True, stdout=self._log_handle, stderr=subprocess.STDOUT,
                                              cwd=str(exe.parent), env=server_child_env(os.environ))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
@@ -276,6 +278,9 @@ class LlamaServerSupervisor:
                 with self._lifecycle_lock:
                     if self._stopping:
                         return
+                    # The crashed router's group: stop what is left of it and release its number
+                    # before the replacement registers its own (survivors stay covered).
+                    stop_owned_group_survivors(proc.pid, proc=proc)
                     self._reap_orphaned_children()
                     self._spawn()
                 self._wait_health(120)
@@ -295,6 +300,11 @@ class LlamaServerSupervisor:
                 if self._job is not None:
                     self._job.close()
                     self._job = None
+            if self.proc is not None:
+                # A router that crashed (the watcher's restart backoff) can leave its model children
+                # running in its group: stop them, then release the group only once it is empty, so
+                # a tree we failed to kill stays covered by the owner-death supervisor.
+                stop_owned_group_survivors(self.proc.pid, proc=self.proc)
             # Retain state: deleting it could race a replacement publication.
             if self._log_handle:
                 self._log_handle.close()

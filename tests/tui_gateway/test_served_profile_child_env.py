@@ -70,7 +70,7 @@ def test_slash_worker_child_runs_in_the_served_profiles_env(mux_homes, monkeypat
             return 0
 
     with monkeypatch.context() as m:  # restored before the probe child spawns through the real Popen
-        m.setattr(server.subprocess, "Popen", _Popen)
+        m.setattr(server, "spawn_owned", lambda argv, purpose, **kw: _Popen(argv, **kw))
         token = set_hermes_home_override(str(b))
         try:
             server._SlashWorker("sess", "", profile_home=str(b))
@@ -105,7 +105,7 @@ def test_launch_profile_worker_spawns_with_own_home_after_multiplex_flip(mux_hom
             return 0
 
     with monkeypatch.context() as m:
-        m.setattr(server.subprocess, "Popen", _Popen)
+        m.setattr(server, "spawn_owned", lambda argv, purpose, **kw: _Popen(argv, **kw))
         # Multiplex is already active (mux_homes fixture). profile_home=None = launch-profile session.
         server._SlashWorker("sess", "", profile_home=None)
     # No UnscopedSecretError: the worker is launched under the launch profile's own home, not routed.

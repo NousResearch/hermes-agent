@@ -26,6 +26,7 @@ HELLO_SECONDS = 60
 STOP_ACK_SECONDS = 30
 # Own session (POSIX): a worker whose owner died kills its whole group (managed_worker
 # _die_with_owner); on Windows it exits itself.
+# detached-spawn: ok — covered: the worker kills its own group when its owner dies (_die_with_owner)
 WORKER_POPEN = {'start_new_session': True, 'close_fds': True}
 
 

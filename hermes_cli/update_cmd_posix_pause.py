@@ -529,6 +529,7 @@ def _relaunch_bare(entry: dict) -> int:
         env.pop(leaked, None)
     with open(logs / "gateway-update-resume.log", "ab") as log:
         proc = subprocess.Popen(list(entry["argv"]), env=env, stdin=subprocess.DEVNULL, stdout=log,
+                                # detached-spawn: ok — resumes the paused gateway after an update; it must outlive the updater
                                 stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
     deadline = time.monotonic() + _READY_TIMEOUT_S
     while time.monotonic() < deadline:

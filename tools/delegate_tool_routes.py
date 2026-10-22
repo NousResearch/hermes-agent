@@ -179,7 +179,7 @@ def _profile_route(home: Path, label: Optional[str]) -> TaskRoute:
     from hermes_cli.config import load_config_readonly
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_constants import resolve_reasoning_config
-    from tools.delegate_tool_config import ResolvedReasoning, _credential_bundle
+    from tools.delegate_tool_config import ResolvedReasoning, _credential_bundle, _require_pinned_command
     _refuse_under_worker_snapshot(home)
     with delegated_profile_scope(home):
         cfg = load_config_readonly() or {}
@@ -194,6 +194,10 @@ def _profile_route(home: Path, label: Optional[str]) -> TaskRoute:
     # does) so two named providers sharing one URL never lease each other's pool.
     requested = str(rt.get("requested_provider") or "").strip()
     provider = requested if rt.get("provider") == "custom" and requested.lower() not in ("", "auto") else rt.get("provider")
+    # Same rule as delegation.provider (#80450): a pinned ACP command that is not on PATH refuses the spawn.
+    _require_pinned_command(
+        rt.get("command"), f"Profile at {home} is pinned to the '{rt.get('command')}' command, which was not "
+        f"found on PATH. Install it or route this task elsewhere.")
     creds = _credential_bundle(
         model, provider, rt.get("base_url"),
         rt.get("api_key") or "no-key-required", rt.get("api_mode"), dict(rt.get("request_overrides") or {}),

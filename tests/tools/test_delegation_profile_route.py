@@ -291,3 +291,18 @@ def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_pro
     assert routes == [] and "managed worker" in (error or "")
     with pytest.raises(DelegationRouteError):
         _route_to_task_route({"profile": "coder"}, _parent(), {})
+
+
+def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profiles, monkeypatch):
+    """Same rule as ``delegation.provider`` (#80450): a profile whose provider is pinned to an ACP binary
+    that is not on PATH refuses the spawn, naming the profile, instead of building a broken child."""
+    _, coder = two_profiles
+    _set_config(coder, model={"provider": "copilot-acp", "default": "coder-model"})
+    # An acp+tcp endpoint keeps the configured command unresolved (the runtime resolver only refuses a missing
+    # binary when it would spawn one); the delegation pin rule still refuses it.
+    monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "hermes-test-missing-acp-binary")
+    monkeypatch.setenv("COPILOT_ACP_BASE_URL", "acp+tcp://127.0.0.1:9")
+
+    routes, error = _resolve_coder_task()
+    assert routes == []
+    assert "hermes-test-missing-acp-binary" in (error or "") and "coder" in error

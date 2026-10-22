@@ -14,14 +14,13 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 
-def _account_method(params_model=None, *, invalid="", invalid_reason=ConnectorErrorReason.invalid_params,
-                    unavailable, unavailable_message, no_identity=None):
-    """``no_identity(rid, request)`` answers a page read while the user has no identity yet, so
-    opening the Connectors page creates none; methods without it create the guest identity."""
+def _account_method(params_model=None, *, creates_guest, invalid="", invalid_reason=ConnectorErrorReason.invalid_params,
+                    unavailable, unavailable_message):
+    """``creates_guest``: whether this entry point may create the guest identity when the user has
+    none. The page's reads never do; they answer from what a caller without a token can see."""
     def decorate(fn):
         def handler(rid, params):
             from pydantic import ValidationError
-            from tools.connectors import guest_identity_pending
             from tools.connectors.gateway.errors import GatewayAuthError
 
             with _desktop_page_vars():
@@ -31,9 +30,7 @@ def _account_method(params_model=None, *, invalid="", invalid_reason=ConnectorEr
                     request = params if params_model is None else params_model.model_validate(params)
                 except ValidationError:
                     return _connector_rpc_error(rid, 4000, invalid_reason, invalid)
-                if no_identity is not None and guest_identity_pending():
-                    return no_identity(rid, request)
-                if identity_error := _account_identity_error(rid):
+                if creates_guest and (identity_error := _account_identity_error(rid)):
                     return identity_error
                 try:
                     return fn(rid, request)
@@ -51,25 +48,11 @@ def _account_method(params_model=None, *, invalid="", invalid_reason=ConnectorEr
     return decorate
 
 
-def _bundled_catalog(rid, _request):
-    from tools.connectors.portal.catalog_snapshot import CATALOG
-    from tui_gateway.contracts.connectors import ConnectorsCatalogResult
-
-    return _ok(rid, ConnectorsCatalogResult.model_validate({"connectors": CATALOG}).model_dump(mode="json"))
-
-
-def _no_accounts(rid, _request):
-    return _ok(rid, {"accounts": []})
-
-
-def _no_policy(rid, _request):
-    return _ok(rid, {"layers": [], "effective": {"mode": "unrestricted", "version": 1, "revision": "", "issued_at_ms": 0}})
-
-
 @method("connectors.tools")
 @_profile_scoped
 @_account_method(
     ConnectorToolsParams,
+    creates_guest=True,
     invalid="slug and refresh are required parameters",
     unavailable=ConnectorErrorReason.tools_unavailable,
     unavailable_message="Connector tools are unavailable.",
@@ -93,17 +76,17 @@ def _(rid, request):
 @method("connectors.catalog")
 @_profile_scoped
 @_account_method(
+    creates_guest=False,
     unavailable=ConnectorErrorReason.catalog_unavailable,
     unavailable_message="Connector catalog is unavailable.",
-    no_identity=_bundled_catalog,
 )
 def _(rid, _params):
     from tools.connectors.portal.client import PortalConnectorClient
+    from tools.managed_tool_gateway import read_nous_access_token
     from tui_gateway.contracts.connectors import ConnectorsCatalogResult
 
     client = PortalConnectorClient()
-    client.require_authentication()
-    catalog = client.catalog()
+    catalog = client.catalog() if read_nous_access_token() else client.public_catalog()
     return _ok(rid, ConnectorsCatalogResult.model_validate(catalog, from_attributes=True).model_dump(mode="json"))
 
 
@@ -111,16 +94,17 @@ def _(rid, _params):
 @_profile_scoped
 @_account_method(
     ConnectorAccountsParams,
+    creates_guest=False,
     invalid="connector must be a slug.",
     unavailable=ConnectorErrorReason.accounts_unavailable,
     unavailable_message="Connector accounts are unavailable.",
-    no_identity=_no_accounts,
 )
 def _(rid, request):
     from tools.connectors.portal.client import PortalConnectorClient
+    from tools.managed_tool_gateway import read_nous_access_token
     from tui_gateway.contracts.connectors import ConnectorAccountRow, ConnectorAccountsResult
 
-    accounts = PortalConnectorClient().list_accounts()
+    accounts = PortalConnectorClient().list_accounts() if read_nous_access_token() else []
     rows = [account for account in accounts if request.connector is None or account["connector"] == request.connector]
     result = ConnectorAccountsResult(accounts=[_account_row(account) for account in rows])
     return _ok(rid, result.model_dump(mode="json"))
@@ -147,6 +131,7 @@ def _account_row(account):
 @_profile_scoped
 @_account_method(
     ConnectorAccountsRenameParams,
+    creates_guest=True,
     invalid="connection_id and a valid alias are required.",
     unavailable=ConnectorErrorReason.accounts_unavailable,
     unavailable_message="Connector accounts are unavailable.",
@@ -184,6 +169,7 @@ def _(rid, request):
 @_profile_scoped
 @_account_method(
     ConnectorAccountsRemoveParams,
+    creates_guest=True,
     invalid="connection_id is required.",
     unavailable=ConnectorErrorReason.accounts_unavailable,
     unavailable_message="Connector accounts are unavailable.",
@@ -216,9 +202,9 @@ def _(rid, request):
 @method("connectors.policy.get")
 @_profile_scoped
 @_account_method(
+    creates_guest=False,
     unavailable=ConnectorErrorReason.policy_unavailable,
     unavailable_message="Connector policy is unavailable.",
-    no_identity=_no_policy,
 )
 def _(rid, _params):
     from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
@@ -247,6 +233,7 @@ def _(rid, _params):
 @_profile_scoped
 @_account_method(
     ConnectorPolicySetParams,
+    creates_guest=True,
     invalid="Connector parameters are invalid.",
     unavailable=ConnectorErrorReason.policy_unavailable,
     unavailable_message="Connector policy is unavailable.",

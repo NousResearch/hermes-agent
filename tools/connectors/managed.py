@@ -51,14 +51,15 @@ DESKTOP_PAGE = "desktop_page"
 CARD_RETRY = "card_retry"
 
 
-def managed_client(*, initiator: Optional[str] = AGENT_TOOL, call: Optional[Any] = None):
-    """The real gateway client for a user action. The first one creates the guest identity when the
-    user has none: every hosted action is a request for an app. ``initiator`` names who asked, so
-    every link the client mints is attributed."""
+def managed_client(*, creates_guest: bool, initiator: Optional[str] = AGENT_TOOL, call: Optional[Any] = None):
+    """The real gateway client for a user action. ``creates_guest`` is the caller's declaration that
+    it may create the guest identity when the user has none (a connect, an explicit list); a page
+    read passes False and holds a token already. ``initiator`` names who asked, so every link the
+    client mints is attributed."""
     from tools.connectors.gateway.client import ConnectorClient
     from tools.connectors.gateway.errors import ToolGatewayError
 
-    if setup_error := ensure_guest_identity():
+    if creates_guest and (setup_error := ensure_guest_identity()):
         raise ToolGatewayError(setup_error, code=GUEST_SETUP_FAILED, retryable=True)
     return ConnectorClient(initiator=initiator, call=call)
 
@@ -446,7 +447,7 @@ def run_managed_action(
         if action == "rename":
             return _rename_result(targets[0])
         call = CallRef(turn_id=turn_id, tool_call_id=tool_call_id)
-        client = client_factory() if client_factory else managed_client(call=call)
+        client = client_factory() if client_factory else managed_client(creates_guest=True, call=call)
         if action == "display":
             return _display_result(client, [t.name for t in targets], session_id=session_id, tool_call_id=tool_call_id,
                                    connection_callback=connection_callback if card_surface else None, call=call)

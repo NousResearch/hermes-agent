@@ -102,8 +102,11 @@ export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
     queryKey: connectorsAccountsQueryKey(scope)
   })
 
+  // Rules exist only for an identity. The page list is empty until one does (no token, no gateway
+  // read), so rules are asked for once it has rows; the first connect re-reads both.
   const policy = useQuery({
     ...read('policy'),
+    enabled: (list.data?.connectors.length ?? 0) > 0,
     queryFn: () => connectorPolicy(scope),
     queryKey: connectorsPolicyQueryKey(scope)
   })

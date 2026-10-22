@@ -190,10 +190,16 @@ def _connector_rows(rows):
     ])
 
 
+# Whether each account-owned action of the Connectors page may create the guest identity.
+_ACCOUNT_CREATES_GUEST = {"status": False, "connect": True}
+
+
 def _account_connector_list(rid):
     from tools.connectors.managed import managed_client
+    from tools.managed_tool_gateway import read_nous_access_token
 
-    return _ok(rid, {"available": True, "connectors": _connector_rows(managed_client().list_connectors())})
+    rows = managed_client(creates_guest=False).list_connectors() if read_nous_access_token() else []
+    return _ok(rid, {"available": True, "connectors": _connector_rows(rows)})
 
 
 def _account_connector_connect(rid, request):
@@ -222,7 +228,6 @@ def _account_connector_connect(rid, request):
 
 
 def _connector_rpc(rid, params, action):
-    from tools.connectors import guest_identity_pending
     from tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorsConnectParams, ConnectorsListParams
 
     model = ConnectorsListParams if action == "status" else ConnectorsConnectParams
@@ -233,10 +238,7 @@ def _connector_rpc(rid, params, action):
         with _account_scope(request):
             if closed := _account_gate_closed(rid):
                 return _ok(rid, {"available": False, "connectors": []}) if action == "status" else closed
-            if action == "status" and guest_identity_pending():
-                # Opening the page creates no identity; the bundled catalog lists the apps.
-                return _ok(rid, {"available": True, "connectors": []})
-            if setup_error := _account_identity_error(rid):
+            if _ACCOUNT_CREATES_GUEST[action] and (setup_error := _account_identity_error(rid)):
                 return setup_error
             return _account_connector_list(rid) if action == "status" else _account_connector_connect(rid, request)
 

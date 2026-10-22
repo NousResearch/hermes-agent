@@ -185,8 +185,9 @@ tools:
 Connectors need a Nous identity. You do not have to sign in for one: if you
 have no Nous account, the first `manage_connections` action (or connecting an
 app from the desktop Connectors page) creates a free Nous identity for you, on
-every surface. Opening the Connectors page creates none: it lists the hosted
-apps from a catalog that ships with Hermes until an identity exists.
+every surface. Opening the Connectors page creates none: until an identity
+exists it lists the hosted apps from the Nous Portal's public catalog, which
+needs no sign-in.
 It does not change your model provider: outside builds that ship
 the Nous free tier it is used for connectors and managed tools only. Until it exists, `tool_search` sends nothing to the
 gateway and its result says that hosted connectors are not set up yet and

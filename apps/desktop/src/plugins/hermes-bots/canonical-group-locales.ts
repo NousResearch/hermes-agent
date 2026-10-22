@@ -51,6 +51,7 @@ export interface CanonicalGroupMessages {
   disband: string
   disbandWarning: string
   disbandUnconfirmed: string
+  you: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -106,7 +107,8 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: 'Room name',
     disband: 'End group chat',
     disbandWarning: 'End this group chat permanently? The Bots will be asked to stop. Actions already taken won’t be undone.',
-    disbandUnconfirmed: 'We couldn’t confirm that the group chat ended. Check its status before trying again.'
+    disbandUnconfirmed: 'We couldn’t confirm that the group chat ended. Check its status before trying again.',
+    you: 'You'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -160,7 +162,8 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: 'ルーム名',
     disband: 'グループチャットを終了',
     disbandWarning: 'このグループチャットを完全に終了しますか？Botに停止を要求します。すでに行われた操作は元に戻りません。',
-    disbandUnconfirmed: 'グループチャットの終了を確認できませんでした。再試行する前に状態を確認してください。'
+    disbandUnconfirmed: 'グループチャットの終了を確認できませんでした。再試行する前に状態を確認してください。',
+    you: 'あなた'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -214,7 +217,8 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: '群组名称',
     disband: '结束群聊',
     disbandWarning: '永久结束此群聊？系统会请求Bot停止。已经执行的操作不会被撤销。',
-    disbandUnconfirmed: '无法确认群聊是否已经结束。请先检查其状态，再重试。'
+    disbandUnconfirmed: '无法确认群聊是否已经结束。请先检查其状态，再重试。',
+    you: '你'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -268,7 +272,8 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: '群組名稱',
     disband: '結束群聊',
     disbandWarning: '永久結束此群聊？系統會要求Bot停止。已經執行的操作不會被復原。',
-    disbandUnconfirmed: '無法確認群聊是否已經結束。請先檢查其狀態，再重試。'
+    disbandUnconfirmed: '無法確認群聊是否已經結束。請先檢查其狀態，再重試。',
+    you: '你'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -322,7 +327,8 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: 'اسم الغرفة',
     disband: 'إنهاء محادثة المجموعة',
     disbandWarning: 'إنهاء محادثة المجموعة نهائيًا؟ سيُطلب من البوتات التوقف. لن يتم التراجع عن الإجراءات التي نُفّذت بالفعل.',
-    disbandUnconfirmed: 'لم نتمكن من تأكيد انتهاء محادثة المجموعة. تحقّق من حالتها قبل إعادة المحاولة.'
+    disbandUnconfirmed: 'لم نتمكن من تأكيد انتهاء محادثة المجموعة. تحقّق من حالتها قبل إعادة المحاولة.',
+    you: 'أنت'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -379,7 +385,8 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: 'Название комнаты',
     disband: 'Завершить групповой чат',
     disbandWarning: 'Завершить этот групповой чат навсегда? Ботам будет отправлен запрос на остановку. Уже выполненные действия не будут отменены.',
-    disbandUnconfirmed: 'Не удалось подтвердить завершение чата. Проверьте его состояние перед повторной попыткой.'
+    disbandUnconfirmed: 'Не удалось подтвердить завершение чата. Проверьте его состояние перед повторной попыткой.',
+    you: 'Вы'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -435,7 +442,8 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: 'Nom du salon',
     disband: 'Terminer la discussion',
     disbandWarning: 'Terminer définitivement cette discussion ? Il sera demandé aux Bots de s’arrêter. Les actions déjà effectuées ne seront pas annulées.',
-    disbandUnconfirmed: 'La fin de la discussion n’a pas pu être confirmée. Vérifiez son état avant de réessayer.'
+    disbandUnconfirmed: 'La fin de la discussion n’a pas pu être confirmée. Vérifiez son état avant de réessayer.',
+    you: 'Vous'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -492,7 +500,8 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: 'Raumname',
     disband: 'Gruppenchat beenden',
     disbandWarning: 'Diesen Gruppenchat endgültig beenden? Die Bots werden gebeten, anzuhalten. Bereits ausgeführte Aktionen werden nicht rückgängig gemacht.',
-    disbandUnconfirmed: 'Das Ende des Gruppenchats konnte nicht bestätigt werden. Prüfen Sie seinen Status, bevor Sie es erneut versuchen.'
+    disbandUnconfirmed: 'Das Ende des Gruppenchats konnte nicht bestätigt werden. Prüfen Sie seinen Status, bevor Sie es erneut versuchen.',
+    you: 'Sie'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -548,6 +557,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomName: 'Nombre de la sala',
     disband: 'Finalizar chat de grupo',
     disbandWarning: '¿Finalizar este chat de forma permanente? Se pedirá a los Bots que se detengan. Las acciones ya realizadas no se desharán.',
-    disbandUnconfirmed: 'No pudimos confirmar que el chat haya terminado. Comprueba su estado antes de reintentarlo.'
+    disbandUnconfirmed: 'No pudimos confirmar que el chat haya terminado. Comprueba su estado antes de reintentarlo.',
+    you: 'Tú'
   }
 } satisfies Record<string, CanonicalGroupMessages>

@@ -344,6 +344,7 @@ Review staged writes from the CLI or any messaging platform:
 
 ```
 /memory pending             # list staged memory writes (auto ones tagged [auto])
+/memory pending --json      # same list as one JSON object with each record's full payload
 /memory approve <id>        # apply one (or 'all')
 /memory reject <id>         # drop one (or 'all')
 /memory approval on         # turn the gate on (or 'off') and persist it

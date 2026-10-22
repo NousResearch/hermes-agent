@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (solo el próximo turno: se restaura tras una respuesta)"
     switch_cancelled: "🟡 Cambio de modelo cancelado. El modelo actual no cambia ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Alternativa en texto: responde `{prefix}approve` para cambiar o `{prefix}cancel` para conservar el modelo actual._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Agentes y tareas activos**"
     active_agents: "**Agentes activos:** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "Para subir registros completos, usa `hermes debug share` desde la CLI."
     share_hint: "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
     report_label: "Informe"
+    local_refused: "`/debug local` mantiene el informe en la máquina donde se ejecuta Hermes, así que no está disponible desde un chat. Envía `/debug` para subir el informe resumido."
   deny:
     stale: "❌ Comando denegado (la aprobación había caducado)."
     no_pending: "No hay ningún comando pendiente que denegar."
@@ -443,6 +446,9 @@ gateway:
     state_no: "No"
     queued: "**Seguimientos en cola:** {count}"
     platforms: "**Plataformas conectadas:** {platforms}"
+  discard:
+    nothing: "Nada que descartar: este chat no tiene ningún turno perdido en un reinicio."
+    done: "🗑️ Se descartaron {count} turno(s) perdido(s); no se volvieron a ejecutar. Tus mensajes guardados se responderán ahora."
   stop:
     stopped_pending: "⚡ Detenido. El agente aún no había comenzado — puedes continuar esta sesión."
     stopped: "⚡ Detenido. Puedes continuar esta sesión."
@@ -685,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Algo salió mal y no pude terminar esta respuesta.{hint}\nUsa /retry para intentarlo de nuevo o /new para empezar una conversación nueva. Los detalles técnicos están en el registro del gateway (`hermes logs`)."
     history_unavailable: "⚠️ El historial de esta sesión no está disponible temporalmente, así que este mensaje no se procesó. Pide al operador que revise state.db y reenvíalo cuando esté en buen estado. Usa /reset solo si realmente quieres empezar una conversación nueva."
     no_credentials: "⚠️ No pude conectar con el servicio del modelo de IA, así que este mensaje no se procesó. Usa /login para iniciar sesión de nuevo, o /model para elegir otro modelo. Si sigue fallando, ejecuta `hermes doctor` en el host."
+    cron_session_read_only: "⚠️ Este chat pertenece a una tarea programada y solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo."
   skills:
     disabled: "La skill **{name}** está instalada pero desactivada.\nActívala con: `hermes skills config`"
     not_installed: "La skill **{name}** está disponible pero no instalada.\nInstálala con: `hermes skills install {install_name}`"
@@ -1528,6 +1535,8 @@ slash:
     description: "Importar un archivo de perfil compartido como nuevo perfil"
   stop:
     description: "Terminar todos los procesos en segundo plano en ejecución"
+  discard:
+    description: "Descarta un turno perdido al reiniciar Hermes para que la cola de este chat continúe"
   pause:
     description: "Pausar todo el trabajo nuevo globalmente (parada de emergencia); '/pause off' reanuda"
   deny:
@@ -1681,6 +1690,21 @@ slash:
   quit:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:
+  modern:
+    thought_for: "Pensó durante {seconds}s"
+    thought: "Pensó"
+    working: "Trabajando…"
+    preparing: "Preparando {what}…"
+    hint_steer: "guiar"
+    hint_queue: "encolar"
+    hint_interrupt: "interrumpir"
+    hint_stop: "detener"
+    hint_commands: "comandos"
+    hint_files: "archivos"
+    hint_shell: "shell"
+    placeholder_busy_steer: "escribe para guiar este turno · Tab lo encola para después"
+    placeholder_busy_interrupt: "escribe para redirigir este turno · Tab lo encola para después"
+    placeholder_busy_queue: "escribe para encolar un mensaje para después de este turno"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "No se pudo cargar la facturación"
@@ -1966,6 +1990,7 @@ cli:
     desc_switch_anyway: "Usar este modelo en la sesión actual de Hermes."
     choice_cancel: "Cancelar"
     desc_keep_current_model: "Mantener el modelo actual."
+    confirm_choice_prompt: "Opción [1/2]: "
     switch_cancelled: "Cambio de modelo cancelado."
     selection_failed: "✗ Falló la selección de modelo: {error}"
     switch_failed: "⚠ Falló el cambio al modelo {model} ({error}); se mantiene {old_model}."
@@ -2223,6 +2248,7 @@ cli:
     queue_heading: "Cola · {count} en cola · /queue list{controls}"
     more_queued: "+{count} más"
     transcript_unavailable: "La transcripción en vivo aún no está disponible."
+    control_pending: "Enviando…"
     steer_prompt: "Redirigir: "
     roster_empty: "No hay subagentes activos ni procesos en segundo plano. Los resultados llegan a la conversación."
     entry_gone: "Esta entrada ya no está activa."
@@ -2361,6 +2387,14 @@ cli:
     move_out_of_range: "Movimiento fuera de rango en la cola. Tamaño actual: {size}"
     moved: "Elemento {source} de la cola movido a {destination}."
     usage_add: "Uso: /queue add <prompt>"
+    gateway_refused: "El gateway no lo encoló: {error}. No se encoló nada; envíalo de nuevo cuando termine el turno."
+    submit_unknown: "El gateway no respondió ({error}), así que el prompt puede estar ya en la cola. Revisa /queue list antes de enviarlo de nuevo."
+    move_gateway_fifo: "El gateway ejecuta los prompts en cola en el orden de envío; edita o elimina uno en su lugar."
+    remove_refused: "No se pudo quitar el elemento {index} de la cola: {error}"
+    edit_refused: "No se pudo editar el elemento {index} de la cola: {error}"
+    already_started: "El elemento {index} de la cola ya empezó; se ejecuta tal como se envió."
+    started_stopped: "El elemento {index} de la cola ya había empezado; el gateway lo detuvo."
+    change_unknown: "El gateway no respondió sobre el elemento {index} de la cola ({error}); revisa /queue list antes de reintentarlo."
   reload:
     env_reloaded: "Se recargó .env ({count} variable(s) actualizada(s))"
   steer:
@@ -3001,6 +3035,10 @@ cli:
       usage_disconnect: "disconnect   Volver al backend de navegador predeterminado"
       usage_status: "status       Mostrar el modo de navegador actual"
       usage_use: "use [off]    Cambiar al modo Browser Use (CLI 3.0) / volver a las herramientas integradas"
+      remote_gateway: "/browser connect y /browser disconnect gestionan un navegador Chromium en el host del gateway — solo disponible con un gateway local."
+      checking: "Comprobando la depuración remota del navegador Chromium en {url}..."
+      new_sessions_only: "Se aplica a sesiones nuevas — esta conserva sus herramientas actuales (/new para iniciar una)."
+      status_gateway_default: "🌐 Navegador: backend de navegador predeterminado del gateway (sin conexión CDP en vivo)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat pausado: {prompt}"
@@ -3109,6 +3147,10 @@ cli:
     loaded: "(cargado)"
     not_found: "(no encontrado)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "¡Sin definir!"
     value_not_set: "sin definir"
     section_model: "Modelo"
@@ -3290,8 +3332,22 @@ cli:
     next_session_deepens: "La próxima sesión `hermes -w` profundiza el clon y elimina automáticamente los worktrees fusionados."
     unpushed_keeping: "⚠ El worktree tiene commits sin push, se conserva: {path}"
     uncommitted_keeping: "⚠ El worktree tiene cambios sin commit, se conserva: {path}"
+    kept_reason: "⚠ Se conserva el worktree ({reason}): {path}"
     clean_up_manually: "Para limpiar manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree limpiado: {path}"
+    exit_question_dirty: "Este worktree tiene cambios sin commit: {path}"
+    exit_question_unpushed: "Este worktree tiene commits sin push: {path}"
+    exit_choice_keep: "Conservar el worktree (predeterminado)"
+    exit_choice_archive: "Archivarlo y eliminarlo (recuperable)"
+    exit_choice_discard: "Eliminarlo y descartar los cambios"
+    archiving: "Archivando {path} … (puede tardar en un árbol grande)"
+    archived: "✓ Worktree archivado en {ref} y eliminado: {path}"
+    restore_hint: "Restáuralo con: hermes worktree restore {name}"
+    archive_failed: "✗ No se pudo archivar {path}, se conserva: {error}"
+    archived_kept: "✓ Worktree archivado en {ref} pero conservado ({reason}): {path}"
+    sweep_archived_removed: "archivado + eliminado → {ref}"
+    sweep_archived_kept: "archivado, conservado ({reason}) → {ref}"
+    discarded: "Worktree eliminado y cambios descartados: {path}"
 display:
   verb:
     web_search: "Buscando en la web"
@@ -3720,7 +3776,7 @@ tips:
   t241: "El gateway cachea las instancias de AIAgent por sesión: destruir este caché rompe el caché de prompts de Anthropic."
   t242: "Cualquier sitio web puede exponer skills vía /.well-known/skills/index.json: el hub de skills las descubre automáticamente."
   t243: "El registro de auditoría de skills en ~/.hermes/skills/.hub/audit.log rastrea cada operación de instalación y eliminación."
-  t244: "Los worktrees de git obsoletos se limpian automáticamente al iniciar: los árboles limpios y totalmente fusionados se eliminan; el trabajo sucio o sin push siempre se conserva."
+  t244: "Los worktrees de git obsoletos se limpian automáticamente: los árboles limpios y fusionados se eliminan; los inactivos con cambios sin commit o sin push se archivan primero y se pueden restaurar con hermes worktree restore."
   t245: "Los perfiles delimitan el estado de Hermes mediante HERMES_HOME; los subprocesos de herramientas del host conservan tu HOME real salvo que terminal.home_mode sea profile."
   t246: "La variable de entorno HERMES_HOME_MODE (octal, p. ej. 0701) fija permisos de directorio personalizados para el acceso del servidor web."
   t247: "Modo contenedor: coloca .container-mode en HERMES_HOME y la CLI del host se ejecutará automáticamente dentro del contenedor."

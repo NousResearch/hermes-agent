@@ -16,7 +16,7 @@ export const arAssistant = {
       hideNames: 'إخفاء الأسماء',
       skill: name => `المهارة ${name}`,
       kind: { plugin: 'إضافة', skill: 'مهارة' },
-      tier: { official: 'رسمي', community: 'مجتمعي' },
+      tier: { official: 'رسمي', verified: 'موثّق', community: 'مجتمعي' },
       targetProfile: profile => `يُثبَّت في ملفك الشخصي ${profile}`,
       sendFailed: 'تعذّر إرسال ردك. حاول مرة أخرى.',
       commitLabel: 'الإيداع',
@@ -55,6 +55,12 @@ export const arAssistant = {
         provider: 'خطأ من المزوّد',
         runtime: 'خطأ في بيئة التشغيل المحلية',
         streaming: 'خطأ في اتصال البث'
+      },
+      errorCodes: {
+        cron_session_read_only: {
+          title: 'هذه المحادثة تابعة لمهمة مجدولة',
+          body: 'إنها تشغّل تلك المهمة فقط، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
+        }
       },
       errorRetry: 'إعادة المحاولة',
       errorLimitResets: time => `يُعاد ضبط الحد عند ${time}`,

@@ -2,12 +2,13 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
-import { zhAuxTasks } from './zh_aux_tasks'
+import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
+import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
@@ -16,6 +17,8 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+
+  catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -271,15 +274,6 @@ export const zhOverrides = {
   },
 
   ...zhNotices,
-
-  billingBlock: {
-    titleNous: 'Nous 额度已用尽',
-    titleProvider: provider => `额度已用尽 — ${provider}`,
-    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
-    openBilling: '打开账单',
-    addCredits: '添加额度',
-    dismiss: '忽略'
-  },
 
   sendDiagnostics: {
     title: '向 Nous 发送诊断信息',
@@ -1197,12 +1191,6 @@ export const zhOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '预热机器人后端',
-      warmBotBackendsTitle: '预热机器人后端',
-      backendIdleTimeoutAria: '后端空闲超时（毫秒）',
-      backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
-    },
     customEndpoints: {
       active: '已启用',
       apiKeySet: '已设置 API 密钥',
@@ -1633,62 +1621,7 @@ export const zhOverrides = {
       deepLinkErrorUrl: '仅允许 http:// 和 https:// 服务器地址。',
       deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
     },
-    model: {
-      setupProviderFallback: '提供方',
-      setUpProvider: name => `设置 ${name}`,
-      staleAuxBefore: (count, names) => `${count} 个辅助任务（${names}）仍由 `,
-      staleAuxAfter: ' 运行，而不是主模型。',
-      staleAuxOtherProviders: '其他提供方',
-      moaEnabled: '启用',
-      moaSetDefault: '设为默认',
-      moaNewPresetPlaceholder: '新预设',
-      moaAddPreset: '添加预设',
-      customModel: '自定义模型…',
-      customModelPlaceholder: '模型 ID',
-      chooseFromList: '从列表中选择',
-      moaDefault: '默认：',
-      moaReferenceToggle: (enabled, index) => `${enabled ? '禁用' : '启用'}参考 ${index}`,
-      moaReferenceTitle: index => `参考 ${index}`,
-      moaAddReference: '添加参考模型',
-      loading: '正在加载模型配置...',
-      appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
-      provider: '提供方',
-      model: '模型',
-      applying: '应用中...',
-      defaultsLabel: '默认值',
-      reasoning: '推理',
-      reasoningOff: '关闭',
-      speed: '速度',
-      speedStandard: '标准',
-      defaultsFailed: '保存模型默认值失败',
-      loadFailed: '无法加载模型',
-      restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
-      restartBackend: '重启后端',
-      restartingBackend: '正在重启后端...',
-      restartFailed: '无法重启后端',
-      auxiliaryTitle: '辅助模型',
-      resetAllToMain: '全部重置为主模型',
-      staleAuxDismiss: '不再显示',
-      auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
-      setToMain: '设为主模型',
-      change: '更改',
-      autoUseMain: '自动 · 使用主模型',
-      inheritMainEffort: '继承 · 主模型推理强度',
-      inheritsFrom: task => `继承 ${task}`,
-      followTask: task => `跟随 ${task}`,
-      providerDefault: '(提供方默认)',
-      fallbackAdd: '添加备用模型',
-      fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
-      notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
-      moaTitle: '混合智能体（Mixture of Agents）',
-      moaPreset: '预设',
-      moaDescription:
-        '配置以「混合智能体」提供商下模型形式出现的命名预设。聚合模型是执行模型——它运行工具循环的每一步，整个运行几乎全部费用都计入其提供商。参考模型默认每轮用户消息仅提供一次建议。',
-      moaAggregator: '聚合模型',
-      moaAggregatorBilled: '执行模型 · 整个运行在此计费',
-      moaReferenceHint: '默认每轮仅建议一次',
-      tasks: zhAuxTasks
-    },
+    model: zhModelSettings,
     localModels: zhLocalModels,
     billing: {
       perMonth: amount => `${amount}/月`,
@@ -2076,17 +2009,7 @@ export const zhOverrides = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `安装“${name}”？`,
-    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
-    installTo: '安装到',
-    thisComputer: '此电脑',
-    installing: '正在安装…',
-    installComplete: (name: string) => `已安装“${name}”`,
-    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
-    installed: '已安装',
-    source: '来源'
-  },
+  skillDeepLink: zhSkillDeepLink,
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
@@ -2171,17 +2094,10 @@ export const zhOverrides = {
       toggleFailed: (name: string) => `无法切换 ${name}`,
       legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
       portableBadge: '便携',
-      catalogTitle: '插件目录',
-      catalogBrowse: '浏览',
-      catalogHide: '隐藏目录浏览器',
-      catalogHint:
-        '点击任意插件上的「+ Add to this Agent」— 经过审核的条目会以其固定提交安装到所选配置。捆绑的 agent+桌面插件会同时提供两部分。',
       alreadyInstalled: (name: string) => `${name} 已安装在此配置中。`,
       catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
       pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
       pinnedBadge: (sha: string) => `固定 @ ${sha}`,
-      tierOfficial: '官方',
-      tierCommunity: '社区',
       updateToPin: (sha: string) => `更新到 ${sha}`,
       updateFailed: (name: string) => `无法更新 ${name}`,
       updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`,
@@ -3291,6 +3207,7 @@ export const zhOverrides = {
     openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
+    redirect: '重新定向当前运行',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',
@@ -3432,6 +3349,11 @@ export const zhOverrides = {
     queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
     queueDelete: '删除',
+    queueLostNote: '重启期间该轮次已丢失',
+    restoreImageDraft: '恢复图片草稿',
+    queueCancelFailed: '无法移除排队的轮次',
+    queueLostDiscard: '丢弃',
+    queueLostDiscardTip: '网关在该轮次进行中重启，无法完成。丢弃后其后的排队轮次将继续执行。',
     queueResume: '继续',
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
@@ -3466,43 +3388,6 @@ export const zhOverrides = {
     snippetsDesc: '选择一个起始提示词放入输入框。',
     dropFiles: '拖放文件以附加',
     dropSession: '拖放以链接此对话',
-    mcpSuggestions: {
-      label: server => `添加 ${server}`,
-      tip: keyword => `因为你提到了“${keyword}”而推荐 — 点击连接`,
-      connecting: server => `正在连接 ${server}…`,
-      cancelTip: '点击取消',
-      added: server => `已添加 ${server}`,
-      addedTip: '已连接 — 其工具已在此对话中可用',
-      connectFailed: server => `无法连接 ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `使用技能: ${skill}`,
-      tip: skill => `你提到了“${skill}” — 点击以该技能开头`,
-      done: skill => `已添加 /${skill}`,
-      doneTip: '发送时将加载该技能'
-    },
-    githubSuggestions: {
-      label: '设置 GitHub',
-      tip: '这里通过 gh CLI 技能使用 GitHub — 点击连接你的账号',
-      done: '已添加 /github-auth',
-      doneTip: '发送消息后，agent 将引导你完成 GitHub 登录'
-    },
-    repairSuggestions: {
-      label: server => `重新连接 ${server}`,
-      tip: server => `${server} 调用刚因连接错误失败`,
-      working: server => `正在重新连接 ${server}…`,
-      workingTip: '点击取消',
-      done: server => `已重新连接 ${server}`,
-      doneTip: '新凭据已在此对话中生效',
-      failed: server => `无法重新连接 ${server}`
-    },
-    cronSuggestions: {
-      label: '定时执行',
-      tip: phrase => `“${phrase}”听起来是周期性任务 — 可以按计划运行`,
-      prefix: '将此设置为定时任务:',
-      done: '已标记为定时任务',
-      doneTip: '发送后由智能体创建任务'
-    },
     snippets: {
       codeReview: {
         label: '代码审查',
@@ -3609,7 +3494,7 @@ export const zhOverrides = {
       heartbeatEveryHours: hours => `每 ${hours} 小时`,
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
-      heartbeatDueWaitingForIdle: '已到期，等待会话空闲',
+      dueWaitingForIdle: '已到期，等待会话空闲',
       heartbeatActions: '心跳操作',
       pauseHeartbeat: '暂停心跳',
       resumeHeartbeat: '恢复心跳',
@@ -4464,6 +4349,10 @@ export const zhOverrides = {
         ssl_cert_verification: {
           title: '安全连接失败',
           body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
+        },
+        cron_session_read_only: {
+          title: '此聊天属于一个定时任务',
+          body: '它只运行该任务，因此你的消息未被执行。请新建聊天后再发送。'
         }
       },
       errorLayers: {
@@ -4544,7 +4433,7 @@ export const zhOverrides = {
       hideNames: '隐藏名称',
       skill: name => `技能 ${name}`,
       kind: { plugin: '插件', skill: '技能' },
-      tier: { official: '官方', community: '社区' },
+      tier: { official: '官方', verified: '已验证', community: '社区' },
       targetProfile: profile => `安装到你的 ${profile} 配置文件`,
       sendFailed: '无法发送你的回复，请重试。',
       commitLabel: '提交',

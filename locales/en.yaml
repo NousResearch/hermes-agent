@@ -76,6 +76,8 @@ gateway:
     next_turn_only: "    (next turn only — restores after one response)"
     switch_cancelled: "🟡 Model switch cancelled. Current model unchanged ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Text fallback: reply `{prefix}approve` to switch or `{prefix}cancel` to keep the current model._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Active Agents & Tasks**"
     active_agents: "**Active agents:** {count}"
@@ -165,6 +167,7 @@ gateway:
     full_logs_hint: "For full log uploads, use `hermes debug share` from the CLI."
     share_hint: "Share these links with the Hermes team for support."
     report_label: "Report"
+    local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug` to upload the summary report."
   deny:
     stale: "❌ Command denied (approval was stale)."
     no_pending: "No pending command to deny."
@@ -447,6 +450,9 @@ gateway:
     state_no: "No"
     queued: "**Queued follow-ups:** {count}"
     platforms: "**Connected Platforms:** {platforms}"
+  discard:
+    nothing: "Nothing to discard: this chat has no turn lost in a restart."
+    done: "🗑️ Discarded {count} lost turn(s); they were not re-run. Your saved messages will be answered now."
   stop:
     stopped_pending: "⚡ Stopped. The agent hadn't started yet — you can continue this session."
     stopped: "⚡ Stopped. You can continue this session."
@@ -693,6 +699,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Something went wrong and I couldn't finish this reply.{hint}\nUse /retry to try again, or /new to start a fresh conversation. Technical details are in the gateway log (`hermes logs`)."
     history_unavailable: "⚠️ This session's history is temporarily unavailable, so this message was not processed. Ask the operator to inspect state.db, then resend after it is healthy. Use /reset only if you intentionally want to start a new conversation."
     no_credentials: "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. Use /login to sign in again, or /model to pick a different model. If it keeps failing, run `hermes doctor` on the host."
+    cron_session_read_only: "⚠️ This chat belongs to a scheduled job and only runs that job, so your message was not run. Start a new chat to send it."
 
   skills:
     disabled: "The **{name}** skill is installed but disabled.\nEnable it with: `hermes skills config`"
@@ -1599,6 +1606,8 @@ slash:
     description: "Import a shared profile archive as a new profile"
   stop:
     description: "Kill all running background processes"
+  discard:
+    description: "Drop a turn lost when Hermes restarted so this chat's queue runs again"
   pause:
     description: "Pause new work globally (emergency stop); '/pause off' resumes"
   deny:
@@ -1752,6 +1761,21 @@ slash:
   quit:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:
+  modern:
+    thought_for: "Thought for {seconds}s"
+    thought: "Thought"
+    working: "Working…"
+    preparing: "Preparing {what}…"
+    hint_steer: "steer"
+    hint_queue: "queue"
+    hint_interrupt: "interrupt"
+    hint_stop: "stop"
+    hint_commands: "commands"
+    hint_files: "files"
+    hint_shell: "shell"
+    placeholder_busy_steer: "type to steer this turn · Tab queues it for after"
+    placeholder_busy_interrupt: "type to redirect this turn · Tab queues it for after"
+    placeholder_busy_queue: "type to queue a message for after this turn"
   billing:
     # shared helpers (/topup + /subscription)
     load_failed: "{label}: {error}"
@@ -2059,6 +2083,7 @@ cli:
     desc_switch_anyway: "Use this model for the current Hermes session."
     choice_cancel: "Cancel"
     desc_keep_current_model: "Keep the current model."
+    confirm_choice_prompt: "Choice [1/2]: "
     switch_cancelled: "Model switch cancelled."
     selection_failed: "✗ Model selection failed: {error}"
     switch_failed: "⚠ Model switch to {model} failed ({error}); staying on {old_model}."
@@ -2322,6 +2347,7 @@ cli:
     queue_heading: "Queue · {count} queued · /queue list{controls}"
     more_queued: "+{count} more"
     transcript_unavailable: "Live transcript not available yet."
+    control_pending: "Sending…"
     steer_prompt: "Steer: "
     roster_empty: "No live subagents or background processes. Results arrive in the conversation."
     entry_gone: "This entry is no longer live."
@@ -2461,6 +2487,14 @@ cli:
     move_out_of_range: "Queue move out of range. Current size: {size}"
     moved: "Moved queue item {source} to {destination}."
     usage_add: "Usage: /queue add <prompt>"
+    gateway_refused: "The gateway did not queue it: {error}. Nothing was queued; send it again when the turn ends."
+    submit_unknown: "The gateway did not answer ({error}), so the prompt may already be queued. Check /queue list before sending it again."
+    move_gateway_fifo: "The gateway runs queued prompts in the order they were sent; edit or remove one instead."
+    remove_refused: "Could not remove queue item {index}: {error}"
+    edit_refused: "Could not edit queue item {index}: {error}"
+    already_started: "Queue item {index} already started; it runs as it was sent."
+    started_stopped: "Queue item {index} had already started; the gateway stopped it."
+    change_unknown: "The gateway did not answer about queue item {index} ({error}); check /queue list before trying again."
   reload:
     env_reloaded: "Reloaded .env ({count} var(s) updated)"
   steer:
@@ -3101,6 +3135,10 @@ cli:
       usage_disconnect: "disconnect   Revert to default browser backend"
       usage_status: "status       Show current browser mode"
       usage_use: "use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools"
+      remote_gateway: "/browser connect and /browser disconnect manage a Chromium-family browser on the gateway host — only available when connected to a local gateway."
+      checking: "Checking Chromium-family browser remote debugging at {url}..."
+      new_sessions_only: "Applies to new sessions — this one keeps its current tools (/new to start one)."
+      status_gateway_default: "🌐 Browser: the gateway's default browser backend (no live CDP connection)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat paused: {prompt}"
@@ -3209,6 +3247,10 @@ cli:
     loaded: "(loaded)"
     not_found: "(not found)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Not set!"
     value_not_set: "not set"
     section_model: "Model"
@@ -3391,8 +3433,22 @@ cli:
     next_session_deepens: "The next `hermes -w` session deepens the clone and prunes merged worktrees automatically."
     unpushed_keeping: "⚠ Worktree has unpushed commits, keeping: {path}"
     uncommitted_keeping: "⚠ Worktree has uncommitted changes, keeping: {path}"
+    kept_reason: "⚠ Keeping worktree ({reason}): {path}"
     clean_up_manually: "To clean up manually: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree cleaned up: {path}"
+    exit_question_dirty: "This worktree has uncommitted changes: {path}"
+    exit_question_unpushed: "This worktree has commits that are not pushed: {path}"
+    exit_choice_keep: "Keep the worktree (default)"
+    exit_choice_archive: "Archive and remove it (restorable)"
+    exit_choice_discard: "Remove it and discard the changes"
+    archiving: "Archiving {path} … (this can take a while for a large tree)"
+    archived: "✓ Worktree archived to {ref} and removed: {path}"
+    restore_hint: "Restore it with: hermes worktree restore {name}"
+    archive_failed: "✗ Could not archive {path}, keeping it: {error}"
+    archived_kept: "✓ Worktree archived to {ref} but kept ({reason}): {path}"
+    sweep_archived_removed: "archived + removed → {ref}"
+    sweep_archived_kept: "archived, kept ({reason}) → {ref}"
+    discarded: "Worktree removed and its changes discarded: {path}"
 
 display:
   # Tool verbs, spinner/progress text, completion rows and failure suffixes (agent/display.py).
@@ -3834,7 +3890,7 @@ tips:
   t241: "The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching."
   t242: "Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically."
   t243: "The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation."
-  t244: "Stale git worktrees are auto-cleaned on startup: clean, fully-merged trees get pruned; dirty or unpushed work is always preserved."
+  t244: "Stale git worktrees are auto-cleaned: clean merged trees are removed; idle dirty or unpushed trees are archived first and restorable with hermes worktree restore."
   t245: "Profiles scope Hermes state via HERMES_HOME; host tool subprocesses keep your real HOME unless terminal.home_mode is profile."
   t246: "HERMES_HOME_MODE env var (octal, e.g. 0701) sets custom directory permissions for web server traversal."
   t247: "Container mode: place .container-mode in HERMES_HOME and the host CLI auto-execs into the container."

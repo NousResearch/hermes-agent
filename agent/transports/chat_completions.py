@@ -15,7 +15,7 @@ from agent.reasoning_effort import (
     GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
-from agent.message_metadata import MESSAGE_UID
+from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
 from agent.message_sanitization import coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -38,7 +38,10 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
-    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks", MESSAGE_UID,
+    # ``platform_message_id`` is persisted as-is and comes back from replay as ``message_id``
+    # (JSONL transcript compat); both are delivery bookkeeping, never model input.
+    "platform_message_id", "message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
+    MESSAGE_UID, DATA_USE,
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
@@ -556,6 +559,8 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
+        # Read before convert_messages strips the key; only a profile that asks for it consumes it.
+        params["data_use"] = data_use_requirement(messages)
         sanitized = self.convert_messages(
             messages, model=model, base_url=params.get("base_url"), provider_profile=_profile,
             provider=params.get("provider_name"),
@@ -655,7 +660,7 @@ class ChatCompletionsTransport(ProviderTransport):
         profile_body = profile.build_extra_body(
             session_id=params.get("session_id"), provider_preferences=params.get("provider_preferences"), model=model,
             base_url=params.get("base_url"), reasoning_config=reasoning_config,
-            openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
+            openrouter_min_coding_score=params.get("openrouter_min_coding_score"), data_use=params.get("data_use"),
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:

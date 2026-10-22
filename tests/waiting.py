@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TypeVar
 
 T = TypeVar("T")
@@ -43,6 +44,23 @@ def wait_until(predicate: Callable[[], T], timeout: float = DEFAULT_TIMEOUT,
         if time.monotonic() >= deadline:
             raise _timed_out(what, timeout)
         time.sleep(interval)
+
+
+def wait_for_ctime_tick(directory: Path, after_ns: int, timeout: float = DEFAULT_TIMEOUT) -> None:
+    """Block until the filesystem timestamp clock on ``directory``'s fs has passed ``after_ns``.
+
+    Kernels without multigrain timestamps stamp inodes from a coarse, tick-granular clock (~4 ms),
+    so an in-place rewrite inside the tick of an earlier write keeps ctime too and no stat-based
+    signature can see it. Call this before a ``cp -p`` / pinned-mtime replacement test rewrites a
+    file whose ``st_ctime_ns`` was ``after_ns``. A ``.ctime-probe`` file is left in ``directory``.
+    """
+    probe = Path(directory) / ".ctime-probe"
+
+    def _ticked() -> bool:
+        probe.touch()
+        return probe.stat().st_ctime_ns > after_ns
+
+    wait_until(_ticked, timeout=timeout, what="filesystem ctime clock to advance")
 
 
 async def async_wait_until(predicate: Callable[[], T], timeout: float = DEFAULT_TIMEOUT,

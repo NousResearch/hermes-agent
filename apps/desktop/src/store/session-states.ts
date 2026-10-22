@@ -1852,7 +1852,12 @@ function ownerConnectionMode(owner: SessionOwnerScope): 'local' | 'remote' | nul
 export function isSessionRemote(sessionId: null | string | undefined): boolean {
   const mode = ownerConnectionMode(knownOwnerForSession(sessionId)) ?? $connection.get()?.mode
 
-  return mode === 'remote'
+  // Any known mode other than local means the backend is on another machine.
+  // SSH is remote even though a resolved descriptor calls it `remote`; an
+  // older shell or a persisted owner route can still carry the saved-config
+  // `ssh` label, and reading only `remote` sent it a client-local image path
+  // (#142877).
+  return mode != null && mode !== 'local'
 }
 
 /**

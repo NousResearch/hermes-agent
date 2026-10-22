@@ -113,6 +113,14 @@ class GatewayTurnPrepareMixin:
             return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
+        cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
+        channel_override = None
+        if cfg and source is not None:
+            channel_override = _get_channel_override(
+                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
         if skey:
             self._rehydrate_session_model_override(skey)
         _override_state = self._peek_session_state(skey) if skey else None
@@ -164,7 +172,22 @@ class GatewayTurnPrepareMixin:
                                exc_info=True)
                 unavailable_override, override = override, None
         if runtime_kwargs is None:
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            channel_fallback = (
+                channel_override.fallback_providers
+                if channel_override is not None else None
+            )
+            if channel_override and channel_override.provider and channel_fallback is not None:
+                if channel_override.model:
+                    model = channel_override.model
+                runtime_kwargs = _resolve_runtime_agent_kwargs(
+                    fallback_providers=channel_fallback,
+                    requested_provider=channel_override.provider,
+                    target_model=model or None,
+                )
+            elif channel_fallback is not None:
+                runtime_kwargs = _resolve_runtime_agent_kwargs(fallback_providers=channel_fallback)
+            else:
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
         self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
@@ -177,22 +200,19 @@ class GatewayTurnPrepareMixin:
             self._pre_agent_fallback_notice = pre_agent_fallback_notice(
                 unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
 
-        cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
-        if cfg and source is not None:
-            ch = _get_channel_override(
-                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
-                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
-                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
-            )
-            if ch:
-                if ch.model:
-                    model = ch.model
-                if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Adopt the provider's bundled model only when the override named none.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+        if channel_override and not (
+            channel_override.provider and channel_override.fallback_providers is not None
+        ):
+            if channel_override.model:
+                model = channel_override.model
+            if channel_override.provider:
+                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                    channel_override.provider, target_model=model or None
+                )
+                ch_runtime_model = runtime_kwargs.pop("model", None)
+                # Adopt the provider's bundled model only when the override named none.
+                if ch_runtime_model and not channel_override.model:
+                    model = ch_runtime_model
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)

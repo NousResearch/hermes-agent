@@ -891,3 +891,55 @@ def test_engine_probe_accepts_unsaved_path(client, tmp_path):
     assert "version: 1" in r.json()["version"]
     # Probing never registers anything.
     assert [e["id"] for e in client.get("/api/local-models/engines").json()["engines"]] == ["managed"]
+
+# ── engine mutation announce (bottom-left backend status) ──────────
+
+
+def test_engine_restart_reannounces_setup_ready(monkeypatch):
+    """An engine edit must re-broadcast setup.ready so the desktop's
+    backend indicator repaints with the new engine's verdict instead of
+    holding the previous one until an ambient tick."""
+    import sys
+    import types
+
+    from hermes_cli.web_routers import local_models
+
+    events: list[tuple[str, dict]] = []
+    sink = types.ModuleType("tui_gateway.server")
+    sink._broadcast_global_event = lambda name, payload=None: events.append((name, payload))
+    ftb = types.ModuleType("hermes_cli.free_tier_bootstrap")
+    ftb.SETUP_READY_EVENT = "setup.ready"
+    monkeypatch.setattr(local_models.bootstrap, "refresh_local_runtime", lambda: True)
+    # The announce imports lazily; stubbing inside a context keeps both doubles
+    # out of sys.modules before the gateway-state finalizer runs.
+    with monkeypatch.context() as m:
+        m.setitem(sys.modules, "tui_gateway.server", sink)
+        m.setitem(sys.modules, "hermes_cli.free_tier_bootstrap", ftb)
+        local_models._restart_for_engines()
+
+    assert events == [("setup.ready",
+                       {"reason": "engine_mutation", "runtime_restarted": True})]
+
+
+def test_engine_restart_announces_even_when_bounce_fails(monkeypatch):
+    import sys
+    import types
+
+    from hermes_cli.web_routers import local_models
+
+    events: list[tuple[str, dict]] = []
+    sink = types.ModuleType("tui_gateway.server")
+    sink._broadcast_global_event = lambda name, payload=None: events.append((name, payload))
+    ftb = types.ModuleType("hermes_cli.free_tier_bootstrap")
+    ftb.SETUP_READY_EVENT = "setup.ready"
+
+    def _boom() -> bool:
+        raise RuntimeError("supervisor down")
+    monkeypatch.setattr(local_models.bootstrap, "refresh_local_runtime", _boom)
+    with monkeypatch.context() as m:
+        m.setitem(sys.modules, "tui_gateway.server", sink)
+        m.setitem(sys.modules, "hermes_cli.free_tier_bootstrap", ftb)
+        local_models._restart_for_engines()
+
+    assert events and events[0][0] == "setup.ready"
+    assert events[0][1]["runtime_restarted"] is False

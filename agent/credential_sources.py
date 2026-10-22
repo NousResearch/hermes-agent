@@ -240,7 +240,8 @@ _REGISTRY: list[RemovalStep] = [
     RemovalStep(
         provider="anthropic", source_id="claude_code",
         remove_fn=_suppress_only(
-            "Suppressed claude_code credential — it will not be re-seeded.",
+            "Suppressed claude_code credential — Hermes will no longer "
+            "read, refresh, or re-seed it.",
             "Note: Claude Code credentials still live in ~/.claude/.credentials.json",
             "Run `hermes auth add anthropic` to re-enable if needed.",
         ),

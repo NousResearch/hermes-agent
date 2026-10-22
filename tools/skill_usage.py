@@ -701,7 +701,10 @@ def curated_report() -> list[dict[str, Any]]:
     # guard keeps stale records for deleted dirs from rendering as ghost rows.
     names.update(name for name, rec in data.items()
                  if rec.get("pinned") and is_curation_eligible(name) and _find_skill_dir(name) is not None)
-    return [_report_row(n, data.get(n), _persisted=n in data, provenance=provenance(n)) for n in sorted(names)]
+    return [
+        _report_row(n, data.get(n), _persisted=n in data, provenance=provenance(n, data.get(n)))
+        for n in sorted(names)
+    ]
 
 
 def is_external_only(skill_name: str) -> bool:
@@ -725,18 +728,19 @@ def _external_skill_names() -> set:
     return names
 
 
-def provenance(skill_name: str) -> str:
-    """'hub' | 'bundled' | 'external' | 'agent'.
+def provenance(skill_name: str, record: Optional[dict[str, Any]] = None) -> str:
+    """Report hub, bundled, or external origin; local labels reflect curator management.
 
-    'external' covers skills mounted from ``skills.external_dirs`` and absent from the local
-    store — externally authored, not learned from the user (#108032). 'agent' keeps covering
-    agent-authored AND local hand-made skills — the ones the user may edit/delete from the UI
-    (external skills stay foreground-editable in place by design, commit 8c8fc6c1ec; the label
-    split is about origin, not mutability)."""
-    return ("hub" if is_hub_installed(skill_name)
-            else "bundled" if is_bundled(skill_name)
-            else "external" if is_external_only(skill_name)
-            else "agent")
+    External-only mounts keep their origin even if a usage record exists. A local copy
+    wins name clashes, then the curator-management marker distinguishes agent from user.
+    """
+    if is_hub_installed(skill_name):
+        return "hub"
+    if is_bundled(skill_name):
+        return "bundled"
+    if is_external_only(skill_name):
+        return "external"
+    return "agent" if _is_curator_managed_record(record) else "user"
 
 
 def usage_report() -> list[dict[str, Any]]:
@@ -744,5 +748,5 @@ def usage_report() -> list[dict[str, Any]]:
     if not (base := _skills_dir()).exists():
         return []
     data = load_usage()
-    return [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data)
+    return [_report_row(n, data.get(n), provenance=provenance(n, data.get(n)), _persisted=n in data)
             for n in sorted({name for name, _md in _iter_skill_mds(base, local_only=False)})]

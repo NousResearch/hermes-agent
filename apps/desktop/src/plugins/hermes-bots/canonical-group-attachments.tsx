@@ -17,10 +17,14 @@ function kindFor(file: File): string {
   return 'file'
 }
 
-export function CanonicalGroupAttachments({ binding, attachments, onChange, onUploadingChange, disabled, readOnly = false }: {
+export function CanonicalGroupAttachments({ binding, attachments, onChange, onUploadingChange, disabled, readOnly = false,
+  uploads = true, downloads = true }: {
   binding: CanonicalGroupBinding
   attachments: Attachment[]
   disabled: boolean
+  /** Whether the room's gateway lists groups.attachment.upload / groups.attachment.download. */
+  uploads?: boolean
+  downloads?: boolean
   // C21: the form holds Send while a selected file's manifest is not committed yet.
   onUploadingChange?: (uploading: boolean) => void
 } & ({ readOnly: true; onChange?: never } | { readOnly?: false; onChange: (attachments: Attachment[]) => void })) {
@@ -83,12 +87,12 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
   }
 
   return <div className="flex flex-wrap items-center gap-2">
-    {!readOnly && <><input hidden onChange={e => { const file = e.target.files?.[0];
+    {!readOnly && uploads && <><input hidden onChange={e => { const file = e.target.files?.[0];
 
  if (file) {void upload(file);} e.currentTarget.value = '' }} ref={input} type="file" />
     <Button disabled={disabled || busy} onClick={() => input.current?.click()} type="button">{labels.attachFiles}</Button></>}
     {attachments.map(a => <span className="flex items-center gap-1" key={a.attachment_id ?? a.name}>
-      <span>{a.name}</span><Button disabled={disabled || busy} onClick={() => void download(a)} type="button">{labels.download}</Button>
+      <span>{a.name}</span><Button disabled={disabled || busy || !downloads} onClick={() => void download(a)} type="button">{labels.download}</Button>
       {!readOnly && <Button disabled={disabled || busy} onClick={() => onChange?.(attachments.filter(item => item !== a))} type="button">{labels.removeAttachment}</Button>}
     </span>)}
     {error && <span role="alert">{labels.uploadFailed}: {error}</span>}

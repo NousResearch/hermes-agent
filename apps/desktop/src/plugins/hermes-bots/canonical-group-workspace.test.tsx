@@ -18,6 +18,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
     host: { ...gateway.host, requestProfile: captureGroupRequests(request).request } }
 })
+import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
@@ -199,4 +200,32 @@ it('shows which bots are working, and still says the group is working on a gatew
   driver = { working: true }
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'older' }} />)
   await waitFor(() => expect(screen.getByRole('status').textContent).toBe('The group is working…'))
+})
+
+it.each([
+  ['the gateway', CANONICAL_GROUP_CAPABILITIES, true],
+  ['the standalone server', STANDALONE_GROUP_CAPABILITIES, false]
+])('offers Discard and attachments only where %s lists them', async (_surface, capabilities, offered) => {
+  const actions = [{ kind: 'discard', member_id: 'ops', task_id: 'unknown', execution_generation: 2 },
+    { kind: 'retry', member_id: 'qa', task_id: 'late', execution_generation: 1 }]
+
+  const events = [{ seq: 1, room_id: 'surfaces', event_id: 'file-event', kind: 'message.member', actor: { kind: 'member', id: 'ops' },
+    payload: { attachments: [{ attachment_id: 'att_1', kind: 'file', name: 'notes.txt', mime: 'text/plain' }] } }]
+
+  let answer!: (value: unknown) => void
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities'
+    ? new Promise(resolve => { answer = resolve })
+    : method === 'groups.state' ? { room: { name: 'Room' }, driver_status: { pending_actions: actions } }
+      : method === 'groups.log' ? { events } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'surfaces' }} />)
+  await screen.findByText('notes.txt')
+  // Until the gateway says what it offers, no optional control is shown.
+  expect(screen.queryByRole('button', { name: 'Discard' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Attach files' })).toBeNull()
+
+  answer(capabilities)
+  await screen.findByRole('button', { name: 'Retry' })
+  expect(Boolean(screen.queryByRole('button', { name: 'Discard' }))).toBe(offered)
+  expect(Boolean(screen.queryByRole('button', { name: 'Attach files' }))).toBe(offered)
+  expect((screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(!offered)
 })

@@ -6,6 +6,9 @@ import type { RosterRow } from './types'
 
 export type GroupExecutionMode = 'canonical' | 'legacy' | 'unavailable'
 
+const stringList = (value: unknown): value is string[] | undefined =>
+  value === undefined || (Array.isArray(value) && value.every(item => typeof item === 'string'))
+
 export function groupExecutionMode(value: unknown): GroupExecutionMode {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return 'unavailable'
@@ -14,11 +17,7 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
   const capability = value as Record<string, unknown>
   const { driver, persistent_process, features, methods } = capability
 
-  if (features !== undefined && (!Array.isArray(features) || features.some(feature => typeof feature !== 'string'))) {
-    return 'unavailable'
-  }
-
-  if (methods !== undefined && (!Array.isArray(methods) || methods.some(method => typeof method !== 'string'))) {
+  if (!stringList(features) || !stringList(methods)) {
     return 'unavailable'
   }
 
@@ -33,6 +32,51 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
   }
 
   return 'unavailable'
+}
+
+/** Two surfaces answer `groups.capabilities`: the gateway's own (gateway/session_group_controls.py)
+ *  and the standalone server's older one (`hermes serve`, `hermes dashboard`, reached by SSH, URL and
+ *  Cloud connections; tui_gateway/methods_groups.py), which has no groups.discard and no attachments.
+ *  A room offers a control only when its gateway lists the control's method: `undefined` until a
+ *  read succeeds (none), `null` when a successful answer lists no methods (every control, as before). */
+export type GroupMethods = ReadonlySet<string> | null | undefined
+
+export function groupAdvertisedMethods(value: unknown): ReadonlySet<string> | null {
+  const methods = value && typeof value === 'object' ? (value as Record<string, unknown>).methods : undefined
+
+  return Array.isArray(methods) && stringList(methods) ? new Set(methods) : null
+}
+
+export const offersGroupMethod = (methods: GroupMethods, method: string) =>
+  methods === null || Boolean(methods?.has(method))
+
+/** The group methods `route`'s gateway lists, read once per opening of the gateway socket: an
+ *  update restarts the gateway, so a reopened socket may be a gateway with other methods. Until a
+ *  read for the current opening succeeds it lists none, so a failed read never offers a control the
+ *  gateway did not confirm, and a reply from before the socket changed never publishes. While the
+ *  room is visible and the socket open, a failed read is tried again every two seconds. */
+export function useGroupMethods(route: { connectionId: string; profile: string }, visible = true): GroupMethods {
+  const [opening, setOpening] = useState(0)
+  const [answer, setAnswer] = useState<{ opening: number; methods: ReadonlySet<string> | null } | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const answered = answer?.opening === opening
+
+  // A host double without socket state reads as one socket that stays open.
+  useEffect(() => host.state?.gateway?.listen(() => setOpening(value => value + 1)), [])
+
+  useEffect(() => {
+    if (answered || !visible || (host.state?.gateway?.get() ?? 'open') !== 'open') {return}
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    void canonicalGroupRequest<unknown>(route, 'groups.capabilities').then(
+      value => { if (!cancelled) {setAnswer({ opening, methods: groupAdvertisedMethods(value) })} },
+      () => { if (!cancelled) {timer = setTimeout(() => setAttempt(value => value + 1), 2000)} }
+    )
+
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [route, visible, answered, attempt, opening])
+
+  return answered ? answer.methods : undefined
 }
 
 /** The profiles `groups.create` will seat for THIS caller, as `groups.capabilities`

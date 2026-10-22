@@ -14,7 +14,9 @@ import {
   assertCanonicalGroupCalls,
   CANONICAL_GROUP_CAPABILITIES,
   declaredCapabilities,
-  declaredGroupMethod
+  declaredGroupMethod,
+  STANDALONE_RETRY_MISMATCH,
+  standaloneGroupProblems
 } from './canonical-group-contract-test-utils'
 import { actCanonicalGroup, canonicalGroupRequest, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
 
@@ -62,4 +64,15 @@ it('rejects a captured undeclared method, unknown field or missing field even wh
   expect(() => assertCanonicalGroupCalls([calls[1]])).toThrow('Undeclared canonical group field: groups.state.undeclared')
   expect(() => assertCanonicalGroupCalls([calls[2]])).toThrow('Undeclared canonical group method: groups.promote')
   expect(() => assertCanonicalGroupCalls([calls[3]])).toThrow('Missing canonical group field: groups.send.payload')
+})
+
+// The standalone server (SSH, URL and Cloud connections) refuses only unknown keys, against the shared
+// declaration; the gateway checks its own declaration first. One body cannot satisfy both for Retry.
+it('checks each request against the standalone server too, and pins the one mismatch main has', () => {
+  const retry = { method: 'groups.retry', params: { room_id: 'room', member_id: 'alice', task_id: 'task', execution_generation: 7, profile: 'team' } }
+  expect(standaloneGroupProblems(retry)).toEqual(STANDALONE_RETRY_MISMATCH)
+  expect(standaloneGroupProblems({ method: 'groups.state', params: { room_id: 'room', undeclared: true } })).toEqual(['groups.state.undeclared'])
+  // Methods it does not list are never offered there.
+  expect(standaloneGroupProblems({ method: 'groups.discard', params: { room_id: 'room', undeclared: true } })).toEqual([])
+  expect(() => assertCanonicalGroupCalls([retry])).not.toThrow()
 })

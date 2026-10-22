@@ -20,6 +20,7 @@ vi.mock('./canonical-group-labels', async () => {
   return { useCanonicalGroupLabels: () => ({ ...CANONICAL_GROUP_LOCALES.en, refresh: 'Refresh', retry: 'Retry',
     send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel' }) }
 })
+import { CANONICAL_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'owner-a', profile: 'reviewer', roomId: 'room-one' }
@@ -34,6 +35,8 @@ function setup() {
   let release!: (value: unknown) => void
   const held = new Promise(resolve => { release = resolve })
   request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
     if (method === 'groups.state') {return { room: { name: 'Room' } }}
 
     if (method === 'groups.log') {return { events: [{ seq: 1, room_id: binding.roomId, event_id: 'committed',

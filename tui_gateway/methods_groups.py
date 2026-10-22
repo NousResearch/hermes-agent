@@ -182,12 +182,14 @@ def _room_error_class(replica_only: bool) -> type:
 def _room_method(
     name: str, *, code: int, room_code: int | None = None, replica_only: bool = False,
     with_reason: bool = True, service_code: int | None = None,
-    service_message: str = _DRIVER_UNAVAILABLE, db: bool = False):
+    service_message: str = _DRIVER_UNAVAILABLE, db: bool = False, admits: bool = False):
     """Register ``fn`` under ``name`` with the shared hosted-room error envelope.
     ``service_code``: the live service is required (else that error) and passed as a third
     argument; ``db``: the default room db path follows. ``room_code`` maps ``HostedRoomError``
     (only ``ReplicaError`` when ``replica_only``) to a client error with ``{"reason"}`` data
-    when ``with_reason``; anything else maps to ``code``."""
+    when ``with_reason``; anything else maps to ``code``. A refusal that admitted nothing of
+    the request (``admits``: no service to take it; or an error marked ``admitted = False``)
+    adds ``{"admitted": false}``."""
     error_class = _room_error_class  # closure cell: handlers run under server.py globals
 
     def dec(fn):
@@ -196,7 +198,7 @@ def _room_method(
             if service_code is not None:
                 service = get_hosted_room_service()
                 if service is None:
-                    return _err(rid, service_code, service_message)
+                    return _err(rid, service_code, service_message, {"admitted": False} if admits else None)
                 args += (service,)
             if db:
                 from gateway.hosted_rooms import default_db_path
@@ -204,10 +206,13 @@ def _room_method(
             try:
                 return fn(*args)
             except Exception as exc:
+                data = {"admitted": False} if getattr(exc, "admitted", None) is False else {}
                 if room_code is not None and isinstance(exc, error_class(replica_only)):
                     reason = getattr(exc, "reason", None) if with_reason else None
-                    return _err(rid, room_code, str(exc), {"reason": reason} if reason else None)
-                return _err(rid, code, str(exc))
+                    if reason:
+                        data = {"reason": reason, **data}
+                    return _err(rid, room_code, str(exc), data or None)
+                return _err(rid, code, str(exc), data or None)
         handler.__doc__ = fn.__doc__
         return method(name)(handler)
     return dec
@@ -380,7 +385,7 @@ def _(rid, params: dict, db_path) -> dict:
 
 @_room_method(
     "groups.send", code=5112, room_code=4111, service_code=4123,
-    service_message=_WORKER_UNAVAILABLE)
+    service_message=_WORKER_UNAVAILABLE, admits=True)
 def _(rid, params: dict, service) -> dict:
     """Append one typed event idempotently (inert ``message.user`` only; actor is server-owned)."""
     from gateway.hosted_rooms import user_event_id

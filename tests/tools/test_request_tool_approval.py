@@ -62,6 +62,57 @@ class TestRequestToolApproval:
         res = request_tool_approval("write_file", "writing ~/.ssh/authorized_keys")
         assert res["approved"] is True
 
+    def test_human_grant_carries_marker_choice_and_trace(self, monkeypatch):
+        """#142867: a human grant through the action gate used to return a
+        bare ``{"approved": True, "message": None}`` — indistinguishable in
+        the agent's context from never being gated, while a denial leaves a
+        BLOCKED trace. The grant must mark itself and stash the executor
+        trace naming the choice."""
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "once")
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *a, **k: "once")
+        approval_context._take_human_approval_note()
+        res = request_tool_approval("write_file", "writing ~/.ssh/authorized_keys")
+        assert res["approved"] is True
+        assert res.get("user_approved") is True
+        assert res.get("approval_choice") == "once"
+        note = approval_context._take_human_approval_note()
+        assert note and "Approved by the user (once)" in note
+        assert approval_context._take_human_approval_note() is None  # consumed
+
+    def test_non_human_paths_leave_no_trace(self, monkeypatch):
+        """Cache/yolo short-circuits never asked a human this time, so they
+        must not claim a human approved (exact bare shape preserved)."""
+        approval_context._take_human_approval_note()
+        monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
+        res = request_tool_approval("write_file", "sensitive path", rule_key="ssh")
+        assert res == {"approved": True, "message": None}
+        assert approval_context._take_human_approval_note() is None
+
+
+class TestAnnotateToolResultApproval:
+    def test_json_result_gains_approval_field(self):
+        out = approval.annotate_tool_result_approval(
+            '{"output": "ok", "exit_code": 0}', "Approved by the user (once) after an approval request.")
+        import json as _json
+        parsed = _json.loads(out)
+        assert parsed["approval"] == "Approved by the user (once) after an approval request."
+        assert parsed["output"] == "ok"
+
+    def test_existing_approval_field_wins(self):
+        out = approval.annotate_tool_result_approval(
+            '{"output": "ok", "approval": "Command required approval (x) and was approved by the user."}',
+            "Approved by the user (once) after an approval request.")
+        import json as _json
+        assert "Command required approval" in _json.loads(out)["approval"]
+
+    def test_non_json_and_no_note_unchanged(self):
+        assert approval.annotate_tool_result_approval("plain text", "note") == "plain text"
+        assert approval.annotate_tool_result_approval('{"output": "ok"}', None) == '{"output": "ok"}'
+        assert approval.annotate_tool_result_approval('{"output": "ok"}', "") == '{"output": "ok"}'
+
     def test_cli_deny_blocks(self, monkeypatch):
         from hermes_cli import lifecycle
 

@@ -14,6 +14,7 @@ call time; sibling-defined names are imported from their defining module.
 from dataclasses import dataclass
 import hashlib
 import importlib
+import json
 import logging
 import os
 import threading
@@ -26,7 +27,7 @@ from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
     _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
-    get_current_session_key,
+    _take_human_approval_note, get_current_session_key,
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
@@ -521,6 +522,25 @@ def _approved() -> dict:
     return {"approved": True, "message": None}
 
 
+def annotate_tool_result_approval(result, note: str | None):
+    """Attach a human-approval trace to a JSON tool result (#142867).
+
+    Mirrors the terminal tool's own ``"approval"`` field: a result that
+    already carries one (terminal) keeps it — it is the more specific
+    wording. Non-JSON results and a missing note pass through unchanged, so
+    plain-text tool contracts are never corrupted by the annotation."""
+    if not note or not isinstance(result, str):
+        return result
+    try:
+        parsed = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(parsed, dict) or "approval" in parsed:
+        return result
+    parsed["approval"] = note
+    return json.dumps(parsed, ensure_ascii=False)
+
+
 # ``outcome`` -> one plain sentence for the person who just answered (or did not), keyed as
 # ``approval.summary.<outcome>`` (``approval.summary.default`` for unknown outcomes). ``message`` is
 # addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
@@ -828,9 +848,19 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, pattern_keys)
-        if spec.user_approved:
-            return _user_approved(session_key, description)
-        return _approved()
+        # A human was asked and said yes. Mark it on the result and stash the
+        # model-facing trace the executors attach to the tool result — an
+        # approval used to leave no trace, so the agent could not tell
+        # "approved after a card" from "no card was needed" (#142867). The
+        # denial-tally reset stays scoped to spec.user_approved gates
+        # (historical parity for _ACTION_GATE); only the marker is universal.
+        approval_context._set_human_approval_note(
+            f"Approved by the user ({choice}) after an approval request ({description}).")
+        result = (_user_approved(session_key, description) if spec.user_approved else
+                  {"approved": True, "message": None, "user_approved": True,
+                   "description": description})
+        result["approval_choice"] = choice
+        return result
 
     if spec.transport:
         attempt = _present_with_selected_transport(

@@ -3115,6 +3115,7 @@
     "settings.connections.testConnection",
     "settings.connections.testFailed",
     "settings.connections.testOk",
+    "settings.connections.thisDeviceSuffix",
     "settings.connections.title",
     "settings.connections.updateAll",
     "settings.connections.updateAllDone",

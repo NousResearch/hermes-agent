@@ -15,6 +15,7 @@ export const zhHantSettings = {
   },
 
   settings: {
+    connections: { thisDeviceSuffix: '（本裝置）' },
     subpages: {
       appearanceTheme: '主題',
       appearanceTypography: '字體與縮放',

@@ -560,7 +560,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberQueued: 'In der Warteschlange',
     groupWorking: 'Die Gruppe arbeitet…',
     statusBlocked: 'Blockiert',
-    statusApprovals: '{count} warten auf Freigabe',
+    statusApprovals: 'Freigabe ausstehend: {count}',
     statusAttention: 'Aufmerksamkeit erforderlich: {count}',
     stopped: 'Stopp angefordert',
     nothingRunning: 'Keine neuen Antworten wurden abgebrochen.',

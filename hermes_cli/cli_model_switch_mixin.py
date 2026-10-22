@@ -133,8 +133,10 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
     providers and prompt caching). ``strict_context``: the typed /model path lets
     context-resolution errors propagate; the picker path swallows them.
     """
-    from cli import _cprint
-    from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length
+    from cli import CLI_CONFIG, _cprint
+    from hermes_cli.model_switch import (
+        format_model_for_display, openrouter_routing_summary, resolve_display_context_length,
+    )
     _display_old = format_model_for_display(old_model)
     _display_new = format_model_for_display(result.new_model)
     cli._pending_model_switch_note = (
@@ -152,6 +154,10 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         if agg:
             _acting = f"{agg.get('provider')}:{agg.get('model')}"
             _cprint(f"    {t('cli.model.acting_model', model=_acting)}")
+    for line in openrouter_routing_summary(
+        result.new_model, result.target_provider, CLI_CONFIG.get("provider_routing"),
+    ):
+        _cprint(f"    {line}")
 
     # Provider-aware context chain: Codex OAuth / Copilot / Nous caps win over the raw
     # models.dev entry (gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).

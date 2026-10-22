@@ -2732,6 +2732,7 @@ export interface PromptSubmitParams {
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
+  origin?: string | null
   surface?: string | null
   voice_context?: string | null
   voice_turn?: boolean | null

@@ -154,3 +154,8 @@ class TestSurfaceRecording:
         self._submit(surface="pet-overlay")
 
         assert busy_session["client_surface"] == ""
+
+    def test_queued_submit_keeps_its_origin_on_the_queue_entry(self, busy_session):
+        self._submit(origin="hermes-pilot")
+
+        assert busy_session["queued_prompt"]["turn_origin"] == "hermes-pilot"

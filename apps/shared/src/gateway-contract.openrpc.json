@@ -31970,6 +31970,18 @@
             "default": null,
             "title": "Queued"
           },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin"
+          },
           "surface": {
             "anyOf": [
               {

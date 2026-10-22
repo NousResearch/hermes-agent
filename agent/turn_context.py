@@ -817,6 +817,7 @@ def _collect_pre_llm_call_context(
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            origin=getattr(agent, "_turn_client_origin", "") or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
         )

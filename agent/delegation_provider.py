@@ -17,7 +17,8 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
 * ``model``, ``provider``, ``base_url``, ``api_key``, ``api_mode``, ``request_overrides``,
   ``reasoning_effort``, ``fallback_providers`` - shaped exactly like the ``delegation`` config
   section and resolved by the same credential resolver ``delegation.*`` uses (empty route = the
-  child inherits the parent's route, like an empty ``delegation`` section).
+  child inherits the parent's route, like an empty ``delegation`` section). An unknown
+  ``reasoning_effort`` refuses the task.
 * ``service_tier`` - ``normal``, ``fast`` or ``ultrafast``, checked like ``/fast`` against the
   resolved route (and, for ultrafast, the Codex account); a tier the route does not offer refuses
   the task, and the tier is re-applied after the child is built.

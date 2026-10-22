@@ -224,6 +224,19 @@ def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[s
     return replace(cache[key], label=label)
 
 
+def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+    """A backend's ``reasoning_effort`` must be a known level: a typo is a tool error, never the parent's level.
+    The ``delegation`` section's own value (a backend returning ``dict(config)``) keeps its warn-and-inherit rule."""
+    effort = route.get("reasoning_effort")
+    if route.get("profile") or effort in (None, "") or effort == config.get("reasoning_effort"):
+        return
+    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    if parse_reasoning_effort(effort) is None:
+        raise DelegationRouteError(
+            f"Task {index}: unknown reasoning_effort {effort!r} on this route. "
+            f"Use none or one of: {', '.join(VALID_REASONING_EFFORTS)}.")
+
+
 def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]], index: int,
                task: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
     params = {name: task[name] for name in declared if task.get(name) is not None}
@@ -255,7 +268,9 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     try:
         for i, task in enumerate(task_list):
             route = _route_one(provider, declared, i, task, config)
-            if not from_backend:
+            if from_backend:
+                _check_backend_effort(i, route, config)
+            else:
                 route.pop("service_tier", None)  # not a delegation-section key: the default route stays today's
             routes.append(_route_to_task_route(route, parent_agent, cache))
     except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals

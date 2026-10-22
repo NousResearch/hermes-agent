@@ -118,3 +118,14 @@ def test_default_backend_never_reads_a_tier_from_the_delegation_section():
     result, (child,), _ = _spawn([None], cfg={**CODEX, "service_tier": "fast"}, provider=get_active_provider({}))
     assert result == {"status": "built"}
     assert child.get("service_tier") is None and "service_tier" not in child["request_overrides"]
+
+
+def test_unknown_route_reasoning_effort_is_a_tool_error_not_the_parents_level():
+    result, built, _ = _spawn([{**LOCAL, "reasoning_effort": "hgih"}, None])
+    assert "hgih" in result["error"] and "xhigh" in result["error"] and built == []
+
+
+def test_the_delegation_sections_own_effort_keeps_its_warn_and_inherit_rule():
+    """A backend that falls back to ``dict(config)`` carries the config's value; config behaviour is unchanged."""
+    result, (child,), _ = _spawn([None], cfg={"reasoning_effort": "hgih"})
+    assert result == {"status": "built"} and child["reasoning_config"] == {"enabled": True, "effort": "medium"}

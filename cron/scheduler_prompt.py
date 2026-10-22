@@ -195,7 +195,7 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
-    from agent.skill_commands import _inject_skill_config, ambiguous_skill_label
+    from agent.skill_commands import _SKILL_DIR_NOTE, _inject_skill_config, ambiguous_skill_label
     from agent.skill_utils import normalize_skill_lookup_name
     job_label = job.get("name", job.get("id"))
     task_id = str(job.get("id") or "") or None
@@ -245,6 +245,10 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
             f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
             "",
             str(loaded.get("content") or "").strip()])
+        # Match the interactive skill path: external skills do not live under
+        # ~/.hermes/skills, so give cron the resolved directory for scripts.
+        if loaded.get("skill_dir"):
+            parts.extend(["", f"[Skill directory: {loaded['skill_dir']}]", _SKILL_DIR_NOTE])
         _inject_skill_config(loaded, parts)
 
     if skipped:

@@ -124,12 +124,14 @@ class HostedRoomRuntime:
         active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float = 1830.0,
         indeterminate_defer_seconds: float = 60.0, max_concurrent_rooms: int = 4,
         unavailable_retry_min_seconds: float = 1.0, unavailable_retry_max_seconds: float = 30.0,
+        idle_poll_backoff_max_seconds: float = 60.0,
         process_generation: str | None = None) -> None:
         positive = dict(
             lease_ttl_seconds=lease_ttl_seconds, poll_interval_seconds=poll_interval_seconds,
             active_poll_interval_seconds=active_poll_interval_seconds,
             turn_timeout_seconds=turn_timeout_seconds,
-            indeterminate_defer_seconds=indeterminate_defer_seconds)
+            indeterminate_defer_seconds=indeterminate_defer_seconds,
+            idle_poll_backoff_max_seconds=idle_poll_backoff_max_seconds)
         for name, value in positive.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -138,6 +140,8 @@ class HostedRoomRuntime:
             raise ValueError("max_concurrent_rooms must be a positive integer")
         if not 0 < unavailable_retry_min_seconds <= unavailable_retry_max_seconds:
             raise ValueError("unavailable retry bounds are invalid")
+        if idle_poll_backoff_max_seconds < poll_interval_seconds:
+            raise ValueError("idle_poll_backoff_max_seconds must be at least poll_interval_seconds")
         if rpc is None and transport_resolver is None:
             raise ValueError("rpc or transport_resolver is required")
         self.db_path = Path(db_path)
@@ -168,6 +172,7 @@ class HostedRoomRuntime:
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
         self._room_schedule_cursor, self._cycles = 0, 0
+        self._idle_tick = False
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -618,9 +623,11 @@ class HostedRoomRuntime:
     # ------------------------------------------------------------------ scheduling
     def _worker_loop(self) -> None:
         try:
+            delay = self.poll_interval_seconds
             while not self._stop.is_set():
                 # Clear before work so a write racing the cycle forces a follow-up pass.
                 self._wake.clear()
+                self._idle_tick = False
                 try:
                     self._run_cycle()
                 except Exception as exc:  # keep independent rooms serviceable
@@ -632,7 +639,16 @@ class HostedRoomRuntime:
                         self._record_error(f"worker maintenance failed: {exc}")
                 with self._status_lock:
                     self._cycles += 1
-                self._wake.wait(self.poll_interval_seconds)
+                # An empty pass owned no room, and rooms only appear through this service's
+                # own writes (which wakeup()) or an out-of-process write it must eventually
+                # notice: back the recheck off toward the idle ceiling instead of re-reading
+                # the store every poll on profiles that host nothing (#143256).
+                if self._wake.wait(delay):
+                    delay = self.poll_interval_seconds
+                elif self._idle_tick:
+                    delay = min(delay * 2.0, self.idle_poll_backoff_max_seconds)
+                else:
+                    delay = self.poll_interval_seconds
         finally:
             while True:
                 with self._status_lock:
@@ -661,6 +677,7 @@ class HostedRoomRuntime:
             return
         bindings = tuple(self._rooms_provider())
         if not bindings:
+            self._idle_tick = True
             return
         start = self._room_schedule_cursor % len(bindings)
         self._room_schedule_cursor = (start + 1) % len(bindings)

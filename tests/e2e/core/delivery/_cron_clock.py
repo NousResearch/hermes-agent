@@ -14,8 +14,14 @@ What is virtual and what stays real:
 * Fakes: the agent (``cron.scheduler.run_job``, the one function that would build an AIAgent)
   and the platform wire (``tools.send_message_tool._send_to_platform``). Both append JSONL
   records. Everything between — the real ``InProcessCronScheduler.start`` ticker loop,
-  ``tick()``, due scan, pending slots, fire claims, heartbeat, executions ledger, delivery
-  routing, ``mark_job_run`` — is production code.
+  ``tick()``, due scan, pending slots, fire claims, heartbeat, executions ledger, the durable
+  delivery queue (``cron/deliveries.db``) and its drain, delivery routing, ``mark_job_run`` — is
+  production code.
+* An agent run books its send into the durable queue (ledger ``delivery_outcome='queued'``) and
+  the gateway's housekeeping thread drains it (``gateway/run.py::
+  _drain_restart_safe_cron_deliveries`` -> ``cron.scheduler.drain_delivery_queue``). The soak has
+  no gateway process, so the driver performs that drain (``drain_deliveries``) once the ticker is
+  quiescent; ``delivery_status`` reads the queue's terminal verdict for a queued execution.
 
 ``SchedulerHost`` runs the real ticker loop in a thread with a stepping ``stop_event``; running
 this file as a script runs the same loop in a separate OS process (``ChildHost``), stepped via
@@ -82,7 +88,7 @@ def _append_jsonl(path: Path, record: dict) -> None:
         os.close(fd)
 
 
-def read_jsonl(path: Path) -> List[dict]:
+def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     out = []
@@ -106,14 +112,14 @@ class Control:
         self.replica = self.root / "replica"
         self.claims = self.root / "claims.jsonl"
 
-    def ensure(self) -> "Control":
+    def ensure(self) -> Control:
         for d in (self.root, self.gates, self.child, self.replica):
             d.mkdir(parents=True, exist_ok=True)
         if not self.behaviors.exists():
             self.set_behaviors({})
         return self
 
-    def set_behaviors(self, behaviors: Dict[str, dict]) -> None:
+    def set_behaviors(self, behaviors: dict[str, dict]) -> None:
         _atomic_write(self.behaviors, json.dumps(behaviors))
 
     def behavior(self, name: str) -> dict:
@@ -147,7 +153,7 @@ class VirtualClock:
 def _virtual_datetime_class(clock: VirtualClock):
     class VirtualDatetime(REAL_DATETIME):
         @classmethod
-        def now(cls, tz=None):  # noqa: D401 - datetime API
+        def now(cls, tz=None):
             return REAL_DATETIME.fromtimestamp(clock.now_ts(), tz)
 
     return VirtualDatetime
@@ -235,11 +241,11 @@ class FakeSink:
 
 def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     """Install the virtual clock + fakes. ``setattr_fn`` is ``monkeypatch.setattr`` in pytest."""
-    import cron.executions as executions
-    import cron.jobs as jobs
-    import cron.scheduler as scheduler
+    from cron import executions
+    from cron import jobs
+    from cron import scheduler
     import hermes_time
-    import tools.send_message_tool as send_message_tool
+    from tools import send_message_tool
 
     setattr_fn(hermes_time, "datetime", _virtual_datetime_class(clock))
     proxy = _TimeProxy(clock)
@@ -248,10 +254,22 @@ def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     setattr_fn(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", HEARTBEAT_REAL_SECONDS)
     setattr_fn(scheduler, "run_job", FakeAgent(clock, control))
     setattr_fn(send_message_tool, "_send_to_platform", FakeSink(clock, control))
+    # The drain sends from the housekeeping (here: driver) thread, not the run's worker thread,
+    # so the sink learns WHICH execution it is sending from the queued job, not from the text.
+    real_deliver_result = scheduler._deliver_result
+
+    def deliver_result(job, content, *args, **kwargs):
+        token = _CURRENT_EXECUTION.set(job.get("execution_id") or _CURRENT_EXECUTION.get())
+        try:
+            return real_deliver_result(job, content, *args, **kwargs)
+        finally:
+            _CURRENT_EXECUTION.reset(token)
+
+    setattr_fn(scheduler, "_deliver_result", deliver_result)
     # Durability is not under test (SIGKILL keeps the page cache); per-write fsync of
     # jobs.json/markers dominates wall time at virtual cadence. Atomic renames stay real.
     setattr_fn(os, "fsync", lambda _fd: None)
-    import hermes_cli.sqlite_util as sqlite_util
+    from hermes_cli import sqlite_util
 
     real_open_db = sqlite_util.open_db
 
@@ -309,7 +327,7 @@ class SchedulerHost:
     def __init__(self):
         self.gate: Optional[_StepGate] = None
         self.thread: Optional[threading.Thread] = None
-        self.errors: List[BaseException] = []
+        self.errors: list[BaseException] = []
 
     @property
     def alive(self) -> bool:
@@ -395,7 +413,7 @@ class ChildHost:
 
     label = "child"
 
-    def __init__(self, control: Control, env: Dict[str, str], repo_root: Path):
+    def __init__(self, control: Control, env: dict[str, str], repo_root: Path):
         self.control = control
         self.env = env
         self.repo_root = repo_root
@@ -420,7 +438,7 @@ class ChildHost:
         for name in ("go", "idle", "stop"):
             (self.control.child / name).unlink(missing_ok=True)
         self.go = 0
-        log = open(self.control.child / "stderr.log", "a", encoding="utf-8")  # noqa: SIM115
+        log = open(self.control.child / "stderr.log", "a", encoding="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), str(self.control.root)],
             cwd=str(self.repo_root), env=self.env, stdin=subprocess.DEVNULL,
@@ -473,7 +491,7 @@ def tick_together(hosts: Iterable[Any]) -> None:
 
 # --- external-provider replicas contending for one fire ----------------------------------------
 
-_CLAIM_ROUND: List[Optional[int]] = [None]  # one round in flight per process at a time
+_CLAIM_ROUND: list[Optional[int]] = [None]  # one round in flight per process at a time
 
 
 def replica_scheduler():
@@ -496,7 +514,7 @@ def install_claim_barrier(control: Control, setattr_fn=setattr, parties: int = 2
     """Wrap ``cron.jobs.claim_job_for_fire`` (``claim_fire`` imports it at call time): each call
     waits until ``parties`` replicas have entered the claim for the current round, then runs the
     REAL claim and logs who won. It only delays, never changes a decision."""
-    import cron.jobs as jobs
+    from cron import jobs
 
     real = jobs.claim_job_for_fire
 
@@ -522,7 +540,7 @@ class ReplicaHost:
     """A second replica in its own OS process: fires ``req-<n>.json`` requests in order and
     answers ``res-<n>.json`` with whether its ``fire_due`` claimed the fire."""
 
-    def __init__(self, control: Control, env: Dict[str, str], repo_root: Path):
+    def __init__(self, control: Control, env: dict[str, str], repo_root: Path):
         self.control, self.env, self.repo_root = control, env, repo_root
         self.proc: Optional[subprocess.Popen] = None
 
@@ -536,7 +554,7 @@ class ReplicaHost:
             raise AssertionError(f"replica exited rc={self.proc.returncode}:\n{tail}")
 
     def start(self) -> None:
-        log = open(self.control.replica / "stderr.log", "a", encoding="utf-8")  # noqa: SIM115
+        log = open(self.control.replica / "stderr.log", "a", encoding="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), str(self.control.root), "replica"],
             cwd=str(self.repo_root), env=self.env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
@@ -589,9 +607,48 @@ def _replica_main(control: Control) -> None:
         _atomic_write(control.replica / f"res-{rnd}.json", json.dumps({"won": won}))
 
 
-# --- ledger / store readers ------------------------------------------------------------------
+# --- gateway drain / ledger / store readers ---------------------------------------------------
 
-def ledger_rows(home: Path, where: str = "") -> List[dict]:
+def drain_deliveries() -> int:
+    """The live gateway's housekeeping drain of the durable delivery queue. No live adapters
+    exist in the soak, so every send takes the standalone wire (``FakeSink``). Returns how many
+    queued sends were performed."""
+    from cron import scheduler
+
+    total = 0
+    while True:
+        n = scheduler.drain_delivery_queue({}, None)
+        if not n:
+            return total
+        total += n
+
+
+def delivery_status(home: Path) -> dict[str, str]:
+    """execution id -> durable queue status (``pending``/``delivering``/``delivered``/``failed``/
+    ``unknown``/``suppressed``), including tombstoned rows."""
+    path = Path(home) / "cron" / "deliveries.db"
+    if not path.exists():
+        return {}
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    try:
+        out = {r[0]: r[1] for r in conn.execute(
+            "SELECT execution_id, terminal_status FROM delivery_tombstones")}
+        out.update({r[0]: r[1] for r in conn.execute("SELECT execution_id, status FROM deliveries")})
+        return out
+    finally:
+        conn.close()
+
+
+def effective_outcome(row: dict, deliveries: dict[str, str]) -> Optional[str]:
+    """The ledger's delivery outcome, resolved through the durable queue when the run only
+    booked the handoff (``queued``): the queue's verdict is the delivery's truth."""
+    outcome = row["delivery_outcome"]
+    if outcome != "queued":
+        return outcome
+    return deliveries.get(row["id"], "queued")
+
+
+def ledger_rows(home: Path, where: str = "") -> list[dict]:
     path = Path(home) / "cron" / "executions.db"
     if not path.exists():
         return []
@@ -604,13 +661,13 @@ def ledger_rows(home: Path, where: str = "") -> List[dict]:
         conn.close()
 
 
-def non_terminal(home: Path, ignore: Iterable[str] = ()) -> List[dict]:
+def non_terminal(home: Path, ignore: Iterable[str] = ()) -> list[dict]:
     ignore = set(ignore)
     return [r for r in ledger_rows(home, "status IN ('claimed', 'running')")
             if r["id"] not in ignore]
 
 
-def store_jobs(home: Path) -> List[dict]:
+def store_jobs(home: Path) -> list[dict]:
     path = Path(home) / "cron" / "jobs.json"
     if not path.exists():
         return []

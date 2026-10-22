@@ -93,8 +93,7 @@ class TestSyncCallEnforcesLimit:
             nonlocal active, max_active
             with lock:
                 active += 1
-                if active > max_active:
-                    max_active = active
+                max_active = max(max_active, active)
             try:
                 time.sleep(0.05)
             finally:
@@ -239,8 +238,7 @@ class TestAsyncCallEnforcesLimit:
         async def fake_create(**kwargs):
             nonlocal active, max_active
             active += 1
-            if active > max_active:
-                max_active = active
+            max_active = max(max_active, active)
             try:
                 await asyncio.sleep(0.05)
             finally:

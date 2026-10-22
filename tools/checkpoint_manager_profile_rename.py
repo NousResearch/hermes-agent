@@ -20,7 +20,7 @@ from tools import checkpoint_maintenance as maintenance
 logger = logging.getLogger(__name__)
 
 
-def _rebase_ledger_paths(ledger: Dict, old_workdir: Path, new_workdir: Path) -> Dict:
+def _rebase_ledger_paths(ledger: dict, old_workdir: Path, new_workdir: Path) -> dict:
     """Move absolute ledger keys under ``old_workdir`` to the corresponding new path."""
     rebased = {}
     for raw_path, entry in ledger.items():
@@ -33,7 +33,7 @@ def _rebase_ledger_paths(ledger: Dict, old_workdir: Path, new_workdir: Path) -> 
     return rebased
 
 
-def _rekey_project(store: Path, meta: Dict, old_workdir: Path, new_workdir: Path) -> None:
+def _rekey_project(store: Path, meta: dict, old_workdir: Path, new_workdir: Path) -> None:
     """Install the project under its new hash, then drop the old identity.
 
     A retry (``hermes profile migrate-identity``) after a mid-way failure finds the new identity
@@ -76,7 +76,7 @@ def _rekey_project(store: Path, meta: Dict, old_workdir: Path, new_workdir: Path
     cm._unlink_quiet(cm._index_path(store, old_hash))
 
 
-def migrate_profile_checkpoint_projects(old_profile_dir: Path, new_profile_dir: Path) -> Dict[str, int]:
+def migrate_profile_checkpoint_projects(old_profile_dir: Path, new_profile_dir: Path) -> dict[str, int]:
     """Rekey checkpoint projects whose workdirs moved with a profile rename.
 
     Only workdirs beneath ``old_profile_dir`` are affected: an external workdir keeps its absolute

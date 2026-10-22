@@ -1732,7 +1732,6 @@ export function reconcileRegistryDrift(
       return { changed: true, registry: upsertConnection(registry, aligned) }
     }
 
-
     let entry: RegistryConnection
 
     try {

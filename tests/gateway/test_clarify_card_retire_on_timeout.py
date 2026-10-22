@@ -56,6 +56,7 @@ def _run_clarify(adapter, questions=_ONE_QUESTION, answers=(), via_tool=False):
     from tools import clarify_gateway as cm
 
     runner = object.__new__(TurnRunner)
+    runner._approval_owner = None  # no owning authority: the controls snapshot is skipped
     runner._ctx = SimpleNamespace(
         _status_adapter=adapter, _status_chat_id="C1", _status_thread_metadata={},
         session_key="sk1", stream_consumer_holder=[None])
@@ -169,3 +170,36 @@ def test_clarify_tool_batch_route_answers_and_stops_together(adapter_cls, outcom
     assert result["notice"] == notice
     assert [r["status"] for r in result["responses"]] == ["unanswered", "unanswered"]
     assert [r["user_response"] for r in result["responses"]] == [None, None]
+
+
+@pytest.mark.parametrize(("platform", "hinted"), [("local", False), ("telegram", True)])
+def test_skip_hint_only_on_messaging_platforms(platform, hinted):
+    """The messaging "Reply \"skip\"" hint is for chat adapters, where a typed reply answers the card.
+    A local viewer (TUI / Desktop / CLI) renders a modal with its own skip key, as on main (row 8)."""
+    from gateway.config import Platform
+    adapter = _CardAdapter()
+    from gateway.run_turn_runner import TurnRunner
+    from tools import clarify_gateway as cm
+    runner = object.__new__(TurnRunner)
+    runner._approval_owner = None
+    runner._ctx = SimpleNamespace(
+        _status_adapter=adapter, _status_chat_id="C1", _status_thread_metadata={},
+        session_key="sk1", stream_consumer_holder=[None],
+        source=SimpleNamespace(platform=Platform(platform)))
+
+    class _Fut:
+        def __init__(self, r): self._r = r
+        def result(self, timeout=None): return self._r
+    runner._schedule = lambda coro, label: _Fut(asyncio.run(coro))
+    runner._close_native_stream_boundary = lambda *a, **k: None
+    real_register = cm.register
+
+    def _register(**kwargs):
+        entry = real_register(**kwargs)
+        cm.resolve_gateway_clarify(kwargs["clarify_id"], "a")
+        return entry
+    with patch.object(cm, "register", _register), \
+            patch("tools.clarify_gateway.get_clarify_timeout", return_value=0.05):
+        runner._clarify_callback_sync(_ONE_QUESTION)
+    assert adapter.asked[0].startswith("Pick one")
+    assert ("skip" in adapter.asked[0]) is hinted, adapter.asked

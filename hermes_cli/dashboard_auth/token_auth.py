@@ -46,7 +46,7 @@ def clear_token_routes() -> None:
         _token_routes.clear()
 
 
-def authenticate_token(request: Request) -> Tuple[Optional[TokenPrincipal], Optional[str]]:
+def authenticate_token(request: Request) -> tuple[Optional[TokenPrincipal], Optional[str]]:
     """Try every token provider against the request's bearer token. Returns ``(principal, None)``
     on success; ``(None, None)`` for no token or no recogniser (401); ``(None, name)`` when no
     provider accepted it AND at least one was unreachable (caller surfaces 503). Never raises."""
@@ -63,7 +63,7 @@ def authenticate_token(request: Request) -> Tuple[Optional[TokenPrincipal], Opti
             if unreachable is None:
                 unreachable = provider.name
             continue
-        except Exception as e:  # noqa: BLE001 — a buggy provider must not 500 the gate
+        except Exception as e:
             _log.warning("dashboard-auth: token provider %r raised during verify: %s",
                          provider.name, e)
             continue

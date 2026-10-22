@@ -6,9 +6,13 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { CheckCircle2 } from '@/lib/icons'
 import { fmtDateTime, relativeTime } from '@/lib/time'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
+
+/** Trust tiers read at a glance (same tones as the installed-plugin pill); the rest stay muted. */
+const SOURCE_TONE: Record<string, 'default' | 'success'> = { official: 'default', verified: 'success' }
 
 interface CatalogMetadataProps {
   entry: CatalogEntry
@@ -30,12 +34,13 @@ interface CatalogChip {
   onClick?: () => void
 }
 
-/** Source, version and stars, trailing the author line. */
+/** Source and version, leading the card footer. Stars sit opposite them. */
 export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
   return (
-    <span className="flex min-w-0 shrink-0 items-center gap-1">
+    <span className="flex min-w-0 items-center justify-start gap-1">
       {entry.source && (
-        <Badge className="max-w-full" size="xs" variant="muted">
+        <Badge className="max-w-full" size="xs" variant={SOURCE_TONE[entry.source] ?? 'muted'}>
+          {entry.source === 'verified' && <CheckCircle2 aria-hidden className="size-3 shrink-0" />}
           <span className="truncate">{catalogLabel(entry.source)}</span>
         </Badge>
       )}
@@ -44,12 +49,17 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
           v{entry.version}
         </Badge>
       )}
-      {entry.stars !== null && entry.stars > 0 && (
-        <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
-          <Codicon name="star-full" size="0.65rem" />
-          {compactNumber(entry.stars)}
-        </span>
-      )}
+    </span>
+  )
+}
+
+export function CatalogRating({ entry }: { entry: CatalogEntry }) {
+  if (entry.stars === null || entry.stars <= 0) {return null}
+
+  return (
+    <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
+      <Codicon name="star-full" size="0.65rem" />
+      {compactNumber(entry.stars)}
     </span>
   )
 }
@@ -110,7 +120,7 @@ export function CatalogMetadata({ entry, onCategory, onTag, onSearch, onOpen, li
   ]
 
   const commands = (entry.commands ?? []).map(value => `/${value.replace(/^\//, '')}`)
-  const visible = expanded ? secondary : secondary.slice(0, limit ?? 5)
+  const visible = expanded ? secondary : secondary.slice(0, limit ?? 1)
   const remaining = secondary.length - visible.length
 
   const chip = ({ id, label, hint, quiet, onClick }: CatalogChip) => {

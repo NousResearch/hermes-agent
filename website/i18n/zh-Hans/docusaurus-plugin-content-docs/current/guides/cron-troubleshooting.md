@@ -72,7 +72,7 @@ hermes cron list   # 将 next_run 时间与本地时间对比
 | `local` | 对 `~/.hermes/cron/output/` 有写权限 |
 | `origin` | 投递到创建该任务的聊天会话 |
 
-其他支持的平台包括 `mattermost`、`homeassistant`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot` 和 `webhook`。你也可以使用 `platform:chat_id` 语法指定特定聊天（例如 `telegram:-1001234567890`）。
+其他支持的平台包括 `mattermost`、`homeassistant`（插件）、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot` 和 `webhook`。你也可以使用 `platform:chat_id` 语法指定特定聊天（例如 `telegram:-1001234567890`）。
 
 若投递失败，任务仍会执行——只是不会发送到任何地方。检查 `hermes cron list` 中的 `last_error` 字段（如有）。
 

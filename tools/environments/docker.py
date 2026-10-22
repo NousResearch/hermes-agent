@@ -15,13 +15,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE
+from hermes_constants import get_hermes_home
+from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
 from tools.terminal_tool_config import (
     _host_path_key, _is_windows_drive_path, cwd_follows_host_mount,
 )
@@ -31,6 +33,8 @@ from tools.environments.docker_egress import (
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
     check_forward_env_collisions, merge_egress_env,
 )
+from tools.environments.docker_ownership import (
+    hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
@@ -45,6 +49,12 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
+_ENVIRONMENT_LABEL_KEY = "hermes-environment"
+# Stamped at create time on per-workspace persistent containers (task key ``<base>:ws:<digest>``)
+# with the digest as its value. The orphan reaper reads it to spare a container the idle reaper
+# stopped on purpose; ``hermes-task-id`` cannot serve, it is truncated to 63 chars.
+_WORKSPACE_LABEL_KEY = "hermes-workspace"
+_WORKSPACE_TASK_RE = re.compile(r":ws:([0-9a-f]{16})$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -125,6 +135,52 @@ def _container_identity(shared_key: str = "") -> str:
     return f"{_sanitize_label_value(shared_key)[:50]}-{digest}"
 
 
+def _is_volatile_mount_spec(spec: str) -> bool:
+    """True when *spec* is a ``host:container[:mode]`` mount whose host source is a
+    per-process tempdir (a ``mkdtemp`` under the system temp), so its path is random
+    per process and must not be hashed into the reuse label.
+
+    The known source is the symlink-safe skills copy from
+    ``credential_files._safe_skills_path``: any symlink under ``skills/`` makes it a
+    fresh ``mkdtemp`` per process. Stable host paths — including a symlink-free
+    skills dir, which mounts directly — never sit under the process tempdir.
+    """
+    if spec in ("-v", "--mount") or ":" not in spec:
+        return False  # the flag element itself, or a non-bind arg (tmpfs modes etc.)
+    parsed = _split_volume_spec(spec)
+    source = parsed[0] if parsed is not None else spec.split(":", 1)[0]
+    if _is_windows_drive_path(source):
+        return False  # drive-letter hosts can never be the POSIX process tempdir
+    try:
+        temp_root = os.path.realpath(tempfile.gettempdir())
+        source_abs = os.path.realpath(os.path.abspath(os.path.expanduser(source)))
+        return source_abs == temp_root or source_abs.startswith(temp_root + os.sep)
+    except OSError:  # unreadable source — treat as stable, fail the safe way
+        return False
+
+
+def _reuse_environment_fingerprint(*, image: str, mount_args: list[str], hermes_home: str) -> str:
+    """Hash immutable configuration so reuse cannot silently attach to stale mounts.
+
+    Hash requested values rather than exposing profile paths and volume sources in labels.
+    Keep mount order: later arguments can override earlier mount destinations.
+    Per-process tempdir-sourced mounts (the symlink-safe skills copy) have their volatile
+    host path replaced by a stable placeholder: the path is random per process, so hashing
+    it made the label differ across processes and cross-process container reuse never
+    matched for users with any symlink under ``skills/``. The container path stays in the
+    hash, so moving where that mount lands still forces a fresh container.
+    """
+    normalized_home = os.path.normcase(os.path.abspath(os.path.expanduser(hermes_home)))
+    canonical_mounts = [
+        (f"<volatile-tempdir-mount>:{spec.split(':', 1)[1]}"
+         if _is_volatile_mount_spec(spec) else spec)
+        for spec in mount_args]
+    payload = json.dumps(
+        {"image": image, "mount_args": canonical_mounts, "hermes_home": normalized_home},
+        sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
 def reap_orphan_containers(
     *, max_age_seconds: int = 600, profile_filter: str | None = None, docker_exe: str | None = None,
 ) -> int:
@@ -146,7 +202,7 @@ def reap_orphan_containers(
         return 0
 
     # Per-container inspect keeps the failure blast radius to one container.
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     removed = 0
     for cid in (ln.strip() for ln in listing.stdout.splitlines() if ln.strip()):
         finished_at = _container_finished_at(docker, cid)
@@ -154,6 +210,9 @@ def reap_orphan_containers(
             continue
         age = (now - finished_at).total_seconds()
         if age < max_age_seconds:
+            continue
+        strip_sandbox_privileges(docker, cid)  # its teardown never ran; owners stay (it may restart)
+        if _is_idle_workspace_container(docker, cid):
             continue
         # No -f: a sibling may have restarted the container between the ps snapshot
         # and now (FinishedAt still reports the previous exit), and the daemon refuses
@@ -168,6 +227,20 @@ def reap_orphan_containers(
         else:
             logger.debug("docker rm %s failed: %s", cid[:12], result.stderr.strip())
     return removed
+
+
+def _is_idle_workspace_container(docker_exe: str, container_id: str) -> bool:
+    """A persistent per-workspace container (task key ``<base>:ws:<digest>``, stamped with the
+    ``hermes-workspace=<digest>`` label at create time) that the idle reaper STOPPED on purpose
+    (``DockerEnvironment.stop_idle``): it is that workspace's sandbox, restarted on next use, not an
+    orphan. Reads the dedicated label, never the 63-char-truncated ``hermes-task-id``, whose
+    ``_ws_<digest>`` suffix a long profile name cuts. Unknown (inspect failed) reads as not one."""
+    result = _docker_query(
+        [docker_exe, "inspect", "--format", f'{{{{index .Config.Labels "{_WORKSPACE_LABEL_KEY}"}}}}', container_id],
+        timeout=10, fail="orphan reaper docker inspect %s failed: %s", fail_args=(container_id[:12],))
+    if result is None or result.returncode != 0:
+        return False
+    return re.fullmatch(r"[0-9a-f]{16}", result.stdout.strip()) is not None
 
 
 def _container_finished_at(docker_exe: str, container_id: str):
@@ -593,14 +666,14 @@ class DockerEnvironment(BaseEnvironment):
         disk: int = 0,
         persistent_filesystem: bool = False,
         task_id: str = "default",
-        volumes: list = None,
+        volumes: list | None = None,
         forward_env: list[str] | None = None,
         env: dict | None = None,
         network: bool = True,
         host_cwd: Optional[str] = None,
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
-        extra_args: list = None,
+        extra_args: list | None = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
@@ -622,6 +695,8 @@ class DockerEnvironment(BaseEnvironment):
         self._init_env_values: dict[str, str] = {}
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
+        # (host_dir, container_path) of the Hermes-created sandbox bind mounts; owner handback targets.
+        self._sandbox_mounts: list[tuple[str, str]] = []
         logger.info("DockerEnvironment volumes: %s", volumes)
         if volumes is not None and not isinstance(volumes, list):
             logger.warning("docker_volumes config is not a list: %r", volumes)
@@ -684,6 +759,14 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label}
+        if workspace := _WORKSPACE_TASK_RE.search(task_id or ""):
+            self._labels[_WORKSPACE_LABEL_KEY] = workspace.group(1)
+        # Explicit sharing opts into the first creator's settings. Otherwise,
+        # changed image/mount/home configuration must start a fresh container.
+        if not shared_container_key:
+            self._labels[_ENVIRONMENT_LABEL_KEY] = _reuse_environment_fingerprint(
+                image=image, mount_args=[*writable_args, *volume_args],
+                hermes_home=str(get_hermes_home()))
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_pinned = image_pinned
@@ -694,6 +777,9 @@ class DockerEnvironment(BaseEnvironment):
             task_label, profile_name, egress_label, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
+        else:  # it never stopped, so no teardown stripped what it left
+            strip_sandbox_privileges(self._docker_exe, self._container_id)
+        reclaim_sandbox_files(self._docker_exe, self._container_id, self._sandbox_mounts)
 
         # Init-time env forwarding args seed the snapshot.
         self._init_env_args = self._build_init_env_args()
@@ -819,17 +905,18 @@ class DockerEnvironment(BaseEnvironment):
 
         writable_args: list[str] = []
         if self._persistent:
-            from tools.environments.base import get_sandbox_dir
             # _sandbox_dir_name(): a raw session-key task_id carries colons,
             # which `-v` reads as extra spec fields (exit 125).
             sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
-            writable_args += ["-v", f"{self._home_dir}:/root"]
+            self._sandbox_mounts = [(self._home_dir, "/root")]
             if mount_workspace:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
-                writable_args += ["-v", f"{self._workspace_dir}:/workspace"]
+                self._sandbox_mounts.append((self._workspace_dir, "/workspace"))
+            for host_dir, container_path in self._sandbox_mounts:
+                writable_args += ["-v", f"{host_dir}:{container_path}"]
         else:
             writable_args += ["--tmpfs", "/workspace:rw,exec,size=10g"] if mount_workspace else []
             writable_args += ["--tmpfs", "/home:rw,exec,size=1g", "--tmpfs", "/root:rw,exec,size=1g"]
@@ -967,7 +1054,7 @@ class DockerEnvironment(BaseEnvironment):
             logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, e)
             subprocess.run(
                 [self._docker_exe, "rm", "-f", container_name],
-                capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
+                capture_output=True, timeout=10, stdin=subprocess.DEVNULL, check=False)
             raise
         container_id = result.stdout.strip()
         logger.info("Started container %s (%s)", container_name, container_id[:12])
@@ -1130,7 +1217,7 @@ class DockerEnvironment(BaseEnvironment):
                 _storage_opt_ok = True
                 if probe.stdout.strip():
                     subprocess.run([docker, "rm", probe.stdout.strip()],
-                                   capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+                                   capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             elif "storage" in (probe.stderr or "").lower():
                 _storage_opt_ok = False  # daemon rejected --storage-opt: a host property
             # else: pull/daemon failure unrelated to storage-opt; not cached, retried next spawn
@@ -1159,7 +1246,8 @@ class DockerEnvironment(BaseEnvironment):
     def _find_reusable_container(
         self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
         """``(container_id, state)`` of an existing container labeled for this task/profile/
-        egress posture, or ``None`` on miss or any failure. The egress posture is a label
+        egress posture and immutable environment, or ``None`` on miss or any failure.
+        Explicit shared keys opt out of the environment filter. The egress posture is a label
         FILTER for every posture, "off" included: a container built with egress on must not be
         reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
         container this class creates carries the label. The ``{{.Label "key"}}`` template
@@ -1169,6 +1257,8 @@ class DockerEnvironment(BaseEnvironment):
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
             "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
+        if environment_label := self._labels.get(_ENVIRONMENT_LABEL_KEY):
+            filters.extend(["--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}"])
         result = _docker_query(
             [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",
@@ -1214,37 +1304,70 @@ class DockerEnvironment(BaseEnvironment):
                 self._remove_bind_dirs()
             return
 
+        # Capture what the worker needs — the thread can outlive ``self``.
+        docker_exe = self._docker_exe
+        log_id = container_id[:12]
+        sandbox_mounts = list(getattr(self, "_sandbox_mounts", []))
+
         if not force_remove and self._persist_across_processes:
             # Drop the in-process handle so a fresh __init__ re-probes via
             # labels instead of reusing a stale Python reference.
             self._container_id = None
+            # The host user may run what the container left before it is reattached.
+            self._start_teardown(lambda: strip_sandbox_privileges(docker_exe, container_id), log_id)
             return
-
-        # Capture what the worker needs — the thread can outlive ``self``.
-        docker_exe = self._docker_exe
-        log_id = container_id[:12]
 
         def _do_cleanup() -> None:
             for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
                                    (["rm", "-f"], "docker rm -f %s failed: %s")):
+                if argv[0] == "rm" and sandbox_mounts:  # stopped: no writer left, volumes still reachable
+                    hand_back_sandbox_files(docker_exe, container_id, sandbox_mounts)
                 try:
                     subprocess.run(
                         [docker_exe, *argv, container_id],
-                        capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+                        capture_output=True, timeout=30, stdin=subprocess.DEVNULL, check=False)
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning(fail_msg, log_id, e)
 
-        t = threading.Thread(target=_do_cleanup, daemon=True, name=f"hermes-cleanup-{log_id}")
-        with _TEARDOWN_LOCK:
-            _TEARDOWN_THREADS.add(t)
-        t.start()
-        self._cleanup_thread = t
+        self._start_teardown(_do_cleanup, log_id)
         self._container_id = None
 
         # Bind-mount dirs are the container's filesystem state; only drop them
         # once the container itself is removed.
         if not self._persistent:
             self._remove_bind_dirs()
+
+    def stop_idle(self) -> None:
+        """Idle reclaim of a per-workspace persistent container (#140665): ``docker stop``, never
+        ``rm``. Its writable layer and ``/root`` sandbox stay, and the next use in that workspace
+        re-attaches through :meth:`_attach_existing_container`, which ``docker start``s a stopped
+        container. Without this, persistent mode left one RUNNING container per workspace a user
+        ever opened (each with its own ``container_memory``) until the process exited. Like a
+        persist-mode cleanup, the host user may touch what it left before it is reattached, so its
+        sandbox privileges are stripped once it has stopped."""
+        container_id = self._container_id
+        if not container_id:
+            return
+        docker_exe, log_id = self._docker_exe, container_id[:12]
+
+        def _do_stop() -> None:
+            try:
+                subprocess.run([docker_exe, "stop", "-t", "10", container_id], capture_output=True,
+                               timeout=30, stdin=subprocess.DEVNULL, check=False)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logger.warning("docker stop %s (idle workspace) failed: %s", log_id, e)
+            strip_sandbox_privileges(docker_exe, container_id)
+
+        self._start_teardown(_do_stop, log_id)
+        self._container_id = None
+
+    def _start_teardown(self, work, log_id: str) -> None:
+        """Run *work* on a daemon thread the atexit drain joins."""
+        t = threading.Thread(target=work, daemon=True, name=f"hermes-cleanup-{log_id}")
+        with _TEARDOWN_LOCK:
+            _TEARDOWN_THREADS.add(t)
+        t.start()
+        self._cleanup_thread = t
 
     @staticmethod
     def wait_for_all_teardowns(timeout: float = 15.0) -> bool:

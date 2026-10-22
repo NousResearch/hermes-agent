@@ -64,7 +64,7 @@ def _make_adapter():
     return a
 
 
-def _slack_api_error(status_code: int, retry_after: str = None):
+def _slack_api_error(status_code: int, retry_after: str | None = None):
     """Simulate a SlackApiError with response status and optional Retry-After."""
     headers = {}
     if retry_after is not None:

@@ -8,16 +8,29 @@ export const SHARED_METRICS_DOCS_URL = 'https://hermes-agent.nousresearch.com/do
 
 export type SharedMetricsConsent = SharedMetricsConsentResult
 
-/** The first-run answers, as the two config opt-ins `hermes setup` writes. */
-export type SharedMetricsChoice = 'local' | 'off' | 'share'
+/** The first-run answers, as the two config opt-ins `hermes setup` writes: each sets both. */
+export type SharedMetricsChoice = 'off' | 'share'
 
 export const SHARED_METRICS_CHOICES: Record<SharedMetricsChoice, { enabled: boolean; send: boolean }> = {
   share: { enabled: true, send: true },
-  local: { enabled: true, send: false },
   off: { enabled: false, send: false }
 }
 
 export type SharedMetricsRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+/**
+ * Name the profile on every consent RPC: an unscoped one resolves to the
+ * backend's launch home, so on a shared backend the answer landed in another
+ * profile's config.yaml and the focused profile's offer never retired (#130714).
+ * `custom` is a HERMES_HOME outside profiles/ the backend cannot resolve by
+ * name; there the ambient route already is that home.
+ */
+export function sharedMetricsProfileRequester(
+  request: SharedMetricsRequester,
+  profile: string
+): SharedMetricsRequester {
+  return profile === 'custom' ? request : (method, params = {}) => request(method, { ...params, profile })
+}
 
 function isConsent(value: unknown): value is SharedMetricsConsent {
   return typeof value === 'object' && value !== null && typeof (value as SharedMetricsConsent).decided === 'boolean'

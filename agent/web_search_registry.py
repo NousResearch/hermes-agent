@@ -50,8 +50,12 @@ def _read_config_key(*path: str) -> Optional[str]:
 
 
 def _configured_backend(capability: str) -> Optional[str]:
-    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback)."""
-    return _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
+    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback). The managed ``nous``
+    selection names no provider: it is served by Perplexity (search) and Firecrawl (extract)."""
+    configured = _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
+    if configured and configured.lower() == "nous":
+        return "perplexity" if capability == "search" else "firecrawl"
+    return configured
 
 
 # Paid providers first so existing paid setups don't get downgraded to a free
@@ -74,7 +78,7 @@ def _keyless_preference() -> tuple:
 
         start = _ring_cursor % len(_KEYLESS_RING)
         return tuple(_KEYLESS_RING[start:] + _KEYLESS_RING[:start])
-    except Exception as exc:  # noqa: BLE001 — ring optional in stripped envs
+    except Exception as exc:
         logger.debug("keyless ring order unavailable: %s", exc)
     return _KEYLESS_PREFERENCE
 
@@ -132,7 +136,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             try:
                 if provider.is_keyless_available():
                     return provider
-            except Exception as exc:  # noqa: BLE001 — buggy provider skipped
+            except Exception as exc:
                 logger.debug("provider %s.is_keyless_available() raised %s", name, exc)
 
     return None
@@ -145,7 +149,7 @@ def _keyless_tier_enabled() -> bool:
 
         web_cfg = load_config().get("web") or {}
         return bool(web_cfg.get("keyless_fallback", True))
-    except Exception as exc:  # noqa: BLE001 — config layer optional
+    except Exception as exc:
         logger.debug("keyless_fallback config read failed: %s", exc)
         return True
 
@@ -185,7 +189,7 @@ def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Op
                 and loaded.error == "disabled via config" and _norm(key.split("/", 1)[1]) == want
             ):
                 return key
-    except Exception as exc:  # noqa: BLE001 — diagnostics are best-effort
+    except Exception as exc:
         logger.debug("disabled-web-plugin lookup failed: %s", exc)
     return None
 

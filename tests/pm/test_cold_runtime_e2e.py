@@ -37,7 +37,7 @@ class _ArchiveHandler(SimpleHTTPRequestHandler):
 
 def _run(command, *, cwd, env, expected=0, timeout=240):
     result = subprocess.run(command, cwd=cwd, env=env, capture_output=True,
-                            text=True, timeout=timeout)
+                            text=True, timeout=timeout, check=False)
     assert result.returncode == expected, (
         f"{command!r}\nexit={result.returncode}\n{result.stdout}\n{result.stderr}"
     )

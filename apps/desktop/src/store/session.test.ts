@@ -537,6 +537,17 @@ describe('mergeSessionPage', () => {
     expect(merged.find(s => s.id === 'a')?.message_count).toBe(2)
   })
 
+  it('does not preserve an omitted internal delegate child even when selected or working', () => {
+    const previous = [
+      session({ id: 'delegate-child', is_internal_child: true, parent_session_id: 'parent' }),
+      session({ id: 'visible-branch', parent_session_id: 'parent' })
+    ]
+
+    const merged = mergeSessionPage(previous, [], ['delegate-child', 'visible-branch'])
+
+    expect(merged.map(s => s.id)).toEqual(['visible-branch'])
+  })
+
   it('does not duplicate a working session the server already returned', () => {
     const previous = [session({ id: 'b' }), session({ id: 'a' })]
     const incoming = [session({ id: 'b', message_count: 4 }), session({ id: 'a' })]

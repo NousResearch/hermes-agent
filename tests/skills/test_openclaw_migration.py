@@ -433,7 +433,7 @@ def test_slack_settings_migrated(tmp_path: Path):
         workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
         selected_options={"slack-settings"},
     )
-    report = migrator.migrate()
+    migrator.migrate()
     env_text = (target / ".env").read_text(encoding="utf-8")
     assert "SLACK_BOT_TOKEN=xoxb-slack-bot" in env_text
     assert "SLACK_APP_TOKEN=xapp-slack-app" in env_text
@@ -464,7 +464,7 @@ def test_model_config_migrated(tmp_path: Path):
         workspace_target=None, overwrite=True, migrate_secrets=False, output_dir=None,
         selected_options={"model-config"},
     )
-    report = migrator.migrate()
+    migrator.migrate()
     config_text = (target / "config.yaml").read_text(encoding="utf-8")
     assert "anthropic/claude-sonnet-4" in config_text
 
@@ -492,7 +492,7 @@ def test_shared_skills_migrated(tmp_path: Path):
         workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
         selected_options={"shared-skills"},
     )
-    report = migrator.migrate()
+    migrator.migrate()
     imported = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "my-shared-skill" / "SKILL.md"
     assert imported.exists()
 
@@ -520,7 +520,7 @@ def test_daily_memory_merged(tmp_path: Path):
         workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
         selected_options={"daily-memory"},
     )
-    report = migrator.migrate()
+    migrator.migrate()
     mem_path = target / "memories" / "MEMORY.md"
     assert mem_path.exists()
     content = mem_path.read_text(encoding="utf-8")
@@ -556,7 +556,7 @@ def test_provider_keys_require_migrate_secrets_flag(tmp_path: Path):
         workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
         selected_options={"provider-keys"},
     )
-    report = migrator.migrate()
+    migrator.migrate()
     env_path = target / ".env"
     if env_path.exists():
         assert "sk-or-test-key" not in env_path.read_text(encoding="utf-8")
@@ -567,7 +567,7 @@ def test_provider_keys_require_migrate_secrets_flag(tmp_path: Path):
         workspace_target=None, overwrite=False, migrate_secrets=True, output_dir=None,
         selected_options={"provider-keys"},
     )
-    report2 = migrator2.migrate()
+    migrator2.migrate()
     env_text = (target / ".env").read_text(encoding="utf-8")
     assert "OPENROUTER_API_KEY=sk-or-test-key" in env_text
 

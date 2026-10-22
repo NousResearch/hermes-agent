@@ -3604,7 +3604,7 @@ tips:
   t069: "Cuireann hermes skills tap add myorg/skills-repo foinse scileanna GitHub shaincheaptha leis."
   t070: "Easpórtálann hermes skills snapshot export setup.json do chumraíocht scileanna le haghaidh cúltaca nó roinnte."
   t071: "Cuireann hermes mcp add github --command npx freastalaithe MCP leis ón líne ordaithe."
-  t072: "Ritheann hermes mcp serve Hermes féin mar fhreastalaí MCP do ghníomhairí eile."
+  t072: "Ritheann hermes mcp-serve Hermes féin mar fhreastalaí MCP do ghníomhairí eile."
   t073: "Ligeann hermes auth add duit eochracha API iolracha a chur leis le haghaidh rothlú linn dintiúr."
   t074: "Cumasaíonn hermes completion bash >> ~/.bashrc comhlánú táib do gach ordú agus próifíl."
   t075: "Leanann hermes logs -f agent.log i bhfíor-am. Scagann --level WARNING --since 1h an t-aschur."

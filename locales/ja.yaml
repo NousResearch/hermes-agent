@@ -3604,7 +3604,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo はカスタムの GitHub スキルソースを追加します。"
   t070: "hermes skills snapshot export setup.json はバックアップや共有のためにスキル設定をエクスポートします。"
   t071: "hermes mcp add github --command npx はコマンドラインから MCP サーバーを追加します。"
-  t072: "hermes mcp serve は Hermes 自体を他のエージェント向けの MCP サーバーとして実行します。"
+  t072: "hermes mcp-serve は Hermes 自体を他のエージェント向けの MCP サーバーとして実行します。"
   t073: "hermes auth add で認証情報プールのローテーション用に複数の API キーを追加できます。"
   t074: "hermes completion bash >> ~/.bashrc はすべてのコマンドとプロファイルの Tab 補完を有効にします。"
   t075: "hermes logs -f は agent.log をリアルタイムで追跡します。--level WARNING --since 1h で出力を絞り込めます。"

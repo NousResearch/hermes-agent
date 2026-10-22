@@ -41,7 +41,7 @@ hermes chat --provider openrouter  # Force OpenRouter
 hermes chat --toolsets "web,terminal,skills"
 
 # Start with one or more skills preloaded (rendered once into the session's prompt)
-hermes chat -s hermes-agent-dev,github-auth
+hermes chat -s hermes-agent,github
 
 # Resume previous sessions
 hermes --resume <session_id>  # Resume a specific session by ID (-r)
@@ -358,8 +358,8 @@ Then type `/status`, `/gpu`, or `/restart` in any chat. See the [Configuration g
 If you already know which skills you want active for the session, pass them at launch time:
 
 ```bash
-hermes -s hermes-agent-dev,github-auth
-hermes chat -s github-pr-workflow -s github-auth
+hermes -s hermes-agent,github
+hermes chat -s github -s codebase-inspection
 ```
 
 Hermes loads each named skill into the session prompt before the first turn. The same flag works in interactive mode and single-query mode.

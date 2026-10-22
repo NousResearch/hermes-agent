@@ -234,6 +234,9 @@ def cmd_send(args: argparse.Namespace) -> None:
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.
     tool_args = {"action": "send", "target": target, "message": message}
+    file_path = getattr(args, "file", None)
+    if file_path and file_path != "-" and Path(file_path).suffix.lower() == ".md":
+        tool_args["markdown_file"] = True
     if mentions:
         tool_args["mentions"] = mentions
     result = send_message_tool(tool_args)

@@ -1,8 +1,10 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { queryClient } from '@/lib/query-client'
+import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
 import { setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
 
 import { useHostedConnectors } from './queries'
@@ -15,7 +17,7 @@ function gateway(listed: object[]) {
       ({
         'connectors.accounts': { accounts: [] },
         'connectors.catalog': { connectors: [] },
-        'connectors.list': { available: true, connectors: listed },
+        'connectors.list': { available: true, connectors: [...listed] },
         'connectors.policy.get': { effective: { mode: 'unrestricted' }, layers: [] }
       })[method]
   )
@@ -27,11 +29,10 @@ function gateway(listed: object[]) {
   return request
 }
 
+// The page invalidates through the app's one query client, so the hook runs on it too.
 function mount() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   )
 
   return renderHook(() => useHostedConnectors('default'), { wrapper })
@@ -40,7 +41,10 @@ function mount() {
 const asked = (request: ReturnType<typeof gateway>, method: string) =>
   request.mock.calls.some(([name]) => name === method)
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  queryClient.clear()
+})
 
 describe('connector rules on the Connectors page', () => {
   it('are not asked for while the list is empty (no identity yet)', async () => {
@@ -58,6 +62,18 @@ describe('connector rules on the Connectors page', () => {
     const request = gateway([row])
 
     mount()
+
+    await waitFor(() => expect(asked(request, 'connectors.policy.get')).toBe(true))
+  })
+
+  it('are asked for once an identity appears outside the page (an agent connect in a chat)', async () => {
+    const listed: object[] = []
+    const request = gateway(listed)
+    const { result } = mount()
+
+    await waitFor(() => expect(result.current.phase).toBe('ready'))
+    listed.push(row)
+    noteFreeTierTurnComplete()
 
     await waitFor(() => expect(asked(request, 'connectors.policy.get')).toBe(true))
   })

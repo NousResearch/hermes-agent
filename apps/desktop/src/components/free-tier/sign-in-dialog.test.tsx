@@ -185,14 +185,14 @@ describe('FreeTierSignInDialog', () => {
         $freeTierStatus.set({ ...dueNow, nudge_due_in: 0 })
       })
 
-      expect(requestGateway).not.toHaveBeenCalledWith('free_tier.claim_nudge', { kind: 'trial' })
+      expect(requestGateway).not.toHaveBeenCalledWith('free_tier.claim_nudge', undefined)
 
       await act(async () => {
         setOnboardingSurfaceActive('onboarding', false)
       })
 
       await waitFor(() => expect(screen.getByText('Keep going with Hermes')).toBeTruthy())
-      expect(requestGateway).toHaveBeenCalledWith('free_tier.claim_nudge', { kind: 'trial' })
+      expect(requestGateway).toHaveBeenCalledWith('free_tier.claim_nudge', undefined)
     })
 
     it('a finished free-tier turn re-reads the status, and a due offer opens with no user action', async () => {

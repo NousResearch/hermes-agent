@@ -230,7 +230,9 @@ async function claimFreeTierOffer(requestGateway: FreeTierRequester, kind: FreeT
   let claimed: boolean
 
   try {
-    claimed = (await requestGateway<FreeTierClaimNudgeResult>('free_tier.claim_nudge', { kind }))?.claimed === true
+    // A trial claim sends no `kind`: an older backend rejects the unknown key, and defaults to the trial.
+    const params = kind === 'trial' ? undefined : { kind }
+    claimed = (await requestGateway<FreeTierClaimNudgeResult>('free_tier.claim_nudge', params))?.claimed === true
   } catch {
     // Not claimed; the next status read tries again. No re-read here, or a failing call would loop.
     return

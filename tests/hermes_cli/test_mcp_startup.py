@@ -295,3 +295,36 @@ def test_background_discovery_does_not_retry_when_servers_connected(monkeypatch)
         logger=_retry_logger(), thread_name="test-mcp-noretry-2"
     )
     assert calls["mcp"] == 1
+
+
+@pytest.mark.parametrize("config_val", [{}, {"mcp_servers": {}}, {"mcp_servers": None}])
+def test_background_discovery_with_no_configured_mcp_servers_emits_no_warning_and_creates_no_thread(monkeypatch, config_val):
+    """Calling start_background_mcp_discovery repeatedly when no MCP servers are configured
+    must never create a background thread and must never emit a retry warning."""
+    warnings = []
+    fake_logger = types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda msg, *_a, **_k: warnings.append(msg),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(read_raw_config=lambda: config_val),
+    )
+
+    # First call: sets started=True, creates no thread, emits no warning
+    mcp_startup.start_background_mcp_discovery(
+        logger=fake_logger, thread_name="test-mcp-no-server-1"
+    )
+    assert mcp_startup._mcp_discovery_started is True
+    assert mcp_startup._mcp_discovery_thread is None
+    assert warnings == []
+
+    # Second call: returns early from started check, creates no thread, emits no warning
+    mcp_startup.start_background_mcp_discovery(
+        logger=fake_logger, thread_name="test-mcp-no-server-2"
+    )
+    assert mcp_startup._mcp_discovery_started is True
+    assert mcp_startup._mcp_discovery_thread is None
+    assert warnings == []
+

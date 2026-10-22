@@ -1,18 +1,12 @@
-# This test must pass on the unmodified codecrc (before the fix) and document
-# the exact regression: a single Responses function_call surfaced as two
-# same-id items (one with arguments, one with empty ``{}``) was executed twice,
-# emitting an empty-argument tool call that ran with default/no args.
-"""Regression: same-id function_call must yield exactly one tool call.
+"""Regression: one Responses function call surfaced as two same-identity items runs once.
 
-luna/sol responses can announce a function_call through multiple same-id events
-(a bare ``output_item.added`` with empty arguments followed by a completed
-``output_item.done``, or two ``output_item.done`` frames for the same id, one
-empty).  Hermes previously kept every same-id copy, so one logical tool call
-became two ``tool_calls`` entries — the empty-argument twin reaching the tool
-executor (e.g. ``read_file`` on the workdir) and erroring.
-
-This test pins the assembler to emit one item per call id, preferring the copy
-that carries non-empty arguments.
+Copilot Responses backends (gpt-5.6-luna / gpt-5.6-sol) can emit one logical call as a
+populated item plus an empty ``{}`` twin with the same call identity: in a non-streamed
+``response.output`` or as repeated ``output_item.done`` frames. Hermes executed both and
+the empty twin failed (``read_file`` on the workdir). Rotating stream item ids and stale
+settled announcements are fixed in the assembler by #135285
+(tests/agent/test_codex_stream_rotating_item_ids.py); this file pins the shared normalizer
+that both routes reach through ``_normalize_codex_response``.
 """
 
 import subprocess
@@ -43,74 +37,6 @@ def _assembler():
 def _finish(a: _CodexResponseAssembler):
     a.feed(_ev("response.completed", response=SimpleNamespace(id="r", usage=None, status="completed")))
     return a.result().output
-
-
-def _calls(output):
-    return [
-        (getattr(it, "id", None), getattr(it, "arguments", None))
-        for it in output
-        if "function_call" in str(getattr(it, "type", ""))
-    ]
-
-
-def test_done_plus_empty_added_same_id_single_call():
-    a = _assembler()
-    a.feed(_ev("response.output_item.added",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments=""), output_index=0))
-    a.feed(_ev("response.function_call_arguments.delta", item_id="fc_1", delta='{"a":1}'))
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments='{"a":1}'), output_index=0))
-    calls = _calls(_finish(a))
-    assert len(calls) == 1, calls
-    assert calls[0] == ("fc_1", '{"a":1}')
-
-
-def test_two_done_frames_same_id_empty_then_full_single_call():
-    a = _assembler()
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments="{}"), output_index=0))
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments='{"a":1}'), output_index=1))
-    calls = _calls(_finish(a))
-    assert len(calls) == 1, calls
-    assert calls[0] == ("fc_1", '{"a":1}')
-
-
-def test_two_done_frames_same_id_distinct_calls_preserved():
-    """Different ids (and genuinely different calls) are never merged."""
-    a = _assembler()
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments='{"a":1}'), output_index=0))
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="function_call", id="fc_2", name="y", arguments='{"b":2}'), output_index=1))
-    calls = _calls(_finish(a))
-    assert len(calls) == 2, calls
-
-
-def test_all_empty_duplicates_keeps_first():
-    a = _assembler()
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments="{}"), output_index=0))
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments="{}"), output_index=1))
-    calls = _calls(_finish(a))
-    assert len(calls) == 1, calls
-    assert calls[0][0] == "fc_1"
-
-
-def test_message_items_untouched():
-    a = _assembler()
-    a.feed(_ev("response.output_item.added",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments=""), output_index=0))
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="function_call", id="fc_1", name="x", arguments='{"a":1}'), output_index=0))
-    a.feed(_ev("response.output_item.done",
-               item=SimpleNamespace(type="message", role="assistant", status="completed",
-                                    content=[SimpleNamespace(type="output_text", text="hi")]), output_index=1))
-    out = _finish(a)
-    kinds = [str(getattr(it, "type", "")) for it in out]
-    assert kinds.count("message") == 1
-    assert len(_calls(out)) == 1
 
 
 # --- Non-streamed normalize path (agent/transports/codex.py -> _normalize_codex_response) ---
@@ -171,6 +97,18 @@ def _normalized_message(items, streamed):
 def _normalized_calls(items, streamed):
     message = _normalized_message(items, streamed)
     return [(call.id, call.function.name, call.function.arguments) for call in message.tool_calls]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("arguments,expected", [
+    (("{}", '{"a":1}'), '{"a":1}'),
+    (('{"a":1}', "{}"), '{"a":1}'),
+    (("{}", "{}"), "{}"),
+], ids=["empty-then-full", "full-then-empty", "all-empty"])
+def test_repeated_frames_without_call_id_collapse(streamed, arguments, expected):
+    items = [SimpleNamespace(type="function_call", id="fc_1", name="x", status="completed", arguments=value)
+             for value in arguments]
+    assert [(name, args) for _, name, args in _normalized_calls(items, streamed)] == [("x", expected)]
 
 
 @pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])

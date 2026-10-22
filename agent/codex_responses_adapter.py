@@ -1139,7 +1139,8 @@ def _dedupe_function_call_items(output: List[Any]) -> List[Any]:
     """Keep the populated twin of a function call without merging distinct identities.
 
     Work on raw Responses items: normalization erases the distinction between a real
-    call_id and a fallback item ID. Share this rule with the streaming assembler.
+    call_id and a fallback item ID. Streamed and non-streamed responses both reach this
+    through _normalize_codex_response.
     """
     positions: Dict[tuple[str, str, str], int] = {}
     result: List[Any] = []

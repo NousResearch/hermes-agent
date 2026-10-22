@@ -928,8 +928,6 @@ class _CodexResponseAssembler:
         return [entry[2] for entry in indexed]
 
     def result(self) -> SimpleNamespace:
-        from agent.codex_responses_adapter import _dedupe_function_call_items
-
         # With only plain text deltas (no tool calls), synthesize one message item.
         output: List[Any] = list(self.output_items)
         if not output and self.text_deltas and not self.has_tool_calls:
@@ -939,10 +937,6 @@ class _CodexResponseAssembler:
         # per-item done events on a successful completion.
         if self.pending_function_calls and self.saw_response_completed:
             output = self._settled_output()
-        # Guard against same-id function_calls emitted as multiple frames (bare added + done, or
-        # repeated done) collapsing into the same logical tool call.  Must run after settlement so
-        # both the done-only and settle paths are deduplicated.
-        output = _dedupe_function_call_items(output)
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")

@@ -32,7 +32,7 @@ def test_build_browser_env_excludes_aws_chain_keeps_backend_keys(aws_env):
 
 def test_scrub_covers_shared_sanitizer_leftovers(monkeypatch):
     """Even if the shared sanitizer lets AWS vars through, the browser boundary drops them."""
-    import tools.environments.local as local
+    from tools.environments import local
 
     monkeypatch.setattr(local, "hermes_subprocess_env", lambda inherit_credentials=False: dict(AWS_VARS, PATH="/usr/bin"))
 
@@ -43,7 +43,7 @@ def test_scrub_covers_shared_sanitizer_leftovers(monkeypatch):
 
 
 def test_command_env_excludes_aws_chain_keeps_backend_keys(aws_env, monkeypatch):
-    import hermes_cli.browser_runtime as browser_runtime
+    from hermes_cli import browser_runtime
 
     monkeypatch.setattr(browser_runtime, "chromium_executable", lambda: None)
 

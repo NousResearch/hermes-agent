@@ -417,7 +417,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 
 看板有两种方式处理你放入 Triage 列的任务：
 
-**自动（默认）** —— `kanban.auto_decompose: true`。Gateway 内嵌调度器在每个 tick 运行**分解器**，受 `kanban.auto_decompose_per_tick`（默认每 tick 3 个任务）限制，以防批量加载分诊任务时突发消耗辅助 LLM。分解器读取粗略想法，查看你安装的配置文件及其描述，并要求 LLM 生成 JSON 任务图：要启动哪些任务、分配给谁，以及哪些依赖哪些。原始分诊任务成为图中每个叶节点的父级，因此它保持存活直到整个图完成 —— 然后推进回 `ready`，让其受让人（编排器配置文件）判断完成情况，并在工作未完成时添加更多任务。这是"丢一行描述，走开"的流程。
+**自动（显式启用）** —— 设置 `kanban.auto_decompose: true`。Gateway 内嵌调度器随后在每个 tick 运行**分解器**，受 `kanban.auto_decompose_per_tick`（默认每 tick 3 个任务）限制，以防批量加载分诊任务时突发消耗辅助 LLM。分解器读取粗略想法，查看你安装的配置文件及其描述，并要求 LLM 生成 JSON 任务图：要启动哪些任务、分配给谁，以及哪些依赖哪些。原始任务作为每个子任务的父级保持存活，因此当所有子任务完成时，编排器会重新唤醒以判断完成情况，并在工作未完成时添加更多任务。
 
 **手动** —— `kanban.auto_decompose: false`。分诊任务保持在分诊中，直到你操作。点击卡片上的 **⚗ Decompose** 按钮，运行 `hermes kanban decompose <id>`（或 `--all`），或从聊天中使用 `/kanban decompose <id>`。这与看板的预分解器行为一致，适合需要完全控制运行时机的场景。
 
@@ -431,7 +431,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 
 | 键 | 默认值 | 用途 |
 |---|---|---|
-| `auto_decompose` | `true` | 调度器每 tick 为 Triage 任务运行内置分解器；它不会限制配置文件驱动的 `kanban_create` 或创建者唤醒回合。 |
+| `auto_decompose` | `false` | 显式设为 `true` 后，调度器才会每 tick 为 Triage 任务运行内置分解器；它不会限制配置文件驱动的 `kanban_create` 或创建者唤醒回合。 |
 | `auto_decompose_per_tick` | `3` | 每个调度器 tick 的分解上限。超出部分推迟到下一个 tick。 |
 | `orchestrator_profile` | `""` | 拥有分解权的配置文件。空 = 回退到活动默认配置文件。 |
 | `default_assignee` | `""` | LLM 选择未知配置文件时子任务的落地位置。空 = 回退到活动默认配置文件。 |

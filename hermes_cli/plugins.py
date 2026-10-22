@@ -616,6 +616,12 @@ class PluginContext:
         from hermes_cli.plugin_messages import apost
         return await apost(self, text)
 
+    def ask_choice(self, question: str, choices: list) -> Optional[str]:
+        """From a sync slash-command handler: ask its user to pick one of *choices* (``str`` or
+        ``{value, label?, description?}``); the value, or None if unanswerable: ``plugin_choices.py``."""
+        from hermes_cli.plugin_choices import ask_choice
+        return ask_choice(question, choices)
+
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's
         own profile config, never the calling thread's ambient home)."""

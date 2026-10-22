@@ -10,6 +10,7 @@ import asyncio
 from contextlib import asynccontextmanager, contextmanager
 import json
 import os
+import queue
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import signal
@@ -118,6 +119,7 @@ class _Wire:
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
         self.calls = []
+        self.events = queue.Queue()  # the session's frames (none reach this wire's ``call``)
 
         async def _open():
             return await websocket(home, desc)

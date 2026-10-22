@@ -6,8 +6,11 @@ its clients never asked the default gateway's control socket (``starting`` until
 the link's target as its own root (``--profile default``). That gateway held the profile's lock and blocked the
 default multiplexer's all-or-nothing reserve.
 """
+import json
 import os
 from pathlib import Path
+import time
+from types import SimpleNamespace
 
 from tests.gateway.test_hosted_group_members import _gateway, _link
 
@@ -135,3 +138,52 @@ def test_a_cold_linked_profile_starts_the_multiplexer_never_its_target(tmp_path,
     monkeypatch.setattr(start, 'spawn_unmanaged_gateway', lambda target, **k: spawned.append(Path(target)))
     ensure_gateway_runtime(link, timeout=0.5)
     assert spawned == [root.resolve()]
+
+
+def test_a_standalone_linked_profile_runs_under_its_profiles_entry(tmp_path, monkeypatch):
+    from hermes_cli import gateway_runtime_service as service, gateway_runtime_start as start, gateway_windows
+    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+
+    root, _target, link = _layout(tmp_path, monkeypatch, standalone=True)
+    started = []
+    monkeypatch.setattr(service, 'discover_existing_gateway_service', lambda *a, **k: None)
+    monkeypatch.setattr(gateway_windows, 'windowless_gateway_restart_spec',
+                        lambda command: (command, None, {'RUNTIME_TEST_OVERLAY': '1'}))
+    monkeypatch.setattr(start.subprocess, 'Popen', lambda command, **kwargs: started.append(
+        (command, kwargs['env']['HERMES_HOME'])) or SimpleNamespace(pid=1, poll=lambda: None))
+    ensure_gateway_runtime(link, timeout=0.5)
+    [(command, hermes_home)] = started
+    # The child's profile override trusts a profiles/<name> home; a bare target would boot as a root.
+    assert '--profile' not in command, command
+    assert hermes_home == str(root.resolve() / 'profiles' / 'linked')
+
+
+def test_a_target_folder_named_otherwise_answers_to_its_entry_name(tmp_path, monkeypatch):
+    """A junction's target folder can be called anything: served and parked verdicts read the entry's name."""
+    from hermes_cli.gateway_runtime import _canonical_home, _parked_by_multiplexer
+    from hermes_cli.gateway_runtime_multiplex import multiplexer_serves_home
+
+    root, _target, link = _layout(tmp_path, monkeypatch, folder='Hermes Work')
+    home = Path(_canonical_home(link))
+    (root / 'gateway_state.json').write_text(json.dumps({'served_profiles': ['default', 'linked']}), encoding='utf-8')
+    assert multiplexer_serves_home(home) == root.resolve()
+    parked = _parked_by_multiplexer({'parked_profiles': {'linked': 'session store unusable'}}, home)
+    assert (parked.state, parked.reason_code, parked.detail) == ('inaccessible', 'profile_parked', 'session store unusable')
+
+
+def test_a_home_nested_in_a_profile_starts_as_itself(tmp_path, monkeypatch):
+    """A custom home inside a profile's folder is started as that home, never as the enclosing profile."""
+    from hermes_cli import gateway_runtime_start as start, gateway_windows
+
+    root, _target, _linked = _layout(tmp_path, monkeypatch)
+    nested = root / 'profiles' / 'alpha' / 'task-home'
+    nested.mkdir(parents=True)
+    started = []
+    monkeypatch.setattr(gateway_windows, 'windowless_gateway_restart_spec',
+                        lambda command: (command, None, {'RUNTIME_TEST_OVERLAY': '1'}))
+    monkeypatch.setattr(start.subprocess, 'Popen', lambda command, **kwargs: started.append(
+        (command, kwargs['env']['HERMES_HOME'])) or SimpleNamespace(pid=1))
+    start.spawn_unmanaged_gateway(nested, deadline=time.monotonic() + 5)
+    [(command, hermes_home)] = started
+    assert command[command.index('--profile') + 1] == 'default'
+    assert hermes_home == str(nested.resolve())

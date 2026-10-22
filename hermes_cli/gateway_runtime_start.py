@@ -68,8 +68,11 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     root = Path(__file__).resolve().parent.parent
     # A root home is only pinned by an explicit selector: without one the child's
     # _apply_profile_override follows the sticky active_profile and boots the wrong
-    # profile's daemon. A <root>/profiles/<name> home is already trusted as-is.
-    selector = [] if home.parent.name == "profiles" else ["--profile", "default"]
+    # profile's daemon. A <root>/profiles/<name> home is already trusted as-is, and a linked
+    # profile (resolved outside profiles/) is started under that entry, never as its own root.
+    from hermes_cli.gateway_runtime_multiplex import profile_entry
+    named = profile_entry(home) or (home if home.parent.name == "profiles" else None)
+    selector = [] if named is not None else ["--profile", "default"]
     command = [sys.executable, "-m", "hermes_cli.main", *selector, "gateway", "run", "--quiet",
                *(["--idle-exit"] if idle_exit else []), *(["--force"] if force else [])]
     # The target profile's own secrets, never the launching client's: a `hermes -p work` client's
@@ -83,7 +86,7 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
             raise RuntimeStartError("windows_interpreter_unavailable")
         env.update(overlay)
         env[_WINDOWS_GATEWAY_BREAKAWAY_ENV] = "1"
-    env.update(HERMES_HOME=str(home), HERMES_GATEWAY_DETACHED="1", PYTHONIOENCODING="utf-8")
+    env.update(HERMES_HOME=str(named or home), HERMES_GATEWAY_DETACHED="1", PYTHONIOENCODING="utf-8")
     # Profile selection is the explicit home, not the invoking client's display
     # name. Launch-only approval/context/config flags ride the launching session's frozen
     # policy, not the shared daemon or every later session.

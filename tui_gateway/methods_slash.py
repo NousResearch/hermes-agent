@@ -168,7 +168,12 @@ def _format_live_usage_tokens(session: dict) -> str:
 
     def n(key: str) -> str:
         return f"{int(usage.get(key) or 0):,}"
-    rows = [("Input tokens:", n("input")), ("Output tokens:", n("output"))]
+    rows = [("Input tokens:", n("input"))]
+    if usage.get("cache_read"):
+        rows.append(("Cache read tokens:", n("cache_read")))
+    if usage.get("cache_write"):
+        rows.append(("Cache write tokens:", n("cache_write")))
+    rows.append(("Output tokens:", n("output")))
     if int(usage.get("reasoning") or 0):
         rows.append(("Reasoning tokens:", n("reasoning")))
     rows += [("Prompt tokens:", n("prompt")), ("Completion tokens:", n("completion")),

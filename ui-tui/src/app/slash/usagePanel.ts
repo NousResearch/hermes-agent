@@ -5,6 +5,8 @@ import type { PanelSection } from '../../types.js'
  * context line, compressions), from main's `Usage` shape: the sidecar's `session.usage` RPC, or a
  * canonical owner's `session.stats` mapped through `usageFromTick`. */
 export interface UsageTotals {
+  cache_read?: null | number
+  cache_write?: null | number
   calls?: null | number
   compressions?: null | number
   context_estimated?: boolean | null
@@ -22,11 +24,16 @@ export function usageTotalsSections(r: UsageTotals): PanelSection[] {
 
   const rows: [string, string][] = [
     [t('slashCmd.session.usage.rowModel'), r.model ?? ''],
-    [t('slashCmd.session.usage.rowInputTokens'), f(r.input)],
+    [t('slashCmd.session.usage.rowInputTokens'), f(r.input)]
+  ]
+
+  if (r.cache_read) rows.push([t('slashCmd.session.usage.rowCacheReadTokens'), f(r.cache_read)])
+  if (r.cache_write) rows.push([t('slashCmd.session.usage.rowCacheWriteTokens'), f(r.cache_write)])
+  rows.push(
     [t('slashCmd.session.usage.rowOutputTokens'), f(r.output)],
     [t('slashCmd.session.usage.rowTotalTokens'), f(r.total)],
     [t('slashCmd.session.usage.rowApiCalls'), f(r.calls)]
-  ]
+  )
 
   const sections: PanelSection[] = [{ rows }]
 

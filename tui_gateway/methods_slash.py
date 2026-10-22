@@ -59,7 +59,7 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
         # UnscopedSecretError unless the same runtime scope a turn binds is here
         # (#117544; same wrap as _compress_live_with_feedback / #116611).
         with _session_profile_runtime_scope(session):
-            result = start_review(agent, snapshot, arg or "")
+            result = start_review(agent, snapshot, arg or "", cwd=_session_cwd(session))
     except ValueError as exc:
         return str(exc)
     except Exception as exc:

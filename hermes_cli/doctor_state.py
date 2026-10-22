@@ -230,6 +230,219 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 
 
+def _unproven_line(names: list[str], display_home: str) -> str:
+    """The manual-review line for family names not shaped like a pre-PM binary."""
+    return (
+        f"{', '.join(names)} in {display_home}/bin {'is' if len(names) == 1 else 'are'} not "
+        "shaped like a pre-PM uv binary (too small, not a native uv binary, a symlink, or "
+        "missing uv's own identity markers) "
+        "— if it is your own uv, leave it; if it is a leftover, remove it manually"
+    )
+
+
+def _unresolved_cleanup_parts(left: list[str], kept: list[str], verb: str, display_home: str) -> str:
+    """One line naming what a failed cleanup leaves behind, for either remedy.
+
+    ``left`` are leaves still at their public name, ``kept`` are quarantined copies;
+    the two remedies differ only in the verb (a manual delete vs a retried ``--fix``),
+    so the wording lives here rather than twice at the call sites.
+    """
+    parts = [f"{verb} {', '.join(left)} from {display_home}/bin" if left else "",
+             f"remove or restore the copy kept at {', '.join(kept)}" if kept else ""]
+    return "; ".join(part for part in parts if part)
+
+
+def _pm_has_replacement_uv() -> bool:
+    """Whether PM's store already carries its own uv, or ``False`` when that cannot be read.
+
+    Doctor must survive a damaged install: a corrupt ``pm/lock.json``, a store on a dead
+    share or an unreadable ``facts.json`` makes ``pm.is_installed`` raise, and an
+    exception here would abort the whole run before the remaining checks (including the
+    ones that would explain the damage). Unanswerable therefore means "assume not" — the
+    conservative branch keeps the legacy copy rather than deleting the install's only uv.
+    """
+    try:
+        import pm
+
+        return bool(pm.is_installed("uv"))
+    except Exception as exc:  # health: allow BLE001 -- a doctor check may not take the run down
+        check_warn("Could not confirm PM's own uv", f"({exc})")
+        return False
+
+
+@doctor_check()
+def _check_legacy_uv_shadow(should_fix: bool, f: Finding) -> None:
+    """Report (and with ``--fix`` delete) pre-PM ``uv``/``uvx`` in ``$HERMES_HOME/bin``.
+
+    A leftover shadows the user's own uv — ``bin`` sits on the Windows User
+    PATH and the agent terminal's PATH (#101269). Only the family goes once
+    PM's store carries its own uv; clean is reported only when it is actually
+    gone. Without :func:`legacy_uv.automatic_cleanup` the manual step is named, never a
+    ``--fix`` retry.
+
+    Scope is one home: the ``HERMES_HOME`` this run resolved. That is complete,
+    because only a home's own ``bin`` can shadow — the terminal prepends
+    ``get_hermes_home()/bin`` and install.ps1 puts the default root's ``bin`` on
+    the User PATH, so another profile's leftover is on no PATH. ``hermes
+    update``'s notice walks every profile anyway; it only points here.
+    """
+    from hermes_cli import legacy_uv
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_cli.legacy_uv import (
+        LEGACY_MANAGED_UV_NAMES,
+        bin_escapes_home,
+        classify_leftover,
+        remove_legacy_managed_uv,
+    )
+
+    _section("Legacy uv binaries")
+    if bin_escapes_home(HERMES_HOME):
+        # Behind a linked bin are the user's own files, not ours to name or clear.
+        return check_warn(
+            f"{_DHH}/bin resolves outside the Hermes home",
+            "(legacy-uv check skipped — files behind it are not Hermes' to remove)",
+        )
+    # Same shape policy as the anchored probe (classify_leftover): a link or
+    # under-the-floor file is a hint, never a deletable finding.
+    buckets: dict[str, list[str]] = {}
+    for name in LEGACY_MANAGED_UV_NAMES:
+        verdict = classify_leftover(HERMES_HOME / "bin" / name)
+        if verdict != legacy_uv.ABSENT:
+            buckets.setdefault(verdict, []).append(name)
+    unprobeable = buckets.get(legacy_uv.UNPROBEABLE, [])
+    unproven = buckets.get(legacy_uv.UNPROVEN, [])
+    removable = buckets.get(legacy_uv.REMOVABLE, [])
+    # A copy an earlier cleanup moved aside keeps NO public name, so every by-name
+    # bucket above reads clean while the file still sits in bin. Only a human can
+    # say whether it is theirs, hence manual_issues rather than a fix. Reported
+    # even when a by-name bucket exists: ``--fix`` clears those and would then
+    # print a clean section with the copy still there.
+    quarantined = legacy_uv.quarantined_leftovers(HERMES_HOME)
+    if quarantined:
+        _fail_and_issue(
+            f"A previous cleanup left {len(quarantined)} uv cop{'y' if len(quarantined) == 1 else 'ies'} "
+            f"aside in {_DHH}/bin",
+            f"({', '.join(p.name for p in quarantined)})",
+            "Each is a moved-aside copy whose removal and restore both failed — "
+            "restore it or delete it by hand",
+            f.manual_issues,
+        )
+    if not (unprobeable or unproven or removable):
+        # Nothing named is left: either the home is clean, or only the quarantined
+        # copies above remain — and those are already reported as unresolved.
+        return None if quarantined else check_ok(f"No pre-PM uv binaries in {_DHH}/bin")
+    if unprobeable:
+        if not legacy_uv.automatic_cleanup():
+            # Same platform gate as the removable branch below: on a fail-closed
+            # platform no ``--fix`` run deletes anything, so "retry" would be advice
+            # nothing can satisfy — the manual step is the only remedy.
+            return _fail_and_issue(
+                f"Pre-PM uv binaries in {_DHH}/bin could not be inspected",
+                f"({', '.join(unprobeable)})",
+                f"Automatic legacy-uv cleanup is not performed on this platform — "
+                f"inspect {', '.join(unprobeable)} in {_DHH}/bin and delete any leftover manually",
+                f.manual_issues,
+            )
+        return _fail_and_issue(
+            f"Pre-PM uv binaries in {_DHH}/bin could not be inspected",
+            f"({', '.join(unprobeable)})",
+            "The file changed or became inaccessible during the check; retry "
+            "`hermes doctor --fix`",
+            f.issues,
+        )
+    if unproven and not removable:
+        check_ok(f"No legacy-shaped uv binaries in {_DHH}/bin")
+        return check_info(_unproven_line(unproven, _DHH))
+    if unproven:
+        # ``--fix`` refuses to touch these, so name them here too: a headline
+        # listing only ``removable`` would hide the files the fix leaves behind.
+        check_info(_unproven_line(unproven, _DHH))
+    headline = f"Pre-PM uv binaries in {_DHH}/bin shadow your own uv"
+    detail = f"({', '.join(removable)})"
+    # Identity is product recognition, not an installation receipt (the old
+    # installer wrote none): the wording tells the user these are *shaped like*
+    # Hermes' old uv so a copy they placed there deliberately stays their call.
+    provenance = (
+        "Hermes wrote no install receipt for the old uv, so shape alone cannot prove "
+        "these copies are Hermes' own"
+    )
+    if not legacy_uv.automatic_cleanup():
+        provision = (
+            "PM's store has no uv yet, so these are this install's only uv — run "
+            "`hermes update` to provision PM's uv first, then "
+            if not _pm_has_replacement_uv()
+            else ""
+        )
+        # ``manual_issues``: no ``--fix`` run can ever clear this one (the cleanup
+        # fails closed by design), which is exactly what that bucket means.
+        return _fail_and_issue(
+            headline,
+            detail,
+            f"Automatic legacy-uv cleanup is not performed on this platform — leave these "
+            f"if they are yours ({provenance}); otherwise {provision}delete "
+            f"{', '.join(removable)} from {_DHH}/bin manually",
+            f.manual_issues,
+        )
+    if should_fix:
+        if not _pm_has_replacement_uv():
+            return _fail_and_issue(
+                headline,
+                detail,
+                "PM's store has no uv yet, so these are this install's only uv — "
+                "run `hermes update` to install uv into PM's store, then re-run "
+                "`hermes doctor --fix` to clear these",
+                f.issues,
+            )
+        outcome = remove_legacy_managed_uv(HERMES_HOME)
+        f.fixed += len(outcome.removed)
+        if outcome.unresolved:
+            # Neither a skip, nor a partial delete, nor a quarantined copy may read
+            # as a repair: a leaf whose dispose and restore both failed keeps no
+            # public name, so a by-name recheck would call it removed.
+            left = [p.name for p in outcome.remaining]
+            kept = [p.name for p in outcome.retained]
+            parts = []
+            if left:
+                parts.append(f"{', '.join(left)} still there")
+            if kept:
+                parts.append(f"{', '.join(kept)} moved aside and kept for recovery")
+            detail_text = "(" + "; ".join(parts) + " — cleanup could not complete)"
+            if not legacy_uv.automatic_cleanup():
+                # The rename itself found the filesystem rejects the no-clobber flag
+                # (the binding flipped mid-run): a "retry --fix" can never succeed
+                # here, so name the manual step instead of transient contention.
+                return _fail_and_issue(
+                    headline,
+                    detail_text.replace("cleanup could not complete",
+                                        "automatic cleanup is unsupported on this filesystem"),
+                    _unresolved_cleanup_parts(left, kept, "Delete", _DHH),
+                    f.manual_issues,
+                )
+            return _fail_and_issue(
+                headline,
+                detail_text,
+                _unresolved_cleanup_parts(left, kept, "Remove", _DHH)
+                + " — retry `hermes doctor --fix` once the active PM operation finishes",
+                f.issues,
+            )
+        noun = "binary" if len(outcome.removed) == 1 else "binaries"
+        return check_ok(
+            f"Removed {len(outcome.removed)} pre-PM uv {noun} from {_DHH}/bin",
+            f"({', '.join(removable)})",
+        )
+    remedy = (
+        "run `hermes update` to install uv into PM's store, then re-run `hermes doctor --fix` to remove them"
+        if not _pm_has_replacement_uv()
+        else "run `hermes doctor --fix` to remove them"
+    )
+    _fail_and_issue(
+        headline,
+        detail,
+        f"Leave these if they are yours ({provenance}); otherwise {remedy}",
+        f.issues,
+    )
+
+
 # Cache-root entries at least this big that no pruner covers get a doctor warning.
 _UNPRUNED_CACHE_WARN_BYTES = 1 << 30
 _PRUNED_CACHE_DIRS = frozenset({"scratch", "terminal"})

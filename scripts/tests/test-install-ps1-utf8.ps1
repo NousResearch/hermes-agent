@@ -120,8 +120,15 @@ class Fixture {
 
     # Run the supported setup/activation entry from a real temporary checkout.
     # Prestage uv at its pinned store path so setup needs no download or mocks.
+    # setup dot-sources the canonical resolver and uv-state pins relative to its
+    # own directory, so the isolated copy carries them too.
     $setupScript = Join-Path $testInstallDir 'setup-hermes.ps1'
     Copy-Item -LiteralPath (Join-Path $repoRoot 'setup-hermes.ps1') -Destination $setupScript
+    $bootstrapDir = Join-Path $testInstallDir 'scripts\bootstrap'
+    New-Item -ItemType Directory -Path $bootstrapDir -Force | Out-Null
+    foreach ($name in @('store_root.ps1', 'uv_state_pins.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot "scripts\bootstrap\$name") -Destination $bootstrapDir
+    }
     $env:HERMES_RUNTIME_DIR = Join-Path $profileDir 'tools'
     foreach ($arch in @('x64', 'arm64')) {
         $uvEntry = Join-Path $env:HERMES_RUNTIME_DIR "uv-fixture-win32-$arch"

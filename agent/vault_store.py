@@ -104,6 +104,13 @@ def normalize_otp_secret(value: str) -> str:
     return f"{seed}|{digits}|{period}|{algo}"
 
 
+def normalize_fixed_otp(value: str) -> str:
+    """Validate a deterministic OTP intended only for local testing."""
+    if not re.fullmatch(r"[0-9]{6}", value or ""):
+        raise VaultError("fixed test OTP must be exactly six decimal digits")
+    return value
+
+
 def totp_now(seed: str, *, digits: int = 6, period: int = 30, at: Optional[float] = None) -> str:
     """RFC 6238 TOTP for a stored seed (see normalize_otp_secret for the ``seed|digits|period|algo``
     form). Stdlib only."""
@@ -167,7 +174,7 @@ class VaultItemMeta:
     created_at: str
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
-    has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
+    has_otp: bool = False  # an OTP method is stored: 2FA codes can be supplied without asking the user
     # Every origin the password manager bound to this item (manager backends only;
     # ``origin`` is the first/primary one). Fill matching stays exact-origin against
     # this list — no wildcard or subdomain inference is ever derived from it.
@@ -340,10 +347,17 @@ class VaultStore:
             if not identifier or not secret.get("password"):
                 raise VaultError("login items require identifier and password")
             identifier_type = str(id_type)
-            # Login secret payload is password (+ optional TOTP seed); identifier lives in
+            # Login secret payload is password plus one optional OTP method; identifier lives in
             # metadata and any stray origin echo is dropped.
             otp_secret = normalize_otp_secret(str(secret.get("otp_secret") or ""))
-            secret = {"password": secret["password"], **({"otp_secret": otp_secret} if otp_secret else {})}
+            fixed_otp = str(secret.get("fixed_otp") or "")
+            if otp_secret and fixed_otp:
+                raise VaultError("login items cannot store both an authenticator key and fixed test OTP")
+            secret = {
+                "password": secret["password"],
+                **({"otp_secret": otp_secret} if otp_secret else {}),
+                **({"fixed_otp": normalize_fixed_otp(fixed_otp)} if fixed_otp else {}),
+            }
         else:
             allowed = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
             secret = {k: str(v) for k, v in secret.items() if k in allowed and str(v or "").strip()}
@@ -421,7 +435,7 @@ class VaultStore:
             created_at=str(rec.get("created_at", "")),
             identifier_type=rec.get("identifier_type") if identifier else None,
             identifier=identifier or None,
-            has_otp=bool((rec.get("secret") or {}).get("otp_secret")),
+            has_otp=bool((rec.get("secret") or {}).get("otp_secret") or (rec.get("secret") or {}).get("fixed_otp")),
         )
 
 

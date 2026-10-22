@@ -4,11 +4,12 @@
 coerced to a dict before the opt-out is written."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import hermes_yaml as yaml
 
 from agent.vault_store import VaultStore
-from hermes_cli.vault import _cmd_sources, vault_command
+from hermes_cli.vault import _cmd_add, _cmd_sources, vault_command
 
 
 def _corrupt_vault(home):
@@ -47,3 +48,19 @@ def test_vault_command_surfaces_corrupt_store_as_clean_error(tmp_path, monkeypat
     out = capsys.readouterr().out
     assert "Error" in out
     assert "corrupted" in out
+
+
+def test_vault_add_offers_fixed_test_otp_without_exposing_it(tmp_path, monkeypatch, capsys):
+    """Regression for #137094: the interactive fixed mode is an encrypted local-test secret."""
+    store = VaultStore(tmp_path / "vault")
+    answers = iter(["Test login", "https://example.com", "email", "test@example.com", "fixed"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: {"Password (hidden): ": "pw",
+                                                              "Fixed test OTP (six digits, hidden): ": "258000"}[_prompt])
+
+    with patch("agent.vault_store.get_vault_store", return_value=store):
+        _cmd_add(SimpleNamespace(kind="login"))
+
+    meta = store.list_items()[0]
+    assert store.resolve_secret(meta.id)["fixed_otp"] == "258000"
+    assert "258000" not in capsys.readouterr().out

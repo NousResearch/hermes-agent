@@ -1,9 +1,12 @@
 """Skills Hub GitHub adapter: API auth, tap providers, and the Contents/Trees source."""
 
+import hashlib
 import json
 import logging
+import re
 import subprocess
 import time
+import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import quote
@@ -201,6 +204,66 @@ def _tree_members(entries: list[dict], prefix: str):
             yield item_path[len(prefix):], item_path, item.get("type") == "blob" and item.get("mode") != "120000"
 
 
+def validate_revision(revision: str) -> str:
+    """Accept only a literal full lowercase commit SHA; never repair a caller's pin."""
+    if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise ValueError("revision must be a full 40-character lowercase hexadecimal commit SHA")
+    return revision
+
+
+def git_blob_hash(content: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(content)).encode("ascii") + b"\0" + content).hexdigest()
+
+
+def _portable_component_key(component: str) -> str:
+    """Conservative comparison identity, never a replacement for literal Git paths."""
+    basename = component.split(".", 1)[0].rstrip(" ").upper()
+    reserved = basename in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} or (
+        len(basename) == 4 and basename[:3] in {"COM", "LPT"} and basename[3] in "123456789¹²³")
+    if (component.endswith((".", " ")) or reserved
+            or any(char in '<>:"/\\|?*' or unicodedata.category(char) in {"Cc", "Cs"} for char in component)):
+        raise ValueError("Pinned tree contains a non-portable path component")
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", component).casefold())
+
+
+def _preflight_commit_members(entries: list[dict], prefix: str) -> Optional[list[tuple[str, str, str]]]:
+    """Validate explicit directories and implicit parents before downloading any blob."""
+    nodes: dict[str, tuple[str, str]] = {}
+    explicit: set[str] = set()
+    members = []
+    for item in entries:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not item["path"]:
+            return None
+        path = item["path"]
+        if not path.startswith(prefix):
+            continue
+        rel = path[len(prefix):]
+        kind, mode = item.get("type"), item.get("mode")
+        if (kind, mode) not in (("tree", "040000"), ("blob", "100644"), ("blob", "100755")):
+            return None
+        try:
+            if _validate_bundle_rel_path(rel) != rel:
+                return None
+            validate_revision(item.get("sha"))
+            keys = [_portable_component_key(part) for part in rel.split("/")]
+        except ValueError:
+            return None
+        if rel in explicit:
+            return None
+        explicit.add(rel)
+        parts = rel.split("/")
+        for index in range(1, len(parts) + 1):
+            component = "/".join(parts[:index])
+            node = (component, kind if index == len(parts) else "tree")
+            folded = "/".join(keys[:index])
+            if folded in nodes and nodes[folded] != node:
+                return None
+            nodes[folded] = node
+        if kind == "blob":
+            members.append((path, rel, item["sha"]))
+    return members
+
+
 class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
@@ -246,6 +309,7 @@ class GitHubSource(SkillSource):
         # search/install flow so repeated tree lookups cost no API calls.
         self._tree_cache: dict[str, Optional[tuple[str, list[dict]]]] = {}
         self._tree_revisions: dict[str, str] = {}
+        self._commit_trees: dict[tuple[str, str], Optional[tuple[str, list[dict]]]] = {}
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: dict[str, Optional[dict[str, str]]] = {}
         self._rate_limited: bool = False
@@ -279,8 +343,10 @@ class GitHubSource(SkillSource):
                 logger.debug("Failed to search %s: %s", tap['repo'], e)
         return _dedupe_by_trust(results)[:limit]
 
-    def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        """Download a skill; identifier format: "owner/repo/path/to/skill-dir"."""
+    def fetch(self, identifier: str, *, revision: Optional[str] = None) -> Optional[SkillBundle]:
+        """Download a skill; an explicit commit pin requires a complete verified bundle."""
+        if revision is not None:
+            return self._fetch_at_commit(identifier, validate_revision(revision))
         if (split := _split_repo_id(identifier)) is None:
             return None
         repo, skill_path = split
@@ -313,6 +379,76 @@ class GitHubSource(SkillSource):
         return SkillBundle(
             name=skill_dir.split("/")[-1] or repo.split("/")[-1], files=files, source="github", identifier=identifier,
             trust_level=self.trust_level_for(identifier), metadata={"source_url": url, "source_revision": revision},
+        )
+
+    def _get_commit_tree(self, repo: str, revision: str) -> Optional[tuple[str, list[dict]]]:
+        key = (repo, revision)
+        if key in self._commit_trees:
+            return self._commit_trees[key]
+        self._commit_trees[key] = None
+        commit = self._github_json(f"{_API}/{repo}/commits/{revision}")
+        if not isinstance(commit, dict) or commit.get("sha") != revision:
+            return None
+        details = commit.get("commit")
+        if not isinstance(details, dict) or not isinstance(details.get("tree"), dict):
+            return None
+        tree_sha = details["tree"].get("sha")
+        if not isinstance(tree_sha, str) or re.fullmatch(r"[0-9a-f]{40}", tree_sha) is None:
+            return None
+        data = self._github_json(f"{_API}/{repo}/git/trees/{tree_sha}",
+                                 params={"recursive": "1"}, timeout=30.0)
+        if (not isinstance(data, dict) or data.get("truncated") is not False
+                or data.get("sha") != tree_sha or not isinstance(data.get("tree"), list)):
+            return None
+        self._commit_trees[key] = result = (tree_sha, data["tree"])
+        return result
+
+    def _fetch_commit_files(self, repo: str, skill_dir: str, revision: str,
+                            entries: list[dict]) -> Optional[tuple[dict, dict]]:
+        prefix = f"{skill_dir}/" if skill_dir else ""
+        members = _preflight_commit_members(entries, prefix)
+        if members is None:
+            return None
+        files, hashes = {}, {}
+        for path, rel, blob_sha in members:
+            content = self._fetch_file_bytes(repo, path, ref=revision)
+            if content is None or git_blob_hash(content) != blob_sha:
+                return None
+            files[rel], hashes[rel] = content, blob_sha
+        return files, hashes
+
+    def _fetch_at_commit(self, identifier: str, revision: str) -> Optional[SkillBundle]:
+        split = _split_repo_id(identifier)
+        if split is None:
+            return None
+        repo, skill_dir = split[0], split[1].rstrip("/")
+        try:
+            if skill_dir and _validate_bundle_rel_path(skill_dir) != skill_dir:
+                return None
+            for component in skill_dir.split("/") if skill_dir else []:
+                _portable_component_key(component)
+        except ValueError:
+            return None
+        tree = self._get_commit_tree(repo, revision)
+        if tree is None:
+            return None
+        collected = self._fetch_commit_files(repo, skill_dir, revision, tree[1])
+        if collected is None:
+            return None
+        files, hashes = collected
+        try:
+            skill_md = files["SKILL.md"].decode("utf-8")
+        except (KeyError, UnicodeDecodeError):
+            return None
+        referenced = _referenced_support_paths(skill_md)
+        if referenced is None or not referenced.issubset(files):
+            return None
+        url = f"https://github.com/{repo}/tree/{revision}" + (f"/{skill_dir}" if skill_dir else "")
+        return SkillBundle(
+            name=skill_dir.split("/")[-1] or repo.split("/")[-1], files=files,
+            source="github", identifier=identifier, trust_level=self.trust_level_for(identifier),
+            metadata={"source_url": url, "requested_revision": revision, "resolved_commit": revision,
+                      "source_tree": tree[0], "source_revision": tree[0], "source_blob_hashes": hashes},
         )
 
     def current_revision(self, identifier: str) -> str:
@@ -376,8 +512,19 @@ class GitHubSource(SkillSource):
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)
         return complete
 
-    def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        """Fetch just the SKILL.md metadata for preview."""
+    def inspect(self, identifier: str, *, revision: Optional[str] = None) -> Optional[SkillMeta]:
+        """Pinned previews validate the same complete bundle that install will scan."""
+        if revision is not None:
+            bundle = self.fetch(identifier, revision=revision)
+            if bundle is None:
+                return None
+            raw = bundle.files["SKILL.md"]
+            fm = _parse_frontmatter(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+            owner, repo_name, path = identifier.split("/", 2)
+            repo = f"{owner}/{repo_name}"
+            return SkillMeta(name=fm.get("name", bundle.name), description=str(fm.get("description", "")),
+                             source="github", identifier=identifier, trust_level=bundle.trust_level,
+                             repo=repo, path=path, extra=bundle.metadata.copy())
         if (split := _split_repo_id(identifier)) is None:
             return None
         repo, skill_path = split[0], split[1].rstrip("/")

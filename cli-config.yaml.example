@@ -1661,6 +1661,12 @@ platform_toolsets:
 #     telegram:
 #       max_file_bytes: 52428800
 #       safety_ratio: 0.85
+#   edge:
+#     # Omit proxy to use HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (upper case first,
+#     # then lower case), honoring NO_PROXY / no_proxy for speech.platform.bing.com.
+#     # HTTP(S) URLs only; invalid/SOCKS proxies report an error, never silently bypass.
+#     # An explicit URL overrides the environment and NO_PROXY; "" forces direct access.
+#     proxy: "http://127.0.0.1:8080"
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"

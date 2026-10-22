@@ -296,6 +296,23 @@ class TestBrowserVaultTools:
         assert out["error_type"] == "origin_mismatch"
         assert "s3cret-pw" not in json.dumps(out)
 
+    def test_direct_browser_use_cloud_explains_why_vault_fill_cannot_attach(self, store):
+        """Regression for #132492: direct Browser Use Cloud has no CDP endpoint to supervise."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store)
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch("tools.browser_use_cli.is_direct_browser_use_cloud_without_cdp", return_value=True), \
+             patch.object(browser_vault_tool, "_current_page_origin") as origin:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+
+        assert out["success"] is False
+        assert out["error_type"] == "direct_cloud_vault_unsupported"
+        assert "CDP" in out["error"]
+        assert "browser_exec" in out["error"]
+        assert "s3cret-pw" not in out["error"]
+        origin.assert_not_called()
+
     @staticmethod
     def _manager_meta():
         from agent.vault_store import VaultItemMeta

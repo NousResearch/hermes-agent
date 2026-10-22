@@ -253,6 +253,24 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
     return _browser_use_api_key_set()
 
 
+def is_direct_browser_use_cloud_without_cdp() -> bool:
+    """Whether Browser Use's direct API owns this session without a CDP endpoint.
+
+    The harness can start a direct Browser Use Cloud browser with ``BU_AUTOSPAWN``,
+    but that API does not return a DevTools endpoint.  Vault fill deliberately
+    requires one so credential bytes never enter a subprocess argument list.
+    An explicit CDP connection takes precedence and remains fill-capable.
+    """
+    if not is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+        return False
+    try:
+        from tools.browser_tool_cdp import _get_cdp_override
+
+        return not bool(_get_cdp_override())
+    except Exception:
+        return True
+
+
 def _browser_use_api_key_set() -> bool:
     """BROWSER_USE_API_KEY for the served profile: the only credential Hermes autospawns BU cloud with.
     Profile-scoped so a multiplexed secondary never inherits the default's cloud mode."""

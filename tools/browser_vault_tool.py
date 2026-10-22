@@ -448,6 +448,24 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_use_cli import is_direct_browser_use_cloud_without_cdp
+
+    if (is_direct_browser_use_cloud_without_cdp()
+            and SUPERVISOR_REGISTRY.get(effective_task_id) is None):
+        return json.dumps(
+            {
+                "success": False,
+                "error_type": "direct_cloud_vault_unsupported",
+                "error": (
+                    "Direct Browser Use Cloud sessions do not expose a CDP endpoint, so vault fill "
+                    "cannot access the browser that browser_exec opened. Use a CDP-connected Hermes "
+                    "browser (for example, /browser connect or the managed Browser Use gateway) for "
+                    "vault fill; Hermes will not pass credentials through the browser_exec subprocess."
+                ),
+            }
+        )
+
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
     # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);

@@ -397,6 +397,15 @@ class TestLegacyCloudMigration:
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "autospawn:[]" in result["output"]
 
+    def test_direct_cloud_without_cdp_is_identified_for_vault_fill(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "is_legacy_browser_use_cloud_config", lambda cfg: True)
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        assert bu_cli.is_direct_browser_use_cloud_without_cdp() is True
+
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "wss://connected.example/cdp")
+        assert bu_cli.is_direct_browser_use_cloud_without_cdp() is False
+
     def test_picker_highlights_cli_row_for_migrated_config(self, monkeypatch):
         from hermes_cli.tools_config import TOOL_CATEGORIES, _is_provider_active
 

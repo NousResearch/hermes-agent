@@ -406,7 +406,7 @@ def settle_unrecovered_error(
     wait_time = compute_error_backoff(
         agent, api_error, retry_count=retry_count, max_retries=max_retries,
         is_rate_limited=is_rate_limited, is_zai_coding_overload=_is_zai_coding_overload,
-        base_url=_base, model=_model,
+        base_url=_base, model=_model, retry_reason=classified.reason,
     )
     # Same preserve-redirect rule as the invalid-response wait: a steering correction
     # must survive backoff, not die as "Operation interrupted".

@@ -15,6 +15,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 import { groupAdvertisedMethods, groupExecutionMode, offersGroupMethod } from './canonical-group-capabilities'
 import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
+import type { CanonicalPendingAction } from './canonical-groups'
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -86,7 +87,7 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     })
   }
 
-  await actCanonicalGroup(binding, { kind: 'approval', ...identity, request_id: 'request:original' }, 'deny')
+  await actCanonicalGroup(binding, { kind: 'approval', ...identity, request_id: 'request:original', approval: { choices: ['deny'] } }, 'deny')
   expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.approve', {
     profile: route.profile, room_id: binding.roomId, ...identity, request_id: 'request:original', choice: 'deny'
   })
@@ -97,7 +98,28 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     { kind: 'unknown', ...identity }, { kind: 'toString', ...identity }, { kind: 'discard', ...identity, task_id: '' }
   ]) {await expect(actCanonicalGroup(binding, action)).rejects.toThrow()}
 
-  expect(host.requestProfile).toHaveBeenCalledTimes(count)
+  // Only a choice the gateway offered, and Allow once only for what canonicalApprovalPreview finds
+  // reviewable (canonical-group-approval.test.ts has each case).
+  const approval = { kind: 'approval', ...identity, request_id: 'request:original' }
+  // What tools/approval.py request_tool_approval() sends for a plugin `approve` directive.
+  const plugin = { command: '<terminal> (plugin approval rule)', description: 'Approve running pwd' }
+
+  const refused: Array<[CanonicalPendingAction, 'once' | 'deny']> = [
+    [{ ...approval, approval: { choices: ['once'] } }, 'deny'],
+    [{ ...approval, approval: { choices: ['deny'], ...plugin } }, 'once'],
+    [{ ...approval, approval: { choices: ['once', 'deny'], description: 'Run a tool' } }, 'once']
+  ]
+
+  for (const [action, choice] of refused) {await expect(actCanonicalGroup(binding, action, choice)).rejects.toThrow()}
+
+  await actCanonicalGroup(binding, { ...approval, approval: { choices: ['once', 'deny'], command: 'rm -rf build' } }, 'once')
+  expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.approve', expect.objectContaining({ choice: 'once' }))
+  await actCanonicalGroup(binding, { ...approval, approval: { choices: ['once', 'deny'], ...plugin } }, 'once')
+  expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.approve', {
+    profile: route.profile, room_id: binding.roomId, ...identity, request_id: 'request:original', choice: 'once'
+  })
+  expect(host.requestProfile).toHaveBeenCalledTimes(count + 2)
+
   expect(host.request).not.toHaveBeenCalled()
 })
 

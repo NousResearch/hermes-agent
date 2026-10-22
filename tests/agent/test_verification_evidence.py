@@ -254,6 +254,66 @@ def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, m
     assert evidence.status == "passed"
 
 
+def test_gate_mandated_scratch_inside_workspace_root_still_records(tmp_path, monkeypatch):
+    """The bootstrap points TMPDIR at HERMES_HOME/cache/scratch, so a workspace root that
+    contains the Hermes home makes the gate-mandated script path land under the temp dir AND
+    under the root. The old ANDed pair admitted no script at all — every passing ad-hoc run
+    recorded nothing and the verify-on-stop nudge fired again each turn (#136322)."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    scratch = home / "cache" / "scratch"
+    scratch.mkdir(parents=True)
+    script = scratch / "hermes-verify-render.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    try:
+        evidence = classify_verification_command(
+            f"python3 {script}",
+            cwd=home,
+            session_id="s1",
+            exit_code=0,
+            output="ok",
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+    assert evidence.status == "passed"
+
+
+def test_prefixed_script_outside_temp_and_root_is_ad_hoc(tmp_path):
+    """A prefixed script written outside the temp dir AND outside the workspace — a project
+    convention that forbids scratch files in TMPDIR — is still an ad-hoc verification run
+    (#136322)."""
+    from agent.verification_evidence import _is_temp_script_path
+
+    assert _is_temp_script_path(f"/opt/ws-{tmp_path.name}/hermes-verify-x.py", tmp_path)
+
+
+def test_prefixed_script_inside_the_repo_root_is_not_ad_hoc_evidence(tmp_path, monkeypatch):
+    """A committed file with the prefix inside the workspace root stays excluded — the prefix
+    alone must not turn repo contents into ad-hoc coverage."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    # pytest's tmp_path lives under the ambient temp dir, which would satisfy the containment
+    # branch for anything inside the root; pin the temp dir outside the workspace under test.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "ambient-tmp"))
+    (workspace / "package.json").write_text("{}", encoding="utf-8")
+    script = workspace / "hermes-verify-x.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    evidence = classify_verification_command(
+        f"python3 {script}",
+        cwd=workspace,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+    )
+    assert evidence is None
+
+
 @pytest.mark.parametrize(
     "invocation",
     [

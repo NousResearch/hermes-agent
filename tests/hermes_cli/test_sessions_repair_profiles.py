@@ -62,6 +62,16 @@ def _seed_crossings(homes):
     _session(root, "stray-child", "agent:acme:telegram:dm:202", profile="acme", parent="stray-parent")
     #    …and a legacy agent:main row inside acme's store (reported, not repaired by default)
     _session(acme, "legacy-main", "agent:main:telegram:dm:203", profile="default")
+    #    …and a legacy local session with state_meta receipt in acme's store
+    local_key = "agent:main:local:dm:legacy-local"
+    _session(acme, "legacy-local", local_key, profile="default", source="local")
+    from hermes_state_local import POLICY_PREFIX
+    acme.set_meta(POLICY_PREFIX + "legacy-local", json.dumps({
+        "session_id": "legacy-local",
+        "route": local_key,
+        "entry": {"session_id": "legacy-local", "session_key": local_key, "origin": {"chat_id": "legacy-local", "platform": "local", "profile": "default"}},
+        "policy": {"source": "local"}
+    }))
     #    …and a row keyed to a profile that does not exist
     _session(root, "ghost", GHOST_KEY, profile="ghost")
     # 3. parent crossing namespaces inside beta's store: beta's own child forked from an acme row
@@ -231,6 +241,13 @@ def test_legacy_main_rekey_adopts_a_standalone_gateways_history(homes, monkeypat
     try:
         row = acme.get_session("legacy-main")
         assert row["session_key"] == "agent:acme:telegram:dm:203" and row["profile_name"] == "acme"
+        local_row = acme.get_session("legacy-local")
+        assert local_row["session_key"] == "agent:acme:local:dm:legacy-local" and local_row["profile_name"] == "acme"
+        from hermes_state_local import POLICY_PREFIX
+        receipt = json.loads(acme.get_meta(POLICY_PREFIX + "legacy-local"))
+        assert receipt["route"] == "agent:acme:local:dm:legacy-local"
+        assert receipt["entry"]["session_key"] == "agent:acme:local:dm:legacy-local"
+        assert receipt["entry"]["origin"]["profile"] == "acme"
     finally:
         acme.close()
     assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])

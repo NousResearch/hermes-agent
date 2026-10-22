@@ -312,6 +312,42 @@ class SessionProfileRepairMixin:
                     "UPDATE sessions SET session_key = ? || substr(session_key, 12), profile_name = ? "
                     f"WHERE id IN ({_session_ids_placeholders(chunk)}) AND substr(session_key, 1, 11) = 'agent:main:'",
                     (new_ns, profile, *chunk)).rowcount
+                # Reconcile local policy receipts in state_meta and gateway_routing for multiplexing
+                from hermes_state_local import POLICY_PREFIX
+                import json
+                meta_keys = [POLICY_PREFIX + sid for sid in chunk]
+                rows = conn.execute(
+                    f"SELECT key, value FROM state_meta WHERE key IN ({_session_ids_placeholders(meta_keys)})",
+                    meta_keys).fetchall()
+                for key, val_str in rows:
+                    try:
+                        data = json.loads(val_str)
+                        mutated = False
+                        route = data.get("route")
+                        if route and route.startswith("agent:main:"):
+                            data["route"] = new_ns + route[11:]
+                            mutated = True
+                        entry = data.get("entry")
+                        if isinstance(entry, dict):
+                            skey = entry.get("session_key")
+                            if skey and skey.startswith("agent:main:"):
+                                entry["session_key"] = new_ns + skey[11:]
+                                mutated = True
+                            orig = entry.get("origin")
+                            if isinstance(orig, dict) and profile != "default":
+                                if orig.get("profile") != profile:
+                                    orig["profile"] = profile
+                                    mutated = True
+                        if mutated:
+                            conn.execute("UPDATE state_meta SET value = ? WHERE key = ?", (json.dumps(data), key))
+                    except (ValueError, TypeError, KeyError):
+                        pass
+                for sid in chunk:
+                    legacy_route = f"agent:main:local:dm:{sid}"
+                    new_route = f"{new_ns}local:dm:{sid}"
+                    conn.execute(
+                        "UPDATE gateway_routing SET session_key = ? WHERE session_key = ? AND scope = ''",
+                        (new_route, legacy_route))
             return changed
         return self._execute_write(_do)
 

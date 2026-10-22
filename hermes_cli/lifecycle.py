@@ -66,6 +66,26 @@ def session_end_messages(results: Any) -> list[str]:
     return messages
 
 
+def _drain_outbound_webhooks(timeout: float = 2.0) -> bool:
+    """Block briefly so queued outbound webhook deliveries leave before we return.
+
+    Webhook dispatch is fire-and-forget on a daemon worker thread. A finalize
+    enqueued during process shutdown would otherwise die with the interpreter
+    and the endpoint would never learn the session closed — subscribers show
+    the session as live forever. Bounded best-effort: a wedged or slow endpoint
+    must not turn a shutdown into a hang, so deliveries still queued after
+    *timeout* are abandoned like any other fire-and-forget loss. Empty queues
+    return immediately, so the cost lands only on shutdown with work pending.
+    """
+    try:
+        from agent.outbound_webhooks import flush
+
+        return flush(timeout=timeout)
+    except Exception:
+        logger.debug("Outbound webhook drain at session finalize failed", exc_info=True)
+        return False
+
+
 def finalize_session(**kwargs: Any) -> list[Any]:
     """Notify observers and hard-close one core-owned Relay conversation."""
     _observe("on_session_finalize", **kwargs)
@@ -82,4 +102,9 @@ def finalize_session(**kwargs: Any) -> list[Any]:
         except Exception:
             logger.warning("Core Relay session finalization failed", exc_info=True)
 
-    return _plugin_hooks("on_session_finalize", **kwargs)
+    messages = _plugin_hooks("on_session_finalize", **kwargs)
+    # Last act of a session close everywhere (CLI exit, gateway shutdown, tui
+    # finalize): drain the FIFO — which also carries any earlier per-turn
+    # events queued just before this finalize — before the process can exit.
+    _drain_outbound_webhooks()
+    return messages

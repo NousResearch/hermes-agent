@@ -176,7 +176,7 @@ class AgentSummaryFileTests(unittest.TestCase):
                 # Follow the plugin data-directory contract, not its historical layout.
                 path = plugin_api._data_file(plugin_api.AGENT_SUMMARY_FILE)
                 self.assertTrue(path.exists())
-                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
                 self.assertEqual(payload["top_tier"], "Gold")
                 self.assertEqual(payload["unlocked_ids"], ["red_text", "night_owl"])
             finally:

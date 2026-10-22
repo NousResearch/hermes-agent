@@ -2,14 +2,17 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
-import { jaAuxTasks } from './ja_aux_tasks'
 import { jaBoot } from './ja_boot'
+import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
+import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
+import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
+import { jaNotifications } from './ja_notifications'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
@@ -18,6 +21,7 @@ import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
@@ -181,15 +185,6 @@ export const jaOverrides = {
   },
 
   ...jaNotices,
-
-  billingBlock: {
-    titleNous: 'Nous クレジットが不足しています',
-    titleProvider: provider => `クレジット不足 — ${provider}`,
-    fallbackMessage: 'アカウントのクレジットが不足しています。続行するにはクレジットを追加してください。',
-    openBilling: '請求を開く',
-    addCredits: 'クレジットを追加',
-    dismiss: '閉じる'
-  },
 
   sendDiagnostics: {
     title: 'Nous に診断情報を送信',
@@ -430,52 +425,7 @@ export const jaOverrides = {
         masterPasswordPlaceholder: 'マスターパスワード'
       }
     },
-    notifications: {
-      title: '通知',
-      intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
-      enableAll: '通知を有効にする',
-      enableAllDesc: 'オフで以下の通知をすべて無効にします。',
-      focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
-      kinds: {
-        approval: {
-          label: '承認が必要',
-          description: 'コマンドが承認または拒否を待っています。'
-        },
-        input: {
-          label: '入力が必要',
-          description: 'Hermes が質問したか、パスワードやシークレットを必要としています。'
-        },
-        turnDone: {
-          label: '応答完了',
-          description: 'Hermes がバックグラウンドのときにターンが完了しました。'
-        },
-        turnError: {
-          label: 'ターン失敗',
-          description: 'バックグラウンドのターンエラー。'
-        },
-        backgroundDone: {
-          label: 'バックグラウンドタスク完了',
-          description: 'バックグラウンドのターミナルコマンドが完了しました。'
-        },
-        credits: {
-          label: 'クレジット通知',
-          description: 'クレジットの利用が停止または復旧しました。'
-        },
-        plugin: {
-          label: 'プラグイン通知',
-          description: 'Hermes がバックグラウンドの間に、デスクトッププラグインが通知を送信しました。'
-        }
-      },
-      test: 'テスト通知を送信',
-      testTitle: 'Hermes',
-      testBody: '通知は正常に動作しています。',
-      testSent:
-        'テストを送信しました。表示されない場合は、OS の通知許可と集中モード／おやすみモードを確認してください。',
-      testUnsupported: 'このシステムはネイティブ通知に対応していません。',
-      completionSoundTitle: '完了サウンド',
-      completionSoundDesc: 'エージェントのターン終了時に再生されます。プリセットを選んでここで試聴できます。',
-      completionSoundPreview: '試聴'
-    },
+    notifications: jaNotifications,
     sections: {
       model: 'モデル',
       chat: 'チャット',
@@ -1172,56 +1122,7 @@ export const jaOverrides = {
       deepLinkErrorUrl: 'サーバー URL は http:// と https:// のみ許可されます。',
       deepLinkErrorTooLarge: '設定ペイロードが 32KB の上限を超えています。'
     },
-    model: {
-      moaTitle: 'エージェント混合（Mixture of Agents）',
-      moaPreset: 'プリセット',
-      moaDescription:
-        '「Mixture of Agents」プロバイダーのモデルとして表示される名前付きプリセットを設定します。集約モデルが実行を担当し、ツールループのすべての処理を行うため、実行費用のほぼ全額がそのプロバイダーに請求されます。参照モデルは既定でユーザーの各ターンに一度だけ助言します。',
-      moaAggregator: '集約モデル',
-      moaAggregatorBilled: '実行モデル · 実行費用の請求先',
-      moaReferenceHint: '既定では各ターンに一度だけ助言',
-      setupProviderFallback: 'プロバイダー',
-      setUpProvider: name => `${name} を設定`,
-      staleAuxBefore: (count, names) => `${count} 件の補助タスク（${names}）は引き続き `,
-      staleAuxAfter: ' で実行され、メインモデルは使用されません。',
-      staleAuxOtherProviders: '別のプロバイダー',
-      moaEnabled: '有効',
-      moaSetDefault: 'デフォルトに設定',
-      moaNewPresetPlaceholder: '新しいプリセット',
-      moaAddPreset: 'プリセットを追加',
-      customModel: 'カスタムモデル…',
-      customModelPlaceholder: 'モデル ID',
-      chooseFromList: 'リストから選択',
-      moaDefault: 'デフォルト:',
-      moaReferenceToggle: (enabled, index) => `参照 ${index} を${enabled ? '無効化' : '有効化'}`,
-      moaReferenceTitle: index => `参照 ${index}`,
-      moaAddReference: '参照モデルを追加',
-      loading: 'モデル設定を読み込み中...',
-      appliesDesc:
-        '新しいセッションに適用されます。コンポーザーのモデルピッカーを使ってアクティブなチャットをホットスワップできます。',
-      provider: 'プロバイダー',
-      model: 'モデル',
-      applying: '適用中...',
-      loadFailed: 'モデルを読み込めませんでした',
-      restartRequired:
-        'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。',
-      restartBackend: 'バックエンドを再起動',
-      restartingBackend: 'バックエンドを再起動中...',
-      restartFailed: 'バックエンドを再起動できませんでした',
-      auxiliaryTitle: '補助モデル',
-      resetAllToMain: 'すべてメインにリセット',
-      staleAuxDismiss: '今後表示しない',
-      auxiliaryDesc:
-        'ヘルパータスクはデフォルトでメインモデルで実行されます。タスクに専用モデルを割り当てることでオーバーライドできます。',
-      setToMain: 'メインに設定',
-      change: '変更',
-      autoUseMain: '自動 · メインモデルを使用',
-      inheritMainEffort: '継承 · メインモデルの推論強度',
-      inheritsFrom: task => `${task} を継承`,
-      followTask: task => `${task} に従う`,
-      providerDefault: '(プロバイダーのデフォルト)',
-      tasks: jaAuxTasks
-    },
+    model: jaModelSettings,
     localModels: jaLocalModels,
     providers: {
       connectAccount: 'アカウントを接続',
@@ -1378,19 +1279,7 @@ export const jaOverrides = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `「${name}」をインストールしますか？`,
-    installDescription:
-      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-    installTo: 'インストール先',
-    thisComputer: 'このコンピューター',
-    installing: 'インストール中…',
-    installComplete: (name: string) => `「${name}」をインストールしました`,
-    destinationChanged:
-      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-    installed: 'インストール済み',
-    source: '提供元'
-  },
+  skillDeepLink: jaSkillDeepLink,
   skills: {
     plugins: {
       pageBlurb:
@@ -3375,15 +3264,7 @@ export const jaOverrides = {
       react: 'リアクション',
       dismissError: 'エラーを閉じる',
       errorGenericProvider: 'AI サービス',
-      errorLayerBodies: {
-        generic:
-          'Hermes の返信中に問題が発生しました。再試行してください。問題が続く場合はエラー詳細をコピーしてください。',
-        provider:
-          'AI サービスがリクエストを完了できませんでした。少し待って再試行するか、プロバイダーを切り替えてください。',
-        endpoint:
-          'カスタムモデルサーバーに接続できません。サーバーが起動しているか確認し、メッセージを再送してください。',
-        streaming: '返信が完了する前に接続が切れました。再試行してもう一度送信してください。'
-      },
+      ...jaErrorLayers,
       errorCodes: {
         provider_policy_blocked: {
           title: 'アカウント設定によりこのモデルはブロックされています',
@@ -3434,18 +3315,15 @@ export const jaOverrides = {
           title: '安全な接続に失敗しました',
           body: provider =>
             `Hermes は ${provider} との安全な接続を検証できませんでした。ネットワークやプロキシの設定を確認するか、プロバイダーを切り替えて再送してください。`
+        },
+        cron_session_read_only: {
+          title: 'このチャットはスケジュールされたジョブ用です',
+          body: 'このチャットはそのジョブの実行専用のため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。'
+        },
+        workspace_unavailable: {
+          title: 'このチャットのフォルダーが見つかりません',
+          body: 'このチャットの作業フォルダーが移動または削除されたため、メッセージは実行されませんでした。フォルダーを作り直すか、「Move to project」で別のフォルダーを割り当ててから、もう一度お試しください。'
         }
-      },
-      errorLayers: {
-        auth: '認証エラー',
-        billing: 'クレジット不足',
-        disk: 'ディスク容量不足',
-        endpoint: 'カスタムエンドポイントのエラー',
-        gateway: 'ゲートウェイのエラー',
-        generic: 'ターンが失敗しました',
-        provider: 'プロバイダーのエラー',
-        runtime: 'ローカルランタイムのエラー',
-        streaming: 'ストリーミング接続のエラー'
       },
       errorRetry: '再試行',
       errorLimitResets: time => `制限は ${time} にリセットされます`,

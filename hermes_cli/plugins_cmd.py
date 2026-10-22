@@ -725,9 +725,9 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
 
     changed = _activate_key(key, enable=True, console=console)
     if changed:
-        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
+        from hermes_cli.plugins_activation import report_activation
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled.")  # the hint says when it applies
-        console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
+        report_activation(console, key)
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
     if source != "bundled":
@@ -1063,6 +1063,18 @@ def _catalog():
     return plugins_cmd_catalog
 
 
+def _action_update(args):
+    if args.name:
+        if getattr(args, "yes", False):
+            _fail(_console(), "[red]Error:[/red] --yes only applies to `hermes plugins update` with no name.")
+        cmd_update(args.name, force=getattr(args, "force", False))
+        return
+    if getattr(args, "force", False):
+        _fail(_console(), "[red]Error:[/red] --force applies to one named plugin: `hermes plugins update <name> --force`.")
+    from hermes_cli.plugins_cmd_update_all import cmd_update_all
+    cmd_update_all(yes=getattr(args, "yes", False))
+
+
 def _action_pack(args):
     from hermes_cli.plugin_packs import pack_command
     pack_command(args)
@@ -1083,7 +1095,7 @@ _PLUGIN_ACTIONS = {
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
-    "update": lambda args: cmd_update(args.name),
+    "update": _action_update,
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),

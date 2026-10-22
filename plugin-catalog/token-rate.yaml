@@ -1,6 +1,6 @@
 name: token-rate
 repo: https://github.com/Lazzdaycod/hermes-lang-it
-sha: b2e1ea8a9928deaa16a7753ffc652ff8f7cbfc49
+sha: ea89da154acb8c801f38e758f0c2ac1469942b8f
 subdir: plugins/token-rate
 title: Token Rate Monitor
 description: >-

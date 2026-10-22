@@ -88,6 +88,7 @@ def _ensure_plugin(hermes_home: Path) -> bool:
     """The plugin installed and enabled in *hermes_home*: the catalog install (reviewed pin, the
     usual install checks) when it is missing, else just an enable."""
     from hermes_cli.left_core_migration import plugin_present
+    from hermes_cli.plugins_admission import AdmissionRefused
     from hermes_cli.plugins_cmd import cmd_enable
     from hermes_cli.plugins_cmd_install import cmd_install
     from hermes_cli.setup import _info, print_warning
@@ -100,12 +101,16 @@ def _ensure_plugin(hermes_home: Path) -> bool:
             cmd_enable(PLUGIN)
         else:
             cmd_install(PLUGIN, enable=True)
-    except SystemExit:  # both print their own error, then exit
+    # Both print their own error first: a refusal exits, an enable whose dependencies PM cannot
+    # admit raises. Either way the import is skipped and the rest of setup goes on.
+    except (SystemExit, AdmissionRefused):
         pass
-    if plugin_present(PLUGIN, hermes_home):
-        return True
-    print_warning(f"The '{PLUGIN}' plugin could not be installed, so nothing was imported. "
-                  f"Try again later with: hermes plugins install {PLUGIN}")
+    else:
+        if plugin_present(PLUGIN, hermes_home):
+            return True
+    verb = "enabled" if present else "installed"
+    print_warning(f"The '{PLUGIN}' plugin could not be {verb}, so nothing was imported. "
+                  f"Try again later with: hermes plugins {'enable' if present else 'install'} {PLUGIN}")
     return False
 
 
@@ -122,7 +127,10 @@ def _run_import(source: ImportSource, hermes_home: Path) -> bool:
     from tools.environments.local import served_profile_child_env
     print_header(f"Importing from {source.label}", gap=True)
     before = _snapshot(hermes_home)
-    argv = [sys.executable, "-m", "hermes_cli.main", "import-agent", source.name, *source.extra_args]
+    # A home that is not <root>/profiles/<name> is the root: without a selector the child's
+    # _apply_profile_override would follow the sticky active_profile into another profile.
+    selector = [] if hermes_home.resolve().parent.name == "profiles" else ["--profile", "default"]
+    argv = [sys.executable, "-m", "hermes_cli.main", *selector, "import-agent", source.name, *source.extra_args]
     env = served_profile_child_env(target_home=hermes_home)
     if os.environ.get("PYTHONPATH"):  # this same interpreter running Hermes: keep the source tree
         env["PYTHONPATH"] = os.environ["PYTHONPATH"]  # a checkout launched by path, which it strips

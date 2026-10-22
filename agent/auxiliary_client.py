@@ -945,18 +945,10 @@ def _ai_gateway_headers() -> dict[str, str]:
     return {"HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
             "User-Agent": hermes_user_agent("HermesAgent")}
 
-# Nous Portal attribution extra_body. Tags come from agent.portal_tags so the client= marker
-# tracks the canonical base version — never inline a literal here.
+# Nous Portal attribution tags, built per call. They come from agent.portal_tags so the client=
+# marker tracks the canonical base version — never inline a literal here.
 from agent.portal_tags import nous_portal_tags as _nous_portal_tags
 
-
-def _nous_extra_body() -> dict:
-    """Fresh Nous Portal ``extra_body`` (per call, so a hot-reloaded version is reflected)."""
-    return {"tags": _nous_portal_tags()}
-
-
-# Set at resolve time — True if the auxiliary client points to Nous Portal
-auxiliary_is_nous: bool = False
 
 # _OPENROUTER_MODEL MUST stay a :free SKU (matching the free_only warning): this lane engages
 # silently, and a paid default meant spend the user never opted into. User-configured values
@@ -2403,12 +2395,9 @@ def _try_nous(vision: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
     # Vision rides the same id (the backing model is multimodal; a backing that is not answers
     # the request with the upstream's own error, which the ladder handles like any other).
     from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
-    global auxiliary_is_nous
     if route_is_welcome_host(base_url):
-        auxiliary_is_nous = True
         logger.debug("Auxiliary/%s: Nous free tier; using %s", lane, GUEST_MODEL)
         return _create_openai_client(api_key=api_key, base_url=base_url), GUEST_MODEL
-    auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
     # Portal recommended-models is authoritative (tier-aware); _NOUS_MODEL when unreachable/null.
     # Probes skip the lookup: exact model is irrelevant and it hits the network.
@@ -4631,8 +4620,6 @@ def _resolve_auto_route(
     per-task overrides still win); (2) configured fallback policy — task chain, then the main agent's
     top-level chain; (3) OpenRouter → Nous → custom → Codex → API-key providers, only with no policy
     and no working main client."""
-    global auxiliary_is_nous
-    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
@@ -5675,11 +5662,6 @@ def resolve_vision_provider_client(
         raw_requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
     )
     return requested, client, (final_model if client is not None else None)
-
-
-def get_auxiliary_extra_body() -> dict:
-    """Return extra_body kwargs (Nous Portal product tags when Nous-backed, else {})."""
-    return _nous_extra_body() if auxiliary_is_nous else {}
 
 
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:

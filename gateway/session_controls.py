@@ -235,7 +235,7 @@ class AuthorityConnection:
         return handlers
 
     async def dispatch(self, request):
-        from gateway.session_server_requests import is_response_frame
+        from gateway.session_sudo_prompt import is_response_frame
         if is_response_frame(request):
             # A viewer answering one of the owner's server→client requests (the sudo prompt): a
             # response gets no reply (JSON-RPC), and only a viewer entitled to respond on that
@@ -830,12 +830,21 @@ class AuthorityConnection:
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
     def _resolve_response(self, frame):
-        from gateway.session_server_requests import may_settle, resolve
+        from gateway.session_server_requests import may_settle, resolve as resolve_clarify
+        from gateway.session_sudo_prompt import resolve as resolve_local
 
-        def entitled(session_id, events):
-            # The same rule ``clarify.lock`` applies to the same request id (attached + respond).
+        def entitled_batch(session_id, events):
             return may_settle(self.authority, self.actor, session_id, events)
-        if not resolve(frame, session_ok=entitled):
+        if resolve_clarify(frame, session_ok=entitled_batch):
+            return
+
+        def entitled_local(session_id):
+            try:
+                self.authority.authorize(self.actor, SessionRef(self.actor.profile_id, session_id), 'session:respond')
+            except RuntimeStoreError:
+                return False
+            return True
+        if not resolve_local(frame, session_ok=entitled_local):
             import logging
             logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))
 

@@ -288,6 +288,16 @@ def test_dm_pairing_mode_forwards_unknown_sender_to_gateway_intake(monkeypatch):
     assert adapter._admit(sender, message) is None
 
 
+def test_at_all_does_not_wake_bot_when_mention_is_required():
+    adapter = make_adapter_skeleton(require_mention=True, group_policy="open")
+    sender = make_sender()
+    message = make_message(chat_type="group")
+    message.content = '{"text":"@_all"}'
+
+    assert adapter._mentions_self(message) is False
+    assert adapter._admit(sender, message) == "group_policy_rejected"
+
+
 # --- Per-group require_mention override ------------------------------------
 
 

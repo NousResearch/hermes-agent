@@ -41,6 +41,16 @@ def test_oneshot_run_gets_distinct_source(monkeypatch, inherited):
     assert session_source_for("cli") == "oneshot"
 
 
+@pytest.mark.parametrize("inherited", ["local", "feishu", "telegram", "tool", "kanban", "a2a", "desktop", "tui"])
+def test_interactive_cli_does_not_inherit_gateway_transport_source(monkeypatch, inherited):
+    """A CLI launched from a gateway turn remains CLI-owned unless --source was explicit."""
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", inherited)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE_EXPLICIT", raising=False)
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+
+    assert session_source_for("cli") == "cli"
+
+
 def test_oneshot_marker_does_not_relabel_subagents(monkeypatch):
     """Delegate children inside a one-shot process share its env but keep their own platform."""
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)

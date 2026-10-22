@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from hermes_dir_acl import make_user_dir
 
 
 class HomeInitializationError(RuntimeError):
@@ -37,7 +36,7 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
             if not link.is_dir():
                 raise FileNotFoundError(f"Directory link is unavailable: {link}")
         if create:
-            make_user_dir(path, parents=True, exist_ok=True)
+            path.mkdir(parents=True, exist_ok=True)
         elif not path.is_dir():
             raise FileNotFoundError(f"Required directory does not exist: {path}")
         # The operator owns permissions beyond a link, including logs/curator.

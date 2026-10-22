@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import stat
 import threading
-from hermes_dir_acl import make_user_dir
 
 
 class OwnershipConflict(RuntimeError):
@@ -149,9 +148,7 @@ class ProfileOwnership:
         with self._mutex:
             return tuple(self._handles)
 
-    def reserve(self, homes, *, purpose: str | None = None) -> None:
-        """``purpose`` marks a maintenance reservation in the lock record, so a contender can tell
-        a short maintenance holder from a gateway runtime owner (:func:`live_runtime_owner`)."""
+    def reserve(self, homes) -> None:
         from gateway.status import _try_acquire_file_lock, _build_pid_record
         with self._mutex:
             added = []
@@ -159,7 +156,7 @@ class ProfileOwnership:
                 for home in sorted({canonical_home(p) for p in homes}):
                     if home in self._handles:
                         continue
-                    make_user_dir(home, mode=0o700, parents=True, exist_ok=True)
+                    home.mkdir(mode=0o700, parents=True, exist_ok=True)
                     path = home / 'gateway.lock'
                     fd = _open_lock(path)
                     handle = os.fdopen(fd, 'r+', encoding='utf-8')  # windows-footgun: ok — write-only
@@ -167,8 +164,6 @@ class ProfileOwnership:
                         if not _try_acquire_file_lock(handle) or not _still_names(path, handle.fileno()):
                             raise OwnershipConflict(f'Gateway runtime already owns profile {home}')
                         record = {**_build_pid_record(), 'hermes_home': str(home)}
-                        if purpose:
-                            record['purpose'] = purpose
                         handle.seek(0)
                         handle.truncate()
                         json.dump(record, handle)
@@ -217,41 +212,8 @@ process_ownership = ProfileOwnership()
 _maintenance = threading.local()
 
 
-def maintenance_holder(home: Path, purpose: str) -> dict | None:
-    """The live holder record of *home*'s ``gateway.lock`` when it is a ``purpose`` maintenance
-    reservation (see :meth:`ProfileOwnership.reserve`), else None. Advisory only: it names the
-    holder for a refusal or a short wait, it never grants the lock."""
-    from gateway.status import _live_pid_from_record, _read_gateway_lock_record
-    record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
-    if not record or record.get('purpose') != purpose or _live_pid_from_record(record) is None:
-        return None
-    return record
-
-
-def lock_record_unpublished(home: Path) -> bool:
-    """True when *home*'s ``gateway.lock`` record names no live holder yet: empty, torn, or a dead
-    previous holder's. :meth:`ProfileOwnership.reserve` takes the flock BEFORE it writes the record,
-    so a contender that loses the flock in that window cannot tell maintenance from a gateway; it
-    must retry (bounded) instead of reporting a runtime owner. Advisory only, never grants the lock."""
-    from gateway.status import _live_pid_from_record, _read_gateway_lock_record
-    record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
-    return not record or _live_pid_from_record(record) is None
-
-
-def live_runtime_owner(home: Path) -> int | None:
-    """PID of a live runtime owner of *home* (a gateway, or a reservation that is not marked as
-    maintenance), else None. A purpose-marked maintenance holder is never an owner."""
-    from gateway.status import _live_pid_from_record, _read_gateway_lock_record, get_running_pid
-    home = canonical_home(home)
-    record = _read_gateway_lock_record(home / 'gateway.lock')
-    live = _live_pid_from_record(record) if record else None
-    if live is not None and record.get('purpose'):
-        return None  # the flock holder is maintenance, so no gateway can hold it too
-    return get_running_pid(home / 'gateway.pid', cleanup_stale=False) or live
-
-
 @contextmanager
-def exclusive_maintenance(homes, *, purpose: str | None = None):
+def exclusive_maintenance(homes):
     """Reserve the authority's exact lock before touching managed state.
 
     This is not an owner-presence check: the reservation remains held through
@@ -265,7 +227,7 @@ def exclusive_maintenance(homes, *, purpose: str | None = None):
     owner = state[1] if state is not None and not outermost else ProfileOwnership()
     previous = set(owner.homes)
     try:
-        owner.reserve(homes, purpose=purpose)
+        owner.reserve(homes)
         if outermost:
             _maintenance.state = (os.getpid(), owner)
         yield

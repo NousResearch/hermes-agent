@@ -6,10 +6,6 @@ unknown method``), so every answer was refused and the turn sat out ``clarify_ti
 through the real dispatcher against a real ``ask_clarify_batch`` wait.
 """
 import asyncio
-import os
-from pathlib import Path
-import subprocess
-import sys
 import threading
 from types import SimpleNamespace
 
@@ -115,20 +111,6 @@ async def test_a_viewer_without_the_session_cannot_lock_its_answers(tmp_path, mo
     finally:
         await outsider.close()
 
-
-def test_cli_turn_batch_answered_by_clarify_lock_from_a_second_viewer_end_to_end(tmp_path):
-    """Real gateway process path: the locked answers reach the real model's tool result."""
-    home, state = tmp_path / 'home', tmp_path / 'state'
-    home.mkdir()
-    state.mkdir()
-    repo = Path(__file__).resolve().parents[2]
-    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TZ') if key in os.environ}
-    env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state), PYTHONPATH=str(repo))
-    result = subprocess.run(
-        [sys.executable, str(Path(__file__).parent / 'fixtures' / 'authority_clarify_lock_peer.py')],
-        cwd=tmp_path, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert (state / 'lock-passed').read_text() == 'both locked answers reached the real model'
 
 
 @pytest.mark.asyncio

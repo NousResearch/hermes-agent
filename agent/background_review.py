@@ -1280,6 +1280,21 @@ def _run_review_in_thread(
             )
             actions = []
         _log_review_completion(st.review_usage, _classify_review_result(actions))
+
+        # Phase-2 WikiSkill bridge: record a small, redacted event outside the
+        # active skill tree. This is intentionally best-effort and proposal-only;
+        # failures here must never change the outcome of the background review.
+        try:
+            from agent.wiki import record_review_event
+
+            record_review_event(
+                actions=actions,
+                session_id=getattr(agent, "session_id", None),
+                outcome="reviewed",
+                evidence=["background_review"],
+            )
+        except Exception as e:
+            logger.debug("Wiki event recording skipped: %s", e, exc_info=True)
         if actions:
             _publish_review_summary(agent, actions)
     except Exception as e:

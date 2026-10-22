@@ -210,6 +210,11 @@ class CLIInitMixin:
         )
         # resume must not clobber an explicit -m with the session's stored model.
         self._explicit_model_override = bool(model)
+        # Local patch: remember exactly which of --model/--provider/--base-url was passed so
+        # later routing stages (cli_agent_setup_mixin) never override an explicit CLI choice.
+        self._model_arg_explicit = model is not None
+        self._provider_arg_explicit = provider is not None
+        self._base_url_arg_explicit = base_url is not None
         self.model = model or _config_model or ""
         _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
         _startup_provider_override = _startup_base_url_override = _startup_api_key_override = ""
@@ -506,7 +511,6 @@ class CLIInitMixin:
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
-        self._detach_on_exit = False  # Ctrl+D mid-turn: leave the gateway turn running (LC-6b)
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning
         self._delete_session_on_exit = False  # /exit --delete

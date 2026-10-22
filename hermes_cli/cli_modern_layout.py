@@ -352,6 +352,10 @@ def _status_line_fragments(cli) -> list:
     stash = cli._prompt_stash.indicator() if _on("stash") and hasattr(cli, "_prompt_stash") else ""
     if stash:  # a parked draft is never silently forgotten
         left += [(dim, " · "), (strong, stash)]
+    # The modern layout is the default; retain the local GLM/GPT quota footer here too.
+    for quota in (cli._glm_status_fragments(), cli._gpt_status_fragments()):
+        if quota:
+            left += quota + [(dim, " ")]
     battery = snapshot.get("battery_label") or ""  # only set while /battery is on
     if battery and _on("battery"):
         left[0:0] = [("", " "), (cli._battery_status_style(snapshot.get("battery_category", "dim")), battery),

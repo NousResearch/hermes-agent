@@ -43,8 +43,6 @@ import time
 import uuid
 from typing import Any, Callable
 
-from tools.clarify_batch import settle_batch
-
 logger = logging.getLogger(__name__)
 
 
@@ -223,7 +221,7 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     if timed_out:
         _emit_cancel(req, "timeout")
         if req.qids is not None:
-            return settle_batch(locked, ended="timed_out")
+            return {"answers": locked, "outcome": "timed_out"}
     return None
 
 
@@ -304,11 +302,16 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
         else:
             result = frame.get("result")
             req.result = result if isinstance(result, dict) else {}
-            if req.qids:
+            if req.qids and "answers" in req.result:
                 # Batch clarify: answers locked early via clarify.lock belong to the final set even when
-                # the closing response only carries the tail the user answered last (one rule with the
-                # session owner's registry: ``tools.clarify_batch``).
-                req.result = settle_batch(req.locked, req.result)
+                # the closing response only carries the tail the user answered last.
+                answers = req.result.get("answers")
+                merged = dict(req.locked)
+                if isinstance(answers, dict):
+                    merged.update(answers)
+                req.result = {**req.result, "answers": merged, "outcome": "submitted"}
+            elif req.qids:
+                req.result = {"answers": dict(req.locked), "outcome": "cancelled"}
             req.answered = True
     if req.on_result is not None:
         req.on_result(req.result)
@@ -329,7 +332,7 @@ def lock_answer(request_id: str, question_id: str, answer: str | None) -> list[s
         req.locked[question_id] = answer
         remaining = [qid for qid in req.qids if qid not in req.locked]
         if not remaining:
-            req.result, req.answered = settle_batch(req.locked, ended="submitted"), True
+            req.result, req.answered = {"answers": dict(req.locked), "outcome": "submitted"}, True
             _open.pop(request_id, None)
     if not remaining:
         req.event.set()
@@ -347,7 +350,7 @@ def cancel(sid: str | None = None, reason: str = "interrupted", *, method: str |
         for req in targets:
             _open.pop(req.id, None)
             if req.qids is not None:
-                req.result, req.answered = settle_batch(req.locked, ended="cancelled"), True
+                req.result, req.answered = {"answers": dict(req.locked), "outcome": "cancelled"}, True
             else:
                 req.result, req.answered = None, False
             if req.writing:

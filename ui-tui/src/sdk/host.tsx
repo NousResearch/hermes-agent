@@ -86,11 +86,21 @@ export function updateWidget<S>(app: WidgetApp<S>, fn: (state: S) => S): void {
 
   if (isAmbient(app as WidgetApp<never>)) {
     if (overlay.ambient.some(active => active.appId === app.id)) {
-      patchOverlayState({
-        ambient: overlay.ambient.map(active =>
-          active.appId === app.id ? { appId: app.id, state: fn(active.state as S) } : active
-        )
+      let changed = false
+      const ambient = overlay.ambient.map(active => {
+        if (active.appId !== app.id) {
+          return active
+        }
+        const nextState = fn(active.state as S)
+        if (nextState === active.state) {
+          return active
+        }
+        changed = true
+        return { appId: app.id, state: nextState }
       })
+      if (changed) {
+        patchOverlayState({ ambient })
+      }
     }
 
     return

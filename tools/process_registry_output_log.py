@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 import time
 from typing import Optional
-from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home
 
@@ -35,7 +34,7 @@ def worker_output_log(session_id: str) -> Optional[Path]:
     if not is_worker_process():
         return None
     directory = output_dir()
-    make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     from tools.process_registry_results import RESULT_RETENTION_SECONDS
     # Only a recorded exit retires a log: a quiet process can run longer than the retention.
     cutoff = time.time() - RESULT_RETENTION_SECONDS

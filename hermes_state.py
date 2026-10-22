@@ -23,7 +23,6 @@ import uuid
 from collections import deque
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
@@ -437,7 +436,7 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
     if not sid or not messages:
         return None
     sessions_dir = get_hermes_home() / "sessions"
-    make_user_dir(sessions_dir, parents=True, exist_ok=True)
+    sessions_dir.mkdir(parents=True, exist_ok=True)
     path = sessions_dir / f"{sid}.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         for msg in messages:

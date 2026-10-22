@@ -88,12 +88,73 @@ def same_credential_surface(a: BackendIdentity, b: BackendIdentity) -> bool:
     return bool(a.base_url and a.base_url == b.base_url)
 
 
+def _url_host(url: Optional[str]) -> str:
+    """Bare lowercase host of *url* (scheme/path/port stripped); "" when unusable."""
+    candidate = (url or "").strip()
+    if "//" in candidate:
+        candidate = candidate.split("//", 1)[1]
+    candidate = candidate.split("/", 1)[0].split("?", 1)[0].split(":", 1)[0].lower()
+    return candidate if "." in candidate or candidate == "localhost" else ""
+
+
+def _host_matches(host: str, known: str) -> bool:
+    return bool(host and known) and (
+        host == known or host.endswith("." + known) or known.endswith("." + host)
+    )
+
+
+def _explicit_url_provably_foreign(provider: str, url: str) -> bool:
+    """True only when *url*'s host provably belongs to a DIFFERENT provider.
+
+    Uses the upstream host->provider map (``agent.model_metadata._infer_provider_from_url``,
+    which knows same-company families such as api.z.ai <-> open.bigmodel.cn) with the provider
+    registry as a fallback. Fail-open by design: unknown hosts (custom proxies, gateways,
+    mirrors, LAN boxes) and any lookup failure answer False — "cannot judge" — which preserves
+    the historical same-label-implies-same-endpoint answer.
+    """
+    host = _url_host(url)
+    if not host:
+        return False
+    try:
+        from agent.model_metadata import _infer_provider_from_url
+
+        inferred = _infer_provider_from_url(url)
+    except Exception:
+        inferred = None
+    if inferred:
+        return inferred != provider
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        return False
+    claimants: set = set()
+    try:
+        for pid, pconfig in PROVIDER_REGISTRY.items():
+            if _host_matches(host, _url_host(getattr(pconfig, "inference_base_url", ""))):
+                claimants.add(pid)
+    except Exception:
+        return False
+    return bool(claimants) and provider not in claimants
+
+
 def same_endpoint(a: BackendIdentity, b: BackendIdentity) -> bool:
     """Do two identities sit behind the endpoint that just went unreachable?
-    An unknown base_url inherits the provider default, so a shared label implies the same endpoint."""
+
+    An unknown base_url inherits the provider default, so a shared label implies the same endpoint —
+    unless the *known* URL is provably foreign to that provider's endpoint family. A stale
+    cross-provider base_url left on the agent by a mid-session /model switch (deepseek label
+    carrying open.bigmodel.cn) made every same-provider fallback look like "the same backend" and
+    stranded failover exactly when the runtime was already misrouted: the fallback's implicit
+    default endpoint is NOT the URL that just failed, so that skip must not apply.
+    """
     if a.base_url and b.base_url:
         return a.base_url == b.base_url
-    return bool(a.provider and a.provider == b.provider)
+    if not (a.provider and a.provider == b.provider):
+        return False
+    explicit_url = a.base_url or b.base_url
+    if not explicit_url:
+        return True  # both unknown -> provider default on both sides
+    return not _explicit_url_provably_foreign(a.provider, explicit_url)
 
 
 def same_deployment(a: BackendIdentity, b: BackendIdentity) -> bool:

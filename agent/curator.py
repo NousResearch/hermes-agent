@@ -925,6 +925,16 @@ def run_curator_review(
     consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(UTC)
     hermes_home = get_hermes_home()  # the LLM pass may run on a thread with no profile binding
+    wiki_summary = {"events": 0, "proposals_created": 0, "proposals_total": 0}
+    if not dry_run:
+        # Phase-2 WikiSkill bridge: curator maintenance only materializes
+        # proposal files under profile-local wiki/. It never edits active skills.
+        try:
+            from agent.wiki import maintain_wiki
+
+            wiki_summary = maintain_wiki()
+        except Exception as e:
+            logger.debug("Wiki maintenance skipped: %s", e, exc_info=True)
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:

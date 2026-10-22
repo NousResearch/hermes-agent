@@ -28,6 +28,13 @@ def session_source_for(platform: Optional[str]) -> str:
     source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
     single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
     explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
+    # A classic CLI launched from a gateway turn inherits the gateway's
+    # HERMES_SESSION_SOURCE environment. That value describes the parent
+    # transport, not the new interactive CLI conversation. Keep an explicit
+    # --source override, but never let an inherited transport relabel a CLI
+    # session as local/Feishu/etc.; otherwise /sessions cannot find it.
+    if (platform or "cli") == "cli" and source and not explicit and not single_query:
+        source = ""
     if single_query and not explicit and source in UI_TRANSPORT_SOURCES:
         source = ""
     if single_query and not source and (platform or "cli") == "cli":

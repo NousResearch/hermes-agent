@@ -18,8 +18,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import safe_url_for_log
+from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
 from agent.i18n import t
@@ -463,6 +462,27 @@ def unauthorized_action_notice(platform: Any) -> str:
     return t("gateway.unauthorized.action_notice", platform=str(name or "<platform>"))
 
 
+def safe_url_for_log(url: str, max_len: int = 80) -> str:
+    """Return a URL string safe for logs (no query/fragment/userinfo)."""
+    raw = str(url) if max_len > 0 and url is not None else ""
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return raw[:max_len]
+    safe = raw
+    if parsed.scheme and parsed.netloc:
+        # Strip potential embedded credentials (user:pass@host).
+        path = parsed.path or ""
+        basename = path.rsplit("/", 1)[-1]
+        tail = "" if path in ("", "/") else f"/.../{basename}" if basename else "/..."
+        safe = f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}{tail}"
+    if len(safe) <= max_len:
+        return safe
+    return "." * max_len if max_len <= 3 else f"{safe[:max_len - 3]}..."
+
+
 async def ssrf_redirect_guard(response):
     """Re-validate each redirect target (a public URL 302-ing to http://169.254.169.254/ would
     bypass the pre-flight is_safe_url()). Async because httpx awaits response event hooks."""
@@ -585,7 +605,7 @@ def _secure_media_cache_dir(cache_dir: Path) -> None:
         if managed:
             cache_dir.mkdir(parents=True, exist_ok=True)
             return
-        make_user_dir(cache_dir, parents=True, exist_ok=True, mode=0o700)
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             from hermes_cli.config import _secure_dir
 
@@ -2191,26 +2211,11 @@ class BasePlatformAdapter(ABC):
         """Acquire a scoped lock for this adapter; True on success. A live cross-HERMES_HOME
         holder is replaced only when the runner armed this adapter for its initial
         ``--replace`` connect (the status module validates ownership and terminates)."""
-        from gateway.status import acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder
-        from gateway.status_lock_dir import ScopedLockDirUnusable
+        from gateway.status import (
+            acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder)
         self._platform_lock_scope, self._platform_lock_identity = scope, identity
         lock_meta = {"platform": self.platform.value}
-        try:
-            acquired, existing = acquire_scoped_lock(scope, identity, metadata=lock_meta)
-        except ScopedLockDirUnusable as exc:
-            # An ACL an elevated install left on the lock dir (#134889 W2): name the repair. Stay
-            # RETRYABLE: the dir is shared by every token-locked adapter, so a non-retryable park
-            # on a gateway that runs only those exits 78 and takes cron and the Desktop attach
-            # endpoint down with it. The status module logs the WARNING once per dir (DEBUG after),
-            # so the watcher's backoff retries quietly and picks the repair up without a restart.
-            self._platform_lock_identity = None
-            self._set_fatal_error(
-                "lock_dir_unusable",
-                f"{resource_desc} lock cannot be taken: the gateway lock directory {exc.filename} is not "
-                f"usable by this user (likely created by an elevated Hermes). To repair, "
-                f"{unusable_dir_remedy(exc.filename)}; the gateway retries on its own.",
-                retryable=True)
-            return False
+        acquired, existing = acquire_scoped_lock(scope, identity, metadata=lock_meta)
         if acquired:
             return True
         if (self._platform_lock_takeover_allowed and not self._platform_lock_takeover_attempted

@@ -77,9 +77,6 @@ class SessionState:
         # Called (loop thread) with each ``session.usage`` payload; GatewayAgent maps it onto main's
         # agent attributes, so a frame landing between turns is never dropped with the turn queue.
         self.usage_listeners: list = []
-        # Called (loop thread) with each ``request.cancel`` payload: the agent thread may be parked in a
-        # modal answering that very request (another viewer settled it), so it cannot read the queue.
-        self.request_listeners: list = []
         # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
         self.admitted_turn: dict | None = None
         # The owner's pending admissions as last published (snapshot or ``session.info``), and the
@@ -141,9 +138,6 @@ class SessionState:
             nested = payload.get("usage")
             flat = isinstance(payload.get("api_calls"), int) or not isinstance(nested, dict)
             self.apply_usage(payload if flat else nested)
-        elif kind == "request.cancel" and isinstance(payload, dict):
-            for listener in list(self.request_listeners):
-                listener(payload)
         elif kind == "session.replay_gap":
             self.gaps += 1
 

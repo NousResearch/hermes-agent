@@ -146,6 +146,31 @@ def test_status_line_keeps_every_classic_status_bar_field(monkeypatch):
         assert piece in line, (piece, line)
 
 
+def test_status_line_keeps_local_quota_segments(monkeypatch):
+    """Modern is the default layout, so it must not hide the local GLM/GPT footer."""
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli._status_bar_visible = True, True
+    snapshot = {"model_short": "m", "duration": "", "context_percent": 7, "context_length": 1_000_000,
+                "context_tokens": 73_200, "context_estimated": False, "avg_latency_label": "",
+                "avg_velocity_label": "", "cache_hit_rate": 0, "cache_read_tokens": 1, "prompt_tokens": 1,
+                "active_background_subagents": 0, "prompt_elapsed": ""}
+    monkeypatch.setattr(HermesCLI, "_get_status_bar_snapshot", lambda self: snapshot)
+    monkeypatch.setattr(HermesCLI, "_get_tui_terminal_width", lambda self: 400)
+    monkeypatch.setattr(HermesCLI, "_get_status_bar_field_set", lambda self: None)
+    monkeypatch.setattr(HermesCLI, "_is_session_yolo_active", lambda self: False)
+    monkeypatch.setattr(HermesCLI, "_vim_mode_label", lambda self: "")
+    monkeypatch.setattr(HermesCLI, "_cache_hit_rate", lambda self, snap, precision=1: (0, ""))
+    monkeypatch.setattr(HermesCLI, "_glm_status_fragments", lambda self: [("", "GLM 60%")])
+    monkeypatch.setattr(HermesCLI, "_gpt_status_fragments", lambda self: [("", "GPT 40%")])
+    monkeypatch.setattr("hermes_cli.cli_modern_layout.hint_pairs", lambda cli: [])
+    monkeypatch.setattr("hermes_cli.cli_modern_layout._cwd_label", lambda: "~")
+
+    line = "".join(text for _, text in cli._get_status_bar_fragments())
+    assert "GLM 60%" in line and "GPT 40%" in line
+
+
 @pytest.mark.parametrize("prompt", ["_connection_state", "_secret_state", "_sudo_state", "_clarify_state"])
 def test_tab_never_queues_what_a_prompt_owns(prompt):
     """A connection form's masked field (or any prompt) owns the composer while a turn runs: Tab must

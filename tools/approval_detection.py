@@ -429,6 +429,10 @@ _PS_EXE_AT_COMMAND_POSITION = (
 _GIT_WORD = r'''(?:"[^"]*"|'[^']*'|[^\s;|&"'])+'''
 _GIT = (r'\bgit(?>\s+(?:(?:-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env)'
         rf'\s+{_GIT_WORD}|-{_GIT_WORD}))*\s+')
+_GIT_PUSH = rf'{_GIT}push\b'
+# The push's own arguments, bounded to ONE command segment: a later command's flag is never the
+# push's (`git push -q origin main && grep -f patterns.txt log` is not a force push).
+_GIT_PUSH_ARGS = r'[^;&|\n]*'
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
@@ -674,8 +678,15 @@ DANGEROUS_PATTERNS = [
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
     (rf'{_GIT}reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (rf'{_GIT}push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (rf'{_GIT}push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    # Git force push. The flag search is bounded to the PUSH's own command segment, so a LATER
+    # command's `-f` (grep -f, pkill -f) no longer trips the force-push prompt on a plain push.
+    # The short form takes git's combined spelling (`-qf`), and the `+refspec` force spelling is a
+    # rule of its own; both were force pushes the old single-token `-f` pattern missed. Quotes are
+    # NOT a boundary here: the shell strips them before git sees the command, so `git push
+    # "--force"` is still a force push.
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}\s-(?!-)[a-z]*f[a-z]*\b', "git force push short flag (rewrites remote history)"),
+    (rf'{_GIT_PUSH}{_GIT_PUSH_ARGS}\s\+[^\s;&|\n]+', "git force push (rewrites remote history)"),
     (rf'{_GIT}clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
@@ -763,6 +774,15 @@ for _canonical_key, _legacy_key in [
 _old_branch_key = r"git\s+branch\s+-D"
 _PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branch_key)
 _PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
+
+# The force-push anchor widened (git's global options may sit before the subcommand), so these
+# patterns' regex-derived legacy key changed; keep the pre-change spelling resolvable so
+# approvals stored under it still match.
+_old_push_key = r"git\s+push"
+for _push_key in ("git force push (rewrites remote history)",
+                  "git force push short flag (rewrites remote history)"):
+    _PATTERN_KEY_ALIASES.setdefault(_push_key, set()).add(_old_push_key)
+    _PATTERN_KEY_ALIASES.setdefault(_old_push_key, set()).update({_old_push_key, _push_key})
 
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:

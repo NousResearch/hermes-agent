@@ -64,6 +64,22 @@ CREATE TABLE IF NOT EXISTS discovered_repos (
     label         TEXT,
     last_seen     INTEGER NOT NULL
 );
+
+-- Per-project handover record ("where is this project at?"). Append-only: the newest row is the
+-- current state, older rows are its history, pruned past STATE_HISTORY_LIMIT in the same write.
+CREATE TABLE IF NOT EXISTS project_state (
+    id          INTEGER PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    goal        TEXT,
+    now         TEXT,
+    next        TEXT,
+    blockers    TEXT,
+    updated_at  INTEGER NOT NULL,
+    updated_by  TEXT NOT NULL CHECK (updated_by IN ('user', 'agent'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_state_project
+    ON project_state(project_id, id);
 """
 
 # Lowercase alphanumerics, hyphens, underscores; 1-64 chars; no leading separator. Strict enough to
@@ -79,6 +95,11 @@ _OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
 _OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path")
 _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
+# Handover record bounds: a handover is a short note, not a log, and its history stays inspectable.
+STATE_FIELDS = ("goal", "now", "next", "blockers")
+STATE_AUTHORS = ("user", "agent")
+STATE_FIELD_MAX_CHARS = 2000
+STATE_HISTORY_LIMIT = 50
 
 
 def _slugify(name: str) -> str:
@@ -398,6 +419,74 @@ def set_active(conn: sqlite3.Connection, project_id: Optional[str]) -> None:
 
 def get_active_id(conn: sqlite3.Connection) -> Optional[str]:
     return _get_meta(conn, _ACTIVE_META_KEY)
+
+
+def _state_dict(row: sqlite3.Row) -> dict:
+    return {"project_id": row["project_id"], **{f: row[f] for f in STATE_FIELDS},
+            "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
+
+
+def _state_rows(conn: sqlite3.Connection, project_id: str, limit: int) -> List[dict]:
+    rows = conn.execute(
+        "SELECT * FROM project_state WHERE project_id = ? ORDER BY id DESC LIMIT ?", (project_id, limit)
+    ).fetchall()
+    return [_state_dict(r) for r in rows]
+
+
+def get_project_state(conn: sqlite3.Connection, project_id: str) -> Optional[dict]:
+    """The project's latest handover record, or ``None`` when none was ever recorded."""
+    rows = _state_rows(conn, project_id, 1)
+    return rows[0] if rows else None
+
+
+def project_state_history(conn: sqlite3.Connection, project_id: str, limit: int = STATE_HISTORY_LIMIT) -> List[dict]:
+    """Past handover records, newest first. Only ``STATE_HISTORY_LIMIT`` are kept, so a larger
+    ``limit`` is clamped to it (which also keeps it inside SQLite's integer range)."""
+    if int(limit) < 1:
+        raise ValueError(f"limit must be at least 1, got {limit}")
+    return _state_rows(conn, project_id, min(int(limit), STATE_HISTORY_LIMIT))
+
+
+def set_project_state(
+    conn: sqlite3.Connection, project_id: str, *, goal: Optional[str] = None, now: Optional[str] = None,
+    next: Optional[str] = None, blockers: Optional[str] = None, updated_by: str,
+) -> dict:
+    """Append a handover record and return it. A ``None`` field carries over from the latest record
+    (partial update); ``""`` clears it. Refuses an unknown or archived project, an author other than
+    ``user``/``agent``, a field over ``STATE_FIELD_MAX_CHARS`` and a record left with no content."""
+    if updated_by not in STATE_AUTHORS:
+        raise ValueError(f"updated_by must be one of {', '.join(STATE_AUTHORS)}, got {updated_by!r}")
+    given = {
+        name: str(value).strip()
+        for name, value in zip(STATE_FIELDS, (goal, now, next, blockers)) if value is not None
+    }
+    for name, value in given.items():
+        if len(value) > STATE_FIELD_MAX_CHARS:
+            raise ValueError(f"{name} is {len(value)} chars; the limit is {STATE_FIELD_MAX_CHARS}")
+    if not given:
+        raise ValueError(f"nothing to record: pass at least one of {', '.join(STATE_FIELDS)}")
+    with write_txn(conn):
+        project = conn.execute("SELECT archived FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if project is None:
+            raise ValueError(f"no such project: {project_id}")
+        if project["archived"]:
+            raise ValueError(f"project {project_id} is archived; restore it before recording a handover")
+        latest = get_project_state(conn, project_id) or {}
+        merged = {f: (given[f] if f in given else latest.get(f)) or None for f in STATE_FIELDS}
+        if not any(merged.values()):
+            raise ValueError(f"a handover needs at least one non-empty field ({', '.join(STATE_FIELDS)})")
+        record = {"project_id": project_id, **merged, "updated_at": _now(), "updated_by": updated_by}
+        conn.execute(
+            "INSERT INTO project_state (project_id, goal, now, next, blockers, updated_at, updated_by) "
+            "VALUES (:project_id, :goal, :now, :next, :blockers, :updated_at, :updated_by)",
+            record,
+        )
+        conn.execute(
+            "DELETE FROM project_state WHERE project_id = ? AND id NOT IN "
+            "(SELECT id FROM project_state WHERE project_id = ? ORDER BY id DESC LIMIT ?)",
+            (project_id, project_id, STATE_HISTORY_LIMIT),
+        )
+    return record
 
 
 def get_discovery_policy_key(conn: sqlite3.Connection) -> Optional[str]:

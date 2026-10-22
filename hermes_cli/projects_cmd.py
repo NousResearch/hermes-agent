@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import sys
+import time
 
 from hermes_cli import projects_db as pdb
 
@@ -54,8 +56,32 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     project_sub("bind-board", "Bind a kanban board to a project").add_argument(
         "board", nargs="?", default="", help="Board slug (omit to unbind)"
     )
+    _add_state_parser(project_sub("state", "Show or record a project's handover (goal / now / next / blockers)"))
     parser.set_defaults(_project_parser=parser)
     return parser
+
+
+_STATE_FIELD_HELP = {
+    "goal": "The outcome the project is driving at",
+    "now": "What is in progress now",
+    "next": "The very next concrete step",
+    "blockers": "What is stopping progress",
+}
+
+
+def _add_state_parser(sp: argparse.ArgumentParser) -> None:
+    mode = sp.add_mutually_exclusive_group()
+    mode.add_argument("--set", action="store_true", dest="set_state",
+                      help="Record a handover; omitted fields keep their previous value, '' clears one")
+    mode.add_argument("--history", action="store_true", help="List past handovers, newest first")
+    for field in pdb.STATE_FIELDS:
+        sp.add_argument(f"--{field}", default=None, metavar="TEXT", help=f"{_STATE_FIELD_HELP[field]} (with --set)")
+    sp.add_argument("--by", choices=pdb.STATE_AUTHORS, default=None,
+                    help="Who is recording it, with --set: user (default) or agent; a self-declared "
+                         "label, not authentication")
+    sp.add_argument("--limit", type=int, default=None,
+                    help=f"History entries to show, with --history (default and maximum {pdb.STATE_HISTORY_LIMIT})")
+    sp.add_argument("--json", action="store_true", help="Machine-readable output")
 
 
 def projects_command(args: argparse.Namespace) -> int:
@@ -225,6 +251,47 @@ def _cmd_bind_board(args, conn, proj) -> str:
     return f"Bound {proj.slug} -> board {args.board}"
 
 
+def _format_state(state: dict) -> str:
+    stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(state["updated_at"]))
+    lines = [f"  updated {stamp} by {state['updated_by']}"]
+    continuation = "\n" + " " * 12  # multi-line values stay aligned under their label
+    for field in pdb.STATE_FIELDS:
+        if state.get(field):
+            lines.append(f"  {field + ':':<10}{state[field].replace(chr(10), continuation)}")
+    return "\n".join(lines)
+
+
+def _state_json(proj, key: str, value) -> str:
+    project = {"id": proj.id, "slug": proj.slug, "name": proj.name}
+    return json.dumps({"project": project, key: value}, indent=2, ensure_ascii=False)
+
+
+@_with_project
+def _cmd_state(args, conn, proj) -> str:
+    fields = {f: getattr(args, f) for f in pdb.STATE_FIELDS if getattr(args, f) is not None}
+    if (fields or args.by is not None) and not args.set_state:
+        raise ValueError("pass --set to record a handover (field flags and --by only apply with --set)")
+    if args.limit is not None and not args.history:
+        raise ValueError("--limit only applies with --history")
+    if args.set_state:
+        state = pdb.set_project_state(conn, proj.id, updated_by=args.by or "user", **fields)
+        return _state_json(proj, "state", state) if args.json else (
+            f"Recorded handover for {proj.slug}\n{_format_state(state)}")
+    if args.history:
+        limit = pdb.STATE_HISTORY_LIMIT if args.limit is None else args.limit
+        history = pdb.project_state_history(conn, proj.id, limit=limit)
+        if args.json:
+            return _state_json(proj, "history", history)
+        return "\n\n".join([f"{proj.slug}: {len(history)} handover(s), newest first"]
+                           + [_format_state(s) for s in history])
+    state = pdb.get_project_state(conn, proj.id)
+    if args.json:
+        return _state_json(proj, "state", state)
+    if state is None:
+        return f"{proj.slug}: no handover recorded (record one with `hermes project state {proj.slug} --set`)"
+    return f"{proj.slug} handover\n{_format_state(state)}"
+
+
 _HANDLERS = {
     "create": _cmd_create,
     "list": _cmd_list,
@@ -238,4 +305,5 @@ _HANDLERS = {
     "archive": _flag_command("archive_project", "Archived"),
     "restore": _flag_command("restore_project", "Restored"),
     "bind-board": _cmd_bind_board,
+    "state": _cmd_state,
 }

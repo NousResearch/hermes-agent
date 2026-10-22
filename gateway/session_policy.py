@@ -24,7 +24,14 @@ FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers
 # A Bot Chat an earlier build committed frozen follows its profile once a client opens it (``follow_bot_chat``).
 # The marker sits in the policy's own config, so no other receipt changes shape (an older owner restores
 # them all, and reads this chat as frozen), and the creation request, the exact-retry identity, stays as sent.
+# A chat created on the welcome trial's model carries it too (``stage_local_session``), so a provider the user
+# connects later replaces that model.
 FOLLOW_ADOPTED = 'follow_adopted'
+# A Desktop chat its creator's connection declared local (``process_identity.local_desktop_client``): its
+# turns run as work for the local Desktop (``local_desktop_turn``). Owner-set in the policy's own config, so
+# an exact create retry from a socket whose declaration has not landed carries the same creation request,
+# and ``launch_request`` never echoes it.
+LOCAL_DESKTOP_CHAT = 'desktop_local'
 # A launch field's state as a committed session edit left it, in the policy's own config: ``True`` the
 # session chose it (``/reasoning <level>``, a model pick carrying one), ``False`` a reset gave it back to
 # the profile. Either wins over the creation request (the launch identity, never rewritten) and the older
@@ -989,6 +996,36 @@ def _valid_client_env(value, kind: type = str):
     env = json.loads(value) if isinstance(value, str) else None
     return isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, kind) and (
         kind is str or all(isinstance(item, str) for item in v)) for k, v in env.items())
+
+
+def policy_turn_toolsets(authority, policy, config, session_id):
+    """A local turn's toolsets: the policy's current set, plus ``onboarding`` for an onboarding chat
+    (``agent.onboarding_session.onboarding_chat_toolsets``)."""
+    from agent.onboarding_session import onboarding_chat_toolsets
+    return onboarding_chat_toolsets(list(policy.current_toolsets(config)), getattr(authority, 'db', None), session_id)
+
+
+def local_desktop_turn(runner, source, scope):
+    """*scope* (the profile scope a turn enters), also marked as work for the local Desktop when the
+    turn belongs to a Desktop chat its creator's connection declared local (``stage_local_session``);
+    any other turn gets *scope* untouched. Read from the live policy without raising: a cold policy
+    is restored, or refused, by the turn."""
+    from gateway.config import Platform
+    policy = None
+    if getattr(source, 'platform', None) == Platform.LOCAL:
+        policy = getattr(runner._adapter_for_source(source), 'policies', {}).get(source.chat_id)
+    # The request_json mark: a chat an earlier build created, which stamped it into the creation request.
+    if policy is None or policy.source != 'gui' or not any(
+            json.loads(raw).get(LOCAL_DESKTOP_CHAT) is True for raw in (policy.config_json, policy.request_json)):
+        return scope
+    return _serving_local_desktop_within(scope)
+
+
+@contextmanager
+def _serving_local_desktop_within(scope):
+    from hermes_cli.process_identity import serving_local_desktop
+    with scope, serving_local_desktop(True):
+        yield
 
 
 def policy_for_source(runner, source):

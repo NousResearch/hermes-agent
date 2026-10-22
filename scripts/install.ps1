@@ -979,13 +979,15 @@ function Stage-Repository {
     if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" unsupported_platform }
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the initial
-    # commit yet", #40998). Move it aside -- never delete it, it may hold
-    # something the user wants -- and clone fresh below.
+    # commit yet", #40998); a killed update or a sync tool can leave one git
+    # rejects outright (empty HEAD, a gitdir: file pointing nowhere), where
+    # `hermes update` cannot fetch. Move it aside -- never delete it, it may
+    # hold something the user wants -- and clone fresh below.
     if (Test-Path (Join-Path $InstallDir ".git")) {
         Invoke-Native { git -C $InstallDir rev-parse --verify HEAD 2>$null } | Out-Null
         if ($LASTEXITCODE) {
             $broken = "$InstallDir.broken-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-            Write-Warn "$InstallDir has no commits (interrupted clone); moving it aside to $broken"
+            Write-Warn "$InstallDir is not a usable git checkout (interrupted clone or damaged .git); moving it aside to $broken"
             Move-Item -LiteralPath $InstallDir -Destination $broken
         }
     }

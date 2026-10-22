@@ -134,6 +134,7 @@ class WSTransport:
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
+        self.desktop_local = False
         #: The served profile home whose skin this peer follows (None = the launch home); see change_watcher.
         self.skin_home: str | None = None
         self._closed = False
@@ -356,19 +357,23 @@ def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict |
 
 
 async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport) -> Any:
-    """One request through the authority when attached, else the legacy dispatcher."""
-    if authority_connection is None:
-        return await asyncio.to_thread(server.dispatch, req, transport)
-    resp = await authority_connection.dispatch(req)
-    actor = authority_connection.actor
-    if (_is_unknown_method(resp) and req_method in server._methods
-            and legacy_fallback_allowed(actor, req_method)):
-        # Session verbs live on the authority; everything else the sidecar still
-        # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
-        # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
-        # method neither side knows, which is what the client's version-skew notice keys on.
-        resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
-    return resp
+    """One request through the authority when attached, else the legacy dispatcher. A request from the
+    local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
+    threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
+    from hermes_cli.process_identity import serving_local_desktop
+    with serving_local_desktop(getattr(transport, "desktop_local", False)):
+        if authority_connection is None:
+            return await asyncio.to_thread(server.dispatch, req, transport)
+        resp = await authority_connection.dispatch(req)
+        actor = authority_connection.actor
+        if (_is_unknown_method(resp) and req_method in server._methods
+                and legacy_fallback_allowed(actor, req_method)):
+            # Session verbs live on the authority; everything else the sidecar still
+            # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
+            # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
+            # method neither side knows, which is what the client's version-skew notice keys on.
+            resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
+        return resp
 
 
 def _start_backend_liveness() -> None:

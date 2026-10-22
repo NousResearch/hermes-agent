@@ -68,7 +68,7 @@ hermes bundles              Skill bundles (one /<name> alias loads several skill
 hermes mcp add NAME (--url or --command) | remove | list | test NAME
 hermes mcp catalog | install NAME     Curated catalog install
 hermes mcp configure NAME             Toggle tool selection
-hermes mcp serve                      Run Hermes as an MCP server
+hermes mcp-serve                      Run Hermes as an MCP server (mcp-serve plugin)
 ```
 Details (transport, tool discovery, catalog): `references/native-mcp.md`.
 

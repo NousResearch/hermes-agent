@@ -1497,6 +1497,9 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#       # Public HTTPS origin in front of this listener; MCP servers with
+#       # `events: true` POST event deliveries to <public_url>/webhooks/<route>.
+#       public_url: "https://hermes.example.com"
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
@@ -1632,6 +1635,13 @@ platform_toolsets:
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       expose_client_tools: false # advertise extended sampling.tools capability
 #       log_level: "info"       # audit verbosity
+#
+# MCP events (experimental, webhook delivery) — opt-in per server. Adds the
+# list_event_types / subscribe_event / unsubscribe_event tools; needs
+# platforms.webhook.extra.public_url and a running gateway:
+#   feeds:
+#     url: https://feeds.example.com/mcp
+#     events: true
 
 # =============================================================================
 # Text-to-Speech

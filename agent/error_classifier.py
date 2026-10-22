@@ -49,6 +49,7 @@ class FailoverReason(enum.Enum):
     image_corrupt = "image_corrupt"       # Provider can't decode image bytes — strip and retry (shrinking won't help)
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
+    data_policy_denied = "data_policy_denied"  # Context holds a connector result needing a no-training model; none serves it
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
     model_entitlement = "model_entitlement"  # This account cannot use the requested model — rotate credential (model-scoped), else fall back
     incomplete_response = "incomplete_response"  # Codex/Responses turn stuck emitting reasoning only (no answer, no tool call) after replay + nudge — hand to a different provider
@@ -862,6 +863,9 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
+    # Deterministic for this context: another provider would receive the same connector result.
+    if c.code == "data_policy_denied":
+        return _v(_R.data_policy_denied, retryable=False, should_fallback=False)
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome

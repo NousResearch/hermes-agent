@@ -16,9 +16,9 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
+| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Replies stay flat in the DM, even when `MATTERMOST_REPLY_MODE=thread`. |
 | **Public/private channels** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
-| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel. |
+| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message in channels. Thread context stays isolated from the parent channel. Direct messages stay a flat chat. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -204,7 +204,7 @@ The `MATTERMOST_REPLY_MODE` setting controls how Hermes posts responses:
 | Mode | Behavior |
 |------|----------|
 | `off` (default) | Hermes posts flat messages in the channel, like a normal user. |
-| `thread` | Hermes replies in a thread under your original message. Keeps channels clean when there's lots of back-and-forth. |
+| `thread` | Hermes replies in a thread under your original message in channels. Keeps channels clean when there's lots of back-and-forth. Direct messages stay flat either way. |
 
 Set it in your `~/.hermes/.env`:
 

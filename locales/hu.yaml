@@ -3825,7 +3825,7 @@ tips:
   t272: "A GPT-5 és a Codex az üzenetformátumban 'system' helyett 'developer' szerepet használ."
   t273: "Feladatonkénti kiegészítő felülírások: auxiliary.vision.provider, auxiliary.compression.model stb. a config.yaml-ban."
   t274: "A kiegészítő kliens a 'main' értéket szolgáltató-aliasként kezeli — a tényleges elsődleges szolgáltatódra és modelledre oldja fel."
-  t275: "A hermes claw migrate --dry-run megmutatja az OpenClaw-migráció eredményét anélkül, hogy bármit írna."
+  t275: "A hermes import-agent openclaw --dry-run megmutatja az OpenClaw-migráció eredményét anélkül, hogy bármit írna."
   t276: "Az idézőjelekkel vagy escape-elt szóközökkel beillesztett fájlútvonalakat automatikusan kezeljük — nem kell kézzel tisztogatni."
   t277: "A slash-parancsok sosem váltják ki a nagy beillesztések összecsukását — a /command nagy argumentumokkal is helyesen működik."
   t278: "Megszakítás módban az ügynök futása közben beírt slash-parancsok megkerülik a megszakítási logikát, és azonnal lefutnak."

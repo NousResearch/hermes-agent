@@ -804,9 +804,9 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None, *, setup_c
     if result.get("unchanged"):
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
     else:
-        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
+        from hermes_cli.plugins_activation import report_activation
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled.")  # the hint says when it applies
-        console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
+        report_activation(console, key)
     if source != "bundled":
         _enable_consent(console, key, allow_tool_override)
     if not result.get("unchanged"):

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -182,6 +183,13 @@ def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
     return configured.lower() == "singularity"
 
 
+def agent_imports_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """*home* registered a ``hermes import-agent`` source for ``--sync`` (its ``import-sync.json``,
+    which scheduled syncs read). A one-shot import leaves no other trace, and installing the plugin
+    for every home would add a command nobody asked for; the old spelling names the install."""
+    return (home / "import-sync.json").is_file()
+
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -212,10 +220,14 @@ class LeftCoreFeature:
     # Top-level command the plugin registers in place of core's ``hermes auth <cli>`` login
     # (``hermes <cli> login|status|logout``); :func:`moved_command_hint` points the old spelling at it.
     cli: str = ""
-    # Top-level command the plugin registers in place of core's nested ``old_command``
-    # (``hermes mcp serve`` -> ``hermes mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
+    # Top-level command the plugin registers: core's own command kept under its name (``hermes
+    # import-agent``), or in place of core's nested ``old_command`` (``hermes mcp serve`` -> ``hermes
+    # mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
     command: str = ""
     old_command: str = ""
+    # Other top-level commands core shipped that the same plugin now registers (``hermes claw``, the
+    # OpenClaw migration's spelling before ``hermes import-agent openclaw``); hinted like *command*.
+    old_cli: tuple[str, ...] = ()
     # Key of the bundled plugin core shipped (``observability/langfuse``). It stays an alias of the
     # catalog plugin in ``plugins.enabled`` / ``plugins.disabled`` (the loader's gate, an
     # administrator's pinned list) and for every `hermes plugins <verb>` (:func:`legacy_plugin_alias`).
@@ -259,6 +271,11 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                   "and the container_* limits are unchanged",
         terminal_backend="singularity",
     ),
+    LeftCoreFeature(
+        plugin="agent-importers", label="`hermes import-agent`", in_use=agent_imports_in_use,
+        unchanged="`hermes import-agent`, its flags and your import-sync.json sync sources are unchanged",
+        command="import-agent", old_cli=("claw",),
+    ),
 )
 
 def _install_sentence(feature: LeftCoreFeature) -> str:
@@ -295,8 +312,8 @@ def legacy_plugin_keys(plugin: str) -> set[str]:
 def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     """For a command a left-core plugin took over: ``hermes auth [<action>] <cli>`` (core's old login
     spelling), core's old nested spelling (``hermes mcp serve``), or the plugin's own ``hermes <cli>`` /
-    ``hermes <command>`` while the plugin is not loaded, the line saying where it went and how to get it
-    for the active home, else ``""``."""
+    ``hermes <command>`` / ``hermes <old_cli>`` while the plugin is not loaded, the line saying where it
+    went and how to get it for the active home, else ``""``."""
     from hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     moved = next((f for f in LEFT_CORE if f.old_command and f.old_command == f"{prog} {value}"), None)
@@ -308,7 +325,7 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     if prog == "hermes auth":
         feature = next((f for f in LEFT_CORE if f.cli and f.cli == value), None)
     elif prog == "hermes":
-        feature = next((f for f in LEFT_CORE if value and value in (f.cli, f.command)), None)
+        feature = next((f for f in LEFT_CORE if value and value in (f.cli, f.command, *f.old_cli)), None)
     else:
         feature = None
     if feature is None:
@@ -322,7 +339,8 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
         old = " ".join(p for p in ("hermes auth", action, value) if p)
         return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: `{old}` is now "
                 f"`hermes {value} {action or 'login'}`.{get}")
-    return f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
+    label = f"`hermes {value}`" if value in feature.old_cli else feature.label
+    return f"{label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
 
 
 def moved_plugin_hint(name: str) -> str:
@@ -619,3 +637,16 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
     except Exception as exc:  # never take agent/gateway start down
         logger.warning("left-core plugin migration failed: %s", exc, exc_info=True)
         return []
+
+
+def recover_for_command(name: Optional[str]) -> None:
+    """``hermes <name>`` names a command a left-core plugin registers, and the active home uses that
+    feature but lacks the plugin: run :func:`recover_at_startup` now, before plugin commands are
+    discovered, so the command it installs runs in this same invocation. A home nothing migrated yet
+    (a Docker image swap runs no ``hermes update``) whose only Hermes process is a scheduled
+    ``hermes import-agent --sync`` never starts an agent or a gateway to do it."""
+    from hermes_constants import get_hermes_home
+    home = Path(get_hermes_home())
+    if any(name and name in (f.cli, f.command, *f.old_cli) and not plugin_present(f.plugin, home)
+           and f.in_use(home) for f in LEFT_CORE):
+        recover_at_startup(say=lambda message: print(message, file=sys.stderr))

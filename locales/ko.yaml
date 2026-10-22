@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5와 Codex는 메시지 형식에서 'system' 대신 'developer' 역할을 사용해요."
   t273: "작업별 보조 모델 설정: config.yaml에서 auxiliary.vision.provider, auxiliary.compression.model 등을 지정할 수 있어요."
   t274: "보조 클라이언트는 'main'을 제공자 별칭으로 취급해요 — 실제 기본 제공자 + 모델로 해석돼요."
-  t275: "hermes claw migrate --dry-run은 아무것도 쓰지 않고 OpenClaw 마이그레이션 결과를 미리 보여줘요."
+  t275: "hermes import-agent openclaw --dry-run은 아무것도 쓰지 않고 OpenClaw 마이그레이션 결과를 미리 보여줘요."
   t276: "따옴표나 이스케이프된 공백이 포함된 채로 붙여 넣은 파일 경로는 자동으로 처리돼요 — 직접 정리할 필요가 없어요."
   t277: "슬래시 명령은 대량 붙여넣기 접기를 절대 일으키지 않아요 — 긴 인자를 가진 /command도 정상 동작해요."
   t278: "인터럽트 모드에서 에이전트 실행 중 입력한 슬래시 명령은 인터럽트 로직을 건너뛰고 즉시 실행돼요."

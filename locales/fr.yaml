@@ -4133,7 +4133,7 @@ tips:
   t272: "GPT-5 et Codex utilisent le rôle 'developer' au lieu de 'system' dans le format des messages."
   t273: "Surcharges auxiliaires par tâche : auxiliary.vision.provider, auxiliary.compression.model, etc. dans config.yaml."
   t274: "Le client auxiliaire traite 'main' comme un alias de fournisseur — il correspond à votre fournisseur et modèle principaux réels."
-  t275: "hermes claw migrate --dry-run prévisualise la migration OpenClaw sans rien écrire."
+  t275: "hermes import-agent openclaw --dry-run prévisualise la migration OpenClaw sans rien écrire."
   t276: "Les chemins de fichiers collés avec des guillemets ou des espaces échappés sont gérés automatiquement — aucun nettoyage manuel nécessaire."
   t277: "Les commandes slash ne déclenchent jamais le repli des gros collages — /command avec de gros arguments fonctionne correctement."
   t278: "En mode interruption, les commandes slash saisies pendant l'exécution de l'agent contournent la logique d'interruption et s'exécutent immédiatement."

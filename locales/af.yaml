@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5 en Codex gebruik die 'developer'-rol in plaas van 'system' in die boodskapformaat."
   t273: "Hulp-oorskrywings per taak: auxiliary.vision.provider, auxiliary.compression.model, ens. in config.yaml."
   t274: "Die hulpkliënt behandel 'main' as 'n verskaffer-alias — dit los op na jou werklike primêre verskaffer + model."
-  t275: "hermes claw migrate --dry-run wys die OpenClaw-migrasie vooraf sonder om iets te skryf."
+  t275: "hermes import-agent openclaw --dry-run wys die OpenClaw-migrasie vooraf sonder om iets te skryf."
   t276: "Lêerpaaie wat met aanhalingstekens of ontsnapte spasies geplak word, word outomaties hanteer — geen handmatige opruiming nodig nie."
   t277: "Slash-opdragte aktiveer nooit die groot-plak-invouing nie — /command met groot argumente werk korrek."
   t278: "In onderbreekmodus omseil slash-opdragte wat tydens agent-uitvoering getik word die onderbreeklogika en loop onmiddellik."

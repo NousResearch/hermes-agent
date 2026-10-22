@@ -3922,7 +3922,7 @@ tips:
   t272: "GPT-5 and Codex use 'developer' role instead of 'system' in the message format."
   t273: "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compression.model, etc. in config.yaml."
   t274: "The auxiliary client treats 'main' as a provider alias — resolves to your actual primary provider + model."
-  t275: "hermes claw migrate --dry-run previews OpenClaw migration without writing anything."
+  t275: "hermes import-agent openclaw --dry-run previews OpenClaw migration without writing anything."
   t276: "File paths pasted with quotes or escaped spaces are handled automatically — no manual cleanup needed."
   t277: "Slash commands never trigger the large-paste collapse — /command with big arguments works correctly."
   t278: "In interrupt mode, slash commands typed during agent execution bypass interrupt logic and run immediately."

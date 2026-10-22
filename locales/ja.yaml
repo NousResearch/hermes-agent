@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5 と Codex はメッセージ形式で 'system' の代わりに 'developer' ロールを使います。"
   t273: "タスクごとの補助モデルの上書き: config.yaml の auxiliary.vision.provider、auxiliary.compression.model など。"
   t274: "補助クライアントは 'main' をプロバイダーの別名として扱い、実際のプライマリプロバイダーとモデルに解決します。"
-  t275: "hermes claw migrate --dry-run は、何も書き込まずに OpenClaw からの移行内容をプレビューします。"
+  t275: "hermes import-agent openclaw --dry-run は、何も書き込まずに OpenClaw からの移行内容をプレビューします。"
   t276: "引用符付きやスペースがエスケープされた状態で貼り付けたファイルパスは自動的に処理されるため、手で整える必要はありません。"
   t277: "スラッシュコマンドは大量貼り付けの折りたたみを引き起こしません。大きな引数を付けた /command も正しく動作します。"
   t278: "中断モードでは、エージェント実行中に入力したスラッシュコマンドは中断ロジックを経由せず即座に実行されます。"

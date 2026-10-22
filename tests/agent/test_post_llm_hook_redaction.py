@@ -7,6 +7,7 @@ the next API call sends must keep their exact bytes or the prompt cache breaks.
 """
 from __future__ import annotations
 
+import json
 import logging
 import types
 
@@ -77,6 +78,41 @@ def test_the_api_content_sidecar_is_masked_too(hook_on):
     # The live dicts keep the bytes the wire sent, or the next API call misses the cache.
     assert messages[0]["api_content"] == injected
     assert FAKE_GITHUB in messages[1]["api_content"]
+
+
+def test_tool_call_arguments_are_masked_and_the_replay_copy_is_not(hook_on):
+    """Arguments carry credentials too — a shell command with an exported token.
+
+    The transcript keeps tool-call arguments raw on purpose (#43083: the model reads its own
+    masked command back and copies the placeholder into the next call). That objection is
+    about the conversation replayed to the model; this payload is a copy handed to a plugin
+    and never sent, so the same masking the other two leaves get applies here.
+    """
+    args = json.dumps({"command": f"export GITHUB_TOKEN={FAKE_GITHUB} && git push origin main"})
+    messages = [
+        {"role": "user", "content": "push it", "timestamp": 1.0},
+        {
+            "role": "assistant", "content": "", "timestamp": 2.0,
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "terminal", "arguments": args}}],
+        },
+    ]
+    history = turn_finalizer._hook_history(messages)
+
+    call = history[1]["tool_calls"][0]
+    assert FAKE_GITHUB not in call["function"]["arguments"]
+    assert "git push origin main" in call["function"]["arguments"], "the command was over-masked"
+    # Still parseable, and the sibling keys survive: a plugin that loads the arguments
+    # must not choke on the mask (#137028 is that failure on the request path).
+    decoded = json.loads(call["function"]["arguments"])
+    assert decoded["command"].startswith("export GITHUB_TOKEN=")
+    assert decoded["command"].endswith("git push origin main")
+    # Identity fields survive so a plugin can still key a call by id.
+    assert call["id"] == "call_1"
+    assert call["function"]["name"] == "terminal"
+    # The live dict keeps the bytes the next API request replays.
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == args
+    assert messages[1]["tool_calls"] is not call
 
 
 def test_no_hook_means_no_masking_work(hook_off):

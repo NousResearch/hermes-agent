@@ -104,7 +104,7 @@ def _prepare_dependencies(path):
     from pm.plugin_inputs import Candidates
 
     try:
-        if read_python_declaration(path.parent).is_member:
+        if read_python_declaration(path.parent).installs_packages:
             sync_venv(explicit=True, plugins=Candidates([path.parent]))
     except Exception as exc:
         raise ValueError(f"Plugin dependencies could not be prepared for setup: {exc}.") from exc

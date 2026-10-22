@@ -174,7 +174,7 @@ def _needs_restart_to_load(name: str) -> bool:
             return False
         declaration = read_python_declaration(Path(path))
         # Requirements this process already imports need no restart, whatever the selection says.
-        if not declaration.is_member or all(
+        if not declaration.installs_packages or all(
                 _dist_installed(req) is not False for req in declaration.install_requirements):
             return False
         reason = restart_needed(repo_root())

@@ -57,10 +57,14 @@ Configure known peers in `config.yaml`:
 a2a_agents:
   researcher:
     url: "http://research-box.local:9900"
-    auth: { type: bearer, token: "..." }
+    # Prefer token_env so a secret is not written to config.yaml.
+    auth: { type: bearer, token_env: A2A_TOKEN_RESEARCHER }
     timeout: 120
     capabilities: [web_search, research]
 ```
+
+`token` remains supported for existing peers. A non-empty `token` takes
+precedence; an unset or empty `token_env` sends no auth header.
 
 Then just ask: *"Ask the researcher agent to summarize today's arXiv postings."* Direct URLs work too — `a2a_call` accepts any A2A endpoint.
 

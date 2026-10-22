@@ -105,7 +105,7 @@ let
   };
 
   hermesWeb = callPackage ./web.nix {
-    inherit hermesNpmLib generatedIcons;
+    inherit hermesNpmLib generatedIcons rev branch dirty;
   };
 
   bundledSkills = lib.cleanSourceWith {

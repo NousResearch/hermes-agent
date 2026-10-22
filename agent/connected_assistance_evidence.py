@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
+import json
 import re
 
 
@@ -12,6 +14,12 @@ _URL = re.compile(r"https?://[^\s<>\"']+")
 _TIME = re.compile(r"\b(?:today|tomorrow|urgent|asap|tonight|\d{4}-\d{2}-\d{2})\b|오늘|내일|긴급", re.IGNORECASE)
 _REQUEST = re.compile(r"\b(?:please|could you|can you|need you)\b|부탁|해\s?주세요", re.IGNORECASE)
 _DEADLINE = re.compile(r"\b(?:deadline|due|by)\b|기한|마감", re.IGNORECASE)
+
+
+def observed_content_digest(content: Any) -> str:
+    """Version the complete observed record, never a model-selected quote or hash."""
+    encoded = json.dumps(content, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _record_nodes(value: Any, pointer: str = ""):
@@ -41,6 +49,7 @@ def observed_records(observations: list[dict]) -> list[dict]:
                             "capability_id": observation["capability_id"],
                             "record_id": str(record_id) if record_id is not None else f"pointer:{pointer}",
                             "json_pointer": pointer, "content": content, "excerpt": excerpt,
+                            "content_digest": observed_content_digest(content),
                             **({"url": url} if isinstance(url, str) and _URL.fullmatch(url) else {}),
                             "data_use": sorted(set(observation.get("data_use") or ()))})
     return records
@@ -57,7 +66,7 @@ def _strings(value: Any):
             yield from _strings(child)
 
 
-def _citation(citation: Any, records: list[dict]) -> dict | None:
+def canonical_citation(citation: Any, records: list[dict]) -> dict | None:
     if not isinstance(citation, dict):
         return None
     if not all(isinstance(citation.get(k), str) for k in ("source_id", "record_id", "json_pointer", "excerpt")):
@@ -78,6 +87,7 @@ def _citation(citation: Any, records: list[dict]) -> dict | None:
                             or not any(url in _URL.findall(value) for value in text)):
         return None
     return {**{k: record[k] for k in ("source_id", "capability_id", "record_id", "json_pointer", "data_use")},
+            "content_digest": observed_content_digest(record["content"]),
             "excerpt": excerpt, **({"url": url} if url else {})}
 
 
@@ -114,7 +124,7 @@ def validate_findings(candidates: Any, records: list[dict]) -> list[dict]:
     for candidate in candidates:
         if not _valid_candidate(candidate):
             continue
-        citations = [_citation(c, records) for c in candidate["evidence"]]
+        citations = [canonical_citation(c, records) for c in candidate["evidence"]]
         if any(c is None for c in citations) or not _supported_claim(candidate, citations, records):
             continue
         findings.append({**candidate, "evidence": citations,

@@ -3,12 +3,10 @@
 Never publish source text in a toast/replay and never fall back to messaging.
 """
 from contextlib import closing
-import hashlib
-import json
 from pathlib import Path
 
 from gateway.config import Platform
-from gateway.connected_assistance_store import AssistanceStore
+from gateway.connected_assistance_store import AssistanceStore, notification_key
 
 POINTER = "Connected-source findings are ready. Open `hermes connectors findings` in your local terminal."
 
@@ -50,8 +48,7 @@ def notification_receipts(store):
 
 
 def _claim(store, row):
-    evidence = sorted({json.dumps(e, sort_keys=True) for e in row["evidence"]})
-    key = hashlib.sha256(json.dumps([row["id"], evidence]).encode()).hexdigest()
+    key = notification_key(row)
     with closing(store._connect()) as db, db:
         _receipts(db)
         changed = db.execute("INSERT OR IGNORE INTO assistance_notifications VALUES (?, ?, 'unknown')",
@@ -68,13 +65,14 @@ def publish_private_findings(authority, rows, *, current=lambda: True):
     if target is None:
         return 0
     store = AssistanceStore(Path(authority.profile_id))
-    shown = 0
-    for row in rows[:5]:
-        if not current() or store.is_paused():
+    shown = claimed = 0
+    for row in rows:
+        if claimed >= 5 or not current() or store.is_paused():
             break
         key = _claim(store, row)
         if key is None:
             continue
+        claimed += 1
         sid, live = target
         # Claim BEFORE publish: an interrupted/ambiguous send is unknown, never blindly retried.
         if not current() or owned_local_target(authority, sid) is not live:

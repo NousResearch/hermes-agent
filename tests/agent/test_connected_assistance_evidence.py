@@ -94,3 +94,22 @@ def test_malformed_judgment_fails_closed(value):
     from agent.connected_assistance_evidence import observed_records, validate_findings
 
     assert validate_findings(value, observed_records([observation()])) == []
+
+
+def test_observed_content_digest_ignores_model_quote_and_forged_digest():
+    from agent.connected_assistance_evidence import observed_records, validate_findings
+
+    records = observed_records([observation(text="Please review Atlas today before lunch.")])
+    first = candidate()
+    first["evidence"][0]["content_digest"] = "model-selected"
+    short = validate_findings([first], records)[0]["evidence"][0]
+    first["evidence"][0]["excerpt"] += " before lunch."
+    first["evidence"][0].pop("url")
+    long = validate_findings([first], records)[0]["evidence"][0]
+    assert len(records[0]["content_digest"]) == 64
+    assert short["content_digest"] == long["content_digest"] == records[0]["content_digest"]
+    # Even a forged digest on a retained record is not authority over its actual content.
+    records[0]["content_digest"] = "forged"
+    assert validate_findings([first], records)[0]["evidence"][0]["content_digest"] == short["content_digest"]
+    updated = observed_records([observation(text="Please review Atlas today before dinner.")])
+    assert updated[0]["content_digest"] != short["content_digest"]

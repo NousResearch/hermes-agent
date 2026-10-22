@@ -309,3 +309,34 @@ def test_standard_installs_without_optional_jsonschema_can_discover_and_validate
         sources.read(cap.capability_id, {"query": 123})
     service.schema = {"type": "object", "properties": {"x": {"anyOf": [{"type": "string"}]}}}
     assert sources.discover() == []  # Unimplemented subset rules must never silently disappear.
+
+
+@pytest.mark.parametrize("phase", ["headers", "retry"])
+def test_current_policy_gate_covers_transport_dispatch_and_internal_retry(monkeypatch, phase):
+    from tools.connectors.assistance import ConnectedSources
+    service = SourceTransport()
+    gateway, portal = service.clients()
+    paused = []
+    original_headers = gateway._header_provider
+    def headers(url):
+        if phase == "headers" and url.endswith("/execute"):
+            paused.append(True)
+        return original_headers(url)
+    gateway._header_provider = headers
+    sources = ConnectedSources(client_factory=lambda: gateway, portal_factory=lambda: portal,
+                               availability=lambda: True)
+    cap = sources.discover()[0]
+    original_request = service.request
+    def request(method, url, **kwargs):
+        if phase == "retry" and url.endswith("/execute"):
+            paused.append(True)
+            original_request(method, url, **kwargs)
+            raise ConnectionError("connection reset by peer")
+        return original_request(method, url, **kwargs)
+    monkeypatch.setattr(service, "request", request)
+    def check():
+        if paused:
+            raise PermissionError("paused")
+    with pytest.raises(Exception):
+        sources.read(cap.capability_id, {"query": "x"}, check_current=check)
+    assert len([url for _, url, _ in service.requests if url.endswith("/execute")]) == (0 if phase == "headers" else 1)

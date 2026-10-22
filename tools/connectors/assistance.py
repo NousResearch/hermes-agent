@@ -97,7 +97,7 @@ class ConnectedSources:
         return admitted
 
     def read(self, capability_id: str, arguments: dict[str, Any], *,
-             deadline: float | None = None) -> dict[str, Any]:
+             deadline: float | None = None, check_current: Callable | None = None) -> dict[str, Any]:
         """Validate the exact ID and schema, then run the normal policies before an exact read.
 
         The generic connector bridge retries a different literal tool slug on a miss and
@@ -127,10 +127,13 @@ class ConnectedSources:
             # A policy hook may have revoked access or switched the owning profile.
             if capability not in self.discover(deadline=deadline):
                 raise ValueError("capability_unavailable")
-            client = _deadline_client((self._client_factory or _default_client_factory)(), deadline)
+            client = _deadline_client((self._client_factory or _default_client_factory)(), deadline,
+                                      check_current=check_current)
             plan = PlannedCall(0, capability.name, capability.connector,
                                capability.capability_id.rsplit(":", 1)[1], dict(next_args))
             check_deadline(deadline)
+            if check_current is not None:
+                check_current()
             result = client.execute([plan])[0]
             check_deadline(deadline)
             if result.get("error") or result.get("account") != capability.alias:
@@ -175,26 +178,30 @@ def check_deadline(deadline: float | None) -> None:
 
 
 class _DeadlineTransport:
-    def __init__(self, transport, deadline: float):
+    def __init__(self, transport, deadline: float | None, check_current: Callable | None = None):
         self.transport = transport
         self.deadline = deadline
+        self.check_current = check_current
 
     def request(self, method, url, **kwargs):
+        if self.check_current is not None:
+            self.check_current()
         check_deadline(self.deadline)
-        remaining = self.deadline - time.monotonic()
-        kwargs["timeout"] = min(kwargs.get("timeout") or remaining, remaining)
+        if self.deadline is not None:
+            remaining = self.deadline - time.monotonic()
+            kwargs["timeout"] = min(kwargs.get("timeout") or remaining, remaining)
         result = self.transport.request(method, url, **kwargs)
         check_deadline(self.deadline)
         return result
 
 
-def _deadline_client(client, deadline: float | None):
-    if deadline is None:
+def _deadline_client(client, deadline: float | None, *, check_current: Callable | None = None):
+    if deadline is None and check_current is None:
         return client
     # Client instances only: never change process-wide transports or other profiles.
     bounded = copy(client)
-    bounded._transport = _DeadlineTransport(client._transport, deadline)
-    if hasattr(client, "_sleep"):
+    bounded._transport = _DeadlineTransport(client._transport, deadline, check_current)
+    if deadline is not None and hasattr(client, "_sleep"):
         def wait(seconds):
             check_deadline(deadline)
             if seconds >= deadline - time.monotonic():

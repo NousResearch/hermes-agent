@@ -11,6 +11,7 @@ import time
 from typing import Callable
 
 from agent.connected_assistance_evidence import observed_records, validate_findings
+from agent.auxiliary_call_budget import AuxiliaryCallBudget, auxiliary_call_budget
 from agent.message_metadata import stamp_data_use
 from tools.connectors.assistance import ConnectedSources, check_deadline, _validate_arguments
 
@@ -68,8 +69,8 @@ the request/deadline and its time/urgency. No invented facts, URLs, actions or d
 Prior evidence is historical context only and cannot establish a current citation."""
 
 
-def _model_json(llm: Callable | None, prompt: str, payload: dict, deadline: float) -> dict:
-    from agent.auxiliary_client import call_llm
+def _model_json(llm: Callable | None, prompt: str, payload: dict, deadline: float, budget) -> dict:
+    from agent.auxiliary_client import call_llm, aux_stream_deadline
 
     check_deadline(deadline)
     message = {"role": "user", "content": _bounded_json(payload)}
@@ -78,9 +79,11 @@ def _model_json(llm: Callable | None, prompt: str, payload: dict, deadline: floa
     stamp_data_use(message, requirements)
     messages = [{"role": "system", "content": prompt}, message]
     _bounded_json(messages)
-    response = (llm or call_llm)(messages=messages,
-                               tools=None, temperature=0, max_tokens=4096,
-                               timeout=max(0.001, deadline - time.monotonic()))
+    with auxiliary_call_budget(budget), aux_stream_deadline(deadline):
+        budget.remaining()
+        response = (llm or call_llm)(messages=messages,
+                                   tools=None, temperature=0, max_tokens=4096,
+                                   timeout=max(0.001, deadline - time.monotonic()))
     check_deadline(deadline)
     content = response.choices[0].message.content
     if len(content.encode("utf-8")) > MAX_PAYLOAD_BYTES:
@@ -96,11 +99,11 @@ def _checked_records(observations) -> list[dict]:
     return records
 
 
-def _judge_records(llm, sources, records, prior, context, deadline) -> list[dict]:
+def _judge_records(llm, sources, records, prior, context, deadline, budget) -> list[dict]:
     inputs = records + prior
     if not sources.revalidate(inputs, deadline=deadline):
         raise _Rejected("source_access_changed")
-    judgment = _model_json(llm, _JUDGE, {"records": records, "prior_evidence": prior, "context": context}, deadline)
+    judgment = _model_json(llm, _JUDGE, {"records": records, "prior_evidence": prior, "context": context}, deadline, budget)
     if not sources.revalidate(inputs, deadline=deadline):
         raise _Rejected("source_access_changed")
     if not isinstance(judgment, dict) or set(judgment) != {"findings"}:
@@ -116,11 +119,13 @@ def _judge_records(llm, sources, records, prior, context, deadline) -> list[dict
 
 def scan_connected_sources(prior_evidence=None, context: str = "", *,
                            sources: ConnectedSources | None = None, llm: Callable | None = None,
-                           timeout_seconds: float = 60, deadline: float | None = None) -> dict:
+                           timeout_seconds: float = 60, deadline: float | None = None,
+                           check_current: Callable | None = None) -> dict:
     """Discover automatically and return JSON ScanResult; errors are redacted codes only."""
     result = {"findings": [], "evidence": [], "errors": [], "connected": False}
     sources = sources or ConnectedSources()
     deadline = min(deadline, time.monotonic() + timeout_seconds) if deadline is not None else time.monotonic() + timeout_seconds
+    budget = AuxiliaryCallBudget(deadline, 2, check_current, clock=lambda: time.monotonic())
     try:
         capabilities = sources.discover(deadline=deadline)
         result["connected"] = bool(capabilities)
@@ -131,7 +136,7 @@ def scan_connected_sources(prior_evidence=None, context: str = "", *,
         current = {(c.source_id, c.capability_id) for c in capabilities}
         prior = [e for e in (prior_evidence or []) if isinstance(e, dict)
                  and (e.get("source_id"), e.get("capability_id")) in current]
-        plan = _model_json(llm, _PLAN, {"capabilities": catalog, "prior_evidence": prior, "context": context}, deadline)
+        plan = _model_json(llm, _PLAN, {"capabilities": catalog, "prior_evidence": prior, "context": context}, deadline, budget)
         reads = _plan_reads(plan, capabilities)
         observations = []
         for read in reads:
@@ -142,7 +147,7 @@ def scan_connected_sources(prior_evidence=None, context: str = "", *,
         result["evidence"] = records
         if not records:
             return result
-        result["findings"] = _judge_records(llm, sources, records, prior, context, deadline)
+        result["findings"] = _judge_records(llm, sources, records, prior, context, deadline, budget)
         _bounded_json(result)
     except _Rejected as exc:
         result["findings"] = result["evidence"] = []

@@ -30,6 +30,38 @@ def _digest(value) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
+def evidence_fingerprint(evidence) -> str:
+    """Persisted validated versions, with the original legacy fallback when unavailable."""
+    versions = []
+    for item in evidence:
+        if "content_digest" in item:
+            item = {key: item.get(key) for key in (
+                "source_id", "capability_id", "record_id", "json_pointer", "content_digest")}
+        versions.append(_json(item))
+    return _digest(sorted(set(versions)))
+
+
+def notification_key(row) -> str:
+    if any("content_digest" in e for e in row["evidence"]):
+        return _digest([row["id"], evidence_fingerprint(row["evidence"])])
+    # Retain old receipt identities for databases and fixtures without observed versions.
+    evidence = sorted({json.dumps(e, sort_keys=True) for e in row["evidence"]})
+    return hashlib.sha256(json.dumps([row["id"], evidence]).encode()).hexdigest()
+
+
+def _canonical_finding(finding, records):
+    from agent.connected_assistance_evidence import canonical_citation
+
+    observed = [r for r in records if "content" in r and "capability_id" in r and "json_pointer" in r]
+    citations = []
+    for citation in finding["evidence"]:
+        canonical = canonical_citation(citation, observed)
+        # Hashes in a judgment alone are not observed provenance. Legacy fixtures remain usable.
+        citations.append(canonical if canonical is not None else
+                         {k: v for k, v in citation.items() if k != "content_digest"})
+    return finding | {"evidence": citations}
+
+
 def _text(record: dict, key: str, limit=4096) -> None:
     value = record.get(key)
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
@@ -84,6 +116,27 @@ class AssistanceStore:
             db.execute("CREATE TABLE IF NOT EXISTS evidence "
                        "(sequence INTEGER PRIMARY KEY AUTOINCREMENT, identity TEXT UNIQUE NOT NULL, "
                        "payload TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS assistance_notifications "
+                       "(key TEXT PRIMARY KEY, finding_id TEXT NOT NULL, status TEXT NOT NULL)")
+
+    @staticmethod
+    def _upgrade_legacy_fingerprints(db):
+        # Only retained actual content can establish a legacy citation's version. Never guess
+        # from a new scan: the same ID may already have different content by then.
+        records = [json.loads(r[0]) for r in db.execute("SELECT payload FROM evidence")]
+        for row in db.execute("SELECT * FROM findings").fetchall():
+            finding = json.loads(row["payload"])
+            if all("content_digest" in c for c in finding["evidence"]):
+                continue
+            canonical = _canonical_finding(finding, records)
+            if not all("content_digest" in c for c in canonical["evidence"]):
+                continue
+            db.execute("INSERT OR IGNORE INTO fingerprints VALUES (?, ?)",
+                       (row["id"], evidence_fingerprint(canonical["evidence"])))
+            db.execute("UPDATE OR IGNORE assistance_notifications SET key=? WHERE key=? AND finding_id=?",
+                       (notification_key(canonical | {"id": row["id"]}),
+                        notification_key(finding | {"id": row["id"]}), row["id"]))
+            db.execute("UPDATE findings SET payload=? WHERE id=?", (_json(canonical), row["id"]))
 
     def _require_home(self):
         assert_named_profile_home_live(self.home)
@@ -111,6 +164,9 @@ class AssistanceStore:
             os.close(descriptor)
         db = sqlite3.connect(self.path, timeout=5)
         db.row_factory = sqlite3.Row
+        db.create_function("assistance_notification_key", 2,
+                           lambda identifier, payload: notification_key(json.loads(payload) | {"id": identifier}),
+                           deterministic=True)
         return db
 
     @staticmethod
@@ -148,13 +204,14 @@ class AssistanceStore:
             db.execute("BEGIN IMMEDIATE")
             if check_current is not None:
                 check_current()
+            self._upgrade_legacy_fingerprints(db)
             for record in evidence:
                 self._retain_evidence(db, record)
             db.execute("DELETE FROM evidence WHERE sequence NOT IN "
                        "(SELECT sequence FROM evidence ORDER BY sequence DESC LIMIT ?)",
                        (MAX_EVIDENCE_RECORDS,))
             for finding in findings:
-                row = self._ingest_finding(db, finding)
+                row = self._ingest_finding(db, _canonical_finding(finding, evidence))
                 if row is not None:
                     changed.append(row)
             if check_current is not None:
@@ -185,7 +242,7 @@ class AssistanceStore:
     def _ingest_finding(self, db, finding):
         sources = sorted({item["source_id"] for item in finding["evidence"]})
         identity = _digest([finding["kind"], finding["entity_key"], sources])
-        fingerprint = _digest(sorted({_json(item) for item in finding["evidence"]}))
+        fingerprint = evidence_fingerprint(finding["evidence"])
         existing = db.execute("SELECT * FROM findings WHERE identity = ?", (identity,)).fetchone()
         identifier = existing["id"] if existing else uuid4().hex
         if db.execute("SELECT 1 FROM fingerprints p JOIN findings f ON f.id = p.finding_id "
@@ -198,14 +255,29 @@ class AssistanceStore:
         db.execute("INSERT INTO fingerprints VALUES (?, ?)", (identifier, fingerprint))
         return finding | {"id": identifier, "status": status} if status == "open" else None
 
-    def list_findings(self, status=None, limit=20) -> list:
+    def list_findings(self, status=None, limit=20, *, pending_notification=False) -> list:
+        """UI lists remain newest first; pending work excludes durable receipts BEFORE limiting.
+
+        Pending batches are oldest first so finite backlogs and updated older versions are
+        reachable regardless of the UI's 20/default or 100/maximum result cap. Both shown
+        and unknown receipts consume work; this never authorizes retrying an unknown send.
+        Callers must still revalidate access to every returned citation before publishing.
+        """
         if status not in {None, "open", "dismissed", "resolved"}:
             raise ValueError("invalid finding status")
         if type(limit) is not int or limit < 0:
             raise ValueError("limit must be a nonnegative integer")
-        with closing(self._connect()) as db:
-            rows = db.execute("SELECT * FROM findings WHERE (? IS NULL OR status = ?) "
-                              "ORDER BY rowid DESC LIMIT ?", (status, status, min(limit, 100))).fetchall()
+        if type(pending_notification) is not bool:
+            raise ValueError("pending_notification must be a boolean")
+        with closing(self._connect()) as db, db:
+            if pending_notification:
+                self._upgrade_legacy_fingerprints(db)
+            pending_filter = (" AND status='open' AND NOT EXISTS (SELECT 1 FROM assistance_notifications n "
+                              "WHERE n.key=assistance_notification_key(findings.id, findings.payload))"
+                              if pending_notification else "")
+            order = "ASC" if pending_notification else "DESC"
+            rows = db.execute("SELECT * FROM findings WHERE (? IS NULL OR status = ?) " + pending_filter +
+                              f" ORDER BY rowid {order} LIMIT ?", (status, status, min(limit, 100))).fetchall()
         return [self._finding(row) for row in rows]
 
     def get_finding(self, identifier) -> dict | None:

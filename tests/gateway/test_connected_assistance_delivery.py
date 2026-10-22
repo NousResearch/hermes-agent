@@ -97,3 +97,91 @@ async def test_only_owned_local_notification_and_durable_no_retry(tmp_path, monk
     finally:
         await connection.close()
         authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [6, 25, 110])
+async def test_notifications_eventually_consume_entire_backlog_and_updated_old_row(tmp_path, monkeypatch, count):
+    from gateway.connected_assistance_delivery import publish_private_findings, notification_receipts
+    from tests.gateway.test_connected_assistance_store import observed_scan
+
+    _runner, authority, connection, _ref, live = await local_owner(tmp_path, monkeypatch)
+    try:
+        store = AssistanceStore(tmp_path)
+        oldest = None
+        for i in range(count):
+            created = store.ingest_scan(observed_scan(entity=str(i), record=str(i)))[0]
+            if i == 0:
+                oldest = created
+        assert len(store.list_findings()) == min(count, 20)  # UI contract is unchanged.
+        # A full failed publication batch is unknown; it spends five claims, not zero.
+        pending = store.list_findings(status="open", pending_notification=True)
+        assert publish_private_findings(authority, pending) == 0
+        assert len(notification_receipts(store)) == 5
+        frames = []
+        live.event_stream.observers.add(frames.append)
+        for _ in range(count):
+            pending = AssistanceStore(tmp_path).list_findings(status="open", pending_notification=True)
+            if not pending:
+                break
+            assert 1 <= publish_private_findings(authority, pending) <= 5
+        receipts = notification_receipts(store)
+        assert len(receipts) == count
+        assert sum(r["status"] == "unknown" for r in receipts) == 5
+        assert len(frames) == count - 5
+        assert publish_private_findings(authority, store.list_findings(status="open")) == 0
+        assert len(frames) == count - 5
+        assert oldest is not None
+        store.ingest_scan(observed_scan(entity="0", record="0", text="Please review Atlas today before dinner."))
+        pending = store.list_findings(status="open", pending_notification=True)
+        assert [r["id"] for r in pending] == [oldest["id"]]
+        assert publish_private_findings(authority, pending) == 1
+        assert not store.list_findings(status="open", pending_notification=True)
+    finally:
+        await connection.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_delivery_limit_counts_new_claims_not_repeated_candidates(tmp_path, monkeypatch):
+    from gateway.connected_assistance_delivery import publish_private_findings, notification_receipts
+
+    _runner, authority, connection, _ref, live = await local_owner(tmp_path, monkeypatch)
+    try:
+        store = AssistanceStore(tmp_path)
+        for i in range(6):
+            row = finding(entity_key=str(i))
+            row["evidence"][0]["record_id"] = str(i)
+            store.ingest_scan(scan(row))
+        frames = []
+        live.event_stream.observers.add(frames.append)
+        rows = store.list_findings(status="open")
+        assert publish_private_findings(authority, rows) == 5
+        assert publish_private_findings(authority, rows) == 1
+        assert len(notification_receipts(store)) == len(frames) == 6
+    finally:
+        await connection.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_identity_uses_observed_version_not_model_quote(tmp_path, monkeypatch):
+    from gateway.connected_assistance_delivery import publish_private_findings, notification_receipts
+    from tests.gateway.test_connected_assistance_store import observed_scan
+
+    _runner, authority, connection, _ref, live = await local_owner(tmp_path, monkeypatch)
+    try:
+        store = AssistanceStore(tmp_path)
+        original = store.ingest_scan(observed_scan())[0]
+        frames = []
+        live.event_stream.observers.add(frames.append)
+        assert publish_private_findings(authority, [original]) == 1
+        alternate = original | {"entity_key": "Atlas review", "evidence": [original["evidence"][0] | {
+            "excerpt": "Please review Atlas today before lunch.", "url": "https://mail.test/m1"}]}
+        assert publish_private_findings(authority, [alternate]) == 0
+        changed = store.ingest_scan(observed_scan(text="Please review Atlas today before dinner."))
+        assert publish_private_findings(authority, changed) == 1
+        assert len(notification_receipts(store)) == len(frames) == 2
+    finally:
+        await connection.close()
+        authority.db.close()

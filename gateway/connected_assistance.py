@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 
 from gateway.connected_assistance_store import AssistanceStore
 from gateway.session_authorities import owner_scope, serving_authorities
@@ -58,11 +59,23 @@ class _CurrentSources:
 
     def read(self, *args, **kwargs):
         self.check()
-        return self.sources.read(*args, **kwargs)
+        return self.sources.read(*args, check_current=self.check, **kwargs)
 
     def revalidate(self, *args, **kwargs):
         self.check()
         return self.sources.revalidate(*args, **kwargs)
+
+
+class _WriterHandle:
+    """One root-shutdown registration follows this serial runtime's physical thread."""
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    def start(self):
+        self.runtime.thread.start()
+
+    def is_alive(self):
+        return self.runtime.thread is not None and self.runtime.thread.is_alive()
 
 
 class ConnectedAssistance:
@@ -70,6 +83,8 @@ class ConnectedAssistance:
     def __init__(self, runner):
         self.runner = runner
         self.worker = None
+        self.thread = None
+        self.writer_handle = None
         self.owner = None
         self.stopped = threading.Event()
         self.retired = {}
@@ -105,7 +120,7 @@ class ConnectedAssistance:
             if not _claim_scan(store, time.time()):
                 return self._ready(store, sources, check, deadline)
             result = scan_connected_sources(_bounded_prior(store.prior_evidence()), sources=sources, llm=model,
-                                            deadline=deadline, timeout_seconds=SCAN_TIMEOUT_SECONDS)
+                                            deadline=deadline, timeout_seconds=SCAN_TIMEOUT_SECONDS, check_current=check)
             check()
             if result.get("connected") is not True or result.get("errors"):
                 return []
@@ -117,7 +132,7 @@ class ConnectedAssistance:
 
     @staticmethod
     def _ready(store, sources, check, deadline):
-        rows = store.list_findings(status="open")
+        rows = store.list_findings(status="open", limit=5, pending_notification=True)
         evidence = [e for row in rows for e in row["evidence"]]
         if not rows or not sources.revalidate(evidence, deadline=deadline):
             return []
@@ -128,7 +143,7 @@ class ConnectedAssistance:
         async with self.tick_lock:
             # A cancelled waiter does not free the worker slot or begin another scan.
             if self.worker is not None:
-                if not self.worker.done():
+                if _worker_live(self):
                     return
                 self._settle_worker()
             for authority in serving_authorities(self.runner):
@@ -136,7 +151,7 @@ class ConnectedAssistance:
                     continue
                 self.owner = authority
                 cancelled = threading.Event()
-                self.worker = asyncio.create_task(asyncio.to_thread(self._scan, authority, cancelled))
+                self.worker = self._start_worker(authority, cancelled)
                 try:
                     rows = await asyncio.shield(self.worker)
                     if self.current(authority):
@@ -151,12 +166,55 @@ class ConnectedAssistance:
                     if self.worker.done():
                         self._settle_worker()
 
+    def _start_worker(self, authority, cancelled):
+        from agent.memory_provider import spawn_context_thread
+        from gateway.runtime_ownership import process_ownership
+        from gateway.session_runtime_workers import track_turn_worker
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        handle = SimpleNamespace(worker_done=threading.Event())
+
+        def complete(result, error):
+            if not future.done():
+                if error is None:
+                    future.set_result(result)
+                else:
+                    future.set_exception(error)
+
+        def run():
+            result, error = None, None
+            try:
+                result = self._scan(authority, cancelled)
+            except BaseException as exc:  # health: allow BLE001 -- transfer the worker failure to its retained future; caller logs redacted provider errors
+                error = exc
+            finally:
+                handle.worker_done.set()
+                try:
+                    loop.call_soon_threadsafe(complete, result, error)
+                except RuntimeError:
+                    logger.debug("Connected assistance worker settled after its loop closed")
+
+        with owner_scope(authority):
+            track_turn_worker(self.runner, handle, None)
+            self.thread = spawn_context_thread(run, name="connected-assistance")
+        try:
+            if self.writer_handle is None:
+                self.writer_handle = _WriterHandle(self)
+                process_ownership.start_writer(self.writer_handle)
+            else:
+                self.thread.start()
+        except RuntimeError:
+            handle.worker_done.set()
+            raise
+        return future
+
     def _settle_worker(self):
         if not self.worker.cancelled():
             self.worker.exception()
         self.worker = self.owner = None
 
-    async def stop(self, *, home=None, timeout=SCAN_TIMEOUT_SECONDS + 5):
+    async def stop(self, *, home=None, timeout: float = SCAN_TIMEOUT_SECONDS + 5):
         if home is None:
             self.stopped.set()
         else:
@@ -170,7 +228,7 @@ class ConnectedAssistance:
         if worker is None or (home_key is not None and owner.profile_id != home_key):
             return True
         done, _ = await asyncio.wait({worker}, timeout=timeout)
-        return bool(done)
+        return bool(done) and not _worker_live(self)
 
     async def watch(self):
         while self.runner._running and not self.stopped.is_set():
@@ -186,6 +244,16 @@ def start_connected_assistance(runner):
     return runtime
 
 
-async def stop_connected_assistance(runner, *, home=None, timeout=SCAN_TIMEOUT_SECONDS + 5):
+async def stop_connected_assistance(runner, *, home=None, timeout: float = SCAN_TIMEOUT_SECONDS + 5):
     runtime = getattr(runner, "_connected_assistance", None)
     return True if runtime is None else await runtime.stop(home=home, timeout=timeout)
+
+
+def assistance_worker_live(runner):
+    runtime = getattr(runner, "_connected_assistance", None)
+    return runtime is not None and _worker_live(runtime)
+
+
+def _worker_live(runtime):
+    return ((runtime.worker is not None and not runtime.worker.done())
+            or (getattr(runtime, "thread", None) is not None and runtime.thread.is_alive()))

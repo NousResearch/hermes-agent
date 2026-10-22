@@ -269,3 +269,51 @@ def test_revocation_during_malformed_judgment_discards_retained_evidence():
     assert result["findings"] == result["evidence"] == []
     assert result["errors"] == ["source_access_changed"]
     assert len(calls) == 2
+
+
+def test_real_auxiliary_recovery_obeys_scan_deadline(tmp_path, monkeypatch):
+    from agent import auxiliary_client as aux
+    from agent import connected_assistance as pipeline
+    from tools.connectors import assistance as source_module
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    service = SourceTransport()
+    clock = [100.0]
+    monkeypatch.setattr(pipeline, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(source_module, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    attempts = []
+    def create(**kwargs):
+        attempts.append({'at':clock[0], 'timeout':kwargs.get('timeout')})
+        if len(attempts) == 1:
+            clock[0] = 161.0
+            raise ConnectionError('connection reset by peer')
+        return completion({'reads':[]})
+    client = SimpleNamespace(base_url='https://fixture.test/v1', chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(aux, '_resolve_task_provider_model', lambda *a, **kw: ('custom','fixture','https://fixture.test/v1','fixture',None))
+    monkeypatch.setattr(aux, '_get_cached_client', lambda *a, **kw: (client,'fixture'))
+    monkeypatch.setattr(aux, '_TRANSIENT_RETRY_BACKOFF_BASE', 0)
+    result = pipeline.scan_connected_sources(sources=service.sources(), timeout_seconds=60)
+    print('AUX_AFTER_DEADLINE', {'attempts':attempts, 'result':result})
+    assert len(attempts) == 1
+
+
+def test_real_auxiliary_retries_fit_two_physical_requests(tmp_path, monkeypatch):
+    from agent import auxiliary_client as aux
+    from agent.connected_assistance import scan_connected_sources
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    service = SourceTransport()
+    attempts = []
+    def create(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) < 3:
+            raise ConnectionError('connection reset by peer')
+        payload = json.loads(kwargs['messages'][1]['content'])
+        if 'capabilities' in payload:
+            return completion({'reads':[{'capability_id':payload['capabilities'][0]['capability_id'], 'arguments':{'query':'to:me'}}]})
+        return completion({'findings':[]})
+    client = SimpleNamespace(base_url='https://fixture.test/v1', chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(aux, '_resolve_task_provider_model', lambda *a, **kw: ('custom','fixture','https://fixture.test/v1','fixture',None))
+    monkeypatch.setattr(aux, '_get_cached_client', lambda *a, **kw: (client,'fixture'))
+    monkeypatch.setattr(aux, '_TRANSIENT_RETRY_BACKOFF_BASE', 0)
+    result = scan_connected_sources(sources=service.sources())
+    print('AUX_PHYSICAL_BUDGET', {'attempts':len(attempts),'errors':result['errors']})
+    assert len(attempts) <= 2

@@ -314,3 +314,128 @@ def test_prior_evidence_keeps_capability_and_pointer_provenance_separate(home):
     store.ingest_scan(scan(records=[base, sibling, another_capability]))
     assert store.prior_evidence() == [another_capability, sibling, base]
     assert AssistanceStore(home).prior_evidence()[2]["data_use"] == ["no_external_llm"]
+
+
+def observed_scan(*, text="Please review Atlas today before lunch.", entity="Atlas", quote="Please review Atlas today",
+                  source="gmail:work", capability="READ", pointer="", kind="direct_request", url=False, record="m1"):
+    from agent.connected_assistance_evidence import observed_records, validate_findings
+
+    response = {"id": record, "text": text, "url": "https://mail.test/m1"}
+    if pointer:
+        response = [response]
+    records = observed_records([{"source_id": source, "capability_id": capability,
+                                 "response": response, "data_use": ["no_training"]}])
+    citation = {"source_id": source, "record_id": record, "json_pointer": pointer, "excerpt": quote}
+    if url:
+        citation["url"] = "https://mail.test/m1"
+    row = {"kind": kind, "entity_key": entity, "title": "Review Atlas", "summary": "Review requested",
+           "why_now": "Please review Atlas today", "suggested_action": "review", "evidence": [citation]}
+    return scan(*validate_findings([row], records), records=records)
+
+
+@pytest.mark.parametrize("status", ["open", "dismissed", "resolved"])
+def test_same_observed_content_version_survives_model_rewording(home, status):
+    from gateway.connected_assistance_store import AssistanceStore
+
+    store = AssistanceStore(home)
+    first = store.ingest_scan(observed_scan())[0]
+    if status != "open":
+        store.transition(first["id"], status)
+    assert AssistanceStore(home).ingest_scan(observed_scan(entity="Atlas review", quote="Please review Atlas today before lunch.", url=True)) == []
+    assert len(store.list_findings()) == 1
+    saved = store.get_finding(first["id"])
+    assert saved is not None and saved["status"] == status
+
+
+def test_actual_content_versions_not_forged_digests_drive_changes(home):
+    from gateway.connected_assistance_store import AssistanceStore
+
+    store = AssistanceStore(home)
+    original = observed_scan()
+    first = store.ingest_scan(original)[0]
+    updated = observed_scan(text="Please review Atlas today before dinner.")
+    updated["findings"][0]["evidence"][0]["content_digest"] = first["evidence"][0].get("content_digest")
+    updated["evidence"][0]["content_digest"] = "forged"
+    changed = store.ingest_scan(updated)
+    assert len(changed) == 1 and changed[0]["id"] == first["id"]
+    assert changed[0]["evidence"][0]["content_digest"] != first["evidence"][0]["content_digest"]
+    assert store.ingest_scan(original) == []
+    for kwargs in ({"source": "gmail:personal"}, {"capability": "READ-OTHER"}, {"pointer": "/0"}):
+        assert len(store.ingest_scan(observed_scan(entity=str(kwargs), **kwargs))) == 1
+
+
+def test_legacy_without_observed_content_does_not_trust_digest(home):
+    from gateway.connected_assistance_store import AssistanceStore
+
+    store = AssistanceStore(home)
+    first = store.ingest_scan(scan(finding()))[0]
+    forged = finding(entity_key="reworded", evidence=[evidence() | {"content_digest": "f" * 64}])
+    store.transition(first["id"], "dismissed")
+    assert store.ingest_scan(scan(forged)) == []
+
+
+def test_legacy_dismissal_is_upgraded_from_retained_actual_content(home):
+    import json
+    from gateway.connected_assistance_store import AssistanceStore
+
+    store = AssistanceStore(home)
+    result = observed_scan()
+    first = store.ingest_scan(result)[0]
+    store.transition(first["id"], "dismissed")
+    # Simulate a pre-digest database with real observed data but legacy citation fingerprints.
+    legacy = {k: v for k, v in first.items() if k not in {"id", "status"}}
+    legacy["evidence"][0].pop("content_digest", None)
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE findings SET payload=? WHERE id=?", (json.dumps(legacy), first["id"]))
+        db.execute("DELETE FROM fingerprints")
+    assert AssistanceStore(home).ingest_scan(observed_scan(entity="Atlas review", quote="Please review Atlas today before lunch.")) == []
+    assert len(store.list_findings()) == 1
+
+
+@pytest.mark.parametrize("receipt_status", ["unknown", "shown"])
+def test_legacy_notification_receipts_survive_content_version_upgrade(home, receipt_status):
+    import json
+    from gateway.connected_assistance_store import AssistanceStore, notification_key
+
+    store = AssistanceStore(home)
+    first = store.ingest_scan(observed_scan())[0]
+    legacy = {k: v for k, v in first.items() if k not in {"id", "status"}}
+    legacy["evidence"][0].pop("content_digest", None)
+    legacy_key = notification_key(legacy | {"id": first["id"]})
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE findings SET payload=? WHERE id=?", (json.dumps(legacy), first["id"]))
+        db.execute("INSERT INTO assistance_notifications VALUES (?, ?, ?)",
+                   (legacy_key, first["id"], receipt_status))
+    reopened = AssistanceStore(home)
+    assert reopened.list_findings(status="open", pending_notification=True) == []
+    with sqlite3.connect(store.path) as db:
+        statuses = db.execute("SELECT status FROM assistance_notifications WHERE finding_id=?", (first["id"],)).fetchall()
+        assert statuses == [(receipt_status,)]
+
+
+def test_legacy_local_management_never_loads_agent_or_connectors(home, monkeypatch):
+    import builtins
+    import json
+    from gateway.connected_assistance_store import AssistanceStore
+
+    store = AssistanceStore(home)
+    first = store.ingest_scan(observed_scan())[0]
+    payload = {k: v for k, v in first.items() if k not in {"id", "status"}}
+    payload["evidence"][0].pop("content_digest")
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE findings SET payload=? WHERE id=?", (json.dumps(payload), first["id"]))
+    original_import = builtins.__import__
+
+    def no_apps(name, *args, **kwargs):
+        if name.startswith(("agent.", "tools.connectors")):
+            raise AssertionError("local management must not load the scan pipeline")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_apps)
+    reopened = AssistanceStore(home)
+    assert reopened.list_findings()
+    assert reopened.get_finding(first["id"])
+    assert reopened.prior_evidence()
+    reopened.transition(first["id"], "dismissed")
+    reopened.set_paused(True)
+    assert reopened.is_paused()

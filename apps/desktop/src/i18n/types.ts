@@ -3680,6 +3680,7 @@ catalog: CatalogTranslations
     openPreview: string
     openInBrowser: string
     openInExternal: string
+    openWithSystemApp: string
     popIn: string
     popOut: string
     linkHint: string

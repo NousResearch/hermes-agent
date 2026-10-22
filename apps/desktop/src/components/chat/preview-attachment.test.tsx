@@ -48,15 +48,17 @@ function fileTarget(path: string, previewKind = 'text') {
 
 function mountDesktopStub(normalizePreviewTarget: (target: string, baseDir?: string) => unknown) {
   const openDir = vi.fn(async () => ({ ok: true }))
+  const openExternal = vi.fn(async () => undefined)
   const revealPath = vi.fn(async () => true)
 
   window.hermesDesktop = {
     normalizePreviewTarget: vi.fn(normalizePreviewTarget),
     openDir,
+    openExternal,
     revealPath
   } as never
 
-  return { openDir, revealPath }
+  return { openDir, openExternal, revealPath }
 }
 
 async function buttons() {
@@ -106,13 +108,13 @@ describe('PreviewAttachment local target classification (#101683)', () => {
     expect(openPreview).not.toHaveBeenCalled()
   })
 
-  it('reveals an existing local file in the file manager instead of offering Download', async () => {
-    const { openDir, revealPath } = mountDesktopStub(() => fileTarget('/work/report.md'))
+  it('reveals or opens an existing local file without offering Download', async () => {
+    const { openDir, openExternal, revealPath } = mountDesktopStub(() => fileTarget('/work/report.md'))
 
     render(<PreviewAttachment target="/work/report.md" />)
 
     await screen.findByRole('button', { name: 'Open containing folder' })
-    expect(await buttons()).toEqual(['Open containing folder', 'Open preview'])
+    expect(await buttons()).toEqual(['Open containing folder', 'Open with system app', 'Open preview'])
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Open containing folder' }))
@@ -120,6 +122,13 @@ describe('PreviewAttachment local target classification (#101683)', () => {
 
     expect(revealPath).toHaveBeenCalledWith('/work/report.md')
     expect(openDir).not.toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Open with system app' }))
+    })
+
+    // A bare path, not file:, selects Electron's shell.openPath route.
+    expect(openExternal).toHaveBeenCalledWith('/work/report.md')
   })
 
   it('keeps Download and the preview action for a remote-backend file', async () => {

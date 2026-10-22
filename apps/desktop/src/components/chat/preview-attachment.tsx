@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { openExternalLink } from '@/lib/external-link'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
@@ -275,6 +276,19 @@ export function PreviewAttachment({ target }: { target: string }) {
           {downloaded ? t.fileMenu.downloadSaved : t.fileMenu.download}
         </button>
       )}
+      {localTarget?.type === 'file' ? (
+        <button
+          aria-label={t.preview.openWithSystemApp}
+          className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground"
+          // A bare verified-local path selects main's audited shell.openPath
+          // route. A file: URL deliberately reveals instead, while a remote
+          // path must only use the authenticated download action above.
+          onClick={() => openExternalLink(localTarget.path)}
+          type="button"
+        >
+          {t.preview.openWithSystemApp}
+        </button>
+      ) : null}
       <button
         className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
         disabled={opening}

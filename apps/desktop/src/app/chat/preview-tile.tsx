@@ -65,7 +65,18 @@ const NON_EXTERNAL_URL = /^(about|blob|chrome|data|devtools|javascript):/i
 export function browserTabExternalUrl(tabId: string): null | string {
   const target = targetFor(tabId)
 
-  if (target?.kind !== 'url') {
+  if (!target) {
+    return null
+  }
+
+  if (target.kind === 'file') {
+    // File URLs deliberately reveal their parent folder. Only a path Electron
+    // verified as local at preview admission may enter the system-app route,
+    // which accepts a bare path and calls shell.openPath.
+    return target.localFile ? target.path || null : null
+  }
+
+  if (target.kind !== 'url') {
     return null
   }
 
@@ -75,13 +86,15 @@ export function browserTabExternalUrl(tabId: string): null | string {
 }
 
 function browserTabMenuPrefix(tabId: string) {
-  if (targetFor(tabId)?.kind !== 'url') {
+  const kind = targetFor(tabId)?.kind
+
+  if (kind !== 'file' && kind !== 'url') {
     return undefined
   }
 
   return (kit: MenuKit) => (
     <>
-      {canOpenBrowserWindow()
+      {kind === 'url' && canOpenBrowserWindow()
         ? renderActionItem(kit, {
             icon: 'empty-window',
             key: 'pop-out',
@@ -93,7 +106,7 @@ function browserTabMenuPrefix(tabId: string) {
         disabled: !browserTabExternalUrl(tabId),
         icon: 'link-external',
         key: 'open-external',
-        label: translateNow('preview.openInExternal'),
+        label: translateNow('preview.openWithSystemApp'),
         onSelect: () => openExternalLink(browserTabExternalUrl(tabId) ?? '')
       })}
     </>

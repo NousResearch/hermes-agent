@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from acp.schema import ModelInfo, SessionModelState
 
@@ -168,6 +168,7 @@ class _ModelCatalog:
     seen_ids: set[str] = field(default_factory=set)
     seen_semantic_ids: set[str] = field(default_factory=set)
     empty_authoritative: set[str] = field(default_factory=set)
+    allowed_models: Any = None
 
     def __post_init__(self) -> None:
         if self.current_choice_provider == "ollama":
@@ -178,6 +179,10 @@ class _ModelCatalog:
         return _semantic_provider(provider_id, self.normalize_provider)
 
     def add(self, provider_id: str, model_id: str, name: str, description: str) -> None:
+        from hermes_cli.model_allowlist import model_is_allowed
+
+        if not model_is_allowed(model_id, provider_id, self.allowed_models):
+            return
         choice_id = encode_model_choice(provider_id, model_id)
         semantic_id = f"{self.semantic(provider_id)}:{model_id}"
         if not choice_id or choice_id in self.seen_ids or semantic_id in self.seen_semantic_ids:
@@ -239,6 +244,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
     from hermes_cli.inventory import build_models_payload, load_picker_context
+    from hermes_cli.model_allowlist import model_is_allowed
     from hermes_cli.models import normalize_provider, provider_label
 
     normalized_provider = normalize_provider(provider)
@@ -250,6 +256,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         canonical_order=True, pricing=False, capabilities=False, refresh=False,
         probe_custom_providers=False, probe_current_custom_provider=False, max_models=ACP_MAX_MODELS_PER_PROVIDER,
     )
+    allowed_models = getattr(context, "allowed_models", None)
 
     named_catalogs = _named_custom_provider_catalogs()
     named_slugs = {str(slug).strip().lower() for slug, _label, _models in named_catalogs}
@@ -280,6 +287,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         normalize_provider=normalize_provider, current_model=model,
         current_choice_provider=current_choice_provider,
         current_base_url=current_base,
+        allowed_models=allowed_models,
     )
     cat.add_inventory_rows(inventory_rows, provider_label)
     cat.add_named_catalogs(named_catalogs, current_choice_provider)
@@ -295,6 +303,8 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     if current_is_empty:
         available_models = [m for m in available_models if " • current" not in str(m.description or "")]
     current_model_id = "" if current_is_empty else encode_model_choice(cat.current_choice_provider, model)
+    if current_model_id and not model_is_allowed(model, cat.current_choice_provider, allowed_models):
+        current_model_id = ""
     if current_model_id and current_model_id not in {item.model_id for item in available_models}:
         provider_name = provider_label(normalized_provider)
         available_models.insert(0, ModelInfo(

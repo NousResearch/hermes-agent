@@ -69,6 +69,15 @@ class TestCLIQuickCommands:
         printed = self._printed_plain(cli.console.print.call_args[0][0])
         assert printed == "overridden"
 
+    def test_null_quick_commands_key_does_not_break_unknown_slash(self):
+        """A blank `quick_commands:` config section parses to None; an unknown slash
+        command must fall through, not raise TypeError on `in None`."""
+        cli = self._make_cli(None)
+
+        result = cli._process_unregistered_slash("/definitely-not-a-command", "/definitely-not-a-command")
+
+        assert isinstance(result, bool)
+
 
 
 

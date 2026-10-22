@@ -28,14 +28,14 @@ afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.h
 it('holds Send until the selected attachment is committed, then sends it with the text', async () => {
   let ack!: () => void
   const uploaded = { attachment_id: 'file-one', kind: 'file', name: 'report.txt', mime: 'text/plain', size: 2 }
-  request.mockImplementation(async (_route, method) => {
+  request.mockImplementation(async (_route, method, params) => {
     if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
 
     if (method === 'groups.log') {return { events: [] }}
 
     if (method === 'groups.attachment.upload') {return new Promise(resolve => { ack = () => resolve(uploaded) })}
 
-    return {}
+    return method === 'groups.send' ? { client_event_id: params.event_id, accepted: true } : {}
   })
   const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'upload-race' }} />)
   await screen.findByText('Room')

@@ -35,6 +35,10 @@ export interface CanonicalGroupMessages {
   stopped: string
   nothingRunning: string
   pendingActionUnconfirmed: string
+  sendRefused: string
+  sendStopped: string
+  sendMaybe: string
+  sendSettledElsewhere: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -74,7 +78,11 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: 'Needs attention: {count}',
     stopped: 'Stop requested',
     nothingRunning: 'No new replies were cancelled.',
-    pendingActionUnconfirmed: 'We couldn’t confirm this action. Refresh the group chat to check its status.'
+    pendingActionUnconfirmed: 'We couldn’t confirm this action. Refresh the group chat to check its status.',
+    sendRefused: 'The gateway refused this message. Edit it and send again.',
+    sendStopped: 'Stopped before sending. Your message is still here.',
+    sendMaybe: 'This message may already have been sent. Retry sends the same message; it will not be posted twice.',
+    sendSettledElsewhere: 'Another Desktop window already finished with this message. Check the conversation before sending it again.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -112,7 +120,11 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: '要対応 {count} 件',
     stopped: '停止を要求しました',
     nothingRunning: '新たに取り消された返信はありません。',
-    pendingActionUnconfirmed: 'この操作を確認できませんでした。グループチャットを更新して状態を確認してください。'
+    pendingActionUnconfirmed: 'この操作を確認できませんでした。グループチャットを更新して状態を確認してください。',
+    sendRefused: 'ゲートウェイがこのメッセージを拒否しました。編集してからもう一度送信してください。',
+    sendStopped: '送信前に停止しました。メッセージはそのまま残っています。',
+    sendMaybe: 'このメッセージは既に送信された可能性があります。再試行しても同じメッセージが二重に投稿されることはありません。',
+    sendSettledElsewhere: 'このメッセージは別の Desktop ウィンドウで処理済みです。もう一度送信する前に会話を確認してください。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -150,7 +162,11 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: '{count} 项需要处理',
     stopped: '已请求停止',
     nothingRunning: '没有取消新的回复。',
-    pendingActionUnconfirmed: '无法确认此操作。请刷新群聊以检查其状态。'
+    pendingActionUnconfirmed: '无法确认此操作。请刷新群聊以检查其状态。',
+    sendRefused: '网关拒绝了这条消息。请编辑后重新发送。',
+    sendStopped: '已在发送前停止。你的消息仍保留在这里。',
+    sendMaybe: '这条消息可能已经发送。重试会发送同一条消息，不会重复发布。',
+    sendSettledElsewhere: '另一个 Desktop 窗口已处理完这条消息。再次发送前请先查看对话。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -188,7 +204,11 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: '{count} 項需要處理',
     stopped: '已要求停止',
     nothingRunning: '沒有取消新的回覆。',
-    pendingActionUnconfirmed: '無法確認此操作。請重新整理群聊以檢查其狀態。'
+    pendingActionUnconfirmed: '無法確認此操作。請重新整理群聊以檢查其狀態。',
+    sendRefused: '閘道拒絕了這則訊息。請編輯後再傳送。',
+    sendStopped: '已在傳送前停止。你的訊息仍保留在這裡。',
+    sendMaybe: '這則訊息可能已經傳送。重試會傳送同一則訊息，不會重複張貼。',
+    sendSettledElsewhere: '另一個 Desktop 視窗已處理完這則訊息。再次傳送前請先查看對話。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -226,7 +246,11 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: '{count} تحتاج إلى انتباه',
     stopped: 'طُلب الإيقاف',
     nothingRunning: 'لم يتم إلغاء أي ردود جديدة.',
-    pendingActionUnconfirmed: 'لم نتمكن من تأكيد هذا الإجراء. حدّث محادثة المجموعة للتحقق من حالته.'
+    pendingActionUnconfirmed: 'لم نتمكن من تأكيد هذا الإجراء. حدّث محادثة المجموعة للتحقق من حالته.',
+    sendRefused: 'رفضت البوابة هذه الرسالة. عدّلها ثم أرسلها مرة أخرى.',
+    sendStopped: 'توقّف قبل الإرسال. رسالتك ما زالت هنا.',
+    sendMaybe: 'ربما أُرسلت هذه الرسالة بالفعل. تعيد إعادة المحاولة إرسال الرسالة نفسها دون نشرها مرتين.',
+    sendSettledElsewhere: 'انتهت نافذة Desktop أخرى من هذه الرسالة بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -267,7 +291,11 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: 'Требуется внимание: {count}',
     stopped: 'Остановка запрошена',
     nothingRunning: 'Новые ответы не были отменены.',
-    pendingActionUnconfirmed: 'Не удалось подтвердить это действие. Обновите групповой чат, чтобы проверить его состояние.'
+    pendingActionUnconfirmed: 'Не удалось подтвердить это действие. Обновите групповой чат, чтобы проверить его состояние.',
+    sendRefused: 'Шлюз отклонил это сообщение. Измените его и отправьте снова.',
+    sendStopped: 'Остановлено до отправки. Ваше сообщение сохранено.',
+    sendMaybe: 'Сообщение, возможно, уже отправлено. Повтор отправит то же сообщение, дважды оно не появится.',
+    sendSettledElsewhere: 'Другое окно Desktop уже завершило работу с этим сообщением. Проверьте беседу, прежде чем отправлять его снова.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -307,7 +335,11 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: '{count} à traiter',
     stopped: 'Arrêt demandé',
     nothingRunning: 'Aucune nouvelle réponse n’a été annulée.',
-    pendingActionUnconfirmed: 'Cette action n’a pas pu être confirmée. Actualisez la discussion pour vérifier son état.'
+    pendingActionUnconfirmed: 'Cette action n’a pas pu être confirmée. Actualisez la discussion pour vérifier son état.',
+    sendRefused: 'La passerelle a refusé ce message. Modifiez-le puis renvoyez-le.',
+    sendStopped: 'Arrêté avant l’envoi. Votre message est toujours là.',
+    sendMaybe: 'Ce message a peut-être déjà été envoyé. Réessayer renvoie le même message, sans le publier deux fois.',
+    sendSettledElsewhere: 'Une autre fenêtre Desktop a déjà traité ce message. Vérifiez la conversation avant de le renvoyer.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -348,7 +380,11 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: 'Aufmerksamkeit erforderlich: {count}',
     stopped: 'Stopp angefordert',
     nothingRunning: 'Keine neuen Antworten wurden abgebrochen.',
-    pendingActionUnconfirmed: 'Diese Aktion konnte nicht bestätigt werden. Aktualisieren Sie den Gruppenchat, um ihren Status zu prüfen.'
+    pendingActionUnconfirmed: 'Diese Aktion konnte nicht bestätigt werden. Aktualisieren Sie den Gruppenchat, um ihren Status zu prüfen.',
+    sendRefused: 'Das Gateway hat diese Nachricht abgelehnt. Bearbeiten Sie sie und senden Sie sie erneut.',
+    sendStopped: 'Vor dem Senden gestoppt. Ihre Nachricht ist noch da.',
+    sendMaybe: 'Diese Nachricht wurde möglicherweise schon gesendet. Erneut versuchen sendet dieselbe Nachricht, ohne sie doppelt zu posten.',
+    sendSettledElsewhere: 'Ein anderes Desktop-Fenster hat diese Nachricht bereits abgeschlossen. Prüfen Sie die Unterhaltung, bevor Sie sie erneut senden.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -388,6 +424,10 @@ export const CANONICAL_GROUP_LOCALES = {
     statusAttention: 'Atención necesaria: {count}',
     stopped: 'Parada solicitada',
     nothingRunning: 'No se cancelaron nuevas respuestas.',
-    pendingActionUnconfirmed: 'No pudimos confirmar esta acción. Actualiza el chat para comprobar su estado.'
+    pendingActionUnconfirmed: 'No pudimos confirmar esta acción. Actualiza el chat para comprobar su estado.',
+    sendRefused: 'La pasarela rechazó este mensaje. Edítalo y envíalo de nuevo.',
+    sendStopped: 'Se detuvo antes de enviar. Tu mensaje sigue aquí.',
+    sendMaybe: 'Es posible que este mensaje ya se haya enviado. Reintentar envía el mismo mensaje sin publicarlo dos veces.',
+    sendSettledElsewhere: 'Otra ventana de Desktop ya terminó con este mensaje. Revisa la conversación antes de volver a enviarlo.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

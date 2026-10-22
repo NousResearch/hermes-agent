@@ -5,7 +5,7 @@ import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
-import { readDesktopFileText } from '@/lib/desktop-fs'
+import { isReadFileErrorResult, readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
 
 /**
@@ -38,7 +38,10 @@ import { localPreviewTarget } from '@/lib/local-preview'
  * composer's send path as a user turn typed `display_kind=hidden`: the agent
  * wakes and the durable row exists (context, resume, audit via the DB), but
  * no bubble renders — the widget updating is the visible response. Token-
- * gated, length-capped, throttled to human speed.
+ * gated, length-capped, throttled to human speed. Nothing is lost silently:
+ * `send()` resolves a delivery ack, and an over-length, throttled, or
+ * undeliverable intent resolves `{ ok: false, error }` instead of being
+ * truncated or dropped behind the widget's back (#118973).
  *
  * Non-HTML targets and remote gateways (no local file access) fall back to
  * the standard preview-attachment card rather than a broken frame.
@@ -68,52 +71,111 @@ export function directiveFrameHeight(raw: string | undefined): number | null {
 
 const SIZE_MESSAGE_TYPE = 'hermes-inline-preview-size'
 const INTENT_MESSAGE_TYPE = 'hermes-inline-preview-intent'
+const INTENT_ACK_MESSAGE_TYPE = 'hermes-inline-preview-intent-ack'
 
-/** Prompt length cap for a widget intent — a sentence, not a payload dump. */
-const MAX_INTENT_LENGTH = 500
-/** One intent per frame per second; clicks are human-speed. */
-const INTENT_THROTTLE_MS = 1000
+/** Prompt length cap for a widget intent — a sentence, not a payload dump.
+ *  Over-length intents are REJECTED back to the widget, never truncated: a
+ *  sliced JSON payload reaches the agent as garbage while the widget thinks
+ *  it sent. */
+export const MAX_INTENT_LENGTH = 500
+/** One intent per frame per second; clicks are human-speed. A faster intent
+ *  is rejected with `retryAfterMs`, not dropped silently. */
+export const INTENT_THROTTLE_MS = 1000
+/** How long `hermes.send()` waits for the parent's ack before resolving
+ *  `timeout` (the parent acks synchronously; this only fires if it's gone). */
+const INTENT_ACK_TIMEOUT_MS = 5000
+
+export type IntentError = 'invalid' | 'too_long' | 'throttled' | 'undelivered'
+
+/** What `hermes.send()` resolves to inside the frame. `ok` means the prompt
+ *  was handed to the owning composer's send path — not that the agent has
+ *  answered. */
+export type IntentAck = { ok: true } | { error: IntentError; maxLength?: number; ok: false; retryAfterMs?: number }
 
 /** The script that gives the widget its ONE voice: `hermes.send(prompt)`.
- *  Posts the prompt up tagged with the mount token; the parent validates,
- *  throttles, and routes it through the composer as a normal user message —
- *  the widget speaks WITH the user's voice, visibly, never silently. Also
- *  wires `data-hermes-send` so declarative HTML works with zero script:
+ *  Posts the prompt up tagged with the mount token and a per-call id; the
+ *  parent validates, throttles, routes it through the composer, and posts an
+ *  ack back, so `send()` returns a Promise of an `IntentAck` — a widget can
+ *  show "saved" only when it was. Also wires `data-hermes-send` so
+ *  declarative HTML works with zero script:
  *  `<button data-hermes-send="get-price eth">ETH</button>`. */
 export function intentScript(token: string): string {
   return (
     '<script>(function(){var t=' +
     JSON.stringify(token) +
-    ';function send(p){if(typeof p!=="string"||!p.trim())return false;' +
+    ';var n=0,w={};' +
+    'addEventListener("message",function(e){var d=e.data;' +
+    'if(e.source!==parent||!d||d.type!==' +
+    JSON.stringify(INTENT_ACK_MESSAGE_TYPE) +
+    '||d.token!==t||!w[d.id])return;' +
+    'var r=w[d.id];delete w[d.id];r(d.ack)});' +
+    'function send(p){if(typeof p!=="string"||!p.trim())return Promise.resolve({ok:false,error:"invalid"});' +
+    'var id=++n;return new Promise(function(res){' +
+    'var done=function(a){clearTimeout(k);res(a)};' +
+    'var k=setTimeout(function(){if(w[id]){delete w[id];res({ok:false,error:"undelivered"})}},' +
+    String(INTENT_ACK_TIMEOUT_MS) +
+    ');w[id]=done;' +
     'parent.postMessage({type:' +
     JSON.stringify(INTENT_MESSAGE_TYPE) +
-    ',token:t,prompt:p.slice(0,' +
+    ',token:t,id:id,prompt:p},"*")})}' +
+    'window.hermes={send:send,maxLength:' +
     String(MAX_INTENT_LENGTH) +
-    ')},"*");return true}' +
-    'window.hermes={send:send};' +
+    '};' +
     'addEventListener("click",function(e){var el=e.target&&e.target.closest?' +
     'e.target.closest("[data-hermes-send]"):null;' +
     'if(el)send(el.getAttribute("data-hermes-send")||"")},true)})()</script>'
   )
 }
 
-/** Parse a widget intent. Null unless it is OUR type with OUR token and a
- *  non-empty string prompt — same trust boundary as size reports, because
- *  this one turns into a user message. Trimmed and length-capped. */
-export function intentFromMessage(data: unknown, token: string): string | null {
+export type IntentDecision =
+  | { id: number | null; kind: 'accept'; prompt: string }
+  | { ack: Extract<IntentAck, { ok: false }>; id: number | null; kind: 'reject' }
+
+/** The pure intent gate. Null unless it is OUR type with OUR token — same
+ *  trust boundary as size reports, because an accepted intent turns into a
+ *  user message; anything else is ignored without a reply. For our own
+ *  messages every outcome is explicit: accept (trimmed, never truncated) or
+ *  reject with a reason the frame gets back. `lastAcceptedAt` is the time
+ *  of this frame's previous accepted intent (0 for none). */
+export function evaluateIntent(
+  data: unknown,
+  token: string,
+  now: number,
+  lastAcceptedAt: number
+): IntentDecision | null {
   if (typeof data !== 'object' || data === null) {
     return null
   }
 
-  const message = data as { type?: unknown; token?: unknown; prompt?: unknown }
+  const message = data as { id?: unknown; prompt?: unknown; token?: unknown; type?: unknown }
 
-  if (message.type !== INTENT_MESSAGE_TYPE || message.token !== token || typeof message.prompt !== 'string') {
+  if (message.type !== INTENT_MESSAGE_TYPE || message.token !== token) {
     return null
   }
 
-  const prompt = message.prompt.trim().slice(0, MAX_INTENT_LENGTH)
+  const id = typeof message.id === 'number' && Number.isSafeInteger(message.id) ? message.id : null
+  const prompt = typeof message.prompt === 'string' ? message.prompt.trim() : ''
 
-  return prompt || null
+  if (!prompt) {
+    return { ack: { error: 'invalid', ok: false }, id, kind: 'reject' }
+  }
+
+  if (prompt.length > MAX_INTENT_LENGTH) {
+    return { ack: { error: 'too_long', maxLength: MAX_INTENT_LENGTH, ok: false }, id, kind: 'reject' }
+  }
+
+  const elapsed = now - lastAcceptedAt
+
+  if (lastAcceptedAt > 0 && elapsed < INTENT_THROTTLE_MS) {
+    return { ack: { error: 'throttled', ok: false, retryAfterMs: INTENT_THROTTLE_MS - elapsed }, id, kind: 'reject' }
+  }
+
+  return { id, kind: 'accept', prompt }
+}
+
+/** The ack posted back into the frame for intent `id`. */
+export function intentAckMessage(token: string, id: number, ack: IntentAck) {
+  return { ack, id, token, type: INTENT_ACK_MESSAGE_TYPE }
 }
 
 /** Semantic tokens handed into the frame, resolved to concrete values from
@@ -343,7 +405,13 @@ function InlineHtmlFrame({
           return
         }
 
-        if (!result || result.binary || !result.text) {
+        if (!result || isReadFileErrorResult(result)) {
+          setFailed(true)
+
+          return
+        }
+
+        if (result.binary || !result.text) {
           setFailed(true)
         } else {
           setDoc(result.text)
@@ -362,18 +430,32 @@ function InlineHtmlFrame({
     let lastIntentAt = 0
 
     const onMessage = (event: MessageEvent) => {
-      const intent = intentFromMessage(event.data, token)
+      const decision = evaluateIntent(event.data, token, Date.now(), lastIntentAt)
 
-      if (intent !== null) {
-        const now = Date.now()
+      if (decision !== null) {
+        let ack: IntentAck
 
-        if (now - lastIntentAt >= INTENT_THROTTLE_MS) {
-          lastIntentAt = now
+        if (decision.kind === 'reject') {
+          ack = decision.ack
+        } else {
+          lastIntentAt = Date.now()
           // Off-screen: the prompt reaches the agent as a normal user turn
           // through the composer's own send path (steer/queue rules apply),
           // but the row is typed hidden — no bubble, no UI space. The widget
-          // updating IS the visible response.
-          requestComposerSubmit(intent, { target: 'active', displayKind: 'hidden' })
+          // updating IS the visible response. `false` means no visible
+          // composer surface took it; the widget is told instead of assuming.
+          ack = requestComposerSubmit(decision.prompt, { target: 'active', displayKind: 'hidden' })
+            ? { ok: true }
+            : { error: 'undelivered', ok: false }
+        }
+
+        // Reply only to the sender that proved it holds this mount's token.
+        // The ack carries status, never app data; '*' because the sandboxed
+        // frame's origin is opaque.
+        const source = event.source as Window | null
+
+        if (decision.id !== null && source) {
+          source.postMessage(intentAckMessage(token, decision.id, ack), '*')
         }
 
         return

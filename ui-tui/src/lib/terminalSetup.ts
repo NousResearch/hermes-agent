@@ -431,11 +431,15 @@ export async function configureTerminalKeybindings(
     const parts: string[] = []
 
     if (added) {
-      parts.push(t(added === 1 ? 'libText.terminalSetup.addedOne' : 'libText.terminalSetup.addedOther', added, meta.label))
+      parts.push(
+        t(added === 1 ? 'libText.terminalSetup.addedOne' : 'libText.terminalSetup.addedOther', added, meta.label)
+      )
     }
 
     if (migrated) {
-      parts.push(t(migrated === 1 ? 'libText.terminalSetup.migratedOne' : 'libText.terminalSetup.migratedOther', migrated))
+      parts.push(
+        t(migrated === 1 ? 'libText.terminalSetup.migratedOne' : 'libText.terminalSetup.migratedOther', migrated)
+      )
     }
 
     return {

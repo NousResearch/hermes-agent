@@ -81,7 +81,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
 
 
     def test_keeps_bare_custom_when_no_entry_matches(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: {})
+        monkeypatch.setattr(rp, "load_config", dict)
 
         from tui_gateway.server import _runtime_model_config
 
@@ -424,7 +424,7 @@ class TestStaleProviderNameFallsBack:
         configured default instead of failing the build."""
         config = {"custom_providers": NAMED_CONFIG["custom_providers"]}
         monkeypatch.setattr(rp, "load_config", lambda: config)
-        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setattr(rp, "_get_model_config", dict)
 
         from tui_gateway.server import _stored_session_runtime_overrides
 
@@ -596,7 +596,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         ``session.resume`` on the deferred (cold, agent-less) path restores the pin while B's config.yaml
         model is unchanged, and drops it once B's profile model moves. Launch home A has a different
         model the whole time, so the compare must run under B's scope, not the launch profile's."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
@@ -635,7 +635,6 @@ class TestFollowProfileConfigRuntimeOverrides:
         known = set(server._sessions)
         try:
             with (
-                patch("hermes_cli.model_switch.parse_model_flags", return_value=("glm-5.1", None, False, False, None)),
                 patch("hermes_cli.model_switch.resolve_persist_behavior", return_value=False),
                 patch("hermes_cli.model_switch.switch_model", return_value=result),
                 server._profile_build_scope(secondary),
@@ -672,7 +671,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         chat-scoped pick a mid-chat switch records: the record carries the OWNING profile's model as the
         divergence marker (not the launch profile's), the first row write persists it, and the resume read
         under that profile restores model AND provider instead of the ambient fallback (#123805)."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
@@ -710,7 +709,7 @@ class TestFollowProfileConfigRuntimeOverrides:
 
     def test_profile_model_change_supersedes_composer_override_on_resume_and_live(self, monkeypatch):
         """Changing the Bot profile invalidates both stored and live chat pins."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/new-default", "nous"))
         row = {
@@ -807,14 +806,13 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_persists_contract_marker(self, monkeypatch):
         """_ensure_session_db_row stamps follow_profile_config into the row's
         model_config when the session carries the contract."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         captured = {}
 
         class FakeDB:
             def create_session(self, *args, **kwargs):
                 captured["model_config"] = kwargs.get("model_config")
-                return None
 
         monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
@@ -833,14 +831,13 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_omits_marker_without_contract(self, monkeypatch):
         """Sessions without the contract do NOT get the marker — normal chats
         keep the stored-runtime restore."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         captured = {}
 
         class FakeDB:
             def create_session(self, *args, **kwargs):
                 captured["model_config"] = kwargs.get("model_config")
-                return None
 
         monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")

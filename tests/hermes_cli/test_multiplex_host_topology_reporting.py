@@ -30,10 +30,13 @@ def served_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "served")
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "served"))
-    return root
+    yield root
+    hr.release_host_lock(hr.ROLE_GATEWAY)
 
 
 def test_cron_status_names_the_host_gateway_for_a_served_profile(served_host, capsys, monkeypatch):

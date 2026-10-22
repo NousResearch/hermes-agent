@@ -15,16 +15,12 @@ export const overlaysEn = {
     clarify: {
       other: 'Other (type your answer)',
       skipped: '(skipped)',
+      toggle: 'Space toggle',
       confirmAndContinue: 'confirm and continue',
       lockAnswer: 'lock answer',
-      batchTypingHint: (enterAction: string) => `Enter ${enterAction} · Esc back`,
-      batchHint: (enterAction: string) =>
-        `↑/↓ select · Enter ${enterAction} · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel`,
-      typingHint: (escAction: string) => `Enter send · Esc ${escAction} ·`,
-      back: 'back',
-      cancel: 'cancel',
-      macClipboardHint: 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel',
-      ctrlCCancel: 'Ctrl+C cancel'
+      typingHint: (enterAction: string) => `Enter ${enterAction} · Esc back`,
+      hint: (enterAction: string) =>
+        `↑/↓ select · Enter ${enterAction} · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel`
     },
     confirm: {
       confirm: 'Yes',

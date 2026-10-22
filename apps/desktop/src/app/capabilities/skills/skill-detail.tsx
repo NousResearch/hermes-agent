@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import type { SkillInfo } from '@/types/hermes'
 
 import { parseFrontmatter } from './frontmatter'
+import { isEditableProvenance } from './skill-provenance'
 
 export function SkillDetail({
   onArchive,
@@ -21,9 +22,9 @@ export function SkillDetail({
   skill: SkillInfo
 }) {
   const { t } = useI18n()
-  // Only learned/local skills are the user's to rewrite or archive — bundled
-  // and hub skills are managed by their sources.
-  const editable = skill.provenance === 'agent'
+  // Origin only, never mutability: external mounts stay editable in place —
+  // see ./skill-provenance (commit 8c8fc6c1ec).
+  const editable = isEditableProvenance(skill.provenance)
 
   // The FULL skill — frontmatter metadata + complete SKILL.md body — for any
   // provenance, scoped to the Capabilities profile selector. The row list only

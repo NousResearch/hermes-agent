@@ -2,10 +2,11 @@ import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { sharedControlParams } from '../canonicalGateway.js'
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
-import type { ConfigSetResponse, VoiceRecordResponse } from '../gatewayTypes.js'
+import type { ConfigSetResponse, SharedControlRespondResponse, VoiceRecordResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
@@ -21,7 +22,14 @@ import {
   type InputHandlerResult,
   type OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import {
+  $isBlocked,
+  $overlayState,
+  capturePromptResponseGuard,
+  hasSensitivePrompt,
+  patchOverlayState,
+  SENSITIVE_PROMPTS
+} from './overlayStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -165,40 +173,35 @@ export function applyVoiceRecordResponse(
   }
 }
 
+type SensitivePrompt = (typeof SENSITIVE_PROMPTS)[number]
+
+const DISMISSED_PROMPT_NOTICE: { [K in SensitivePrompt]: (req: NonNullable<OverlayState[K]>) => string } = {
+  sudo: () => t('session.input.sudoCancelled'),
+  secret: () => t('session.input.secretCancelled'),
+  vaultUnlock: req => t('session.input.vaultStaysLocked', req.displayName),
+  vaultSaveLogin: req => t('session.input.loginNotSaved', req.site),
+  vaultCode: req => t('session.input.codeSkipped', req.site)
+}
+
+const dismissedNotice = <K extends SensitivePrompt>(key: K, req: NonNullable<OverlayState[K]>) =>
+  DISMISSED_PROMPT_NOTICE[key](req)
+
+/** Decline the open credential prompt with an empty value so the blocked tool resolves now. */
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
+  overlay: Pick<OverlayState, SensitivePrompt>,
   rpc: GatewayRpc,
   sys: (text: string) => void
 ) {
-  if (overlay.sudo) {
-    const requestId = overlay.sudo.requestId
+  for (const key of SENSITIVE_PROMPTS) {
+    const req = overlay[key]
 
-    patchOverlayState({ sudo: null })
-    sys(t('session.input.sudoCancelled'))
+    if (req) {
+      patchOverlayState({ [key]: null })
+      sys(dismissedNotice(key, req))
+      respondToServerRequest(req.requestId, { value: '' })
 
-    respondToServerRequest(requestId, { value: '' })
-
-    return
-  }
-
-  if (overlay.secret) {
-    const requestId = overlay.secret.requestId
-
-    patchOverlayState({ secret: null })
-    sys(t('session.input.secretCancelled'))
-
-    respondToServerRequest(requestId, { value: '' })
-
-    return
-  }
-
-  if (overlay.vaultUnlock) {
-    const requestId = overlay.vaultUnlock.requestId
-
-    patchOverlayState({ vaultUnlock: null })
-    sys(t('session.input.vaultStaysLocked', overlay.vaultUnlock.displayName))
-
-    respondToServerRequest(requestId, { value: '' })
+      return
+    }
   }
 }
 
@@ -251,13 +254,31 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
   const cancelOverlayFromCtrlC = () => {
     if (overlay.clarify) {
-      return actions.answerClarify('')
+      return actions.cancelClarify()
     }
 
     if (overlay.approval) {
+      const fresh = capturePromptResponseGuard('approval', overlay.approval)
+
+      if (!fresh()) {
+        return
+      }
+
+      const settle = () => {
+        patchOverlayState({ approval: null })
+        patchTurnState({ outcome: t('session.approval.denied') })
+      }
+
+      // Canonical shared controls deny through the generation-bound RPC; a
+      // legacy server→client request resolves its response frame locally.
+      if (overlay.approval.sharedControl) {
+        return gateway
+          .rpc<SharedControlRespondResponse>('approval.respond', { choice: 'deny', ...sharedControlParams(overlay.approval) })
+          .then(r => r && fresh() && settle())
+      }
+
       respondToServerRequest(overlay.approval.requestId, { choice: 'deny' })
-      patchOverlayState({ approval: null })
-      patchTurnState({ outcome: t('session.approval.denied') })
+      settle()
 
       return
     }
@@ -279,7 +300,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
+    if (hasSensitivePrompt(overlay)) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
@@ -307,6 +328,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ pluginsHub: false })
     }
 
+    if (overlay.connectors) {
+      return patchOverlayState({ connectors: false })
+    }
+
     if (overlay.sessions) {
       return patchOverlayState({ sessions: false })
     }
@@ -325,7 +350,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   }
 
   const cycleQueue = (dir: 1 | -1) => {
-    const len = cRefs.queueRef.current.length
+    const len = cState.queuedDisplay.length
 
     if (!len) {
       return false
@@ -335,7 +360,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     cActions.setQueueEdit(index)
     cActions.setHistoryIdx(null)
-    cActions.setInput(cRefs.queueRef.current[index]?.display ?? '')
+    cActions.setInput(cActions.queueDraft(index))
 
     return true
   }
@@ -568,7 +593,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo || overlay.vaultUnlock))) {
+      if (isCtrl(key, ch, 'c') || (key.escape && hasSensitivePrompt(overlay))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })
@@ -840,7 +865,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
-      const next = cActions.dequeue()
+      const next = cActions.dequeue(true)
 
       if (next) {
         cActions.setQueueEdit(null)

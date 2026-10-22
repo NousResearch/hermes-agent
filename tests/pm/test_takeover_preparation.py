@@ -22,7 +22,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     root.mkdir()
     for name in ("pm", "hermes_cli"):
         shutil.copytree(source / name, root / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for name in ("hermes_constants.py", "hermes_yaml.py", "utils.py", "hermes_bootstrap.py"):
+    for name in ("hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "utils.py", "hermes_bootstrap.py"):
         shutil.copy2(source / name, root / name)
     home, store, wheels = (tmp_path / name for name in ("home", "tools", "wheels"))
     for directory in (home, store, wheels):
@@ -80,7 +80,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     context, result = tmp_path / "context.json", tmp_path / "result.json"
     context.write_text(json.dumps({"root": str(root), "home": str(home)}), encoding="utf-8")
     completed = subprocess.run([sys.executable, "-I", "-S", "-B", str(root / "hermes_cli/_update_takeover.py"), str(context), str(result)],
-                               env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+                               env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120, check=False)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     output = json.loads(result.read_text())
     assert Path(output['python']).is_relative_to(store)
@@ -106,7 +106,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     with (root / "uv.lock").open("a", encoding="utf-8") as changed:
         changed.write("\n# changed source inputs\n")
     repaired = subprocess.run([sys.executable, "-I", "-S", "-B", str(root / "hermes_cli/_update_takeover.py"), str(context), str(result)],
-                              env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+                              env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120, check=False)
     assert repaired.returncode == 0, repaired.stdout + repaired.stderr
     assert json.loads(facts.read_text())["packages"]["venv"]["stamp"] != first_stamp
     remaining_generations = {path.resolve() for path in generations.iterdir() if path.is_dir()}
@@ -118,7 +118,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     (root / "hermes_cli/update_finish.py").write_text("raise SystemExit(7)\n", encoding="utf-8")
     result.unlink()
     crashed = subprocess.run([sys.executable, "-I", "-S", "-B", str(root / "hermes_cli/_update_takeover.py"), str(context), str(result)],
-                             env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+                             env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120, check=False)
     assert crashed.returncode == 7
     assert json.loads(result.read_text())["receipt_handled"]
     crash_receipt = json.loads((home / "logs/update_receipts/latest.json").read_text())
@@ -131,7 +131,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     (root / "uv.lock").write_text("not valid TOML [", encoding="utf-8")
     result.unlink()
     failed = subprocess.run([sys.executable, "-I", "-S", "-B", str(root / "hermes_cli/_update_takeover.py"), str(context), str(result)],
-                            env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+                            env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120, check=False)
     assert failed.returncode != 0
     assert facts.read_bytes() == before
     failure = json.loads(result.read_text())

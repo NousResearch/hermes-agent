@@ -12,8 +12,7 @@ export const userMessagesEn = {
     details: (text: string) => `Details: ${text}`,
 
     backend: {
-      restarting:
-        'Hermes stopped unexpectedly — restarting and reopening your chat (the reply in progress was lost).',
+      restarting: 'Hermes stopped unexpectedly — restarting and reopening your chat (the reply in progress was lost).',
       restartingActivity: 'Hermes stopped unexpectedly · restarting…',
       connectionLost: 'Connection to Hermes lost — reconnecting and reopening your chat…',
       connectionLostActivity: 'connection lost · reconnecting…',
@@ -38,6 +37,12 @@ export const userMessagesEn = {
     },
 
     rpc: {
+      /** `{0}` = the session's terminal backend (docker, ssh, ...). shell.exec runs on the gateway host. */
+      shellBackendRefused: (backend: string) =>
+        `!commands run on the gateway host, but this session's terminal backend is ${backend}, so the command was not run. Ask the agent to run it instead; the agent's terminal runs inside ${backend}.`,
+      /** shellBackendRefused when the gateway did not name the backend (older gateways). */
+      shellBackendRefusedUnnamed:
+        "!commands run on the gateway host, but this session's terminal backend isn't local, so the command was not run. Ask the agent to run it instead.",
       versionSkew:
         'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.',
       sessionNotFound:
@@ -86,7 +91,10 @@ export const userMessagesEn = {
           hint: 'Try /retry; if it persists, switch with /model.',
           hintNoRetry: 'Pick another model with /model; if it persists, switch with /model.'
         },
-        modelNotFound: { title: 'The model provider does not know this model', hint: 'Pick another model with /model.' },
+        modelNotFound: {
+          title: 'The model provider does not know this model',
+          hint: 'Pick another model with /model.'
+        },
         overloaded: { title: 'The model provider is overloaded', hint: 'Wait a moment, then /retry.' },
         payloadTooLarge: { title: 'The request was too large for this model', hint: 'Run /compress, then /retry.' },
         providerPolicyBlocked: {

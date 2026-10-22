@@ -16,7 +16,7 @@ Windows post-update path already uses for exactly this case.
 
 import pytest
 
-import hermes_cli.gateway as gateway
+from hermes_cli import gateway
 
 
 _ARGV = ["python", "-m", "hermes_cli.main", "gateway", "run"]

@@ -20,7 +20,7 @@ from tests.termux_fixtures import write_wheel, verify_record
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts" / "termux"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import retag_wheel  # noqa: E402
+import retag_wheel
 
 ANDROID_TAG = "android_24_arm64_v8a"
 

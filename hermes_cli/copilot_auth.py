@@ -16,7 +16,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 from utils import atomic_json_write
@@ -322,7 +322,11 @@ def _load_jwt_from_disk(fp: str) -> Optional[tuple[str, float, Optional[str]]]:
             return None
         api_token = entry.get("api_token", "")
         expires_at = float(entry.get("expires_at", 0) or 0)
-        return (api_token, expires_at, entry.get("base_url")) if api_token and expires_at else None
+        stored = entry.get("base_url")
+        base_url = _safe_api_base(stored) if stored else None
+        if stored and not base_url:
+            return None  # a tampered base must not ride a cached token: force a fresh exchange
+        return (api_token, expires_at, base_url) if api_token and expires_at else None
 
     return _with_jwt_store("load persisted", _load)
 
@@ -467,13 +471,44 @@ def _exchange_copilot_token_locked(
     # ``endpoints.api`` is authoritative (Copilot Enterprise / proxied accounts); else derive from
     # the token's ``proxy-ep``. Individual accounts have neither → None (registry default).
     endpoints = data.get("endpoints")
-    base_url: Optional[str] = (
-        str(endpoints.get("api") or "").strip().rstrip("/") if isinstance(endpoints, dict) else ""
-    ) or _derive_base_url_from_proxy_ep(api_token)
+    base_url = _safe_api_base(endpoints.get("api") if isinstance(endpoints, dict) else None) or _safe_api_base(
+        _derive_base_url_from_proxy_ep(api_token))
     _jwt_cache[fp] = (api_token, expires_at, base_url)
     _save_jwt_to_disk(fp, api_token, expires_at, base_url)
     logger.debug("Copilot token exchanged, expires_at=%s, base_url=%s", expires_at, base_url)
     return api_token, expires_at, base_url
+
+
+def _safe_api_base(url: Any) -> Optional[str]:
+    """``url`` without its trailing slash when it is an ``https://host[:443][/path]`` base, else None.
+
+    The exchanged token is sent to this host as a Bearer credential on every request, so a value
+    that would downgrade to http, carry userinfo, name another port, or carry a query, fragment
+    or whitespace/control character is dropped (the caller falls back to the token's
+    ``proxy-ep``, then the registry default) instead of being trusted.
+    """
+    text = str(url or "").strip().rstrip("/")
+    if not text:
+        return None
+    if any(ch.isspace() or not ch.isprintable() for ch in text):
+        return _reject_api_base(text)
+    try:
+        parsed = urllib.parse.urlsplit(text)
+        ok = (parsed.scheme == "https" and bool(parsed.hostname) and parsed.port in (None, 443)
+              and "@" not in parsed.netloc and not parsed.query and not parsed.fragment)
+    except ValueError:  # malformed port or IPv6 literal
+        ok = False
+    return text if ok else _reject_api_base(text)
+
+
+def _reject_api_base(text: str) -> None:
+    # Never log the raw value: rejected bases are exactly the ones that may carry credentials.
+    try:
+        host = urllib.parse.urlsplit(text).hostname or "?"
+    except ValueError:
+        host = "?"
+    logger.warning("Copilot: ignoring API base for host %r (expected https://<host>[/path], "
+                   "no credentials, port or query)", host)
 
 
 def _derive_base_url_from_proxy_ep(token: str) -> Optional[str]:

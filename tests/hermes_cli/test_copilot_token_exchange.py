@@ -230,3 +230,80 @@ class TestExchangeFailureFastPath:
         mod._exchange_failure_cache[fp] = time.time() + 999
         evict_cached_exchanged_token("gho_stale")
         assert fp not in mod._exchange_failure_cache
+
+
+class TestExchangedApiBaseIsChecked:
+    """The exchanged token is sent to the returned API base as a Bearer credential, so only a plain
+    ``https://host`` base is trusted; anything else falls back to proxy-ep, then the default."""
+
+    def _exchange(self, endpoints_api, token="tid=abc;exp=999"):
+        from hermes_cli.copilot_auth import exchange_copilot_token
+
+        body = {"token": token, "expires_at": time.time() + 1800, "endpoints": {"api": endpoints_api}}
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(body).encode()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=resp):
+            return exchange_copilot_token(f"gho_{endpoints_api}{token}")[2]  # fresh fingerprint per case
+
+    @pytest.mark.parametrize("api", [
+        "https://api.enterprise.githubcopilot.com",
+        "https://api.business.githubcopilot.com/",
+        "https://copilot-api.acme.ghe.com:443",
+        "https://api.enterprise.githubcopilot.com/v1",
+    ])
+    def test_plain_https_bases_are_kept(self, api):
+        assert self._exchange(api) == api.rstrip("/")
+
+    @pytest.mark.parametrize("api", [
+        "http://api.enterprise.githubcopilot.com",
+        "https://user:pw@api.enterprise.githubcopilot.com",
+        "https://api.enterprise.githubcopilot.com:8443",
+        "https://[::1",
+        "api.enterprise.githubcopilot.com",
+        "https://api.enterprise.githubcopilot.com?x=1",
+        "https://api.enterprise.githubcopilot.com#f",
+        "https://api.enterprise.githubcopilot.com\n.evil.example",
+    ])
+    def test_unsafe_bases_fall_back_to_proxy_ep_then_default(self, api):
+        assert self._exchange(api) is None
+        proxied = "tid=abc;exp=999;proxy-ep=proxy.enterprise.githubcopilot.com"
+        assert self._exchange(api, token=proxied) == "https://api.enterprise.githubcopilot.com"
+
+    def test_persisted_unsafe_base_forces_a_fresh_exchange(self):
+        from hermes_cli import copilot_auth as mod
+
+        raw = "gho_tampered"
+        mod._save_jwt_to_disk(mod._token_fingerprint(raw), "tok-disk", time.time() + 1800, "http://evil.example")
+        assert mod._load_jwt_from_disk(mod._token_fingerprint(raw)) is None
+        body = {"token": "tid=fresh;proxy-ep=proxy.enterprise.githubcopilot.com", "expires_at": time.time() + 1800}
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(body).encode()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=resp) as urlopen:
+            token, _, base = mod.exchange_copilot_token(raw)
+        assert urlopen.called and token.startswith("tid=fresh")
+        assert base == "https://api.enterprise.githubcopilot.com"
+
+    def test_rejected_base_is_not_logged_verbatim(self, caplog):
+        from hermes_cli.copilot_auth import _safe_api_base
+
+        with caplog.at_level("WARNING", logger="hermes_cli.copilot_auth"):
+            assert _safe_api_base("https://svc:Sup3rS3cretPw@api.enterprise.githubcopilot.com") is None
+            assert _safe_api_base("https://api.x.example/#tok=Sup3rS3cretFrag") is None
+        assert "Sup3rS3cret" not in caplog.text
+        assert "api.enterprise.githubcopilot.com" in caplog.text
+
+    def test_persisted_base_comes_back_normalised(self):
+        from hermes_cli import copilot_auth as mod
+
+        mod._save_jwt_to_disk("fp2", "tok", time.time() + 1800, " https://api.enterprise.githubcopilot.com/ ")
+        assert mod._load_jwt_from_disk("fp2")[2] == "https://api.enterprise.githubcopilot.com"
+
+    def test_persisted_safe_base_is_kept(self):
+        from hermes_cli import copilot_auth as mod
+
+        mod._save_jwt_to_disk("fp", "tok", time.time() + 1800, "https://api.enterprise.githubcopilot.com")
+        assert mod._load_jwt_from_disk("fp")[2] == "https://api.enterprise.githubcopilot.com"

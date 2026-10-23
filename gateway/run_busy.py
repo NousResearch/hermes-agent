@@ -566,10 +566,11 @@ class GatewayBusySessionMixin:
 
     @staticmethod
     def _busy_reply_to(event: MessageEvent, reply_anchor):
-        # Telegram DM topics anchor on the thread; other Telegram threads send unanchored. An
-        # internal wake's message_id is its producer identity, never a platform id (#139611).
+        # Telegram topics (DM lanes and forum topics) quote the triggering message via reply_anchor,
+        # which is None for an internal wake. Elsewhere an internal wake's message_id is its producer
+        # identity, never a platform id (#139611).
         if event.source.platform == Platform.TELEGRAM and event.source.thread_id:
-            return reply_anchor if event.source.chat_type == "dm" else None
+            return reply_anchor
         return None if getattr(event, "internal", False) else event.message_id
 
     async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:

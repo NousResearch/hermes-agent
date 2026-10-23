@@ -7,6 +7,7 @@ import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { cleanPath, isUnderPath } from '@/lib/path-compare'
 import { cn } from '@/lib/utils'
 import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-status'
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
@@ -105,12 +106,27 @@ export function ProjectTree({
   // pane is opened by the caller; this drives the tree to the file.
   const revealNode = useCallback(
     async (absPath: string) => {
-      const root = cwd.replace(/[\\/]+$/, '')
-      const target = absPath.replace(/[\\/]+$/, '')
-      const rel = target.startsWith(root) ? target.slice(root.length).replace(/^[\\/]+/, '') : ''
-      const segments = rel.split(/[\\/]/).filter(Boolean)
+      const root = cleanPath(cwd)
+      const requested = cleanPath(absPath)
 
-      let acc = root
+      // The shared comparator handles Windows spelling and component boundaries;
+      // POSIX / needs its own separator rule (and must not accept a UNC root).
+      const inside = root === '/' ? requested.startsWith('/') && !requested.startsWith('//') : isUnderPath(root, requested)
+
+      if (!inside) {
+        return
+      }
+
+      const segments = requested.slice(root.length).split('/').filter(Boolean)
+
+      // Do not expand lexical traversal components as if they were tree nodes.
+      if (segments.some(segment => segment === '.' || segment === '..')) {
+        return
+      }
+
+      const base = root === '/' ? '' : root
+      const target = segments.length ? `${base}/${segments.join('/')}` : root
+      let acc = base
 
       for (let i = 0; i < segments.length - 1; i += 1) {
         acc = `${acc}/${segments[i]}`

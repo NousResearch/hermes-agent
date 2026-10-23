@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -86,9 +87,38 @@ def _gws_binary() -> str | None:
     return shutil.which("gws")
 
 
+def _gws_config_dir() -> Path | None:
+    """Config dir for gws, one per Google account.
+
+    gws caches access tokens in ``<config dir>/token_cache.json`` without keying
+    the cache on the credentials file (googleworkspace/cli#572). Two token files
+    that share an OAuth client then reuse one cached token, so a call for one
+    account runs as the other. Key the dir on the refresh token. A re-auth
+    leaves the old dir behind with an expired token in it; that is expected.
+    """
+    try:
+        payload = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
+        refresh = payload.get("refresh_token")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not refresh:
+        return None
+    digest = hashlib.sha256(str(refresh).encode("utf-8")).hexdigest()[:16]
+    root = HERMES_HOME / "google_workspace" / "gws"
+    path = root / digest
+    path.mkdir(parents=True, exist_ok=True)
+    for directory in (root, path):
+        os.chmod(directory, 0o700)
+    return path
+
+
 def _gws_env() -> dict[str, str]:
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
+    if not env.get("GOOGLE_WORKSPACE_CLI_CONFIG_DIR"):
+        config_dir = _gws_config_dir()
+        if config_dir is not None:
+            env["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = str(config_dir)
     return env
 
 

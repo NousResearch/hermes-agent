@@ -1001,6 +1001,110 @@ class TestPasteCallbackSkipToken:
         assert result["error"] is None
 
 
+class TestPasteCallbackStateGuard:
+    """A pasted callback whose ``state`` belongs to a different in-flight PKCE flow must be rejected
+    with a clear message and must not commit a result — the flow keeps waiting for the matching
+    callback instead of accepting a stale code and failing later (#134964)."""
+
+    def _empty_result(self):
+        return {"auth_code": None, "state": None, "error": None}
+
+    @staticmethod
+    def _stdin_with(lines, monkeypatch):
+        feed = iter(lines)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: next(feed, "")))
+
+    def test_mismatched_state_rejected_then_matching_accepted(self, monkeypatch, capsys):
+        """Pasting flow B's callback into flow A must not commit or claim success; the matching
+        callback pasted afterwards completes the flow exactly once."""
+        result = self._empty_result()
+        self._stdin_with(
+            [
+                "http://127.0.0.1:27890/callback?code=code-b&state=state-b\n",
+                "http://127.0.0.1:27890/callback?code=code-a&state=state-a\n",
+            ],
+            monkeypatch,
+        )
+        _paste_callback_reader(result, expected_state="state-a")
+        assert result["auth_code"] == "code-a"
+        assert result["state"] == "state-a"
+        err = capsys.readouterr().err
+        assert "Callback state does not match this OAuth flow" in err
+        assert err.index("Callback state does not match") < err.index("completing flow")
+
+    def test_mismatched_state_keeps_result_empty_on_eof(self, monkeypatch, capsys):
+        """A lone mismatched paste followed by EOF must leave the result untouched."""
+        result = self._empty_result()
+        self._stdin_with(["?code=code-b&state=state-b\n"], monkeypatch)
+        _paste_callback_reader(result, expected_state="state-a")
+        assert result["auth_code"] is None
+        assert result["state"] is None
+        assert result["error"] is None
+        assert "completing flow" not in capsys.readouterr().err
+
+    def test_without_expected_state_any_state_is_accepted(self, monkeypatch):
+        """No known expected state (flow without a captured authorization URL) keeps today's
+        permissive behavior — the SDK still validates the state downstream."""
+        result = self._empty_result()
+        self._stdin_with(["?code=abc&state=xyz\n"], monkeypatch)
+        _paste_callback_reader(result, expected_state=None)
+        assert result["auth_code"] == "abc"
+        assert result["state"] == "xyz"
+
+    def test_error_callback_still_committed_without_state_check(self, monkeypatch):
+        """``error=`` redirects carry no code to exchange; they must keep ending the flow."""
+        result = self._empty_result()
+        self._stdin_with(["?error=access_denied&state=state-b\n"], monkeypatch)
+        _paste_callback_reader(result, expected_state="state-a")
+        assert result["error"] == "access_denied"
+        assert result["auth_code"] is None
+
+    def test_redirect_handler_records_state_in_sink(self, monkeypatch, capsys):
+        """The redirect handler publishes this flow's ``state`` from the authorization URL into the
+        shared sink the callback waiter reads."""
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mod, "_can_open_browser", lambda: False)
+        sink: dict = {}
+        asyncio.run(
+            mod._make_redirect_handler(49304, state_sink=sink)(
+                "https://idp.example.com/authorize?client_id=c&state=state-a&code_challenge=x"
+            )
+        )
+        assert sink["expected"] == "state-a"
+        capsys.readouterr()
+
+    def test_waiter_passes_expected_state_to_paste_reader(self, monkeypatch):
+        """The waiter wires the shared sink into the paste fallback thread."""
+        import socket
+        import tools.mcp_oauth as mo
+
+        monkeypatch.setattr(mo, "_is_interactive", lambda: True)
+        monkeypatch.setattr(mo, "_raise_if_non_interactive", lambda lead: None)
+        monkeypatch.setattr(mo, "get_dashboard_oauth_flow", lambda: None)
+        captured = {}
+
+        def fake_reader(result, expected_state=None):
+            captured["expected_state"] = expected_state
+            result.update(auth_code="code-a", state="state-a", error=None, iss=None)
+
+        monkeypatch.setattr(mo, "_paste_callback_reader", fake_reader)
+        port = _find_free_port()
+        outcome = asyncio.run(
+            mo._make_callback_waiter(
+                port, timeout=10, expected_state={"expected": "state-a"}
+            )()
+        )
+        assert captured["expected_state"] == "state-a"
+        assert (
+            getattr(outcome, "code", outcome[0] if isinstance(outcome, tuple) else None)
+            == "code-a"
+        )
+
+
 class TestWaitForCallbackSkipIntegration:
     """_wait_for_callback maps the skip sentinel to OAuthNonInteractiveError."""
 

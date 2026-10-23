@@ -978,6 +978,31 @@ Config and state have different owners: settings are user-visible behavior in
 `config.yaml`, while state is plugin-owned runtime data under
 `<HERMES_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
 
+### Add validation to dashboard skills
+
+Plugins can add a namespaced record to `GET /api/skills/content`. Register one
+callback that receives a stable skill descriptor (`name`, `path`) and the
+SHA-256 digest of every file in that skill's instruction tree. Return `None` for
+no record, or a JSON-compatible mapping that repeats that exact digest in
+`content_hash`. Hermes exposes matching records under `validation.<plugin-id>`
+and drops a stale record without interpreting its other fields.
+
+```python
+def register(ctx):
+    def skill_validation(skill, content_hash):
+        record = ctx.state.get(f"validation:{skill['name']}")
+        if not isinstance(record, dict) or record.get("content_hash") != content_hash:
+            # A plugin route may clear or replace its own durable record here.
+            return None
+        return record
+
+    ctx.register_skill_validation(skill_validation)
+```
+
+When a plugin writes a validation result, store the response's `content_hash`
+with it. A changed instruction file then makes the old result invisible until
+the plugin validates the new tree and stores the new hash.
+
 ### Settings form in the Desktop
 
 Every key you declare in the manifest's `config_schema` renders as a row on the

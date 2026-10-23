@@ -8,6 +8,7 @@ seam so ``monkeypatch.setattr(<owning module>, ...)`` keeps working.
 """
 
 import asyncio
+import hashlib
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -92,6 +93,20 @@ def _clear_skills_prompt_cache() -> None:
         clear_skills_system_prompt_cache(clear_snapshot=True)
     except Exception:
         pass
+
+
+def _skill_instruction_hash(skill_dir) -> str:
+    """Stable digest of the complete skill instruction tree, including paths."""
+    digest = hashlib.sha256()
+    files = (item for item in skill_dir.rglob("*") if item.is_file())
+    for path in sorted(files, key=lambda item: item.relative_to(skill_dir).as_posix()):
+        relative = path.relative_to(skill_dir).as_posix().encode("utf-8", "surrogateescape")
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
 
 
 @hub_router.post("/api/skills/hub/install")
@@ -410,7 +425,16 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
             content = skill_md.read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {"name": name, "content": content, "path": str(skill_md)}
+        content_hash = _skill_instruction_hash(found["path"])
+        from hermes_cli.plugins import get_plugin_manager
+        manager = get_plugin_manager()
+        manager.discover_and_load()
+        validation = manager.get_skill_validation(
+            {"name": name, "path": str(skill_md)}, content_hash)
+        return {
+            "name": name, "content": content, "path": str(skill_md),
+            "content_hash": content_hash, "validation": validation,
+        }
 
     return await scoped_to_thread(profile, _read)
 

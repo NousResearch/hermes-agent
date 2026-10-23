@@ -62,6 +62,8 @@ Backends return raw page markdown, which can be huge (forum threads, docs sites,
 
 The per-page budget is configurable via `web.extract_char_limit` in `config.yaml` (default `15000`, clamped to 2 000–500 000), and the agent can raise it per-call with the tool's `char_limit` argument.
 
+This all works on the text the backend returns. A backend-side cap such as `web.exa.extract_max_characters` cuts the page before this pipeline runs: text past the cap never reaches the head+tail window or the stored copy, and a larger `char_limit` cannot bring it back.
+
 Each provider dispatch is also bounded by a wall-clock timeout (`web.extract_timeout` in `config.yaml`, default `120` seconds; `0` disables it). A backend that keeps the response open without finishing returns per-URL timeout errors instead of stalling the tool call indefinitely.
 
 ### When truncation gets in the way
@@ -318,7 +320,7 @@ Neural search with semantic understanding. Good for research and finding concept
 EXA_API_KEY=your-exa-key-here
 ```
 
-Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/month.
+Get a key at [exa.ai](https://exa.ai). The free tier gives $10 of credits each month (the balance resets on the 1st).
 
 **Optional knobs** (keyed path only; leave unset for Exa's defaults):
 
@@ -327,11 +329,13 @@ web:
   exa:
     type: lite                    # auto (default) | lite | fast | deep-lite | deep
     dynamic_highlights: true      # research-preview beta: one shared highlight budget across results
-    max_age_hours: 24             # refetch cached pages older than this; 0 = always fresh, -1 = cache only (max 720)
-    extract_max_characters: 20000 # per-page text cap for web_extract; never below web.extract_char_limit
+    max_age_hours: 24             # Exa refetches its cached pages older than this; 0 = always fresh, -1 = cache only (max 720)
+    extract_max_characters: 20000 # Exa returns at most this many characters per page to web_extract (max 1 000 000)
 ```
 
-`lite` costs about 40% less than `auto` ($4 vs $7 per 1 000 searches) at slightly lower quality (79 vs 80.5 on Exa's own 3.0 benchmark). Exa rejects `max_age_hours` on `lite` searches, so it is sent only with `web_extract` in that case. `deep-lite` and `deep` run multi-step research and are slower and more expensive per call.
+`lite` costs about 40% less than `auto` ($4 vs $7 per 1 000 searches) at slightly lower quality (79 vs 80.5 on Exa's own 3.0 benchmark). `deep-lite` and `deep` run multi-step research and are slower and more expensive per call. Exa rejects `max_age_hours` on `lite` searches, so it is sent only with `web_extract` in that case. It only controls Exa's own cache: a call that Hermes serves from its [result cache](#result-caching) never reaches Exa, even with `0`. Lower `web.cache_ttl_minutes` or set `web.cache_enabled: false` when every call must be fresh.
+
+`extract_max_characters` is applied by Exa, before Hermes' [long-page handling](#how-web_extract-handles-long-pages). A page longer than the cap arrives cut at the cap: the tail is lost, the stored copy holds only the capped text, and a larger `char_limit` cannot recover the rest. A cap below `web.extract_char_limit` also lowers what the agent sees. Leave it unset to get full pages.
 
 ---
 

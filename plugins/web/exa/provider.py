@@ -5,9 +5,10 @@ sync-only; the dispatcher threads extract when the caller is async.
 
 Optional ``web.exa`` config (keyed path only; unset = Exa's defaults):
 ``type`` (auto | lite | fast | deep-lite | deep), ``dynamic_highlights`` (bool, research-preview
-beta), ``max_age_hours`` (-1..720, content cache age; not sent on ``lite`` searches, which reject
-it), ``extract_max_characters`` (per-page text cap for extract, never below
-``web.extract_char_limit``).
+beta), ``max_age_hours`` (-1..720, Exa's content cache age, applied only when a call reaches Exa;
+not sent on ``lite`` searches, which reject it), ``extract_max_characters`` (1..1,000,000, Exa's
+``text.maxCharacters`` for extract). The extract cap cuts the page at Exa, before Hermes truncation:
+text past it never reaches the head+tail window, the stored copy or a larger ``char_limit``.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ _MISSING_KEY = "EXA_API_KEY environment variable not set. Get your API key at ht
 _SEARCH_TYPES = ("auto", "lite", "fast", "deep-lite", "deep")
 # Exa-Beta token for Dynamic Highlights (https://exa.ai/docs/search/highlights).
 _DYNAMIC_HIGHLIGHTS_BETA = "dynamic-highlights-2026-08-28"
+_MAX_TEXT_CHARACTERS = 1_000_000  # Exa's ceiling for text.maxCharacters
 
 
 def _exa_config() -> dict[str, Any]:
@@ -72,10 +74,8 @@ def _search_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def _contents_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
     """Keyword arguments for ``Exa.get_contents`` beyond the URLs."""
-    from tools.web_tools_truncate import _get_extract_char_limit
-    cap = _int_setting(cfg, "extract_max_characters", 1, 2_000_000)
-    # The cap never undercuts the per-page budget web_extract hands the model.
-    kwargs: dict[str, Any] = {"text": True if cap is None else {"max_characters": max(cap, _get_extract_char_limit())}}
+    cap = _int_setting(cfg, "extract_max_characters", 1, _MAX_TEXT_CHARACTERS)
+    kwargs: dict[str, Any] = {"text": True if cap is None else {"max_characters": cap}}
     max_age = _max_age_hours(cfg)
     if max_age is not None:
         kwargs["max_age_hours"] = max_age

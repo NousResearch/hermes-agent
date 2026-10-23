@@ -20,6 +20,7 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_providers import _URL_TO_PROVIDER
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -437,26 +438,6 @@ def _is_custom_endpoint(base_url: str) -> bool:
     normalized = _normalize_base_url(base_url)
     return bool(normalized) and not base_url_host_matches(normalized, "openrouter.ai")
 
-
-# Host substring -> provider. ".githubcopilot.com" covers api.enterprise./api.business.
-# hosts; models.inference.ai.azure.com (GitHub Models free tier, ~8K per-request cap)
-# is mapped so a targeted hint fires instead of the custom-endpoint path.
-_URL_TO_PROVIDER: dict[str, str] = {
-    "api.openai.com": "openai", "chatgpt.com": "openai", "api.anthropic.com": "anthropic",
-    "api.z.ai": "zai", "open.bigmodel.cn": "zai",
-    "api.moonshot.ai": "kimi-coding", "api.moonshot.cn": "kimi-coding-cn", "api.kimi.com": "kimi-coding",
-    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee", "api.minimax": "minimax",
-    "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba", "portal.qwen.ai": "qwen-oauth",
-    "openrouter.ai": "openrouter", "generativelanguage.googleapis.com": "gemini",
-    "inference-api.nousresearch.com": "nous", "api.deepseek.com": "deepseek",
-    "api.githubcopilot.com": "copilot", ".githubcopilot.com": "copilot", "models.github.ai": "copilot",
-    "models.inference.ai.azure.com": "copilot",
-    "api.fireworks.ai": "fireworks", "opencode.ai": "opencode-go", "api.x.ai": "xai",
-    "integrate.api.nvidia.com": "nvidia", "api.xiaomimimo.com": "xiaomi", "xiaomimimo.com": "xiaomi",
-    "api.gmi-serving.com": "gmi", "api.novita.ai": "novita",
-    "tokenhub.tencentmaas.com": "tencent-tokenhub", "api.lkeap.cloud.tencent.com": "tencent-tokenplan",
-    "ollama.com": "ollama-cloud",
-}
 
 # Auto-extend with provider-profile hostnames not already mapped.
 try:

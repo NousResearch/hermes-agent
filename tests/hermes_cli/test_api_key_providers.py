@@ -1128,7 +1128,8 @@ class TestRuntimeAlibabaRegionalAndTokenPlan:
         assert result["provider"] == "alibaba-token-plan"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "atp-key"
-        assert result["base_url"] == "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+        from providers import get_provider_profile
+        assert result["base_url"] == get_provider_profile("alibaba-token-plan").base_url
 
     def test_runtime_alibaba_token_plan_cn(self, monkeypatch):
         monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
@@ -1137,4 +1138,5 @@ class TestRuntimeAlibabaRegionalAndTokenPlan:
         assert result["provider"] == "alibaba-token-plan-cn"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "atp-key"
-        assert result["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+        from providers import get_provider_profile
+        assert result["base_url"] == get_provider_profile("alibaba-token-plan-cn").base_url

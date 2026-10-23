@@ -35,7 +35,7 @@ from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
-    _resolve_zai_base_url, detect_zai_endpoint)
+    _resolve_zai_base_url, _provider_env_base_url, detect_zai_endpoint)
 from hermes_cli.auth_model_picker import (
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (
@@ -2040,18 +2040,6 @@ def get_xai_oauth_auth_status() -> dict[str, Any]:
     return _pool_first_oauth_status(
         "xai-oauth", is_expiring=_xai_access_token_is_expiring, auth_mode="oauth_device_code",
         resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
-
-
-def _provider_env_base_url(pconfig: ProviderConfig) -> str:
-    if pconfig.id == "actual":
-        from hermes_cli.providers import normalize_provider
-
-        model = read_raw_config().get("model")
-        if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == "actual":
-            configured_url = str(model.get("base_url") or "").strip()
-            if configured_url:
-                return configured_url
-    return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
 
 
 def get_api_key_provider_status(provider_id: str) -> dict[str, Any]:

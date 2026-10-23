@@ -883,6 +883,7 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
     from hermes_cli.models import (
+        _ALIBABA_TOKEN_PLAN_PROVIDERS,
         _LIVE_TERMINAL_PICKER_PROVIDERS,
         _PROVIDER_MODELS,
         fetch_api_models,
@@ -894,6 +895,13 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     special = _SPECIAL_MODEL_LISTS.get(provider_id)
     if special is not None:
         return special(pconfig, curated, api_key_for_probe, effective_base)
+    if provider_id in _ALIBABA_TOKEN_PLAN_PROVIDERS:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider_id)
+        model_list = probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base)
+        _report_live_models(model_list, f"{pconfig.name} catalog")
+        return model_list
     # models.dev first (tool-capable, noise-filtered), merged with curated so newly added
     # models still appear.
     model_list = _models_dev_merged(provider_id, curated)

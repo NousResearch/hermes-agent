@@ -918,6 +918,46 @@ def _pool_entries(auth_store: dict[str, Any], provider_id: str) -> Optional[list
     return entries if isinstance(entries, list) else None
 
 
+def _order_codex_pool_entries_for_strategy(
+    entries: Any,
+) -> list[dict[str, Any]]:
+    """Honor ``credential_pool_strategies`` for the codex construction binding.
+
+    Without this the raw file-order scan always binds the first usable entry, so a
+    strategy set on the pool only ever engages at rotation time. With
+    ``fresh_first``/``earliest_reset`` configured, candidates are ordered by the
+    quota probe cache; any error or missing cache leaves the original order
+    untouched (fail-open)."""
+    try:
+        from agent.credential_pool import (
+            STRATEGY_EARLIEST_RESET,
+            STRATEGY_FRESH_FIRST,
+            _earliest_reset_metric,
+            _load_quota_cache,
+            get_pool_strategy,
+        )
+
+        strategy = get_pool_strategy("openai-codex")
+        entries = list(entries or [])
+        if strategy not in (STRATEGY_EARLIEST_RESET, STRATEGY_FRESH_FIRST) or len(entries) < 2:
+            return entries
+        cache = _load_quota_cache()
+        if cache is None:
+            return entries
+        scored = []
+        for idx, entry in enumerate(entries):
+            metric = _earliest_reset_metric(cache, "openai-codex", str(entry.get("id") or ""))
+            fresh = 0 if (strategy == STRATEGY_FRESH_FIRST and metric is not None and metric[1] <= 0.0) else 1
+            scored.append((metric is None, fresh, metric or (0.0, 0.0), idx, entry))
+        scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        if scored and scored[0][0]:
+            return entries  # nothing probed — keep file order
+        return [item[4] for item in scored]
+    except Exception:
+        logger.debug("codex pool strategy ordering skipped", exc_info=True)
+        return entries
+
+
 def _pool_codex_credential() -> tuple[str, str]:
     """``(access_token, row base_url)`` of the first pool entry with a non-empty access_token that is
     not in an exhaustion cooldown window, so the caller routes the token to the host that row belongs
@@ -928,7 +968,9 @@ def _pool_codex_credential() -> tuple[str, str]:
     from agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
-        for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
+        for entry in _order_codex_pool_entries_for_strategy(
+            _codex_pool_dicts(read_credential_pool("openai-codex"))
+        ):
             token = entry.get("access_token")
             # Same normaliser as ``_codex_pool_rate_limit_status``: a millisecond epoch compared
             # raw reads as far-future here and as elapsed there, hiding a usable entry (#103349).

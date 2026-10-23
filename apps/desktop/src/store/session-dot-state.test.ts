@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
+import { $backgroundStatusBySession } from './composer-status'
 import {
   $cronSessions,
   $messagingSessions,
@@ -16,6 +17,7 @@ import {
 import {
   $delegatingSessionIds,
   $sessionDotStateById,
+  $sessionLiveWorkById,
   $unreadSessionCount,
   hasLiveTurn,
   showsRunningArc,
@@ -99,6 +101,52 @@ describe('$delegatingSessionIds', () => {
     $subagentsBySession.set({ 'runtime-fresh': [subagent('queued')] })
 
     expect($delegatingSessionIds.get()).toContain('runtime-fresh')
+  })
+})
+
+describe('$sessionLiveWorkById', () => {
+  const subagent = (status: SubagentProgress['status']): SubagentProgress => ({
+    id: 'sub-1',
+    parentId: null,
+    goal: 'do a thing',
+    status,
+    taskCount: 1,
+    taskIndex: 0,
+    startedAt: 0,
+    updatedAt: 0,
+    filesRead: [],
+    filesWritten: [],
+    stream: []
+  })
+
+  beforeEach(() => {
+    clearAllSessionStates()
+    $backgroundStatusBySession.set({})
+    $subagentsBySession.set({})
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $backgroundStatusBySession.set({})
+    $subagentsBySession.set({})
+  })
+
+  it('maps active delegated work to the stored session and drops terminal work', () => {
+    publishSessionState('runtime-1', { ...createClientSessionState('stored-1'), busy: false })
+    $subagentsBySession.set({ 'runtime-1': [subagent('running'), { ...subagent('queued'), id: 'sub-2' }] })
+    $backgroundStatusBySession.set({
+      'runtime-1': [
+        { id: 'process-1', state: 'running', title: 'build', type: 'background' },
+        { id: 'process-2', state: 'done', title: 'done', type: 'background' }
+      ]
+    })
+
+    expect($sessionLiveWorkById.get()['stored-1']).toEqual({ background: 1, subagents: 2 })
+
+    $subagentsBySession.set({ 'runtime-1': [subagent('completed')] })
+    $backgroundStatusBySession.set({ 'runtime-1': [{ id: 'process-1', state: 'done', title: 'build', type: 'background' }] })
+
+    expect($sessionLiveWorkById.get()['stored-1']).toBeUndefined()
   })
 })
 

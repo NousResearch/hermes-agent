@@ -360,3 +360,92 @@ def test_import_rejects_a_future_format_version(kanban_root, tmp_path):
     kanban_root("target")
     with pytest.raises(ValueError, match="newer than this Hermes"):
         kt.import_board(str(bumped))
+
+
+# ---------------------------------------------------------------------------
+# Concurrency. ``_available_slug`` only OBSERVED that a slug was free; between
+# that observation and the ``shutil.move`` that installs the DB, a second
+# importer could claim the same slug and the later move replaced the first
+# board's ``kanban.db`` -- a silent, total loss of an imported board
+# (FleetReview on PR #785). Two REAL processes, because the window is between
+# two syscalls and a mock cannot occupy it.
+# ---------------------------------------------------------------------------
+
+def _import_in_child(home: str, archive: str, marker: str, barrier, q) -> None:
+    """Run a real ``import_board`` in a fresh interpreter, barrier-synced."""
+    import os
+    import sys as _sys
+
+    for key in [k for k in os.environ if k.startswith("HERMES_KANBAN")]:
+        os.environ.pop(key, None)
+    os.environ["HERMES_KANBAN_SANDBOX"] = "1"
+    os.environ["HERMES_HOME"] = home
+    _sys.path.insert(0, str(_WORKTREE))
+    from hermes_cli import kanban_transfer as _kt
+
+    barrier.wait(timeout=60)
+    try:
+        result = _kt.import_board(Path(archive), slug="shared")
+        q.put((marker, result["board"], None))
+    except Exception as exc:  # noqa: BLE001
+        q.put((marker, None, f"{type(exc).__name__}: {exc}"))
+
+
+@pytest.mark.timeout(300)
+def test_concurrent_imports_of_the_same_slug_never_overwrite(kanban_root, tmp_path):
+    """Two importers racing on one slug must produce two boards, no loss."""
+    import multiprocessing
+    import sqlite3
+    from hermes_cli.kanban_db_connect import connect_closing
+
+    archives: dict[str, str] = {}
+    expected: dict[str, str] = {}
+    for marker in ("a", "b"):
+        kanban_root("src-" + marker)
+        kb.create_board("shared", name="Shared")
+        with connect_closing(board="shared") as conn:
+            expected[marker] = kb.create_task(
+                conn, title="card-" + marker, assignee="daedalus",
+                workspace_kind="dir", workspace_path=str(tmp_path),
+            )
+        archives[marker] = kt.export_board(
+            "shared", str(tmp_path / ("arc-" + marker)))["archive"]
+
+    home = kanban_root("target")
+
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(2)
+    queue = ctx.Queue()
+    procs = [
+        ctx.Process(target=_import_in_child,
+                    args=(str(home), archives[m], m, barrier, queue))
+        for m in ("a", "b")
+    ]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(240)
+    results = [queue.get(timeout=30) for _ in procs]
+
+    errors = [err for _m, _b, err in results if err]
+    assert not errors, results
+    slugs = [board for _m, board, _e in results]
+    assert len(set(slugs)) == 2, f"both importers claimed the same slug: {slugs}"
+
+    # Every imported card must still be readable somewhere. A replaced
+    # kanban.db shows up here as a missing id, which is what this test exists
+    # to catch -- the two-scan shape is deliberate: WHICH board holds which
+    # card depends on who won the race, and that is not the invariant.
+    survived: set[str] = set()
+    for slug in slugs:
+        db = kb.board_dir(slug) / "kanban.db"
+        assert db.is_file(), f"board {slug} has no kanban.db"
+        conn = sqlite3.connect(db)
+        try:
+            survived |= {row[0] for row in conn.execute("SELECT id FROM tasks")}
+        finally:
+            conn.close()
+    assert set(expected.values()) <= survived, (
+        f"an imported board was overwritten: expected {sorted(expected.values())}, "
+        f"found {sorted(survived)}"
+    )

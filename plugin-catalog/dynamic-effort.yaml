@@ -1,0 +1,36 @@
+name: dynamic-effort
+repo: https://github.com/ryancalpin/hermes-dynamic-effort
+sha: a2572c84dea08ab288cfb31bd227e8d876d2f8d9
+description: >-
+  Per-turn reasoning-effort routing for Hermes. A small local decision model
+  (default tev1:0.8b via Ollama /v1/systemone, a TypeSafe Jev-style API) reads
+  the current conversation before each main LLM call and picks the reasoning
+  effort, constrained to the levels the active provider/model actually supports
+  (deepseek -> low/medium/high/max, kimi-k3 -> low/high/max, etc.). Applies a
+  change only when the recommended level's top probability clears a
+  per-direction threshold (up-shift >= 0.45, down-shift >= 0.60; down needs more
+  confidence because a wrong down costs quality). Fail-open: any error leaves
+  the turn untouched. Never injects text into prompts, never enables reasoning
+  when the user disabled it, and respects manual /reasoning session overrides.
+  Ships a /effort slash command (status/on/off/auto/level/gate/last) and logs
+  every decision to the profile's plugin-data dir. Disclosure: requires a local
+  Ollama >= 0.35 with a decision model pulled and talks only to the configured
+  localhost decision endpoint; raises effort which needs an adequate
+  model.max_tokens output cap or reasoning can exhaust the budget and leave no
+  visible answer. Reads Hermes gateway internals only to resolve the live agent
+  and detect manual overrides (same pattern as the bundled max-output-budget).
+  The <0.45/0.60> threshold defaults were measured on the author's hardware.
+maintainer: ryancalpin
+tier: community
+category: automation
+docs_url: https://github.com/ryancalpin/hermes-dynamic-effort#readme
+requires_hermes: ">=0.21.5"
+version: "1.3.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

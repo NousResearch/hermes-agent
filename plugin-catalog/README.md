@@ -120,7 +120,7 @@ meaningful:
    at its current pin until Hermes is updated. Declare the same floor in
    `plugin.yaml` as well, because older Hermes versions enforce only that one
    (the loader skips the plugin when it does not match). A portable package
-   (`plugin.json`) has no version field of its own, so the catalog entry's
+   (`plugin.json`) has no `requires_hermes` field, so the catalog entry's
    `requires_hermes` is its only floor: set one when the package needs a recent
    Hermes (a server declaration key an older release ignores). `version` matches the
    pinned code, and Python dependencies resolve under Hermes's core constraints

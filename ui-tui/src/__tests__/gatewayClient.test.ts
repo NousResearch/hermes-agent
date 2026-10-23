@@ -234,11 +234,15 @@ describe('GatewayClient websocket attach mode', () => {
     delete process.env.HERMES_TUI_SIDECAR_URL
     const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
 
-    const describe = async (capabilities?: string[]) => {
+    const open = async () => {
       const socket = FakeWebSocket.instances.at(-1)!
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
 
+      return socket
+    }
+
+    const describe = async (socket: FakeWebSocket, capabilities?: string[]) => {
       const request = socket.sent.map(text => JSON.parse(text) as { id: number; method: string })
         .find(frame => frame.method === 'runtime.describe')!
 
@@ -252,13 +256,16 @@ describe('GatewayClient websocket attach mode', () => {
     try {
       gw.start(); gw.drain()
       await vi.advanceTimersByTimeAsync(0)
-      const first = await describe(['clarify-batch-v1'])
+      const first = await describe(await open(), ['clarify-batch-v1'])
       expect(gw.clarifyBatch).toBe(true)
 
       first.close()
       await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS)
       expect(FakeWebSocket.instances.at(-1)).not.toBe(first)
-      await describe()
+      const second = await open()
+      // The previous owner's list must not outlive it while the new owner is still describing.
+      expect(gw.clarifyBatch).toBe(false)
+      await describe(second)
       expect(gw.clarifyBatch).toBe(false)
     } finally { gw.kill(); vi.useRealTimers() }
   })

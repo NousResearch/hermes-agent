@@ -40,6 +40,12 @@ import { TipHost } from '@/components/tips'
 import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
 import { translateNow } from '@/i18n'
+import { Panel } from '../overlays/panel'
+import { Button } from '@/components/ui/button'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
+import { useContributions } from '@/contrib/react/use-contributions'
+import { contributedRoutes, ROUTES_AREA, routePathname } from '@/app/routes'
+import { openRouteTile } from '@/store/route-tiles'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
@@ -190,6 +196,8 @@ import {
 // ChatRoutesSurface's and live in ./surfaces.
 const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
 const CapabilitiesView = lazy(async () => ({ default: (await import('../capabilities')).CapabilitiesView }))
+const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
+const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
 const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
@@ -363,6 +371,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     capabilitiesOpen,
     chatOpen,
     closeOverlayToPreviousRoute,
+    pageOverlayPath,
+    pageOverlayView,
     commandCenterInitialSection,
     commandCenterOpen,
     cronOpen,
@@ -377,6 +387,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     toggleCommandCenter,
     webhooksOpen
   } = useOverlayRouting()
+
+  // The page-overlay card mounts registry-contributed pages (Gmail, Kanban,
+  // Newswire, …) through their own contribution, behind the same blast wall the
+  // route table used to give them.
+  const routeSnapshot = useContributions(ROUTES_AREA)
+  const pageOverlayRoute =
+    pageOverlayView === 'extension' && pageOverlayPath
+      ? contributedRoutes(routeSnapshot).find(route => route.path === routePathname(pageOverlayPath))
+      : undefined
 
   const {
     activeSessionIdRef,
@@ -1356,6 +1375,36 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
           />
+        </Suspense>
+      )}
+
+      {/* Every sidebar destination that is not a chat opens as a card over the
+          workspace, so a visit never costs the chat tabs. The button moves the
+          page into a tab: openRouteTile keys tiles by path, so an existing tab
+          is reused — nothing is replaced, and the workspace keeps its chat. */}
+      {pageOverlayPath && (
+        <Suspense fallback={null}>
+          <Panel onClose={closeOverlayToPreviousRoute}>
+            <div className="mb-2 flex shrink-0 justify-end pr-8">
+              <Button
+                onClick={() => {
+                  openRouteTile(routePathname(pageOverlayPath))
+                  closeOverlayToPreviousRoute()
+                }}
+                size="sm"
+                variant="ghost"
+              >
+                {translateNow('sidebar.row.openInNewTab')}
+              </Button>
+            </div>
+            {pageOverlayView === 'messaging' && <MessagingView overlay />}
+            {pageOverlayView === 'artifacts' && <ArtifactsView overlay />}
+            {pageOverlayView === 'extension' && pageOverlayRoute && (
+              <ContribBoundary id={pageOverlayRoute.key}>
+                <ContribRender render={pageOverlayRoute.render} />
+              </ContribBoundary>
+            )}
+          </Panel>
         </Suspense>
       )}
 

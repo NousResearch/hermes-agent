@@ -16,6 +16,20 @@ describe('hidesFixedTitlebarClusters', () => {
   })
 })
 
+describe('every non-chat view is an overlay by default', () => {
+  it('overlays the first-party pages and contributed plugin routes', () => {
+    expect(isOverlayView('messaging')).toBe(true)
+    expect(isOverlayView('artifacts')).toBe(true)
+    expect(isOverlayView('extension')).toBe(true)
+  })
+
+  it('keeps the chat workspace as the only non-overlay view', () => {
+    expect(isOverlayView('chat')).toBe(false)
+    expect(isWorkspacePageRoute('/messaging')).toBe(false)
+    expect(isWorkspacePageRoute('/session/abc')).toBe(false)
+  })
+})
+
 describe('capabilities is an overlay', () => {
   it('classifies the route as an overlay, not a workspace page', () => {
     expect(appViewForPath(CAPABILITIES_ROUTE)).toBe('capabilities')

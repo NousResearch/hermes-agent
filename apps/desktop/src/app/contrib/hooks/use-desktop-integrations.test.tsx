@@ -714,16 +714,14 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('route-scoped restoration', () => {
-    it('restores a non-session page route like /artifacts', () => {
+    it('does NOT restore /artifacts either — every non-chat page is an overlay now', () => {
       window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/artifacts')
 
-      const sessions = [session({ id: 'some-session', profile: 'default' })]
+      render({ profileReady: true, sessions: [] })
 
-      render({ profileReady: true, sessions })
-
-      // /artifacts is a workspace PAGE, not a session route — no ownership
-      // validation needed, and it is a destination worth booting back into.
-      expect(navigate).toHaveBeenCalledWith('/artifacts', { replace: true })
+      // Messaging/Artifacts and contributed pages float over the chat like
+      // Settings: booting back into one would bury the workspace behind a card.
+      expect(navigate).not.toHaveBeenCalled()
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {

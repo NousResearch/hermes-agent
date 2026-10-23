@@ -22,7 +22,7 @@ import asyncio
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
@@ -52,11 +52,7 @@ class _DrainProbeAdapter(BasePlatformAdapter):
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent.append(content)
 
-        class _R:
-            success = True
-            message_id = "m1"
-
-        return _R()
+        return SendResult(success=True, message_id="m1")
 
     async def send_typing(self, chat_id, metadata=None):
         pass

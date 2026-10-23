@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { openVoiceSocket } from './voice-stream'
+import { openGatewaySocket } from './canonical-protocol'
 
-// A local gateway admits its voice sockets on the /api/ws dial's grant, in the gateway
-// subprotocol only (RT-71, RT-80); a remote route keeps its own query credential.
-describe('openVoiceSocket', () => {
+// Chat and the voice sockets beside it (RT-71, RT-80) share one dial rule: a local gateway's
+// ticket rides only in the gateway subprotocol; a remote route keeps its own query credential.
+describe('openGatewaySocket', () => {
   const dials: unknown[][] = []
 
   afterEach(() => {
@@ -16,7 +16,7 @@ describe('openVoiceSocket', () => {
     vi.stubGlobal('WebSocket', function (...args: unknown[]) {
       dials.push(args)
     })
-    openVoiceSocket(url)
+    openGatewaySocket(url)
 
     return dials[0]
   }
@@ -26,6 +26,11 @@ describe('openVoiceSocket', () => {
       'ws://127.0.0.1:5151/api/audio/speak-stream?native_dial=n1&profile=beta',
       ['hermes-gateway-v1', 'hermes-gateway-ticket.t1']
     ])
+  })
+
+  it('refuses a local dial without a ticket', () => {
+    expect(() => open('ws://127.0.0.1:5151/api/audio/transcribe-stream?native_dial=n1')).toThrow(/fresh private ticket/)
+    expect(dials).toEqual([])
   })
 
   it('leaves a remote credential where the remote gateway reads it', () => {

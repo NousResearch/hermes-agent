@@ -1,9 +1,9 @@
 import { resolveGatewayWsUrl } from '@hermes/shared'
 
+import { openGatewaySocket } from '@/api/canonical-protocol'
 import type { OwnerScope } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
 import { directTtsConfig, type DirectTtsConfig, synthesizeSpeechClientDirect } from '@/lib/voice-client-direct'
-import { openVoiceSocket } from '@/lib/voice-stream'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $voicePlayback,
@@ -390,7 +390,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
  * stream (ChatGPT-style) with no per-sentence connection or synthesis gaps.
  */
 function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechStreamSession {
-  const ws = openVoiceSocket(wsUrl)
+  const ws = openGatewaySocket(wsUrl)
   ws.binaryType = 'arraybuffer'
 
   let context: AudioContext | null = null

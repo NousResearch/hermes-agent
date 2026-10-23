@@ -9,6 +9,8 @@ Direct-SQL setup is used to construct that state deterministically.
 from __future__ import annotations
 
 import argparse
+import json
+import time
 from pathlib import Path
 
 import pytest
@@ -71,6 +73,27 @@ def test_promote_refuses_undone_parent_and_names_the_real_remedy(conn):
     assert err and parent in err
     assert kb.get_task(conn, child).status == "todo"
     assert kb.claim_task(conn, child) is None  # still gated; nothing pretended
+
+
+def test_recompute_ready_preserves_explicit_manual_todo(conn):
+    """A dashboard/operator move to todo is a hold, not dependency readiness."""
+    task_id = kb.create_task(conn, title="parked backlog", assignee="setup")
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (task_id,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'status', ?, ?)",
+            (
+                task_id,
+                json.dumps({"status": "todo", "requested_status": "todo"}),
+                int(time.time()),
+            ),
+        )
+
+    assert kb.recompute_ready(conn) == 0
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "todo"
 
 
 

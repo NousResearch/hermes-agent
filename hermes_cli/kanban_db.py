@@ -2036,16 +2036,13 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
-    ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
-    ``consecutive_failures`` reached the limit (else the breaker could never
-    trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
+    Sticky explicit blocks and manual todo holds are not promoted. Failure-limit
+    order matches ``_record_task_failure``: task ``max_retries`` > caller
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
-
-    1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
+    from hermes_cli.kanban_db_todo import has_manual_todo_hold
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
@@ -2055,6 +2052,8 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if cur_status == "todo" and has_manual_todo_hold(conn, task_id):
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue

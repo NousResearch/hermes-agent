@@ -40,6 +40,7 @@ import type {
   KanbanTask,
   KanbanTaskDetail,
   OrchestrationSettings,
+  OriginTasksResponse,
   TaskEstimate,
   WorkerLog
 } from './types'
@@ -176,6 +177,8 @@ function onEventsFrame(scope: string, slug: string, data: unknown, selectedSlug 
   void queryClient.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   // Any event can change a board's card count — keep the switcher badge honest.
   void queryClient.invalidateQueries({ queryKey: boardsKey(scope) })
+  // …and a linked task's activity, which conversation badges and strips read.
+  void queryClient.invalidateQueries({ queryKey: originKeyPrefix(scope) })
 
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
     void queryClient.invalidateQueries({ queryKey: taskKey(scope, slug, taskId!) })
@@ -225,6 +228,17 @@ export function bindApi(
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
+
+  // Origin links live on boards other than the selected one, whose socket is
+  // the only live feed — so one shared slow tick refreshes every mounted
+  // conversation badge/strip (the batcher folds them into few requests).
+  const originTick = setInterval(() => {
+    if (document.visibilityState !== 'hidden') {
+      void queryClient.invalidateQueries({ queryKey: originKeyPrefix(kanbanConnectionScope()) })
+    }
+  }, ORIGIN_REFRESH_MS)
+
+  unsubs.push(() => clearInterval(originTick))
 
   eventCursorByBoard.clear()
 
@@ -379,6 +393,9 @@ export const boardKey = (scope: string, slug: string, archived: boolean) =>
 export const taskKey = (scope: string, slug: string, id: string) => ['kanban', 'task', scope, slug, id] as const
 export const logKey = (scope: string, slug: string, id: string) => ['kanban', 'log', scope, slug, id] as const
 export const boardsKey = (scope: string) => ['kanban', 'boards', scope] as const
+export const originKeyPrefix = (scope: string) => ['kanban', 'origin', scope] as const
+export const originKey = (scope: string, profile: string, ids: readonly string[]) =>
+  [...originKeyPrefix(scope), profile, [...ids].sort().join(',')] as const
 export const profilesKey = (scope: string) => ['kanban', 'profiles', scope] as const
 export const projectsKey = (scope: string) => ['kanban', 'projects', scope] as const
 export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', scope] as const
@@ -399,6 +416,34 @@ export const fetchTask = async (id: string) => {
 export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }))
 
 export const fetchBoards = () => call<BoardsResponse>('/boards')
+
+const ORIGIN_REFRESH_MS = 30_000
+
+// In-flight lookups by (connection, profile, exact conversation seed set). One backend answer
+// belongs to ONE conversation: its ref cap, `total_refs` and truncation flags are that
+// conversation's own. Distinct conversations are never merged into a shared request, so a crowded
+// one cannot crowd out, or put its counts on, a sparse one.
+const originInflight = new Map<string, Promise<OriginTasksResponse>>()
+
+/** The conversation's own `/origin-tasks` answer. Identical seed sets on the same owner route (the
+ *  sidebar row and the composer of one conversation) share one in-flight request. */
+export function fetchOriginTasks(scope: string, profile: string, ids: readonly string[]): Promise<OriginTasksResponse> {
+  const seeds = [...new Set(ids)].sort()
+  const key = `${scope}\0${profile}\0${seeds.join('\0')}`
+  const pending = originInflight.get(key)
+
+  if (pending) {
+    return pending
+  }
+
+  const request = call<OriginTasksResponse>(`/origin-tasks?session_ids=${encodeURIComponent(seeds.join(','))}`).finally(
+    () => originInflight.delete(key)
+  )
+
+  originInflight.set(key, request)
+
+  return request
+}
 
 export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profiles')
 

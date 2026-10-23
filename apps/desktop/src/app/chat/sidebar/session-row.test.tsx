@@ -418,6 +418,45 @@ describe('SidebarSessionRow decoration slots', () => {
     expect(screen.getByTestId('tail-deco').textContent).toBe('root-9')
   })
 
+  it('hands the row its lineage, its owner and whether plugin REST reaches that owner', () => {
+    act(() => {
+      disposers.push(
+        registry.register({
+          area: SESSION_ROW_AREAS.trailing,
+          data: { render: (props: SessionRowSlotProps) => <span data-testid="route">{JSON.stringify(props)}</span> },
+          id: 'route',
+          source: 'disk'
+        })
+      )
+    })
+
+    // Another profile on another connection, mid-lineage ids included: never ambient.
+    const foreign = renderRow(
+      makeSession({
+        _lineage_ids: ['root-9', 'mid-9', 'live-9'],
+        _lineage_root_id: 'root-9',
+        connection_id: 'spark',
+        id: 'live-9',
+        profile: 'research',
+        title: 'Foreign'
+      })
+    )
+
+    const route = JSON.parse(screen.getByTestId('route').textContent ?? '{}')
+
+    expect(route).toMatchObject({ ambient: false, connectionId: 'spark', profile: 'research', sessionId: 'root-9' })
+    expect([...route.lineageIds].sort()).toEqual(['live-9', 'mid-9', 'root-9'])
+    foreign.unmount()
+
+    // The active (default) profile on the primary backend is reachable.
+    renderRow(makeSession({ id: 'row-1', title: 'Mine' }))
+    expect(JSON.parse(screen.getByTestId('route').textContent ?? '{}')).toMatchObject({
+      ambient: true,
+      connectionId: '',
+      profile: 'default'
+    })
+  })
+
   it('renders nothing for an area with no registrations and survives an unmount', () => {
     const { container } = renderRow(makeSession({ id: 'row-7', title: 'Plain' }))
 

@@ -88,6 +88,7 @@ import { OrchestrationPanel } from './orchestration'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
+  $requestedTask,
   ago,
   type ArcState,
   arcState,
@@ -1106,7 +1107,15 @@ export function KanbanBoardPage() {
     refetchInterval: 60_000
   })
 
-  const [openId, setOpenId] = useState<null | string>(null)
+  const [openId, setOpenIdState] = useState<null | string>(null)
+  // Section the drawer was explicitly asked to open on; any other navigation drops it.
+  const [openSection, setOpenSection] = useState<'log' | undefined>(undefined)
+
+  const setOpenId = (id: null | string) => {
+    setOpenIdState(id)
+    setOpenSection(undefined)
+  }
+
   const [addStatus, setAddStatus] = useState<null | string>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -1128,6 +1137,22 @@ export function KanbanBoardPage() {
     setAddStatus(requestedLane)
     $newTaskLane.set(null)
   }, [requestedLane])
+
+  // A linked-task open raised from a conversation: select the task's board
+  // (the drawer and its queries follow `$boardSlug`), open the drawer, and
+  // clear the request so a remount can't reopen it.
+  const requestedTask = useValue($requestedTask)
+
+  useEffect(() => {
+    if (!requestedTask) {
+      return
+    }
+
+    $requestedTask.set(null)
+    $boardSlug.set(requestedTask.board)
+    setOpenIdState(requestedTask.id)
+    setOpenSection(requestedTask.section)
+  }, [requestedTask])
 
   const toggleSelect = (id: string) => {
     setSelected(prev => {
@@ -1438,7 +1463,13 @@ export function KanbanBoardPage() {
       )}
 
       <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
-      <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
+      <TaskDrawer
+        columns={columnNames}
+        id={openId}
+        initialTab={openSection}
+        onClose={() => setOpenId(null)}
+        onOpen={setOpenId}
+      />
     </div>
   )
 }

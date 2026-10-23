@@ -13,6 +13,9 @@
  *   data kinds (`data`):      composer.middleware    (ComposerMiddleware)
  *                             composer.attachments   (ComposerAttachmentProvider)
  *                             composer.microActions  (ComposerMicroActionProvider)
+ *                             composer.session       (ComposerSessionContribution —
+ *                                                     a strip describing THIS
+ *                                                     composer's conversation)
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -38,7 +41,8 @@ export const COMPOSER_AREAS = {
   attachments: 'composer.attachments',
   microActions: 'composer.microActions',
   atCompletions: 'composer.atCompletions',
-  modelPill: 'composer.modelPill'
+  modelPill: 'composer.modelPill',
+  session: 'composer.session'
 } as const
 
 export interface ComposerDraft {

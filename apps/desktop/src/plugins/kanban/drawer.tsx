@@ -687,6 +687,7 @@ function LinkChips({
 function FeedTabs({
   commentPending,
   detail,
+  initialTab,
   log,
   onComment,
   onRequeue,
@@ -694,13 +695,15 @@ function FeedTabs({
 }: {
   commentPending: boolean
   detail: KanbanTaskDetail
+  /** Section the drawer opens on (an explicit "Logs" request). Applies once the section has content. */
+  initialTab?: 'log'
   log: null | WorkerLog
   onComment: (body: string) => void
   onRequeue: (body: string) => void
   running: boolean
 }) {
   const k = useKanban()
-  const [tab, setTab] = useState<'activity' | 'comments' | 'log' | 'runs'>('comments')
+  const [tab, setTab] = useState<'activity' | 'comments' | 'log' | 'runs'>(initialTab ?? 'comments')
 
   const hasLog = !!log?.exists && !!log.content
   const switchable = detail.events.length > 0 || detail.runs.length > 0 || hasLog
@@ -716,6 +719,10 @@ function FeedTabs({
       (t.id === 'activity' ? detail.events.length > 0 : t.id === 'runs' ? detail.runs.length > 0 : hasLog)
   )
 
+  // A requested section that has no content yet (the log is still loading, or
+  // the task never wrote one) shows Comments, then follows the request once it fills.
+  const active = tabs.some(t => t.id === tab) ? tab : 'comments'
+
   const help = (
     <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
       <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
@@ -726,7 +733,7 @@ function FeedTabs({
 
   const body = (
     <div className="flex flex-col gap-4">
-      {tab === 'comments' && (
+      {active === 'comments' && (
         <>
           {detail.comments.length > 0 && (
             <ul className="flex flex-col gap-3">
@@ -744,7 +751,7 @@ function FeedTabs({
           <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
         </>
       )}
-      {tab === 'activity' && (
+      {active === 'activity' && (
         <ScrollFade deps={detail.events.length} max="7rem">
           <ul className="flex flex-col gap-1">
             {detail.events.map(event => {
@@ -765,7 +772,7 @@ function FeedTabs({
           </ul>
         </ScrollFade>
       )}
-      {tab === 'runs' && (
+      {active === 'runs' && (
         <ScrollFade max="11rem">
           <ul className="flex flex-col gap-1.5">
             {detail.runs.map(run => {
@@ -801,7 +808,7 @@ function FeedTabs({
           </ul>
         </ScrollFade>
       )}
-      {tab === 'log' && (
+      {active === 'log' && (
         <ScrollFade deps={log?.content.length} max="12rem">
           <LogView className="border-0 px-0">{log!.content}</LogView>
         </ScrollFade>
@@ -822,7 +829,7 @@ function FeedTabs({
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <SegmentedControl onChange={setTab} options={tabs} value={tab} />
+        <SegmentedControl onChange={setTab} options={tabs} value={active} />
         {help}
       </div>
       {body}
@@ -833,11 +840,14 @@ function FeedTabs({
 export function TaskDrawer({
   columns,
   id,
+  initialTab,
   onClose,
   onOpen
 }: {
   columns: string[]
   id: null | string
+  /** Open on the worker-log section (an explicit "Logs" action elsewhere). */
+  initialTab?: 'log'
   onClose: () => void
   onOpen: (id: string) => void
 }) {
@@ -1091,6 +1101,7 @@ export function TaskDrawer({
                   <FeedTabs
                     commentPending={commentMut.isPending || requeueMut.isPending}
                     detail={detail}
+                    initialTab={initialTab}
                     log={log ?? null}
                     onComment={body => commentMut.mutate(body)}
                     onRequeue={body => requeueMut.mutate(body)}

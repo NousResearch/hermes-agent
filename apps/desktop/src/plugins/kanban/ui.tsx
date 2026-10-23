@@ -10,6 +10,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   FadeScroll,
+  host,
   profileColor,
   profileColorSoft,
   relativeTime,
@@ -31,6 +32,25 @@ export { columnHelp, columnLabel, type KanbanText, lockedReason, useKanban } fro
  *  page consumes it on arrival and clears it. Ephemeral by design — never
  *  persisted, so a remount can't reopen a dialog the user already dismissed. */
 export const $newTaskLane = atom<null | string>(null)
+
+/** One-shot "open this task's drawer" request from outside the board page (a
+ *  conversation's linked-task list). Same contract as `$newTaskLane`: the
+ *  caller parks it and navigates, the page consumes it on arrival — switching
+ *  to the task's board first, since the drawer is keyed to `$boardSlug` — and
+ *  clears it. `section: 'log'` opens the drawer on the worker log. The user
+ *  always initiates it; nothing opens it for a background event. */
+export interface RequestedTask {
+  board: string
+  id: string
+  section?: 'log'
+}
+
+export const $requestedTask = atom<null | RequestedTask>(null)
+
+export function openLinkedTask(request: RequestedTask): void {
+  $requestedTask.set(request)
+  host.navigate('/kanban')
+}
 
 /** Orchestration knobs (cached app-wide; the settings panel invalidates). */
 export function useOrchestration() {

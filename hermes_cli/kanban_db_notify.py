@@ -139,6 +139,12 @@ def add_notify_sub(
                 f"UPDATE kanban_notify_subs SET {column} = ? " + _SUB_KEY_WHERE + guard,
                 (value, *key),
             )
+    if platform.lower() == "tui":
+        # Navigation index for the origin conversation (best-effort; see kanban_origin).
+        from hermes_cli import kanban_origin
+
+        kanban_origin.index_subscription(
+            conn, task_id=task_id, platform=platform, chat_id=chat_id, notifier_profile=notifier_profile)
 
 
 def _notify_profile_filter(

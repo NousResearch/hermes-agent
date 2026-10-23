@@ -215,6 +215,64 @@ export interface WorkerLog {
   truncated: boolean
 }
 
+/** What the board's own rows say a linked task is doing (`kanban_origin.classify_activity`).
+ *  `background` is the ONLY execution claim, and needs a fresh heartbeat or worker spawn; a live
+ *  claim alone is `reserved`, no evidence at all is `unknown`, evidence gone old is `stale`. */
+export type OriginActivity =
+  | 'archived'
+  | 'background'
+  | 'blocked'
+  | 'done'
+  | 'needs-input'
+  | 'queued'
+  | 'reserved'
+  | 'review'
+  | 'stale'
+  | 'unknown'
+  | 'waiting'
+
+/** Whether the board could confirm an indexed ref. Anything but `ok` carries no task facts. */
+export type OriginEvidence = 'board_missing' | 'board_unreadable' | 'not_associated' | 'ok' | 'task_missing'
+
+export interface OriginTaskSummary {
+  id: string
+  title: string
+  status: string
+  assignee?: null | string
+  block_kind?: null | string
+  created_at?: null | number
+  completed_at?: null | number
+  last_heartbeat_at?: null | number
+  claim_expires?: null | number
+  current_run_id?: null | number
+  activity: OriginActivity
+  activity_evidence: string
+}
+
+export interface OriginRef {
+  /** The lineage segment the reference was indexed under (maps back to a row's `lineageIds`). */
+  origin_session_id: string
+  board: string
+  task_id: string
+  indexed_at: number
+  source: string
+  evidence: OriginEvidence
+  task: null | OriginTaskSummary
+}
+
+/** GET /origin-tasks — linked tasks for the requested conversations in the request's profile. */
+export interface OriginTasksResponse {
+  profile: string
+  now: number
+  refs: OriginRef[]
+  /** Requested ids this profile's store does not know — never reported as "no tasks". */
+  unknown_sessions: string[]
+  /** Each known requested id → the compression chain the answering profile's own store resolved for it
+   *  (root first). Absent on older backends; the client then trusts only the ids it sent. */
+  lineage?: Record<string, string[]>
+  truncated: { lineage: boolean; refs: boolean; sessions: boolean; total_refs: number }
+}
+
 /** GET /orchestration — dispatcher knobs from config.yaml + resolved values. */
 export interface OrchestrationSettings {
   orchestrator_profile: string

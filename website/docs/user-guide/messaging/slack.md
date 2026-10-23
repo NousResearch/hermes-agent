@@ -1069,6 +1069,7 @@ Notes:
 | Bot can chat but can't read uploaded images/files | Add `files:read`, then **reinstall** the app. Hermes now surfaces attachment access diagnostics in-chat when Slack returns scope/auth/permission failures. |
 | `missing_scope` error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
 | Socket disconnects frequently | Check your network; Bolt auto-reconnects but unstable connections cause lag |
+| Bot stays connected but stops receiving messages (often after a Slack outage) | Slack can keep a Socket Mode session open without routing events to it. Hermes restarts a session Slack never registered (`Socket Mode unhealthy (no hello from Slack ...)` in `gateway.log`) and renews one that has been silent for 30 minutes (`Socket Mode renewed ...`); tune with `SLACK_SOCKET_HELLO_TIMEOUT_SECONDS` / `SLACK_SOCKET_SILENCE_RENEW_SECONDS`. Messages sent to a deaf session are not replayed, so ask users to resend. A `Slack counts N Socket Mode connections` warning means another process uses the same app token and receives part of the events. |
 | Changed scopes/events but nothing changed | You **must reinstall** the app to your workspace after any scope or event subscription change |
 
 ### Quick Checklist

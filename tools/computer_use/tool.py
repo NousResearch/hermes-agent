@@ -65,6 +65,11 @@ def _reject_unsafe(action: str, args: dict[str, Any]) -> Optional[str]:
     if action == "key" and (blocked := next((b for b in _BLOCKED_KEY_COMBOS
                                              if b.issubset(_canon_key_combo(args.get("keys", "")))), None)) is not None:
         return json.dumps({"error": f"blocked key combo: {sorted(blocked)}", "hint": "Destructive system shortcuts are hard-blocked."})
+    if action == "run_steps":
+        unsupported = next((name for name in ("bring_to_front", "capture_after") if args.get(name)), None)
+        if unsupported:
+            return json.dumps({"error": f"`{unsupported}` is not supported for run_steps; use an explicit focus or observe step.",
+                               "code": f"run_steps_{unsupported}_unsupported"})
     if action == "run_steps" and (err := _reject_unsafe_steps(args.get("steps"))):
         return err
     if args.get("bring_to_front") and args.get("delivery_mode") != "foreground":
@@ -95,21 +100,51 @@ def _reject_unsafe_steps(steps: Any) -> Optional[str]:
             tool, raw = names[0], step.get(names[0])
         if not isinstance(raw, dict):
             continue
+        # Ignore the separately supplied top-level args if a tagged action name is not a recognized step.
+        if tool not in {"click", "double_click", "right_click", "set_value", "type_text", "press_key",
+                        "hotkey", "scroll", "drag", "move_cursor", "type", "key", "middle_click"}:
+            continue
         text = raw.get("text", raw.get("value") if tool in {"type", "type_text"} else None)
         if isinstance(text, str) and any(pattern.search(text) for pattern in _BLOCKED_TYPE_PATTERNS):
             return json.dumps({"error": f"blocked pattern in type text (step {i + 1})"})
         combo = raw.get("keys")
-        if combo is None and tool in {"key", "press_key"} and isinstance(raw.get("key"), str):
+        if isinstance(raw.get("key"), str) and (
+                tool == "hotkey" or (tool in {"key", "press_key"} and isinstance(raw.get("modifiers"), list))):
             modifiers = raw.get("modifiers")
-            combo = [*modifiers, raw["key"]] if isinstance(modifiers, list) else raw["key"]
+            combo = [*modifiers, raw["key"]] if isinstance(modifiers, list) and modifiers else raw["key"]
         if isinstance(combo, str):
             keys = _canon_key_combo(combo)
         elif isinstance(combo, list):
             keys = frozenset(part for item in combo for part in _canon_key_combo(str(item)))
         else:
             keys = frozenset()
+        # Match the translator: key+modifiers forms a hotkey chord only on key aliases.
+        if combo is None and tool in {"key", "press_key"} and isinstance(raw.get("key"), str):
+            modifiers = raw.get("modifiers")
+            if isinstance(modifiers, list) and modifiers:
+                keys = frozenset(part for item in [*modifiers, raw["key"]]
+                                 for part in _canon_key_combo(str(item)))
+            else:
+                keys = _canon_key_combo(raw["key"])
+        # Driver press_key's key field is a single key name. Treat chord syntax as a chord at the gate,
+        # even if a caller supplied it in that field instead of the Hermes `keys` spelling.
+        if tool in {"press_key", "key"} and isinstance(raw.get("key"), str) and any(sep in raw["key"] for sep in "+-"):
+            keys = _canon_key_combo(raw["key"])
         if any(blocked.issubset(keys) for blocked in _BLOCKED_KEY_COMBOS):
             return json.dumps({"error": f"blocked key combo in step {i + 1}"})
+        # A raw hotkey can use its native {keys:[modifier, key]} shape. Treat each item as
+        # potentially containing aliases or separators too, matching _canon_key_combo().
+        if tool == "hotkey" and isinstance(raw.get("keys"), str):
+            hotkey_keys = _canon_key_combo(raw["keys"])
+            if any(blocked.issubset(hotkey_keys) for blocked in _BLOCKED_KEY_COMBOS):
+                return json.dumps({"error": f"blocked key combo in step {i + 1}"})
+        if tool == "hotkey" and isinstance(raw.get("keys"), list):
+            hotkey_keys = frozenset(part for item in raw["keys"] for part in _canon_key_combo(str(item)))
+            if any(blocked.issubset(hotkey_keys) for blocked in _BLOCKED_KEY_COMBOS):
+                return json.dumps({"error": f"blocked key combo in step {i + 1}"})
+        if tool in {"press_key", "key"} and isinstance(raw.get("key"), str) and any(sep in raw["key"] for sep in "+-"):
+            if any(blocked.issubset(_canon_key_combo(raw["key"])) for blocked in _BLOCKED_KEY_COMBOS):
+                return json.dumps({"error": f"blocked key combo in step {i + 1}"})
     return None
 
 def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:

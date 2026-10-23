@@ -37,6 +37,7 @@ def test_prepare_iteration_wires_governor_into_provider_bound_messages(monkeypat
     agent._skill_nudge_interval = 0
     agent.valid_tool_names = set()
     agent._drain_pending_steer = lambda: None
+    agent._adopt_nous_key_before_expiry = lambda: None
     agent.run_budget_seconds = None
     agent.budget_warning_ratio = None
     agent.logger = None

@@ -18,8 +18,10 @@ import {
 
 // A command token starts a word and doesn't continue into a path: `/usr/local`
 // is a path, not a `/usr` command. Same shape the sent message uses to decide
-// what renders as a pill, so the composer and the transcript agree.
-const SLASH_COMMAND_RE = /(?<=^|\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
+// what renders as a pill, so the composer and the transcript agree. A
+// digit-prefixed name must contain a letter so fractions such as `3 /4` stay
+// plain text when pasted or restored.
+const SLASH_COMMAND_RE = /(?<=^|\s)\/((?:[a-zA-Z][\w-]*|[0-9][\w-]*[a-zA-Z][\w-]*))(?![\w-]*\/)/g
 
 export interface SlashCommandMatch {
   /** The command with its leading slash, e.g. `/clean`. */

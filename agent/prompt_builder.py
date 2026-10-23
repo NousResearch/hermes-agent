@@ -292,7 +292,7 @@ KANBAN_GUIDANCE = (
     "implementation phase is done, and completion is what releases those children. Never sticky-block that parent for "
     "`review-required` and never request same-card review as well — either choice would strand or duplicate the "
     "downstream lane. Otherwise, when this same task needs review before it is final, call "
-    "`kanban_request_review(summary=..., metadata=..., reviewer=<optional-profile>)`. The reviewer approves with "
+    "`kanban_request_review(summary=..., metadata=..., reviewer=\"cursor-reviewer\")`. The reviewer approves with "
     "`kanban_complete`, returns actionable rework with `kanban_request_changes`, or uses `kanban_block` only for a "
     "genuine external escalation. Review is not a block, so repeated review cycles do not trip unblock-loop "
     "detection.\n"

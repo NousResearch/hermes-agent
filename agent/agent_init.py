@@ -1129,8 +1129,21 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # owning a task.
     from agent.delegation_context import owned_kanban_task
     from agent.prompt_builder import KANBAN_GUIDANCE
+    # The default reviewer is config-driven: ``kanban.default_reviewer``
+    # overrides the literal default embedded in KANBAN_GUIDANCE. This keeps the
+    # routing a config concern (survives source updates) rather than a hardcode.
+    _guidance = KANBAN_GUIDANCE
+    try:
+        from hermes_cli.config import load_config_readonly
+        _reviewer = ((load_config_readonly() or {}).get("kanban") or {}).get("default_reviewer")
+        if _reviewer:
+            _guidance = KANBAN_GUIDANCE.replace(
+                'reviewer="cursor-reviewer"', f'reviewer="{_reviewer}"'
+            )
+    except Exception:
+        pass
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
+        _guidance if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
     )
     if agent.quiet_mode:
         return

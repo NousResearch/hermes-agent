@@ -2731,9 +2731,53 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+def _profile_executor_command(hermes_home: Optional[str]) -> Optional[list[str]]:
+    """Resolve a thin-dispatcher profile's ``kanban.executor_command`` to argv.
+
+    When a profile configures ``kanban.executor_command`` (e.g. the Cursor
+    cloud delegation profiles), the dispatcher runs that command directly —
+    with the same ``HERMES_KANBAN_*`` env the worker would get — instead of
+    spawning an LLM worker that then has to follow a SOUL to reach the script.
+    The executor is responsible for its own terminal kanban transition (via
+    ``hermes kanban complete``/``block``/``request-review``, which inherit the
+    claim lock and run id from env) and then exiting 0.
+
+    Returns ``None`` when the profile has no executor configured, so the
+    default LLM-worker path is unchanged.
+    """
+    if not hermes_home:
+        return None
+    cfg_path = Path(hermes_home) / "config.yaml"
+    if not cfg_path.is_file():
+        return None
+    try:
+        import shlex
+
+        import yaml
+
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        cmd = (cfg.get("kanban") or {}).get("executor_command")
+        if isinstance(cmd, str) and cmd.strip():
+            return shlex.split(cmd)
+    except Exception:
+        # A malformed/unreadable profile config must not break spawning —
+        # fall back to the default LLM worker.
+        return None
+    return None
+
+
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
-    """The profile owner executes; this subprocess only waits for its receipt."""
+    """The profile owner executes; this subprocess only waits for its receipt.
+
+    Thin-dispatcher profiles configured with ``kanban.executor_command`` run
+    that command directly instead of the LLM worker client.
+    """
     import sys
+
+    executor = _profile_executor_command(hermes_home)
+    if executor:
+        return executor
     return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
 
 

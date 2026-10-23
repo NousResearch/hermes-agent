@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import coerce_plaintext_gateway_command, resolve_channel_prompt
+from gateway.platforms.base import coerce_plaintext_gateway_command, resolve_channel_prompt, resolve_channel_skills
 from gateway.platforms.event import MessageEvent
 from gateway.session_identity import replace_source
 
@@ -77,5 +77,17 @@ def apply_topic_prompt_inputs(adapter: Any, event: MessageEvent) -> None:
     chat_id = str(source.chat_id)
     topic = adapter._get_dm_topic_info(chat_id, source.thread_id) or {}
     event.source = replace_source(source, chat_topic=topic.get("name"))
-    event.auto_skill = topic.get("skill")
+    event.auto_skill = resolve_auto_skill(adapter.config.extra, chat_id, source.chat_type, topic.get("skill"))
     event.channel_prompt = resolve_channel_prompt(adapter.config.extra, source.thread_id, chat_id)
+
+
+def resolve_auto_skill(
+        extra: dict, chat_id: str, chat_type: str, topic_skill: Optional[str]) -> Optional[str | list[str]]:
+    """The skill(s) a message auto-loads: its topic's skill, led by the DM's chat-wide
+    ``channel_skill_bindings`` when the chat has one. Groups keep their topic skill alone. Every path
+    that places a message in a topic resolves through here, so a recovered or transferred DM turn
+    loads the same skills as one sent inside the topic."""
+    chat_skills = resolve_channel_skills(extra, chat_id) if chat_type == "dm" else None
+    if not chat_skills:
+        return topic_skill
+    return chat_skills + [topic_skill] if topic_skill and topic_skill not in chat_skills else chat_skills

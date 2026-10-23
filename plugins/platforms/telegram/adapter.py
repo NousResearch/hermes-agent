@@ -1157,23 +1157,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
         cls, error: Exception, metadata: Optional[dict[str, Any]], reply_to_message_id: Optional[int]) -> bool:
-        """True when a DM-topic send should be retried with routing stripped: (1) stale anchor — reply
-        target deleted; (2) anchor-less synthetic send whose ``direct_messages_topic_id`` Bot API rejects.
-
-        2. The synthetic-event case (added when #27937 introduced ``direct_messages_topic_id`` fallback for
-        sends without an anchor): if Bot API rejects the topic id itself with any BadRequest that mentions
-        topic/thread routing, we retry without routing rather than dropping the message.
-        """
+        """True when a DM-topic send may drop a deleted reply anchor and keep its route."""
         if not cls._dm_topic_fallback(metadata) or not cls._is_bad_request_error(error):
             return False
         err_lower = str(error).lower()
-        if reply_to_message_id is not None and "message to be replied not found" in err_lower:
+        if reply_to_message_id is not None and (
+            "message to be replied not found" in err_lower or "reply message not found" in err_lower
+        ):
             return True
-        if not metadata.get("direct_messages_topic_id"):  # topic id rejected → plain DM send
-            return False
-        topic_markers = (
-            "direct_messages_topic", "message thread not found", "thread not found", "topic_closed", "topic_deleted", "topic not found")
-        return any(marker in err_lower for marker in topic_markers)
+        return False
 
     async def _send_with_dm_topic_reply_anchor_retry(
         self, send_fn: Any, send_kwargs: dict[str, Any], metadata: Optional[dict[str, Any]],
@@ -1188,13 +1180,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
                     raise
                 logger.warning(
-                    "[%s] Reply target deleted for Telegram %s, retrying without reply/topic anchor: %s",
+                    "[%s] Reply target deleted for Telegram %s, retrying without reply anchor: %s",
                     self.name, media_label, _redact_telegram_error_text(send_err))
                 if reset_media is not None:
                     reset_media()
                 retry_kwargs = dict(send_kwargs)
                 retry_kwargs["reply_to_message_id"] = None
-                retry_kwargs.pop("message_thread_id", None)
                 retry_kwargs.pop("direct_messages_topic_id", None)
                 return await _await_with_thread_deadline(
                     send_fn(**retry_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
@@ -3995,11 +3986,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     reply_to_message_id=reply_to_id, **thread_kwargs, **base),
                     timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
             except Exception as send_err:
-                if "reply message not found" in str(send_err).lower():
-                    # Private DM topic fallback needs anchor + topic id together; forum topics keep thread id.
-                    retry_thread_kwargs = (
-                        {} if self._dm_topic_fallback(metadata)
-                        else self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=None))
+                if any(marker in str(send_err).lower() for marker in (
+                    "message to be replied not found", "reply message not found")):
+                    retry_thread_kwargs = self._thread_kwargs_for_send(
+                        chat_id, thread_id, metadata, reply_to_message_id=None)
                     try:
                         return await _await_with_thread_deadline(
                             self._bot.send_message(
@@ -4131,7 +4121,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 return SendResult(success=False, error=_redact_telegram_error_text(e))
         return SendResult(success=False, error="draft_rejected")
 
-    async def _send_message_with_thread_fallback(self, **kwargs):
+    async def _send_message_with_thread_fallback(self, *, private_topic_route: bool = False, **kwargs):
         """Send a control-style message (approval prompts, pickers), retrying once without
         message_thread_id on 'Message thread not found' (stale thread_id); ``send`` has its own.
 
@@ -4147,6 +4137,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 self._bot.send_message(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         except Exception as send_err:
             if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
+                if private_topic_route:
+                    raise
                 logger.warning(
                     "[%s] Thread %s not found for control message, retrying without message_thread_id", self.name, message_thread_id)
                 # Same prune as the streaming send path; control sends carry no gateway metadata.
@@ -4169,7 +4161,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         kwargs["reply_to_message_id"] = reply_to_id
         kwargs.update(self._thread_kwargs_for_send(
             chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=reply_to_mode))
-        return await self._send_message_with_thread_fallback(**kwargs)
+        return await self._send_message_with_thread_fallback(
+            private_topic_route=self._dm_topic_fallback(metadata), **kwargs)
 
     async def _send_prompt(self, what: str, chat_id: str, metadata: Optional[dict[str, Any]], build, *,
                            parse_mode: Any = None, thread_id: Any = None, reply_to_mode: Any = None) -> SendResult:
@@ -4829,7 +4822,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                         str(
                             query.message.chat_id
                         ), str(thread_id), meta, reply_to_message_id=reply_to_id, reply_to_mode=self._reply_to_mode))
-                await self._send_message_with_thread_fallback(**send_kwargs)
+                await self._send_message_with_thread_fallback(
+                    private_topic_route=is_private_chat and thread_id is not None, **send_kwargs)
         except Exception as exc:
             logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
 

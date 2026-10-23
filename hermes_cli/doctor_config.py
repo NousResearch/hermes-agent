@@ -558,12 +558,19 @@ def _check_xai_retirement(should_fix: bool, f: Finding) -> None:
 @doctor_check("Session reset check skipped", "({e})")
 def _check_retired_session_reset(should_fix: bool, f: Finding) -> None:
     from hermes_cli.config_effective import load_user_config_effective
-    from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
+    from hermes_cli.session_reset_retirement import (
+        PLUGIN_NAME, format_notice, reset_plugin_enabled, retired_reset_policy,
+    )
     found = retired_reset_policy(load_user_config_effective())
     if found is None:
         check_ok("No idle/daily session_reset policy configured")
     elif reset_plugin_enabled():
-        check_ok(f"{found[0]}.mode: {found[1]} is applied by the session reset plugin")
+        from hermes_cli.profiles import get_active_profile_name
+        check_ok(f"{found[0]}.mode: {found[1]}: {PLUGIN_NAME} is enabled in profile "
+                 f"'{get_active_profile_name() or 'default'}'")
+        check_info("That is plugin enablement, not a verified reset: the plugin runs on "
+                   "gateway-dispatched messages, and local CLI/TUI/Desktop turns never fire "
+                   "pre_gateway_dispatch, so their sessions are not covered")
     else:
         check_warn(format_notice(*found))
         f.manual_issues.append(format_notice(*found))

@@ -18,6 +18,9 @@ from tools.environments.local import LocalEnvironment
 from tools.file_tools import clear_file_ops_cache
 from tools.registry import registry
 
+# The host fast path is POSIX-only (``_native_read_enabled``); Windows always takes the shell path.
+pytestmark = pytest.mark.platforms("posix")
+
 
 class _MountedViewEnv(LocalEnvironment):
     """Commands see ``real`` at ``view``; the host sees only ``real``."""
@@ -44,6 +47,7 @@ def _dispatch(name, task_id, **arguments):
 @pytest.fixture
 def mounted(tmp_path, monkeypatch, request):
     """``(env, view, real, task_id)`` with the env active for the task; ``a.txt`` holds two lines."""
+    monkeypatch.delenv("HERMES_NATIVE_FILE_READ", raising=False)  # the fast path at its default: on
     view, real = tmp_path / "view", tmp_path / "real"
     real.mkdir()
     (real / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")

@@ -25,9 +25,12 @@ use ``build_editable``, which does NOT call ``bdist_wheel`` — it calls
 """
 
 import os
+import importlib.util
+from pathlib import Path
 
 from setuptools import setup
 from setuptools.command.sdist import sdist
+from setuptools.command.build_py import build_py
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -46,14 +49,36 @@ _BLOCK_MESSAGE = (
 )
 
 
+def _metadata_helpers():
+    spec = importlib.util.spec_from_file_location(
+        "_hermes_source_revision", Path(_ROOT) / "hermes_cli" / "source_revision.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _BuildPythonWithMetadata(build_py):
+    def run(self):
+        helpers = _metadata_helpers()
+        revision = helpers.resolve_build_source_revision(_ROOT, os.environ.get("HERMES_GIT_SHA"))
+        super().run()
+        helpers.write_build_metadata(self.build_lib, revision)
+
+
 class _GuardedSdist(sdist):
     def run(self, *args, **kwargs):
         if not _IN_NIX_BUILD:
             raise RuntimeError(_BLOCK_MESSAGE)
         return super().run(*args, **kwargs)
 
+    def make_release_tree(self, base_dir, files):
+        helpers = _metadata_helpers()
+        revision = helpers.resolve_build_source_revision(_ROOT, os.environ.get("HERMES_GIT_SHA"))
+        super().make_release_tree(base_dir, files)
+        helpers.write_build_metadata(base_dir, revision)
 
-cmdclass = {"sdist": _GuardedSdist}
+
+cmdclass = {"sdist": _GuardedSdist, "build_py": _BuildPythonWithMetadata}
 
 # bdist_wheel is only available when the `wheel` package is installed.
 # setuptools.build_meta.build_wheel() calls it internally, so the guard

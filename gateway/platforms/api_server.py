@@ -1,3 +1,6 @@
+# health: allow FILE_LINES -- attribution fix for #84207: the session-stream drain must name the
+# client as the interrupt issuer, so the turn's exit reason stops reading ``interrupted_by_user``;
+# the added lines are a ``tool_reason`` argument and its rationale at that existing chokepoint
 """OpenAI-compatible API server platform adapter (aiohttp).
 
 Serves /v1/chat/completions, /v1/responses, /v1/models, /v1/capabilities, /api/sessions,
@@ -3251,7 +3254,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     await task
             return
         with suppress(Exception):
-            agent.interrupt(interrupt_message)
+            # The client is the issuer, not the user: without a ``tool_reason`` this books as a
+            # user stop and the turn's exit reason says ``interrupted_by_user`` (#84207). The
+            # sibling SSE path already names its issuer this way.
+            agent.interrupt(interrupt_message, tool_reason=interrupt_message.lower())
         if not task.done():
             with suppress(Exception):
                 await (asyncio.shield(task) if shield_wait else task)

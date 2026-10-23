@@ -208,6 +208,10 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
             if emitter is not None:
                 exit_single_query(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
+            # A quiet one-shot run has no result record to carry the reason: the turn ended with
+            # no reply and the user is left with a bare exit code (#84207). Say so on stderr; stdout
+            # stays byte-identical for the reply stream.
+            print("Turn interrupted.", file=sys.stderr, flush=True)
             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
             exit_single_query(130)
         # The exit line below reports session_id to stderr for automation wrappers;

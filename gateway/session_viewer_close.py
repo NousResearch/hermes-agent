@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 import uuid
 from functools import partial
 from pathlib import Path
@@ -52,6 +53,8 @@ _RESET_REASONS = frozenset({'new_session', 'tui_close'})
 # Ends nobody asked for (#143547 LC-35/LC-37): the last viewer vanished without closing (a killed
 # terminal, a dropped socket), or the previous gateway stopped under it. Both stay resumable.
 ORPHAN_REASONS = frozenset({'ws_orphan_reap', 'startup_orphan_reap'})
+# The legacy startup sweep's session TTL (tui_gateway ``_SESSION_TTL_S``): see arm_startup_orphan_closes.
+STARTUP_IDLE_S = 6 * 3600.0
 
 
 class _PendingClose:
@@ -162,19 +165,36 @@ def rearm_persisted_closes(authority):
     return armed
 
 
-def orphan_close_grace(authority):
-    """Blocking: ``sessions.orphan_end_grace_s`` of the profile that owns *authority*'s store (0 = never)."""
+def _seconds(raw, default):
+    with contextlib.suppress(ValueError, TypeError):
+        return max(0.0, float(raw))
+    return default
+
+
+def _section(config, key):
+    value = config.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def orphan_close_grace(authority, *, startup=False):
+    """Blocking: ``sessions.orphan_end_grace_s`` of the profile that owns *authority*'s store (0 = never).
+    Unset, the legacy backend's switches for the same reaping still opt out: ``dashboard.
+    ws_orphan_reap_grace_s: 0`` (park forever) and, for *startup* arms, ``startup_orphan_sweep: false``."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_cli.config_effective import load_user_config_effective
     from gateway.session_local import profile_env_scope
+    from utils import is_truthy_value
     default = DEFAULT_CONFIG['sessions']['orphan_end_grace_s']
     home = Path(authority.db.db_path).resolve().parent
     # A dropped socket detaches outside the RPC's owner scope: expand ``${VAR}`` against this profile.
     with profile_env_scope(home):
         config = load_user_config_effective(home / 'config.yaml')
-    with contextlib.suppress(ValueError, TypeError, AttributeError):
-        return max(0.0, float((config.get('sessions') or {}).get('orphan_end_grace_s', default)))
-    return default
+    sessions, dashboard = _section(config, 'sessions'), _section(config, 'dashboard')
+    if 'orphan_end_grace_s' in sessions:
+        return _seconds(sessions['orphan_end_grace_s'], default)
+    legacy_off = _seconds(dashboard.get('ws_orphan_reap_grace_s'), default) == 0 or (
+        startup and not is_truthy_value(dashboard.get('startup_orphan_sweep'), default=True))
+    return 0.0 if legacy_off else default
 
 
 def orphan_candidate(authority, session_id):
@@ -215,14 +235,25 @@ async def arm_detached_orphan_close(authority, session_id):
     arm_orphan_close(authority, session_id, 'ws_orphan_reap', await asyncio.to_thread(grace))
 
 
+def _idle_s(authority, session_id):
+    from hermes_state_common import _sql_session_last_active
+    with authority.db._read_ctx() as conn:
+        row = conn.execute(f'SELECT {_sql_session_last_active("s")} FROM sessions s WHERE s.id = ?',
+                           (_physical_target(authority, session_id),)).fetchone()
+    return time.time() - row[0] if row and row[0] else 0.0
+
+
 def arm_startup_orphan_closes(authority, session_ids):
     """Boot, after the stored closes are re-armed: the previous owner stopped under these sessions
     (idle, or with input it left queued), so no viewer is left to close them (#143547 LC-37). One
-    that reattaches keeps it open; a fired close still waits for the queued input to settle."""
-    grace = orphan_close_grace(authority)
+    that reattaches keeps it open; a fired close still waits for the queued input to settle.
+    An idle classic CLI only redials on its next call, so a session idle less than the legacy
+    sweep's TTL waits out the rest of it, as that sweep did, before its grace starts to count."""
+    grace = orphan_close_grace(authority, startup=True)
     for session_id in session_ids:
-        if session_id not in authority.pending_closes and orphan_candidate(authority, session_id):
-            arm_orphan_close(authority, session_id, 'startup_orphan_reap', grace)
+        if grace and session_id not in authority.pending_closes and orphan_candidate(authority, session_id):
+            delay = max(grace, STARTUP_IDLE_S - _idle_s(authority, session_id))
+            arm_orphan_close(authority, session_id, 'startup_orphan_reap', delay)
 
 
 def cancel_orphan_close(authority, session_id):

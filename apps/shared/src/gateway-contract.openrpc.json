@@ -10362,6 +10362,21 @@
             "title": "Prompts",
             "type": "array"
           },
+          "open_requests": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenRequestEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Requests"
+          },
           "info": {
             "$ref": "#/components/schemas/CanonicalSnapshotInfo"
           },

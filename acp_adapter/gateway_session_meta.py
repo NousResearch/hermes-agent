@@ -12,11 +12,15 @@ from pathlib import Path
 import sqlite3
 
 from acp.schema import (
-    AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionInfoUpdate, SessionMode, SessionModeState,
-    SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
+    AvailableCommand, AvailableCommandsUpdate, SessionConfigOptionSelect, SessionConfigSelectOption,
+    SessionInfoUpdate, SessionMode, SessionModeState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
-from acp_adapter.modes import DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_TO_MODE, MODES
+from acp_adapter.modes import (
+    DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID,
+    EDIT_APPROVAL_POLICY_TO_MODE, MODES, MODE_TO_EDIT_APPROVAL_POLICY,
+)
+from acp_adapter.model_catalog import MODEL_CONFIG_ID
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +71,7 @@ def session_modes(info: dict | None = None) -> SessionModeState:
         SessionMode(id=mode, name=name, description=description) for mode, (_p, name, description) in MODES.items()])
 
 
-def model_state(info: dict) -> SessionModelState | None:
+def model_state(info: dict) -> SessionConfigOptionSelect | None:
     """The picker for the session's model (``session.info``), from the shared inventory; a single
     current-model row when nothing is listable, as main's ``_build_model_state``. Blocking."""
     from acp_adapter.auth import detect_provider
@@ -84,7 +88,23 @@ def model_state(info: dict) -> SessionModelState | None:
     if not model:
         return None
     choice = encode_model_choice(provider, model)
-    return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+    return SessionConfigOptionSelect(
+        id=MODEL_CONFIG_ID, name="Model", description="Active provider and model for the session.",
+        category="model_config", type="select", current_value=choice,
+        options=[SessionConfigSelectOption(value=choice, name=model)],
+    )
+
+
+def session_config_options(info: dict) -> list[SessionConfigOptionSelect]:
+    """Every selector, from the owner's committed model and edit policy. Blocking catalog read."""
+    model = model_state(info)
+    approval = SessionConfigOptionSelect(
+        id=EDIT_APPROVAL_POLICY_CONFIG_ID, name="Edit approval", category="mode", type="select",
+        current_value=MODE_TO_EDIT_APPROVAL_POLICY[current_mode(info)],
+        options=[SessionConfigSelectOption(value=policy, name=name, description=description)
+                 for policy, name, description in MODES.values()],
+    )
+    return [model, approval] if model is not None else [approval]
 
 
 def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict | None:

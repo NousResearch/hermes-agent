@@ -25,7 +25,17 @@ async def _reply(acp, sid, text):
     return ''.join(update['content']['text'] for update in _updates(acp, sid, 'agent_message_chunk', start))
 
 
-@pytest.mark.platforms('linux')
+def _selectors(result):
+    assert 'models' not in result, result
+    options = {option['id']: option for option in result['configOptions']}
+    assert set(options) == {'model', 'edit_approval_policy'}, result
+    assert options['model']['category'] == 'model_config'
+    assert options['edit_approval_policy']['category'] == 'mode'
+    assert all(option['type'] == 'select' for option in options.values())
+    return options
+
+
+@pytest.mark.platforms('posix')
 @pytest.mark.asyncio
 async def test_new_session_carries_picker_modes_provenance_and_commands(daemon, tmp_path):
     async with editor(daemon, tmp_path) as acp:
@@ -33,7 +43,8 @@ async def test_new_session_carries_picker_modes_provenance_and_commands(daemon, 
         created = await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[])
         result = created['result']
         sid = result['sessionId']
-        assert 'local-wire-stub' in result['models']['currentModelId'], result
+        model = _selectors(result)['model']['currentValue']
+        assert 'local-wire-stub' in model, result
         assert result['modes']['currentModeId'] == 'default', result
         assert result['_meta']['hermes']['sessionProvenance']['acpSessionId'] == sid, result
         await async_wait_until(lambda: _updates(acp, sid, 'available_commands_update'))
@@ -43,12 +54,26 @@ async def test_new_session_carries_picker_modes_provenance_and_commands(daemon, 
 
         # Selecting the advertised mode / the owner's own edit policy never fails the editor.
         assert 'result' in await acp.rpc('session/set_mode', sessionId=sid, modeId='default')
-        assert 'result' in await acp.rpc('session/set_config_option', sessionId=sid,
-                                         configId='edit_approval_policy', value='ask')
+        changed = await acp.rpc('session/set_config_option', sessionId=sid,
+                                configId='edit_approval_policy', value='workspace_session')
+        assert _selectors(changed['result'])['edit_approval_policy']['currentValue'] == 'workspace_session'
+        picked = await acp.rpc('session/set_config_option', sessionId=sid, configId='model', value=model)
+        assert _selectors(picked['result'])['model']['currentValue'] == model
+        assert _selectors(picked['result'])['edit_approval_policy']['currentValue'] == 'workspace_session'
+        for config_id in ('model', 'edit_approval_policy'):
+            refused = await acp.rpc('session/set_config_option', sessionId=sid, configId=config_id, value=False)
+            assert refused['error']['code'] == -32602, refused
 
         loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
-        assert loaded['result']['modes']['currentModeId'] == 'default', loaded
-        assert 'local-wire-stub' in loaded['result']['models']['currentModelId'], loaded
+        assert loaded['result']['modes']['currentModeId'] == 'accept_edits', loaded
+        assert _selectors(loaded['result'])['model']['currentValue'] == model
+        # Forks deliberately start at Default; resumes keep the owner's existing policy.
+        for method, policy, mode in (('session/resume', 'workspace_session', 'accept_edits'),
+                                     ('session/fork', 'ask', 'default')):
+            attached = await acp.rpc(method, sessionId=sid, cwd=str(tmp_path), mcpServers=[])
+            assert _selectors(attached['result'])['model']['currentValue'] == model
+            assert _selectors(attached['result'])['edit_approval_policy']['currentValue'] == policy
+            assert attached['result']['modes']['currentModeId'] == mode
 
 
 @pytest.mark.platforms('linux')

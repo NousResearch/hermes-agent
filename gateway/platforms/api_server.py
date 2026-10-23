@@ -68,8 +68,8 @@ _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
-    "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
-    "reasoning_streaming": True,
+    "session_chat_streaming": True, "session_fork": True, "session_rewind": True,
+    "session_model_lock": True, "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -94,6 +94,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_delete", ("DELETE", "/api/sessions/{session_id}")),
     ("session_messages", ("GET", "/api/sessions/{session_id}/messages")),
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
+    ("session_rewind", ("POST", "/api/sessions/{session_id}/rewind")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
     ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
@@ -1159,6 +1160,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # which is per request -> unbounded). Recovers a transient empty model resolution.
         self._last_resolved_model: dict[str, str] = {}
         self._session_db_lock: Optional[asyncio.Lock] = None  # single-flight for lazy init
+        # Coordinates rewind admission with /v1/runs queued registration and
+        # session-chat turns so a run cannot slip in between the rewind busy
+        # check and SessionDB.rewind_to_message.
+        self._session_rewind_admission_lock = asyncio.Lock()
+        self._sessions_rewinding: set[str] = set()
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
         self._history_tool_output_max_chars = self._resolve_api_server_int(
             "history_tool_output_max_chars", default=0)
@@ -1668,6 +1674,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
+            ("POST", "/api/sessions/{session_id}/rewind", self._handle_rewind_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
@@ -2992,6 +2999,100 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None, _error_response(f"Session not found: {session_id}", 404, code="session_not_found")
         return session, None
 
+    _ACTIVE_RUN_STATUSES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
+
+    def _session_has_active_run(self, session_id: str) -> bool:
+        """True when a /v1/runs job for *session_id* is still in flight."""
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return False
+        for status in self._run_statuses.values():
+            if not isinstance(status, dict):
+                continue
+            if status.get("session_id") != session_id:
+                continue
+            if status.get("status") in self._ACTIVE_RUN_STATUSES:
+                return True
+        return False
+
+    @staticmethod
+    def _session_ids_for_rewind_guard(session_id: str, resolved_id: str) -> tuple[str, ...]:
+        """Distinct non-empty session ids that share one rewind admission slot."""
+        ids: list[str] = []
+        for raw in (session_id, resolved_id):
+            sid = str(raw or "").strip()
+            if sid and sid not in ids:
+                ids.append(sid)
+        return tuple(ids)
+
+    async def _begin_session_rewind_guard(
+        self,
+        session_ids: tuple[str, ...],
+    ) -> Optional[web.Response]:
+        """Reserve *session_ids* for rewind; reject active runs or concurrent rewind."""
+        async with self._session_rewind_admission_lock:
+            for sid in session_ids:
+                if self._session_has_active_run(sid):
+                    return _error_response(
+                        "Session has an active run; stop or wait before rewind",
+                        409,
+                        code="session_busy",
+                    )
+                if sid in self._sessions_rewinding:
+                    return _error_response(
+                        "Session rewind is already in progress",
+                        409,
+                        code="session_rewind_in_progress",
+                    )
+            for sid in session_ids:
+                self._sessions_rewinding.add(sid)
+        return None
+
+    async def _end_session_rewind_guard(self, session_ids: tuple[str, ...]) -> None:
+        async with self._session_rewind_admission_lock:
+            for sid in session_ids:
+                self._sessions_rewinding.discard(sid)
+
+    async def _session_rewind_blocked_response(self, session_id: str) -> Optional[web.Response]:
+        """409 when a rewind mutation is in flight for *session_id*."""
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return None
+        async with self._session_rewind_admission_lock:
+            if session_id not in self._sessions_rewinding:
+                return None
+        return _error_response(
+            "Session rewind is in progress",
+            409,
+            code="session_rewind_in_progress",
+        )
+
+    async def _admit_run_for_session(
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        created_at: float,
+        model: str,
+    ) -> Optional[web.Response]:
+        """Register a queued /v1/runs job without racing session rewind."""
+        session_id = str(session_id or "").strip()
+        async with self._session_rewind_admission_lock:
+            if session_id and session_id in self._sessions_rewinding:
+                return _error_response(
+                    "Session rewind is in progress",
+                    409,
+                    code="session_rewind_in_progress",
+                )
+            self._set_run_status(
+                run_id,
+                "queued",
+                created_at=created_at,
+                session_id=session_id,
+                model=model,
+            )
+        return None
+
     async def _conversation_history_for_session(self, session_id: str) -> list[dict[str, Any]]:
         db = await self._ensure_session_db_async()
         if db is None:
@@ -3257,6 +3358,78 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "returned": len(messages)}})
 
     @_require_auth
+    async def _handle_rewind_session(self, request: web.Request) -> web.Response:
+        """POST /api/sessions/{session_id}/rewind — soft-delete from a user message onward.
+
+        Wraps ``SessionDB.rewind_to_message`` (same primitive as gateway/CLI
+        ``/undo``): the target must be a ``user`` row; it and every later
+        message become ``active=0`` (kept for audit, hidden from subsequent
+        history loads). Callers that need regenerate then issue a normal
+        ``POST /v1/runs`` with the same ``session_id`` and user input.
+
+        Body: ``{"target_message_id": <int>}`` — id from GET .../messages.
+        Rejects with 409 when a /v1/runs job for this session is still active
+        or a rewind mutation is already in flight for this session.
+        This endpoint only mutates SessionDB; it does not sync in-memory
+        Desktop/TUI live history.
+        """
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        raw_target = body.get("target_message_id")
+        if raw_target is None:
+            return _error_response(
+                "target_message_id is required", 400, code="invalid_target_message_id")
+        try:
+            target_message_id = int(raw_target)
+        except (TypeError, ValueError):
+            return _error_response(
+                "target_message_id must be an integer", 400, code="invalid_target_message_id")
+
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return self._session_db_unavailable()
+        # Match GET /messages: resolve resume lineage so ids from that listing
+        # address the same transcript row set.
+        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        resolved = await asyncio.to_thread(db.get_session, resolved_id)
+        if not resolved:
+            return _error_response(
+                f"Session not found: {session_id}", 404, code="session_not_found")
+
+        guard_ids = self._session_ids_for_rewind_guard(session_id, resolved_id)
+        guard_err = await self._begin_session_rewind_guard(guard_ids)
+        if guard_err:
+            return guard_err
+
+        try:
+            try:
+                result = await asyncio.to_thread(
+                    db.rewind_to_message, resolved_id, target_message_id)
+            except ValueError as exc:
+                return _error_response(str(exc), 400, code="invalid_rewind_target")
+
+            target_message = result.get("target_message") or {}
+            if isinstance(target_message, dict):
+                target_message = self._message_response(target_message)
+
+            return web.json_response({
+                "object": "hermes.session.rewind",
+                "ok": True,
+                "session_id": resolved_id,
+                "rewound_count": result.get("rewound_count", 0),
+                "target_message": target_message,
+                "new_head_id": result.get("new_head_id"),
+            })
+        finally:
+            await self._end_session_rewind_guard(guard_ids)
+
+    @_require_auth
     async def _handle_fork_session(self, request: web.Request) -> web.Response:
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         source_id = request.match_info["session_id"]
@@ -3364,6 +3537,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # request path (/api/sessions/{session_id}/chat) — so a wake self-post lands where
             # the client will read it. The audited native-session opt-in.
             session_history_delivery="1", **agent_overrides)
+        rewind_err = await self._session_rewind_blocked_response(session_id)
+        if rewind_err is not None:
+            return None, rewind_err
         return {
             "gateway_session_key": gateway_session_key, "session_id": session_id, "body": body,
             "user_message": user_message, "runtime_request": runtime_request,

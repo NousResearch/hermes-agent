@@ -805,8 +805,15 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     q = self._run_streams[run_id] = _RunStream()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
-    initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+    # Atomic with session rewind: refuse queued registration while rewind holds the slot.
+    admit_err = await self._admit_run_for_session(
+        run_id, session_id, created_at=created_at, model=body.get("model", self._model_name))
+    if admit_err is not None:
+        _forget_run(
+            self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+            self._run_statuses, self._run_owners)
+        return admit_err
+    initial_status = self._run_statuses[run_id]
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,

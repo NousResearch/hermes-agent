@@ -50,7 +50,28 @@ _MAGIC_MIME_TYPES = (
 
 
 def _determine_mime_type(image_path: Path) -> str:
-    """MIME type from file extension (defaults to image/jpeg)."""
+    """MIME type for an image file: the bytes decide, the extension is only a hint.
+
+    Extensions lie. A capture helper that writes JPEG bytes into ``shot.png`` (or a CDP
+    screenshot saved with the wrong name) makes the payload claim ``image/png`` while carrying
+    JPEG bytes, and Anthropic rejects that outright: "The image was specified using the
+    image/png media type, but the image appears to be a image/jpeg image". Sniff the magic
+    bytes first with the same resolver the attachment path uses
+    (:func:`_detect_image_mime_type_from_bytes`), then fall back to the extension map, then to
+    ``image/jpeg``.
+    """
+    try:
+        with open(image_path, "rb") as fh:
+            head = fh.read(64)
+            # The PNG branch of the sniffer verifies the container with Pillow, so it needs the
+            # whole file; every other format is decided by the first bytes alone.
+            if head.startswith(b"\x89PNG\r\n\x1a\n"):
+                head += fh.read()
+    except OSError:
+        return _EXTENSION_MIME_TYPES.get(image_path.suffix.lower(), "image/jpeg")
+    sniffed = _detect_image_mime_type_from_bytes(head) if head else None
+    if sniffed:
+        return sniffed
     return _EXTENSION_MIME_TYPES.get(image_path.suffix.lower(), "image/jpeg")
 
 

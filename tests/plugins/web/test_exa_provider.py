@@ -102,6 +102,21 @@ def test_lite_search_drops_max_age_hours(exa):
     }
 
 
+@pytest.mark.parametrize("configured", [None, "auto", "lite", "deep-lite"])
+def test_depth_overrides_the_configured_type(exa, configured):
+    """standard keeps web.exa.type; quick is lite (dropping max_age_hours, which lite rejects); deep is deep."""
+    from plugins.web.exa.provider import ExaWebSearchProvider
+
+    exa.config = {"exa": {"max_age_hours": 24, **({"type": configured} if configured else {})}}
+    sent = {}
+    for depth in ("standard", "quick", "deep"):
+        assert ExaWebSearchProvider().search("q", 5, depth=depth)["success"]
+        sent[depth] = exa.calls[-1][2]
+    assert sent["standard"] == _search(exa, max_age_hours=24, **({"type": configured} if configured else {}))
+    assert sent["quick"] == {"num_results": 5, "contents": {"highlights": True}, "type": "lite"}
+    assert sent["deep"] == {"num_results": 5, "contents": {"highlights": True, "max_age_hours": 24}, "type": "deep"}
+
+
 @pytest.mark.parametrize("bad", [721, -2, "24", True])
 def test_invalid_max_age_hours_is_ignored(exa, bad):
     assert _search(exa, max_age_hours=bad)["contents"] == {"highlights": True}

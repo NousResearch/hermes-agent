@@ -9,6 +9,9 @@ beta), ``max_age_hours`` (-1..720, Exa's content cache age, applied only when a 
 not sent on ``lite`` searches, which reject it), ``extract_max_characters`` (1..1,000,000, Exa's
 ``text.maxCharacters`` for extract). The extract cap cuts the page at Exa, before Hermes truncation:
 text past it never reaches the head+tail window, the stored copy or a larger ``char_limit``.
+
+``web_search(depth=...)`` on the keyed path: quick sends ``type: lite``, deep sends ``type: deep``,
+standard keeps ``web.exa.type``. The keyless tier has no type option and ignores depth.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ logger = logging.getLogger(__name__)
 _MISSING_KEY = "EXA_API_KEY environment variable not set. Get your API key at https://exa.ai"
 
 _SEARCH_TYPES = ("auto", "lite", "fast", "deep-lite", "deep")
+_DEPTH_TYPES = {"quick": "lite", "deep": "deep"}  # web_search depth -> Exa search type
 # Exa-Beta token for Dynamic Highlights (https://exa.ai/docs/search/highlights).
 _DYNAMIC_HIGHLIGHTS_BETA = "dynamic-highlights-2026-08-28"
 _MAX_TEXT_CHARACTERS = 1_000_000  # Exa's ceiling for text.maxCharacters
@@ -53,9 +57,9 @@ def _max_age_hours(cfg: dict[str, Any]) -> int | None:
     return _int_setting(cfg, "max_age_hours", -1, 720)
 
 
-def _search_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
+def _search_kwargs(cfg: dict[str, Any], depth: str = "standard") -> dict[str, Any]:
     """Keyword arguments for ``Exa.search`` beyond the query and result count."""
-    search_type = str(cfg.get("type") or "auto").strip().lower()
+    search_type = _DEPTH_TYPES.get(depth) or str(cfg.get("type") or "auto").strip().lower()
     if search_type not in _SEARCH_TYPES:
         logger.warning("Ignoring web.exa.type=%r: expected one of %s", cfg.get("type"), ", ".join(_SEARCH_TYPES))
         search_type = "auto"
@@ -106,12 +110,15 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
     EXTRACT = True
     KEYLESS = True
 
-    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+    def supports_search_depth(self) -> bool:
+        return not use_keyless("exa", provider_env("EXA_API_KEY"))
+
+    def search(self, query: str, limit: int = 5, depth: str = "standard") -> dict[str, Any]:
         def _body() -> dict[str, Any]:
             if use_keyless("exa", provider_env("EXA_API_KEY")):
                 return keyless_search("Exa", "exa", query, limit, logger)
             logger.info("Exa search: '%s' (limit=%d)", query, limit)
-            response = _get_exa_client().search(query, num_results=limit, **_search_kwargs(_exa_config()))
+            response = _get_exa_client().search(query, num_results=limit, **_search_kwargs(_exa_config(), depth))
             return search_ok([
                 web_hit(r.url or "", r.title or "", " ".join(r.highlights or []), i + 1)
                 for i, r in enumerate(response.results or [])

@@ -27,6 +27,9 @@ gateway serves to any Nous identity (paid, unpaid or anonymous guest); a direct 
 takes precedence.
 Managed extract stays on Firecrawl.
 
+``web_search(depth="quick")`` with a direct key sends ``search_type: "fast"``; standard and deep
+send Perplexity's default (``web``, which has no deeper tier). The managed route is always ``fast``.
+
 Extract caveat: Perplexity's only supported page-content route returns the
 passages of a page relevant to a *query* (elisions marked ``…``), not the
 whole page. ``web_extract`` has no query, so the URL's own path words are
@@ -198,7 +201,12 @@ class PerplexityWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+    def supports_search_depth(self) -> bool:
+        from agent.web_search_provider import get_provider_env
+
+        return bool(get_provider_env("PERPLEXITY_API_KEY"))
+
+    def search(self, query: str, limit: int = 5, depth: str = "standard") -> dict[str, Any]:
         """Execute a Perplexity Search API query.
 
         ``search_context_size: low`` keeps ``snippet`` at description length;
@@ -229,7 +237,7 @@ class PerplexityWebSearchProvider(WebSearchProvider):
                 "max_results": max(1, min(limit, _MAX_SEARCH_RESULTS)),
                 "search_context_size": "low",
             }
-            if gateway is not None:
+            if gateway is not None or depth == "quick":
                 payload["search_type"] = "fast"
             raw = _perplexity_request("search", payload, gateway)
             return _normalize_search_results(raw)

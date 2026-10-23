@@ -2,6 +2,10 @@
 
 Env: ``PARALLEL_API_KEY`` (https://parallel.ai), optional
 ``PARALLEL_SEARCH_MODE`` = agentic (default) | fast | one-shot.
+
+``web_search(depth=...)`` on the keyed path: quick sends ``mode: fast``, deep ``mode: agentic``
+(Parallel's highest-quality beta mode), standard keeps ``PARALLEL_SEARCH_MODE``. The keyless
+tier has no mode option and ignores depth.
 """
 
 from __future__ import annotations
@@ -39,6 +43,9 @@ def _get_async_client() -> Any:
     return _client("_async_parallel_client", "AsyncParallel")
 
 
+_DEPTH_MODES = {"quick": "fast", "deep": "agentic"}  # web_search depth -> Parallel beta search mode
+
+
 def _resolve_search_mode() -> str:
     mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
     return mode if mode in {"fast", "one-shot", "agentic"} else "agentic"
@@ -53,11 +60,14 @@ class ParallelWebSearchProvider(BaseWebSearchProvider):
     EXTRACT = True
     KEYLESS = True
 
-    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+    def supports_search_depth(self) -> bool:
+        return not use_keyless("parallel", provider_env("PARALLEL_API_KEY"))
+
+    def search(self, query: str, limit: int = 5, depth: str = "standard") -> dict[str, Any]:
         def _body() -> dict[str, Any]:
             if use_keyless("parallel", provider_env("PARALLEL_API_KEY")):
                 return keyless_search("Parallel", "parallel", query, limit, logger)
-            mode = _resolve_search_mode()
+            mode = _DEPTH_MODES.get(depth) or _resolve_search_mode()
             logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
             response = _get_sync_client().beta.search(search_queries=[query], objective=query, mode=mode, max_results=min(limit, SEARCH_LIMIT_CAP))
             return search_ok([

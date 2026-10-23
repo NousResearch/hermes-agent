@@ -568,3 +568,60 @@ def test_hardline_blocks_before_selected_transport(monkeypatch):
 
     assert result["approved"] is False
     assert calls == []
+
+
+def _plugin_escalation_gateway(monkeypatch, approval, manager):
+    """Gateway presence for ``request_tool_approval``: manual mode, no cached
+    approval, no notifier — the only answerable surface is the transport."""
+    import tools.approval_context as tools_approval_context
+
+    _configure_manual_guard(monkeypatch, approval, manager)
+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+    monkeypatch.setattr(
+        tools_approval_context, "_is_gateway_approval_context", lambda: True
+    )
+    monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: False)
+    monkeypatch.setattr(
+        tools_approval_context, "_is_cron_approval_context", lambda: False
+    )
+
+
+def test_plugin_escalation_uses_selected_transport(monkeypatch):
+    from tools import approval
+
+    manager = PluginManager()
+    seen = []
+    _context(manager).register_approval_transport(
+        "phone", lambda request: seen.append(request) or request.respond("once")
+    )
+    _plugin_escalation_gateway(monkeypatch, approval, manager)
+
+    result = approval.request_tool_approval(
+        "send_message", "needs review", rule_key="send_message"
+    )
+
+    assert result["approved"] is True
+    assert len(seen) == 1
+    assert seen[0].pattern_key == "plugin_rule:send_message"
+    assert seen[0].surface == "gateway"
+
+
+def test_plugin_escalation_transport_deny_denies_with_action_wording(monkeypatch):
+    from tools import approval
+
+    manager = PluginManager()
+    _context(manager).register_approval_transport(
+        "phone", lambda request: request.respond("deny")
+    )
+    _plugin_escalation_gateway(monkeypatch, approval, manager)
+
+    result = approval.request_tool_approval(
+        "send_message", "needs review", rule_key="send_message"
+    )
+
+    assert result["approved"] is False
+    assert (
+        "denied this action through the selected approval transport"
+        in result["message"]
+    )

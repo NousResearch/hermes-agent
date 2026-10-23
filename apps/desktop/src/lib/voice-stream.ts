@@ -1,5 +1,21 @@
+import { CANONICAL_GATEWAY_PROTOCOL } from '@/api/canonical-protocol'
 import type { ResolvedOwner } from '@/hermes'
 import { resolveSiblingWsUrl } from '@/lib/sibling-ws-url'
+
+/** Dial a voice socket beside `/api/ws`. A local gateway's one-use ticket leaves the URL for the
+ *  gateway subprotocol, as on the `/api/ws` dial itself (api/client.ts socketFactory). */
+export function openVoiceSocket(url: string): WebSocket {
+  const parsed = new URL(url)
+  const ticket = parsed.searchParams.get('ticket')
+
+  if (!parsed.searchParams.has('native_dial') || !ticket) {
+    return new WebSocket(url)
+  }
+
+  parsed.searchParams.delete('ticket')
+
+  return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
+}
 
 /**
  * Live dictation STT: mic PCM streams to the host's `/api/audio/transcribe-stream` WebSocket
@@ -43,7 +59,7 @@ export async function openDictationStream(
     url.searchParams.set('profile', owner.profile)
   }
 
-  const ws = new WebSocket(url.toString())
+  const ws = openVoiceSocket(url.toString())
   ws.binaryType = 'arraybuffer'
 
   let settled = false

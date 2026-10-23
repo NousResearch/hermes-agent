@@ -188,6 +188,46 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
+_LEARNED_TOOL = (r"(?:browser|playwright|terminal|shell|docker|web[ _-]?search|web|python|git|sudo|mcp)"
+                 r"(?:[ _-]?tools?)?")
+# "<tool> doesn't work" / "<tool> is broken" — a blanket capability verdict.
+_BLANKET_TOOL_FAILURE_RE = re.compile(
+    rf"\b{_LEARNED_TOOL}\s+(?:(?:(?:does|do|did|will|would)\s*n[o']t|cannot|can't|can\s+not|never)\s+work"
+    rf"|(?:is|are)\s+(?:permanently\s+)?(?:broken|unavailable|unusable))\b",
+    re.IGNORECASE)
+# "never use <tool> because it fails" — an avoidance rule justified by a failure. The lookahead
+# keeps ordinary advice like "never use git push --force because ..." out of scope.
+_AVOID_FAILED_TOOL_RE = re.compile(
+    rf"\b(?:never|do\s*n[o']t|avoid)\s+(?:(?:use|using|call|calling|run|running|try|trying)\s+)?"
+    rf"(?:the\s+)?{_LEARNED_TOOL}(?=\s*(?:$|[.,;:!)]|\s(?:because|since|as)\b))"
+    rf".*\b(?:broken|unavailable|fail(?:s|ed|ing)?|(?:does|do)\s*n[o']t\s+work|not\s+work(?:ing)?)\b",
+    re.IGNORECASE)
+_TRANSIENT_QUALIFIERS = (
+    "transient", "temporar", "this environment", "current environment", "this machine",
+    "this session", "until", "revalidat", "re-validat", "retest", "re-test", "recheck",
+    "re-check", "after setup", "after install", "not a permanent", "not installed",
+    "not configured", "missing dependency", "unless",
+)
+
+
+def _validate_operational_learning(content: str, previous: str = "") -> Optional[str]:
+    """Refuse a skill instruction that turns a tool/environment failure into a permanent
+    avoidance rule. Each line is judged on its own, so a qualifier elsewhere in the skill
+    cannot excuse it; lines already present in ``previous`` are left alone."""
+    existing = set(previous.splitlines())
+    for line in content.splitlines():
+        if line in existing:
+            continue
+        if not (_BLANKET_TOOL_FAILURE_RE.search(line) or _AVOID_FAILED_TOOL_RE.search(line)):
+            continue
+        if any(q in line.lower() for q in _TRANSIENT_QUALIFIERS):
+            continue
+        return (f"Skill content encodes a tool/environment failure as a permanent avoidance rule: "
+                f"{_clip(line.strip(), 160, '…')!r}. Scope that instruction as transient, give its "
+                f"revalidation condition, or record the exact setup prerequisite instead.")
+    return None
+
+
 def _description_preview(content: str) -> str:
     """First 120 chars of the frontmatter description; '' on any failure."""
     with suppress(Exception):
@@ -452,7 +492,8 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 
 def _create_skill(name: str, content: str, category: str | None = None) -> dict[str, Any]:
     if err := (_validate_name(name) or _validate_category(category)
-               or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)):
+               or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)
+               or _validate_operational_learning(content)):
         return _err(err)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
@@ -496,6 +537,11 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
     if err := _validate_frontmatter(content) or _validate_content_size(content):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
+    if not guard:
+        with suppress(OSError):
+            previous = (skill_dir / "SKILL.md").read_text(encoding="utf-8-sig")
+            if err := _validate_operational_learning(content, previous):
+                return _err(err)
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
     if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
         return guard
@@ -544,6 +590,8 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")
+    if err := _validate_operational_learning(new_content, content):
+        return _err(f"Patch would add unsafe operational learning: {err}")
     if guard := _guarded_write(name, skill_dir, target, "patch", target_label, new_content):
         return guard
     result = {

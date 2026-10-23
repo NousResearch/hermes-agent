@@ -140,15 +140,25 @@ def get_all_passthrough() -> frozenset[str]:
                      if not _is_hermes_provider_credential(name))
 
 
-def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | None:
+def resolve_passthrough_value(name: str, fallback: str | None = None, *,
+                              client_toolchain: bool = False) -> str | None:
     """Resolve an allowlisted variable without crossing profile boundaries. ``fallback``
     is what the caller would have forwarded before secret scopes existed (a snapshot of
     ``os.environ`` / the profile ``.env``). An active multiplex scope is authoritative:
     a missing key returns ``None``, never the process-global env, and an unscoped read
     raises the fail-closed ``UnscopedSecretError``. Outside multiplexing an installed
-    scope keeps overlay semantics and an unscoped caller keeps its fallback."""
+    scope keeps overlay semantics and an unscoped caller keeps its fallback. Only builders
+    that already merged the client's toolchain may set ``client_toolchain``: its admitted
+    non-secret names keep their effective value, including backend overrides."""
     from agent.secret_scope import (
         _is_global_env, current_secret_scope, get_secret, is_multiplex_active)
+    from agent.session_client_env import tool_env
+
+    # The subprocess builders already merged this session's verified local client
+    # toolchain beneath backend overrides. Sandbox allowlisting must not erase it.
+    # Remote/unbound sessions and credential-looking names are excluded by tool_env.
+    if client_toolchain and fallback is not None and name in tool_env():
+        return fallback
     # Global terminal/runtime settings are not profile secrets; ``fallback`` is
     # already the caller's effective value (incl. an explicit per-call override).
     if _is_global_env(name) and fallback is not None:

@@ -125,7 +125,19 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
     [language, code, replacements, themeConfig]
   )
 
-  const [html, setHtml] = useState<string | null>(() => highlightCache.get(cacheKey) ?? null)
+  // The HTML is only valid for the key it was produced from. A block that
+  // MOUNTS on a cache hit has html already, so the viewport observer below
+  // never arms; if the same mounted row then gets new props (an edit, a
+  // re-sent turn, a language change) the old markup must not be served as if
+  // it were current. Keep the key beside the HTML and re-derive on mismatch,
+  // so an uncached change falls back to the placeholder and re-arms the
+  // observer, and a cached change paints that entry without tokenizing.
+  const [rendered, setRendered] = useState<{ key: string; html: string | null }>(() => ({
+    key: cacheKey,
+    html: highlightCache.get(cacheKey) ?? null
+  }))
+
+  const html = rendered.key === cacheKey ? rendered.html : (highlightCache.get(cacheKey) ?? null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [nearViewport, setNearViewport] = useState(() => typeof IntersectionObserver === 'undefined')
 
@@ -163,7 +175,7 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
     const cached = highlightCache.get(cacheKey)
 
     if (cached !== undefined) {
-      setHtml(cached)
+      setRendered({ key: cacheKey, html: cached })
 
       return
     }
@@ -180,7 +192,7 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
           }
 
           highlightCache.set(cacheKey, result)
-          setHtml(result)
+          setRendered({ key: cacheKey, html: result })
         })
         .catch(error => {
           if (cancelled) {
@@ -188,7 +200,7 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
           }
 
           console.error('shiki highlight failed; rendering plain code', error)
-          setHtml(plainTextHtml(code))
+          setRendered({ key: cacheKey, html: plainTextHtml(code) })
         })
     }, HIGHLIGHT_DELAY_MS)
 

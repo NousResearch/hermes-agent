@@ -125,6 +125,63 @@ def test_streamed_summary_stops_at_an_elapsed_host_deadline():
     assert stream.closed is True
 
 
+def test_host_deadline_stops_fallback_before_caller_evicts_client(monkeypatch):
+    """An expired host deadline skips fallback without bypassing client eviction."""
+    failure = TimeoutError("host compression deadline exceeded")
+    evictions = []
+
+    def _parameter_rungs(first_err, route, kwargs, max_tokens):
+        if False:
+            yield None
+        return None, first_err, kwargs
+
+    def _nous_rungs(first_err, route, kwargs, client_is_nous):
+        if False:
+            yield None
+        return None, first_err
+
+    def _credential_rungs(first_err, route, kwargs, client_is_nous):
+        if False:
+            yield None
+        return None, first_err
+
+    monkeypatch.setattr(aux, "_ladder_parameter_rungs", _parameter_rungs)
+    monkeypatch.setattr(aux, "_ladder_nous_rungs", _nous_rungs)
+    monkeypatch.setattr(aux, "_ladder_credential_rungs", _credential_rungs)
+    monkeypatch.setattr(aux, "_is_connection_error", lambda exc: True)
+    monkeypatch.setattr(aux, "_evict_cached_client_instance", lambda client: evictions.append(client))
+    monkeypatch.setattr(
+        aux,
+        "_ladder_provider_fallback",
+        lambda *args, **kwargs: pytest.fail("expired host deadline must not enter fallback"),
+    )
+
+    client = object()
+    ladder = aux._aux_recovery_ladder(
+        failure,
+        client=client,
+        kwargs={"timeout": 30},
+        task="compression",
+        async_mode=False,
+        base_info="https://example.test/v1",
+        resolved_provider="custom",
+        resolved_model="model",
+        resolved_base_url=None,
+        resolved_api_key=None,
+        resolved_api_mode=None,
+        final_model="model",
+        max_tokens=None,
+        main_runtime=None,
+        route_info={},
+    )
+
+    with pytest.raises(TimeoutError) as raised:
+        aux._drive_ladder(ladder, lambda step: pytest.fail("no provider request expected"))
+
+    assert raised.value is failure
+    assert evictions == [client]
+
+
 def test_streamed_summary_runs_to_completion_under_a_live_host_deadline():
     stream = _Stream(count=5)
     with aux.aux_stream_deadline(time.monotonic() + 600.0):

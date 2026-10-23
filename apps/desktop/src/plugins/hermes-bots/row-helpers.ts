@@ -87,6 +87,11 @@ export function workerActiveAt(bot: null | RosterRow | undefined, now = Date.now
 
 /** Older shells without the live-turn atom remain idle rather than reading socket state. */
 const $idleTurn = atom(false)
+const $noWorkingSessions = atom<readonly string[]>([])
+
+export function useWorkingSessionIds(): readonly string[] {
+  return useValue(host.state.workingSessionIds || $noWorkingSessions)
+}
 
 export function useTurnBusy(): boolean {
   return useValue(host.state.busy || $idleTurn)
@@ -98,16 +103,23 @@ interface WorkingOwner {
   name: string
 }
 
-/** The busy atom follows tile focus, not the gateway socket or row selection. */
+/** Canonical chat activity survives focus changes; focused busy also covers drafts. */
 export function botWorkingMood(
   bot: RosterRow,
   owner: WorkingOwner | null,
   turnBusy: boolean,
   activeConnectionId = 'local',
   now = Date.now(),
-  groupKeys?: ReadonlySet<string>
+  groupKeys?: ReadonlySet<string>,
+  workingSessionIds: readonly string[] = []
 ): 'idle' | 'think' | 'work' {
   if (groupKeys?.has(botRosterKey(bot))) {
+    return 'think'
+  }
+
+  const canonicalId = botCanonicalSessionId(bot)
+
+  if (canonicalId && workingSessionIds.includes(canonicalId)) {
     return 'think'
   }
 
@@ -126,17 +138,20 @@ export function botWorkingMood(
   return workerActiveAt(bot, now) ? 'work' : 'idle'
 }
 
-/** Focused turns, recent messages and live workers, preserving roster order. */
+/** Live canonical/focused turns, recent messages and workers, preserving roster order. */
 export function activeBots(
   roster: null | RosterRow[] | undefined,
   owner: WorkingOwner | null,
   turnBusy: boolean,
   now = Date.now(),
   activeConnectionId = 'local',
-  groupKeys?: ReadonlySet<string>
+  groupKeys?: ReadonlySet<string>,
+  workingSessionIds: readonly string[] = []
 ): RosterRow[] {
   return (roster || []).filter(bot => {
-    const busyTurn = botWorkingMood(bot, owner, turnBusy, activeConnectionId, now, groupKeys) !== 'idle'
+    const busyTurn =
+      botWorkingMood(bot, owner, turnBusy, activeConnectionId, now, groupKeys, workingSessionIds) !== 'idle'
+
     const last = botActivitySession(bot)?.last_active || 0
     const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
 

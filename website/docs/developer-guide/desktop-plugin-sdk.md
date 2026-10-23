@@ -1370,6 +1370,7 @@ host.state.activeSessionId  // ReadableAtom<string | null>
 host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assistant payload
 host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
 host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
+host.state.workingSessionIds // ReadableAtom<readonly string[]>  working stored-session ids, including lineage aliases
 host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the FOCUSED session — tile-aware; prefer for session.* RPC)
 host.state.focusedSessionProfile // ReadableAtom<string>  (owner profile of the focused chat — prefer over `profile` for per-bot/profile readouts)
 host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
@@ -1394,6 +1395,12 @@ can be idle at the same time. Disable composer or plugin actions from the
 **focused session's** turn-busy (`host.state.busyBySession[sessionId]`, or that
 session's `view.$busy`) — never from `gateway`, and never from a process-global
 busy flag.
+
+`host.state.workingSessionIds` lists the stored-session ids currently working,
+including their compression-lineage aliases. It is independent of tile focus:
+use it for background session indicators (such as a canonical Bot Chat avatar),
+not `host.state.busy`, which follows the focused chat. These are durable
+stored-session ids, not the runtime ids used by `busyBySession`.
 
 ```ts
 host.notify({ kind, message, title?, detail?, action? })  // toast; returns id

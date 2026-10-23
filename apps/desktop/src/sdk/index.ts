@@ -98,6 +98,7 @@ import {
   $focusedSessionState,
   $sessionStates,
   $sessionTiles,
+  $workingSessionIds,
   dropTilesForProfile,
   focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
@@ -120,6 +121,7 @@ import {
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 import { spellcheckHost } from './spellcheck'
+import { $busyBySession } from './turn-activity'
 import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
@@ -219,17 +221,6 @@ const $focusedSessionProfile = computed(
   (owner, focused, sessions, activeProfile) =>
     owner?.profile || rememberedSessionProfile(sessions, focused, activeProfile)
 )
-
-/** Runtime session id → mid-turn. Not gateway socket state. */
-const $busyBySession = computed($sessionStates, states => {
-  const map: Record<string, boolean> = {}
-
-  for (const [id, state] of Object.entries(states)) {
-    map[id] = Boolean(state.busy)
-  }
-
-  return map
-})
 
 /** Live usage of the FOCUSED session, projected out of the streamed session
  *  state — the same readout the core statusbar's context chip paints. */
@@ -569,6 +560,8 @@ export const host = {
     busy: readonlyAtom<boolean>($focusedBusy),
     /** Runtime session id → mid-turn. Not socket state; see `gateway`. */
     busyBySession: readonlyAtom<Record<string, boolean>>($busyBySession),
+    /** Busy stored-session ids, including lineage aliases, independent of focus. */
+    workingSessionIds: readonlyAtom<readonly string[]>($workingSessionIds),
     /** Registry source that owns the active gateway, when source-scoped. */
     connectionId: readonlyAtom<null | string>($activeConnectionId),
     /** Active workspace cwd ('' when detached). */

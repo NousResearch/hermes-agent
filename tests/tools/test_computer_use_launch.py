@@ -1,4 +1,4 @@
-"""action="launch": how a free-form app reaches cua-driver."""
+"""action="launch" and the Windows key names: how a free-form app or key combo reaches cua-driver."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -7,7 +7,7 @@ import pytest
 
 from tools.computer_use import tool as cu_tool
 from tools.computer_use.cua_backend import CuaDriverBackend
-from tools.computer_use.cua_backend_parse import _launch_target_args
+from tools.computer_use.cua_backend_parse import _launch_target_args, _parse_key_combo
 
 
 @pytest.fixture
@@ -70,3 +70,16 @@ def test_launch_app_sends_the_resolved_field_and_session():
 ])
 def test_launch_target_resolution(target, platform, expected):
     assert _launch_target_args(target, platform) == expected
+
+
+@pytest.mark.parametrize("combo, platform, expected", [
+    ("win+r", "win32", ("r", ["win"])),
+    ("windows+r", "win32", ("r", ["win"])),
+    ("super+r", "win32", ("r", ["win"])),
+    ("meta+r", "win32", ("r", ["win"])),
+    ("super+a", "linux", ("a", ["super"])),
+    ("meta+a", "darwin", ("a", ["meta"])),
+    ("cmd+alt+t", "darwin", ("t", ["cmd", "option"])),
+])
+def test_windows_key_names_alias_win_only_on_windows(combo, platform, expected):
+    assert _parse_key_combo(combo, platform) == expected

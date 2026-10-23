@@ -437,6 +437,10 @@ def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
                           element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
 
+def _do_key(backend, action, args, **delivery):
+    # scope is forwarded only when given, so backends without desktop scope keep their signature.
+    return backend.key(args.get("keys", ""), **({"scope": args["scope"]} if args.get("scope") else {}), **delivery)
+
 def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
@@ -470,8 +474,8 @@ _ACTIONS: dict[str, _ActionSpec] = {
     "scroll": _input(_do_scroll, summarize=lambda a, args, fg: f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}{fg}"),
     "type": _input(lambda backend, action, args, **delivery: backend.type_text(args.get("text", ""), **delivery),
                    summarize=lambda a, args, fg: f"type {args.get('text', '')[:60]!r}" + ("..." if len(args.get("text", "")) > 60 else "") + fg),
-    "key": _input(lambda backend, action, args, **delivery: backend.key(args.get("keys", ""), **delivery),
-                  summarize=lambda a, args, fg: f"key {args.get('keys', '')!r}{fg}"),
+    "key": _input(_do_key, summarize=lambda a, args, fg: f"key {args.get('keys', '')!r}"
+                  + (f" ({args['scope']} scope)" if args.get("scope") else "") + fg),
     "set_value": _input(lambda backend, action, args, **_: (
         json.dumps({"error": "set_value requires `value`"}) if args.get("value") is None
         else backend.set_value(value=str(args["value"]), element=args.get("element")))),

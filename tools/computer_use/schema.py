@@ -149,6 +149,15 @@ _PROPERTIES: dict[str, Any] = {
             "Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', 'escape', 'tab'. Use '+' to combine."
         ),
     },
+    "scope": {
+        "type": "string",
+        "enum": ["window", "desktop"],
+        "description": (
+            "action='key' only. 'window' (default) sends the key to the window from the last capture "
+            "and refuses when there is none. 'desktop' sends an OS-level shortcut (e.g. 'win+r') with no "
+            "target window; refused when the connected cua-driver does not accept it."
+        ),
+    },
     "seconds": {"type": "number", "description": "wait: seconds to pause (max 30)."},
     "raise_window": {
         "type": "boolean",

@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
@@ -131,15 +132,20 @@ def _split_tree_text(full_text: str) -> tuple[str, str]:
     summary, _, tree = full_text.partition("\n")
     return summary, tree
 
-_MODIFIER_NAMES = frozenset({"cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"})
+_MODIFIER_NAMES = frozenset({"cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn",
+                             "win", "windows", "super", "meta"})
 _KEY_ALIASES = {"command": "cmd", "alt": "option", "control": "ctrl"}
+# Windows has one logo key, so every name for it means `win`. Elsewhere `super` and `meta` are distinct keys
+# (macOS has no `win`), so they pass through for the driver to judge.
+_WINDOWS_KEY_ALIASES = {**_KEY_ALIASES, "windows": "win", "super": "win", "meta": "win"}
 
-def _parse_key_combo(keys: str) -> tuple[Optional[str], list[str]]:
+def _parse_key_combo(keys: str, platform: str = sys.platform) -> tuple[Optional[str], list[str]]:
     """Parse 'cmd+s' / 'ctrl-alt-t' into (key, modifiers); last non-modifier wins."""
+    aliases = _WINDOWS_KEY_ALIASES if platform == "win32" else _KEY_ALIASES
     modifiers: list[str] = []
     key = None
     for part in (p.strip().lower() for p in re.split(r'[+\-]', keys) if p.strip()):
-        normalized = _KEY_ALIASES.get(part, part)
+        normalized = aliases.get(part, part)
         if normalized in _MODIFIER_NAMES:
             modifiers.append(normalized)
         else:

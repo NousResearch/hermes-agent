@@ -124,6 +124,8 @@ class ComputerUseBackend(ABC):
     def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
                   bring_to_front: bool = False) -> ActionResult: ...
 
+    # ``scope="desktop"`` (an OS-level shortcut with no target window) is forwarded only when the caller set it,
+    # so only backends that support it need to accept it.
     @abstractmethod
     def key(self, keys: str, *, delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
 

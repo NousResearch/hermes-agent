@@ -25,8 +25,8 @@ const SYSTEM_ROOTS = ['/proc', '/sys', '/dev']
 // `/host/proc`, a chroot's `proc`): proc, sysfs, debugfs, tracefs,
 // securityfs, cgroup, cgroup2, bpf, efivarfs, configfs, pstore, selinuxfs.
 const PSEUDO_FS_TYPES = new Set([
-  0x9fa0, 0x62656572, 0x64626720, 0x74726163, 0x73636673, 0x27e0eb, 0x63677270, 0xcafe4a11, 0xde5e81e4,
-  0x62656570, 0x6165676c, 0xf97cff8c
+  0x9fa0, 0x62656572, 0x64626720, 0x74726163, 0x73636673, 0x27e0eb, 0x63677270, 0xcafe4a11, 0xde5e81e4, 0x62656570,
+  0x6165676c, 0xf97cff8c
 ])
 
 const WSL_SHARE_RE = /^\\\\(?:wsl\.localhost|wsl\$)\\[^\\]+/i

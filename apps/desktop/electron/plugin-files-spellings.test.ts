@@ -96,21 +96,23 @@ describe('sensitive names after Unicode folding', () => {
   it.each(['id_r\u017fa', '.ENV', '\uff0eenv', '.env.LOCAL', '.e\u200dnv', 'id_\u200brsa', '.np\ufeffmrc'])(
     'refuses reading or writing %s',
     async name => {
-    const files = make()
-    const id = await grant(files)
-    fs.writeFileSync(path.join(vault, name), 'SECRET=1\n')
+      const files = make()
+      const id = await grant(files)
+      fs.writeFileSync(path.join(vault, name), 'SECRET=1\n')
 
-    expect(await files.run('plexus', { op: 'readText', folder: id, path: name })).toMatchObject({
-      ok: false,
-      error: 'sensitive-file'
-    })
-    fs.mkdirSync(path.join(vault, 'fresh'))
+      expect(await files.run('plexus', { op: 'readText', folder: id, path: name })).toMatchObject({
+        ok: false,
+        error: 'sensitive-file'
+      })
+      fs.mkdirSync(path.join(vault, 'fresh'))
 
-    expect(await files.run('plexus', { op: 'writeText', folder: id, path: `fresh/${name}`, text: 'x' })).toMatchObject({
-      ok: false,
-      error: 'sensitive-file'
-    })
-    expect(fs.existsSync(path.join(vault, 'fresh', name))).toBe(false)
+      expect(
+        await files.run('plexus', { op: 'writeText', folder: id, path: `fresh/${name}`, text: 'x' })
+      ).toMatchObject({
+        ok: false,
+        error: 'sensitive-file'
+      })
+      expect(fs.existsSync(path.join(vault, 'fresh', name))).toBe(false)
     }
   )
 
@@ -145,18 +147,27 @@ describe('macOS named forks', () => {
 })
 
 describe('Windows names that open something else', () => {
-  it.each(['CON', 'nul.txt', 'COM1', 'lpt\u00b9', 'CONIN$', 'conout$.log', 'CLOCK$', 'a.md:secret', '.env.', '.env ', 'notes\\..\\..'])(
-    'refuses the segment %s',
-    async rel => {
-      const files = make('win32')
-      const id = await grant(files)
+  it.each([
+    'CON',
+    'nul.txt',
+    'COM1',
+    'lpt\u00b9',
+    'CONIN$',
+    'conout$.log',
+    'CLOCK$',
+    'a.md:secret',
+    '.env.',
+    '.env ',
+    'notes\\..\\..'
+  ])('refuses the segment %s', async rel => {
+    const files = make('win32')
+    const id = await grant(files)
 
-      expect(await files.run('plexus', { op: 'readText', folder: id, path: rel })).toMatchObject({
-        ok: false,
-        error: 'invalid-path'
-      })
-    }
-  )
+    expect(await files.run('plexus', { op: 'readText', folder: id, path: rel })).toMatchObject({
+      ok: false,
+      error: 'invalid-path'
+    })
+  })
 })
 
 describe('Windows second paths to this machine', () => {
@@ -222,7 +233,10 @@ describe('kernel pseudo-filesystems wherever they are mounted', () => {
     }) as never)
 
     for (const op of ['readText', 'readDataUrl', 'stat'] as const) {
-      expect(await files.run('plexus', { op, folder: id, path: 'environ' })).toMatchObject({ ok: false, error: 'protected' })
+      expect(await files.run('plexus', { op, folder: id, path: 'environ' })).toMatchObject({
+        ok: false,
+        error: 'protected'
+      })
     }
 
     expect(await files.run('plexus', { op: 'writeText', folder: id, path: 'environ', text: 'x' })).toMatchObject({

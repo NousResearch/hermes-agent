@@ -35,7 +35,11 @@ const IMAGE_MIME: Record<string, string> = {
   '.webp': 'image/webp'
 }
 
-export const fail = (error: PluginFilesErrorCode, message: string): PluginFilesFailure => ({ ok: false, error, message })
+export const fail = (error: PluginFilesErrorCode, message: string): PluginFilesFailure => ({
+  ok: false,
+  error,
+  message
+})
 
 export class Refusal extends Error {
   constructor(readonly failure: PluginFilesFailure) {

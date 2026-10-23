@@ -250,11 +250,17 @@ unique_leaf = true
 | `unique_leaf` | Name slots `<repo>-<slot>` so per-checkout identity (workspaces, pytest rootdir, Xcode derived data) never collides between slots. |
 
 With the file present, the dispatcher acquires a **durable lease**
-(`treehouse get --lease`) and records the slot path as the card's workspace.
-Without it, the card keeps the `git worktree add` path and the dispatcher logs
-that fallback reason for every card - the uncapped path is never silent. A
-malformed config, or a config with no `treehouse` binary installed, fails the
-card instead of degrading quietly.
+(`treehouse get --lease --json --branch wt/<task-id>`) and records the slot
+path as the card's workspace. The pool is then the *only* worktree provider for
+that repo: a card that still carries a legacy `<repo>/.worktrees/<task-id>`
+workspace path is moved onto a free slot instead of having that directory
+recreated, and the raw creation helper refuses a legacy target outright. That
+keeps one repo on one worktree system - `treehouse status` is the whole truth,
+with no hidden trees beside the pool. A repo without the file keeps the
+`git worktree add` path (its single worktree system) and the dispatcher logs
+that reason for every card - the uncapped path is never silent. A malformed
+config, or a config with no `treehouse` binary installed, fails the card
+instead of degrading quietly.
 
 Lifecycle:
 

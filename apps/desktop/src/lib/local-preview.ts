@@ -1,6 +1,12 @@
 import DOMPurify from 'dompurify'
 
-import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import {
+  isDesktopFsRemoteMode,
+  localPathFromFileHref,
+  pathToFileUrl,
+  readDesktopFileDataUrl,
+  readDesktopFileText
+} from '@/lib/desktop-fs'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -83,22 +89,6 @@ function joinPath(base: string, rel: string) {
   }
 
   return `${root}${parts.join('/')}`
-}
-
-function pathToFileUrl(path: string) {
-  const isWindowsUnc = path.startsWith('\\\\')
-  const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
-
-  const encoded = normalized
-    .split('/')
-    .map(part => encodeURIComponent(part))
-    .join('/')
-
-  if (isWindowsUnc) {
-    return `file://${encoded.slice(2)}`
-  }
-
-  return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
 }
 
 /** Loopback hosts — "this machine". The one address family an agent's dev
@@ -237,11 +227,9 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   let path = raw
 
   if (/^file:\/\//i.test(raw)) {
-    try {
-      path = decodeURIComponent(new URL(raw).pathname)
-    } catch {
-      path = raw.replace(/^file:\/\//i, '')
-    }
+    const localPath = localPathFromFileHref(raw)
+
+    path = localPath === raw ? raw.replace(/^file:\/\//i, '') : localPath
   } else if (!raw.startsWith('/') && !isWindowsAbsolutePath(raw) && cwd) {
     path = joinPath(cwd, raw)
   }
@@ -265,14 +253,11 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   }
 }
 
-async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
-  if (
-    !isDesktopFsRemoteMode() ||
-    !target ||
-    target.kind !== 'file' ||
-    target.previewKind === 'image' ||
-    target.previewKind === 'pdf'
-  ) {
+async function enrichPreviewTarget(
+  target: PreviewTarget | null,
+  remote = isDesktopFsRemoteMode()
+): Promise<PreviewTarget | null> {
+  if (!remote || !target || target.kind !== 'file' || target.previewKind === 'image' || target.previewKind === 'pdf') {
     return target
   }
 
@@ -306,6 +291,19 @@ export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
   cwd?: string | null
 ): Promise<PreviewTarget | null> {
+  // Capture provenance before awaiting Electron or gateway work. Preview tabs
+  // can be pinned and shown under another session later; eligibility for local
+  // OS actions must follow the filesystem that opened the tab, not whichever
+  // connection happens to be focused then.
+  const remote = isDesktopFsRemoteMode()
+  const filesystemOrigin = remote ? 'remote' : 'local'
+
+  const finish = async (target: PreviewTarget | null): Promise<PreviewTarget | null> => {
+    const enriched = await enrichPreviewTarget(target, remote)
+
+    return enriched?.kind === 'file' ? { ...enriched, filesystemOrigin } : enriched
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
@@ -317,10 +315,10 @@ export async function normalizeOrLocalPreviewTarget(
       // machine, so remote mode keeps the fabricated fallback the gateway
       // read resolves later.
       if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
-        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd)) : null
+        return remote ? finish(localPreviewTarget(rawTarget, cwd)) : null
       }
 
-      return enrichPreviewTarget(normalized)
+      return finish(normalized)
     }
 
     // The main process resolved the target against the real filesystem and
@@ -329,7 +327,7 @@ export async function normalizeOrLocalPreviewTarget(
     // is authoritative — the fallback below can only fabricate a broken
     // preview tab (#101683). Remote-backend paths, and a dev server without
     // the bridge, keep it.
-    if (!isDesktopFsRemoteMode() && normalized === null) {
+    if (!remote && normalized === null) {
       return null
     }
   } catch {
@@ -337,5 +335,5 @@ export async function normalizeOrLocalPreviewTarget(
     // through to renderer-side local classification so text/images still open.
   }
 
-  return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
+  return finish(localPreviewTarget(rawTarget, cwd))
 }

@@ -53,6 +53,11 @@ export interface PreviewTarget {
    * path the preview can't reliably re-read. Rendered directly and NOT
    * persisted (it would bloat localStorage). */
   dataUrl?: string
+  /** Filesystem that owned this target when it was normalized. Persisted so a
+   * pinned remote tab never becomes eligible for local OS actions merely
+   * because the user later focuses a local session. Missing means unknown and
+   * callers that need local provenance must fail closed. */
+  filesystemOrigin?: 'local' | 'remote'
   /** `artifact` targets have nothing behind them on disk or on the network —
    * `url` is an id into the artifact registry, which owns the content. They
    * are what lets the rail preview generated HTML the workspace never saw. */

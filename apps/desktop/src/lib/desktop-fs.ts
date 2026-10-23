@@ -223,6 +223,57 @@ export async function revealDesktopPath(path: string): Promise<void> {
   }
 }
 
+// Absolute path → `file://` URL. Windows drive letters and UNC shares keep
+// their shape; each segment is percent-encoded so spaces and CJK names survive.
+export function pathToFileUrl(path: string): string {
+  const isWindowsUnc = path.startsWith('\\\\')
+  const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
+
+  const encoded = normalized
+    .split('/')
+    .map(part => encodeURIComponent(part))
+    .join('/')
+
+  if (isWindowsUnc) {
+    return `file://${encoded.slice(2)}`
+  }
+
+  return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
+}
+
+// `file://` href → on-disk path. A non-localhost hostname means a Windows UNC
+// share (file://server/docs/x.pdf); it returns as the native \\server\share
+// form so pathToFileUrl re-encodes it with the host intact — mapping it to the
+// bare pathname instead would silently retarget a local path of the same name.
+// (POSIX `//host/...` URLs keep an empty host and stay local-path-shaped.)
+export function localPathFromFileHref(raw: string): string {
+  try {
+    const url = new URL(raw)
+
+    if (url.protocol !== 'file:') {
+      return raw
+    }
+
+    const pathname = decodeURIComponent(url.pathname)
+
+    return url.hostname && url.hostname !== 'localhost'
+      ? `\\\\${url.hostname}${pathname.replace(/\//g, '\\')}`
+      : pathname
+  } catch {
+    return raw
+  }
+}
+
+// Hand a LOCAL file/folder to its OS default application (Excel, Preview, …).
+// The existing `openExternal` bridge deliberately treats `file://` URLs as
+// reveal-in-folder requests. A bare native path takes its audited `openPath`
+// route instead, including missing-file checks and reveal fallback, so keep the
+// path native here. A gateway path has no bytes on this disk; callers gate by
+// the target's captured filesystem origin before invoking this action.
+export async function openDesktopPathWithDefaultApp(path: string): Promise<void> {
+  await bridge().openExternal(path)
+}
+
 // Rename a file/folder in place; returns the new absolute path. Local only.
 export async function renameDesktopPath(path: string, newName: string): Promise<string> {
   const desktop = bridge()

@@ -234,13 +234,21 @@ def _billing_pending_change(result: dict) -> dict:
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
                     model: str, copy_fields=(), compensate: bool = False, title_source: str = "user",
-                    user_id: str | None = None) -> None:
+                    user_id: str | None = None, transcript_source: str | None = None,
+                    up_to_row_id: int | None = None) -> bool:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
-    login: the child is a Desktop session too, and the row only records identity at insert."""
+    login: the child is a Desktop session too, and the row only records identity at insert.
+
+    ``transcript_source``: copy the parent's DURABLE display rows verbatim via
+    ``db.copy_transcript_for_branch`` instead of rebuilding a prose seed from *history* — the child's
+    transcript must be the parent's transcript (tool calls/results, reasoning sidecars, api_content bytes,
+    compaction flags), not a narration-only approximation of it; *history* rows are then APPENDED after
+    the copy (the live branch's unflushed tail). Returns True when the durable copy ran, False when the
+    store lacks the copy API and only the *history* append landed (legacy fallback seed)."""
     from agent.message_metadata import message_identity
     from agent.transcript_repair import sync_flushed_message_markers
 
@@ -254,22 +262,34 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     db.create_session(new_key, source=source, model=model, model_config={"_branched_from": parent_key},
                       parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id,
                       system_prompt=parent_prompt or None)
+    copied = False
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
         # committed, the durable-but-empty row would defeat the lazy first-prompt fallback
         # (_ensure_session_db_row is INSERT OR IGNORE — the row exists, so the seed never lands and the
         # renderer fail-latches on a "transcript-less" session again). Roll back just this child so the seed
         # path can retry cleanly on first submit.
-        # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
-        # rows, and per-row transactions were the write-amplification pattern removed in #23254.
-        rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                 **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
-        db.append_messages_batch(new_key, rows, chunk_rows=500)
+        if transcript_source is not None and hasattr(db, "copy_transcript_for_branch"):
+            # Verbatim durable copy: the display row set (tools/reasoning/api_content/compaction flags
+            # intact) in one INSERT..SELECT per chunk. *history* rows after it are the live unflushed tail.
+            db.copy_transcript_for_branch(transcript_source, new_key, up_to_row_id=up_to_row_id)
+            copied = True
+        if history:
+            # Legacy prose seed (store without the copy API), or the live branch's tail rows riding
+            # after the durable copy — either way bounded-chunk transactions: a branch seed can be
+            # hundreds of rows, and per-row transactions were the write-amplification pattern removed
+            # in #23254.
+            rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
+                     **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
+            db.append_messages_batch(new_key, rows, chunk_rows=500)
+        else:
+            rows = []
         if title_source == "user":
             db.set_session_title(new_key, title)
         else:
             db.set_auto_title(new_key, title, source=title_source)
-        sync_flushed_message_markers(history, rows)
+        if rows:
+            sync_flushed_message_markers(history, rows)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
@@ -278,23 +298,43 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
             except Exception:
                 logger.debug("branch seed compensation delete failed for %s", new_key, exc_info=True)
         raise
+    return copied
 
 
-def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: list, source: str, profile_home):
+def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: list, source: str, profile_home,
+                    *, transcript_source: str | None = None):
     """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
     renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
-    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
+    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback.
+
+    ``transcript_source``: the child's transcript is the parent's DURABLE display rows copied verbatim
+    (``copy_transcript_for_branch``), and *history* is only the fallback prose. On a successful copy the
+    live model context is reloaded from the child's OWN rows: the read-back carries fresh row ids and
+    born-durable stamps (the parent's projection dicts address PARENT rows — riding them would make the
+    child's first flush rewrite the parent)."""
     try:
         with _session_db(record) as db:
             if db is None:
                 return
-            _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
-                            source=source, cwd=None if _is_remote_launch_cwd(record) else record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
-                            model=_session_default_route(record)[0], compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
+            copied = _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id),
+                                     [] if transcript_source else history,
+                                     source=source, cwd=None if _is_remote_launch_cwd(record) else record["cwd"],
+                                     profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
+                                     model=_session_default_route(record)[0], compensate=True,
+                                     title_source="derived", user_id=_session_auth_user_id(record),
+                                     transcript_source=transcript_source)
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
+            if copied and hasattr(db, "get_resume_conversations"):
+                try:
+                    record["history"] = db.get_resume_conversations(key)[0]
+                except Exception:
+                    # The copy is durable; only the in-memory swap failed. The prose seed stays live so
+                    # the first turn still has context, and the lazy path must NOT re-append over the
+                    # copied rows — the _branch_seed_persisted stamp above already fences it.
+                    logger.warning("branch child %s: model-history read-back failed; prose seed remains live",
+                                   key, exc_info=True)
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
@@ -378,6 +418,9 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
+    # None for client-seeded creates (their ``messages`` may be a subset — a durable whole-transcript
+    # copy would duplicate it); set below only for branch_stored's server-side whole copy.
+    branch_transcript_source = None
     if copy_parent_history:
         if not parent_session_id:
             return _err(rid, 4008, "parent_session_id is required when copying parent history")
@@ -394,6 +437,11 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         history = _visible_branch_history(display_history)
         if not history:
             return _err(rid, 4008, "send a message first")
+        # Durable-verbatim seed (the fix for narration-only branch children): the child's transcript is
+        # copied from the parent's display rows with tool calls/results, reasoning sidecars and
+        # api_content bytes intact, not rebuilt as prose. *history* (visible prose) stays the in-memory
+        # fallback: on copy failure it is what the lazy first-submit seed re-appends.
+        branch_transcript_source = parent_session_id if hasattr(db, "copy_transcript_for_branch") else None
     # Only a chosen workspace persists as cwd; the launch-dir fallback is "No workspace"
     # (#108205: the desktop arm lets the client vouch for a host-invisible path, #52589 provenance).
     explicit_cwd, session_cwd, remote_cwd = _resolve_create_cwd(params, source, profile_home)
@@ -459,7 +507,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     # already written): the transcript exists only in memory, so a restart before the first prompt lost it
     # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     if parent_session_id and history:
-        _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+        _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home,
+                        transcript_source=branch_transcript_source)
     elif history:
         _seed_row(_sessions[sid])
     elif explicit_cwd and remote_cwd:

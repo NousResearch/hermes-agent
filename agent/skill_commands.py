@@ -595,9 +595,9 @@ def _skill_dirs_signature() -> Optional[tuple]:
     it cannot be computed (a root that cannot be stat'ed), which keeps the published map rather than
     rescanning on every lookup. Any other error raises: the catalog scan itself takes the same signature
     unguarded (``tools.skills_tool._skill_catalog``), and a swallowed bug would pin a stale map silently."""
-    from tools.skills_tool import _get_disabled_skill_names, _skill_search_dirs, _skills_scan_signature
+    from tools.skills_tool import _get_disabled_skill_names, skill_search_dirs, _skills_scan_signature
     try:
-        roots, _active = _skill_search_dirs()
+        roots, _active = skill_search_dirs()
         return _skills_scan_signature([d for _tier, d in roots], _get_disabled_skill_names())
     except OSError:
         logger.debug("Skill dir signature failed", exc_info=True)

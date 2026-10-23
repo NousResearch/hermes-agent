@@ -1,6 +1,6 @@
 name: hermes-windows-ops
 repo: https://github.com/Yicheng-Mark/hermes-windows-ops
-sha: cc67f6e25ee56580ae6bff8498aba9ed79ae0445
+sha: 02512e4b545d09ee837d269c7261aaeb363cac8d
 description: >-
   Windows and WSL triage skills for Hermes: processes that survive a quit
   (orphaned stdio MCP trees, lingering python/uv/node children), WSL-to-Windows

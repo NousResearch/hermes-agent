@@ -211,8 +211,9 @@ async def test_no_scheduler_starts_the_fresh_fifo_before_reset_cleanup_finishes(
 
 @pytest.mark.asyncio
 async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(native, monkeypatch):
-    """A retry of queued B and a new D that reserved the old route before the reset commit after
-    the re-home: B dedupes onto its moved row (same admission id), D queues behind it there."""
+    """A retry of queued B that reserved the old route before the reset commits after the re-home,
+    deduped onto its moved row (same admission id); D, the chat's next input, waits for it at the
+    route's admission turn and queues behind it there."""
     import threading
     from gateway.session_results import execution_result
     runner, authority, db = native.runner, native.authority, native.authority.db
@@ -230,10 +231,11 @@ async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(
     monkeypatch.setattr(authority, "_reserve_route", held_reserve)
     late = [asyncio.create_task(_admit(native, "B", admitted[1][0])), asyncio.create_task(_admit(native, "D"))]
     for _ in range(250):
-        if len(held) == 2:
+        if held:
             break
         await asyncio.sleep(0.02)
-    assert [sid for sid, _ in held] == [old.session_id] * 2
+    await asyncio.wait({late[1]}, timeout=0.2)
+    assert [sid for sid, _ in held] == [old.session_id]  # D waits behind B's admission
     executed, fresh = [], {}
 
     async def turn(event, source, session_key, run_generation):

@@ -40,6 +40,8 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const lifetime = useRef<AbortController | null>(null)
+  // Files still to upload in the running batch; a paste or drop during it joins instead of being lost.
+  const queued = useRef<File[] | null>(null)
 
   useLayoutEffect(() => {
     const controller = new AbortController()
@@ -54,11 +56,20 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
   useImperativeHandle(ref, () => ({ upload: files => void upload(files) }))
 
   async function upload(files: File[]) {
-    if (readOnly || busy) {return}
+    if (readOnly) {return}
+
+    if (queued.current) {
+      queued.current.push(...files)
+
+      return
+    }
+
+    const pending = [...files]
+    queued.current = pending
     setBusy(true); setError(''); onUploadingChange?.(true)
     let next = attachments
 
-    try { for (const file of files) {
+    try { for (let file = pending.shift(); file; file = pending.shift()) {
       const data = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader()
         reader.onload = () => resolve(String(reader.result).split(',', 2)[1])
@@ -76,7 +87,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
       next = [...next, { attachment_id, kind, name, mime, size }]
       onChange?.(next)
     } } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-    finally { setBusy(false); onUploadingChange?.(false) }
+    finally { queued.current = null; setBusy(false); onUploadingChange?.(false) }
   }
 
   async function download(attachment: Attachment) {

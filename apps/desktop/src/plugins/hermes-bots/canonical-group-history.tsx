@@ -83,12 +83,12 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   useEffect(() => {
     const el = box.current
 
-    if (near || !el) {return}
+    if (near || disabled || !el) {return}
     const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) {setNear(true)} }, { rootMargin: '200px' })
     observer.observe(el)
 
     return () => observer.disconnect()
-  }, [near])
+  }, [near, disabled])
 
   useEffect(() => {
     if (disabled || !near || !attachmentId || !previewable) {return}
@@ -101,7 +101,8 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
       setSrc(url)
     }, () => undefined)
 
-    return () => { cancelled = true; URL.revokeObjectURL(url); setSrc('') }
+    // Dropping `near` makes a re-shown room wait on the observer again, not refetch every preview seen so far at once.
+    return () => { cancelled = true; URL.revokeObjectURL(url); setSrc(''); setNear(false) }
   }, [connectionId, profile, roomId, eventId, attachmentId, disabled, near, previewable])
 
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null

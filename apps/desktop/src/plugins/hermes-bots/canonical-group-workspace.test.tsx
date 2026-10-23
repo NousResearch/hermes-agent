@@ -20,7 +20,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
     RowButton: (p: ComponentProps<'button'>) => <button type="button" {...p} />,
     host: { ...gateway.host, requestProfile: request } }
 })
-import { registerCanonicalGroup } from './canonical-group-registry'
+import { host } from '@hermes/plugin-sdk'
+
+import { $canonicalGroupBindings, CanonicalGroupList, registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { $groupChatWorkspace } from './group-chat'
@@ -263,6 +265,28 @@ it('leaves the in-panel room after a disband even though no tab supplies onBack'
   await waitFor(() => expect($groupChatWorkspace.get()).toBeNull())
 })
 
+it('drops a disbanded room from the sidebar list and its bindings, with the disbanded toast', async () => {
+  vi.mocked(host.notify).mockClear()
+  let disbanded = false
+  const room = { room_id: 'gone', name: 'Doomed', members: [] }
+  request.mockImplementation(async (_route, method) => method === 'groups.disband' ? (disbanded = true, {})
+    : method === 'groups.capabilities' ? { driver: true } : method === 'groups.list' ? { rooms: disbanded ? [] : [room], next_offset: null }
+      : roomReads()(method) ?? {})
+  render(<CanonicalGroupList onOpen={vi.fn()} />)
+  await screen.findByRole('button', { name: 'Doomed' })
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'gone', roomName: 'Doomed' }
+  const key = registerCanonicalGroup(binding, room)
+  render(<CanonicalGroupWorkspace binding={binding} onBack={vi.fn()} />)
+  const disband = await screen.findByRole('button', { name: /disband/i }) as HTMLButtonElement
+  await waitFor(() => expect(disband.disabled).toBe(false))
+  fireEvent.click(disband)
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /disband/i }))
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Doomed' })).toBeNull())
+  expect($canonicalGroupBindings.get()[key]).toBeUndefined()
+  // This fixture's plugin i18n mock answers with the key: the legacy view's `group.disbanded` toast.
+  expect(host.notify).toHaveBeenCalledExactlyOnceWith({ kind: 'success', message: 'group.disbanded' })
+})
+
 it('@-completes room members with the exact handle the gateway resolves', async () => {
   request.mockImplementation(async (_route, method) => roomReads([{ member_id: 'm1', profile: 'ops', handle: 'ops-2', display_name: 'Ops Bot' }])(method) ?? {})
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'mentions' }} />)
@@ -300,4 +324,45 @@ it('uploads pasted and dropped files through the room upload and previews commit
   fireEvent.drop(box, { dataTransfer: { files: [new File(['b'], 'b.txt', { type: 'text/plain' })], types: ['Files'] } })
   await screen.findByText('b.txt')
   expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.upload').map(c => [c[2].name, c[2].kind])).toEqual([['a.png', 'image'], ['b.txt', 'file']])
+})
+
+it('re-gates previews on the observer after the room is hidden and shown, instead of refetching them all at once', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  const image = { attachment_id: 'img', kind: 'image', name: 'shot.png', mime: 'image/png', size: 1 }
+  const events = [{ seq: 1, room_id: 'toggle', event_id: 'e1', kind: 'message.member', payload: { attachments: [image] } }]
+  request.mockImplementation(async (_route, method) => roomReads([], events)(method)
+    ?? (method === 'groups.attachment.download' ? { ...image, data_base64: 'QQ==' } : {}))
+  const observers: IntersectionObserverCallback[] = []
+  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
+  const downloads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.download').length
+  const binding = { connectionId: 'local', profile: 'team', roomId: 'toggle' }
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect(observers).toHaveLength(1))
+  act(() => observers[0]([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))
+  await screen.findByRole('img', { name: 'shot.png' })
+  view.rerender(<CanonicalGroupWorkspace binding={binding} visible={false} />)
+  view.rerender(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect(observers).toHaveLength(2))
+  expect(downloads()).toBe(1)
+  act(() => observers[1]([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))
+  await waitFor(() => expect(downloads()).toBe(2))
+})
+
+it('uploads a file pasted while another upload runs once that one finishes, instead of dropping it', async () => {
+  let release!: () => void
+  const receipt = (params: Record<string, string>) => ({ attachment_id: `att-${params.name}`, kind: params.kind, name: params.name, mime: params.mime, size: 1 })
+  request.mockImplementation(async (_route, method, params) => roomReads()(method) ?? (method !== 'groups.attachment.upload' ? {}
+    : params.name === 'first.png' ? new Promise(resolve => { release = () => resolve(receipt(params)) }) : receipt(params)))
+  const uploads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.upload').map(c => c[2].name)
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'queue' }} />)
+  const box = screen.getByRole('textbox')
+  await waitFor(() => expect((box as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.paste(box, { clipboardData: { files: [new File(['a'], 'first.png', { type: 'image/png' })], types: ['Files'] } })
+  await waitFor(() => expect(uploads()).toEqual(['first.png']))
+  fireEvent.paste(box, { clipboardData: { files: [new File(['b'], 'second.txt', { type: 'text/plain' })], types: ['Files'] } })
+  await act(async () => release())
+  await screen.findByText('second.txt')
+  expect(screen.getByText('first.png')).toBeTruthy()
+  expect(uploads()).toEqual(['first.png', 'second.txt'])
 })

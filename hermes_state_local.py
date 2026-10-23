@@ -9,10 +9,16 @@ API_BINDING_PREFIX = 'gateway.api.binding.v1.'
 API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
 
-def commit_local_session(db, *, epoch, receipt):
+def commit_local_session(db, *, epoch, receipt, legacy_attestor=None):
     """Reserve the row, route and immutable policy together, before publication. A staged receipt's
     ``on_create`` (owner memory, never stored) is published by the transaction that creates the row
-    and withdrawn if that transaction fails: an exact retry, a refused or a losing attempt adds none."""
+    and withdrawn if that transaction fails: an exact retry, a refused or a losing attempt adds none.
+
+    ``legacy_attestor`` is an in-process, transaction-scoped callable (never serialised into the
+    receipt or state_meta) used only by the legacy-adoption commit: it is invoked again *inside* the
+    write transaction when ``bind_legacy_target`` re-validates the unrouted row, so the host's
+    live-provider attestation cannot be reused across a row that changed between check and commit.
+    """
     on_create = getattr(receipt, 'on_create', None)
     request = getattr(receipt, 'client_request', None)  # the staged request's own client_env, never stored
     if request is None:
@@ -52,7 +58,7 @@ def commit_local_session(db, *, epoch, receipt):
             raise RuntimeStoreError('admission_conflict')
         if 'legacy_session_id' in receipt:
             from hermes_state_local_migration import bind_legacy_target
-            bind_legacy_target(db, conn, receipt)
+            bind_legacy_target(db, conn, receipt, host_login_attestor=legacy_attestor)
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()

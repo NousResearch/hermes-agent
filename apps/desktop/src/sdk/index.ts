@@ -59,6 +59,7 @@ import {
   retainGatewayForRelay,
   retireLocalProfileGateways
 } from '@/store/gateway'
+import { revealFileInTree } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -555,6 +556,8 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  /** Request selection in the active workspace tree; the tree rejects paths outside its cwd. */
+  revealFileInTree: (path: string): void => revealFileInTree(path),
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),

@@ -17,6 +17,9 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { useContributions } from '@/contrib'
+import { SESSION_AREAS } from '@/contrib/session'
+import { SessionContributions } from '@/contrib/session-contributions'
 import { type Translations, useI18n } from '@/i18n'
 import { todoTree } from '@/lib/todos'
 import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
@@ -27,6 +30,7 @@ import {
   type ComposerStatusItem,
   dismissBackgroundProcess,
   groupStatusItems,
+  needsBackgroundRefresh,
   refreshBackgroundProcesses,
   type StatusGroup,
   stopBackgroundProcess
@@ -48,7 +52,8 @@ import { SubagentSection } from './subagent-section'
 import { useSubagentSnapshot } from './use-subagent-snapshot'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
-// emit no event when they die). Only armed while a running row is on screen.
+// emit no event when they die) and for results still owed to the agent.
+// Only armed while such a row is on a visible pane.
 const BACKGROUND_POLL_MS = 5_000
 
 // A localhost/loopback preview is only meaningful while its dev server is up, so
@@ -111,6 +116,7 @@ interface ComposerStatusStackProps {
  */
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
+  const pluginRows = useContributions(SESSION_AREAS.statusStack)
   const navigate = useNavigate()
   const storedSessionId = useStore(useSessionView().$storedId)
   const interfaceMode = useStore($interfaceMode)
@@ -187,9 +193,12 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // poll (event-driven refreshes in use-message-stream still land through the
   // store) and resume it on reveal via `paneVisible` in the dep array.
   const paneVisible = usePaneVisible()
+  // An exited process whose notice has not reached the agent yet still needs
+  // the poll, or its Monitoring state would never learn of the settle.
+  const needsBackgroundPoll = allGroups.some(g => g.type === 'background' && g.items.some(needsBackgroundRefresh))
 
   useEffect(() => {
-    if (!sessionId || !hasRunningBackground || !paneVisible) {
+    if (!sessionId || !needsBackgroundPoll || !paneVisible) {
       return
     }
 
@@ -200,7 +209,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
     }, BACKGROUND_POLL_MS)
 
     return () => clearInterval(timer)
-  }, [hasRunningBackground, sessionId, paneVisible])
+  }, [needsBackgroundPoll, sessionId, paneVisible])
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 
@@ -339,6 +348,34 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
     })
   }
 
+  const hasCoreSections = sections.length > 0 || Boolean(queue)
+
+  if (sessionId && pluginRows.length > 0) {
+    // Every other section in the stack is self-delimiting: status groups carry
+    // a caret + icon + label header, the billing wall and session control have
+    // their own chrome. A plugin's contribution is raw content with none of
+    // that, so dropped straight under the section above it it reads as a
+    // footnote of that section rather than as its own status. One hairline
+    // gives it an edge — only when something actually precedes it, so a lone
+    // plugin row never carries a stray line above it, and two headered
+    // sections are never separated by a divider they don't need.
+    const followsSection = sections.length > 0
+
+    sections.push({
+      key: 'session-contributions',
+      node: (
+        // Matches a StatusSection header's inset, so the row shares the stack's
+        // gutter instead of sitting at its own left edge.
+        <div
+          className={cn('px-2 py-1 empty:hidden', followsSection && 'border-t border-(--ui-stroke-tertiary)')}
+          data-session-contribution-content=""
+        >
+          <SessionContributions area={SESSION_AREAS.statusStack} runtimeSessionId={sessionId} />
+        </div>
+      )
+    })
+  }
+
   if (queue) {
     sections.push({ key: 'queue', node: queue })
   }
@@ -368,7 +405,10 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       // In flow in the dock column, directly above the composer. The dock is
       // bottom-anchored, so this grows upward over the thread without needing
       // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
+      className={cn(
+        'flex max-h-[40vh] min-h-0 flex-col overflow-hidden',
+        !hasCoreSections && '[&:not(:has([data-session-contribution-content]:not(:empty)))]:hidden'
+      )}
       data-slot="composer-status-stack"
       onPointerDownCapture={() => blurComposerInput()}
     >

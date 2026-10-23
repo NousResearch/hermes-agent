@@ -491,7 +491,7 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
             if _should_emit_cleanup_session_finalize(cleanup_session_id):
                 # Printed by _print_exit_summary, which clears the screen first.
                 _session_end_messages.extend(
-                    _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown"))
+                    _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown", agent=_active_agent_ref))
         try:
             _shutdown_agent_memory_provider(_active_agent_ref)
         except Exception as e:
@@ -1272,18 +1272,21 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         answered = gateway_plugin_commands.run(self, base_cmd.lstrip("/"), user_args)
         if answered:
             return answered  # ran beside the plugin's hooks, tools and MCP servers in the gateway, or GONE
-        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command, plugin_command_context
         from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
         plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
         if not plugin_handler:
             return
-        session_id = getattr(self, "session_id", None) or ""
         from hermes_cli.plugin_choices import bind_asker, clarify_asker
         try:
+            agent = getattr(self, "agent", None)
+            stored_id = getattr(self, "session_id", None)
+            context = plugin_command_context(
+                session_id=getattr(agent, "session_id", None) or stored_id, session_key=stored_id,
+                platform="cli", task_id=getattr(agent, "_current_task_id", None),
+                stored_session_id=stored_id, surface="cli")
             with bind_asker(clarify_asker(self._clarify_callback)):  # ctx.ask_choice: the clarify panel
-                result = resolve_plugin_command_result(invoke_plugin_command(
-                    plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
-                    platform="cli"))
+                result = resolve_plugin_command_result(invoke_plugin_command(plugin_handler, user_args, **context))
             if result:
                 _cprint(str(result))
         except Exception as e:

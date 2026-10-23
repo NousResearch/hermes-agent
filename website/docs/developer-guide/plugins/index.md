@@ -1773,8 +1773,14 @@ After registration, users can type `/mystatus` in any session. The command appea
 | `session_key` | The routing key of the calling chat. |
 | `platform` | Where the command came from: `telegram`, `discord`, …, `local` (CLI/Desktop sessions owned by the gateway), `cli`, `tui`, `desktop`. |
 | `source` | The adapter-derived `gateway.session.SessionSource` (`user_id`, `chat_id`, `chat_type`, `thread_id`, …) when the gateway dispatched the command, else `None`. |
+| `task_id` | Execution identity: desktop/TUI's durable session key, the messaging session id, or the CLI agent's current task id (`None` before the first turn). Never the desktop runtime UUID. |
+| `runtime_session_id` | Desktop/TUI runtime handle, or `None` elsewhere. |
+| `stored_session_id` | Durable id used to resume the conversation (may differ from the current agent id). |
+| `profile` | Owning profile name (`default`, a named profile, or `custom` for an arbitrary home). |
+| `hermes_home` | Owning profile's `pathlib.Path`; use this rather than reading the process environment. |
+| `surface` | `cli`, `gateway` (messaging chats), `local` (gateway-owned CLI/Desktop sessions), or the desktop/TUI session's source (`desktop`, `tui`, …). |
 
-Every surface passes them: messaging platforms, the classic CLI, the TUI and Desktop. Sync handlers run in the gateway executor and async handlers are awaited, as before.
+Every surface passes them: messaging platforms, the classic CLI, the TUI and Desktop. Unavailable identities are empty or `None`; they are invocation snapshots, not live agent or session objects. A command never creates a session: in a messaging chat with no session yet, `session_id` is empty until the first message. Commands that act on session-owned resources should refuse a missing identity rather than guess from a process-global "last session". Desktop/TUI lookup and execution use the session's own profile. Sync handlers run in the gateway executor and async handlers are awaited, as before.
 
 ```python
 def _handle_whoami(raw_args: str, *, session_id: str = "", platform: str = "", source=None) -> str:
@@ -2589,3 +2595,72 @@ def handler(args, **kwargs):
 # Good — model knows exactly when and how
 "description": "Evaluate a mathematical expression. Use for arithmetic, trig, logarithms. Supports: +, -, *, /, **, sqrt, sin, cos, log, pi, e."
 ```
+
+
+## Consented native runtime setup
+
+Native directory plugins may declare `setup: {entrypoint: setup.py}` in
+`plugin.yaml`. This is management-only metadata; discovery, lists, sessions,
+and tool calls **never invoke setup** or refresh cached prompts/toolsets.
+
+The entrypoint must be a regular, non-symlink `setup.py` at the root of a
+trusted installed or bundled package. Traversal, absolute entrypoints, and
+symlinked package paths are refused. This is trusted plugin execution, **not a
+sandbox**. The file provides two functions receiving the owning profile's
+explicit `pathlib.Path` home:
+
+- `describe(hermes_home)` returns `{revision: str, ready: bool, summary: str,
+  details: list[str]}`. It must be read-only: no downloads, processes, or writes.
+  Include exact public URLs, profile destinations, hashes, platform support,
+  and prerequisites. Change the revision whenever the reviewed installation
+  changes. Readiness must attest to a verified runtime and completed setup,
+  not merely enabled configuration or file existence.
+- `run(hermes_home)` performs the consented installation and verifies the actual
+  runtime binary and prerequisites. Raise an actionable error on failure; its
+  return value is ignored. Keep setup idempotent and recoverable. Runtime
+  files are plugin-owned: a failed attempt may leave partial files, which the
+  host does not roll back.
+
+Each function runs in a separate `python -I -B` subprocess, with explicit child
+`HERMES_HOME` and package cwd, without importing the plugin into the gateway.
+Standalone entrypoints should use exact-path imports for package helpers.
+Timeouts are 15 seconds for describe and 300 seconds for run. After run, a fresh
+description must report ready at the same reviewed revision before enablement
+is saved. Failure or declined consent preserves prior enablement. Managed
+enable transactions are serialized per profile. Existing conversations retain
+their startup snapshots; restart the owning gateway to adopt saved changes.
+
+CLI enable shows the full description and asks a separate default-No setup
+question. `install --enable`, packs, and checkbox selection are not setup
+consent. Noninteractive callers must supply the exact JSON object printed by
+a refused attempt using `enable NAME --setup-consent '<JSON>'` (also supported
+by install). The object contains exactly `key` (canonical plugin key),
+`hermes_home` (canonical owning profile path), and `revision`. There is no
+blanket yes grant. Plugins without setup retain ordinary activation behavior.
+
+Desktop uses the existing confirmation dialog to show the reviewed setup,
+profile, and revision, with busy and inline failure/retry states. The switch
+stays off until the backend confirms success.
+
+The existing `plugins.manage` toggle/install actions accept optional
+`setup_consent` containing that reviewed object. Refusals retain JSON-RPC code
+5026 and include the full structured result in `error.data`:
+
+```json
+{
+  "ok": false,
+  "status": "consent_required",
+  "name": "example",
+  "error": "Review native setup and explicitly consent before enabling this plugin.",
+  "setup": {"revision": "reviewed-revision", "ready": false, "summary": "Install runtime", "details": []},
+  "consent": {"key": "example", "hermes_home": "/profile/home", "revision": "reviewed-revision"}
+}
+```
+
+Setup failures use `status: "setup_failed"` and an actionable error.
+Install-and-enable refusals include `installed: true` and `plugin_name`: files
+were installed, but activation was not saved. Retry **enable**, not cloning.
+Selected-profile RPC scope is retained. REST enable/install endpoints accept
+`{"setup_consent": {...}}` and return setup refusals as HTTP 409 with the same
+object in `detail`. Older clients can display the refusal and continue through
+CLI enable; no surface silently runs setup.

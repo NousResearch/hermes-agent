@@ -14,8 +14,10 @@ import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
 import { zhNotifications } from './zh_notifications'
 import { zhOnboarding } from './zh_onboarding'
+import { zhPluginsTab } from './zh_plugins_tab'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhSidebarRow } from './zh_sidebar_row'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
@@ -612,6 +614,17 @@ export const zhOverrides = {
       reveal: '在文件管理器中显示',
       failed: '失败',
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
+      agent: {
+        setupInstalled: '文件已安装；启用状态未更改。打开插件设置并启用此插件以查看或重试设置。',
+        reviewSetup: '在插件中查看设置',
+        setupTitle: '原生插件设置',
+        setupConfirm: '设置并启用',
+        setupBusy: '正在设置…',
+        setupTrust: '这将在选定后端运行受信任的插件代码。现有会话保持不变；重启网关后生效。'
+      },
+      agentHalfMissing: '此处缺少 agent 部分',
+      agentHalfMissingTip:
+        '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
       installModal: {
         installFromGit: '从 Git 安装',
         reviewRepository: '检查仓库',
@@ -2047,6 +2060,7 @@ export const zhOverrides = {
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
+      ...zhPluginsTab,
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
       pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
@@ -2063,16 +2077,12 @@ export const zhOverrides = {
         `桌面部分已加载到本应用，但 agent 部分尚未安装到 ${profile}。在那里安装它。`,
       installAgentHereNoOrigin:
         '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
-      desktopHalfPending: '复制中…',
-      desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
-      desktopHalfRemote: '不可用（远程后端）',
-      desktopHalfRemoteTip:
-        '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
       emptyAll: '还没有插件。',
       empty: '此配置尚未安装任何 agent 插件。',
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
       loadFailed: '无法加载 agent 插件',
       toggleFailed: (name: string) => `无法切换 ${name}`,
+      enabledRestartRequired: (name: string) => `${name} 已启用。其 Python 依赖已为下次启动安装，请重启 Hermes 以加载它。`,
       legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
       portableBadge: '便携',
       alreadyInstalled: (name: string) => `${name} 已安装在此配置中。`,
@@ -3100,52 +3110,7 @@ export const zhOverrides = {
     loadCount: step => `再加载 ${step} 个`,
     messageCount: count => `${count} 条消息`,
     toolCallCount: count => `${count} 次工具调用`,
-    row: {
-      pin: '置顶',
-      unpin: '取消置顶',
-      markUnread: '标记为未读',
-      markRead: '标记为已读',
-      unreadFailed: '无法更新未读状态',
-      copyId: '复制 ID',
-      export: '导出',
-      branchFrom: '分支',
-      rename: '重命名…',
-      archive: '归档',
-      unarchive: '取消归档',
-      newWindow: '新窗口',
-      openInTerminal: '在终端中打开',
-      hideTabBar: '隐藏标签栏',
-      openInNewTab: '在新标签页中打开',
-      openInSplit: '在分屏中打开',
-      copyIdFailed: '无法复制会话 ID',
-
-      sessionActions: '会话操作',
-      sessionRunning: '会话运行中',
-      needsInput: '需要你输入',
-      waitingForAnswer: '正在等待你的回答',
-      finishedUnread: '已完成 — 未读',
-      backgroundRunning: '后台任务运行中',
-      draftSession: '草稿 — 尚未发送',
-      handoffOrigin: platform => `从 ${platform} 转接`,
-      continuationOrigin: '自动延续 — 此对话已压缩并延续',
-      ownedByProfile: profile => `配置档：${profile}`,
-      renamed: '已重命名',
-      renameFailed: '重命名失败',
-      renameTitle: '重命名会话',
-      renameDesc: '留空则清除。',
-      untitledPlaceholder: '无标题会话',
-      deleteTitle: '删除会话？',
-      deleteDesc: title => `这将永久删除“${title}”，且无法撤销。`,
-      deleting: '正在删除…',
-      deleted: '会话已删除',
-      untitledChat: id => `会话 ${id}`,
-      messageCount: count => `${count} 条消息`,
-      todoProgress: '任务完成度',
-      ageNow: '刚刚',
-      ageDay: '天',
-      ageHour: '时',
-      ageMin: '分'
-    },
+    row: zhSidebarRow,
     dateDivider: {
       today: '今天早些时候',
       yesterday: '昨天',

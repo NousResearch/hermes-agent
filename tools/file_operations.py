@@ -917,9 +917,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
         if flag in ("0", "false", "no", "off"):
             return False
-        # Same "is this env the local host" test the LSP path uses; isinstance is
-        # microseconds and self.env is never rebound, so nothing to memoize.
-        return sys.platform != "win32" and self._lsp_local_only()
+        # Context-bound local environments still require their backend's command
+        # prefix and environment routing; native I/O would bypass both.
+        return (sys.platform != "win32" and self._lsp_local_only()
+                and self.env.execution_context is None)
 
     def _native_path(self, path: str) -> str:
         """``path`` resolved the way the shell resolves it: against the live backend cwd."""

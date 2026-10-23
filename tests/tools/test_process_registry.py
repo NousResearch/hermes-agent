@@ -289,6 +289,44 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert moved == ["proc_reader_live"]
 
 
+def test_reader_strips_shell_noise_split_across_reads(registry, monkeypatch):
+    """bash may write its two job-control warnings separately; neither reaches output."""
+
+    class _FakeBuffer:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read1(self, _n):
+            return self._chunks.pop(0) if self._chunks else b""
+
+    class _FakeStdout:
+        def __init__(self, chunks):
+            self.buffer = _FakeBuffer(chunks)
+
+    class _FakeProcess:
+        def __init__(self, chunks):
+            self.stdout = _FakeStdout(chunks)
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    session = _make_session(sid="proc_reader_split_noise")
+    session.process = _FakeProcess([
+        b"bash: cannot set terminal process group (1): Inappropriate ioctl for device\n",
+        b"bash: no job control in this shell\n",
+        b"/work\n",
+        b"bash: no job control in this shell\n",
+    ])
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+
+    registry._reader_loop(session)
+
+    # Only leading startup noise is stripped; the same text after real output is kept.
+    assert session.output_buffer == "/work\nbash: no job control in this shell\n"
+
+
 def test_reader_waits_past_early_stdout_eof_before_publishing_completion(registry, monkeypatch):
     """Closing stdout is not process completion; the reader must still reap the child."""
 

@@ -14,8 +14,10 @@ import { deNotices } from './de_notices'
 import { deNotifications } from './de_notifications'
 import { deOnboarding } from './de_onboarding'
 import { dePluginUpdate } from './de_plugin_update'
+import { dePluginsTab } from './de_plugins_tab'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deSidebarRow } from './de_sidebar_row'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -2443,6 +2445,7 @@ export const deOverrides = {
     skillArchivedMessage: 'Wiederherstellbar über „hermes curator restore“.',
     tabPlugins: 'Plugins',
     plugins: {
+      ...dePluginsTab,
       agentTitle: 'Agent-Plugins',
       agentBlurb:
         'Erweitert den Agenten für das gewählte Profil — Tools, Hooks, Anbieter. Wirkt nach einem Gateway-Neustart.',
@@ -2460,17 +2463,13 @@ export const deOverrides = {
         `Die Desktop-Hälfte ist in dieser App geladen, aber die Agent-Hälfte ist in ${profile} nicht installiert. Installieren Sie sie dort.`,
       installAgentHereNoOrigin:
         'Die Agent-Hälfte ist in diesem Profil nicht installiert, und dieses Paket wurde von Hand hineinkopiert (kein Katalogeintrag und kein Git-Remote), daher kann es nicht von hier aus installiert werden. Kopieren Sie seinen Ordner ins Profil oder installieren Sie es neu aus Git.',
-      desktopHalfPending: 'wird kopiert…',
-      desktopHalfPendingTip:
-        'Dieses Paket enthält eine Desktop-Hälfte, die noch nicht in die App kopiert wurde. Verwenden Sie „Erneut scannen“ oder starten Sie die App neu.',
-      desktopHalfRemote: 'nicht verfügbar (Remote-Backend)',
-      desktopHalfRemoteTip:
-        'Die Desktop-Hälfte dieses Pakets liegt auf der Festplatte des Remote-Backends, die diese App nicht lesen kann. Um sie hier zu nutzen, führen Sie „Aus Git installieren“ mit der Repository-URL des Pakets und aktiviertem Desktop-Ziel aus – dadurch wird die Desktop-Hälfte auf diesen Rechner geklont.',
       emptyAll: 'Noch keine Plugins.',
       empty: 'Für dieses Profil sind keine Agent-Plugins installiert.',
       emptyHint: 'Durchsuchen Sie unten den Katalog und installieren Sie ein geprüftes Plugin mit einem Klick.',
       loadFailed: 'Agent-Plugins konnten nicht geladen werden',
       toggleFailed: name => `${name} konnte nicht umgeschaltet werden`,
+      enabledRestartRequired: (name: string) =>
+        `${name} ist aktiviert. Seine Python-Abhängigkeiten wurden für den nächsten Start installiert; starten Sie Hermes neu, um es zu laden.`,
       toolsetOn: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} aktiviert`,
       toolsetOff: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} deaktiviert`,
       toolsetToggleFailed: (name: string) =>
@@ -2478,17 +2477,6 @@ export const deOverrides = {
       legacyBackend:
         'Dieses Backend ist älter als schlüsseladressierte Plugin-Schalter — aktualisieren Sie Hermes, um es hier zu verwalten.',
       portableBadge: 'tragbar',
-      serverStates: {
-        connected: 'verbunden',
-        app_not_running: 'App läuft nicht',
-        hermes_not_connected: 'MCP-Verbindung fehlt',
-        endpoint_unavailable: 'Endpunkt nicht verfügbar',
-        no_interactive_session: 'keine interaktive Session',
-        version_too_old: 'Version zu alt',
-        missing_app: 'App fehlt',
-        unsupported_gpu: 'GPU nicht unterstützt',
-        unknown: 'Status unbekannt'
-      },
       alreadyInstalled: name => `${name} ist in diesem Profil bereits installiert.`,
       catalogProvenance: sha => `Aus dem Hermes-Katalog installiert${sha ? ` am Pin ${sha}` : ''}.`,
       pinnedProvenance: sha =>
@@ -3640,51 +3628,7 @@ export const deOverrides = {
     loadCount: step => `${step} mehr laden`,
     messageCount: count => `${count} ${count === 1 ? 'Nachricht' : 'Nachrichten'}`,
     toolCallCount: count => `${count} ${count === 1 ? 'Tool-Aufruf' : 'Tool-Aufrufe'}`,
-    row: {
-      pin: 'Anpinnen',
-      unpin: 'Lösen',
-      markUnread: 'Als ungelesen markieren',
-      markRead: 'Als gelesen markieren',
-      unreadFailed: 'Ungelesen-Status konnte nicht aktualisiert werden',
-      copyId: 'ID kopieren',
-      export: 'Exportieren',
-      branchFrom: 'Branch',
-      rename: 'Umbenennen…',
-      archive: 'Archivieren',
-      unarchive: 'Archivierung aufheben',
-      newWindow: 'Neues Fenster',
-      openInTerminal: 'Im Terminal öffnen',
-      hideTabBar: 'Tab-Leiste ausblenden',
-      openInNewTab: 'In neuem Tab öffnen',
-      openInSplit: 'Im Split öffnen',
-      copyIdFailed: 'Session-ID konnte nicht kopiert werden',
-      sessionActions: 'Session-Aktionen',
-      sessionRunning: 'Session läuft',
-      needsInput: 'Braucht Ihre Eingabe',
-      waitingForAnswer: 'Wartet auf Ihre Antwort',
-      finishedUnread: 'Abgeschlossen – ungelesen',
-      backgroundRunning: 'Hintergrundaufgabe läuft',
-      draftSession: 'Entwurf – noch nichts gesendet',
-      handoffOrigin: platform => `Übergeben von ${platform}`,
-      continuationOrigin: 'Automatische Fortsetzung — dieser Chat wurde komprimiert und fortgesetzt',
-      ownedByProfile: profile => `Profil: ${profile}`,
-      renamed: 'Umbenannt',
-      renameFailed: 'Umbenennen fehlgeschlagen',
-      renameTitle: 'Session umbenennen',
-      renameDesc: 'Leer lassen, um zu löschen.',
-      untitledPlaceholder: 'Unbenannte Session',
-      deleteTitle: 'Session löschen?',
-      deleteDesc: title => `Das löscht “${title}” dauerhaft. Das kann nicht rückgängig gemacht werden.`,
-      deleting: 'Wird gelöscht…',
-      deleted: 'Session gelöscht',
-      untitledChat: id => `Chat ${id}`,
-      messageCount: count => `${count} ${count === 1 ? 'Nachricht' : 'Nachrichten'}`,
-      todoProgress: 'Aufgaben abgeschlossen',
-      ageNow: 'jetzt',
-      ageDay: 'T',
-      ageHour: 'h',
-      ageMin: 'Min'
-    },
+    row: deSidebarRow,
     dateDivider: {
       today: 'Heute früher',
       yesterday: 'Gestern',

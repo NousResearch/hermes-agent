@@ -354,6 +354,7 @@ def install_pack_plugins(
     from hermes_cli.plugins_cmd import (
         PluginOperationError,
         _declared_capabilities_from_manifest,
+        _enable_plugin_cli,
         _install_plugin_core,
         _prompt_plugin_env_vars,
         _run_capability_consent,
@@ -393,7 +394,13 @@ def install_pack_plugins(
             logger.debug("requires_env prompt failed for %s", installed_name, exc_info=True)
 
         try:
-            _set_plugin_enabled(installed_name, enable=True)
+            if "setup" in manifest:
+                result = _enable_plugin_cli(installed_name, console)
+                if not result.get("ok"):
+                    _fail(display, result["error"] + " Files installed; retry `hermes plugins enable`.")
+                    continue
+            else:
+                _set_plugin_enabled(installed_name, enable=True)
         except AdmissionRefused as exc:
             _fail(display, str(exc))
             continue

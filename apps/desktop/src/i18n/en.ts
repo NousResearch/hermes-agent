@@ -21,8 +21,10 @@ import { enNotices } from './en_notices'
 import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
 import { enPluginUpdate } from './en_plugin_update'
+import { enPluginsTab } from './en_plugins_tab'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enSidebarRow } from './en_sidebar_row'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
@@ -774,6 +776,19 @@ export const en: Translations = {
       disable: 'Disable',
       failed: 'failed',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
+      agent: {
+        setupInstalled:
+          'Files installed; enablement was not changed. Open Plugins and enable this plugin to review or retry setup.',
+        reviewSetup: 'Review setup in Plugins',
+        setupTitle: 'Native plugin setup',
+        setupConfirm: 'Set up and enable',
+        setupBusy: 'Setting up…',
+        setupTrust:
+          'This runs trusted plugin code on the selected backend. Existing sessions stay unchanged; restart the gateway to activate.'
+      },
+      agentHalfMissing: 'agent half missing here',
+      agentHalfMissingTip:
+        'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
       installModal: {
         installFromGit: 'Install from Git',
         reviewRepository: 'Review repository',
@@ -2084,6 +2099,7 @@ export const en: Translations = {
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
+      ...enPluginsTab,
       agentTitle: 'Agent plugins',
       agentBlurb:
         'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
@@ -2101,34 +2117,19 @@ export const en: Translations = {
         `The desktop half is loaded in this app, but the agent half is not installed in ${profile}. Install it there.`,
       installAgentHereNoOrigin:
         'The agent half is not installed in this profile, and this package was copied in by hand (no catalog entry or git remote), so it cannot be installed from here. Copy its folder into the profile or reinstall from Git.',
-      desktopHalfPending: 'copying…',
-      desktopHalfPendingTip:
-        'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
-      desktopHalfRemote: 'unavailable (remote backend)',
-      desktopHalfRemoteTip:
-        "This package's desktop half is on the remote backend's disk, which this app cannot read. To use it here, run Install from Git with the package's repo URL and the Desktop target checked — that clones the desktop half onto this machine.",
       emptyAll: 'No plugins yet.',
       empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
       loadFailed: 'Could not load agent plugins',
       toggleFailed: (name: string) => `Could not toggle ${name}`,
+      enabledRestartRequired: (name: string) =>
+        `${name} is enabled. Its Python dependencies were installed for the next start, so restart Hermes to load it.`,
       toolsetOn: (name: string, profile: string) => `${name} agent tools enabled for ${profile}`,
       toolsetOff: (name: string, profile: string) => `${name} agent tools disabled for ${profile}`,
       toolsetToggleFailed: (name: string) =>
         `Could not toggle the ${name} agent tools; the Desktop panel was left unchanged`,
       legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
       portableBadge: 'portable',
-      serverStates: {
-        connected: 'connected',
-        app_not_running: 'app not running',
-        hermes_not_connected: 'MCP connection missing',
-        endpoint_unavailable: 'endpoint unavailable',
-        no_interactive_session: 'no interactive session',
-        version_too_old: 'version too old',
-        missing_app: 'app missing',
-        unsupported_gpu: 'GPU not supported',
-        unknown: 'status unknown'
-      },
       alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
       catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
@@ -3206,51 +3207,7 @@ export const en: Translations = {
     loadCount: step => `Load ${step} more`,
     messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
     toolCallCount: count => `${count} ${count === 1 ? 'tool call' : 'tool calls'}`,
-    row: {
-      pin: 'Pin',
-      unpin: 'Unpin',
-      markUnread: 'Mark as unread',
-      markRead: 'Mark as read',
-      unreadFailed: 'Could not update unread state',
-      copyId: 'Copy ID',
-      export: 'Export',
-      branchFrom: 'Branch',
-      rename: 'Rename…',
-      archive: 'Archive',
-      unarchive: 'Unarchive',
-      newWindow: 'New window',
-      openInTerminal: 'Open in terminal',
-      hideTabBar: 'Hide tab bar',
-      openInNewTab: 'Open in new tab',
-      openInSplit: 'Open in split',
-      copyIdFailed: 'Could not copy session ID',
-      sessionActions: 'Session actions',
-      sessionRunning: 'Session running',
-      needsInput: 'Needs your input',
-      waitingForAnswer: 'Waiting for your answer',
-      finishedUnread: 'Finished — unread',
-      backgroundRunning: 'Background task running',
-      draftSession: 'Draft — nothing sent yet',
-      handoffOrigin: platform => `Handed off from ${platform}`,
-      continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
-      ownedByProfile: profile => `Profile: ${profile}`,
-      renamed: 'Renamed',
-      renameFailed: 'Rename failed',
-      renameTitle: 'Rename session',
-      renameDesc: 'Leave empty to clear.',
-      untitledPlaceholder: 'Untitled session',
-      deleteTitle: 'Delete session?',
-      deleteDesc: title => `This will permanently delete “${title}”. This cannot be undone.`,
-      deleting: 'Deleting…',
-      deleted: 'Session deleted',
-      untitledChat: id => `Chat ${id}`,
-      messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
-      todoProgress: 'Tasks completed',
-      ageNow: 'now',
-      ageDay: 'd',
-      ageHour: 'h',
-      ageMin: 'm'
-    },
+    row: enSidebarRow,
     dateDivider: {
       today: 'Earlier today',
       yesterday: 'Yesterday',

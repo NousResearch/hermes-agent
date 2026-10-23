@@ -113,6 +113,13 @@ def _plan_goal_compression_recovery(
         "Run /compress, then /goal resume to continue.")
 
 
+def _release_prompt_claim_locked(session: dict, queued_prompt_generation: int | None) -> None:
+    """Release only this admission's claim; caller holds history_lock."""
+    if (queued_prompt_generation is None
+            or int(session.get("_running_prompt_generation", queued_prompt_generation)) == queued_prompt_generation):
+        session["running"] = False
+
+
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
@@ -128,7 +135,7 @@ def _admit_prompt_turn(
             session.get("session_key") or sid,
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
-            session["running"] = False
+            _release_prompt_claim_locked(session, queued_prompt_generation)
             session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
         if report_ownership_refusal:
             _emit("error", sid, {"message": str(ownership_refusal)})
@@ -137,7 +144,7 @@ def _admit_prompt_turn(
         if session.get("_closing") or (
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
-            session["running"] = False
+            _release_prompt_claim_locked(session, queued_prompt_generation)
             session.pop("_submit_user_row", None)
             if session.get("_closing") and session.get("active_session_lease") is not held_lease:
                 # Close stops waiting for this thread after a grace and then finalizes. A lease this
@@ -145,6 +152,7 @@ def _admit_prompt_turn(
                 # the session already held stays for close's own handoff (_settle_isolated_turn_before_close).
                 _release_active_session_slot(session)
             return None
+        session["_running_prompt_generation"] = int(session.get("_queued_prompt_generation", 0))
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:
             session["attached_images"] = []
@@ -472,8 +480,12 @@ def _run_post_turn_followups(
         # are requeued and ours are routed, so the reapers never see an owner whose notice is in nobody's hands.
         with _session_profile_runtime_scope(session), drained_for(process_registry, owns) as mine:
             deferred = []
+            surfaced = [evt for evt in mine if should_surface_notification(evt)]
+            for evt in mine:
+                if not any(evt is kept for kept in surfaced):
+                    process_registry.settle_notification(evt)  # deliberately dropped: nothing is owed any more
             _notif_handle_ready(
-                sid, session, [evt for evt in mine if should_surface_notification(evt)],
+                sid, session, surfaced,
                 session.setdefault("_notification_emitted", set()), process_registry,
                 format_process_notification, deferred, owned=True)
             for event in deferred:
@@ -1235,7 +1247,7 @@ def _run_prompt_submit(
             can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
     if not can_start:
         with session["history_lock"]:
-            session["running"] = False
+            _release_prompt_claim_locked(session, queued_prompt_generation)
     return can_start
 
 

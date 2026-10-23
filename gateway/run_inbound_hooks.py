@@ -19,6 +19,7 @@ import sys
 from typing import Optional, Tuple
 
 from agent.i18n import t
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_context
 
@@ -248,13 +249,19 @@ class GatewayInboundHooksMixin:
         """Plugin-registered slash command *command* → ``(handled, result, command)``. No quick
         commands: a local session resolves those in its own profile before calling this."""
         # Underscores normalize to hyphens so Telegram's underscored autocomplete form matches
-        # plugin commands registered with hyphens.
+        # plugin commands registered with hyphens. Under multiplexed profiles the handler is looked
+        # up and run in the chat's own profile, so ``profile``/``hermes_home`` name its owner.
         if command:
             try:
+                from gateway.run import _async_profile_runtime_scope
                 from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command
+
+                scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+                         if getattr(self.config, "multiplex_profiles", False) else contextlib.nullcontext())
+                async with scope:
+                    plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                    if plugin_handler:
+                        return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
         return False, None, command
@@ -282,13 +289,16 @@ class GatewayInboundHooksMixin:
         if session_entry is None:
             _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip() if args is None else args
-        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command, plugin_command_context
         from gateway.plugin_messages import bind_live_source
         from gateway.plugin_command_choice import chat_choices
-        call = functools.partial(
-            invoke_plugin_command, plugin_handler, user_args, source=source,
-            session_id=_plugin_context.session_id or "", session_key=_plugin_context.session_key or "",
-            platform=source.platform.value)
+        session_id = _plugin_context.session_id or ""
+        context = plugin_command_context(
+            source=source, session_id=session_id, session_key=_plugin_context.session_key,
+            platform=source.platform.value, task_id=session_id, stored_session_id=session_id,
+            # A gateway-owned CLI/Desktop session is local; only messaging chats are remote.
+            surface="local" if source.platform is Platform.LOCAL else "gateway")
+        call = functools.partial(invoke_plugin_command, plugin_handler, user_args, **context)
         # ctx.post_message from the handler reaches this chat even before its session is stored;
         # ctx.ask_choice asks it with the clarify prompt.
         with (self._session_env_scope(_plugin_context), bind_live_source(source),

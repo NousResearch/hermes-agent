@@ -1,12 +1,14 @@
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
+import { $apiRequestScope } from '@/api/client'
 import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
+import { type PluginSettingsScope, PluginSettingsSlot } from '@/contrib/plugin-settings'
 import { $pluginRecords, enablePackageDesktopHalf, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
@@ -28,13 +30,14 @@ import {
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
-  removeAgentPlugin,
-  toggleAgentPlugin
+  removeAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
+import { scanPluginFleet } from '@/store/plugin-fleet-updates'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
@@ -45,8 +48,11 @@ import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
 import { CatalogSwitch } from '../catalog/catalog-switch'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
+import { AgentPluginToggle } from './agent-plugin-toggle'
+import { FleetUpdateAllButton, FleetUpdateHost } from './fleet-update-dialog'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
-import { runPluginUpdate } from './plugin-update'
+import { runPluginUpdate, updateTargetLabel } from './plugin-update'
+import { UpdateButton } from './plugin-update-button'
 
 /** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
  *  Accepts the agent key, the agent name, or the desktop record id. */
@@ -93,6 +99,7 @@ async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
   await loadAgentPlugins(requestGateway, scope)
+  void scanPluginFleet({ force: true })
 }
 
 /** Open the dual-target install modal pre-filled to install ONLY the agent
@@ -136,13 +143,6 @@ const SERVER_TONE = {
   missing_app: 'destructive',
   unsupported_gpu: 'destructive'
 } as const satisfies Record<AgentPluginServerState, 'destructive' | 'success' | 'warn'>
-
-/** What the Update button moves to: the catalog's version label or short pin, else a git install's target. */
-const updateTargetLabel = (agent: AgentPluginRow) =>
-  agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? shortTarget(agent.update_target)
-
-/** A full commit shortens to 8 characters; a feed version stays as it is. */
-const shortTarget = (target?: string) => (target && /^[0-9a-f]{40}$/i.test(target) ? target.slice(0, 8) : (target ?? ''))
 
 function KindBadge({ kind }: { kind: PackageKind }) {
   const { t } = useI18n()
@@ -256,24 +256,26 @@ function UninstallRow({
 function PackageRow({
   pkg,
   scope,
+  settingsScope,
   profile,
   scopeLabel,
   scopeSelector,
   busy,
+  actionsBusy,
   request,
-  onAgentToggle,
   onAgentUpdate,
   onAgentRemove,
   onDesktopRemove
 }: {
   pkg: PluginPackage
   scope: null | string
+  settingsScope: PluginSettingsScope | null
   profile: ProfileScope
   scopeLabel: string
   scopeSelector?: ReactNode
   busy: boolean
+  actionsBusy: boolean
   request: GatewayRequest
-  onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
   onAgentRemove: (row: AgentPluginRow) => void
   onDesktopRemove: (record: PluginRecord) => void
@@ -410,6 +412,9 @@ function PackageRow({
                 </div>
               ) : null
             )}
+            {settingsScope && desktop?.status === 'loaded' && (
+              <PluginSettingsSlot pluginId={desktop.id} scope={settingsScope} />
+            )}
           </div>
           {/* Fixed slot so the switch column stays straight whether or not
             this row has a folder to reveal (bundled plugins have none). */}
@@ -465,23 +470,28 @@ function PackageRow({
           {agent ? (
             <>
               {agent.update_available && (
-                <Button
-                  className="h-5 px-1.5 text-[0.65rem]"
-                  disabled={busy}
-                  onClick={() => onAgentUpdate(agent)}
-                  size="xs"
-                  variant="outline"
-                >
-                  {p.updateToPin(updateTargetLabel(agent))}
-                </Button>
+                <UpdateButton
+                  agent={agent}
+                  busy={actionsBusy}
+                  label={p.updateToPin(updateTargetLabel(agent))}
+                  onUpdate={() => onAgentUpdate(agent)}
+                  scopeLabel={scopeLabel}
+                />
               )}
               {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
               {agentToggleable ? (
-                <Switch
-                  aria-label={`${p.halfAgent}: ${pkg.name}`}
-                  checked={agentOn}
-                  disabled={busy}
-                  onCheckedChange={on => onAgentToggle(agent, on)}
+                <AgentPluginToggle
+                  busy={actionsBusy}
+                  label={`${p.halfAgent}: ${pkg.name}`}
+                  onEnabled={() => {
+                    const half = desktop?.packageName
+
+                    if (half) {
+                      void enablePackageDesktopHalf(half, { keepUserChoice: true })
+                    }
+                  }}
+                  profile={scope}
+                  row={agent}
                 />
               ) : (
                 <Tip label={p.legacyBackend}>
@@ -594,8 +604,21 @@ export const PluginsTab = memo(function PluginsTab({
   const error = useStore($agentPluginsError)
   const gatewayState = useStore($gatewayState)
   const busyKey = useStore($agentPluginBusy)
+  const activeProfile = useStore($activeGatewayProfile)
 
   const scope = profileParam(profile)
+
+  // Subscribe to the transport's actual tag; never infer a local pin from a
+  // selector label or roster, or rely on another atom's notification timing.
+  const taggedConnection = useStore($apiRequestScope).connectionId
+
+  const settingsScope =
+    profile && typeof profile === 'object' && profile.connectionId?.trim() && profile.profile?.trim()
+      ? { connectionId: profile.connectionId, profile: profile.profile }
+      : typeof profile === 'string' && profile.trim() && taggedConnection?.trim()
+        ? { connectionId: taggedConnection, profile }
+        : null
+
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
@@ -603,6 +626,11 @@ export const PluginsTab = memo(function PluginsTab({
       void loadAgentPlugins(requestGateway, scope)
     }
   }, [requestGateway, scope, gatewayState])
+
+  // Fleet-wide view of the same update signal: every gateway, every profile.
+  useEffect(() => {
+    void scanPluginFleet()
+  }, [])
 
   const packages = useMemo(
     () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
@@ -733,22 +761,31 @@ export const PluginsTab = memo(function PluginsTab({
   const packageSwitch = (pkg: PluginPackage) => {
     const { agent, desktop } = pkg
 
-    const setEnabled = (enable: boolean) => {
-      if (agent?.key) {
-        void toggleAgentPlugin(requestGateway, agent.key, enable, p.toggleFailed(agent.name), scope)
-      }
-
+    const setDesktopEnabled = (enable: boolean) => {
       if (desktop) {
         void setPluginEnabled(desktop.id, enable)
       }
     }
 
+    // The agent half always goes through the reviewed setup-consent toggle.
+    if (agent) {
+      return (
+        <AgentPluginToggle
+          busy={agentBusy(agent)}
+          catalog
+          label={pkg.name}
+          onToggle={setDesktopEnabled}
+          profile={scope}
+          row={agent}
+        />
+      )
+    }
+
     return (
       <CatalogSwitch
         aria-label={pkg.name}
-        checked={agent ? agent.status === 'enabled' : desktop?.status !== 'disabled'}
-        disabled={agent ? !agent.key || agentBusy(agent) : false}
-        onCheckedChange={setEnabled}
+        checked={desktop?.status !== 'disabled'}
+        onCheckedChange={setDesktopEnabled}
         size="xs"
       />
     )
@@ -766,71 +803,70 @@ export const PluginsTab = memo(function PluginsTab({
     ) : null
 
   return (
-    <CatalogBrowser
-      headerActions={<PluginActions profile={profile} />}
-      installedEntries={installedEntries}
-      installedPending={status !== 'ready'}
-      isInstalled={isInstalled}
-      kind="plugins"
-      matchInstalled={matchInstalled}
-      notice={notice}
-      // A plugin row's `source` IS its catalog tier (catalog-data.ts::catalogEntry);
-      // CatalogEntry has no `tier` field, so don't "fix" this to entry.tier.
-      onInstall={entry => openCatalogPluginInstall(entry, scope, { tier: entry.source })}
-      onQueryChange={onQueryChange}
-      query={query}
-      renderInstalledAction={entry => {
-        const pkg = packageById.get(entry.id)
-
-        return pkg ? packageSwitch(pkg) : null
-      }}
-      renderInstalledDetail={entry => {
-        const pkg = packageById.get(entry.id)
-
-        if (!pkg) {
-          return null
+    <>
+      <CatalogBrowser
+        headerActions={
+          <>
+            <FleetUpdateAllButton />
+            <PluginActions profile={profile} />
+          </>
         }
+        installedEntries={installedEntries}
+        installedPending={status !== 'ready'}
+        isInstalled={isInstalled}
+        kind="plugins"
+        matchInstalled={matchInstalled}
+        notice={notice}
+        // A plugin row's `source` IS its catalog tier (catalog-data.ts::catalogEntry);
+        // CatalogEntry has no `tier` field, so don't "fix" this to entry.tier.
+        onInstall={entry => openCatalogPluginInstall(entry, scope, { tier: entry.source })}
+        onQueryChange={onQueryChange}
+        query={query}
+        renderInstalledAction={entry => {
+          const pkg = packageById.get(entry.id)
 
-        return (
-          <PackageRow
-            busy={pkg.agent ? agentBusy(pkg.agent) : false}
-            key={pkg.key}
-            onAgentRemove={handleAgentRemove}
-            onAgentToggle={(row, enable) => {
-              if (!row.key) {
-                return
-              }
+          return pkg ? packageSwitch(pkg) : null
+        }}
+        renderInstalledDetail={entry => {
+          const pkg = packageById.get(entry.id)
 
-              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope).then(ok => {
-                // Turning a unified package on turns its desktop half on too
-                // (unless the user switched that half off on purpose). Off
-                // stays per half: the desktop half is app-wide, and another
-                // profile may still run the agent half.
-                const half = pkg.desktop?.packageName
+          if (!pkg) {
+            return null
+          }
 
-                if (ok && enable && half) {
-                  void enablePackageDesktopHalf(half, { keepUserChoice: true })
-                }
-              })
-            }}
-            onAgentUpdate={row => {
-              void runPluginUpdate(requestGateway, row, scope, p).then(outcome => {
-                if (outcome.kind === 'applied') {
-                  void rescanAll(requestGateway, scope)
-                }
-              })
-            }}
-            onDesktopRemove={handleDesktopRemove}
-            pkg={pkg}
-            profile={profile}
-            request={requestGateway}
-            scope={scope}
-            scopeLabel={label}
-            scopeSelector={scopeSelector}
-          />
-        )
-      }}
-      selectedEntryId={selectedEntryId}
-    />
+          return (
+            <PackageRow
+              actionsBusy={busyKey !== null}
+              busy={pkg.agent ? agentBusy(pkg.agent) : false}
+              key={`${scope ?? activeProfile}:${pkg.key}`}
+              onAgentRemove={handleAgentRemove}
+              onAgentUpdate={row => {
+                void runPluginUpdate(requestGateway, row, scope, p).then(outcome => {
+                  if (outcome.kind === 'applied') {
+                    void rescanAll(requestGateway, scope)
+                  }
+                })
+              }}
+              onDesktopRemove={handleDesktopRemove}
+              pkg={pkg}
+              profile={profile}
+              request={requestGateway}
+              scope={scope}
+              scopeLabel={label}
+              scopeSelector={scopeSelector}
+              settingsScope={settingsScope}
+            />
+          )
+        }}
+        selectedEntryId={selectedEntryId}
+      />
+
+      <FleetUpdateHost
+        onApplied={applied => {
+          notify({ kind: 'success', message: p.fleet.finished(applied) })
+          void loadAgentPlugins(requestGateway, scope)
+        }}
+      />
+    </>
   )
 })

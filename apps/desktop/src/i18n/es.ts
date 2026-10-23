@@ -15,8 +15,10 @@ import { esNotices } from './es_notices'
 import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
 import { esPluginUpdate } from './es_plugin_update'
+import { esPluginsTab } from './es_plugins_tab'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
+import { esSidebarRow } from './es_sidebar_row'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
@@ -2434,6 +2436,7 @@ export const esOverrides = {
     skillArchivedMessage: 'Puedes restaurarlo con hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
+      ...esPluginsTab,
       agentTitle: 'Plugins del agente',
       agentBlurb:
         'Amplían el agente del perfil seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar el gateway.',
@@ -2451,17 +2454,13 @@ export const esOverrides = {
         `La mitad de escritorio está cargada en esta app, pero la mitad del agente no está instalada en ${profile}. Instálala allí.`,
       installAgentHereNoOrigin:
         'La mitad del agente no está instalada en este perfil y este paquete se copió a mano (sin entrada de catálogo ni remoto de git), así que no se puede instalar desde aquí. Copia su carpeta en el perfil o reinstálalo desde Git.',
-      desktopHalfPending: 'copiando…',
-      desktopHalfPendingTip:
-        'Este paquete incluye una mitad de escritorio que todavía no se ha copiado en la app. Usa Volver a escanear o reinicia la app.',
-      desktopHalfRemote: 'no disponible (backend remoto)',
-      desktopHalfRemoteTip:
-        'La mitad de escritorio de este paquete está en el disco del backend remoto, que esta app no puede leer. Para usarla aquí, ejecuta Instalar desde Git con la URL del repositorio del paquete y el destino Escritorio marcado; eso clona la mitad de escritorio en este equipo.',
       emptyAll: 'Todavía no hay plugins.',
       empty: 'No hay plugins del agente instalados para este perfil.',
       emptyHint: 'Explora el catálogo de abajo e instala un plugin revisado con un clic.',
       loadFailed: 'No se pudieron cargar los plugins del agente',
       toggleFailed: (name: string) => `No se pudo cambiar ${name}`,
+      enabledRestartRequired: (name: string) =>
+        `${name} está activado. Sus dependencias de Python se instalaron para el próximo inicio: reinicia Hermes para cargarlo.`,
       toolsetOn: (name: string, profile: string) => `Herramientas de agente de ${name} activadas para ${profile}`,
       toolsetOff: (name: string, profile: string) => `Herramientas de agente de ${name} desactivadas para ${profile}`,
       toolsetToggleFailed: (name: string) =>
@@ -2469,17 +2468,6 @@ export const esOverrides = {
       legacyBackend:
         'Este backend es anterior a los interruptores de plugins por clave: actualiza Hermes para gestionarlo aquí.',
       portableBadge: 'portátil',
-      serverStates: {
-        connected: 'conectado',
-        app_not_running: 'la app no se está ejecutando',
-        hermes_not_connected: 'falta la conexión MCP',
-        endpoint_unavailable: 'endpoint no disponible',
-        no_interactive_session: 'sin sesión interactiva',
-        version_too_old: 'versión demasiado antigua',
-        missing_app: 'falta la app',
-        unsupported_gpu: 'GPU no compatible',
-        unknown: 'estado desconocido'
-      },
       alreadyInstalled: (name: string) => `${name} ya está instalado en este perfil.`,
       catalogProvenance: (sha: string) =>
         `Instalado desde el catálogo de Hermes${sha ? ` en el commit fijado ${sha}` : ''}.`,
@@ -3630,51 +3618,7 @@ export const esOverrides = {
     loadCount: step => `Cargar ${step} más`,
     messageCount: (count: number) => `${count} ${count === 1 ? 'mensaje' : 'mensajes'}`,
     toolCallCount: (count: number) => `${count} ${count === 1 ? 'llamada a herramienta' : 'llamadas a herramientas'}`,
-    row: {
-      pin: 'Fijar',
-      unpin: 'Desfijar',
-      markUnread: 'Marcar como no leído',
-      markRead: 'Marcar como leído',
-      unreadFailed: 'No se pudo actualizar el estado de no leído',
-      copyId: 'Copiar ID',
-      export: 'Exportar',
-      branchFrom: 'Rama',
-      rename: 'Renombrar',
-      archive: 'Archivar',
-      unarchive: 'Desarchivar',
-      newWindow: 'Nueva ventana',
-      openInTerminal: 'Abrir en el terminal',
-      hideTabBar: 'Ocultar barra de pestañas',
-      openInNewTab: 'Abrir en una pestaña nueva',
-      openInSplit: 'Abrir en vista dividida',
-      copyIdFailed: 'No se pudo copiar el ID de sesión',
-      sessionActions: 'Acciones de sesión',
-      sessionRunning: 'Sesión en ejecución',
-      needsInput: 'Necesita tu respuesta',
-      waitingForAnswer: 'Esperando tu respuesta',
-      finishedUnread: 'Finalizada — sin leer',
-      backgroundRunning: 'Tarea en segundo plano en ejecución',
-      draftSession: 'Borrador — aún no se ha enviado nada',
-      handoffOrigin: platform => `Transferido desde ${platform}`,
-      continuationOrigin: 'Continuación automática: esta conversación fue comprimida y continuada',
-      ownedByProfile: profile => `Perfil: ${profile}`,
-      renamed: 'Renombrada',
-      renameFailed: 'No se pudo renombrar',
-      renameTitle: 'Renombrar sesión',
-      renameDesc: 'Déjalo vacío para limpiarlo.',
-      untitledPlaceholder: 'Sesión sin título',
-      deleteTitle: '¿Eliminar la sesión?',
-      deleteDesc: (title: string) => `Se eliminará “${title}” de forma permanente. No se puede deshacer.`,
-      deleting: 'Eliminando…',
-      deleted: 'Sesión eliminada',
-      untitledChat: id => `Chat ${id}`,
-      messageCount: count => `${count} ${count === 1 ? 'mensaje' : 'mensajes'}`,
-      todoProgress: 'Tareas completadas',
-      ageNow: 'ahora',
-      ageDay: 'd',
-      ageHour: 'h',
-      ageMin: 'm'
-    },
+    row: esSidebarRow,
     dateDivider: {
       today: 'Hoy, más temprano',
       yesterday: 'Ayer',

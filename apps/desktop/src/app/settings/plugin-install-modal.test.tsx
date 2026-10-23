@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The host tab lists installed plugins on mount; only an `install` action counts as installing.
@@ -35,6 +35,12 @@ import { PluginInstallModal } from './plugin-install-modal'
 const probePluginRepo = vi.fn()
 const installDesktopPlugin = vi.fn()
 
+function CurrentLocation() {
+  const location = useLocation()
+
+  return <output data-testid="location">{location.pathname + location.search}</output>
+}
+
 const BLENDER = {
   catalogName: 'blender',
   repo: 'https://github.com/NousResearch/hermes-official-plugins#blender',
@@ -61,6 +67,7 @@ const renderFlow = () =>
       <QueryClientProvider client={queryClient}>
         <PluginsTab profile={null} />
         <PluginInstallModal />
+        <CurrentLocation />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -395,4 +402,33 @@ describe('Unified package desktop half on a local backend', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(installButton().disabled).toBe(true)
   })
+})
+
+it('offers setup review after files install without recloning a unified package', async () => {
+  const reconcileDesktopPlugins = vi.fn(async (): Promise<string[]> => [])
+  probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'native-fixture', desktop: true, warnings: [] })
+  vi.stubGlobal('hermesDesktop', { probePluginRepo, installDesktopPlugin, reconcileDesktopPlugins })
+  requestGateway.mockImplementation(async (_method, params) => {
+    if (params?.action === 'list') {
+      return { plugins: [] }
+    }
+
+    throw Object.assign(new Error('Review setup'), {
+      data: { status: 'consent_required', installed: true, plugin_name: 'native-fixture', error: 'Review setup' }
+    })
+  })
+  renderFlow()
+  act(() => openPluginInstallRequest({ repo: 'owner/native-fixture', profile: 'research' }))
+  await waitFor(() => expect(installButton().disabled).toBe(false))
+  fireEvent.click(installButton())
+  const review = await screen.findByRole('button', { name: 'Review setup in Plugins' })
+  expect(screen.getByText(/Files installed; enablement was not changed/)).toBeTruthy()
+  expect(installButton().disabled).toBe(true)
+  expect(reconcileDesktopPlugins).toHaveBeenCalledTimes(1)
+  expect(installDesktopPlugin).not.toHaveBeenCalled()
+  expect(requestGateway).toHaveBeenCalledWith('plugins.manage', { action: 'list', profile: 'research' })
+  fireEvent.click(review)
+  await waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
+  expect(screen.getByTestId('location').textContent).toBe('/capabilities?tab=plugins&plugin=native-fixture')
+  expect(installCalls()).toHaveLength(1)
 })

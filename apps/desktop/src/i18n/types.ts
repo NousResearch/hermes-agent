@@ -25,8 +25,10 @@ import type { NoticeTranslations } from './types_notices'
 import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginUpdateTranslations } from './types_plugin_update'
+import type { PluginsTabCopy } from './types_plugins_tab'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { SidebarRowTranslations } from './types_sidebar_row'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
@@ -631,6 +633,16 @@ catalog: CatalogTranslations
       disable: string
       failed: string
       kinds: { bundled: string; disk: string; runtime: string }
+      agent: {
+        setupInstalled: string
+        reviewSetup: string
+        setupTitle: string
+        setupConfirm: string
+        setupBusy: string
+        setupTrust: string
+      }
+      agentHalfMissing: string
+      agentHalfMissingTip: string
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -1888,7 +1900,7 @@ catalog: CatalogTranslations
     skillArchivedTitle: string
     skillArchivedMessage: string
     tabPlugins: string
-    plugins: PluginUpdateTranslations & {
+    plugins: PluginUpdateTranslations & PluginsTabCopy & {
       agentTitle: string
       agentBlurb: string
       pageBlurb: string
@@ -1903,31 +1915,17 @@ catalog: CatalogTranslations
       installAgentHere: string
       installAgentHereTip: (profile: string) => string
       installAgentHereNoOrigin: string
-      desktopHalfPending: string
-      desktopHalfPendingTip: string
-      desktopHalfRemote: string
-      desktopHalfRemoteTip: string
       emptyAll: string
       empty: string
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      enabledRestartRequired: (name: string) => string
       toolsetOn: (name: string, profile: string) => string
       toolsetOff: (name: string, profile: string) => string
       toolsetToggleFailed: (name: string) => string
       legacyBackend: string
       portableBadge: string
-      serverStates: {
-        connected: string
-        app_not_running: string
-        hermes_not_connected: string
-        endpoint_unavailable: string
-        no_interactive_session: string
-        version_too_old: string
-        missing_app: string
-        unsupported_gpu: string
-        unknown: string
-      }
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
       pinnedProvenance: (sha: string) => string
@@ -2818,51 +2816,7 @@ catalog: CatalogTranslations
     loadCount: (step: number) => string
     messageCount: (count: number) => string
     toolCallCount: (count: number) => string
-    row: {
-      pin: string
-      unpin: string
-      markUnread: string
-      markRead: string
-      unreadFailed: string
-      copyId: string
-      export: string
-      branchFrom: string
-      rename: string
-      archive: string
-      unarchive: string
-      newWindow: string
-      openInTerminal: string
-      hideTabBar: string
-      openInNewTab: string
-      openInSplit: string
-      copyIdFailed: string
-      sessionActions: string
-      sessionRunning: string
-      needsInput: string
-      waitingForAnswer: string
-      finishedUnread: string
-      backgroundRunning: string
-      draftSession: string
-      handoffOrigin: (platform: string) => string
-      continuationOrigin: string
-      ownedByProfile: (profile: string) => string
-      renamed: string
-      renameFailed: string
-      renameTitle: string
-      renameDesc: string
-      untitledPlaceholder: string
-      deleteTitle: string
-      deleteDesc: (title: string) => string
-      deleting: string
-      deleted: string
-      untitledChat: (id: string) => string
-      messageCount: (count: number) => string
-      todoProgress: string
-      ageNow: string
-      ageDay: string
-      ageHour: string
-      ageMin: string
-    }
+    row: SidebarRowTranslations
     dateDivider: {
       today: string
       yesterday: string

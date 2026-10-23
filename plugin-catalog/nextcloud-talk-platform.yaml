@@ -1,5 +1,5 @@
 name: nextcloud-talk-platform
-repo: https://github.com/chefboyrdave21/hermes-nextcloud-talk
+repo: https://github.com/smilinTux/hermes-nextcloud-talk
 sha: e58bfa6ab14fed6b064fbdfb6e1fbdb0c13f82ea
 description: >-
   Nextcloud Talk platform adapter for Hermes Agent, in two modes behind one
@@ -11,10 +11,11 @@ description: >-
 maintainer: chefboyrdave21
 tier: community
 category: platform
-docs_url: https://github.com/chefboyrdave21/hermes-nextcloud-talk#readme
+docs_url: https://github.com/smilinTux/hermes-nextcloud-talk#readme
 version: "1.0.0"
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+

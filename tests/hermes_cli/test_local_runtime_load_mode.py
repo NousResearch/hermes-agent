@@ -16,7 +16,6 @@ from hermes_cli.local_runtime import supervisor
 def test_spawn_selects_supported_direct_io_option(tmp_path, monkeypatch, help_text, expected):
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path / "runtime")
     executable = tmp_path / "engine" / "llama-server"
-    monkeypatch.setattr(supervisor, "server_binary", lambda _: executable)
     probes = []
 
     def run(argv, **kwargs):
@@ -28,7 +27,7 @@ def test_spawn_selects_supported_direct_io_option(tmp_path, monkeypatch, help_te
     monkeypatch.setattr(supervisor, "spawn_server", lambda argv, **kwargs: (
         commands.append(argv) or SimpleNamespace(pid=123, poll=lambda: 0), None,
     ))
-    sup = supervisor.LlamaServerSupervisor(tmp_path / "engine", tmp_path / "models", port=19001)
+    sup = supervisor.LlamaServerSupervisor(executable, tmp_path / "models", port=19001)
     monkeypatch.setattr(sup, "_write_state", lambda: None)
     try:
         sup._spawn()

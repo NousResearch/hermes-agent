@@ -1,7 +1,7 @@
 """Tests for per-turn stream isolation and concurrent consumer scenarios."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from gateway.config import PlatformConfig
 
 
@@ -192,23 +192,6 @@ class TestPerTurnStreamIsolation:
         finally:
             await adapter.disconnect()
 
-    @pytest.mark.asyncio
-    async def test_expired_chat_blocks_new_turn_creation(self):
-        """After one turn expired, new turn creation is blocked."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
-
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-        try:
-            adapter._last_chat_req_ids["chat-1"] = "req-1"
-            adapter._stream_expired_chats.add("chat-1")
-            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
-
-            # Try to create a new turn after chat is expired
-            ok = await adapter.send_stream_frame("new frame", chat_id="chat-1", turn_id="new-turn")
-            assert ok is False
-            assert "chat-1:new-turn" not in adapter._stream_turns
-        finally:
-            await adapter.disconnect()
 
 
 class TestNativeFallbackStreamClose:

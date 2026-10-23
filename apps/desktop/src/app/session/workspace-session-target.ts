@@ -61,7 +61,13 @@ export function startWorkspaceSession({
   const workspaceGeneration = $newChatWorkspaceTargetGeneration.get()
 
   setCurrentCwd(target)
-  void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
+  void requestGateway<{ branch?: string; cwd?: string }>('config.get', {
+    key: 'project',
+    cwd: target,
+    // The project's profile decides its terminal backend: an ssh project dir is not on this host, and
+    // resolving it under the launch profile would normalize it away to the launch cwd.
+    ...(profile ? { profile } : {})
+  })
     .then(info => {
       if ($newChatWorkspaceTargetGeneration.get() !== workspaceGeneration || activeSessionIdRef.current) {
         return

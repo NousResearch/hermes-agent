@@ -6,17 +6,21 @@ import pytest
 from hermes_cli import update_cmd_fleet as fleet
 
 
-@pytest.mark.parametrize("graceful,retry", [(False, False), (False, True), (True, False), ("catchup", False)])
+@pytest.fixture(autouse=True)
+def _units_belong_to_this_update(monkeypatch):
+    """Fake units on an invented MainPID (42) have no readable home; ownership (#93349,
+    ``test_update_fleet_home_scope.py``) is pinned so these tests keep proving budgets and health."""
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda scope_cmd, svc_name: True)
+
+
+@pytest.mark.parametrize("graceful,retry", [(False, False), (False, True), (True, False)])
 def test_unit_transaction_budget_preserves_scope_and_health(monkeypatch, graceful, retry):
-    catchup = graceful == "catchup"
-    scope = ["systemctl", "--user"] if catchup else ["systemctl", "--no-ask-password"]
-    manage = scope if catchup else ["sudo", "-n", *scope]
+    scope = ["systemctl", "--no-ask-password"]
+    manage = ["sudo", "-n", *scope]
     calls = []
 
     def systemctl(cmd, *, timeout):
         calls.append((cmd, timeout))
-        if "list-units" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, "hermes-serve-test.service loaded active running", "")
         if "show" in cmd:
             assert cmd[:len(scope)] == scope
             output = "42" if "--property=MainPID" in cmd else "TimeoutStopUSec=70s\nTimeoutStartUSec=90s"
@@ -27,14 +31,7 @@ def test_unit_transaction_budget_preserves_scope_and_health(monkeypatch, gracefu
         return subprocess.CompletedProcess(cmd, 0, "active", "")
 
     monkeypatch.setattr(fleet, "_systemctl", systemctl)
-    if catchup:
-        monkeypatch.setattr(fleet, "_SYSTEMD_SCOPES", (("user", scope),))
-        failed = []
-        fleet._restart_systemd_gateway_units_best_effort(failed, list(fleet._systemd_gateway_unit_listings()))
-        assert not failed
-        assert sum("restart" in cmd for cmd, _ in calls) == 1
-        return
-    monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a: True)
+    monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a, **kw: True)
     health = iter([False, True] if retry else [True])
     monkeypatch.setattr(fleet, "_wait_for_service_active", lambda *a, **kw: next(health))
     name = "hermes-gateway-test" if graceful else "hermes-serve-test"
@@ -46,6 +43,47 @@ def test_unit_transaction_budget_preserves_scope_and_health(monkeypatch, gracefu
     )
     assert restarted == [name] and not failed
     assert sum("restart" in cmd or "start" in cmd for cmd, _ in calls) == (2 if retry else 1)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("healthy", [True, False])
+def test_fleet_restart_budget_preserves_user_scope_and_verifies_health(monkeypatch, healthy):
+    """Already-current updates use the normal fleet restart, not a catch-up shortcut."""
+    scope = ["systemctl", "--user"]
+    manage = [*scope, "--no-ask-password"]
+    calls, health_checks = [], []
+    name = "hermes-serve-test"
+
+    def systemctl(cmd, *, timeout):
+        calls.append((cmd, timeout))
+        assert cmd[:len(scope)] == scope
+        if "list-units" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, f"{name}.service loaded active running", "")
+        if "show" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "TimeoutStopUSec=70s\nTimeoutStartUSec=90s", "")
+        if "restart" in cmd:
+            assert cmd[:len(manage)] == manage
+            assert timeout > 160
+        return subprocess.CompletedProcess(cmd, 0, "active", "")
+
+    def check_health(command, unit, *, timeout):
+        health_checks.append((command, unit))
+        return healthy
+
+    monkeypatch.setattr(fleet, "_systemctl", systemctl)
+    monkeypatch.setattr(fleet, "_SYSTEMD_SCOPES", (("user", scope),))
+    monkeypatch.setattr(fleet, "_wait_for_service_active", check_health)
+    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
+    monkeypatch.setattr("hermes_cli.gateway._ensure_user_systemd_env", lambda: None)
+    restarted, failed, scoped = [], [], set()
+    fleet._restart_systemd_gateway_units(restarted, failed, scoped, drain_budget=45)
+
+    attempts = 1 if healthy else 2
+    assert health_checks == [(scope, name)] * attempts
+    assert sum("restart" in cmd for cmd, _ in calls) == attempts
+    assert restarted == ([name] if healthy else [])
+    assert scoped == ({f"user/{name}"} if healthy else set())
+    assert failed == ([] if healthy else [name])
 
 
 @pytest.mark.parametrize("limits", ["", "TimeoutStopUSec=infinity\nTimeoutStartUSec=invalid", "TimeoutStopUSec=70000000\nTimeoutStartUSec=90s"])
@@ -69,3 +107,41 @@ def test_budget_fallback_keeps_real_errors(monkeypatch, limits, outcome):
         result = fleet._systemctl_reset_and_restart(["systemctl"], "hermes-serve-test")
         assert result.returncode == outcome
         assert result.stderr == "manager diagnostic"
+
+
+@pytest.mark.parametrize("root", [True, False])
+def test_fleet_restart_repairs_a_system_unit_that_cannot_park_on_exit_78(monkeypatch, tmp_path, capsys, root):
+    """A ``Restart=on-failure`` system unit predating ``RestartPreventExitStatus=78`` crash-looped ~180x on
+    a permanent refusal while the user units parked (#118282). The update-time fleet restart is the only
+    contact with that unit: as root it rewrites it, otherwise it names the repair. A parked unit is left alone."""
+    from hermes_cli import gateway as gateway_cli
+
+    unit_dir = tmp_path / "system"
+    unit_dir.mkdir()
+    stale = unit_dir / "hermes-gateway.service"
+    stale.write_text("[Service]\nRestart=on-failure\nRestartSec=10\n", encoding="utf-8")
+    current = unit_dir / "hermes-gateway-ops.service"
+    current.write_text(f"[Service]\nRestart=always\nRestartPreventExitStatus={gateway_cli.GATEWAY_FATAL_CONFIG_EXIT_CODE}\n", encoding="utf-8")
+    monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+    monkeypatch.setattr(fleet, "_needs_sudo", lambda scope: not root)
+    refreshed = []
+    monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: refreshed.append(system))
+    monkeypatch.setattr(fleet, "_systemctl", lambda cmd, *, timeout: subprocess.CompletedProcess(cmd, 0, "active", ""))
+    monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a, **kw: True)
+    monkeypatch.setattr(fleet, "_wait_for_service_active", lambda *a, **kw: True)
+
+    for name in ("hermes-gateway", "hermes-gateway-ops"):
+        fleet._restart_one_systemd_gateway_unit(
+            name, scope="system", scope_cmd=["systemctl"], drain_budget=5,
+            _manage_cmd_cache={"system": ["systemctl"]}, restarted_services=[], failed_or_stale_units=[],
+        )
+
+    out = capsys.readouterr().out
+    if root:
+        assert refreshed == [True]
+        assert "RestartPreventExitStatus" not in out
+    else:
+        assert refreshed == []
+        assert out.count("RestartPreventExitStatus=78") == 1 and "hermes-gateway lacks" in out
+        assert "sudo hermes gateway install --system" in out

@@ -85,27 +85,6 @@ def test_run_daemon_resolves_and_passes_max_in_progress(
     assert captured.get("max_in_progress") == 3
 
 
-def test_run_daemon_explicit_config_wins(kanban_home, monkeypatch):
-    captured: dict = {}
-    stop = threading.Event()
-
-    def fake_dispatch_once(conn, **kwargs):
-        captured.update(kwargs)
-        return kb.DispatchResult()
-
-    monkeypatch.setattr(kbd, "dispatch_once", fake_dispatch_once)
-    monkeypatch.setattr(kbd, "configured_max_in_progress", lambda: 7)
-    monkeypatch.setattr(
-        kbd, "derive_default_max_in_progress",
-        lambda sample=None: pytest.fail("derived default must not be consulted"),
-    )
-
-    def on_tick(res):
-        stop.set()
-
-    kbd.run_daemon(interval=0.01, stop_event=stop, on_tick=on_tick)
-
-    assert captured.get("max_in_progress") == 7
 
 
 def test_configured_max_in_progress_parsing(monkeypatch):

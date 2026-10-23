@@ -33,7 +33,6 @@ from plugins.image_gen._common import (
 
 logger = logging.getLogger(__name__)
 
-_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _MAX_ERROR_BODY_CHARS = 500
 
 _MAX_REFERENCE_IMAGES = 16
@@ -60,26 +59,31 @@ def _summarize_error_body(body: str) -> str:
     return text[:_MAX_ERROR_BODY_CHARS]
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model() -> tuple[str, dict[str, Any]]:
     return resolve_static_model(
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
 
 
-def _read_codex_access_token() -> Optional[str]:
-    """Usable Codex OAuth token or None (``agent.auxiliary_client`` owns expiry/pool/JWT)."""
+def _read_codex_credential() -> tuple[Optional[str], Optional[str]]:
+    """``(token, base_url)`` from one resolution (``agent.auxiliary_client`` owns expiry/pool/JWT):
+    the image request goes to the host the token's credential routes to (pool row /
+    ``model.base_url`` / profile override), never a default it does not belong to (#121486).
+    ``(None, None)`` without a usable token."""
     try:
-        from agent.auxiliary_client import _read_codex_access_token as _reader
+        from agent.auxiliary_client import _resolve_codex_credential_and_base
 
-        token = _reader()
-        return token.strip() if isinstance(token, str) and token.strip() else None
+        token, base_url = _resolve_codex_credential_and_base()
+        if isinstance(token, str) and token.strip():
+            return token.strip(), base_url
+        return None, None
     except Exception as exc:
-        logger.debug("Could not resolve Codex access token: %s", exc)
-        return None
+        logger.debug("Could not resolve Codex credential: %s", exc)
+        return None, None
 
 
 def _httpx_available() -> bool:
     try:
-        import httpx  # noqa: F401
+        import httpx
     except ImportError:
         return False
     return True
@@ -147,7 +151,7 @@ def _local_image_to_data_url(value: str) -> str:
         f"Image input path is not a supported image: {value}")
 
 
-def _to_input_image(value: str) -> Dict[str, str]:
+def _to_input_image(value: str) -> dict[str, str]:
     """Convert a URL/data URL/local path into an ``images[]`` entry for ``images/edits``."""
     candidate = (value or "").strip()
     if not candidate:
@@ -163,19 +167,19 @@ def _to_input_image(value: str) -> Dict[str, str]:
 
 
 def _normalize_input_images(
-    image_url: Optional[str], reference_image_urls: Optional[List[str]]
-) -> List[Dict[str, str]]:
+    image_url: Optional[str], reference_image_urls: Optional[list[str]]
+) -> list[dict[str, str]]:
     values = collect_source_images(image_url, reference_image_urls, limit=_MAX_REFERENCE_IMAGES)
     return [_to_input_image(value) for value in values]
 
 
 def _build_image_request(
-    *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
-) -> Tuple[str, Dict[str, Any]]:
+    *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None
+) -> tuple[str, dict[str, Any]]:
     """``(endpoint_path, json_body)`` — ``images/edits`` when sources are present, else
     ``images/generations``. Field set mirrors the official client's ``ImageGenerationRequest`` /
     ``ImageEditRequest``."""
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "prompt": prompt, "model": API_MODEL, "n": 1, "quality": quality, "size": size,
         "background": "opaque",
     }
@@ -186,14 +190,18 @@ def _build_image_request(
 
 
 def _post_image_request(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
-) -> Dict[str, Any]:
+    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None,
+    base_url: str,
+) -> dict[str, Any]:
     """POST to the native Codex images endpoint; return the decoded JSON body plus
-    ``imagegen_request_id`` (backend correlation id, for support tickets)."""
+    ``imagegen_request_id`` (backend correlation id, for support tickets).
+
+    ``base_url`` must come from the same resolution as ``token`` (``_read_codex_credential``)."""
     import httpx
     from agent.codex_headers import codex_cloudflare_headers
 
-    headers = codex_cloudflare_headers(token)
+    base_url = base_url.strip().rstrip("/")
+    headers = codex_cloudflare_headers(token, base_url=base_url)
     headers.update({
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -202,7 +210,7 @@ def _post_image_request(
     path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        response = http.post(f"{_CODEX_BASE_URL}/{path}", json=body)
+        response = http.post(f"{base_url}/{path}", json=body)
     if response.status_code >= 400:
         raise RuntimeError(
             f"Codex images API returned HTTP {response.status_code}: "
@@ -234,9 +242,9 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
     price = "varies"
 
     def is_available(self) -> bool:
-        return bool(_read_codex_access_token()) and _httpx_available()
+        return bool(_read_codex_credential()[0]) and _httpx_available()
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
@@ -250,19 +258,19 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
                 "if you haven't already. No API key needed."),
         }
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
-        image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
-        token = _read_codex_access_token()
+        token, base_url = _read_codex_credential()
         if not token:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():
@@ -279,7 +287,8 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
 
         try:
             payload = _post_image_request(
-                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None)
+                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None,
+                base_url=base_url)
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")

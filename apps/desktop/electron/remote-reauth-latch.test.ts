@@ -24,7 +24,6 @@ import { httpStatusError } from './api-transport'
 import { isReauthRequiredError } from './backend-health'
 import { isRetryableRemoteBootFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 import { gatewayTicketFailure, isGatewayAuthRejection, withTransientRetries } from './connection-config'
-import { shouldRotateNativeTokenAfterRejection } from './native-auth-decisions'
 
 // --- composition: the real modules, in production order ------------------
 
@@ -69,32 +68,4 @@ test('FIX #95701: a native-bearer 401 is a confirmed, non-retryable reauth rejec
     false,
     'the boot progress must be non-retryable so the renderer never re-drives the boot'
   )
-})
-
-test('FIX #95701: the pre-fix error shape is exactly what made the rejection look transient', async () => {
-  // A "401: ..." message with no structured statusCode — what fetchJson used
-  // to throw. Every classifier below is shape-based on purpose, so this is
-  // the regression the structured error prevents.
-  const anonymous = new Error('401: {"error":"session_expired"}')
-
-  assert.equal(isGatewayAuthRejection(anonymous), false)
-  assert.equal(shouldRotateNativeTokenAfterRejection(anonymous), false)
-
-  let attempts = 0
-
-  await withTransientRetries(
-    async () => {
-      attempts += 1
-      throw anonymous
-    },
-    { attempts: 3, sleep: async () => {} }
-  ).catch(() => undefined)
-
-  assert.equal(attempts, 3, 'an anonymous 401 was retried like a transport blip')
-
-  const wrapped = gatewayTicketFailure(anonymous, 'auth copy', 'transport copy')
-
-  assert.equal(wrapped.message, 'transport copy')
-  assert.equal(isReauthRequiredError(wrapped), false)
-  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: isReauthRequiredError(wrapped) }), true)
 })

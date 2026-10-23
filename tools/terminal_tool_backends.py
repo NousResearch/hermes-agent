@@ -6,7 +6,6 @@ import functools
 import importlib.util
 import inspect
 import logging
-import shutil
 import subprocess
 from typing import Any, Dict, Optional
 
@@ -14,7 +13,6 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
-from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from tools.terminal_tool_config import _get_plugin_env_provider
@@ -51,21 +49,22 @@ def terminal_backend_unavailable_reason() -> Optional[str]:
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh"
+_BUILTIN_BACKENDS = "local, docker, modal, daytona, vercel_sandbox, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
 _SSH_KEYS = (("host", "ssh_host", ""), ("user", "ssh_user", ""), ("port", "ssh_port", 22),
-             ("key", "ssh_key", ""), ("persistent", "ssh_persistent", False))
+             ("key", "ssh_key", ""), ("persistent", "ssh_persistent", True))
 _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 5120),
                   ("disk", "container_disk", 51200), ("persistent_filesystem", "container_persistent", True))
 _CONTAINER_KEYS = (
     ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200),
-    ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""),
+    ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""), ("vercel_image", ""),
     ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True), ("docker_snap_compat", False),
+    ("docker_image_pinned", False),
 )
 _DOCKER_KWARGS = (
     ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
@@ -73,21 +72,26 @@ _DOCKER_KWARGS = (
     ("run_as_host_user", "docker_run_as_host_user", False), ("network", "docker_network", True),
     ("extra_args", "docker_extra_args", []), ("persist_across_processes", "docker_persist_across_processes", True),
     ("shared_container_key", "docker_shared_container_key", ""), ("shm_size", "docker_shm_size", "1g"),
-    ("snap_compat", "docker_snap_compat", False),
+    ("snap_compat", "docker_snap_compat", False), ("image_pinned", "docker_image_pinned", False),
 )
 
 
-def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
+def _ssh_config_from_config(config: dict[str, Any]) -> dict:
     """``ssh_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
     return {out: config.get(key, default) for out, key, default in _SSH_KEYS}
 
 
-def _container_config_from_config(config: Dict[str, Any]) -> dict:
+def _local_config_from_config(config: dict[str, Any]) -> dict:
+    """``local_config`` for :func:`_create_environment` (TERMINAL_LOCAL_PERSISTENT, default on)."""
+    return {"persistent": config.get("local_persistent", True)}
+
+
+def _container_config_from_config(config: dict[str, Any]) -> dict:
     """``container_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
     return {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
 
 
-def _resources(cc: Dict[str, Any]) -> dict:
+def _resources(cc: dict[str, Any]) -> dict:
     """Common sandbox resource kwargs (cpu/memory in MB/disk in MB/persistence)."""
     return {out: cc.get(key, default) for out, key, default in _RESOURCE_KEYS}
 
@@ -96,13 +100,13 @@ def _is_supported_vercel_runtime(runtime: str) -> bool:
     return not runtime or runtime in _SUPPORTED_VERCEL_RUNTIMES
 
 
-def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
+def _get_modal_backend_state(modal_mode: object | None) -> dict[str, Any]:
     """Resolve direct vs managed Modal backend selection."""
     return resolve_modal_backend_state(modal_mode, has_direct=has_direct_modal_credentials(),
                                        managed_ready=is_managed_tool_gateway_ready("modal"))
 
 
-def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
+def _modal_unavailable_reason(modal_state: dict[str, Any]) -> tuple[str, str]:
     """(log message, ValueError message) for a modal_state with no selected backend.
     Single decision shared by the requirements checker and the env builder."""
     gateway = nous_tool_gateway_unavailable_message("managed Modal execution")
@@ -124,10 +128,10 @@ def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
             f"Modal backend selected but no direct Modal credentials/config {found}.")
 
 
-# --- Environment builders. Signature: (*, image, cwd, timeout, cc, task_id, ssh_config, host_cwd)
+# --- Environment builders. Signature: (*, image, cwd, timeout, cc, task_id, ssh_config, local_config, host_cwd)
 # (env_type is only forwarded to the plugin-registry fallback, not to the built-in builders.)
-def _build_local_env(*, cwd, timeout, **_):
-    return _LocalEnvironment(cwd=cwd, timeout=timeout)
+def _build_local_env(*, cwd, timeout, local_config=None, **_):
+    return _LocalEnvironment(cwd=cwd, timeout=timeout, persistent=(local_config or {}).get("persistent", True))
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
@@ -178,11 +182,11 @@ def _build_modal_env(*, image, cwd, timeout, cc, task_id, **_):
 # env_type -> (class getter, takes image, extra kwargs from (cc, resource kwargs)). SDK-backed modules
 # (daytona/vercel) are imported lazily so they are only required when that backend is selected.
 _SANDBOX_ROWS = {
-    "singularity": (lambda: _SingularityEnvironment, True, lambda cc, kw: {}),
     "daytona": (lambda: importlib.import_module("tools.environments.daytona").DaytonaEnvironment, True,
                 lambda cc, kw: {"cpu": int(kw["cpu"])}),
     "vercel_sandbox": (lambda: importlib.import_module("tools.environments.vercel_sandbox").VercelSandboxEnvironment,
-                       False, lambda cc, kw: {"runtime": cc.get("vercel_runtime") or None}),
+                       False, lambda cc, kw: {"runtime": cc.get("vercel_runtime") or None,
+                                       "image": cc.get("vercel_image") or None}),
 }
 
 
@@ -194,7 +198,6 @@ def _build_sandbox_env(env_type, *, image, cwd, timeout, cc, task_id, **_):
     return cls()(**kwargs)
 
 
-_build_singularity_env = functools.partial(_build_sandbox_env, "singularity")
 _build_daytona_env = functools.partial(_build_sandbox_env, "daytona")
 _build_vercel_env = functools.partial(_build_sandbox_env, "vercel_sandbox")
 
@@ -203,12 +206,45 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
     if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
         raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
     return _SSHEnvironment(host=ssh_config["host"], user=ssh_config["user"], port=ssh_config.get("port", 22),
-                           key_path=ssh_config.get("key", ""), cwd=cwd, timeout=timeout, probe_only=probe_only)
+                           key_path=ssh_config.get("key", ""), cwd=cwd, timeout=timeout, probe_only=probe_only,
+                           persistent=ssh_config.get("persistent", True))
+
+
+def _stamp_sandbox_home(env_obj, provider, cwd) -> None:
+    """Record the provider's declared home on this environment: a declared absolute path whatever ``cwd`` the
+    environment started in (``terminal.cwd`` may pick another directory), or, for ``~``, the path it resolved
+    to inside THIS sandbox when it started there. Per environment, never per backend, so a second sandbox
+    with a different home gets its own."""
+    try:
+        declared = provider.default_cwd
+    except Exception:
+        # A plugin's property must not take environment creation down; it just gets no home.
+        logger.warning("%s.default_cwd raised; not recording a sandbox home", type(provider).__name__,
+                       exc_info=True)
+        declared = None
+    if declared == "~":
+        home = getattr(env_obj, "cwd", None) if cwd == "~" else None
+    else:
+        home = declared
+    if isinstance(home, str) and home.startswith("/") and home != "/":
+        try:
+            env_obj._hermes_sandbox_home = home
+        except AttributeError:
+            pass
 
 
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
+        from hermes_cli.plugin_host import is_hosted_object
+        if is_hosted_object(provider):
+            # The environment would come back as an opaque placeholder, and its execute() would run outside
+            # this process's interrupt, activity and terminal-scope state: refuse before the host starts a
+            # sandbox nothing here could use or clean up.
+            raise ValueError(
+                f"terminal.backend is {env_type}, a plugin that runs in the plugin host (plugins.isolation: host), "
+                f"and the host cannot hand its environment to Hermes, so commands cannot run in it. Set "
+                f"plugins.isolation: in_process to use this backend.")
         env_obj = provider.create_environment(cwd=cwd, timeout=timeout, task_id=task_id, image=image,
                                               container_config=cc)
         # Stamp the backend name so path-resolution and progress surfaces can identify plugin
@@ -217,6 +253,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
             env_obj._hermes_backend_name = provider.name.strip().lower()
         except AttributeError:
             pass
+        _stamp_sandbox_home(env_obj, provider, cwd)
         return env_obj
     try:
         from agent.terminal_env_registry import plugin_backend_names
@@ -224,18 +261,19 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     except Exception:
         plugin_names = []
     known = ", ".join(f"'{n}'" for n in _BUILTIN_BACKENDS.split(", ") + list(plugin_names))
-    raise ValueError(f"Unknown environment type: {env_type}. Use {known}")
+    from hermes_cli.left_core_migration import terminal_backend_install_hint
+    raise ValueError(f"Unknown environment type: {env_type}. Use {known}{terminal_backend_install_hint(env_type)}")
 
 
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
-_ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
-                 "modal": _build_modal_env, "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
+_ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "modal": _build_modal_env,
+                 "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
                  "ssh": _build_ssh_env}
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
-                        ssh_config: dict = None, container_config: dict = None,
-                        local_config: dict = None, task_id: str = "default",
+                        ssh_config: dict | None = None, container_config: dict | None = None,
+                        local_config: dict | None = None, task_id: str = "default",
                         host_cwd: Optional[str] = None, probe_only: bool = False):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
@@ -243,7 +281,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
     builder = _ENV_BUILDERS.get(env_type)
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
-                  ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only)
+                  ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only)
     if builder is not None:
         env = builder(**kwargs)
     else:
@@ -261,7 +299,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 #   pre(config) -> True (satisfied) / False (rejected, already logged) / None (continue);
 #   binary=(finder, version_arg, missing_log_or_None) runs ``<binary> <arg>``, ok iff rc == 0;
 #   module=(find_spec name, log message when absent);  post(config) -> bool.
-def _check_vercel(config: Dict[str, Any]) -> bool:
+def _check_vercel(config: dict[str, Any]) -> bool:
     """Runtime -> disk -> SDK -> auth (OIDC token, else the full TOKEN/PROJECT_ID/TEAM_ID tuple)."""
     runtime = (config.get("vercel_runtime") or "").strip()
     disk = config.get("container_disk", 51200)
@@ -272,7 +310,8 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
         return _reject(f"Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK={disk}. "
                        "Use the default shared setting (51200 MB).")
     if importlib.util.find_spec("vercel") is None:
-        return _reject("vercel is required for the Vercel Sandbox terminal backend: pip install vercel")
+
+        return _reject("vercel is required for the Vercel Sandbox terminal backend. Run hermes setup terminal and select Vercel Sandbox.")
     from agent.secret_scope import get_secret
     if get_secret("VERCEL_OIDC_TOKEN"):
         return True
@@ -286,7 +325,7 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
     return _reject(f"Vercel Sandbox backend {head} VERCEL_OIDC_TOKEN is supported for one-off local development only.")
 
 
-def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
+def _modal_pre(config: dict[str, Any]) -> Optional[bool]:
     modal_state = _get_modal_backend_state(config.get("modal_mode"))
     if modal_state["selected_backend"] == "managed":
         return True
@@ -295,27 +334,26 @@ def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
     return None
 
 
-def _ssh_pre(config: Dict[str, Any]) -> bool:
+def _ssh_pre(config: dict[str, Any]) -> bool:
     if config.get("ssh_host") and config.get("ssh_user"):
         return True
     return _reject("the SSH host and user are not configured (TERMINAL_SSH_HOST / TERMINAL_SSH_USER); "
                    "run `hermes setup terminal` to enter them or pick the 'local' backend")
 
 
-def _daytona_post(config: Dict[str, Any]) -> bool:
-    from daytona import Daytona  # noqa: F401 — SDK presence check (ImportError propagates)
+def _daytona_post(config: dict[str, Any]) -> bool:
+    from daytona import Daytona
     from agent.secret_scope import get_secret
     return get_secret("DAYTONA_API_KEY") is not None
 
 
-_BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
+_BACKEND_SPECS: dict[str, dict[str, Any]] = {
     "local": {},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
                           "Docker is not installed — no docker executable in PATH or the usual install locations")},
-    "singularity": {"binary": (lambda: shutil.which("apptainer") or shutil.which("singularity"), "--version", None)},
     "ssh": {"pre": _ssh_pre},
     "modal": {"pre": _modal_pre,
-              "module": ("modal", "modal is required for direct modal terminal backend: pip install modal")},
+              "module": ("modal", "modal is required for direct modal terminal backend. Run hermes setup terminal and select Modal.")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
 }
@@ -323,11 +361,10 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
 
 _PROBE_FAILED_REASONS = {
     "docker": "Docker is installed but the Docker daemon is not running",
-    "singularity": "Apptainer/Singularity is installed but `--version` failed, so the install looks broken",
 }
 
 
-def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
+def _check_requirements(env_type: str, config: dict[str, Any]) -> bool:
     _record_unavailable_reason(None)
     spec = _BACKEND_SPECS[env_type]
     verdict = spec["pre"](config) if "pre" in spec else None
@@ -338,7 +375,7 @@ def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
         executable = finder()
         if not executable:
             return _reject(missing_msg or f"the {env_type!r} backend's executable was not found")
-        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
         if probe.returncode != 0:
             return _reject(f"{_PROBE_FAILED_REASONS[env_type]} (`{executable} {arg}` exited with code {probe.returncode})")
         return True
@@ -349,14 +386,16 @@ def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
     return True
 
 
-def _check_plugin_requirements(config: Dict[str, Any]) -> bool:
+def _check_plugin_requirements(config: dict[str, Any]) -> bool:
     _record_unavailable_reason(None)
     env_type = config["env_type"]
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
         ok = bool(provider.check_requirements(config))
         return ok or _reject(f"the {env_type!r} plugin backend reported its requirements are not met")
-    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {_BUILTIN_BACKENDS}, or a plugin-registered backend.")
+    from hermes_cli.left_core_migration import terminal_backend_install_hint
+    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {_BUILTIN_BACKENDS}, or a plugin-registered "
+                   f"backend{terminal_backend_install_hint(env_type)}")
 
 
 # Built-in backend -> requirements checker; unknown backends go to the plugin registry.

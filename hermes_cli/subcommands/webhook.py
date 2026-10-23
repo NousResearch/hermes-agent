@@ -30,6 +30,7 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--route-profile", dest="route_profile", default=None, metavar="PROFILE",
         help="Bind the route to a multiplexed profile: only POSTs to /p/PROFILE/webhooks/<name> "
         "are accepted and the agent runs as that profile (default: default; kept on update). "
+        "Changing an existing route's profile rotates its HMAC secret unless a different --secret is supplied. "
         "Distinct from the global -p/--profile, which picks the gateway whose subscriptions "
         "file is written.")
     wh_sub.add_argument(
@@ -37,6 +38,10 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         help="Skip the agent — deliver the rendered prompt directly as the "
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').")
+    wh_sub.add_argument(
+        "--mirror-to-session", action="store_true",
+        help="Also write each delivered message into the target chat's session, so replying to it "
+        "in that chat has context. Only for sources whose content you trust in your conversation.")
     wh_sub.add_argument(
         "--script", default="",
         help="Filter/transform script under ~/.hermes/scripts/. The route "

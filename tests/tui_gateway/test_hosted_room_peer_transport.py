@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from gateway.hosted_room_driver import TaskIdentity
 from tui_gateway.hosted_room_driver import HostedRoomBinding, ROOM_SESSION_SOURCE
 from tui_gateway.hosted_room_peer_transport import (
@@ -169,6 +171,29 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
     )
     assert stopped["status"] == "cancelled"
     assert len([call for call in client.calls if call[0] == "stop"]) == 1
+
+
+def test_peer_transport_refuses_a_submit_for_another_member():
+    client = FakePeerClient()
+    transport = _transport(client)
+    transport.create(
+        profile="reviewer",
+        title="Group: room-1",
+        source=ROOM_SESSION_SOURCE,
+    )
+    args = dict(
+        profile="reviewer",
+        session_id="group-session",
+        prompt="Review this change.",
+        source=ROOM_SESSION_SOURCE,
+        task=TaskIdentity("room-1", "task-1", "thread-1", "turn-1"),
+        execution_generation=1,
+        on_terminal=lambda _receipt: None,
+    )
+    with pytest.raises(ValueError, match="member does not match"):
+        transport.submit(**args, member_id="member-other")
+    assert not [call for call in client.calls if call[0] == "dispatch"]
+    assert transport.submit(**args, member_id="member-reviewer")["status"] == "accepted"
 
 
 def test_peer_transport_carries_each_turns_real_source_event_sequence():

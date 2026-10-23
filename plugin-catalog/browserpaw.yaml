@@ -1,0 +1,33 @@
+name: browserpaw
+repo: https://github.com/GoldenLoaf24h/browserpaw
+sha: 66a7349532a5ab6251b2090d2a4ab347aa07ad45
+subdir: "plugins/browserpaw"
+description: >-
+  Drive your own Chrome from Hermes through a BrowserPaw MCP server you configure: 16 browserpaw_* tools for navigation, indexed DOM reading, click/fill, batch actions, screenshots and tabs. Disclosure — a thin wrapper over a BrowserPaw MCP server you add yourself (mcp_servers.browserpaw, plus plugins.entries.browserpaw.mcp_allowlist: [browserpaw]); it drives your real Chrome profile (logged-in sessions, cookies) through the separately installed BrowserPaw extension and native host on 127.0.0.1:12306, whose credential lives in ~/.chrome-mcp/bridge-token; the agent can click, fill, submit and read pages without a Hermes approval prompt unless you set trust: untrusted on that server (the README sample enables the full 50-tool profile, including in-page JavaScript, HttpOnly cookie reads and raw CDP, as native Hermes MCP tools); the optional Jev remote mode sends structured page state to TypeSafe AI or a base URL you set, and its local model download contacts hf-mirror.com/aifasthub.com/huggingface.co (probing baidu.com/bilibili.com first).
+maintainer: GoldenLoaf24h
+tier: community
+category: web
+requires_hermes: ">=0.21.5"
+docs_url: "https://github.com/GoldenLoaf24h/browserpaw#readme"
+version: "4.0.0"
+capabilities:
+  provides_tools:
+    - browserpaw_act_toward_goal
+    - browserpaw_navigate
+    - browserpaw_read_dom
+    - browserpaw_interact_index
+    - browserpaw_fill_index
+    - browserpaw_batch_actions
+    - browserpaw_screenshot
+    - browserpaw_smart_scroll
+    - browserpaw_scroll_until_found
+    - browserpaw_inspect_media
+    - browserpaw_grep
+    - browserpaw_get_markdown
+    - browserpaw_switch_tab
+    - browserpaw_close_tabs
+    - browserpaw_get_windows_and_tabs
+    - browserpaw_tool_docs
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

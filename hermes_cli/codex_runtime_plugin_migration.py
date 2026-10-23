@@ -191,7 +191,7 @@ def render_codex_toml_section(
     for name in sorted(servers or ()):
         out += ["", f"[mcp_servers.{_quote_key(name)}]"]
         out += [f"{_quote_key(k)} = {_format_toml_value(v)}" for k, v in servers[name].items()]
-    plugin_sort_key = lambda p: f"{p.get('name','')}@{p.get('marketplace','')}"  # noqa: E731
+    plugin_sort_key = lambda p: f"{p.get('name','')}@{p.get('marketplace','')}"
     for plugin in sorted(plugins or (), key=plugin_sort_key):
         qualified = f"{plugin.get('name') or ''}@{plugin.get('marketplace') or 'openai-curated'}"
         out += ["", f'[plugins.{_quote_key(qualified)}]',
@@ -378,8 +378,8 @@ def _looks_like_test_tempdir(path: str) -> bool:
 
 
 def _build_hermes_tools_mcp_entry() -> dict:
-    """Codex stdio entry launching Hermes' own tool surface as an MCP server (browser/web/
-    delegate_task/vision/memory/skills call-backs).
+    """Codex stdio entry launching Hermes' own tool surface as an MCP server (web/vision/
+    image/skills/kanban call-backs).
 
     HERMES_HOME passes through only IF SET, read from os.environ (not get_hermes_home()): when
     unset the codex subprocess must inherit its launcher's runtime HERMES_HOME (systemd, gateway,
@@ -409,7 +409,7 @@ def _build_hermes_tools_mcp_entry() -> dict:
         "command": sys.executable,
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
         "env": env,
-        # Generous timeouts — browser_navigate or delegate_task can take a while.
+        # Generous timeouts — image_generate or delegate_task can take a while.
         "startup_timeout_sec": 30.0,
         "tool_timeout_sec": 600.0}
 
@@ -475,7 +475,7 @@ def migrate(
     without_managed = ""
     if target.exists():
         try:
-            existing = target.read_text(encoding="utf-8")
+            existing = target.read_text(encoding="utf-8-sig")
         except Exception as exc:
             report.errors.append(f"could not read {target}: {exc}")
             return report

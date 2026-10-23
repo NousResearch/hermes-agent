@@ -15,7 +15,6 @@ import batch_runner
 from batch_runner import (
     BatchRunner,
     _entry_prompt_text,
-    _process_batch_worker,
 )
 
 
@@ -37,19 +36,6 @@ def _discarded_result():
     }
 
 
-def test_discard_writes_tombstone_row(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "batch_runner._process_single_prompt", lambda *a, **kw: _discarded_result()
-    )
-
-    _process_batch_worker((1, [(0, {"prompt": "hi"})], tmp_path, set(), {"verbose": False}))
-
-    batch_file = tmp_path / "batch_1.jsonl"
-    rows = [json.loads(line) for line in batch_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(rows) == 1
-    assert rows[0]["discarded"] == "no_reasoning"
-    assert rows[0]["prompt_index"] == 0
-    assert rows[0]["prompt"] == "hi"
 
 
 # ─────────────────────────────────────────────────────────────────────

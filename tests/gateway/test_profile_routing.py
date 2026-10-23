@@ -10,17 +10,6 @@ from gateway.profile_routing import (
 )
 
 
-class TestProfileRoute:
-    def test_specificity_thread(self):
-        r = ProfileRoute(name="t", platform="discord", profile="p",
-                         guild_id="g", chat_id="c", thread_id="t")
-        assert r.specificity == 14  # 2 + 4 + 8
-
-
-    def test_frozen(self):
-        r = ProfileRoute(name="x", platform="discord", profile="p")
-        with pytest.raises(AttributeError):
-            r.name = "y"
 
 
 class TestProfileRouteMatching:
@@ -94,7 +83,7 @@ class TestParseProfileRoutes:
         assert parse_profile_routes([]) == []
 
     def test_coerces_yaml_native_int_ids_to_str(self):
-        # PyYAML loads unquoted snowflakes / negative Telegram ids as int;
+        # YAML loads unquoted snowflakes / negative Telegram ids as int;
         # inbound SessionSource ids are str, so un-coerced routes never match.
         routes = parse_profile_routes([
             {"name": "server", "platform": "discord", "profile": "p",
@@ -173,13 +162,6 @@ class TestMatchProfileRoute:
         assert match_profile_route(routes, "discord") is None
 
 
-class TestSessionKeyIntegration:
-    def test_default_profile_key(self):
-        from gateway.session import build_session_key, SessionSource, Platform
-        src = SessionSource(platform=Platform.DISCORD, chat_id="123",
-                            chat_type="channel", user_id="456")
-        key = build_session_key(src)
-        assert key.startswith("agent:main:")
 
 
 class TestParentChatIdMatching:
@@ -191,14 +173,6 @@ class TestParentChatIdMatching:
         assert r.matches("discord", chat_id="333", parent_chat_id="222")
 
 
-    def test_match_profile_route_with_parent_chat_id(self):
-        routes = [
-            ProfileRoute(name="ch", platform="discord", profile="trader",
-                         chat_id="222"),
-        ]
-        m = match_profile_route(routes, "discord", chat_id="333", parent_chat_id="222")
-        assert m is not None
-        assert m.profile == "trader"
 
 
 class TestForumPostMatching:

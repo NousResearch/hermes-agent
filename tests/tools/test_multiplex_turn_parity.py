@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -62,6 +62,28 @@ def test_routed_local_profile_cwd_matches_standalone_gateway(tmp_path, two_homes
     assert "TERMINAL_CWD" not in build_profile_terminal_scope(two_homes[1])
 
 
+def test_launch_artifact_context_cwd_follows_routed_profile(two_homes, tmp_path):
+    """Ignoring a Desktop launch cwd must still resolve terminal.cwd from the profile whose turn is active."""
+    from agent.runtime_cwd import resolve_context_cwd, reset_session_cwd, set_session_cwd
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+
+    a, b = two_homes
+    workspaces = {"a": tmp_path / "workspace-a", "b": tmp_path / "workspace-b"}
+    for name, home in (("a", a), ("b", b)):
+        workspaces[name].mkdir()
+        cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+        cfg["terminal"] = {"backend": "local", "cwd": str(workspaces[name])}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    token = set_session_cwd(str(tmp_path))
+    try:
+        for home, expected in ((a, workspaces["a"]), (b, workspaces["b"]), (a, workspaces["a"])):
+            with install_and_reset_profile_terminal_scope(home):
+                assert resolve_context_cwd(include_session_override=False) == expected
+    finally:
+        reset_session_cwd(token)
+
+
 def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
     """Every ``TERMINAL_ENV`` reader that shapes a turn (image-source locality, credential-file path
     translation, image-gen cache base, skill readiness) resolves the ROUTED profile's backend."""
@@ -107,8 +129,8 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
     """Config-derived singletons (redaction switch, aux unhealthy marks, LSP service, browser
     engine/headed flags, MCP stderr log path) are keyed by the routed profile home."""
     from agent import auxiliary_client, lsp, redact
-    from tools import browser_tool_cloud, mcp_tool_config
-    from tools.browser_tool_lifecycle import cleanup_all_browsers
+    from tools import browser_session_cloud, mcp_tool_config
+    from tools.browser_session_lifecycle import cleanup_all_browsers
 
     a, b = two_homes
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)  # launch profile opted out
@@ -130,10 +152,10 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
         lsp.shutdown_service()
 
     cleanup_all_browsers()
-    assert _under(a, browser_tool_cloud._get_browser_engine) == "chrome"
-    assert _under(b, browser_tool_cloud._get_browser_engine) == "lightpanda"
-    assert _under(a, browser_tool_cloud._is_headed_mode) is False
-    assert _under(b, browser_tool_cloud._is_headed_mode) is True
+    assert _under(a, browser_session_cloud.get_browser_engine) == "auto"  # "chrome" is an alias of auto
+    assert _under(b, browser_session_cloud.get_browser_engine) == "lightpanda"
+    assert _under(a, browser_session_cloud.is_headed_mode) is False
+    assert _under(b, browser_session_cloud.is_headed_mode) is True
 
     mcp_tool_config._mcp_stderr_log_fh.clear()
     try:

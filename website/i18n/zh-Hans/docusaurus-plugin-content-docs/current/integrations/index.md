@@ -42,12 +42,14 @@ web:
 
 ## 浏览器自动化
 
-Hermes 内置完整的浏览器自动化功能，提供多种后端选项，用于网站导航、表单填写和信息提取：
+Hermes 通过 `browser_exec`（基于 CDP 的 Python）提供完整的浏览器自动化功能，用于网站导航、表单填写和信息提取，浏览器可运行在以下位置：
 
 - **Browserbase** — 托管云端浏览器，具备反机器人工具、CAPTCHA 解决和住宅代理
 - **Browser Use** — 备选云端浏览器提供商
 - **本地 Chromium 系 CDP** — 使用 `/browser connect` 连接正在运行的 Chrome、Brave、Chromium 或 Edge 浏览器
-- **本地 Chromium** — 通过 `agent-browser` CLI 使用无头本地浏览器
+- **本地 Chromium** — 由 Hermes 自行启动的无头本地 Chromium（默认）
+
+Camofox 反检测浏览器以目录插件形式提供：`hermes plugins install camofox`。
 
 详见[浏览器自动化](../user-guide/features/browser.md)的配置与使用说明。
 
@@ -82,13 +84,13 @@ Hermes 内置完整的浏览器自动化功能，提供多种后端选项，用�
 
 Hermes 可作为 gateway（网关）机器人运行于 19+ 个消息平台，均通过同一 `gateway` 子系统配置：
 
-- **[Telegram](../user-guide/messaging/telegram.md)**、**[Discord](../user-guide/messaging/discord.md)**、**[Slack](../user-guide/messaging/slack.md)**、**[WhatsApp](../user-guide/messaging/whatsapp.md)**、**[Signal](../user-guide/messaging/signal.md)**、**[Matrix](../user-guide/messaging/matrix.md)**、**[Mattermost](../user-guide/messaging/mattermost.md)**、**[Email](../user-guide/messaging/email.md)**、**[SMS](../user-guide/messaging/sms.md)**、**[DingTalk](../user-guide/messaging/dingtalk.md)**、**[Feishu/Lark](../user-guide/messaging/feishu.md)**、**[WeCom](../user-guide/messaging/wecom.md)**、**[WeCom Callback](../user-guide/messaging/wecom-callback.md)**、**[Weixin](../user-guide/messaging/weixin.md)**、**[BlueBubbles](../user-guide/messaging/bluebubbles.md)**、**[QQ Bot](../user-guide/messaging/qqbot.md)**、**[Yuanbao](../user-guide/messaging/yuanbao.md)**、**[Home Assistant](../user-guide/messaging/homeassistant.md)**、**[Microsoft Teams](../user-guide/messaging/teams.md)**、**[Webhooks](../user-guide/messaging/webhooks.md)**
+- **[Telegram](../user-guide/messaging/telegram.md)**、**[Discord](../user-guide/messaging/discord.md)**、**[Slack](../user-guide/messaging/slack.md)**、**[WhatsApp](../user-guide/messaging/whatsapp.md)**、**[Signal](../user-guide/messaging/signal.md)**、**[Matrix](../user-guide/messaging/matrix.md)**、**[Mattermost](../user-guide/messaging/mattermost.md)**、**[Email](../user-guide/messaging/email.md)**、**[SMS](../user-guide/messaging/sms.md)**、**[DingTalk](../user-guide/messaging/dingtalk.md)**、**[Feishu/Lark](../user-guide/messaging/feishu.md)**、**[WeCom](../user-guide/messaging/wecom.md)**、**[WeCom Callback](../user-guide/messaging/wecom-callback.md)**、**[Weixin](../user-guide/messaging/weixin.md)**、**[BlueBubbles](../user-guide/messaging/bluebubbles.md)**、**[QQ Bot](../user-guide/messaging/qqbot.md)**、**[Yuanbao](../user-guide/messaging/yuanbao.md)**、**[Home Assistant](../user-guide/messaging/homeassistant.md)**（插件）、**[Microsoft Teams](../user-guide/messaging/teams.md)**、**[Webhooks](../user-guide/messaging/webhooks.md)**
 
 平台对比表和配置指南详见[消息 Gateway 概览](../user-guide/messaging/index.md)。
 
 ## 家庭自动化
 
-- **[Home Assistant](../user-guide/messaging/homeassistant.md)** — 通过四个专用工具（`ha_list_entities`、`ha_get_state`、`ha_list_services`、`ha_call_service`）控制智能家居设备。配置 `HASS_TOKEN` 后，Home Assistant 工具集将自动激活。
+- **[Home Assistant](../user-guide/messaging/homeassistant.md)** — 通过四个专用工具（`ha_list_entities`、`ha_get_state`、`ha_list_services`、`ha_call_service`）控制智能家居设备，并通过 gateway 响应实时状态变更。以插件目录中的 `homeassistant` 插件形式提供（`hermes plugins install homeassistant`）；配置 `HASS_TOKEN` 后，其工具集将自动激活。
 
 ## 插件
 

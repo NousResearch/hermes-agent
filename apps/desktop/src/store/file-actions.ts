@@ -9,7 +9,7 @@ import {
   revealDesktopPath,
   trashDesktopPath
 } from '@/lib/desktop-fs'
-import { downloadGatewayMediaFile } from '@/lib/media'
+import { downloadGatewayFileWithFeedback } from '@/lib/media'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
@@ -78,7 +78,10 @@ export async function copyFilePath(path: string): Promise<void> {
  *  when that session's backend is this computer. A row tagged with a Connections
  *  gateway other than `local` runs there; an untagged row runs on the window's
  *  primary, remote or not (the rule the sidebar menus already apply). */
-export function shouldOfferLocalReveal(connectionId: null | string | undefined, primaryRemote = isDesktopFsRemoteMode()): boolean {
+export function shouldOfferLocalReveal(
+  connectionId: null | string | undefined,
+  primaryRemote = isDesktopFsRemoteMode()
+): boolean {
   const tagged = String(connectionId || '').trim()
 
   return tagged ? tagged === LOCAL_CONNECTION_ID : !primaryRemote
@@ -91,18 +94,8 @@ export function shouldOfferRemoteFileDownload(isDirectory: boolean, remote = isD
   return remote && !isDirectory
 }
 
-export async function downloadRemoteFile(path: string): Promise<void> {
-  try {
-    const result = await downloadGatewayMediaFile(path)
-
-    if (result.canceled || !result.saved) {
-      return
-    }
-
-    notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.downloadSaved') })
-  } catch (error) {
-    notifyError(error, translateNow('fileMenu.downloadFailed'))
-  }
+export function downloadRemoteFile(path: string): Promise<void> {
+  return downloadGatewayFileWithFeedback(path)
 }
 
 /** Strip a `relativeTo` prefix to produce a repo/cwd-relative path. */

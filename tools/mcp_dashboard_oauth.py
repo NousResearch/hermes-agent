@@ -28,10 +28,6 @@ def contextvar_set(var: contextvars.ContextVar, value) -> Iterator[None]:
         var.reset(token)
 
 
-def _event_field():
-    return field(default_factory=threading.Event, init=False, repr=False)
-
-
 def exception_message(exc: BaseException) -> str:
     """``str(exc)``, or the type name when it is empty (bare ``TimeoutError()``/``RuntimeError()``)
     so ``mark_error`` never records a blank cause."""
@@ -51,14 +47,15 @@ class DashboardOAuthFlow:
     authorization_url: str | None = None
     error: str | None = None
     tools: list[dict] = field(default_factory=list)
+    discovery_error: str = ""
     # The user abandoned this flow: terminal for good, never re-minted (see publish_authorization_url).
     cancelled: bool = field(default=False, init=False)
     expected_state: str | None = field(default=None, init=False)
     _callback: tuple[str, str | None, str | None] | None = field(default=None, init=False, repr=False)
     _callback_error: str | None = field(default=None, init=False, repr=False)
-    _authorization_ready: threading.Event = _event_field()
-    _callback_ready: threading.Event = _event_field()
-    _worker_done: threading.Event = _event_field()
+    _authorization_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _callback_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _worker_done: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     async def publish_authorization_url(self, url: str) -> None:

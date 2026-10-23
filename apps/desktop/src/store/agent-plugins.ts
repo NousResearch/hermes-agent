@@ -1,3 +1,4 @@
+import type { PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -14,6 +15,23 @@ import { notifyError } from '@/store/notifications'
  * what's installed and what's enabled. Works against every backend topology
  * (local spawn, SSH, URL+token) because it rides the session's own transport.
  */
+
+export type AgentPluginServerState =
+  | 'connected'
+  | 'app_not_running'
+  | 'hermes_not_connected'
+  | 'endpoint_unavailable'
+  | 'no_interactive_session'
+  | 'version_too_old'
+  | 'missing_app'
+  | 'unsupported_gpu'
+  | 'unknown'
+
+export interface AgentPluginServer {
+  name: string
+  state: AgentPluginServerState
+  sentence: string
+}
 
 export interface AgentPluginRow {
   name: string
@@ -34,15 +52,44 @@ export interface AgentPluginRow {
   catalog_sha?: string
   /** Human label the catalog attaches to that pin ("1.4.0"); shown on the Update button when present. */
   catalog_version?: string | null
-  /** Installed SHA differs from the catalog pin — an update is available. */
+  /** An update is available: the catalog pin moved past the installed SHA, or (git installs) the last
+   *  update check found a newer remote commit. */
   update_available?: boolean
+  /** Git installs: what the last update check found to move to (a commit or a feed version). */
+  update_target?: string
   /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
   pinned_sha?: string
   /** The package folder also ships `desktop/plugin.js` (unified agent+desktop package). */
   has_desktop_half?: boolean
   /** Absolute install dir on the backend (informational). */
   install_dir?: string
+  /** Manifest `config_schema` rendered as a settings form (with current values). */
+  settings_schema?: PluginSettingField[]
+  /** Full snapshot of declared application-backed MCP servers. */
+  servers?: AgentPluginServer[]
 }
+
+export type PluginSettingFieldType = 'boolean' | 'enum' | 'json' | 'number' | 'secret' | 'string'
+
+/** One `config_schema` key of a plugin manifest. Secrets never carry a value:
+ *  `env` names the `.env` variable, `has_value` whether it is set. */
+export interface PluginSettingField {
+  key: string
+  type: PluginSettingFieldType
+  label: string
+  description: string
+  required: boolean
+  value?: unknown
+  default?: unknown
+  choices?: string[]
+  env?: string
+  has_value?: boolean
+}
+
+export const normalizeAgentPluginRow = (row: AgentPluginRow): AgentPluginRow => ({
+  ...row,
+  servers: row.servers ?? []
+})
 
 /** A `--ref` pin is a full 40-hex commit SHA; branches and tags are refused server-side. */
 export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
@@ -50,24 +97,33 @@ export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
 export const $agentPluginsError = atom<string | null>(null)
+/** The profile `$agentPlugins` was loaded for (`null` = the backend's launch
+ *  profile; `undefined` = nothing loaded yet). Surfaces that write a row's
+ *  settings must check it: the list is shared, and a scope switch keeps the
+ *  previous profile's rows on screen until the new list lands. */
+export const $agentPluginsProfile = atom<null | string | undefined>(undefined)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
 // Rows the Plugins page actually lists (and search should surface): plugins
-// the USER installed. Repo-bundled built-ins ship enabled-by-default and are
-// configured from their own surfaces, so they're pure noise here. The prefix
+// the USER installed, plus the few repo-bundled lifecycle plugins that use the
+// ordinary enable/disable contract and have no settings surface of their own
+// (#98861). Every other built-in (providers, platforms, browser/web backends,
+// dashboard auth, observability, unknown future keys) ships enabled-by-default
+// and is configured from its own surface, so it's pure noise here. The prefix
 // list is the fallback for older backends whose rows predate a reliable
 // `source` field — same curation stance as desktop-slash-commands.ts.
 const HIDDEN_KEY_PREFIXES = ['dashboard_auth/', 'model-providers/', 'platforms/']
+const MANAGEABLE_BUNDLED_KEYS = new Set(['disk-cleanup', 'security-guidance'])
 
 export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
   if (row.source === 'bundled') {
-    return false
+    return MANAGEABLE_BUNDLED_KEYS.has(row.key ?? row.name)
   }
 
   const key = row.key
@@ -116,7 +172,8 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
         return
       }
 
-      $agentPlugins.set(result?.plugins ?? [])
+      $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
+      $agentPluginsProfile.set(scope)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
     } catch (e) {
@@ -172,8 +229,11 @@ export async function toggleAgentPlugin(
 
     const refreshed = result.plugin
 
-    if (refreshed) {
-      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...refreshed } : row)))
+    // Patch only a list loaded for the profile this toggle targeted.
+    if (refreshed && $agentPluginsProfile.get() === (profile ?? null)) {
+      const snapshot = normalizeAgentPluginRow(refreshed)
+
+      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
     } else {
       await loadAgentPlugins(request, profile)
     }
@@ -190,11 +250,41 @@ export async function toggleAgentPlugin(
 
 export interface AgentPluginInstallResult {
   ok: boolean
+  /** The client stopped waiting; the backend may still finish the install. */
+  timedOut?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
+  /** Whether the install turned the plugin on (`enabled` in the backend result). */
+  enabled?: boolean
+  /** The `<namespace>:<skill>` names the model can now load (`activation.live_now.skills`). */
+  skillIds?: string[]
   error?: string
+  /** What became usable in open chats of the profile (`activation.live_now`). */
+  live: AgentPluginLiveNow
+  /** Python tools or prompt sections that wait for the next chat (`activation.deferred`). */
+  nextChat: boolean
 }
+
+export interface AgentPluginLiveServer {
+  name: string
+  connected: boolean
+  tools: string[]
+  error?: string | null
+}
+
+export interface AgentPluginLiveNow {
+  mcpServers: AgentPluginLiveServer[]
+  skills: string[]
+}
+
+const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
+
+// Installing a catalog package can clone a repository and resolve Python dependencies.
+// The ordinary Desktop RPC deadline is 30s, which can expire after the backend
+// has already begun an install that will succeed. Keep this wait bounded while
+// giving normal installs time to return their authoritative result.
+const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
 export async function installAgentPlugin(
   request: GatewayRequest,
@@ -217,6 +307,14 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
+      enabled?: boolean
+      activation?: {
+        live_now?: {
+          mcp_servers?: AgentPluginLiveServer[]
+          skills?: { name: string }[]
+        } | null
+        deferred?: Record<string, string[]>
+      } | null
       error?: string
     }>(
       'plugins.manage',
@@ -230,28 +328,132 @@ export async function installAgentPlugin(
           ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile
-      )
+      ),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed' }
+      return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
     }
+
+    const liveSkills = result.activation?.live_now?.skills ?? []
 
     return {
       ok: true,
       pluginName: result.plugin_name,
       warnings: result.warnings,
-      missingEnv: result.missing_env
+      missingEnv: result.missing_env,
+      enabled: result.enabled,
+      skillIds: liveSkills.map(skill => skill.name),
+      live: {
+        mcpServers: result.activation?.live_now?.mcp_servers ?? [],
+        // `<namespace>:<skill>` is what the model loads; the toast shows the skill's own name.
+        skills: liveSkills.map(skill => skill.name.split(':').pop() ?? skill.name)
+      },
+      nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    const message = e instanceof Error ? e.message : String(e)
+
+    return {
+      ok: false,
+      timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
+      error: message,
+      live: NO_LIVE,
+      nextChat: false
+    }
   }
 }
 
-/** Re-pin a catalog-installed plugin to the current catalog SHA (backend
- *  `plugins.manage update`; catalog installs only). Refreshes the list on
- *  success. Returns whether the update applied. */
+/** One security-scan finding on an update the scan blocked. */
+export interface AgentPluginScanFinding {
+  severity: string
+  category: string
+  file: string
+  line: number
+  description: string
+}
+
+/** Outcome of `updateAgentPlugin`: `applied` when the update landed, `unchanged`
+ *  when already current, `consent` when a new catalog pin widens the plugin
+ *  (retry with `acceptCapabilities`), `scan` when the security scan blocked the
+ *  new code (a `caution` verdict can be retried with `force`). The backend
+ *  changed nothing for `consent` and `scan`. */
+export type AgentPluginUpdateOutcome =
+  | { kind: 'applied' | 'unchanged' | 'failed' }
+  | { kind: 'consent'; sha: string; deltaLines: string[] }
+  | { kind: 'scan'; verdict: string; findings: AgentPluginScanFinding[] }
+
+export interface AgentPluginUpdateOptions {
+  /** Apply a catalog re-pin the user confirmed after a `consent` outcome. */
+  acceptCapabilities?: boolean
+  /** Apply an update whose scan returned caution, after the user saw the findings. */
+  force?: boolean
+}
+
+/** Update an installed plugin (backend `plugins.manage update`): a catalog install
+ *  re-pins to the current catalog SHA, a git install pulls. Refreshes the list on
+ *  success. */
 export async function updateAgentPlugin(
+  request: GatewayRequest,
+  name: string,
+  failMessage: string,
+  profile?: string | null,
+  options: AgentPluginUpdateOptions = {}
+): Promise<AgentPluginUpdateOutcome> {
+  $agentPluginBusy.set(name)
+
+  const params: PluginsManageParams = { action: 'update', name }
+
+  if (options.acceptCapabilities) {
+    params.accept_capabilities = true
+  }
+
+  if (options.force) {
+    params.force = true
+  }
+
+  try {
+    const result = await request<{
+      ok?: boolean
+      unchanged?: boolean
+      consent_required?: boolean
+      sha?: string
+      delta_lines?: string[]
+      scan_blocked?: boolean
+      scan_verdict?: string
+      scan_findings?: AgentPluginScanFinding[]
+    }>('plugins.manage', withProfile({ ...params }, profile), PLUGIN_INSTALL_REQUEST_TIMEOUT_MS)
+
+    if (result?.consent_required) {
+      return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
+    }
+
+    if (result?.scan_blocked) {
+      return { kind: 'scan', verdict: result.scan_verdict ?? 'dangerous', findings: result.scan_findings ?? [] }
+    }
+
+    if (!result?.ok) {
+      throw new Error(failMessage)
+    }
+
+    await loadAgentPlugins(request, profile)
+
+    return { kind: result.unchanged ? 'unchanged' : 'applied' }
+  } catch (e) {
+    notifyError(e, failMessage)
+
+    return { kind: 'failed' }
+  } finally {
+    $agentPluginBusy.set(null)
+  }
+}
+
+/** Uninstall a user-installed agent plugin (backend `plugins.manage remove`;
+ *  deletes `<HERMES_HOME>/plugins/<name>` and its install metadata). Drops the
+ *  row locally on success — callers rescan so a unified package's desktop half
+ *  is pruned too. Returns whether the plugin was removed. */
+export async function removeAgentPlugin(
   request: GatewayRequest,
   name: string,
   failMessage: string,
@@ -260,20 +462,88 @@ export async function updateAgentPlugin(
   $agentPluginBusy.set(name)
 
   try {
-    const result = await request<{ ok?: boolean; unchanged?: boolean }>(
-      'plugins.manage',
-      withProfile({ action: 'update', name }, profile)
-    )
+    const result = await request<{ ok?: boolean }>('plugins.manage', withProfile({ action: 'remove', name }, profile))
 
     if (!result?.ok) {
       throw new Error(failMessage)
     }
 
-    await loadAgentPlugins(request, profile)
+    $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
 
-    return !result.unchanged
+    return true
   } catch (e) {
     notifyError(e, failMessage)
+
+    return false
+  } finally {
+    $agentPluginBusy.set(null)
+  }
+}
+
+export interface SaveAgentPluginSettingsOptions {
+  /** Canonical plugin key (`plugins.entries.<key>`). */
+  key: string
+  /** Non-secret `config_schema` values, already coerced to their wire types. */
+  values: Record<string, unknown>
+  /** Secret fields: `.env` variable name → new value (blank = unchanged, never sent). */
+  secrets: Record<string, string>
+  /** Writes ONE secret through the credential route (`PUT /api/env`, profile-scoped
+   *  by the caller) — secrets never ride the config.yaml RPC. */
+  writeSecret: (env: string, value: string) => Promise<unknown>
+  failMessage: string
+  profile?: string | null
+}
+
+/** Persist a plugin's manifest-declared settings: values through
+ *  `plugins.manage settings` (the backend writes `plugins.entries.<key>.settings`
+ *  with the same writer `ctx.set_config` uses), secrets through `writeSecret`.
+ *  Patches the row from the RPC's refreshed copy so the form re-reads what
+ *  landed. Returns whether everything saved. */
+export async function saveAgentPluginSettings(
+  request: GatewayRequest,
+  opts: SaveAgentPluginSettingsOptions
+): Promise<boolean> {
+  $agentPluginBusy.set(opts.key)
+
+  try {
+    for (const [env, value] of Object.entries(opts.secrets)) {
+      if (value) {
+        await opts.writeSecret(env, value)
+      }
+    }
+
+    // A secret-only save still makes the (empty) settings call: the backend's save is what tells a
+    // Desktop half `plugin.<id>.settings.changed`, and a new API key is the change it most needs.
+    const wroteSecret = Object.values(opts.secrets).some(Boolean)
+
+    const result =
+      Object.keys(opts.values).length > 0 || wroteSecret
+        ? await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
+            'plugins.manage',
+            withProfile({ action: 'settings', key: opts.key, values: opts.values }, opts.profile)
+          )
+        : null
+
+    if (result && !result.ok) {
+      throw new Error(opts.failMessage)
+    }
+
+    // The shared list may belong to another profile by now (a scope switch
+    // mid-save): only a list loaded for the profile this save targeted takes
+    // its refreshed row, and a refetch would hijack the other profile's view.
+    const ownsList = $agentPluginsProfile.get() === (opts.profile ?? null)
+
+    if (ownsList && result?.plugin) {
+      const refreshed = result.plugin
+
+      $agentPlugins.set($agentPlugins.get().map(row => (row.key === opts.key ? { ...row, ...refreshed } : row)))
+    } else if (ownsList) {
+      await loadAgentPlugins(request, opts.profile)
+    }
+
+    return true
+  } catch (e) {
+    notifyError(e, opts.failMessage)
 
     return false
   } finally {

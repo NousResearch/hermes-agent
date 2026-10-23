@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { type ChatMessage, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { stopVoicePlayback } from '@/lib/voice-playback'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
 
 import { useVoiceConversation } from './use-voice-conversation'
 
@@ -51,6 +52,7 @@ class TestAudio extends EventTarget {
 }
 
 afterEach(() => {
+  $autoSpeakReplies.set(false)
   cleanup()
   stopVoicePlayback()
   vi.useRealTimers()
@@ -59,6 +61,9 @@ afterEach(() => {
 })
 
 it('speaks a sealed narration while busy and keeps the session open for the final reply', async () => {
+  // This test drives the TTS playback path, gated by the read-aloud toggle
+  // (#44263); opt in like the app does when replies are spoken.
+  $autoSpeakReplies.set(true)
   vi.useFakeTimers()
   TestAudio.instances = []
   vi.stubGlobal('Audio', TestAudio)

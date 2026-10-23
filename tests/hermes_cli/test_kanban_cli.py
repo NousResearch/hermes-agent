@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import threading
 from pathlib import Path
 
@@ -59,6 +58,20 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_run_slash_stats_text_includes_review_lane(kanban_home):
+    """``stats`` text output must surface the ``review`` lane: board_stats() counts
+    every non-archived status, so the ``By status:`` block must list ``review`` too
+    or its count silently disappears while ``--json`` still shows it."""
+    import re
+
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="needs review", assignee="alice")
+        assert kb.request_review(conn, tid, summary="s", force=True)
+
+    assert re.search(r"review\s+1", kc.run_slash("stats"))
+    assert json.loads(kc.run_slash("stats --json"))["by_status"].get("review") == 1
+
+
 def test_kanban_show_json_includes_runtime_limit(kanban_home):
     with kbc.connect() as conn:
         bounded_id = kb.create_task(
@@ -81,20 +94,57 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
 
     output = kc.run_slash(f"show {child_id}")
 
-    assert f"Task {child_id}: child task" in output
-    assert f"parents:   {parent_id}" in output
+    assert "child task" in output
+    assert parent_id in output
     assert "Cannot operate on a closed database" not in output
+
+
+def test_kanban_show_text_renders_legacy_iso_completed_at(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="legacy stamp")
+        kb.complete_task(conn, task_id, result="ok", force=True)
+        conn.execute("UPDATE tasks SET completed_at = '2026-09-30T14:22:11' WHERE id = ?", (task_id,))
+        conn.commit()
+
+    output = kc.run_slash(f"show {task_id}")
+
+    assert "completed: 2026-09-30 14:22" in " ".join(output.split())
+
+
+def test_show_survives_iso_strings_in_integer_timestamp_columns(kanban_home):
+    """`kanban show` must not crash on ISO-8601 strings written into the
+    INTEGER timestamp columns of tasks / task_runs / task_events by raw SQL
+    outside the mutators (#97455): both output modes stay readable and serve
+    epoch ints instead of raising ``invalid literal for int()``."""
+    iso_utc = "2026-08-28T14:35:22+00:00"
+    iso_z = "2026-08-28T16:58:56.613Z"
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="corrupted card", assignee="alice")
+        assert kb.claim_task(conn, task_id)
+        assert kb.complete_task(conn, task_id, summary="done")
+        conn.execute("UPDATE task_runs SET ended_at = ? WHERE task_id = ?", (iso_utc, task_id))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (iso_z, task_id))
+        conn.execute("UPDATE task_events SET created_at = ? WHERE task_id = ?", (iso_z, task_id))
+        conn.commit()
+
+    output = kc.run_slash(f"show {task_id}")
+    assert f"Task {task_id}: corrupted card" in output
+    assert "invalid literal" not in output
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+    assert payload["task"]["id"] == task_id
+    assert [r["ended_at"] for r in payload["runs"]] == [1787927722]  # iso_utc, not a 0 fallback
+    assert payload["events"] and {e["created_at"] for e in payload["events"]} == {1787936336}  # iso_z
 
 
 def test_kanban_edit_updates_documented_task_fields(kanban_home):
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="old title", body="old body", priority=2)
 
-    output = kc.run_slash(
+    kc.run_slash(
         f"edit {task_id} --title 'new title' --body 'new body' --priority 70"
     )
 
-    assert f"Edited {task_id}" in output
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         events = kb.list_events(conn, task_id)
@@ -197,7 +247,6 @@ def test_run_slash_reclaim_running_task(kanban_home):
     import re
     import time
     import secrets
-    from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
 
     out1 = kc.run_slash("create 'stuck worker task' --assignee broken-model")

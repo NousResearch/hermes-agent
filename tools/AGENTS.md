@@ -15,7 +15,10 @@ manual import list. A tool that is a whole package (`tools/connectors/`) registe
 is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
 warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),
 availability (`check_fn`, TTL-cached process-wide), and error wrapping. **All handlers return a JSON
-string.**
+string**, except a tool that hands the model pixels: it may return the multimodal envelope
+`{"_multimodal": True, "content": [text, image_url…], "text_summary": str}` (`registry._normalize_handler_result`
+accepts exactly that shape). Its image path goes through `vision_tools._native_tool_result_images` — never a
+private vision check.
 
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool
 
@@ -39,10 +42,10 @@ toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
    `_HERMES_CORE_TOOLS` is the default bundle every platform's base toolset inherits, not dead code.
 
 Rules for tool code:
-- **Schema descriptions must not name tools from other toolsets** (`browser_navigate` saying "prefer
+- **Schema descriptions must not name tools from other toolsets** (a browser tool saying "prefer
   web_search"). Those tools may be unavailable (missing key, disabled toolset) and the model
   hallucinates calls to them. Cross-references are added dynamically in `get_tool_definitions()` in
-  `model_tools.py` — see the `browser_navigate` / `execute_code` post-processing blocks.
+  `model_tools.py` — see the `browser_cdp` / `execute_code` post-processing blocks.
 - **Paths in schema descriptions use `display_hermes_home()`** (schema is built at import; under
   multiplex it shows the launch home, which is display-only). **State files use `get_hermes_home()`**
   at call time, never `Path.home()/.hermes` and never a module constant, so each served profile gets
@@ -67,17 +70,33 @@ Rules for tool code:
 ## Toolsets (`toolsets.py`)
 
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
-delegation, discord, discord_admin, feishu_doc, feishu_drive, file, homeassistant, image_gen,
-kanban, memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
+delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
+kanban, memory, messaging, moa, rl, safe, search, session_search, skills, terminal, todo,
 tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
-`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
-replaces the other browser tools when `browser.backend` is `browser-use`.
+`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec` is the
+one core browser tool (beside `browser_cdp` / `browser_dialog` / `browser_vault`, all CDP).
+
+## Browser runtime
+
+`browser_exec` (`browser_use_cli.py`) drives a browser over CDP through browser-harness. Where that
+CDP endpoint comes from is `browser_session.get_session_info(cache_key)`: operator `BU_CDP_*` env (in
+browser_exec) > CDP override (live `/browser connect` > `BROWSER_CDP_URL` > `browser.cdp_url`) >
+hybrid `::local` sidecar > cloud provider (failure → local session marked `fallback_from_cloud`) >
+real profile (consented) > Lightpanda > the packaged Chromium from `browser_launcher.launch_chromium`
+(one browser per cache key, `--remote-debugging-port=0` + `DevToolsActivePort`). State lives in
+`browser_session.py`; siblings late-import it inside functions. Every launched Chromium is stopped
+parent-first and recorded in a private 0700 dir (a throwaway profile's in
+`<HERMES_HOME>/cache/browser/chromium-records`; a persistent profile's per OS user under the host lock dir,
+one for every home pinning it) so a later process reaps a crashed owner's browser after checking pid + start
+time + its `--user-data-dir` argv token; the reaper walks every served home and every shared profile.
+`browser_tool.py` and `browser_tool_install.py` are frozen old-updater stubs only (see their
+docstrings); never grow them.
 
 ## Backends and providers inside tools/
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
-docker, ssh, modal, daytona, singularity; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
-browser (`browser_tool_*.py`: cdp, cloud, install, lifecycle, session, real_profile, vision), MCP
+docker, ssh, modal, daytona; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
+browser (`browser_launcher.py` + `browser_session*.py`: lifecycle, cloud, cdp, real_profile, sandbox), MCP
 client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
 (`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
 `OptionalSkillSource`). Adding a backend = a new sibling or provider entry in the existing table,
@@ -85,7 +104,7 @@ never an `elif` on a backend name (root shape rules). Remote-backend file visibi
 fixed at the mount, not by adding a tool.
 
 **Native vision embeds are history, not one-shot payloads.** `vision_tools.py::_vision_analyze_native`
-(and the browser screenshot twins in `browser_tool_vision.py` / `browser_use_cli.py`) bake the image
+(and the browser screenshot twin in `browser_use_cli.py`) bake the image
 into a tool result that is re-sent on every later API call. Size and repeat policy live in
 `vision_tools_history_budget.py` (config section `vision`: `embed_target_bytes`, `max_calls_per_image`);
 the repeat counter is keyed on (session id, resolved source) so region crops share their file's count,
@@ -108,8 +127,8 @@ _record_scope_trust` keys trust on the home; a secondary never adopts the launch
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
 session's profile.
 
-**Background-process teardown signals the parent first.** `process_registry.py::ProcessRegistry.
-_terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
+**Background-process teardown signals the parent first.** `process_registry_termination.py::
+ProcessTerminationMixin._terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
 `terminal.daemon_term_grace_seconds` for it to exit and reap its own children, then SIGTERMs the
 snapshot survivors and SIGKILLs whatever ignored both (so a supervisor that reaps its tree — a
 Chromium/Electron browser reaping its zygotes, a shell trap — exits cleanly, while a shell whose
@@ -134,13 +153,20 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
+subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
+delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
+`delegation.backends.<name>`) that answers each task's route (`tools/delegate_tool_routes.py`: model/provider fields
+resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →
+the child is built, leases and converses inside that profile's scope) and may add enum-checked per-task schema params; it
+never owns lifecycle. The `default` strategy is the bundled `plugins/delegation/default` plugin (no core special case
+beyond selecting it). Fails closed: an unusable backend is a tool error naming it (never a silent `default`), an
+unroutable task is refused alone (`TaskRoute.error`), as is a task sending a parameter its backend lacks. A session routes on the backend its `delegate_task` was built from (`agent._delegation_backend`, pinned with its tools), so a save applies at `/new` or `--now` (`agent/delegation_backends.py`). Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on
 the result as `orphaned_processes`, exited-but-never-read notify processes as `unread_completions` (`_ChildRun.account_background_processes`, before `cleanup` kills them). **Child kernels:** a child's `execute_code` kernels are keyed `<parent-owner>::child::<child-session-id>`, pinned against the `max_session_kernels` LRU cap while the child runs and disposed by `cleanup` (`code_kernel.shutdown_kernels_for_delegated_child`) — never let a finished child's kernel squat the cap. **output_schema:** a miss after the one retry keeps `status: completed` with the raw text in `summary` plus `schema_valid: false` / `schema_errors` / `schema_note` — never discard a child's result. **Durability:** background
 delegation is process-local; work that must survive restart uses `cronjob` or
-`terminal(background=True, notify_on_complete=True)`. **Stop fan-out:** a turn's hard interrupt reaches only
+`terminal(background=True, notify_on_complete=True)`. `heartbeat=N` on the same spawn emits a `heartbeat` event (type on the completion queue; delta output only, `HEARTBEAT_MIN_SECONDS` floor, one daemon timer thread for all sessions in `process_registry.py::ProcessRegistry._heartbeat_loop`) — every surface that renders `watch_match` must render `heartbeat` (`process_registry_notifications.py`, `gateway/run.py::_drain_gateway_watch_events`, `tui_gateway/session_notifications.py::_DEDUP_EXTRA_FIELDS`). **Stop fan-out:** a turn's hard interrupt reaches only
 `_active_children`; background units are detached at dispatch, so every stop surface (gateway `/stop` busy AND
 idle paths, TUI `session.interrupt`, ACP `cancel`, CLI `/stop` via `interrupt_all`) calls
 `async_delegation.interrupt_for_session` too. Depth>0 delegations are always synchronous
@@ -153,3 +179,26 @@ interrupted entry's `summary` is the child's last real assistant text (`_build_r
 assert contracts ("every registered tool has a toolset", "no schema description names a tool from
 another toolset") rather than tool counts. Approval/security-boundary tools are E2E'd with real
 imports against a temp `HERMES_HOME` (see `tests/tools/test_approval_config_readonly.py`).
+
+## Surface capability is a property of the SESSION, never of the process env
+
+A tool that works only because of *who is on the other end* (desktop panes, in-app browser,
+message reactions, Projects) must resolve availability from the **session's own source**, not
+from an env var on the backend. Client and backend are separate machines: the desktop app may
+drive a locally spawned backend, one over SSH, one behind URL + token, or Hermes Cloud, and
+only the first two carry `HERMES_DESKTOP=1`. An env-keyed gate is a silent no-op on the other
+topologies — the tool is stripped from the schema while the platform hint tells the model it
+is "inside the Hermes desktop app". The pattern:
+
+- **The toolset is the surface gate.** Keep such tools off `_HERMES_CORE_TOOLS` and in a named
+  toolset (`desktop_ui`, `project`); the GUI gateway's `_load_enabled_toolsets(platform)`
+  folds it in when the session's platform says GUI. One resolver, every topology.
+- **`check_fn` answers reachability or opt-in, not surface.** "Is the bridge wired?" — fine.
+  "Was I spawned by Electron?" — not. `check_fn` results are TTL-cached process-wide
+  (`tools/registry.py`); a per-session answer does not belong there.
+- **Ask which identity you mean.** `HERMES_DESKTOP=1` legitimately means "this backend was
+  spawned by the app" (cron ticker, web-dist handling). It does NOT mean "a GUI is watching";
+  the embedded terminal pane (`hermes --tui` against that backend) is the counterexample.
+
+Test: if the capability still makes sense with the client on another machine, it is
+session-scoped. Assert the GUI session gets the tool **with the env var absent**.

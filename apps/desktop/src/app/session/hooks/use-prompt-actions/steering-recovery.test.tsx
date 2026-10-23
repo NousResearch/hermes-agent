@@ -12,7 +12,9 @@ import {
   $activeSessionStoredIdRotation,
   $messages,
   $selectedStoredSessionId,
+  $sessions,
   setActiveSessionId,
+  setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
   setMessages,
@@ -146,6 +148,7 @@ afterEach(() => {
   clearAllSessionStates()
   clearSingleFlightSessionResumeState()
   setActiveSessionId(null)
+  setActiveSessionStoredIdRotation(null)
   setSelectedStoredSessionId(null)
   setSessions([])
   setBusy(false)
@@ -200,6 +203,116 @@ const steeringActions = [
   { action: 'injectHiddenPrompt' as const, method: 'session.steer', status: 'queued' }
 ]
 
+it.each(steeringActions)(
+  '$action ($status) keeps steering on a rotated session before its new row has loaded',
+  async ({ action, method, status }) => {
+    seed()
+
+    // session.info can bind the runtime to the continuation before the next
+    // sessions refresh carries its lineage. The open route and selection still
+    // name the previous id during this short handoff.
+    act(() => {
+      handle.cache.updateSessionState('rt-B', state => state, 'stored-B-tip')
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['stored-A', 'stored-B'])
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-B-tip',
+      previousStoredSessionId: 'stored-B',
+      runtimeSessionId: 'rt-B'
+    })
+
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({ status })
+    await act(async () => {
+      expect(await handle.actions[action]('rotated chat correction')).toBe(true)
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenLastCalledWith('connection-B', 'default', method, {
+      session_id: 'rt-B',
+      text: 'rotated chat correction'
+    })
+  }
+)
+
+it.each(steeringActions)(
+  '$action ($status) keeps steering on a rotated session after its previous tip was evicted',
+  async ({ action, method, status }) => {
+    seed()
+
+    act(() => {
+      // First establish the tip that the route and selection were using.
+      handle.cache.updateSessionState('rt-B', state => state, 'stored-B-evicted-tip')
+      setActiveSessionStoredIdRotation(null)
+      routedStoredId = 'stored-B-evicted-tip'
+      setSelectedStoredSessionId('stored-B-evicted-tip')
+
+      // The next compression can replace that tip in the session list before
+      // the route-follow effect has consumed its rotation event.
+      setSessions([
+        {
+          id: 'stored-B-next',
+          _lineage_root_id: 'stored-B',
+          profile: 'default',
+          connection_id: 'connection-B',
+          source: 'desktop',
+          message_count: 2
+        }
+      ] as SessionInfo[])
+      handle.cache.updateSessionState('rt-B', state => state, 'stored-B-next')
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['stored-B-next'])
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-B-next',
+      previousStoredSessionId: 'stored-B-evicted-tip',
+      runtimeSessionId: 'rt-B'
+    })
+
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({ status })
+    await act(async () => {
+      expect(await handle.actions[action]('evicted tip correction')).toBe(true)
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenLastCalledWith('connection-B', 'default', method, {
+      session_id: 'rt-B',
+      text: 'evicted tip correction'
+    })
+  }
+)
+
+it.each(['redirectPrompt', 'injectHiddenPrompt'] as const)(
+  '%s rejects an evicted selection without matching rotation proof',
+  async action => {
+    seed()
+
+    act(() => {
+      setSessions([
+        {
+          id: 'stored-B-next',
+          _lineage_root_id: 'stored-B',
+          profile: 'default',
+          connection_id: 'connection-B',
+          source: 'desktop',
+          message_count: 2
+        }
+      ] as SessionInfo[])
+      handle.cache.updateSessionState('rt-B', state => state, 'stored-B-next')
+      setActiveSessionStoredIdRotation(null)
+
+      // A stale route and selection alone must not make B's live runtime look
+      // like an unrelated, evicted conversation that happened to be on screen.
+      routedStoredId = 'stored-A-evicted-tip'
+      setSelectedStoredSessionId('stored-A-evicted-tip')
+    })
+
+    await act(async () => {
+      expect(await handle.actions[action]('wrong chat correction')).toBe(false)
+    })
+
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+  }
+)
+
 const recoveryCases = (['before-stale-error', 'during-resume', 'stay'] as const).flatMap(navigation =>
   [false, true].flatMap(expiredRecovery => steeringActions.map(action => ({ ...action, navigation, expiredRecovery })))
 )
@@ -227,7 +340,9 @@ it.each(recoveryCases)(
       }
 
       if (rpc === 'prompt.submit') {
-        return { status: 'streaming' }
+        // Durable admission protocol: a successful submit is acknowledged with
+        // the receipt for THIS submission, never a bare legacy status.
+        return { admission_id: params?.submission_id, status: 'started' }
       }
 
       throw new Error(`unexpected ${rpc}`)
@@ -355,6 +470,7 @@ it.each(rebuiltRuntimeCases)(
           completeAssistantMessage: vi.fn(),
           failAssistantMessage: vi.fn(),
           flushQueuedDeltas: vi.fn(),
+          dropQueuedDeltas: vi.fn(),
           finalizeInterimAssistantMessage: vi.fn(),
           hydrateFromStoredSession: vi.fn(async () => undefined),
           queryClient: new QueryClient(),
@@ -423,5 +539,22 @@ it.each(rebuiltRuntimeCases)(
     expect(handle.cache.runtimeIdByStoredSessionIdRef.current.get('stored-B')).toBe('rt-B')
     expect($activeSessionStoredIdRotation.get()).toBe(rotation)
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  }
+)
+
+it.each(['interrupt', 'steer'] as const)(
+  'a %s correction the owner consumed as a voice stop settles with no user bubble (TUI-26)',
+  async mode => {
+    seed()
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({ voice_stopped: true })
+    await act(async () => {
+      expect(await handle.actions.redirectPrompt('stop', mode)).toBe(true)
+    })
+
+    const rows = [...handle.cache.sessionStateByRuntimeIdRef.current.values()]
+      .flatMap(state => state.messages)
+      .filter(message => message.role === 'user')
+
+    expect(rows).toHaveLength(0)
   }
 )

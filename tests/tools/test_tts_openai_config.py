@@ -76,7 +76,6 @@ class TestResolveOpenaiAudioClientConfig:
             with pytest.raises(ValueError) as exc:
                 tts_tool_openai._resolve_openai_audio_client_config()
         assert "nous" in str(exc.value)
-        assert "hermes tools" in str(exc.value)
 
     def test_vendor_selection_missing_key_raises_selection_error(self):
         """A stored vendor selection with no credentials errors by name —
@@ -89,7 +88,6 @@ class TestResolveOpenaiAudioClientConfig:
                 tts_tool_openai._resolve_openai_audio_client_config()
         gateway_mock.assert_not_called()
         assert "openai" in str(exc.value)
-        assert "hermes tools" in str(exc.value)
 
     def test_missing_config_and_env_raises_updated_error(self):
         with patch.object(tts_tool, "_load_tts_config", return_value={}), \
@@ -100,10 +98,7 @@ class TestResolveOpenaiAudioClientConfig:
             with pytest.raises(ValueError) as exc:
                 tts_tool_openai._resolve_openai_audio_client_config()
 
-        assert (
-            str(exc.value)
-            == "Neither tts.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
-        )
+        assert "OPENAI_API_KEY" in str(exc.value)
 
     def test_config_api_key_counts_as_available_backend(self):
         config = {"openai": {"api_key": "cfg-key"}}

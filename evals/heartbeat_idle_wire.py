@@ -16,12 +16,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig  # noqa: E402
-from gateway.platforms.base import BasePlatformAdapter, SendResult  # noqa: E402
-from gateway.platforms.event import MessageEvent  # noqa: E402
-from gateway.run import GatewayRunner  # noqa: E402
-from gateway.session import SessionSource, SessionStore, build_session_key  # noqa: E402
-from hermes_cli import heartbeat  # noqa: E402
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource, SessionStore, build_session_key
+from hermes_cli import heartbeat
 
 
 class WireAdapter(BasePlatformAdapter):
@@ -68,6 +68,10 @@ async def main(base_poller):
     async def drain():
         while adapter._background_tasks:
             await asyncio.gather(*list(adapter._background_tasks))
+            # gather() over tasks that are ALL already done completes without yielding (3.12+), so a
+            # finished task whose queued _background_tasks.discard callback has not run yet would spin
+            # this loop forever; yield once so those done-callbacks run before re-checking.
+            await asyncio.sleep(0)
 
     def snapshot():
         return {"turns": len(received), "queue_depth": runner._queue_depth(key, adapter=adapter),

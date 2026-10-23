@@ -573,7 +573,7 @@ thinking toggle. All four profiles accept `prompt_cache_key`; this does not
 promise measured cache savings or enable explicit `cache_control` markers.
 
 If using the standalone Token Plan chat plugin, follow its
-[release-gated migration guide](https://github.com/oliver-mee/hermes-alibaba-token-plan/blob/main/docs/core-chat-migration.md)
+[release-gated migration guide](https://github.com/oliver-mee/hermes-alibaba-token-plan/blob/142b6e07bfdb1f2e10a6ece2f9e94f352df0139c/docs/core-chat-migration.md)
 once your Hermes release includes this integration. User-installed providers can
 override bundled profiles. Retire only the chat component after backup and
 verification; the separate media plugin remains independently installed.

@@ -90,6 +90,8 @@ def test_provider_429_continuation_reuses_completed_tool_result(monkeypatch, ret
                     def no_prelude(*args):
                         pytest.fail("Retry repeated onboarding prelude")
                     monkeypatch.setattr('agent.onboarding_session.onboarding_prelude', no_prelude)
+                    monkeypatch.setattr(server, '_stage_onboarding_turn_note', no_prelude)
+                    monkeypatch.setattr(server, '_stage_first_contact_onboarding_note', no_prelude)
                     assert payload.get("retry_token"), payload
                     assert server._inflight_snapshot(session)["retry_token"] == payload["retry_token"]
                 server._sessions["retry-runtime"] = session

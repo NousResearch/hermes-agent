@@ -93,3 +93,30 @@ def test_goal_draft_drafts_on_the_gateway(cli, monkeypatch):
     assert lines == ['Drafting completion contract…']
     assert result.output.startswith('⊙ Goal set (20-turn budget): ship the API') and result.kickoff
     assert mgr.state.goal == 'ship the API'
+
+
+def test_mirror_resyncs_when_another_surface_clears(cli):
+    """The gateway's judge takeover cleared the row; the CLI proxy's frozen mirror must resync."""
+    from hermes_cli.goals import clear_goal
+    mgr = cli.cli._get_goal_manager()
+    mgr.set('ship it')
+    clear_goal('sid-1')  # another writer on the same store (the gateway side)
+    assert mgr.state is not None and mgr.is_active()  # 期望: 镜像仍冻结在 active
+    mgr.refresh()  # what _maybe_continue_goal_after_turn now does every turn
+    assert mgr.state is None  # 期望: _adopt 对 cleared 置 None，dock 行消失
+
+
+def test_mirror_resyncs_when_another_surface_resumes(cli, monkeypatch):
+    """done→active drift through the remote proxy: a resumed goal reappears."""
+    from hermes_cli import goals
+    monkeypatch.setattr(goals, 'judge_goal', lambda *a, **k: ('done', 'shipped', False, None, False))
+    mgr = cli.cli._get_goal_manager()
+    mgr.set('ship it')
+    mgr.evaluate_after_turn('shipped it', user_initiated=True)
+    assert mgr.state is not None and mgr.state.status == 'done'  # 期望: judge 判 done 镜像同步
+    state = goals.load_goal('sid-1')
+    assert state is not None
+    state.status = 'active'  # a TUI-side /goal resume on the gateway's store
+    goals.save_goal('sid-1', state)
+    mgr.refresh()
+    assert mgr.is_active()  # 期望: 镜像看到恢复后的 active，dock 行重现

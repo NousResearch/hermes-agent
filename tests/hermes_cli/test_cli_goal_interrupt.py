@@ -120,3 +120,59 @@ class TestHealthyTurnStillRuns:
 
         assert cli._pending_input.empty()
         assert mgr.state.status == "done"
+
+
+class TestMirrorResyncOnExternalWrite:
+    """Another writer moved state_meta; the CLI's frozen mirror must resync
+    before the active check so a done/cleared goal stops the loop and the dock."""
+
+    def test_cleared_by_another_writer_stops_judging_and_repaints(self, hermes_home):
+        sid = f"sid-resync-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        from hermes_cli.goals import clear_goal
+        clear_goal(sid)  # out-of-band write: DB row changes, the mirror does not
+        assert mgr.state is not None and mgr.state.status == "active"  # expected: mirror still frozen at active
+        with patch("hermes_cli.goals.judge_goal") as judge:
+            cli._maybe_continue_goal_after_turn()
+        assert not judge.called  # expected: cleared in DB, no judging
+        assert not mgr.has_goal()  # expected: mirror re-read from DB, dock line disappears
+
+    def test_done_by_another_writer_stops_judging(self, hermes_home):
+        sid = f"sid-resync-done-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        from hermes_cli.goals import GoalManager, save_goal
+        other = GoalManager(session_id=mgr.session_id, default_max_turns=5)
+        assert other.state is not None
+        other.state.status = "done"
+        save_goal(mgr.session_id, other.state)  # a distinct object, like another process
+        with patch("hermes_cli.goals.judge_goal") as judge:
+            cli._maybe_continue_goal_after_turn()
+        assert not judge.called  # expected: already done, no judging
+        assert mgr.state is not None and mgr.state.status == "done"  # expected: mirror synced to done
+
+    def test_resumed_by_another_writer_reactivates_mirror(self, hermes_home):
+        """done→active drift: another surface resumed the goal; the mirror must see it."""
+        sid = f"sid-resync-resume-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        cli.conversation_history = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "did some work, more to do"},
+        ]
+        from hermes_cli.goals import GoalManager, save_goal
+        other = GoalManager(session_id=mgr.session_id, default_max_turns=5)
+        assert other.state is not None
+        other.state.status = "done"
+        save_goal(mgr.session_id, other.state)
+        mgr.refresh()  # the CLI saw the judge's done first — mirror is now done
+        assert mgr.state is not None and mgr.state.status == "done"  # expected: mirror at done before the resume
+        other2 = GoalManager(session_id=mgr.session_id, default_max_turns=5)
+        assert other2.state is not None
+        other2.state.status = "active"  # a TUI-side /goal resume
+        save_goal(mgr.session_id, other2.state)
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "resumed", False, None, False),
+        ) as judge:
+            cli._maybe_continue_goal_after_turn()
+        assert judge.called  # expected: active again, judging resumes
+        assert mgr.is_active()  # expected: mirror saw the resume, dock line returns

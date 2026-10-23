@@ -821,7 +821,15 @@ class CLILoopsMixin:
         via ``/goal resume``. Empty-response skip mirrors ``gateway/run.py``."""
         from cli import _DIM, _RST, _cprint, _looks_like_slash_command
         mgr = self._get_goal_manager()
-        if mgr is None or not mgr.is_active():
+        if mgr is None:
+            return
+        # Another writer (the gateway's post-turn judge takeover, /goal from
+        # another surface, a tool) may have moved state_meta since this
+        # manager's mirror was built. A frozen mirror would skip judging
+        # forever (active→done/cleared) or hide a resumed goal (done→active).
+        # Unconditional: either direction of drift breaks the display.
+        mgr.refresh()
+        if not mgr.is_active():
             return
 
         # Slash commands don't count as "real user messages": they're dispatched via

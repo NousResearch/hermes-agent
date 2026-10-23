@@ -1,8 +1,8 @@
 name: skill-lineage
 title: Skill Lineage
 repo: https://github.com/simin-yuan/hermes-skill-lineage
-sha: 554a951a49489284ad0592ee7916dc2d5b16dd8a
-version: "0.1.4"
+sha: 531cdfc94ab6b0a5ee89232f51ffd1af7de1b388
+version: "0.1.5"
 description: >-
   Records where each skill version's content came from, so a skill that rewrites itself can be audited
   afterwards. For every skill write — a foreground skill_manage call, a background-review edit, or a

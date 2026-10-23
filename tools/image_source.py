@@ -212,6 +212,20 @@ def _ensure_container_env(task_id: Optional[str]) -> None:
         pass
 
 
+def _sandbox_exec_path(p: Path) -> str:
+    """Render *p* as a path the sandbox shell can open.
+
+    Hermes may run on Windows while the terminal backend is a Linux sandbox
+    (ssh -> WSL). A Windows path must be translated to its DrvFS view
+    (``C:\\Users\\x`` -> ``/mnt/c/Users/x``), and any backslash-mangled
+    path needs forward slashes, or the sandbox exec cannot find the file.
+    """
+    text = str(p)
+    if len(text) >= 2 and text[1] == ":":
+        return "/mnt/" + text[0].lower() + text[2:].replace("\\", "/")
+    return text.replace("\\", "/")
+
+
 async def _resolve_container_fallback(
     p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)) -> ResolvedImage:
     """Read the bytes inside the sandbox; fail-closed when no env exists (a non-cache host
@@ -245,7 +259,7 @@ async def _resolve_container_fallback(
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).
-    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
+    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(_sandbox_exec_path(p))} | base64 | tr -d '\\n'"
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
         last_res = await asyncio.to_thread(env.execute, cmd)

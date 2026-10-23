@@ -20,6 +20,7 @@ import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
 import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
+import { enPluginSettingsForm } from './en_plugin_settings_form'
 import { enPluginUpdate } from './en_plugin_update'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
@@ -2153,16 +2154,7 @@ export const en: Translations = {
       deepLinkCatalogUnavailable:
         'Could not load the Hermes plugin catalog. Check your connection and open the link again.',
       settingsToggle: (name: string) => `Settings: ${name}`,
-      settingsForm: {
-        save: 'Save settings',
-        saved: (name: string) => `${name} settings saved.`,
-        saveFailed: (name: string) => `Could not save ${name} settings`,
-        required: 'Required',
-        optional: '(optional)',
-        secretSet: '•••••••• (set)',
-        secretStoredAs: (env: string) =>
-          `Stored in the profile's .env as ${env}, never in config.yaml; leave blank to keep the current value.`
-      }
+      settingsForm: enPluginSettingsForm
     },
     officialCatalog: 'Available to install',
     officialPill: 'Official',

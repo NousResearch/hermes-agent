@@ -24,6 +24,7 @@ import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
 import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
+import type { PluginSettingsFormCopy } from './types_plugin_settings_form'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
@@ -1946,15 +1947,7 @@ catalog: CatalogTranslations
       deepLinkCatalogUnknown: (name: string) => string
       deepLinkCatalogUnavailable: string
       settingsToggle: (name: string) => string
-      settingsForm: {
-        save: string
-        saved: (name: string) => string
-        saveFailed: (name: string) => string
-        required: string
-        optional: string
-        secretSet: string
-        secretStoredAs: (env: string) => string
-      }
+      settingsForm: PluginSettingsFormCopy
     }
     officialCatalog: string
     officialPill: string

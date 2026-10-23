@@ -14,6 +14,7 @@ import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
+import { esPluginSettingsForm } from './es_plugin_settings_form'
 import { esPluginUpdate } from './es_plugin_update'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
@@ -2505,15 +2506,7 @@ export const esOverrides = {
       deepLinkCatalogUnavailable:
         'No se pudo cargar el catálogo de plugins de Hermes. Comprueba tu conexión y vuelve a abrir el enlace.',
       settingsToggle: (name: string) => `Configuración: ${name}`,
-      settingsForm: {
-        save: 'Guardar configuración',
-        saved: (name: string) => `Configuración de ${name} guardada.`,
-        saveFailed: (name: string) => `No se pudo guardar la configuración de ${name}`,
-        required: 'Obligatorio',
-        secretSet: '•••••••• (configurado)',
-        secretStoredAs: (env: string) =>
-          `Se guarda en el .env del perfil como ${env}, nunca en config.yaml; déjalo en blanco para conservar el valor actual.`
-      }
+      settingsForm: esPluginSettingsForm
     },
     officialCatalog: 'Disponibles para instalar',
     officialPill: 'Oficial',

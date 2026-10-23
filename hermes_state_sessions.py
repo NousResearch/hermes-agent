@@ -735,8 +735,17 @@ class SessionSessionsMixin:
         if model:
             patch["model"] = model
         if provider:
-            route = {"provider": provider, "base_url": base_url or None, "api_mode": api_mode or None}
-            patch.update(route, gateway_runtime=route)
+            normalized = str(provider).strip()
+            # Bare ``custom`` is the resolved billing class every named endpoint reports, not a
+            # routable identity: persisting it makes the next resume resolve to "no endpoint or
+            # API key" (runtime_provider._raise_for_credentialless_bare_custom). Callers heal the
+            # name from (base_url, model); without one, keep the stored route rather than write a
+            # provider that can never resolve.
+            if normalized.lower() == "custom":
+                normalized = ""
+            if normalized:
+                route = {"provider": normalized, "base_url": base_url or None, "api_mode": api_mode or None}
+                patch.update(route, gateway_runtime=route)
         self._write_model_config_patch(
             session_id, patch, "UPDATE sessions SET model = ?, model_config = ? WHERE id = ?",
             lambda merged: (model, merged, session_id),

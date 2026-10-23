@@ -12,6 +12,7 @@
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName?, mentions? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
+ *   POST /react          - React to a message { chatId, messageId, emoji, senderId?, fromMe? }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
@@ -31,8 +32,9 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
-import { createOutboundIdTracker } from './outbound_ids.js';
+import { createOutboundIdTracker, isOwnSendEcho } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { registerReactionRoute } from './reaction.js';
 import {
   addMentions,
   buildPollPayload,
@@ -155,18 +157,31 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
+// `skipIfExpired` is for best-effort sends (reactions): a send whose deadline
+// passed while it waited in the queue is dropped instead of started late, where
+// the already-rejected race would free the queue while it is still in flight and
+// overlap the next send.
+function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS, { skipIfExpired = false } = {}) {
   let timer;
+  let expired = false;
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
+      () => {
+        expired = true;
+        reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`));
+      },
       timeoutMs,
     );
   });
-  return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
+  // A send can expire while it still waits in the queue, before the race below is
+  // attached; mark the rejection handled so it cannot crash the process. The
+  // caller still sees it through the race or the expiry check.
+  timeoutPromise.catch(() => {});
+  return enqueueSend(() => {
+    if (skipIfExpired && expired) return timeoutPromise;
+    return Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
+      .finally(() => clearTimeout(timer));
+  });
 }
 
 function formatOutgoingMessage(message) {
@@ -743,8 +758,15 @@ async function startSocket() {
       });
       event.fromOwner = fromOwner;
 
-      // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
+      // Ignore Hermes' own sends (replies, reactions) echoed back as fromMe, to avoid loops.
+      const ownEcho = isOwnSendEcho({
+        fromMe: msg.key.fromMe,
+        messageId: msg.key.id,
+        body: event.body,
+        replyPrefix: REPLY_PREFIX,
+        recentlySent: recentlySentIds,
+      });
+      if (ownEcho) {
         if (WHATSAPP_DEBUG) {
           emitDebugEvent({
             stage: 'ignored',
@@ -1056,6 +1078,15 @@ app.post('/send-location', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+// React to an existing message. The injected send function is the same
+// serialized, timeout-bounded path used by every other outbound send.
+registerReactionRoute(app, {
+  getSocket: () => sock,
+  getConnectionState: () => connectionState,
+  sendWithTimeout,
+  trackSentMessageId,
 });
 
 // Typing indicator

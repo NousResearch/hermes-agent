@@ -216,7 +216,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
 from gateway.platforms.helpers import cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from utils import env_int
 
 
@@ -392,6 +392,45 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
         self._configure_text_batch_delays()
+        self._reaction_tail: Optional[asyncio.Task] = None  # last queued status reaction (see _queue_reaction)
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        """Interpret common config truthy and falsy values."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+    def _reactions_enabled(self) -> bool:
+        """Whether the processing-status reactions (👀 → ✅/❌) are enabled; default on."""
+        configured = None
+        extra = getattr(self.config, "extra", None)
+        if isinstance(extra, dict):
+            configured = extra.get("reactions")
+        if configured is not None:
+            return self._coerce_bool(configured)
+        return True
+
+    def _reaction_sender_authorized(self, event: MessageEvent) -> bool:
+        """The lifecycle hooks run before run.py's auth gate, so a 👀 to an unauthorized sender (an unpaired DM
+        under ``dm_policy: pairing``, anyone off the allowlist) would reveal a listening bot. React only when the
+        runner's auth check (pairing store + allowlists) admits the sender; with no check registered (bare
+        adapter) fall back to the strict access-policy ``_is_dm_allowed``."""
+        source = event.source
+        user_id = str(getattr(source, "user_id", None) or "").strip()
+        if not user_id:
+            return False
+        verdict = self._is_sender_authorized(user_id, source.chat_type, source.chat_id)
+        return verdict if verdict is not None else self._is_dm_allowed(user_id)
+
+    @staticmethod
+    def _is_reaction_event(event: MessageEvent) -> bool:
+        """An inbound reaction (the bridge sets ``nativeType: reactionMessage``) carries no message of its own to
+        mark; reacting to it is a wasted send that could also feed an echo loop."""
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        return raw.get("nativeType") == "reactionMessage"
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -888,6 +927,85 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # ``async with`` — a bare ``await session.post(...)`` leaves the response (and its CLOSE_WAIT socket) alive until GC.
             async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_whatsapp_jid(chat_id)}, timeout=aiohttp.ClientTimeout(total=5)):
                 pass
+
+    async def _send_reaction_to_bridge(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+        *,
+        sender_id: Optional[str] = None,
+        from_me: bool = False,
+    ) -> None:
+        """Send a native WhatsApp reaction via the Node bridge."""
+        if await self._bridge_unavailable():
+            return
+        # Baileys removes an existing reaction by sending the same key with an empty
+        # text value, so only None is invalid here.
+        if not chat_id or not message_id or emoji is None:
+            return
+        try:
+            payload: dict[str, Any] = {
+                "chatId": to_whatsapp_jid(chat_id),
+                "messageId": str(message_id),
+                "emoji": emoji,
+                "fromMe": bool(from_me),
+            }
+            if sender_id:
+                payload["senderId"] = to_whatsapp_jid(str(sender_id))
+            async with self._bridge_req("post", "react", 5, json=payload) as resp:
+                if getattr(resp, "status", 200) >= 400:
+                    logger.debug("[%s] WhatsApp reaction bridge returned HTTP %s", self.name, getattr(resp, "status", "unknown"))
+        except Exception as exc:
+            # Best-effort status reaction: a failure must never disturb message flow.
+            logger.debug("[%s] WhatsApp reaction failed: %s", self.name, exc, exc_info=True)
+
+    def _queue_reaction(self, chat_id: str, message_id: str, emoji: str, *, sender_id: Optional[str], from_me: bool) -> None:
+        """Send a reaction off the turn's critical path, so a slow bridge cannot delay the turn or its reply. Each
+        send waits for the previous one, so a message's 👀 always reaches the bridge before its ✅/❌."""
+        previous = self._reaction_tail
+
+        async def _send() -> None:
+            if previous is not None:
+                await asyncio.wait({previous})  # done either way; its own failure was already logged
+            await self._send_reaction_to_bridge(chat_id, message_id, emoji, sender_id=sender_id, from_me=from_me)
+
+        task = asyncio.get_running_loop().create_task(_send())
+        self._reaction_tail = task
+        self._background_tasks.add(task)  # cancelled with the adapter's other work on shutdown
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """React with 👀 while the message is being processed."""
+        if not self._reactions_enabled() or self._is_reaction_event(event) or not self._reaction_sender_authorized(event):
+            return
+        chat_id = getattr(event.source, "chat_id", None) if event.source else None
+        message_id = event.message_id
+        if not chat_id or not message_id:
+            return
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        self._queue_reaction(chat_id, message_id, "👀", sender_id=raw.get("senderId"), from_me=bool(raw.get("fromMe", False)))
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the in-progress reaction for the final outcome reaction."""
+        if not self._reactions_enabled() or self._is_reaction_event(event) or not self._reaction_sender_authorized(event):
+            return
+        if outcome == ProcessingOutcome.SUCCESS:
+            emoji = "✅"
+        elif outcome == ProcessingOutcome.FAILURE:
+            emoji = "❌"
+        elif outcome == ProcessingOutcome.CANCELLED:
+            # Clear the in-progress reaction so a cancelled run does not leave a
+            # permanent false "still processing" indicator.
+            emoji = ""
+        else:
+            return
+        chat_id = getattr(event.source, "chat_id", None) if event.source else None
+        message_id = event.message_id
+        if not chat_id or not message_id:
+            return
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        self._queue_reaction(chat_id, message_id, emoji, sender_id=raw.get("senderId"), from_me=bool(raw.get("fromMe", False)))
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         if not self._running or not self._http_session:

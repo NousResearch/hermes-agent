@@ -91,10 +91,12 @@ def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list
 
 
 def _bash_starts(candidate: str) -> bool:
-    """An existing bash.exe can still be broken or be a launcher stub."""
+    """An existing bash.exe can still be broken or be a launcher stub.
+    The probe forks (``$(:)``): under Windows Mandatory ASLR an MSYS bash
+    runs builtins fine but dies in ``dofork`` (0xC0000142)."""
     try:
         return subprocess.run(
-            [candidate, "-c", "exit 0"], stdin=subprocess.DEVNULL,
+            [candidate, "-c", "x=$(:)"], stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             check=False,
@@ -105,6 +107,10 @@ def _bash_starts(candidate: str) -> bool:
 
 def bash() -> str | None:
     """Resolve the bash binary to use, or None if none is available."""
+    override = os.environ.get("HERMES_GIT_BASH_PATH")
+    if override and os.path.isfile(override) and _bash_starts(override):
+        return override
+
     staged = _staged_bash()
     if staged and _bash_starts(staged):
         return staged

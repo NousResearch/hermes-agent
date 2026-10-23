@@ -2734,8 +2734,6 @@ def _require_root_for_system_service(action: str) -> None:
 
 def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str, int]:
     import getpass
-    import grp
-    import pwd
     username = (
         run_as_user or os.getenv("SUDO_USER") or os.getenv("USER") or os.getenv("LOGNAME") or getpass.getuser()
     ).strip()
@@ -2748,7 +2746,9 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
     if username == "root":
         print_warning("Installing gateway service to run as root.")
         print_info("  This is fine for LXC/container environments but not recommended on bare-metal hosts.")
-
+    # POSIX-only modules; the refusals above must stay reachable where pwd/grp are absent (Windows).
+    from hermes_cli.gateway_migrate_guards import _posix_pwd_grp
+    pwd, grp = _posix_pwd_grp()
     try:
         user_info = pwd.getpwnam(username)
     except KeyError as e:

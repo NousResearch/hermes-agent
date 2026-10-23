@@ -50,13 +50,32 @@ def pid_is_other_users(pid: int) -> bool:
     return owner is not None and owner != my_uid
 
 
+def _posix_module(name: str):
+    """``import <name>`` for a POSIX-only module, or None where it is absent (Windows)."""
+    try:
+        return __import__(name)
+    except ImportError:
+        return None
+
+
+def _posix_pwd_grp():
+    """``(pwd, grp)`` on POSIX. Raises ValueError where they are absent (Windows): the callers are
+    systemd system-service paths, which cannot exist there."""
+    pwd, grp = _posix_module("pwd"), _posix_module("grp")
+    if pwd is None or grp is None:
+        raise ValueError("System gateway services require a POSIX host (pwd/grp unavailable)")
+    return pwd, grp
+
+
 def _system_unit_uid(unit_path: Path) -> Optional[int]:
     """uid a system unit runs as: its ``User=`` (root when absent); None when the name is unknown."""
     from hermes_cli.gateway import _read_systemd_user_from_unit
     user = _read_systemd_user_from_unit(unit_path)
     if user is None:
         return 0
-    import pwd
+    pwd = _posix_module("pwd")
+    if pwd is None:  # Windows: no pwd module, and no systemd system units to resolve
+        return None
     with contextlib.suppress(KeyError):
         return pwd.getpwnam(user).pw_uid
     return None

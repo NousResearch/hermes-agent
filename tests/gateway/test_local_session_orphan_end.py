@@ -1,0 +1,211 @@
+"""Local sessions nobody closed end on the gateway, and only open ones come back at boot (#143547).
+
+LC-35: a killed terminal or dropped socket detached with no ``end_reason``, and nothing ever ended
+the row. LC-37: a gateway stop with a viewer attached left the row open for good. LC-36: every
+receipt, ended or not, was restored into the live registry on each boot. The turn itself keeps
+running (#106742); the row ends once it settles, through the epoch-fenced viewer-close path.
+"""
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tests.waiting import async_wait_until
+
+
+async def _owner(tmp_path, monkeypatch):
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    finalized = []
+
+    async def finalize(**kwargs):
+        finalized.append(kwargs['reason'])
+        return []
+
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None,
+                             _finalize_session_off_loop=finalize)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
+    return authority, finalized
+
+
+def _viewer(authority):
+    from gateway.session_controls import AuthorityConnection
+    return AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
+
+
+async def _attach(authority, sid):
+    viewer = _viewer(authority)
+    reply = await viewer.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': sid}})
+    assert 'result' in reply, reply
+    return viewer, reply['result']
+
+
+def _create(authority, text='earlier turn'):
+    from gateway.session_local import create_local_session
+    ref = create_local_session(authority, _viewer(authority).actor, {
+        'request_id': text, 'source': 'gui', 'cwd': str(Path(authority.db.db_path).parent), 'model': 'm',
+        'toolsets': []})
+    authority.db.append_message(ref.session_id, 'user', text)
+    return ref
+
+
+def _capture_timers(monkeypatch):
+    """The grace timer's (delay, callback), fired by the test instead of after a real wait."""
+    import gateway.session_viewer_close as viewer_close
+    armed = []
+
+    def call_later(loop, delay, callback):
+        armed.append((delay, callback))
+        return loop.call_later(3600, callback)
+    monkeypatch.setattr(viewer_close, '_call_later', call_later, raising=False)
+    return armed
+
+
+def _stored_close(db, sid):
+    from gateway.session_viewer_close import CLOSE_PREFIX
+    return db.get_meta(CLOSE_PREFIX + sid)
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_viewer_ends_the_session_after_its_turn_settles(tmp_path, monkeypatch):
+    import gateway.session_finite as finite
+    import tools.async_delegation as delegation
+    from hermes_state_runtime import admit_session_input, list_session_admissions
+
+    armed = _capture_timers(monkeypatch)
+    authority, finalized = await _owner(tmp_path, monkeypatch)
+    db, ref = authority.db, _create(authority)
+    sid, user = ref.session_id, authority.sessions[ref.session_id].source.user_id
+    viewer, _ = await _attach(authority, sid)
+    started, release, executed, refused = asyncio.Event(), asyncio.Event(), [], []
+
+    async def execute(authority, ref, row):
+        started.set()
+        await release.wait()
+        executed.append(row['payload']['text'])
+        return 'done'
+    monkeypatch.setattr(finite, 'execute_finite_admission', execute)
+    monkeypatch.setattr(delegation, 'refuse_for_session', lambda *a, **k: refused.append(a))
+    monkeypatch.setattr(delegation, 'interrupt_for_session', lambda *a, **k: refused.append(k))
+    admit_session_input(db, epoch=authority.epoch, principal_id=user, session_id=sid,
+                        request_id='r1', payload={'text': 'long turn'})
+    authority._schedule(ref)
+    await asyncio.wait_for(started.wait(), 10)
+
+    await viewer.close()  # the terminal is killed: no end_reason
+    assert [delay for delay, _ in armed] == [300.0]
+    armed[0][1]()
+    await async_wait_until(lambda: _stored_close(db, sid) is not None)
+    # The turn keeps running and nothing it started is refused; the row stays open meanwhile.
+    assert db.get_session(sid)['ended_at'] is None and executed == [] and refused == []
+
+    release.set()
+    await async_wait_until(lambda: finalized == ['ws_orphan_reap'])  # the end hooks run after the stamp
+    assert db.get_session(sid)['end_reason'] == 'ws_orphan_reap'
+    assert executed == ['long turn'] and _stored_close(db, sid) is None
+
+    admit_session_input(db, epoch=authority.epoch, principal_id=user, session_id=sid,
+                        request_id='r2', payload={'text': 'next turn'})
+    authority._schedule(ref)
+    await async_wait_until(lambda: executed == ['long turn', 'next turn'])
+    await async_wait_until(lambda: not list_session_admissions(db, session_id=sid))
+    assert db.get_session(sid)['ended_at'] is None  # reopened on the same id
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_back_within_the_grace_keeps_the_session_open(tmp_path, monkeypatch):
+    armed = _capture_timers(monkeypatch)
+    authority, finalized = await _owner(tmp_path, monkeypatch)
+    sid = _create(authority).session_id
+    viewer, _ = await _attach(authority, sid)
+    await viewer.close()
+    await _attach(authority, sid)
+    assert authority.orphan_closes == {}
+
+    armed[0][1]()  # a timer that fired anyway finds the viewer back
+    await asyncio.sleep(0)
+    assert authority.pending_closes == {} and _stored_close(authority.db, sid) is None
+    assert authority.db.get_session(sid)['ended_at'] is None and finalized == []
+
+
+@pytest.mark.asyncio
+async def test_an_orphan_end_leaves_an_unknown_turn_for_its_user(tmp_path, monkeypatch):
+    """Nobody closed the session, so nobody decided to drop the turn a hard-killed owner lost."""
+    from hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
+
+    armed = _capture_timers(monkeypatch)
+    first, _ = await _owner(tmp_path, monkeypatch)
+    sid = _create(first).session_id
+    admit_session_input(first.db, epoch=first.epoch, principal_id=first.sessions[sid].source.user_id,
+                        session_id=sid, request_id='r1', payload={'text': 'mid-turn'})
+    row = claim_session_input(first.db, epoch=first.epoch, session_id=sid)
+    authority, finalized = await _owner(tmp_path, monkeypatch)  # SIGKILL, then the next owner
+    assert get_session_admission(authority.db, admission_id=row['admission_id'])['status'] == 'unknown'
+
+    viewer, _ = await _attach(authority, sid)
+    await viewer.close()
+    armed[-1][1]()
+    from gateway.session_runtime_workers import mutation_tasks
+    await asyncio.gather(*mutation_tasks(authority))  # the close is stored and its settle has run
+    assert _stored_close(authority.db, sid) is not None
+    assert get_session_admission(authority.db, admission_id=row['admission_id'])['status'] == 'unknown'
+    assert authority.db.get_session(sid)['ended_at'] is None and finalized == []
+
+
+@pytest.mark.asyncio
+async def test_boot_restores_only_open_sessions_and_an_ended_one_on_first_touch(tmp_path, monkeypatch):
+    from hermes_state_local import end_idle_local_session
+
+    first, _ = await _owner(tmp_path, monkeypatch)
+    ended, live = _create(first, 'finished').session_id, _create(first, 'ongoing').session_id
+    assert end_idle_local_session(first.db, epoch=first.epoch, session_id=ended, target_id=ended, reason='cli_close')
+
+    authority, _ = await _owner(tmp_path, monkeypatch)
+    assert live in authority.sessions and ended not in authority.sessions
+    _, resumed = await _attach(authority, ended)
+    assert [message['content'] for message in resumed['messages']] == ['finished']
+    assert ended in authority.sessions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('viewer_returns', [False, True])
+async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path, monkeypatch, viewer_returns):
+    from gateway.session_local_recovery import recover_local_sessions
+
+    armed = _capture_timers(monkeypatch)
+    first, _ = await _owner(tmp_path, monkeypatch)
+    sid = _create(first).session_id
+    await _attach(first, sid)  # the gateway stops with this viewer attached: no detach ever runs
+
+    authority, finalized = await _owner(tmp_path, monkeypatch)
+    recover_local_sessions(authority, schedule=True)
+    assert [delay for delay, _ in armed] == [300.0]
+    if viewer_returns:
+        await _attach(authority, sid)
+    armed[0][1]()
+    if viewer_returns:
+        await asyncio.sleep(0)
+        assert authority.db.get_session(sid)['ended_at'] is None and finalized == []
+    else:
+        await async_wait_until(lambda: finalized == ['startup_orphan_reap'])
+        assert authority.db.get_session(sid)['end_reason'] == 'startup_orphan_reap'
+
+
+@pytest.mark.asyncio
+async def test_a_zero_grace_never_ends_a_detached_session(tmp_path, monkeypatch):
+    armed = _capture_timers(monkeypatch)
+    authority, _ = await _owner(tmp_path, monkeypatch)
+    (Path(authority.db.db_path).parent / 'config.yaml').write_text('sessions:\n  orphan_end_grace_s: 0\n')
+    sid = _create(authority).session_id
+    viewer, _ = await _attach(authority, sid)
+    await viewer.close()
+    assert armed == [] and authority.orphan_closes == {}
+    assert authority.db.get_session(sid)['ended_at'] is None

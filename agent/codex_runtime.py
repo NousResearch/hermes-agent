@@ -800,6 +800,14 @@ _CODEX_PROGRESS_DELTA_TYPES = frozenset({
     "response.refusal.delta",
 })
 
+# Provider-side transient codes on a terminal ``response.failed`` frame. These mean the server
+# could not complete the generation, not that the request was wrong, so one in-stream retry is
+# worth it. Codes that indicate a permanent request or policy failure are deliberately absent and
+# keep the existing fail-fast behaviour.
+_CODEX_RETRYABLE_TERMINAL_ERROR_CODES = frozenset({
+    "server_error", "internal_error", "overloaded_error", "server_overloaded",
+})
+
 
 def _codex_event_has_content(event: Any) -> bool:
     """Whether a Codex Responses event carries substantive forward progress.
@@ -1142,6 +1150,32 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
     return sanitized
 
 
+def _codex_terminal_error_code(final: Any) -> str:
+    """Lowercased ``error.code`` from a terminal ``response.failed`` frame, ``""`` when absent.
+
+    ``response.error`` arrives as a dict or a namespace depending on the transport, so both
+    shapes are read.
+    """
+    error = getattr(final, "error", None)
+    if error is None:
+        return ""
+    code = error.get("code") if isinstance(error, dict) else getattr(error, "code", None)
+    return str(code or "").strip().lower()
+
+
+def _is_retryable_terminal_failure(final: Any) -> bool:
+    """True when a stream ended in ``response.failed`` with a transient provider error code.
+
+    A failed stream produced no answer to preserve, so retrying it cannot duplicate output. Only
+    provider-side transient codes qualify: a permanent failure (bad request, policy block) would
+    fail identically on every attempt and only burn the budget. ``status=incomplete`` never
+    qualifies, because a retry there re-burns the completion budget for the same truncation.
+    """
+    if str(getattr(final, "status", "") or "").strip().lower() != "failed":
+        return False
+    return _codex_terminal_error_code(final) in _CODEX_RETRYABLE_TERMINAL_ERROR_CODES
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
@@ -1149,7 +1183,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     from agent import relay_llm
     transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
-    max_stream_retries, model = 1, api_kwargs.get("model")
+    # Mid-stream reconnect attempts, resolved in agent_init from agent.max_stream_retries (config)
+    # with HERMES_STREAM_RETRIES as the fallback. Shared with the chat-completions path; this path
+    # used to hardcode 1. The 2 is that shared default, used only when the attribute is absent.
+    max_stream_retries = max(int(getattr(agent, "_max_stream_retries", 2) or 0), 0)
+    model = api_kwargs.get("model")
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
     # Retirement token for THIS request (installed by ``interruptible_api_call``). A watchdog that kills the
@@ -1358,6 +1396,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         intercepted_events: list = []
         writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         writer_token["superseded_logged"] = False
+        # Per attempt: a superseded attempt's bytes must not inflate the streamed_chars diagnostic
+        # or leak into the next attempt's accounting.
+        agent._codex_streamed_text_parts = []
+        # Visible-delivery snapshot for THIS attempt: ``_current_streamed_assistant_text`` is
+        # turn-scoped (it accumulates across tool iterations), so the no-retry-after-delivery
+        # guard below must only consider text this attempt delivered — never the turn's
+        # accumulated buffer, which would wrongly skip safe retries.
+        _visible_before = getattr(agent, "_current_streamed_assistant_text", "") or ""
         try:
             try:
                 event_stream = relay_llm.stream(
@@ -1416,6 +1462,34 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",
                                final.status, final.incomplete_details, final.error,
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
+            if _is_retryable_terminal_failure(final) and attempt < max_stream_retries:
+                # Mirror the chat path's "died AFTER tokens delivered: normally no retry".
+                # Live deltas already reached a consumer this attempt (``_fire_stream_delta``
+                # records only scrubbed, delivered text), so retrying would re-stream the full
+                # completion — duplicate visible text + TTS with no reconnect marker. The check
+                # uses the same visible-delivery semantics as the chat path (stripped visible
+                # text); whitespace-only / think-only deltas record nothing visible, so those
+                # attempts are still safe to retry.
+                _visible_now = getattr(agent, "_current_streamed_assistant_text", "") or ""
+                _grown = (
+                    _visible_now[len(_visible_before):]
+                    if _visible_now.startswith(_visible_before)
+                    else _visible_now
+                )
+                if _grown.strip():
+                    logger.warning(
+                        "Codex Responses stream failed after visible text was delivered "
+                        "(%d chars this attempt); not retrying to avoid duplicate text. %s",
+                        len(_grown), agent._client_log_context(),
+                    )
+                    return final
+                # The provider ended the stream with a transient error and produced no visible
+                # answer, so there is nothing to preserve. Retry in-stream instead of surfacing
+                # a hard failure the outer turn loop has to absorb.
+                logger.debug("Codex Responses stream terminal failure is retryable (code=%s, attempt %s/%s); "
+                             "retrying. %s", _codex_terminal_error_code(final), attempt + 1,
+                             max_stream_retries + 1, agent._client_log_context())
+                continue
             return final
         finally:
             # relay_llm.stream is ManagedLlmStream, whose close() always owns the provider stream; only

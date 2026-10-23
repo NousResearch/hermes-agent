@@ -314,6 +314,7 @@ def test_parent_session_id_survives_checkpoint_recovery(tmp_path, monkeypatch):
         "session_id": "proc_recovered",
         "command": "sleep 999",
         "pid": 4242,
+        "owner_pid": 999999999,  # the writer is gone, so its entries are recovery's
         "pid_scope": "host",
         "host_start_time": 111.0,
         "started_at": 1234.5,

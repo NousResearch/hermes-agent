@@ -7,6 +7,8 @@ its own probe in agent/prompt_builder). Toggle: ``agent.environment_probe`` in c
 from __future__ import annotations
 
 import logging
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -78,11 +80,40 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
         return -1, "", f"oserror: {exc}"
 
 
+def _posix_shim_command(
+    binary: str, args: tuple[str, ...], *, is_windows: Optional[bool] = None,
+) -> Optional[list[str]]:
+    """Command that runs ``binary *args`` through git-bash, or None when N/A.
+
+    On Windows the terminal tool runs git-bash, where ``python3`` commonly resolves to
+    an **extensionless MSYS shim** (a bash script, e.g. ``~/.local/bin/python3``).
+    ``shutil.which`` cannot see one — PATHEXT has no entry for an extensionless file —
+    and ``CreateProcess`` could not exec it even if found. Asking bash keeps the line
+    true to the environment the model actually gets, instead of reporting
+    ``python3=missing`` while the terminal runs ``python3`` fine.
+
+    Only reached when the native lookup misses, so POSIX hosts and native-``.exe``
+    Windows installs keep the existing single-subprocess path.
+    """
+    on_windows = os.name == "nt" if is_windows is None else is_windows
+    # Pass the RESOLVED path, never the bare name: CreateProcess searches the system
+    # directory before PATH, so a bare "bash" finds C:\Windows\System32\bash.exe — the
+    # WSL launcher, not git-bash — and dies with "execvpe(/bin/bash) failed".
+    bash = shutil.which("bash")
+    if not on_windows or not bash:
+        return None
+    return [bash, "-lc", " ".join(shlex.quote(part) for part in (binary, *args))]
+
+
 def _py_out(binary: str, *args: str) -> Optional[str]:
     """stdout of ``<binary> *args`` when the binary is on PATH and exits 0, else None."""
-    if not shutil.which(binary):
-        return None
-    rc, out, _err = _run([binary, *args])
+    if shutil.which(binary):
+        cmd = [binary, *args]
+    else:
+        cmd = _posix_shim_command(binary, args)
+        if cmd is None:
+            return None
+    rc, out, _err = _run(cmd)
     return out if rc == 0 else None
 
 

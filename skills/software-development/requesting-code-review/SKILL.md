@@ -74,6 +74,8 @@ Detect the project language and run the appropriate tools. Capture the failure
 count BEFORE your changes as **baseline_failures** (stash changes, run, pop).
 Only NEW failures introduced by your changes block the commit.
 
+These steps run the project's own code on the host, which is fine for your own working tree. If the code under review is someone else's (a PR, a downloaded repo), run its tests with `hermes sandbox run --path . -- <test command>` instead: a throwaway container with no network, no credentials and no access to your files. If it reports no container runtime (exit 69), do not run that code on the host: review it by reading only and report "tests not run: no isolated runtime available (needs Docker or Podman)".
+
 **Test frameworks** (auto-detect by project files):
 ```bash
 # Python (pytest)

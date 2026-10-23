@@ -312,12 +312,13 @@ _SECURITY_ARGS = [
     "--cap-add", "CHOWN",                         # 包管理器需要文件所有权
     "--cap-add", "FOWNER",                        # 包管理器需要文件所有权
     "--security-opt", "no-new-privileges",         # 阻止权限提升
-    "--pids-limit", "256",                         # 限制进程数量
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # 有大小限制的 /tmp
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",  # 禁止执行的 /var/tmp
     "--tmpfs", "/run:rw,noexec,nosuid,size=64m",   # 禁止执行的 /run
 ]
 ```
+
+`--pids-limit 2048` 以及下文的 CPU、内存限制是单独添加的，且仅在宿主机的 cgroups 支持这些标志时才会添加（非特权 LXC 和部分 rootless 环境不支持）。
 
 ### 资源限制
 
@@ -358,6 +359,47 @@ terminal:
 | **modal** | 云沙箱 | ❌ 跳过 | 可扩展的云隔离 |
 | **daytona** | 云沙箱 | ❌ 跳过 | 持久化云工作区 |
 | **vercel_sandbox** | 云微虚拟机 | ❌ 跳过 | 带快照持久化的云执行 |
+
+## 不受信任的代码 {#untrusted-code}
+
+审查 pull request 或试用一个仓库时，往往需要运行它的代码：测试、构建、安装脚本。在默认的 `local` 后端上，这些代码以你的身份运行，可以读取你的 SSH 密钥、`gh` 登录凭据、`~/.hermes/.env` 以及你的账户能读到的任何文件。从环境变量中剥离密钥并不能改变这一点，因为文件本身仍然可读。
+
+**单次运行：`hermes sandbox run`。** 它在不执行代码所携带任何内容的前提下复制代码（不检出、不运行 hook、不使用仓库配置的 git filter，符号链接保留为链接），然后在一次性容器中运行你的命令：无网络、丢弃所有 capabilities、只读根文件系统、非特权用户、不传入宿主机环境变量，除临时副本外不挂载任何宿主机目录，运行结束后临时副本被删除。可选的 `--setup` 步骤在相同限制下安装依赖。除非传入 `--setup-network open`，它没有网络；`open` 会给它容器运行时的普通网络，此时代码的安装脚本可以访问互联网、你的局域网以及本机上的服务。仅在安装必须下载软件包时使用 `open`；测试运行本身始终没有网络。
+
+```bash
+hermes sandbox run --pr 123 --setup 'pip install --user -e .' --setup-network open -- python -m pytest -q
+```
+
+内置 `github` 技能的 PR 审查流程就是这样运行测试的。选项与细节见 [`hermes sandbox`](../reference/cli-commands.md#hermes-sandbox)。需要 Docker 或 Podman。
+
+**审查之外试用代码。** 内置的 [`sandboxed-prototyping`](skills/bundled/software-development/software-development-sandboxed-prototyping.md) 技能让 agent 以同样的方式运行任何不是它自己写的代码：正在试用的软件包、你粘贴的代码片段、你指给它的仓库。与所有技能一样，agent 只在任务看起来相关时才加载它，并非每次都会加载；单次运行（`hermes chat -q`）加载技能也比聊天会话更保守。若要让它在每个会话中都生效，可以将它[固定加载](configuration.md)，这会把该技能（约 2,000 个 token）加入系统提示词：
+
+```yaml
+skills:
+  auto_load: [sandboxed-prototyping]
+```
+
+**没有容器运行时，或没有容器运行时的托管部署。** 没有 Docker 或 Podman 时，`hermes sandbox run` 以 69 退出且不运行任何内容。此时 Hermes 只通过阅读（diff 和源码）来审查不受信任的代码，并说明测试未运行；它不会退回到在宿主机上运行代码。将来可能支持其他隔离运行时，例如远程终端后端或 bubblewrap 后端。
+
+**整个 profile：锁定的 docker 后端。** 如果某个 profile 专门用于处理不受信任的代码，可让每条命令都运行在临时、断网的容器中：
+
+```yaml
+terminal:
+  backend: docker
+  docker_network: false                  # --network=none：无法下载，也无法外传数据
+  container_persistent: false            # /workspace、/root、/home 使用 tmpfs
+  docker_persist_across_processes: false # 每个进程使用新容器，退出时删除
+  docker_forward_env: []                 # 不显式转发任何变量
+  docker_env: {}
+  env_passthrough: []
+  credential_files: []
+  docker_volumes: []
+  docker_mount_cwd_to_workspace: false   # 不挂载宿主机上的检出目录
+```
+
+注意：已加载技能注册的凭据文件（`required_credential_files`）、你的技能目录以及缓存目录仍会以只读方式挂载进每个容器。网络关闭后 agent 无法克隆或安装依赖，因此需要事先准备好代码，或使用 `hermes sandbox run --setup`。
+
+**两者都不是针对 agent 本身的安全边界。** 它们只约束经由它们运行的命令。上下文文件、插件、MCP 服务器以及 agent 自身进程仍在宿主机上运行；何时应将整个 agent 包裹起来，请参阅[信任模型](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md)。
 
 ## 环境变量透传 {#environment-variable-passthrough}
 

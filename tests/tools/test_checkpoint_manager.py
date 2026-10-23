@@ -19,6 +19,7 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _dir_file_count,
 )
 from tools.checkpoint_maintenance import (
     clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
@@ -83,10 +84,22 @@ class TestStorePath:
         # ~/project and its expanded form are the same project.
         assert _project_hash(f"~/{project.name}") == _project_hash(str(project))
 
+    def test_file_count_guard_includes_raster_only_traversal(self, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as checkpoint_module
+
+        project = tmp_path / "raster-heavy"
+        project.mkdir()
+        for index in range(4):
+            (project / f"frame-{index}.PNG").write_bytes(b"image")
+        monkeypatch.setattr(checkpoint_module, "_MAX_FILES", 3)
+
+        assert _dir_file_count(str(project)) > 3
+
 
 # =========================================================================
 # Store init + legacy migration
 # =========================================================================
+
 
 class TestStoreInit:
     def test_creates_git_store(self, work_dir, checkpoint_base, monkeypatch):
@@ -259,6 +272,207 @@ class TestRealPruning:
         assert "small.py" in names
         assert "weights.bin" not in names  # filtered by size cap
 
+    def test_generated_raster_media_is_excluded_even_when_each_file_is_small(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        wd = tmp_path / "visual-project"
+        wd.mkdir()
+        (wd / "manifest.json").write_text('{"selected": "hero.png"}\n')
+        for name in (
+            "hero.png",
+            "UPPER.PNG",
+            "portrait.jpg",
+            "portrait.jpeg",
+            "preview.webp",
+            "animation.gif",
+            "scan.bmp",
+            "source.tif",
+            "source.tiff",
+            "render.AvIf",
+            "capture.HEIC",
+            "capture.heif",
+            "favicon.ICO",
+        ):
+            (wd / name).write_bytes(b"small-generated-raster")
+
+        m = CheckpointManager(enabled=True, max_file_size_mb=10)
+        assert m.ensure_checkpoint(str(wd), "visual baseline") is True
+
+        store = _store_path(checkpoint_base)
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(wd)))],
+            store, str(wd),
+        )
+        assert ok
+        assert set(files.splitlines()) == {"manifest.json"}
+
+    def test_existing_store_untracks_raster_media_on_next_checkpoint(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """New exclusions must remove raster paths already tracked by old stores."""
+        import tools.checkpoint_manager as checkpoint_module
+
+        monkeypatch.setattr(checkpoint_module, "CHECKPOINT_BASE", checkpoint_base)
+        original_excludes = list(checkpoint_module.DEFAULT_EXCLUDES)
+        original_suffixes = checkpoint_module._RASTER_SUFFIXES
+        monkeypatch.setattr(checkpoint_module, "DEFAULT_EXCLUDES", [])
+        monkeypatch.setattr(checkpoint_module, "_RASTER_SUFFIXES", frozenset())
+        wd = tmp_path / "legacy-visual-project"
+        wd.mkdir()
+        (wd / "main.py").write_text("v1\n")
+        (wd / "legacy.PNG").write_bytes(b"old-raster")
+        manager = CheckpointManager(enabled=True, max_file_size_mb=10)
+        assert manager.ensure_checkpoint(str(wd), "legacy baseline") is True
+
+        store = _store_path(checkpoint_base)
+        ref = _ref_name(_project_hash(str(wd)))
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", ref], store, str(wd)
+        )
+        assert ok and "legacy.PNG" in files.splitlines()
+
+        monkeypatch.setattr(
+            checkpoint_module, "DEFAULT_EXCLUDES", original_excludes
+        )
+        monkeypatch.setattr(
+            checkpoint_module, "_RASTER_SUFFIXES", original_suffixes
+        )
+        manager.new_turn()
+        (wd / "main.py").write_text("v2\n")
+        assert manager.ensure_checkpoint(str(wd), "after exclusion upgrade") is True
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", ref], store, str(wd)
+        )
+        assert ok
+        assert "main.py" in files.splitlines()
+        assert "legacy.PNG" not in files.splitlines()
+
+    def test_checkpoint_fails_closed_when_raster_index_prune_fails(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        import tools.checkpoint_manager as checkpoint_module
+
+        monkeypatch.setattr(checkpoint_module, "CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr(checkpoint_module, "DEFAULT_EXCLUDES", [])
+        project = tmp_path / "prune-failure"
+        project.mkdir()
+        (project / "main.py").write_text("safe\n")
+        (project / "generated.PNG").write_bytes(b"raster")
+        real_run_git = checkpoint_module._run_git
+
+        def fail_raster_removal(args, *call_args, **call_kwargs):
+            if args[:3] == ["rm", "--cached", "--quiet"]:
+                return False, "", "simulated index lock failure"
+            return real_run_git(args, *call_args, **call_kwargs)
+
+        monkeypatch.setattr(checkpoint_module, "_run_git", fail_raster_removal)
+        manager = CheckpointManager(enabled=True)
+
+        assert manager.ensure_checkpoint(str(project), "must fail closed") is False
+        assert manager.list_checkpoints(str(project)) == []
+
+    def test_checkpoint_rechecks_raster_index_immediately_before_write_tree(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """A forbidden raster reintroduced after pruning must abort commit."""
+        import tools.checkpoint_manager as checkpoint_module
+
+        monkeypatch.setattr(checkpoint_module, "CHECKPOINT_BASE", checkpoint_base)
+        project = tmp_path / "late-raster"
+        project.mkdir()
+        (project / "main.py").write_text("safe\n")
+        raster = project / "late.PNG"
+        raster.write_bytes(b"raster")
+
+        real_drop_oversize = CheckpointManager._drop_oversize_from_index
+
+        def reintroduce_raster(self, store, working_dir, index_file):
+            real_drop_oversize(self, store, working_dir, index_file)
+            ok, _, err = checkpoint_module._run_git(
+                ["add", "-f", "--", raster.name],
+                store,
+                working_dir,
+                index_file=index_file,
+            )
+            assert ok, err
+
+        monkeypatch.setattr(
+            CheckpointManager, "_drop_oversize_from_index", reintroduce_raster
+        )
+        manager = CheckpointManager(enabled=True, max_file_size_mb=10)
+
+        assert manager.ensure_checkpoint(str(project), "must recheck") is False
+        assert manager.list_checkpoints(str(project)) == []
+
+
+class TestStoreExcludeRefresh:
+    def test_existing_store_receives_required_raster_exclusions(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        exclude_file = store / "info" / "exclude"
+        exclude_file.write_text("node_modules/\ncustom-local-pattern/\n")
+
+        assert _init_store(store, str(work_dir)) is None
+
+        patterns = set(exclude_file.read_text().splitlines())
+        assert "custom-local-pattern/" in patterns
+        assert {
+            "*.png",
+            "*.jpg",
+            "*.jpeg",
+            "*.webp",
+            "*.gif",
+            "*.bmp",
+            "*.tif",
+            "*.tiff",
+        } <= patterns
+
+    def test_refresh_is_idempotent_and_preserves_custom_content(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        exclude_file = store / "info" / "exclude"
+        exclude_file.write_text("# keep this comment\ncustom-no-newline")
+        assert _init_store(store, str(work_dir)) is None
+        once = exclude_file.read_text()
+        assert _init_store(store, str(work_dir)) is None
+        twice = exclude_file.read_text()
+        assert once == twice
+        assert "# keep this comment\ncustom-no-newline\n" in once
+        assert once.count("*.png") == 1
+
+    def test_custom_raster_negation_cannot_override_checkpoint_safety(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        exclude_file = store / "info" / "exclude"
+        exclude_file.write_text("!keep.png\n")
+        assert _init_store(store, str(work_dir)) is None
+        (work_dir / "keep.png").write_bytes(b"kept-by-custom-rule")
+        ok, output, _ = _run_git(
+            ["check-ignore", "-v", "keep.png"], store, str(work_dir)
+        )
+        assert ok is True
+        assert "!keep.png" in output
+
+        manager = CheckpointManager(enabled=True)
+        assert manager.ensure_checkpoint(str(work_dir), "raster safety") is True
+        ref = _ref_name(_project_hash(str(work_dir)))
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", ref], store, str(work_dir)
+        )
+        assert ok
+        assert "main.py" in files.splitlines()
+        assert "keep.png" not in files.splitlines()
+
 
 # =========================================================================
 # CheckpointManager — restoring
@@ -347,6 +561,37 @@ class TestRestore:
         restore_result = m.restore(tilde, cps[0]["hash"])
         assert restore_result["success"] is True
         assert file_path.read_text() == "original\n"
+
+    def test_restore_historical_checkpoint_does_not_overwrite_raster_media(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        import tools.checkpoint_manager as checkpoint_module
+
+        monkeypatch.setattr(checkpoint_module, "CHECKPOINT_BASE", checkpoint_base)
+        original_excludes = list(checkpoint_module.DEFAULT_EXCLUDES)
+        original_suffixes = checkpoint_module._RASTER_SUFFIXES
+        monkeypatch.setattr(checkpoint_module, "DEFAULT_EXCLUDES", [])
+        monkeypatch.setattr(checkpoint_module, "_RASTER_SUFFIXES", frozenset())
+        project = tmp_path / "legacy-restore"
+        project.mkdir()
+        (project / "main.py").write_text("old\n")
+        (project / "hero.PNG").write_bytes(b"OLD")
+        manager = CheckpointManager(enabled=True)
+        assert manager.ensure_checkpoint(str(project), "legacy") is True
+        commit_hash = manager.list_checkpoints(str(project))[0]["hash"]
+
+        monkeypatch.setattr(checkpoint_module, "DEFAULT_EXCLUDES", original_excludes)
+        monkeypatch.setattr(checkpoint_module, "_RASTER_SUFFIXES", original_suffixes)
+        (project / "main.py").write_text("current\n")
+        (project / "hero.PNG").write_bytes(b"CURRENT-GENERATED")
+        result = manager.restore(str(project), commit_hash)
+
+        assert result["success"] is True
+        assert (project / "main.py").read_text() == "old\n"
+        assert (project / "hero.PNG").read_bytes() == b"CURRENT-GENERATED"
+        single = manager.restore(str(project), commit_hash, file_path="hero.PNG")
+        assert single["success"] is False
+        assert "Raster media" in single["error"]
 
 
 class TestSafeRestore:
@@ -631,6 +876,40 @@ class TestSafeRestore:
         assert result["success"] is True
         assert (work_dir / "main.py").read_text() == "print('hello')\n"
         assert (work_dir / "README.md").read_text() == "# Project\n"
+
+    def test_safe_restore_preserves_legacy_tracked_raster_media(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        import tools.checkpoint_manager as checkpoint_module
+
+        monkeypatch.setattr(checkpoint_module, "CHECKPOINT_BASE", checkpoint_base)
+        original_excludes = list(checkpoint_module.DEFAULT_EXCLUDES)
+        original_suffixes = checkpoint_module._RASTER_SUFFIXES
+        monkeypatch.setattr(checkpoint_module, "DEFAULT_EXCLUDES", [])
+        monkeypatch.setattr(checkpoint_module, "_RASTER_SUFFIXES", frozenset())
+        project = tmp_path / "legacy-safe-restore"
+        project.mkdir()
+        text_file = project / "main.py"
+        raster_file = project / "hero.PNG"
+        text_file.write_text("old\n")
+        raster_file.write_bytes(b"OLD")
+        manager = CheckpointManager(enabled=True)
+        assert manager.ensure_checkpoint(str(project), "legacy") is True
+        checkpoint = manager.list_checkpoints(str(project))[0]["hash"]
+
+        monkeypatch.setattr(checkpoint_module, "DEFAULT_EXCLUDES", original_excludes)
+        monkeypatch.setattr(checkpoint_module, "_RASTER_SUFFIXES", original_suffixes)
+        text_file.write_text("agent text\n")
+        raster_file.write_bytes(b"CURRENT-GENERATED")
+        manager.record_agent_write(str(text_file))
+        manager.record_agent_write(str(raster_file))
+
+        result = manager.restore(str(project), checkpoint, safe=True)
+
+        assert result["success"] is True
+        assert text_file.read_text() == "old\n"
+        assert raster_file.read_bytes() == b"CURRENT-GENERATED"
+        assert "hero.PNG" in result["skipped_excluded_media"]
 
     def test_record_agent_write_disabled_manager_noop(self, checkpoint_base, work_dir, monkeypatch):
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)

@@ -715,6 +715,51 @@ def _read_relay_claim(path: Path) -> Optional[dict[str, Any]]:
         return None
 
 
+def _foreign_unreadable_claim(path: Path, lease_seconds: int) -> dict[str, Any]:
+    """Stand-in record for a claim file that exists but cannot be parsed: the
+    name is held by an unknown writer. The gate treats it as a live foreign
+    claim, so an unreadable file cannot silently disable the cross-instance
+    gate (pass-2 Major)."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = time.time()
+    return {
+        "platform": "", "scope_id": "", "chat_id": "", "profile": "",
+        "instance_id": "<unreadable-claim-file>", "session_id": "",
+        "thread_root_id": "", "lease_expire": mtime + lease_seconds,
+        "created_at": mtime, "updated_at": mtime,
+    }
+
+
+def _heal_unreadable_claim(path: Path, lease_seconds: int, now: float) -> bool:
+    """Remove an unreadable claim once it is older than any viable lease. A
+    live writer survives its own write window by orders of magnitude; a crashed
+    writer's leftover must not gate the channel forever. Young files stay."""
+    try:
+        age = now - path.stat().st_mtime
+    except OSError:
+        return False
+    if age <= float(lease_seconds):
+        return False
+    with contextlib.suppress(OSError):
+        logger.warning("removing unreadable relay claim %s (older than the lease)", path)
+        path.unlink()
+    return True
+
+
+def _reacquire_healed(path: Path, candidate: dict[str, Any], lease_seconds: int) -> tuple[bool, Optional[dict[str, Any]]]:
+    """After a heal of a dead unreadable claim, retry the exclusive create.
+    A peer that recreates the file first keeps the claim (CAS holds)."""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False, _read_relay_claim(path) or _foreign_unreadable_claim(path, lease_seconds)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(candidate))
+    return True, candidate
+
+
 def read_relay_claim(root: Any, platform: str, scope_id: str, chat_id: str, profile: str) -> Optional[dict[str, Any]]:
     profile = _normalize_profile_for_claim(profile)
     path = _channel_claim_path(root, platform, scope_id, chat_id, profile)
@@ -754,7 +799,17 @@ def acquire_relay_claim(
                 # Lost the fresh-create race to a peer gateway: their claim stands.
                 # os.replace is last-writer-wins, so a plain write here would let
                 # both gateways admit the same first message (pass-1 Major 3).
-                return False, _read_relay_claim(path)
+                reread = _read_relay_claim(path)
+                if reread is None and path.exists():
+                    # The file is present but unreadable: the race winner crashed
+                    # mid-write, or an old leftover holds the name (pass-2 Major).
+                    # Fail closed inside the lease window; heal past it and retry
+                    # the exclusive create once.
+                    if not _heal_unreadable_claim(path, lease_seconds, now):
+                        reread = _foreign_unreadable_claim(path, lease_seconds)
+                    else:
+                        return _reacquire_healed(path, candidate, lease_seconds)
+                return False, reread
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(candidate))
             return True, candidate
@@ -801,4 +856,11 @@ def release_relay_claim(
     existing = _read_relay_claim(path)
     if existing is not None and str(existing.get("session_id")) == session_id:
         with contextlib.suppress(OSError):
+            path.unlink()
+    elif existing is None and path.exists():
+        # An unreadable claim matches no session id, so no live holder loses it.
+        # Left in place it stands the channel down for the rest of the lease
+        # (pass-2 Minor); removing it only heals a crashed writer's leftover.
+        with contextlib.suppress(OSError):
+            logger.warning("removing unreadable relay claim %s at release", path)
             path.unlink()

@@ -1132,9 +1132,16 @@ class SessionStore(
                     new_session_id=new_sid, new_instance_id=self._claim_instance())
                 if not moved and not end_session_id:
                     # Placeholder bind lost (row stolen or released): fresh acquire (§5.3).
-                    acquire_channel_claim(db, platform=platform, scope_id=scope_id,
-                        chat_id=chat_id, profile=profile, instance_id=self._claim_instance(),
-                        session_id=new_sid)
+                    fresh_ok, fresh = acquire_channel_claim(db, platform=platform,
+                        scope_id=scope_id, chat_id=chat_id, profile=profile,
+                        instance_id=self._claim_instance(), session_id=new_sid)
+                    if not fresh_ok and fresh is not None:
+                        # Refused: a raced or foreign row won. The lease covers the
+                        # exposure; log so operators can see the race (pass-2 Minor).
+                        logger.warning(
+                            "Channel claim re-acquire at session finish refused for %s "
+                            "(holder instance %s, session %s)", session_key,
+                            fresh.get("instance_id"), fresh.get("session_id"))
             elif end_session_id:
                 release_channel_claim(db, platform=platform, scope_id=scope_id,
                     chat_id=chat_id, profile=profile, session_id=end_session_id)

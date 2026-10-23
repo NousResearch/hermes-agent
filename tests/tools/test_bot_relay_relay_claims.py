@@ -224,3 +224,47 @@ def test_claim_path_rejects_traversal_segments(root):
         bot_relay.acquire_relay_claim(
             root, "mattermost", "", "../../escape", "main", "gw-a", "sid-a")
     assert list(root.rglob("*.json")) == []
+
+
+def test_unreadable_young_claim_fails_closed(root):
+    """A crashed write leaves a zero-byte file; the name is claimed by an
+    unknown writer, so the gate must not read it as 'no claim' (pass-2 Major)."""
+    prof = bot_relay._normalize_profile_for_claim("main")
+    p = bot_relay._channel_claim_path(root, "mattermost", "", "chat-corrupt", prof)
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"")
+    acquired, claim = bot_relay.acquire_relay_claim(
+        root, "mattermost", "", "chat-corrupt", "main", "gw-a", "sid-a")
+    assert acquired is False
+    assert claim is not None
+    assert claim["instance_id"] == "<unreadable-claim-file>"
+    assert claim["lease_expire"] >= time.time()
+
+
+def test_unreadable_dead_claim_heals_then_acquires(root):
+    """Past the lease window the crashed writer's leftover heals: unlink,
+    fresh create, acquire True (pass-2 Major)."""
+    import os
+
+    prof = bot_relay._normalize_profile_for_claim("main")
+    p = bot_relay._channel_claim_path(root, "mattermost", "", "chat-corrupt", prof)
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"")
+    old = time.time() - 7200
+    os.utime(p, (old, old))
+    acquired, _ = bot_relay.acquire_relay_claim(
+        root, "mattermost", "", "chat-corrupt", "main", "gw-a", "sid-a")
+    assert acquired is True
+    reread = bot_relay.read_relay_claim(root, "mattermost", "", "chat-corrupt", "main")
+    assert reread is not None and reread["instance_id"] == "gw-a"
+
+
+def test_release_removes_unreadable_claim(root):
+    """Release heals an unreadable claim file instead of leaving it to stand
+    the channel down for the rest of the lease (pass-2 Minor)."""
+    prof = bot_relay._normalize_profile_for_claim("main")
+    p = bot_relay._channel_claim_path(root, "mattermost", "", "chat-corrupt", prof)
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"\xff not json")
+    bot_relay.release_relay_claim(root, "mattermost", "", "chat-corrupt", "main", "sid-any")
+    assert not p.exists()

@@ -161,6 +161,60 @@ def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite
     ]
 
 
+def test_multiplex_housekeeping_ignores_a_local_only_satellite_map(tmp_path, monkeypatch):
+    """The same grant when the satellite's map is not literally empty but holds only a LOCAL
+    transport. Any local session of the profile (desktop app, a CLI run, a kanban worker) registers
+    one, so "not profile_adapters" was never true in practice and the drain fell back to the
+    satellite's own map, which carries no delivery target."""
+    from gateway.config import Platform
+
+    root_adapters = {"slack": object()}
+    secondary_home = tmp_path / "secondary"
+    runner = SimpleNamespace(
+        config=SimpleNamespace(multiplex_profiles=True),
+        adapters=root_adapters,
+        _profile_adapters={"secondary": {Platform.LOCAL: object()}},
+    )
+    calls = []
+    routed = object()
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_handoff_watch_scopes",
+        lambda _runner: [(None, None), ("secondary", secondary_home)],
+    )
+
+    @contextmanager
+    def fake_scope(_home):
+        yield
+
+    class FakeSharedRouteAdapters:
+        def __new__(cls, adapters, routes):
+            calls.append(("routed", adapters, routes))
+            return routed
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+    monkeypatch.setattr(sched_preflight, "SharedRouteAdapters", FakeSharedRouteAdapters)
+    monkeypatch.setattr(sched_preflight, "_primary_profile_routes_for_current_home",
+        lambda: ["route-to-secondary"],
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "drain_delivery_queue",
+        lambda adapters, _loop: calls.append(("drain", adapters)),
+    )
+
+    gateway_run._drain_restart_safe_cron_deliveries(
+        root_adapters, object(), runner
+    )
+
+    assert calls == [
+        ("drain", root_adapters),
+        ("routed", root_adapters, ["route-to-secondary"]),
+        ("drain", routed),
+    ]
+
+
 def test_primary_drain_delivers_credentialless_satellite_queue_row_through_primary_adapter(
     tmp_path, monkeypatch,
 ):

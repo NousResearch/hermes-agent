@@ -8,6 +8,10 @@ interface RemoteBackendRecoveryDeps {
   disconnectTransport: (key: string) => Promise<void>
 }
 
+export function sshRecoveryTransport<T>(state: { recovering?: boolean; ssh: T } | undefined): T | null | undefined {
+  return state?.recovering ? null : state?.ssh
+}
+
 /** Registry credentials may have been replaced by a different profile's token.
  * Reuse only this scope's credential for the same SSH configuration.
  */

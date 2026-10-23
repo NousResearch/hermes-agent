@@ -508,7 +508,7 @@ import {
   probeCachedConnectionInstallId,
   rememberConnectionInstallId
 } from './registry-backend-identity'
-import { recoverRemotePoolBackend, sshRecoveryToken } from './remote-backend-recovery'
+import { recoverRemotePoolBackend, sshRecoveryToken, sshRecoveryTransport } from './remote-backend-recovery'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -9803,7 +9803,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   }
 
   const cached = sshConnections.get(scope)
-  let ssh = cached?.recovering ? null : cached?.ssh
+  let ssh = sshRecoveryTransport<SshConnection>(cached)
 
   if (ssh && !(await ssh.isAlive())) {
     try {

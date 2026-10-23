@@ -40,6 +40,7 @@ import type {
   KanbanTask,
   KanbanTaskDetail,
   OrchestrationSettings,
+  TaskContextUsage,
   TaskEstimate,
   WorkerLog
 } from './types'
@@ -394,6 +395,9 @@ export const fetchTask = async (id: string) => {
 
   return { ...detail, downloadAttachment }
 }
+
+/** Current occupancy for the exact live worker; fetched only when a card is hovered. */
+export const fetchTaskContext = (id: string) => call<TaskContextUsage>(withBoard(`/tasks/${id}/context`))
 
 /** Worker stdout/stderr tail (last 16 KiB — plenty for the drawer). */
 export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }))

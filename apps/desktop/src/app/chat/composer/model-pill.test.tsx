@@ -8,6 +8,7 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
+import { setShowModelPricing } from '@/store/model-pricing'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
 import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
@@ -265,5 +266,54 @@ describe('ModelPill label providers', () => {
 
     expect(screen.getByText('first wins')).toBeTruthy()
     expect(second).not.toHaveBeenCalled()
+  })
+})
+// #132212: the menu was a fixed w-72, so per-model prices squeezed the names
+// down to "Mi…". It widens only while pricing is shown.
+describe('ModelPill menu width', () => {
+  afterEach(() => setShowModelPricing(false))
+
+  const openMenuClass = async () => {
+    const surface = document.createElement('div')
+    surface.dataset.composerTarget = 'main'
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    surface.append(editor)
+    document.body.append(surface)
+
+    try {
+      render(<ModelPill disabled={false} model={modelState({ modelMenuContent: <MenuChoice /> })} />)
+      editor.focus()
+      await act(async () => {
+        requestModelMenuToggle()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+
+      const choice = await screen.findByText('Choose model')
+
+      return choice.closest('[role="menu"]')?.className ?? ''
+    } finally {
+      surface.remove()
+    }
+  }
+
+  it('keeps the compact width while pricing is off', async () => {
+    setShowModelPricing(false)
+
+    const className = await openMenuClass()
+
+    expect(className).toContain('w-72')
+    expect(className).not.toContain('w-96')
+  })
+
+  it('widens to fit the price column while pricing is on', async () => {
+    setShowModelPricing(true)
+
+    const className = await openMenuClass()
+
+    expect(className).toContain('w-96')
+    expect(className).not.toContain('w-72')
   })
 })

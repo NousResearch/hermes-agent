@@ -724,7 +724,7 @@ def test_frame_id_timeout_is_clamped_to_schema_max(monkeypatch):
     """frame_id used to forward the raw timeout. The schema max is 300s."""
     seen = {}
 
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: False)
 
     def fake_supervisor_route(**kwargs):
         seen.update(kwargs)

@@ -344,8 +344,12 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
           }
         } else {
           // Tripped: keep recording until the user goes quiet (endpoint).
-          // Playback/generation was already cut, so silence-vs-speech works.
-          if (level >= MIN_TRIGGER_LEVEL) {
+          // While playback is still audible, use the playback ceiling as the
+          // endpoint floor so speaker bleed cannot keep the capture open. Once
+          // playback ends, return to the normal voice-loop silence threshold.
+          const endpointLevel = callbacks.isPlaying?.() ? TRIGGER_CEILING_LEVEL : MIN_TRIGGER_LEVEL
+
+          if (level >= endpointLevel) {
             quietSince = null
           } else {
             quietSince ??= now

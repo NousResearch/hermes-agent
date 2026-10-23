@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sqlite3
 import threading
 import time
 from collections import Counter
@@ -35,6 +36,37 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
+
+
+class _RoomListReader:
+    """A worker-owned idle reader which survives hosted-room polling cycles."""
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+        self.connection: sqlite3.Connection | None = None
+        self.identity: tuple[int, int] | None = None
+        self._lock = threading.RLock()
+
+    def close(self) -> None:
+        with self._lock:
+            if self.connection is not None:
+                self.connection.close()
+            self.connection = self.identity = None
+
+    def list(self) -> list[dict[str, Any]]:
+        with self._lock:
+            identity = (self.db_path.stat().st_dev, self.db_path.stat().st_ino)
+            if self.connection is None or self.identity != identity:
+                self.close()
+                self.connection, self.identity = hosted_rooms._read_connection(
+                    self.db_path, check_same_thread=False), identity
+            try:
+                return hosted_rooms.list_rooms(self.db_path, connection=self.connection)
+            except sqlite3.Error:
+                self.close()
+                self.connection = hosted_rooms._read_connection(self.db_path, check_same_thread=False)
+                self.identity = (self.db_path.stat().st_dev, self.db_path.stat().st_ino)
+                return hosted_rooms.list_rooms(self.db_path, connection=self.connection)
 
 
 def _hosted_room_turn_timeout_seconds() -> float:
@@ -70,6 +102,7 @@ class HostedRoomService:
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
         hosted_rooms.prune_disbanded_rooms(self.db_path)
+        self._room_list_reader = _RoomListReader(self.db_path)
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
@@ -149,7 +182,7 @@ class HostedRoomService:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
         return tuple(
             HostedRoomBinding(str(room["room_id"]), *_authority(room))
-            for room in hosted_rooms.list_rooms(self.db_path)
+            for room in self._room_list_reader.list()
             if str(room["authority_gateway_id"]) == local_gateway_id)
 
     def _room(self, room_id: str) -> dict[str, Any]:
@@ -171,7 +204,10 @@ class HostedRoomService:
         self.runtime.start()
 
     def stop(self, *, timeout: float = 5.0) -> bool:
-        return self.runtime.stop(timeout=timeout)
+        stopped = self.runtime.stop(timeout=timeout)
+        if stopped:
+            self._room_list_reader.close()
+        return stopped
 
     def wakeup(self) -> None:
         self.runtime.wakeup()

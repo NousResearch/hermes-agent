@@ -451,16 +451,16 @@ def _connect(db_path: DbPath) -> sqlite3.Connection:
         initialize=partial(_initialize_store, db_path=path), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
 
 
-def _read_connection(db_path: DbPath) -> sqlite3.Connection:
+def _read_connection(db_path: DbPath, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Open the room store without steady-state journal or migration writes."""
     path = Path(db_path)
     if not path.is_file():
         _connect(path).close()
-    conn = open_sqlite(path)
+    conn = open_sqlite(path, check_same_thread=check_same_thread)
     if not _store_ready(conn, path):
         conn.close()
         _connect(path).close()
-        conn = open_sqlite(path)
+        conn = open_sqlite(path, check_same_thread=check_same_thread)
     return conn
 
 
@@ -911,12 +911,20 @@ def create_room(
 
 
 def list_rooms(
-    db_path: DbPath, *, include_disbanded: bool = False, limit: int = MAX_ROOM_LIST_LIMIT, offset: int = 0
+    db_path: DbPath, *, include_disbanded: bool = False, limit: int = MAX_ROOM_LIST_LIMIT, offset: int = 0,
+    connection: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
     """Return one bounded read-only page ordered by most recent change."""
     limit = _bounded_limit(limit, MAX_ROOM_LIST_LIMIT)
     offset = _non_negative(offset, "offset")
-    with closing(_read_connection(db_path)) as conn:
+    if connection is None:
+        with closing(_read_connection(db_path)) as conn:
+            rows = conn.execute(
+                f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE disbanded_at IS NULL OR ?
+                    ORDER BY updated_at DESC, room_id ASC LIMIT ? OFFSET ?""", (int(include_disbanded), limit, offset)
+            ).fetchall()
+    else:
+        conn = connection
         rows = conn.execute(
             f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE disbanded_at IS NULL OR ?
                 ORDER BY updated_at DESC, room_id ASC LIMIT ? OFFSET ?""", (int(include_disbanded), limit, offset)

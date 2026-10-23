@@ -125,7 +125,6 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             home = Path(os.environ["HERMES_HOME"])
             home.mkdir(parents=True, exist_ok=True)
             (home / "profile.yaml").write_text("ui_meta:\\n  hermes-bots: {}\\n")
-            patch.object(Path, "home", return_value=home.parent).start()
             patch("agent.system_prompt._zone_bits", return_value=(
                 ["UTC", "+00:00"] if mode == "bot-zone" else []
             )).start()

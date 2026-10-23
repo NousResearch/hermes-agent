@@ -697,6 +697,36 @@ def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Op
     return token
 
 
+_shadowed_subscription_warned = False  # once per process: the resolver runs on every request
+_shadowed_subscription_lock = threading.Lock()
+
+
+def _claude_code_login_present_on_disk() -> bool:
+    """Existence probe only — the API-key path must never read or parse the borrowed login (the
+    `test_api_key_path_does_not_read_auto_discovered_credentials` contract), and a stat does not
+    touch the Keychain or the single-use refresh family. Honours ``auth.adopt_external_logins``
+    the same way the reader does: an opted-out login is not a subscription the user can switch
+    to, so advising them to unset the key would remove the only credential Hermes may use."""
+    from agent.credential_sources import adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        return False
+    try:
+        return claude_code_credentials_path().is_file()
+    except OSError:
+        return False
+
+
+def _warn_once_api_key_shadows_subscription() -> bool:
+    """True exactly once per process when an explicit key shadows a usable Claude Code login.
+    The check-and-set is under a lock: the resolver runs on every request thread."""
+    global _shadowed_subscription_warned
+    with _shadowed_subscription_lock:
+        if _shadowed_subscription_warned or not _claude_code_login_present_on_disk():
+            return False
+        _shadowed_subscription_warned = True
+        return True
+
+
 def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
     """Resolve an Anthropic token from all sources in priority order (see module docstring).
 
@@ -705,17 +735,40 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        return _available_anthropic_token(
-            _prefer_refreshable_claude_code_token(token, _read_creds()) or token, model,
-        )
+        # Attribute the source to the credential actually returned: a static env OAuth token
+        # may be swapped for the refreshable file so refresh can proceed.
+        refreshable = _prefer_refreshable_claude_code_token(token, _read_creds())
+        if refreshable:
+            logger.debug("Anthropic token source: Claude Code credential file (refreshable, over static env token)")
+        else:
+            logger.debug("Anthropic token source: ANTHROPIC_TOKEN / CLAUDE_CODE_OAUTH_TOKEN env")
+        return _available_anthropic_token(refreshable or token, model)
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
-        return _available_anthropic_token(api_key, model)
+        # Honouring the explicit key is the intent; doing it silently is not. An inherited or
+        # forgotten key otherwise moves a host from subscription to metered billing with no
+        # signal anywhere (#97085). Stage only — never token material. Decide availability
+        # first: a key benched for this model bills nothing, so it neither warns nor spends
+        # the once-per-process slot.
+        usable = _available_anthropic_token(api_key, model)
+        if usable is None:
+            logger.debug("Anthropic token source: ANTHROPIC_API_KEY env (unavailable for this model)")
+        elif _warn_once_api_key_shadows_subscription():
+            logger.warning(
+                "ANTHROPIC_API_KEY is set and takes precedence over a Claude Code subscription login "
+                "found on this host; requests bill to the API key. Unset it to use the subscription.")
+        else:
+            logger.debug("Anthropic token source: ANTHROPIC_API_KEY env")
+        return usable
     # The pool's claude_code row mirrors the same externally owned refresh grant.
-    return _available_anthropic_token(
-        _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
-        model,
-    )
+    resolved = _resolve_anthropic_pool_token(skip_borrowed=True)
+    if resolved:
+        logger.debug("Anthropic token source: credential_pool OAuth entry")
+    else:
+        resolved = _resolve_claude_code_token_from_credentials(_read_creds())
+        if resolved:
+            logger.debug("Anthropic token source: Claude Code credential file")
+    return _available_anthropic_token(resolved, model)
 
 
 def run_oauth_setup_token() -> Optional[str]:

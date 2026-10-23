@@ -35,6 +35,12 @@ accessibility tree of any visible window AND post synthesized events
 without bringing it to front, switching virtual desktops, or moving the
 real OS cursor.
 
+Background delivery is not the same as minimized-window support. On
+Windows, element actions intentionally refuse a minimized target with
+`code: "window_minimized"`. Restore the window or bring it to the
+foreground, then take a fresh capture before retrying; Hermes does not
+automatically bypass this safeguard.
+
 For the underlying contract — *why* background mode matters, the
 no-foreground invariant, click-dispatch internals — see
 **[cua.ai/docs/explanation/the-no-foreground-contract](https://cua.ai/docs/explanation/the-no-foreground-contract)**.

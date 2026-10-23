@@ -799,6 +799,53 @@ test.skipIf(process.platform === 'win32')(
   }
 )
 
+test.skipIf(process.platform === 'win32')(
+  'pidIsOurDashboard recognizes a self-managed relaunch that embeds the original argv',
+  async (): Promise<void> => {
+    const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+    const temp: string = await mkdtemp(path.join(os.tmpdir(), 'hermes relaunch ownership '))
+    const tokenPath = path.join(os.homedir(), spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+    const hermesPath = path.join(temp, 'venv', 'bin', 'hermes')
+
+    const originalArgv = [
+      hermesPath,
+      '--profile',
+      'ops',
+      'serve',
+      '--isolated',
+      '--ssh-session-token-file',
+      tokenPath,
+      '--ssh-owner-nonce',
+      SPAWN_NONCE
+    ]
+
+    const relaunchProgram = `import sys,time\nsys.argv = ${JSON.stringify(originalArgv)}\ntime.sleep(30)\n`
+    const processArgs = ['/store/python3', '-I', '-c', relaunchProgram]
+
+    const ssh: Pick<SshConnection, 'exec'> = {
+      exec: async (command: string): Promise<string> => {
+        const cmdline = Buffer.from(`${processArgs.join('\0')}\0`, 'utf8').toString('hex')
+
+        const simulated = command.replace(
+          'raw=open(f"/proc/{pid}/cmdline","rb").read()',
+          `raw=bytes.fromhex("${cmdline}")`
+        )
+
+        return (await exec(simulated, { shell })).stdout
+      }
+    }
+
+    try {
+      assert.equal(
+        await pidIsOurDashboard(ssh, 777, SPAWN_NONCE, hermesPath, '/unrelated/hermes-home', OWNERSHIP_ID, 'ops'),
+        true
+      )
+    } finally {
+      await rm(temp, { force: true, recursive: true })
+    }
+  }
+)
+
 test.skipIf(process.platform !== 'linux')(
   'terminateOwnedDashboardForUpdate SIGTERMs a serve pinned to a "serve"-named profile',
   async () => {

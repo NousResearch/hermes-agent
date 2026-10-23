@@ -1101,6 +1101,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         from acp.schema import ConfigOptionUpdate
         models = await asyncio.to_thread(model_state, shown)
+        if self._configs.get(sid) is not shown:
+            return  # a newer projection (an event or ``_adopt``) replaced it during the build and sends its own
         await self._conn.session_update(session_id=editor_id, update=ConfigOptionUpdate(
             session_update="config_option_update", config_options=config_options(models, shown, shown["mode"])))
 

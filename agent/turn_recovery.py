@@ -251,12 +251,17 @@ def recover_before_classification(
         if _recovered:
             return True, active_system_prompt
 
-    # Anthropic fast mode with no capacity: a 429 whose fast-mode limit header is 0 can never
-    # succeed at fast speed, and it says nothing about the key's standard-speed limits. Stop
-    # sending ``speed`` to this model and retry now, before credential rotation benches the key.
+    # Anthropic fast mode with no capacity: a 429 with a zero fast-mode limit header, or one
+    # whose body says fast mode needs usage credits, can never succeed at fast speed, and it
+    # says nothing about the key's standard-speed limits. Stop sending ``speed`` to this model
+    # and retry now, before credential rotation benches the key.
     if fast_mode_unprovisioned(api_error, api_kwargs) and mark_fast_mode_unavailable(agent):
         _vlines(agent, f"⚠️  Fast mode isn't available for {agent.model} on this Anthropic organization — using standard speed for this session, retrying...")
-        logger.warning("%sFast mode: %s has a fast-mode limit of 0; standard speed for this session", agent.log_prefix, agent.model)
+        logger.warning(
+            "%sFast mode: %s has no fast-mode capacity (zero limit or usage-credit 429); standard speed for this session",
+            agent.log_prefix,
+            agent.model,
+        )
         return True, active_system_prompt
 
     # Some providers 4xx on image_url content: record the (provider, model) and retry;

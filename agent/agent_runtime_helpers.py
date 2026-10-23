@@ -904,18 +904,11 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     if status_code != 403:
         return False
     haystack = " ".join(
-        # Subscription/entitlement 403s look like auth failures on the wire but refresh cannot fix them —
-        # the OAuth token is already valid, the account simply lacks the entitlement. Without this guard,
-        # the refresh path keeps minting fresh tokens against the same unsubscribed account and the main
-        # agent loop spins re-issuing the same 403 until the user Ctrl+C's. Defense-in-depth for #26847:
-        # xAI's backend has been seen to 403 standard SuperGrok subscribers with bodies that don't match the
-        # existing entitlement keyword set in ``_is_entitlement_failure``. Any 403 against ``xai-oauth`` is
-        # treated as entitlement here so the refresh loop can't spin in those cases either. Exception
-        # (#29344): xAI's ``[WKE=unauthenticated:...]`` suffix and the ``OAuth2 access token could not be
-        # validated`` phrasing are xAI's authoritative "this is a stale token, not entitlement" signal. When
-        # either fires we must NOT apply the catch-all override — refresh is the recoverable path for these
-        # bodies, and blanket-classifying them as entitlement was the bug that left long-running TUI
-        # sessions stuck on stale tokens until the user exited and reopened.
+        # Any 403 against xai-oauth is entitlement (#26847: bodies outside the keyword set in
+        # ``_is_entitlement_failure``) so the refresh loop cannot spin minting tokens the unsubscribed
+        # account keeps rejecting. Exception (#29344): the ``[WKE=unauthenticated:...]`` suffix and
+        # ``OAuth2 access token could not be validated`` are xAI's authoritative stale-token signals —
+        # blanket-classifying them was the bug that stranded TUI sessions on stale tokens.
         str(error_context.get(k) or "").lower()
         for k in ("message", "reason", "code", "error")
         if isinstance(error_context, dict)
@@ -942,8 +935,21 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             agent.provider or "provider",
         )
         return False, has_retried_429
-    # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
-    # burns its single-use refresh token for a failure it never had.
+    # The leased entry still fails after its capped refreshes: bench it (401) and rotate to another
+    # entry before failing the call. Checked BEFORE refreshing: a refresh past the cap only revokes
+    # the token every other holder of the entry has (delegate_task children share one pool object),
+    # and once it rotated the entry no longer matches the failed key, so rotation could not bench it.
+    if credential_id and (getattr(agent, "_auth_pool_refresh_counts", None) or {}).get(
+        (agent.provider, credential_id), 0
+    ) >= _MAX_AUTH_REFRESH_ATTEMPTS:
+        _ra().logger.warning(
+            "Credential auth failure persists after %s refreshes for pool entry %s — "
+            "rotating to another entry, or allowing fallback to activate.",
+            _MAX_AUTH_REFRESH_ATTEMPTS, credential_id,
+        )
+        return (True, False) if rotate_and_swap(401, "auth persists after refresh") else (False, has_retried_429)
+    # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry burns
+    # its single-use refresh token for a failure it never had.
     refresh_kwargs = {"api_key_hint": api_key_hint}
     if credential_id:
         refresh_kwargs["credential_id"] = credential_id
@@ -951,8 +957,7 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
     if refreshed is None:
         # Refresh failed; rotate (the failed entry is already marked exhausted).
         return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
-    # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry
-    # refreshes so a single-entry pool falls through to fallback.
+    # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry refreshes.
     refreshed_id = getattr(refreshed, "id", None)
     if refreshed_id is not None:
         if getattr(agent, "_auth_pool_refresh_counts", None) is None:
@@ -974,7 +979,7 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
 
 
 def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
-    # Already-exhausted credential: rotate immediately. Avoids the "cancel-between-429s" trap where
+    # Already-exhausted credential: rotate immediately — avoids the "cancel-between-429s" trap where
     # the local has_retried_429 resets per prompt and retries forever.
     current_entry = None
     if credential_id:
@@ -1017,13 +1022,9 @@ def recover_with_credential_pool(
     if pool is None:
         return False, has_retried_429
     # The pool belongs to the PRIMARY provider: acting on fallback errors would corrupt its state
-    # and reset base_url to the primary endpoint. Empty pool provider means unscoped; empty agent
-    # provider is a mismatch (swap would leave provider="" model="").
-    # Defensive guard: if a fallback provider is active and its provider name doesn't match the pool's
-    # provider, the pool belongs to the PRIMARY provider. Mutating it based on fallback errors would corrupt
-    # the primary's credential state (see #33088) and, via _swap_credential, overwrite the agent's base_url
-    # back to the primary's endpoint — every subsequent request then goes to the wrong host and 404s (see
-    # #33163). The pool should only act when the agent is still on the same provider that seeded the pool.
+    # (see #33088) and, via _swap_credential, overwrite base_url back to the primary's endpoint so
+    # every request 404s on the wrong host (see #33163). Empty pool provider means unscoped; empty
+    # agent provider is a mismatch (swap would leave provider="" model="").
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if pool_provider and not credential_pool_matches_provider(
@@ -1051,8 +1052,7 @@ def recover_with_credential_pool(
         }
         if credential_id:
             kwargs["credential_id"] = credential_id
-        # Pass classified semantics, not just the status: a billing 403 and an edge-throttle 403
-        # need opposite cooldowns.
+        # Pass classified semantics, not just the status: billing 403 vs edge-throttle 403 need opposite cooldowns.
         if effective_reason is not None:
             from agent.credential_pool_model_cooldowns import pool_failure_reason
             kwargs["failure_reason"] = pool_failure_reason(effective_reason, error_context, billing_unverified)
@@ -1083,13 +1083,11 @@ def recover_with_credential_pool(
             and not getattr(agent, "_credential_pool_revert_id", None)
             and effective_reason in (FailoverReason.rate_limit, FailoverReason.billing)
         ):
-            # A quota bench (429/402) lifts when the window reopens, and a fresh session's
-            # select() would go straight back to this entry; arm the per-turn hook so the live
-            # session does too (#114501). Only when the benched entry OUTRANKS the one we rotated
-            # to: a session that was already on the fallback (preferred benched elsewhere) and
-            # rotates UP once the preferred window reopened must not be pulled back down when
-            # the fallback's cooldown lifts. Keep the FIRST benched entry across chained
-            # rotations — it is the preferred one. Auth benches are not windows; they stay.
+            # A quota bench (429/402) lifts when the window reopens, and a fresh session's select()
+            # would go straight back to this entry; arm the per-turn hook so the live session does
+            # too (#114501). Only when the benched entry OUTRANKS the rotated-to one — a session
+            # already on the fallback must not be pulled back down when its cooldown lifts. Keep
+            # the FIRST benched entry across chained rotations; auth benches are not windows, they stay.
             agent._credential_pool_revert_id = credential_id
         return swapped
     if effective_reason == FailoverReason.upstream_rate_limit:
@@ -1112,6 +1110,8 @@ def recover_with_credential_pool(
         # match the key that failed, not a different account.
         return (True, False) if _rotate_and_swap(402, "billing") else (False, has_retried_429)
     if effective_reason == FailoverReason.rate_limit:
+        # A 429 means the key authenticated: earlier 401 refreshes worked, so the cap starts over.
+        agent._auth_pool_refresh_counts = {}
         return _recover_rate_limit(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,

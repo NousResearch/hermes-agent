@@ -1256,17 +1256,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _sync_entry_from_pool_store(self, entry: PooledCredential) -> PooledCredential:
         """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth).
 
-        Re-reads the exact persisted row from the credential-pool store while
-        the shared cross-process auth-store lock is held. Direct integrations
-        load a fresh ``CredentialPool`` per request, so in-memory locks cannot
-        protect a single-use refresh token across requests or processes.
+        Re-reads the exact persisted row from the credential-pool store while the shared
+        cross-process auth-store lock is held. Direct integrations load a fresh ``CredentialPool``
+        per request, so in-memory locks cannot protect a single-use refresh token across processes.
 
-        Anthropic borrowed sources (``claude_code``) are excluded: they are
-        reference-only rows whose secrets are stripped before reaching
-        auth.json, so re-reading yields empty tokens that would be adopted as
-        a "rotation" — blanking a usable credential. The singleton file, not
-        the pool store, is token authority for those sources; a row with no
-        token material at all is refused for the same reason.
+        Anthropic borrowed sources (``claude_code``) are excluded: reference-only rows whose
+        secrets are stripped before reaching auth.json — re-reading would adopt empty tokens as a
+        "rotation", blanking a usable credential. A row with no token material at all is refused
+        for the same reason.
         """
         if self.provider not in ("anthropic", "xai-oauth") and plugin_refresh_hook(self.provider) is None:
             return entry
@@ -1498,13 +1495,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
             return self._refresh_entry_impl(entry, force=force)
 
-        # Single-use refresh tokens: sync -> POST -> write-back must be atomic
-        # across Hermes processes, or two processes adopt the same on-disk
-        # token, both POST it, and the loser gets ``refresh_token_reused`` /
-        # ``invalid_grant`` (for Anthropic sources other than claude_code
-        # there was no recovery path at all). Serialize through the shared
-        # cross-process auth-store flock; a waiter's in-lock re-sync picks up
-        # the winner's rotated token and skips the POST.
+        # Single-use refresh tokens: sync -> POST -> write-back must be atomic across Hermes
+        # processes, or two processes adopt the same on-disk token, both POST it, and the loser
+        # gets ``refresh_token_reused`` / ``invalid_grant``. Serialize through the shared
+        # cross-process auth-store flock; a waiter's in-lock re-sync adopts the winner's token.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
@@ -1513,15 +1507,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 return self._refresh_entry_impl(synced, force=force)
             synced = self._sync_entry_from_pool_store(entry)
             if self.provider == "anthropic" and synced.source == "claude_code":
-                # claude_code entries are NOT profile-owned: the refresh token
-                # lives in one shared ~/.claude/.credentials.json (or Keychain)
-                # every profile reads. The profile-scoped lock above only covers
-                # THIS profile's auth.json, so take the dedicated shared-file
-                # lock (inner, per the ordering invariant on ``_auth_store_lock``)
-                # and re-read that authoritative file before any
-                # adopt-and-return shortcut fires. The official ``claude`` CLI
-                # rotating out-of-band is handled by the sync-and-retry-once
-                # fallback in ``_recover_failed_refresh``.
+                # claude_code entries are NOT profile-owned: the refresh token lives in one shared
+                # ~/.claude/.credentials.json (or Keychain) every profile reads. The profile-scoped
+                # lock above only covers THIS profile's auth.json, so take the dedicated shared-file
+                # lock (inner, per the ordering invariant on ``_auth_store_lock``) and re-read that
+                # authoritative file before any adopt-and-return shortcut fires; the ``claude`` CLI
+                # rotating out-of-band is handled by ``_recover_failed_refresh``.
                 with self._claude_code_credentials_lock():
                     synced = self._sync_anthropic_entry_from_credentials_file(synced)
                     if synced.refresh_token != entry.refresh_token:
@@ -2393,10 +2384,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     ) -> Optional[PooledCredential]:
         """Force-refresh the entry that supplied the failed request.
 
-        Direct integrations may reload the pool after a request failed, so
-        ``current_id`` cannot identify the issuing credential. With no hint,
-        select WITHOUT the normal proactive refresh: the forced refresh below
-        must consume a rotating refresh token exactly once.
+        Direct integrations may reload the pool after a request failed, so ``current_id`` cannot
+        identify the issuing credential. With no hint, select WITHOUT the normal proactive
+        refresh: the forced refresh below must consume a rotating refresh token exactly once.
         """
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id) if credential_id else None
@@ -2408,6 +2398,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if entry is None:
                 return None
             self._current_id = entry.id
+            # A sibling sharing this pool object may have rotated the entry after our request left, so our
+            # failed key is no longer the entry's key: hand back the rotated pair instead of POSTing again
+            # (a forced refresh revokes the access token that sibling now holds).
+            if (
+                api_key_hint
+                and entry.runtime_api_key
+                and entry.runtime_api_key != api_key_hint
+                and not self._entry_needs_refresh(entry)
+            ):
+                return entry
             return self._try_refresh_current_unlocked()
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:

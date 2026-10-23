@@ -75,6 +75,16 @@ _PROPERTIES: dict[str, Any] = {
             "external cua-driver list_windows lookup has already identified the window."
         ),
     },
+    "strategy": {
+        "type": "string",
+        "enum": ["auto", "a11y", "event"],
+        "description": (
+            "Targeting strategy. `auto` (default) uses whichever of element or coordinate you "
+            "pass. `a11y` requires element targeting (`element`, or `from_element`/`to_element` "
+            "for drag) and refuses coordinate-only calls. `event` requires coordinates and drops "
+            "any element, so input goes through pointer events without accessibility resolution."
+        ),
+    },
     "element": {
         "type": "integer",
         "description": (

@@ -506,6 +506,52 @@ _ACTION_SUGGESTIONS = {
     "open_app": "launch", "start_app": "launch", "run_app": "launch",
 }
 
+def _has_xy(value: Any) -> bool:
+    return isinstance(value, (list, tuple)) and len(value) >= 2 and value[0] is not None and value[1] is not None
+
+# strategy="a11y" admits element addressing only, "event" coordinates only; "auto" leaves the backend to choose.
+# (strategy, action) -> (admits(args), refusal code, message, addressing keys dropped once admitted).
+_StrategyRule = namedtuple("_StrategyRule", "admits code message drop")
+_A11Y_ELEMENT = _StrategyRule(lambda a: a.get("element") is not None, "strategy_a11y_required",
+                              "strategy='a11y' requires targeting by `element`, but no element was provided for {action}.",
+                              ("coordinate",))
+_EVENT_XY = _StrategyRule(lambda a: _has_xy(a.get("coordinate")), "strategy_event_required",
+                          "strategy='event' requires `coordinate=[x, y]` for {action}.", ("element",))
+_STRATEGY_RULES: dict[tuple[str, str], _StrategyRule] = {
+    **{("a11y", a): _A11Y_ELEMENT for a in ("click", "double_click", "right_click", "middle_click", "set_value")},
+    **{("event", a): _EVENT_XY for a in ("click", "double_click", "right_click", "middle_click")},
+    ("a11y", "drag"): _StrategyRule(lambda a: a.get("from_element") is not None and a.get("to_element") is not None,
+                                    "strategy_a11y_required",
+                                    "strategy='a11y' requires `from_element` and `to_element` for drag.",
+                                    ("from_coordinate", "to_coordinate")),
+    ("event", "drag"): _StrategyRule(lambda a: _has_xy(a.get("from_coordinate")) and _has_xy(a.get("to_coordinate")),
+                                     "strategy_event_required",
+                                     "strategy='event' requires `from_coordinate` and `to_coordinate` for drag.",
+                                     ("from_element", "to_element")),
+    ("a11y", "scroll"): _StrategyRule(lambda a: a.get("coordinate") is None or a.get("element") is not None,
+                                      "strategy_a11y_required",
+                                      "strategy='a11y' does not allow coordinate targeting for scroll; use element or "
+                                      "omit coordinates to scroll the window.", ("coordinate",)),
+    ("event", "scroll"): _StrategyRule(lambda a: True, "", "", ("element",)),
+    ("event", "set_value"): _StrategyRule(lambda a: False, "strategy_event_unsupported",
+                                          "strategy='event' is not supported for set_value; set_value is strictly an "
+                                          "accessibility action (use strategy='a11y' or 'auto').", ()),
+}
+
+def _apply_strategy(action: str, args: dict[str, Any]) -> tuple[Optional[str], dict[str, Any]]:
+    """``(refusal JSON, args)``: refuse addressing the requested ``strategy`` excludes, else drop the other form."""
+    strategy = args.get("strategy") or "auto"
+    if strategy not in ("auto", "a11y", "event"):
+        return json.dumps({"ok": False, "action": action, "code": "invalid_strategy",
+                           "error": f"invalid strategy {strategy!r}; must be one of 'auto', 'a11y', 'event'"}), args
+    rule = _STRATEGY_RULES.get((strategy, action))
+    if rule is None:
+        return None, args
+    if not rule.admits(args):
+        return json.dumps({"ok": False, "action": action, "code": rule.code,
+                           "error": rule.message.format(action=action)}), args
+    return None, {k: v for k, v in args.items() if k not in rule.drop}
+
 def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fence: Callable[[], None] = lambda: None,
               session_id: Optional[str] = None) -> Any:
     """``fence`` raises when the screen lease moved since admission; capture paths call it as soon as the
@@ -515,6 +561,9 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
+    refusal, args = _apply_strategy(action, args)
+    if refusal is not None:
+        return refusal
     # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
     # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
     if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()

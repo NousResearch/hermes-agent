@@ -4,6 +4,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
@@ -24,8 +25,11 @@ const STORED = 'completion-stored'
 const ANSWER = 'The answer is unchanged.'
 const noop = async () => undefined
 
-const requestGateway = async <T,>(method: string): Promise<T> =>
-  (method === 'prompt.submit' ? { status: 'started' } : { status: 'redirected' }) as T
+// The canonical admission receipt echoes the client's submission id.
+const requestGateway = async <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
+  (method === 'prompt.submit'
+    ? { admission_id: params?.submission_id, session_id: SID, status: 'started' }
+    : { status: 'redirected' }) as T
 
 // Real submit/redirect, stream reducer, cache and view publication; only RPC
 // acceptance and history/metadata I/O are stand-ins.
@@ -110,14 +114,14 @@ function mount(rpc = requestGateway) {
 it('binds a late submit acknowledgement to its exact optimistic prompt without reviving the turn', async () => {
   const laterUser: ChatMessage = { id: 'later-user', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }
 
-  const h = mount(async <T,>(): Promise<T> => {
+  const h = mount(async <T,>(_method: string, params?: Record<string, unknown>): Promise<T> => {
     await h.send('message.start')
     await h.send('message.delta', { text: ANSWER })
     await h.send('message.complete', { text: ANSWER })
     h.update(state => ({ ...state, messages: [...state.messages, laterUser], needsInput: true }))
     await flush()
 
-    return { status: 'started', user_row_id: 71 } as T
+    return { admission_id: params?.submission_id, session_id: SID, status: 'started', user_row_id: 71 } as T
   })
 
   await h.submit()
@@ -175,6 +179,81 @@ it.each([true, false, undefined])(
     h.dispose()
   }
 )
+
+// The session authority acknowledges a queued admission before the prompt row
+// exists, and writes a steer's row mid-turn, so no submit acknowledgement names
+// them. The completion receipt does; a stored page read after the turn must
+// replace those bubbles, not paint each prompt a second time beside its row.
+const submissionIdOf = (h: ReturnType<typeof mount>) => h.state().messages[0].id.replace(/^user-/, '')
+
+it('binds the sent prompt to the receipt row named by its submission', async () => {
+  const h = mount()
+  await h.submit()
+  expect(h.state().messages[0].rowId).toBeUndefined()
+  await h.send('message.start')
+  await h.send('message.delta', { text: ANSWER })
+  await h.send('message.complete', {
+    text: ANSWER,
+    persisted_turn: {
+      row_ids: [71, 72], user_row_id: 71, user_row_ids: [71], final_assistant_row_id: 72, complete: true,
+      submission_id: submissionIdOf(h)
+    }
+  })
+
+  const latestPage = toChatMessages([
+    { id: 71, role: 'user', content: 'Give the answer.' },
+    { id: 72, role: 'assistant', content: ANSWER }
+  ])
+
+  expect(timeline(graftRefreshedTailOntoBackfill(latestPage, h.state().messages))).toEqual([
+    ['user', 'Give the answer.'],
+    ['assistant', ANSWER]
+  ])
+  h.dispose()
+})
+
+it('binds the prompt and the steer of a turn whose receipt is not complete', async () => {
+  const h = mount()
+  await h.submit()
+  await h.send('message.start')
+  await h.send('message.delta', { text: 'Partial' })
+  await flush()
+  await h.redirect()
+  await h.send('message.delta', { text: ' then revised.' })
+  await h.send('message.complete', {
+    text: 'Revised.',
+    persisted_turn: {
+      row_ids: [71, 72, 73, 74], user_row_id: 71, user_row_ids: [71, 73], final_assistant_row_id: 74,
+      complete: false, submission_id: submissionIdOf(h)
+    }
+  })
+
+  expect(h.state().messages.filter(m => m.role === 'user').map(m => m.rowId)).toEqual([71, 73])
+  h.dispose()
+})
+
+it('binds a viewer that never sent the turn only when it shows exactly the receipt rows', async () => {
+  const h = mount()
+
+  const earlier = toChatMessages([
+    { id: 60, role: 'user', content: 'Earlier.' },
+    { id: 61, role: 'assistant', content: 'Before.' }
+  ])
+
+  h.update(state => ({ ...state, messages: [...earlier, { id: 'user-peer', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }] }))
+  await h.send('message.start')
+  await h.send('message.delta', { text: ANSWER })
+  await h.send('message.complete', {
+    text: ANSWER,
+    persisted_turn: {
+      row_ids: [71, 72], user_row_id: 71, user_row_ids: [71], final_assistant_row_id: 72, complete: true,
+      submission_id: 'sent-from-another-window'
+    }
+  })
+
+  expect(h.state().messages.find(m => m.id === 'user-peer')?.rowId).toBe(71)
+  h.dispose()
+})
 
 const timeline = (messages: ChatMessage[]) => messages.map(message => [message.role, chatMessageText(message)])
 

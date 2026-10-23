@@ -13,7 +13,7 @@ import pytest
 from pm.plugin_inputs import Candidates, Selection, StagedUpdate
 
 from tests.pm.test_worker import client, isolated_python, _current_environment
-from tests.pm._fixtures import worker_toolchain
+from tests.pm._fixtures import installing_member, worker_toolchain
 
 
 def test_worker_publishes_selection_even_when_dependencies_are_current(client, tmp_path, monkeypatch):
@@ -215,7 +215,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
     before_tree = tree_digest(target)
     if kind == "selection":
         if rebuild:
-            (target / "pyproject.toml").write_text(core.replace("death-proof", "example"))
+            installing_member(target, "example", tmp_path / "wheels")
         arguments = {"plugins": Selection({"home": str(home), "enabled": ["example"], "disabled": []})}
         payload = config
     else:
@@ -223,7 +223,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
         shutil.copytree(target, staged)
         (staged / "code.py").write_text("new")
         if rebuild:
-            (staged / "pyproject.toml").write_text(core.replace("death-proof", "example"))
+            installing_member(staged, "example", tmp_path / "wheels")
         arguments = {"plugins": StagedUpdate({
             "target": str(target), "staged": str(staged), "target_digest": before_tree,
             "old_metadata": {"example": {"revision": "old"}}, "new_metadata": {"example": {"revision": "new"}}})}

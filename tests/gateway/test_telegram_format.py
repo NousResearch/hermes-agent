@@ -76,6 +76,31 @@ class TestFormatMessageBasic:
 
 class TestFormatMessageCodeBlocks:
 
+    def test_repeated_fenced_tool_progress_stays_a_code_block(self, adapter):
+        """Regression for #138148: the dedup counter must not trail a closing fence, on both the
+        queued progress bubble and the native stream-consumer path."""
+        import queue
+
+        from gateway.run_turn_progress import GatewayTurnProgressMixin as M
+
+        progress = "💻 terminal\n```\nssh -F /opt/data/home/.ssh/config fed...\n```"
+        native_lines = []
+        sc = SimpleNamespace(accepts_tool_progress=True, on_tool_progress=native_lines.append)
+        for consumer in (None, sc):
+            ctx = SimpleNamespace(last_progress_msg=[None], repeat_count=[0], progress_queue=queue.Queue())
+            runner = SimpleNamespace(_ctx=ctx, _stream_consumer=lambda c=consumer: c)
+            for _ in range(4):
+                M._progress_emit(runner, progress)
+            if consumer is None:
+                st = SimpleNamespace(progress_lines=[])
+                while not ctx.progress_queue.empty():
+                    rendered = M._progress_absorb(runner, st, ctx.progress_queue.get())
+            else:
+                rendered = native_lines[-1]
+            assert rendered.endswith("```\n(×4)"), rendered
+            formatted = adapter.format_message(rendered)
+            assert "\\`\\`\\`" not in formatted
+            assert "```\nssh -F /opt/data/home/.ssh/config fed...\n```" in formatted
 
     def test_code_block_special_chars_not_escaped(self, adapter):
         text = "```\nif (x > 0) { return !x; }\n```"

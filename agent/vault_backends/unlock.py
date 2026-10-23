@@ -84,6 +84,11 @@ def set_current_session_id(session_id: Optional[str]) -> None:
     _current_session_tls.sid = session_id
 
 
+def get_current_session_id() -> Optional[str]:
+    """The session bound on this thread (``tools.thread_context`` carries it to tool workers)."""
+    return getattr(_current_session_tls, "sid", None)
+
+
 def _live(backend: str, *, touch: bool) -> Optional[str]:
     key = _key(backend)
     with _lock:
@@ -117,7 +122,7 @@ def store_session_token(backend: str, token: str, generation: Optional[int] = No
         if generation is not None and generation != _generation.get(key, 0):
             return False
         _sessions[key] = (token, time.monotonic())
-        _owner_session[key] = getattr(_current_session_tls, "sid", None)
+        _owner_session[key] = get_current_session_id()
         return True
 
 

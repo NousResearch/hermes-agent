@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -159,6 +160,9 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
+        # Termux is a real install target: only rewrite the solve off-Android.
+        if sys.platform != "android":
+            _exclude_android_from_solve(uv_policy)
         text = tomli_w.dumps(document)
     else:
         # A member-less generation syncs frozen against core's own lock.
@@ -180,6 +184,24 @@ def _without_release_age(text: str) -> str:
     import re
 
     return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
+
+
+def _exclude_android_from_solve(uv_policy: dict) -> None:
+    """Drop Android from ``tool.uv.environments`` in a generated workspace.
+
+    uv solves every platform its environment markers can name, Android included;
+    a plugin's native transitives (torch behind an optional extra) can have no
+    Python 3.14 wheels there, and one unsolvable platform fails the whole lock —
+    the update then evicts the plugin. A generated workspace installs on one
+    host, so its solve only has to cover that host's platform set. The core's
+    own lock never passes through here and keeps its full platform coverage.
+    """
+    environments = uv_policy.get("environments")
+    uv_policy["environments"] = (
+        [f"{entry} and sys_platform != 'android'" for entry in environments]
+        if environments
+        else ["sys_platform != 'android'"]
+    )
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:

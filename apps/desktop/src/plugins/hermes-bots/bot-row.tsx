@@ -75,6 +75,7 @@ import {
   botWorkingMood,
   previewKind,
   useTurnBusy,
+  useWorkingSessionIds,
   workerActiveAt
 } from './row-helpers'
 import { openBotScreen } from './screen-open'
@@ -163,7 +164,18 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const rowAgeTs = Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
 
   const groupKeys = useValue($activeGroupMemberKeys)
-  const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId, Date.now(), groupKeys)
+  const workingSessionIds = useWorkingSessionIds()
+
+  const botMood = botWorkingMood(
+    bot,
+    focusedOwner,
+    turnBusy,
+    activeConnectionId,
+    Date.now(),
+    groupKeys,
+    workingSessionIds
+  )
+
   // Status keys off the canonical Bot Chat — the very session this row opens,
   // so the dot and the click can never describe different conversations.
   const canonicalSessionId = botCanonicalSessionId(bot)

@@ -308,6 +308,18 @@ def release_computer_use_session(session_id: str) -> bool:
                   lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
     return True
 
+def stop_all_computer_use_backends() -> None:
+    """Stop every cached computer-use backend so no ``cua-driver`` daemon outlives this process.
+
+    Public seam for hosts that exit through ``os._exit`` (the gateway does — see
+    ``gateway/run.py::_exit_after_graceful_shutdown``), which bypasses ``atexit`` and therefore
+    never runs the registered hook. Without this call, a private embedded daemon (launched
+    through LaunchServices on macOS, so it is a child of launchd and not of Hermes) survives
+    the restart with its ``--dangerously-bypass-approvals`` mode and its Accessibility /
+    Screen Recording grants intact (#126364). Never raises; the caller is on an exit path.
+    """
+    _shutdown_backend_atexit()
+
 @atexit.register
 def _shutdown_backend_atexit() -> None:
     """Stop all cached backends so cua-driver subprocesses don't outlive us. atexit only, no signal handlers: a

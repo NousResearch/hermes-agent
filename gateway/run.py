@@ -5222,7 +5222,16 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
 
-    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs):
+    def _stop_cua_backends() -> None:
+        # os._exit bypasses atexit, so the @atexit-registered computer-use teardown never runs on this
+        # path. A private embedded cua-driver daemon is launched through LaunchServices on macOS, so it
+        # is a child of launchd and not of Hermes: nothing else reaps it, and it keeps serving on its
+        # socket with --dangerously-bypass-approvals and the CuaDriver TCC grants intact (#126364).
+        # Stop it before the hard exit. Runs AFTER the log drain so its warnings still reach the file.
+        from tools.computer_use.tool import stop_all_computer_use_backends
+        stop_all_computer_use_backends()
+
+    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs, _stop_cua_backends):
         _best_effort(_step)
     os._exit(exit_code)
 

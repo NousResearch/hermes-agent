@@ -14,7 +14,7 @@ import zipfile
 import zlib
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone, UTC
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import (
@@ -323,6 +323,48 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
+def _configured_backup_exclude_prefixes(hermes_root: Path) -> list[tuple[str, ...]]:
+    """Parse ``updates.backup_exclude_dirs`` from ``<hermes_root>/config.yaml`` into path tuples.
+
+    Each entry is a HERMES_HOME-relative POSIX-style prefix for regenerable provider assets that
+    the built-in rules cannot name, e.g. a local embedding GGUF under ``mnemosyne/models`` that
+    would otherwise be re-zipped into every backup. Entries that are absolute, contain ``..``, or
+    reduce to the root itself are ignored with a warning: a prefix must never reach outside
+    HERMES_HOME, and an empty one would exclude the whole home. Missing or empty key -> ``[]``.
+
+    Applied only on the backup walk. Restore/import are deliberately not filtered by this key so
+    archives created with extra members still restore.
+    """
+    raw_cfg = _read_raw_yaml_dict(hermes_root / "config.yaml") or {}
+    updates = raw_cfg.get("updates")
+    raw = updates.get("backup_exclude_dirs") if isinstance(updates, dict) else None
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        logger.warning("Ignoring updates.backup_exclude_dirs: expected a list of paths")
+        return []
+    prefixes: list[tuple[str, ...]] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            logger.warning("Ignoring non-string updates.backup_exclude_dirs entry %r", entry)
+            continue
+        pure = PurePosixPath(entry.strip().replace("\\", "/"))
+        parts = tuple(p for p in pure.parts if p != ".")
+        if not parts or pure.is_absolute() or ".." in parts:
+            logger.warning("Ignoring updates.backup_exclude_dirs entry %r: must be a relative path "
+                           "inside HERMES_HOME without '..'", entry)
+            continue
+        prefixes.append(parts)
+    return prefixes
+
+
+def _under_prefixes(rel_path: Path, prefixes: list[tuple[str, ...]]) -> bool:
+    """True when *rel_path* equals or sits under one of *prefixes*, compared per path component
+    so excluding ``foo`` never drops ``foobar``."""
+    parts = rel_path.parts
+    return any(parts[:len(prefix)] == prefix for prefix in prefixes)
+
+
 def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
     """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
 
@@ -330,13 +372,15 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
     shared by ``hermes backup`` and the pre-update path so they can never drift.
     """
+    user_excludes = _configured_backup_exclude_prefixes(hermes_root)
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(hermes_root)
         is_root = rel_dir == Path(".")
         kept = [
             d for d in dirnames
             if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
-            and not _in_excluded_root_dir(rel_dir / d)]
+            and not _in_excluded_root_dir(rel_dir / d)
+            and not _under_prefixes(rel_dir / d, user_excludes)]
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
         # No walk may follow a junction.
@@ -346,7 +390,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             fpath = hermes_root / rel
             # zipfile.write() follows file symlinks, so skip links before any archive write can
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel):
+            if _should_exclude(rel) or _under_prefixes(rel, user_excludes):
                 continue
             if _is_non_regular_path(fpath):
                 continue

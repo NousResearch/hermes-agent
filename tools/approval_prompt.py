@@ -323,7 +323,11 @@ def request_elicitation_consent(message: str, description: str, *,
             decision = _gw._await_gateway_decision(
                 session_key, notify_cb, {"command": message, "description": description,
                                          "pattern_key": "mcp_elicitation",
-                                         "pattern_keys": ["mcp_elicitation"]}, surface=surface)
+                                         "pattern_keys": ["mcp_elicitation"],
+                                         # One-shot like the CLI path below, and shown as the
+                                         # server's own question with Yes / No: it is not a command.
+                                         "allow_session": False, "allow_permanent": False,
+                                         "plain": True}, surface=surface)
         except Exception as exc:
             logger.error("Elicitation gateway dispatch failed: %s", exc, exc_info=True)
             return "decline"

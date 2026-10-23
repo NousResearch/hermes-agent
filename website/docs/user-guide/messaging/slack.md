@@ -107,7 +107,7 @@ These are the most commonly missed scopes.
 | Scope | Purpose |
 |-------|---------|
 | `groups:read` | List and get info about private channels |
-| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the status call (`agents.sessions.setStatus` on slack-sdk 3.44+, `assistant.threads.setStatus` on older SDKs) fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
+| `assistant:write` | Helps the working-state status line ("is thinking…") render next to the bot name. Custom phrases (`typing_status_text`, live per-tool status) go through `assistant.threads.setStatus`, which Slack accepts with `assistant:write` **or** `chat:write`. On slack-sdk 3.44+ Hermes first tries `agents.sessions.setStatus` with a lifecycle enum (`processing` / `active`); that endpoint does not take free text and returns `not_authorized` until the app is migrated to Agent Sessions / Agents & AI Apps. A rejection falls back to the legacy phrase path. If both calls fail, Slack shows its own rotating placeholders ("Finding answers…", "Reviewing findings…", …). |
 
 ---
 
@@ -501,10 +501,10 @@ platforms:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. Set `typing_indicator: false` to disable the status line entirely. |
+| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message, via `assistant.threads.setStatus`. On a migrated Agent Sessions app Slack renders its own loading UX for `agents.sessions.setStatus` (enum only — this string is not sent there) and Hermes still sends the phrase on the legacy method as a fallback. Set `typing_indicator: false` to disable the status line entirely. |
 
 :::note Where the status renders
-The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — the status API (`agents.sessions.setStatus` / `assistant.threads.setStatus`) does not control those, and both can appear at the same time.
+The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — neither status API controls those, and both can appear at the same time. `agents.sessions.setStatus` itself only accepts `active` / `processing` / `suspended` / `closed`; the human phrase is a legacy-`assistant.threads.setStatus` feature.
 :::
 
 The same key customizes Google Chat's visible working-state marker message

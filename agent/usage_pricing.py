@@ -255,6 +255,34 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "kimi-k2p7-code-fast": ("1.90", "8.00", "0.38"), "glm-5p2-fast": ("2.10", "6.60", "0.21"),
         "glm-5p1-fast": ("2.80", "8.80", "0.52"),
     }),
+    # Ollama Cloud (ollama.com) — pay-as-you-go usage credits, published per
+    # model at https://ollama.com/pricing. Peak/headline rates are encoded
+    # (the conservative default): Ollama publishes lower off-peak rates ONLY
+    # for the deepseek models (outside 12:00-18:00 UTC on weekdays, all day
+    # weekends), and a rate card that silently under-reports is worse than
+    # one that over-reports at the margin. Cache writes bill at the full
+    # Input rate (no separate write row is published); models with a "-" in
+    # the Cached-input column omit the cache-read tuple member.
+    ("ollama-cloud", "https://ollama.com/pricing", "ollama-cloud-pricing-2026-10-11", {
+        "deepseek-v4.1-flash": ("0.30", "1.20", "0.006"),
+        "deepseek-v4-pro": ("1.32", "3.96", "0.044"),
+        "gemma4": ("0.14", "0.40", "0.05"),
+        "glm-5.3": ("1.40", "4.40", "0.26"),
+        "glm-5.3-flash": ("0.15", "0.50", "0.03"),
+        "glm-5.2": ("1.40", "4.40", "0.26"),
+        "gpt-oss:120b": ("0.15", "0.60", "0.014"),
+        "gpt-oss:20b": ("0.07", "0.30", "0.035"),
+        "kimi-k3": ("3.00", "15.00", "0.30"),
+        "kimi-k2.7-code": ("0.95", "4.00", "0.19"),
+        "kimi-k2.6": ("0.95", "4.00", "0.16"),
+        "minimax-m3": ("0.60", "2.40", "0.12"),
+        "minimax-m2.7": ("0.30", "1.20", "0.06"),
+        "mistral-large-4": ("0.68", "2.09", "0.07"),
+        "mistral-large-3": ("0.50", "1.50"),
+        "nemotron-3-nano": ("0.06", "0.24"),
+        "nemotron-3-super": ("0.015", "0.60", "0.015"),
+        "nemotron-3-ultra": ("0.10", "3.00", "0.10"),
+    }),
 )
 
 _OFFICIAL_DOCS_PRICING: dict[tuple[str, str], PricingEntry] = {}
@@ -397,6 +425,7 @@ def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
 # api.openai.com). Google and Fireworks are matched by name OR host below.
 _SNAPSHOT_PROVIDER_ALIASES = {
     "anthropic": "anthropic", "openai": "openai", "openai-api": "openai", "minimax": "minimax", "minimax-cn": "minimax-cn",
+    "ollama-cloud": "ollama-cloud",
 }
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).

@@ -541,11 +541,15 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # contender never sees the checkout free while it builds. A child the job refuses never runs:
     # the tail stays owed.
     try:
+        from hermes_cli.update_cmd_nixos import wrap_nixos_toolchain
+        command = [
+            sys.executable, "-I", "-B", "-u",
+            str(root / "hermes_cli/source_completion.py"),
+            "--source", str(root), "--finish-update",
+            *(("--desktop",) if desktop else ()),
+        ]
         code = run(
-            [sys.executable, "-I", "-B", "-u",
-             str(root / "hermes_cli/source_completion.py"),
-             "--source", str(root), "--finish-update",
-             *(("--desktop",) if desktop else ())],
+            wrap_nixos_toolchain(command),
             inherit_lock=True, cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
         ).returncode
     except CustodyRefused as exc:

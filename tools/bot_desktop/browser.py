@@ -14,8 +14,10 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+from http.client import HTTPConnection
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
+from urllib.parse import urlsplit
 
 from tools.bot_desktop import runtime
 
@@ -116,32 +118,111 @@ def dock_exec_line(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[boo
 
 
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:
-    """DevTools port of a Chromium currently running on ``user_data_dir``, or ``None``.
+    """Validated DevTools port of a Chromium on this profile, if one is attachable."""
+    return running_instance_cdp_state(user_data_dir, exclude_session=exclude_session)[0]
 
-    Both files outlive a crashed or closed Chromium: ``SingletonLock`` is a symlink to ``host-pid`` and
-    ``DevToolsActivePort`` keeps the last port, so the pid must be alive AND the port must accept a
-    connection before it is trusted. An instance agent-browser launched for ``exclude_session`` itself is
-    reported as ``None``: its daemon already owns that browser, and handing it ``--cdp`` would make it
-    close the browser as a config change and then attach to the port that just died with it.
+
+def running_instance_cdp_state(user_data_dir: str, *, exclude_session: Optional[str] = None) -> tuple[Optional[int], bool]:
+    """Return ``(port, occupied)``. An occupied profile with no safe endpoint must not be relaunched.
+
+    The calling agent-browser session owns its own Chromium, so it remains on the ordinary
+    daemon path instead of attaching to itself.
     """
+    lock = os.path.join(user_data_dir, "SingletonLock")
     try:
-        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8-sig") as fh:
-            port_line = fh.readline().strip()
-        target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
+        target = os.readlink(lock)
     except OSError:
-        return None
-    _host, _, pid_text = target.rpartition("-")
-    if not (port_line.isdigit() and pid_text.isdigit()) or not _pid_alive(int(pid_text)):
-        return None
-    if exclude_session and _launched_by_session(int(pid_text)) == exclude_session:
-        return None
-    port = int(port_line)
+        return None, os.path.lexists(lock)
+    host, separator, pid_text = target.rpartition("-")
+    if not separator or host != socket.gethostname() or not pid_text.isdigit():
+        return None, True
+    pid = int(pid_text)
+    if not _pid_alive(pid):
+        return None, False
+    if not _chromium_owns_profile(pid, user_data_dir):
+        return None, True
+    if exclude_session and _launched_by_session(pid) == exclude_session:
+        return None, False
+
+    marker = Path(user_data_dir) / "DevToolsActivePort"
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-            pass
-    except OSError:
-        return None
-    return port
+        lines = marker.read_text(encoding="utf-8-sig").splitlines()
+        marked_port = int(lines[0])
+        marked_id = lines[1]
+    except (OSError, ValueError, IndexError):
+        marked_port, marked_id = None, None
+    if marked_port and _process_owns_port(pid, marked_port) and _is_loopback_cdp(marked_port, marked_id):
+        return marked_port, True
+    return _process_cdp_port(pid), True
+
+
+def _chromium_owns_profile(pid: int, user_data_dir: str) -> bool:
+    import psutil
+    if not hasattr(os, "getuid"):
+        return False
+    try:
+        process = psutil.Process(pid)
+        if process.uids().real != os.getuid() or process.uids().effective != os.geteuid():  # windows-footgun: ok
+            return False
+        if os.path.basename(process.exe()).lower() not in {
+            "chrome", "chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
+            "chrome-headless-shell", "chromium-headless-shell",
+        }:
+            return False
+        args = process.cmdline()
+        profiles = [arg.partition("=")[2] for arg in args if arg.startswith("--user-data-dir=")]
+        profiles += [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--user-data-dir"]
+        if len(profiles) != 1 or not os.path.isabs(profiles[0]):
+            return False
+        return Path(profiles[0]).resolve() == Path(user_data_dir).resolve()
+    except (OSError, psutil.Error):
+        return False
+
+
+def _process_cdp_port(pid: int) -> Optional[int]:
+    """Probe only loopback listeners owned by this Chromium, never the machine's port range."""
+    for port in _owned_loopback_ports(pid):
+        if _is_loopback_cdp(port):
+            return port
+    return None
+
+
+def _owned_loopback_ports(pid: int) -> set[int]:
+    import psutil
+    try:
+        return {conn.laddr.port for conn in psutil.Process(pid).net_connections(kind="inet")
+                if conn.status == psutil.CONN_LISTEN and conn.laddr.ip == "127.0.0.1"}
+    except (OSError, psutil.Error):
+        return set()
+
+
+def _process_owns_port(pid: int, port: int) -> bool:
+    return port in _owned_loopback_ports(pid)
+
+
+def _is_loopback_cdp(port: int, browser_path: Optional[str] = None) -> bool:
+    """Ask the exact local listener directly; HTTPConnection uses neither proxies nor redirects."""
+    if not 1 <= port <= 65535:
+        return False
+    connection = HTTPConnection("127.0.0.1", port, timeout=0.5)
+    try:
+        connection.request("GET", "/json/version")
+        response = connection.getresponse()
+        if response.status != 200:
+            return False
+        import json
+        data = json.loads(response.read(8193))
+        endpoint = urlsplit(data["webSocketDebuggerUrl"])
+        return (endpoint.scheme == "ws" and endpoint.hostname == "127.0.0.1"
+                and endpoint.port == port and endpoint.username is None and endpoint.password is None
+                and endpoint.path.startswith("/devtools/browser/") and len(endpoint.path) > len("/devtools/browser/")
+                and not endpoint.query and not endpoint.fragment
+                and (browser_path is None or endpoint.path == browser_path))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    finally:
+        connection.close()
+
 
 
 def _launched_by_session(chromium_pid: int) -> Optional[str]:

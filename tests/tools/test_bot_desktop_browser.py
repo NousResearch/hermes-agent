@@ -68,36 +68,132 @@ def test_dock_browser_caps_its_disk_cache():
 
 def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
     (user_data_dir / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/abc\n", encoding="utf-8")
-    os.symlink(f"host-{pid}", user_data_dir / "SingletonLock")
+    os.symlink(f"{socket.gethostname()}-{pid}", user_data_dir / "SingletonLock")
 
 
-def test_running_instance_port_requires_live_pid_and_open_port(tmp_path):
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    port = listener.getsockname()[1]
+@pytest.fixture
+def cdp_listener():
+    import http.server
+    import json
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/json/version":
+                self.send_error(404)
+                return
+            if self.server.redirect:
+                self.send_response(302)
+                self.send_header("Location", "http://foreign.example/json/version")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"webSocketDebuggerUrl": self.server.endpoint}).encode())
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    server.endpoint = f"ws://127.0.0.1:{server.server_port}/devtools/browser/abc"
+    server.redirect = False
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
     try:
-        _fake_running_instance(tmp_path, os.getpid(), port)
-        assert browser.running_instance_cdp_port(str(tmp_path)) == port
-
-        # Both files outlive a closed Chromium: a dead pid must not be trusted.
-        os.unlink(tmp_path / "SingletonLock")
-        os.symlink("host-2147483000", tmp_path / "SingletonLock")
-        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+        yield server
     finally:
-        listener.close()
-    # Live pid, port no longer accepting: still not attachable.
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
+def chromium_process(monkeypatch, tmp_path):
+    import psutil
+
+    original_process = psutil.Process
+    identity = {"exe": "/usr/bin/chromium", "profile": str(tmp_path), "uid": os.getuid(), "owns_listener": True}
+
+    class Process:
+        def __init__(self, pid):
+            self.real = original_process(pid)
+
+        def exe(self):
+            return identity["exe"]
+
+        def cmdline(self):
+            return [identity["exe"], f"--user-data-dir={identity['profile']}", "--remote-debugging-port=0"]
+
+        def uids(self):
+            return SimpleNamespace(real=identity["uid"], effective=identity["uid"])
+
+        def net_connections(self, **kwargs):
+            return self.real.net_connections(**kwargs) if identity["owns_listener"] else []
+
+    monkeypatch.setattr(psutil, "Process", Process)
+    return identity
+
+
+def test_running_instance_port_requires_live_pid_and_open_port(tmp_path, cdp_listener, chromium_process):
+    port = cdp_listener.server_port
+    _fake_running_instance(tmp_path, os.getpid(), port)
+    assert browser.running_instance_cdp_port(str(tmp_path)) == port
     os.unlink(tmp_path / "SingletonLock")
-    os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
-    assert browser.running_instance_cdp_port(str(tmp_path)) is None
-    assert browser.running_instance_cdp_port(str(tmp_path / "missing")) is None
+    os.symlink(f"{socket.gethostname()}-2147483000", tmp_path / "SingletonLock")
+    assert browser.running_instance_cdp_state(str(tmp_path)) == (None, False)
+    cdp_listener.endpoint = "ws://foreign.example:1/devtools/browser/abc"
+    os.unlink(tmp_path / "SingletonLock")
+    os.symlink(f"{socket.gethostname()}-{os.getpid()}", tmp_path / "SingletonLock")
+    assert browser.running_instance_cdp_state(str(tmp_path)) == (None, True)
+    assert browser.running_instance_cdp_state(str(tmp_path / "missing")) == (None, False)
 
 
-def test_agent_attaches_to_human_started_browser(monkeypatch):
-    """With a live dock instance on the shared profile the local argv carries ``--cdp <port>``; without one
-    it stays a plain ``--session`` launch."""
+@pytest.mark.parametrize("marker", [None, "not-a-port\n", "65536\n/devtools/browser/abc\n"])
+def test_missing_or_corrupt_devtools_marker_recovers_verified_process_endpoint(tmp_path, cdp_listener, chromium_process, marker):
+    """Recovery inspects only a Chromium-owned listener for the exact profile."""
+    (tmp_path / "SingletonLock").symlink_to(f"{socket.gethostname()}-{os.getpid()}")
+    if marker is not None:
+        (tmp_path / "DevToolsActivePort").write_text(marker, encoding="utf-8")
+    assert browser.running_instance_cdp_state(str(tmp_path)) == (cdp_listener.server_port, True)
+
+
+@pytest.mark.parametrize("change", ["foreign_host", "wrong_exe", "wrong_profile", "wrong_uid", "other_listener"])
+def test_recovery_rejects_unverified_profile_or_process(tmp_path, cdp_listener, chromium_process, change):
+    host = "foreign-host" if change == "foreign_host" else socket.gethostname()
+    (tmp_path / "SingletonLock").symlink_to(f"{host}-{os.getpid()}")
+    chromium_process.update({
+        "foreign_host": {},
+        "wrong_exe": {"exe": "/usr/bin/python"},
+        "wrong_profile": {"profile": str(tmp_path / "other")},
+        "wrong_uid": {"uid": os.getuid() + 1},
+        "other_listener": {"owns_listener": False},
+    }[change])
+    assert browser.running_instance_cdp_state(str(tmp_path)) == (None, True)
+
+
+def test_same_session_browser_is_never_attached_to_itself(tmp_path, cdp_listener, chromium_process, monkeypatch):
+    _fake_running_instance(tmp_path, os.getpid(), cdp_listener.server_port)
+    monkeypatch.setattr(browser, "_launched_by_session", lambda pid: "h_own")
+    assert browser.running_instance_cdp_state(str(tmp_path), exclude_session="h_own") == (None, False)
+
+
+def test_cdp_probe_never_follows_redirect_or_proxy(tmp_path, cdp_listener, chromium_process, monkeypatch):
+    _fake_running_instance(tmp_path, os.getpid(), cdp_listener.server_port)
+    monkeypatch.setenv("HTTP_PROXY", "http://foreign.example:1234")
+    assert browser.running_instance_cdp_port(str(tmp_path)) == cdp_listener.server_port
+    cdp_listener.endpoint = f"ws://127.0.0.1:{cdp_listener.server_port}@foreign.example/devtools/browser/abc"
+    assert browser.running_instance_cdp_state(str(tmp_path)) == (None, True)
+    cdp_listener.endpoint = f"ws://127.0.0.1:{cdp_listener.server_port}/devtools/browser/abc"
+    cdp_listener.redirect = True
+    assert browser.running_instance_cdp_state(str(tmp_path)) == (None, True)
+
+
+def test_dispatch_attaches_or_refuses_occupied_profile(tmp_path, monkeypatch, cdp_listener, chromium_process):
+    """Dispatch attaches after marker deletion and never launches into an occupied unverified profile."""
     from tools import browser_tool_session as session
 
+    (tmp_path / "SingletonLock").symlink_to(f"{socket.gethostname()}-{os.getpid()}")
+    monkeypatch.setattr(browser, "profile_dir", lambda: tmp_path)
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
     monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "auto")
     monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: False)
@@ -112,13 +208,23 @@ def test_agent_attaches_to_human_started_browser(monkeypatch):
     monkeypatch.setattr(session._lp, "_lightpanda_fallback_reason", lambda *a: None)
     info = {"session_name": "h_abc", "cdp_url": None, "features": {"local": True}}
 
-    monkeypatch.setattr(browser, "running_instance_cdp_port", lambda d, **kw: 41234)
-    session._dispatch_browser_command("t", info, "agent-browser", "open", ["https://x"], 10, None)
-    assert argvs[-1][:5] == ["agent-browser", "--session", "h_abc", "--cdp", "41234"]
+    _engine, result = session._dispatch_browser_command("t", info, "agent-browser", "open", ["https://x"], 10, None)
+    assert result["success"] is True
+    assert argvs[-1][:5] == ["agent-browser", "--session", "h_abc", "--cdp", str(cdp_listener.server_port)]
 
-    monkeypatch.setattr(browser, "running_instance_cdp_port", lambda d, **kw: None)
-    session._dispatch_browser_command("t", info, "agent-browser", "open", ["https://x"], 10, None)
-    assert "--cdp" not in argvs[-1] and argvs[-1][:3] == ["agent-browser", "--session", "h_abc"]
+    chromium_process["owns_listener"] = False
+    before = len(argvs)
+    _engine, result = session._dispatch_browser_command("t", info, "agent-browser", "open", ["https://x"], 10, None)
+    assert result["success"] is False and "profile is in use" in result["error"]
+    assert len(argvs) == before
+
+    monkeypatch.setattr(browser, "_launched_by_session", lambda pid: "h_abc")
+    _engine, result = session._dispatch_browser_command("t", info, "agent-browser", "open", ["https://x"], 10, None)
+    assert result["success"] is True and "--cdp" not in argvs[-1]
+
+    (tmp_path / "SingletonLock").unlink()
+    _engine, result = session._dispatch_browser_command("t", info, "agent-browser", "open", ["https://x"], 10, None)
+    assert result["success"] is True and "--cdp" not in argvs[-1]
 
 
 def _install_browsers(tmp_path, monkeypatch, *, playwright: bool, system: bool):

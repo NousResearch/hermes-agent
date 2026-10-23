@@ -876,13 +876,13 @@ def _shares_bot_desktop_browser(session_info: dict[str, Any]) -> bool:
     return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
 
 
-def _bot_desktop_attach_port(session_info: dict[str, Any]) -> Optional[int]:
-    """DevTools port of a human-started Chromium on the Bot Desktop's shared profile, else ``None``."""
+def _bot_desktop_attach_state(session_info: dict[str, Any]) -> tuple[Optional[int], bool]:
+    """Attach port and occupancy of the Bot Desktop's shared Chromium profile."""
     if not _shares_bot_desktop_browser(session_info):
-        return None
+        return None, False
     from tools.bot_desktop import browser as _bd_browser
-    return _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()),
-                                                 exclude_session=session_info["session_name"])
+    return _bd_browser.running_instance_cdp_state(str(_bd_browser.profile_dir()),
+                                                  exclude_session=session_info["session_name"])
 
 
 def _dispatch_browser_command(
@@ -904,7 +904,10 @@ def _dispatch_browser_command(
     if session_info.get("cdp_url"):
         backend_args += ["--cdp", session_info["cdp_url"]]
     else:
-        if (bd_port := _bot_desktop_attach_port(session_info)) is not None:
+        bd_port, occupied = _bot_desktop_attach_state(session_info) if command != "close" and engine != "lightpanda" else (None, False)
+        if occupied and bd_port is None:
+            return engine, {"success": False, "error": "Bot Desktop Chromium profile is in use, but its DevTools endpoint could not be verified"}
+        if bd_port is not None:
             # A Chromium already runs on the Bot Desktop's shared profile (the human clicked the dock's
             # Browser first): a launch would be forwarded into it by Chromium's singleton and die without
             # a DevTools endpoint, so the session's daemon attaches to the port it advertises instead.

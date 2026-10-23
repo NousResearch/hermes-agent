@@ -303,6 +303,7 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
                           config: Optional[dict[str, Any]] = None) -> Optional[str]:
     """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
     holds, as its canonical ``custom:<name>`` slug. *config* defaults to the active profile's."""
+    from hermes_cli.config import is_provider_enabled
     rp = _rp()
     try:
         config = rp.load_config() if config is None else config
@@ -311,7 +312,7 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
-            if isinstance(entry, dict) and matches(entry):
+            if isinstance(entry, dict) and is_provider_enabled(entry) and matches(entry):
                 return custom_provider_slug(str(ep_name), str(ep_name))
     try:
         custom_providers = rp.get_compatible_custom_providers(config)

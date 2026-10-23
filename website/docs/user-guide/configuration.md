@@ -73,6 +73,38 @@ cannot override, via a system-level managed directory. See
 [Managed Scope](./managed-scope.md).
 :::
 
+### Project-local `.env` files
+
+CWD `.env` loading is disabled by default. Opt in to exact project directories
+in your profile's user-controlled configuration:
+
+```yaml
+dotenv:
+  trusted_cwds:
+    - /Users/alice/code/project-a
+    - /home/alice/code/project-b
+```
+
+Trust entries must be literal absolute paths; environment variables and `~` are
+not expanded. Only the exact resolved directory is trusted, not its children.
+Repository markers cannot grant trust, and symlinked or non-regular `.env` files
+are rejected. CLI, classic runtime, TUI and ACP use the launch directory. The
+messaging gateway uses its effective `terminal.cwd`, including the existing local
+`MESSAGING_CWD`/home fallback; remote-backend placeholders do not map to a local
+file. Startup and gateway credential reload apply the same policy.
+
+Administrator-managed values retain highest authority. Among ordinary dotenv
+sources, names declared in the profile `.env` win, followed by allowed trusted
+project values, inherited shell values, and the source-tree developer fallback.
+The developer fallback retains its legacy shell-override behavior when no profile
+or trusted CWD dotenv source exists.
+
+Project files cannot set Hermes controls (`HERMES_*`), approval/redaction,
+terminal/messaging controls, process-loader variables (`PATH`, `PYTHON*`, `LD_*`,
+`DYLD_*`), proxy/TLS overrides or `SUDO_PASSWORD`. Values are not interpolated;
+ignored protected names are reported without their values. Keep Hermes behavior
+and security settings in `config.yaml`, not a project `.env`.
+
 ## Runtime Limits
 
 Long-running Hermes server surfaces (including the gateway and

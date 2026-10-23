@@ -54,7 +54,11 @@ from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, b
 logger = logging.getLogger(__name__)
 
 _hermes_home = _HERMES_HOME_AT_IMPORT = get_hermes_home()
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
+load_hermes_dotenv(
+    hermes_home=_hermes_home,
+    project_env=Path(__file__).parent.parent / ".env",
+    cwd_env=True,
+)
 
 
 # ── Panic logger: crashes otherwise leave no forensics (stdout is the JSON-RPC pipe, stderr doesn't

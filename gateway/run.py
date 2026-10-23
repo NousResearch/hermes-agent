@@ -1582,7 +1582,7 @@ _hermes_home = get_process_hermes_home()
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env', cwd_env=True, use_terminal_cwd=True)
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
@@ -1593,7 +1593,7 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
         load_hermes_dotenv(
-            hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+            hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env', cwd_env=True, use_terminal_cwd=True)
     _bridge_max_turns_from_config(_hermes_home)
 
 

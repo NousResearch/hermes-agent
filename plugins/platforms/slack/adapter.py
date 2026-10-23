@@ -271,13 +271,11 @@ _AGENT_SESSIONS_SUPPORTED: Optional[bool] = None
 
 
 def _sdk_supports_agent_sessions() -> bool:
-    """Whether the installed slack-sdk ships the Agent Sessions API.
+    """Whether the installed slack-sdk ships the Agent Sessions API (typed methods since 3.44.0).
 
-    Slack is deprecating the Assistant messaging experience in February 2027:
-    ``assistant.threads.setStatus`` / ``assistant.threads.setTitle`` are
-    replaced by ``agents.sessions.setStatus`` / ``agents.sessions.rename``
-    (typed methods landed in slack-sdk 3.44.0). Checked on the SDK class —
-    never on a client instance, where mock auto-attributes would lie.
+    Only the thread title uses it (``agents.sessions.rename`` replaces ``assistant.threads.setTitle``);
+    the status line stays on ``assistant.threads.setStatus`` (see ``SlackAdapter._set_thread_status``).
+    Checked on the SDK class — never on a client instance, where mock auto-attributes would lie.
     """
     global _AGENT_SESSIONS_SUPPORTED
     if _AGENT_SESSIONS_SUPPORTED is None:
@@ -2756,7 +2754,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Evict oldest-thread-first (key[2] is the thread ts) so the newest survives.
             self._evict_oldest_by_ts(
                 self._active_status_threads, self._ACTIVE_STATUS_THREADS_MAX, lambda k: k[2])
-        # May lack assistant:write scope or assistant context; reactions still work.
+        # Needs only chat:write since Slack's 2026-03-05 scope change; reactions still work if it fails.
         _status = getattr(self, "_status_text", {}).get(str(chat_id)) or getattr(
             self.config, "typing_status_text", None)
         _status = _status or self._default_status_text(_status_started)

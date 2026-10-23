@@ -1987,6 +1987,8 @@ DEFAULT_CONFIG = {
     # Working-set core tools stay eager, while the explicit ``defer`` list below
     # may include cold, event-triggered built-ins as well as plugin/MCP tools.
     "tools": {
+        # Read-only usage analytics over local state.db history; opt-in UX gate.
+        "analytics": False,
         "tool_search": {
             # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a
             # name+description manifest when it fits the budget (degrades to names-only); tier 2

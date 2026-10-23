@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import { Codecs, persistentAtom } from '@/lib/persisted'
+import { readKey, writeKey } from '@/lib/storage'
 
 /**
  * USER GRANTS FOR `ctx.preview.executeJavaScript` — which plugin may run
@@ -42,11 +42,36 @@ function sanitizeGrants(value: unknown): PreviewScriptGrants {
   return grants
 }
 
-export const $previewScriptGrants = persistentAtom<PreviewScriptGrants>(
-  'hermes.desktop.pluginPreviewScriptGrants.v1',
-  {},
-  Codecs.json(sanitizeGrants)
-)
+const GRANTS_KEY = 'hermes.desktop.pluginPreviewScriptGrants.v1'
+
+// Every window that runs plugins shares this localStorage record, so it — not
+// a window's atom — is the source of truth: each check and each change reads
+// it fresh (a revoke in one window binds the others at once, and a grant in a
+// stale window cannot write a revoked origin back). The atom mirrors it for UI.
+function readStoredGrants(): PreviewScriptGrants {
+  const raw = readKey(GRANTS_KEY)
+
+  try {
+    return raw ? sanitizeGrants(JSON.parse(raw)) : {}
+  } catch {
+    return {}
+  }
+}
+
+export const $previewScriptGrants = atom<PreviewScriptGrants>(readStoredGrants())
+
+function commitGrants(next: PreviewScriptGrants): void {
+  writeKey(GRANTS_KEY, JSON.stringify(next))
+  $previewScriptGrants.set(next)
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === GRANTS_KEY || event.key === null) {
+      $previewScriptGrants.set(readStoredGrants())
+    }
+  })
+}
 
 /** "Don't allow" answers for this app run, as `${pluginId}\n${origin}`. */
 const $sessionDenials = atom<ReadonlySet<string>>(new Set())
@@ -67,29 +92,22 @@ export function isGrantableOrigin(origin: string): boolean {
 }
 
 export function hasPreviewScriptGrant(pluginId: string, origin: string): boolean {
-  return $previewScriptGrants.get()[pluginId]?.includes(origin) ?? false
+  return readStoredGrants()[pluginId]?.includes(origin) ?? false
 }
 
 export function grantPreviewScript(pluginId: string, origin: string): void {
-  const grants = $previewScriptGrants.get()
+  const grants = readStoredGrants()
   const current = grants[pluginId] ?? []
 
-  if (!current.includes(origin)) {
-    $previewScriptGrants.set({ ...grants, [pluginId]: [...current, origin] })
-  }
+  commitGrants(current.includes(origin) ? grants : { ...grants, [pluginId]: [...current, origin] })
 }
 
 /** Revoke one origin, or every origin for the plugin when omitted. */
 export function revokePreviewScript(pluginId: string, origin?: string): void {
-  const { [pluginId]: current, ...rest } = $previewScriptGrants.get()
-
-  if (!current) {
-    return
-  }
-
+  const { [pluginId]: current = [], ...rest } = readStoredGrants()
   const kept = origin === undefined ? [] : current.filter(entry => entry !== origin)
 
-  $previewScriptGrants.set(kept.length > 0 ? { ...rest, [pluginId]: kept } : rest)
+  commitGrants(kept.length > 0 ? { ...rest, [pluginId]: kept } : rest)
 }
 
 export interface PreviewScriptConsentRequest {
@@ -137,6 +155,28 @@ export function ensurePreviewScriptConsent(pluginId: string, pluginName: string,
   ])
 
   return promise
+}
+
+/**
+ * A plugin left (uninstalled, its folder retired): drop every grant it holds
+ * and refuse its open prompts, so a late "Allow" cannot re-grant a removed
+ * plugin and a later plugin reusing the id starts from nothing.
+ */
+export function forgetPluginPreviewAccess(pluginId: string): void {
+  revokePreviewScript(pluginId)
+
+  const queue = $previewScriptConsentQueue.get()
+
+  $previewScriptConsentQueue.set(queue.filter(entry => entry.pluginId !== pluginId))
+
+  for (const request of queue) {
+    if (request.pluginId === pluginId) {
+      const key = pairKey(request.pluginId, request.origin)
+
+      pending.get(key)?.resolve(false)
+      pending.delete(key)
+    }
+  }
 }
 
 /** The dialog's answer for request `id`. Anything but an explicit allow —

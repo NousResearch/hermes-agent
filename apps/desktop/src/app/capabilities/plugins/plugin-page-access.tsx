@@ -11,7 +11,7 @@ import { Pill } from '../../settings/primitives'
 
 interface PluginPageAccessProps {
   /** The Desktop half of the package; absent for agent-only packages. */
-  plugin?: Pick<PluginRecord, 'capabilities' | 'id'>
+  plugin?: null | Pick<PluginRecord, 'capabilities' | 'id'>
   pluginName: string
 }
 
@@ -52,7 +52,6 @@ export function PluginPageAccess({ plugin, pluginName }: PluginPageAccessProps) 
                 revokePreviewScript(pluginId, origin)
                 notify({ kind: 'info', message: copy.previewScriptRevoked(pluginName, origin) })
               }}
-              title={copy.previewScriptRevoke(origin)}
               type="button"
             >
               <Codicon name="close" size="0.7rem" />

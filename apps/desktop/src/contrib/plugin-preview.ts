@@ -41,11 +41,16 @@ export interface PluginPreview {
 
 const ORIGIN_PROBE = 'window.location.origin'
 
-/** Prepends a statement, so the plugin's script keeps its completion value. */
-function originGuarded(origin: string, code: string): string {
-  const expected = JSON.stringify(origin)
+// A leading `'use strict'` directive must stay first or the script silently
+// leaves strict mode, so the guard goes right after it.
+const STRICT_PROLOGUE = /^\s*(['"])use strict\1[ \t]*(?:;|\r?\n|$)/
 
-  return `if (window.location.origin !== ${expected}) { throw new Error('The preview page changed origin; script not run.') }\n${code}`
+/** Inserts a guard statement; the plugin's script keeps its completion value. */
+function originGuarded(origin: string, code: string): string {
+  const guard = `if (window.location.origin !== ${JSON.stringify(origin)}) { throw new Error('The preview page changed origin; script not run.') }\n`
+  const prologue = STRICT_PROLOGUE.exec(code)?.[0] ?? ''
+
+  return `${prologue}${prologue ? '\n' : ''}${guard}${code.slice(prologue.length)}`
 }
 
 async function runPreviewScript(pluginId: string, declared: boolean, code: unknown): Promise<unknown> {

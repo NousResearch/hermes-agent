@@ -6,6 +6,7 @@ import {
   $previewScriptConsentQueue,
   $previewScriptGrants,
   answerPreviewScriptConsent,
+  forgetPluginPreviewAccess,
   grantPreviewScript,
   revokePreviewScript
 } from '@/store/plugin-preview-grants'
@@ -15,6 +16,7 @@ import { createPluginContext } from './plugin'
 import { dropPlugin, publishPlugin } from './plugins-store'
 
 const CAPABILITY = 'preview.executeJavaScript'
+const GRANTS_KEY = 'hermes.desktop.pluginPreviewScriptGrants.v1'
 
 // A stand-in guest page: evaluates the injected source the way the webview
 // does (script completion value) against a page whose origin the test moves.
@@ -164,6 +166,59 @@ describe('ctx.preview.executeJavaScript', () => {
 
     await expect(ctx.preview.executeJavaScript('document.title')).rejects.toThrow(/web page/)
     expect($previewScriptConsentQueue.get()).toEqual([])
+  })
+
+  it("honours a revoke made in another window instead of this window's cached list", async () => {
+    openPage()
+    const { ctx, id } = pluginWith([CAPABILITY])
+
+    grantPreviewScript(id, 'https://mail.example.com')
+    // Another window revoked it: same localStorage, this window's atom untouched.
+    window.localStorage.setItem(GRANTS_KEY, '{}')
+    void ctx.preview.executeJavaScript('document.title').catch(() => {})
+
+    await expect.poll(() => $previewScriptConsentQueue.get().length).toBe(1)
+    expect(userCodeRuns()).toBe(0)
+
+    window.dispatchEvent(new StorageEvent('storage', { key: GRANTS_KEY }))
+    expect($previewScriptGrants.get()).toEqual({})
+  })
+
+  it("a grant in this window does not resurrect another window's revoke", () => {
+    const { id } = pluginWith([CAPABILITY])
+
+    grantPreviewScript(id, 'https://mail.example.com')
+    window.localStorage.setItem(GRANTS_KEY, '{}')
+    grantPreviewScript(id, 'https://docs.example.com')
+
+    expect(JSON.parse(window.localStorage.getItem(GRANTS_KEY)!)).toEqual({ [id]: ['https://docs.example.com'] })
+  })
+
+  it('forgetting a removed plugin drops its grants and refuses its pending prompt', async () => {
+    openPage()
+    const { ctx, id } = pluginWith([CAPABILITY])
+
+    grantPreviewScript(id, 'https://docs.example.com')
+    const pending = ctx.preview.executeJavaScript('document.title')
+
+    await expect.poll(() => $previewScriptConsentQueue.get().length).toBe(1)
+    forgetPluginPreviewAccess(id)
+
+    await expect(pending).rejects.toThrow(/not allowed/)
+    expect($previewScriptConsentQueue.get()).toEqual([])
+    expect($previewScriptGrants.get()[id]).toBeUndefined()
+    expect(userCodeRuns()).toBe(0)
+  })
+
+  it("keeps a script's leading 'use strict' in effect behind the origin guard", async () => {
+    openPage()
+    const { ctx, id } = pluginWith([CAPABILITY])
+
+    grantPreviewScript(id, 'https://mail.example.com')
+
+    await expect(
+      ctx.preview.executeJavaScript("'use strict'; (function () { return this === undefined })()")
+    ).resolves.toBe(true)
   })
 
   it('rejects when no preview page is open', async () => {

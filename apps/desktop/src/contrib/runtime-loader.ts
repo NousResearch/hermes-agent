@@ -37,7 +37,7 @@ import { atom } from 'nanostores'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
-import { revokePreviewScript } from '@/store/plugin-preview-grants'
+import { forgetPluginPreviewAccess } from '@/store/plugin-preview-grants'
 
 import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
@@ -965,11 +965,13 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
 }
 
 /** Forget a disk entry whose folder is gone: unload its registration, drop
- *  its inventory rows, stop its file watch. */
+ *  its inventory rows and its preview-script grants, stop its file watch. */
 function retireDiskPlugin(file: string, record: DiskPlugin): void {
   if (record.id) {
     unloadRuntimePlugin(record.id)
     dropPlugin(record.id)
+    // A later plugin reusing this id must ask the user again, never inherit.
+    forgetPluginPreviewAccess(record.id)
   }
 
   dropOriginRecord(record.origin, record)
@@ -1011,11 +1013,6 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   retireDiskPlugin(file, record)
-
-  // A later plugin reusing this id must ask the user again, never inherit.
-  if (record.id) {
-    revokePreviewScript(record.id)
-  }
 
   return { ok: true }
 }

@@ -6,7 +6,10 @@ import { $previewScriptGrants, ensurePreviewScriptConsent, grantPreviewScript } 
 
 import { PluginPageAccess } from './plugin-page-access'
 
-beforeEach(() => $previewScriptGrants.set({}))
+beforeEach(() => {
+  window.localStorage.clear()
+  $previewScriptGrants.set({})
+})
 afterEach(cleanup)
 
 describe('PluginPageAccess', () => {

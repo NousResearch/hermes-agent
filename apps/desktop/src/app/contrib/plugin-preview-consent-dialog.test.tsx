@@ -11,6 +11,7 @@ import {
 import { PluginPreviewConsentDialog } from './plugin-preview-consent-dialog'
 
 beforeEach(() => {
+  window.localStorage.clear()
   $previewScriptGrants.set({})
   $previewScriptConsentQueue.set([])
 })

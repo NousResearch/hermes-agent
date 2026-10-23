@@ -361,6 +361,35 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     return None, (f"{namespace}/{bare}" if bare else None)  # plugin not found → local scan
 
 
+def _resolve_bare_plugin_skill(name, file_path, task_id, preprocess):
+    """Serve a uniquely named registered plugin skill addressed without its namespace."""
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+    discover_plugins()  # idempotent; populate the registry before matching bare names
+    pm = get_plugin_manager()
+    matches = sorted(
+        skill["name"] for skill in pm.list_plugin_skill_metadata()
+        if skill["name"].partition(":")[2] == name
+    )
+    if len(matches) > 1:
+        return _fail(
+            f"Ambiguous plugin skill name '{name}'. Use a qualified plugin:skill name.",
+            available_skills=matches,
+            hint="Use skills_list to find the qualified name for the plugin skill you need.")
+    if matches:
+        served, _ = _resolve_plugin_skill(matches[0], file_path, task_id, preprocess)
+        return served
+    return None
+
+
+def _plugin_skill_names() -> list[str]:
+    """Return registered plugin skill names for errors that offer available skills."""
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+    discover_plugins()
+    return [skill["name"] for skill in get_plugin_manager().list_plugin_skill_metadata()]
+
+
 def _under_any(path: Path, dirs) -> bool:
     """True when ``path`` (resolved where possible) lives under one of ``dirs``."""
     resolved = path
@@ -560,6 +589,8 @@ def locate_skill(name: str, local_category_name: Optional[str], roots):
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
         available = [s["name"] for s in sort_skills(find_all_skills())[:20]]
+        with suppress(Exception):
+            available.extend(_plugin_skill_names())
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
@@ -613,6 +644,11 @@ def skill_view(
         all_dirs = [d for _t, d in roots]
         error, skill_dir, skill_md = locate_skill(name, local_category_name, roots)
         if error is not None:
+            if ":" not in name:
+                with suppress(json.JSONDecodeError):
+                    if json.loads(error).get("error") == f"Skill '{name}' not found.":
+                        if served := _resolve_bare_plugin_skill(name, file_path, task_id, preprocess):
+                            return served
             return error
         try:  # read once — reused for platform check and main content
             content = _read_skill_text(skill_md)

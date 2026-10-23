@@ -115,3 +115,19 @@ def test_observed_hwnd_capture_binds_discovered_pid_and_hwnd(monkeypatch):
     assert backend._active_pid == 555
 
 
+def test_several_frame_host_windows_with_the_app_title_are_named_not_guessed(monkeypatch):
+    # A second launch of a UWP app opens a second frame-host window with the same title.
+    windows = [_window(window_id=20, pid=10), _window(window_id=21, pid=10)]
+    result, backend = _capture(monkeypatch, windows)
+
+    message = result.get("window_title") or ""
+    assert "window_id=20" in message and "window_id=21" in message and "pid=10" in message
+    assert "capture" in message and "window_id=<id>" in message
+    assert backend._active_window_id is None and backend._active_pid is None
+
+
+def test_windows_no_match_points_at_list_windows(monkeypatch):
+    result, _ = _capture(monkeypatch, [_window(app="notepad.exe", title="Notes")])
+
+    message = result.get("window_title") or ""
+    assert "call list_windows" in message and "call list_apps" not in message

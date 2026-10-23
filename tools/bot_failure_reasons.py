@@ -43,6 +43,9 @@ ALL_REASONS = frozenset({
 # settled not-sent receipt carries (``gateway/session_bot.py:_not_sent_record``). The Bot DM tool
 # recognises that definite no-send by it, so owner and tool share this one literal.
 HELD_NOT_SENT = "runtime_coordination_required"
+# The tool's reason for that same settled no-send when the owner could not read its active-session
+# registry: no writer was proven, so there is no session to wait for.
+COORDINATION_UNAVAILABLE = "coordination_unavailable"
 
 #: Reasons a supervisor may retry automatically without human intervention.
 AUTO_RETRYABLE = frozenset({RUNTIME_OFFLINE, DELIVERY_TIMEOUT, PROVIDER_RATE_LIMIT, PROVIDER_SERVER_ERROR})

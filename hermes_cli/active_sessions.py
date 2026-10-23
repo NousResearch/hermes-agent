@@ -163,6 +163,29 @@ def session_owner_details(session_id: str, entry: dict[str, Any]) -> str:
     return f"Details: session {session_id} opened by {surface}{age}."
 
 
+# ``metadata[AUTHORITY_LEASE_KEY] == 1``: written by a tui_gateway host that re-checks the gateway's
+# canonical ledger before every turn and takes the durable turn lease, so it coexists with canonical
+# delivery the way it does on an already-adopted chat. Inside ``metadata`` (any dict to every strict
+# reader) so old and new builds keep reading each other's registries.
+AUTHORITY_LEASE_KEY = "authority"
+
+
+def is_authority_lease(entry: dict[str, Any]) -> bool:
+    metadata = entry.get("metadata")
+    return (entry.get("track_liveness") is True and isinstance(metadata, dict)
+            and metadata.get(AUTHORITY_LEASE_KEY) == 1)
+
+
+def lease_holder_facts(entry: dict[str, Any]) -> dict[str, Any]:
+    """Who holds a lease, for a refusal the user reads: surface, pid and age, never metadata."""
+    surface = "".join(ch for ch in str(entry.get("surface") or "") if ch.isprintable())[:40]
+    facts: dict[str, Any] = {"surface": surface or "unknown", "pid": _registry_pid(entry.get("pid"))}
+    started = _optional_float(entry.get("started_at"))
+    if started:
+        facts["age_minutes"] = max(0, int((time.time() - started) // 60))
+    return facts
+
+
 def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:
     """Refusal text for a session another live process holds.
 
@@ -487,9 +510,13 @@ def _drop_lease(
     return kept
 
 
-def _holds_session(entries: list[dict[str, Any]], session_id: str) -> bool:
+def _session_holders(entries: list[dict[str, Any]], session_id: str) -> list[dict[str, Any]]:
     target = str(session_id or "")
-    return bool(target) and any(str(e.get("session_id") or "") == target for e in entries)
+    return [e for e in entries if target and str(e.get("session_id") or "") == target]
+
+
+def _holds_session(entries: list[dict[str, Any]], session_id: str) -> bool:
+    return bool(_session_holders(entries, session_id))
 
 
 def _read_live_entries(
@@ -555,9 +582,10 @@ def try_acquire_active_session(
     lease_id = uuid.uuid4().hex
     key = str(session_id or "")
 
-    # No stored id yet => nothing to fence or record (and the strict schema
-    # refuses empty session ids): hand back a no-op lease.
-    if not key and not track_liveness:
+    # No stored id yet => nothing to fence or record, tracked or not: the strict
+    # schema refuses empty session ids, so one such entry would make every strict
+    # reader (guards, claims, the owner's own release) raise.
+    if not key:
         return ActiveSessionLease(
             lease_id=lease_id, session_id=key, surface=str(surface), enabled=False
         ), None
@@ -598,25 +626,22 @@ def try_acquire_active_session(
             return None, ActiveSessionRefusal(message, reason)
 
         # Correctness first, under the same lock that just pruned dead owners.
-        # An empty key is exempt: treating "" as an identity would make every
-        # unsaved draft exclude every other one.
-        if key:
-            for index, existing in enumerate(entries):
-                if str(existing.get("session_id") or "") != key:
-                    continue
-                # The same writer is not a second writer: a live session that
-                # leaked its lease reference would otherwise be fenced out of
-                # its own session permanently (pruning only removes entries
-                # whose PROCESS is dead). Re-entrancy, not concurrency.
-                if _is_same_writer(existing, metadata):
-                    entries[index] = entry
-                    _write_entries(state_path, entries)
-                    return lease, None
-                return refuse(
-                    session_already_owned_message(key, existing), SESSION_NOT_OWNED,
-                    "Refused active session %s: already held by pid=%s surface=%s",
-                    key, existing.get("pid"), existing.get("surface"),
-                )
+        for index, existing in enumerate(entries):
+            if str(existing.get("session_id") or "") != key:
+                continue
+            # The same writer is not a second writer: a live session that
+            # leaked its lease reference would otherwise be fenced out of
+            # its own session permanently (pruning only removes entries
+            # whose PROCESS is dead). Re-entrancy, not concurrency.
+            if _is_same_writer(existing, metadata):
+                entries[index] = entry
+                _write_entries(state_path, entries)
+                return lease, None
+            return refuse(
+                session_already_owned_message(key, existing), SESSION_NOT_OWNED,
+                "Refused active session %s: already held by pid=%s surface=%s",
+                key, existing.get("pid"), existing.get("surface"),
+            )
 
         # Capacity second, and only when an operator asked for one.
         if max_sessions is not None and len(entries) >= max_sessions:
@@ -802,12 +827,13 @@ def active_session_registry_snapshot(
 
 
 @contextmanager
-def active_session_liveness_guard(
+def active_session_holders_guard(
     session_id: str, *, registry_home: str | Path | None = None,
     own_live_lease_ids: set[str] | None = None,
-) -> Iterator[bool]:
-    """Hold the registry lock while reporting whether ``session_id`` is leased, so no
-    new backend can acquire a lease between the check and the caller's ``end_session``."""
+) -> Iterator[list[dict[str, Any]]]:
+    """``active_session_liveness_guard`` naming the live entries that lease ``session_id``
+    (``[]`` when none), so a caller can tell holders apart and say which one refused it. A
+    list, not one entry: a transfer onto an already-held id can leave two."""
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         entries = _prune_dead(
@@ -815,7 +841,20 @@ def active_session_liveness_guard(
         )
         entries = _drop_self_orphans(entries, own_live_lease_ids)
         _write_entries(state_path, entries)
-        yield _holds_session(entries, session_id)
+        yield [dict(e) for e in _session_holders(entries, session_id)]
+
+
+@contextmanager
+def active_session_liveness_guard(
+    session_id: str, *, registry_home: str | Path | None = None,
+    own_live_lease_ids: set[str] | None = None,
+) -> Iterator[bool]:
+    """Hold the registry lock while reporting whether ``session_id`` is leased, so no
+    new backend can acquire a lease between the check and the caller's ``end_session``."""
+    with active_session_holders_guard(
+        session_id, registry_home=registry_home, own_live_lease_ids=own_live_lease_ids,
+    ) as holders:
+        yield bool(holders)
 
 
 @contextmanager

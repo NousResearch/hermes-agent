@@ -280,3 +280,61 @@ async def test_retry_of_a_deferred_turn_follows_its_running_attempt_to_the_reply
     assert agent.run_conversation.call_count == 1
     assert set(keys) == {f"room:{task['identity'].task_id}:1"}
     assert [event["payload"]["text"] for event in replies] == ["Scoped peer response."]
+
+
+@pytest.mark.asyncio
+async def test_retry_of_deferred_task_does_not_steal_newer_turn_observation(tmp_path, monkeypatch):
+    """Retry may resolve the older run while a retained transport still watches the newer one."""
+    from tools.bot_relay import TurnBusyError, acquire_turn_lock
+
+    target, server, home = await _linked_home(
+        tmp_path, lease_ttl_seconds=1.0, poll_interval_seconds=0.05, active_poll_interval_seconds=0.05,
+        indeterminate_defer_seconds=0.5, turn_timeout_seconds=60)
+    home.runtime.turn_lock = lambda profile: acquire_turn_lock(home.root, profile, timeout_seconds=0)
+    peer_down = threading.Event()
+    peer_down.set()
+    keys = _lose_first_reply(monkeypatch, down=peer_down)
+    agent, started_b, release_b, finished_b = _agent(), threading.Event(), threading.Event(), threading.Event()
+
+    def conversations(*args, **kwargs):
+        if agent.run_conversation.call_count == 1:
+            return {"final_response": "A completed"}
+        started_b.set()
+        assert release_b.wait(20)
+        finished_b.set()
+        return {"final_response": "B completed"}
+
+    agent.run_conversation.side_effect = conversations
+    try:
+        with patch.object(target, "_create_agent", return_value=agent):
+            home.start()
+            home.send(room_id="room-1", event_id="user-A",
+                      payload={"text": "@reviewer task A", "thread_id": "thread-A"})
+            a = await _peer_task(home, ("deferred",))
+            home.runtime.lease_ttl_seconds = 30  # Keep the healthy attempt leased while Retry probes A.
+            peer_down.clear()
+            home.send(room_id="room-1", event_id="user-B",
+                      payload={"text": "@reviewer task B", "thread_id": "thread-B"})
+            assert await asyncio.to_thread(started_b.wait, 10)
+            b = await _peer_task(home, ("running",))
+            assert b["identity"] != a["identity"]
+            try:
+                await asyncio.to_thread(home.retry_room_task, "room-1", task_id=a["identity"].task_id)
+            except TurnBusyError:
+                assert driver.get_task(home.db_path, a["identity"])["status"] == "deferred"
+            release_b.set()
+            assert await asyncio.to_thread(finished_b.wait, 5)
+            def terminal_b():
+                current = driver.get_task(home.db_path, b["identity"])
+                return current if current["status"] in driver.TERMINAL_STATUSES else None
+            current = await async_wait_until(terminal_b, timeout=5, what="newer peer turn settling")
+            assert current["status"] == "settled", (current["status"], home.runtime.status(), keys)
+            assert current["result"]["text"] == "B completed"
+            assert agent.run_conversation.call_count == 2
+            assert set(keys) == {f"room:{task['identity'].task_id}:1" for task in (a, b)}
+    finally:
+        release_b.set()
+        home.stop(timeout=5)
+        await asyncio.gather(*target._active_run_tasks.values(), return_exceptions=True)
+        await server.close()
+        target._run_idempotency_store.close()

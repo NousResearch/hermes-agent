@@ -752,6 +752,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     os.environ["HERMES_EXEC_ASK"] = "1"
     _start_gateway_resolve_terminal_cwd()
 
+    # Owner startup, never incidental imports or ordinary delegated descendants (#87650).
+    os.environ.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
+
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
 

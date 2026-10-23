@@ -655,7 +655,15 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
-def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
+def _detect_dangerous_command_for_env(command: str, env_type: str) -> tuple:
+    """The current-PID self-kill check only means something where the command shares this
+    process's PID namespace; the local call keeps the plain ``detect_dangerous_command(command)`` contract."""
+    if env_type == "local":
+        return detect_dangerous_command(command)
+    return detect_dangerous_command(command, protect_local_pid=False)
+
+
+def _unattended_deny(command: str, ctx: _Unattended, env_type: str) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
     if ctx.mode() != "deny":
         return None
@@ -665,7 +673,7 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = _detect_dangerous_command_for_env(command, env_type)
     if is_dangerous and not _is_permanently_approved(pattern_key):
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
@@ -1107,7 +1115,7 @@ def check_dangerous_command(command: str, env_type: str,
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _approved()
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = _detect_dangerous_command_for_env(command, env_type)
     if not is_dangerous:
         return _approved()
     return _run_approval_gate(
@@ -1177,12 +1185,12 @@ def check_all_command_guards(command: str, env_type: str,
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
         for ctx in _unattended_contexts():
-            result = _unattended_deny(command, ctx)
+            result = _unattended_deny(command, ctx, env_type)
             if result is not None:
                 return result
         return _approved()
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = _detect_dangerous_command_for_env(command, env_type)
     session_key = get_current_session_key()
     if not is_dangerous or is_approved(session_key, pattern_key):
         return _approved()

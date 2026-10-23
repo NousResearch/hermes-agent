@@ -14,6 +14,7 @@ import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
 import { zhNotifications } from './zh_notifications'
 import { zhOnboarding } from './zh_onboarding'
+import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
@@ -2047,6 +2048,7 @@ export const zhOverrides = {
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
+      ...zhPluginPreviewAccess,
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
       pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',

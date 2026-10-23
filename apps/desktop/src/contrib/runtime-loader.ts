@@ -37,9 +37,10 @@ import { atom } from 'nanostores'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
+import { revokePreviewScript } from '@/store/plugin-preview-grants'
 
 import { trackGatewayEventDisposers } from './events'
-import { createPluginContext, type HermesPlugin } from './plugin'
+import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
@@ -456,10 +457,13 @@ export async function loadRuntimePlugin(
       throw new Error(`duplicate id "${plugin.id}", already loaded from ${owner.file ?? owner.kind}`)
     }
 
+    const capabilities = declaredCapabilities(plugin)
+
     const record = {
       id: plugin.id,
       name: plugin.name ?? plugin.id,
       description: plugin.description,
+      capabilities,
       kind: options.kind ?? 'disk',
       file: options.file,
       packageName: options.packageName,
@@ -493,7 +497,7 @@ export async function loadRuntimePlugin(
       try {
         result = trackGatewayEventDisposers(
           dispose => disposers.push(dispose),
-          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose), capabilities))
         )
       } catch (error) {
         failRegistration(error)
@@ -1007,6 +1011,11 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   retireDiskPlugin(file, record)
+
+  // A later plugin reusing this id must ask the user again, never inherit.
+  if (record.id) {
+    revokePreviewScript(record.id)
+  }
 
   return { ok: true }
 }

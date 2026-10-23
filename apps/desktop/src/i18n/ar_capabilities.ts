@@ -1,3 +1,4 @@
+import { arPluginPreviewAccess } from './ar_plugin_preview_access'
 import type { TranslationOverrides } from './define-locale'
 
 export const arCapabilities = {
@@ -14,6 +15,7 @@ export const arCapabilities = {
   },
   skills: {
     plugins: {
+      ...arPluginPreviewAccess,
       pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
     },
     tabSkills: 'المهارات',

@@ -12,6 +12,7 @@ export type {
   PluginNotificationAction,
   PluginOs,
   PluginPet,
+  PluginPreview,
   PluginRestOptions,
   PluginRunActionResult,
   PluginSettingsPage,

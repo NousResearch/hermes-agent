@@ -14,6 +14,7 @@ import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
+import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
@@ -2487,6 +2488,7 @@ export const esOverrides = {
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
       ...esPluginUpdate,
+      ...esPluginPreviewAccess,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `¿Desinstalar ${name}?`,

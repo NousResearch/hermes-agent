@@ -46,6 +46,7 @@ import { CatalogSwitch } from '../catalog/catalog-switch'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
+import { PluginPageAccess } from './plugin-page-access'
 import { runPluginUpdate } from './plugin-update'
 
 /** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
@@ -400,6 +401,7 @@ function PackageRow({
                 {desktop?.status === 'error' ? desktop.error : pkg.description}
               </div>
             )}
+            <PluginPageAccess plugin={desktop} pluginName={pkg.name} />
             {unavailableServers.map(server =>
               server.sentence ? (
                 <div

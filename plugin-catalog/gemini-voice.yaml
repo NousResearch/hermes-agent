@@ -1,0 +1,26 @@
+name: gemini-voice
+repo: https://github.com/bablobanov/hermes-agent-gemini-voice
+sha: 8ded1eef02965fe22fc9a0ac5d6987c409e95d99
+subdir: plugins/gemini-voice
+description: "Give Hermes a task on Android without opening a messenger: call Gemini with its button (hold the power button, or the assistant gesture), even from the lock screen, and say the task in one sentence; Hermes writes the reply into the same Google object and Gemini reads it aloud on request. No messenger and no unlocking, one sentence by voice, the answer read aloud. Supports Gemini 4 Argon and works with earlier Gemini app versions. Gemini creates Google Calendar events, Docs and Sheets by voice; this gateway platform picks up new ones whose title carries a label word (default Hermes) and hands the text to Hermes as a message from the account owner. Cron output can be delivered as a new document or an event at a set time. Disclosure — polls the Google Calendar, Drive (file metadata), Docs and Sheets APIs every 60 seconds with the plugin's own OAuth client and token (scopes calendar.events.owned, drive.metadata.readonly, documents, spreadsheets; no Gmail, no full Drive). GEMINI_VOICE_CLIENT_ID, GEMINI_VOICE_CLIENT_SECRET and GEMINI_VOICE_REFRESH_TOKEN are read through get_secret; the plugin exchanges its own refresh token for a short-lived access token at oauth2.googleapis.com and keeps it in memory, which rule 11 does not admit yet (no Hermes OAuth route for plugins, issue #139077); the refresh token is written once, by the user running hermes gemini-voice auth in a terminal, through Hermes's .env writer, and never rotated. Only objects the account owner created and still owns count; invitations, shared documents and events others added are ignored, and each object is handed over at most once across restarts. The platform is trusted_inbound. Approvals are Hermes's own, none added or bypassed; clarify is blocked on this platform only. Imports gateway.session_context.get_session_env and reads a few gateway runner internals (rule 9 warning), covered by the repo's engine contract test. Task text and replies stay in the user's Google account; no telemetry."
+maintainer: bablobanov
+tier: community
+category: voice
+requires_hermes: ">=0.21.6"
+version: "0.1.2"
+title: "Gemini Voice"
+image: https://raw.githubusercontent.com/bablobanov/hermes-agent-gemini-voice/8ded1eef02965fe22fc9a0ac5d6987c409e95d99/assets/hermes-agent-gemini-live-voice-android-argon.png
+docs_url: https://github.com/bablobanov/hermes-agent-gemini-voice/blob/8ded1eef02965fe22fc9a0ac5d6987c409e95d99/README.md
+readme: true
+platforms: []
+known_issues:
+  - "Requires in-process plugin execution: gateway platform adapters are refused under plugins.isolation: host."
+  - "Polling, not push: a task starts up to poll_seconds (60 s) after Gemini creates the object, and Gemini does not announce the reply; you ask for it."
+  - "Gemini app behaviour: one task is one new object said in one sentence, with the content named explicitly (\"... and put the text in it: ...\"); otherwise Gemini may answer the request itself and save only the title."
+  - "The label word must survive speech recognition: choose one the Gemini app spells reliably (the default Hermes does); a rare name can be written as other words and the object is then not a task."
+  - "Approval prompts cannot be answered by voice: such a command waits approvals.timeout and is refused; repeat it in a messaging app."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: [GEMINI_VOICE_CLIENT_ID, GEMINI_VOICE_CLIENT_SECRET, GEMINI_VOICE_REFRESH_TOKEN]

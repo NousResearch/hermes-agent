@@ -33,6 +33,37 @@ def test_find_git_worktree_finds_dotgit(tmp_path: Path):
     assert find_git_worktree(str(sub)) == str(repo)
 
 
+def test_find_git_worktree_stops_at_dangling_gitfile(tmp_path: Path):
+    # A ``.git`` FILE whose ``gitdir:`` target is gone (worktree of a deleted/moved
+    # repo, or a deliberate "not a repo" marker) is not a worktree: git itself stops
+    # there with "not a git repository". It must not become an LSP root, and the walk
+    # must not climb past it into an enclosing repo either.
+    (tmp_path / ".git").mkdir()
+    scratch = tmp_path / "scratch"
+    (scratch / "job").mkdir(parents=True)
+    (scratch / ".git").write_text("gitdir: /nonexistent/not-a-repo\n", encoding="utf-8")
+    assert find_git_worktree(str(scratch / "job")) is None
+    # A real repo below the dangling marker still resolves to itself.
+    clone = scratch / "job" / "clone"
+    (clone / ".git").mkdir(parents=True)
+    assert find_git_worktree(str(clone)) == str(clone)
+
+
+def test_find_git_worktree_accepts_live_linked_worktree(tmp_path: Path):
+    gitdir = tmp_path / "main" / ".git" / "worktrees" / "wt"
+    gitdir.mkdir(parents=True)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    assert find_git_worktree(str(wt)) == str(wt)
+    # Relative gitdir (``git worktree add --relative-paths``, submodules) resolves
+    # against the gitfile's own directory.
+    rel = tmp_path / "rel"
+    rel.mkdir()
+    (rel / ".git").write_text("gitdir: ../main/.git/worktrees/wt\n", encoding="utf-8")
+    assert find_git_worktree(str(rel)) == str(rel)
+
+
 def test_nearest_root_finds_first_marker(tmp_path: Path):
     root = tmp_path / "p"
     deep = root / "src" / "pkg"

@@ -30,7 +30,10 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static latest: FakeTerminal | null = null;
   options: Record<string, unknown>;
+  textarea = document.createElement("textarea");
+  dataListener: (data: string) => void = () => {};
   rows = 24;
   cols = 80;
   parser = {
@@ -40,6 +43,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.latest = this;
   }
 
   attachCustomKeyEventHandler() {
@@ -64,7 +68,8 @@ class FakeTerminal {
 
   loadAddon() {}
 
-  onData() {
+  onData(listener: (data: string) => void) {
+    this.dataListener = listener;
     return { dispose() {} };
   }
 
@@ -84,7 +89,14 @@ class FakeTerminal {
 
   scrollToBottom() {}
 
-  open() {}
+  // xterm mounts its hidden input textarea inside the host; ChatPage wires
+  // its IME listeners to it, and keydowns must be able to reach it.
+  open(host: HTMLElement) {
+    const textarea = document.createElement("textarea");
+    textarea.className = "xterm-helper-textarea";
+    host.appendChild(textarea);
+    this.textarea = textarea;
+  }
 
   paste() {}
 
@@ -408,6 +420,36 @@ describe("ChatPage", () => {
       expect(paste.defaultPrevented).toBe(true);
     } finally {
       pasteSpy.mockRestore();
+    }
+  });
+
+  // Android IMEs (Gboard, SwiftKey, Samsung Keyboard) report every key as a
+  // keydown with keyCode 229 / key "Process". xterm handles those keys from
+  // its own keydown listener on the hidden textarea (CompositionHelper diffs
+  // the textarea), so the #52111 guard on the terminal host may shield the
+  // React root from the event but must not stop it before the textarea.
+  it("lets a keyCode-229 keydown reach the xterm textarea while shielding the React root", async () => {
+    const host = await renderChat();
+    const textarea = host.querySelector("textarea")!;
+    const seenByTextarea = vi.fn();
+    const seenByReactRoot = vi.fn();
+    textarea.addEventListener("keydown", seenByTextarea, true);
+    container.addEventListener("keydown", seenByReactRoot);
+    try {
+      const keydown = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "Process",
+        keyCode: 229,
+      });
+      await act(async () => {
+        textarea.dispatchEvent(keydown);
+      });
+      expect(seenByTextarea).toHaveBeenCalledTimes(1);
+      expect(seenByReactRoot).not.toHaveBeenCalled();
+    } finally {
+      textarea.removeEventListener("keydown", seenByTextarea, true);
+      container.removeEventListener("keydown", seenByReactRoot);
     }
   });
 
@@ -942,5 +984,236 @@ describe("ChatPage WebGL renderer gating", () => {
     });
 
     expect(webglInstances[0].disposed).toBe(true);
+  });
+});
+
+describe("ChatPage mobile IME textarea edits (#122766)", () => {
+  const graphemes = (text: string) =>
+    Array.from(
+      new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text),
+      ({ segment }) => segment,
+    );
+
+  async function openMobileChat() {
+    vi.stubGlobal("navigator", {
+      ...window.navigator,
+      userAgent: "Mozilla/5.0 (Linux; Android 16) Chrome/153.0 Mobile",
+    });
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+    socket.send.mockClear();
+    const term = FakeTerminal.latest!;
+    const { textarea } = term;
+    // On the device the composer field is focused while the user types, so a
+    // caret jump reaches the bridge through the document-level selectionchange.
+    textarea.focus();
+
+    // The Ink composer line the PTY ends up with: one grapheme per DEL.
+    const ptyLine = () => {
+      let line = "";
+      for (const [frame] of socket.send.mock.calls as [string][]) {
+        if (frame.startsWith("\x1b[RESIZE")) continue;
+        for (const ch of frame) {
+          line = ch === "\x7f" ? graphemes(line).slice(0, -1).join("") : line + ch;
+        }
+      }
+      return line;
+    };
+    // Gboard input events as the device traces record them: the IME edits the
+    // textarea at its caret between beforeinput and input; xterm forwards only
+    // insertText, through onData.
+    const imeEdit = (inputType: string, edit: () => void, data: string | null, isComposing = false) => {
+      textarea.dispatchEvent(new InputEvent("beforeinput", { inputType, data }));
+      edit();
+      textarea.dispatchEvent(new InputEvent("input", { inputType, data, isComposing }));
+      if (inputType === "insertText" && data) term.dataListener(data);
+    };
+    const type = (text: string) =>
+      imeEdit("insertText", () => textarea.setRangeText(text, textarea.selectionStart, textarea.selectionEnd, "end"), text);
+    const deleteBack = (count: number, isComposing = false) => {
+      const caret = textarea.selectionStart;
+      const removed = graphemes(textarea.value.slice(0, caret)).slice(-count).join("");
+      imeEdit(
+        "deleteContentBackward",
+        () => textarea.setRangeText("", caret - removed.length, caret, "end"),
+        null,
+        isComposing,
+      );
+    };
+    // As an Ink composer would replay the bytes sent to the PTY: DEL deletes
+    // the grapheme before the cursor, arrows move the cursor. Used to check
+    // mid-line edits land where the user sees them (#138081 caret path).
+    const simulate = () => {
+      let line = "";
+      let cursor = 0;
+      const g = (s: string) => graphemes(s);
+      for (const [frame] of socket.send.mock.calls as [string][]) {
+        if (frame.startsWith("\x1b[RESIZE")) continue;
+        let i = 0;
+        while (i < frame.length) {
+          const ch = frame[i];
+          if (ch === "\x7f") {
+            if (cursor > 0) {
+              const arr = g(line);
+              arr.splice(cursor - 1, 1);
+              line = arr.join("");
+              cursor -= 1;
+            }
+            i += 1;
+          } else if (ch === "\u001b" && frame[i + 1] === "[") {
+            const cmd = frame[i + 2];
+            if (cmd >= "A" && cmd <= "Z") {
+              if (cmd === "C") cursor += 1;
+              else if (cmd === "D") cursor = Math.max(0, cursor - 1);
+              i += 3;
+            } else {
+              i += 2;
+            }
+          } else {
+            // A frame can carry a multi-code-point grapheme; the composer takes
+            // it as one unit.
+            const grapheme = g(frame).find((segment) => segment[0] === ch) ?? ch;
+            line = g(line).slice(0, cursor).join("") + grapheme + g(line).slice(cursor).join("");
+            cursor += 1;
+            i += grapheme.length;
+          }
+        }
+      }
+      return { line, cursor };
+    };
+    return { deleteBack, ptyLine, simulate, term, textarea, type };
+  }
+
+  it("replays IME deletions xterm drops, so the PTY line matches what the keyboard produced", async () => {
+    const { deleteBack, simulate, textarea, type } = await openMobileChat();
+
+    // Scenario A: `teh` corrected to `the`. The keyboard removes two graphemes
+    // and rewrites them in ONE event, so xterm's snapshot diff sees no deletion.
+    for (const ch of "teh") type(ch);
+    deleteBack(2);
+    type("he");
+    expect(simulate()).toEqual({ line: "the", cursor: 3 });
+
+    // Scenario B: single-grapheme deletions plus a combining cluster the
+    // composer removes with one DEL.
+    for (const ch of " cafe") type(ch);
+    deleteBack(1);
+    type("e\u0301");
+    expect(simulate()).toEqual({ line: "the cafe\u0301", cursor: 8 });
+
+    // Scenario D (#138081 user path): the caret handle moves the caret
+    // mid-line (selectionchange, no keystroke). What is typed lands at the
+    // caret on both sides, and the PTY cursor ends where the user sees it.
+    // Bytes are simulated as an Ink composer would: DEL deletes the grapheme
+    // before the cursor, arrows move it.
+    const moveCaret = (n: number) => {
+      textarea.setSelectionRange(n, n);
+      textarea.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+    };
+    // A caret jump with no keystroke still has to reach the server as arrows,
+    // and what is typed after it lands at the caret the user sees.
+    moveCaret(6); // after "the ca", before "fe"
+    expect(simulate()).toEqual({ line: "the cafe\u0301", cursor: 6 });
+    type("W");
+    expect(textarea.value).toBe("the caWfe\u0301");
+    expect(simulate()).toEqual({ line: "the caWfe\u0301", cursor: 7 });
+    deleteBack(1);
+    expect(textarea.value).toBe("the cafe\u0301");
+    expect(simulate()).toEqual({ line: "the cafe\u0301", cursor: 6 });
+
+    // A deletion inside an active composition belongs to the composition path.
+    deleteBack(1, true);
+    expect(simulate()).toEqual({ line: "the cafe\u0301", cursor: 6 });
+  });
+
+  // #138081: picking a correction from the phone keyboard is two edits in one
+  // task (deleteContentBackward, then insertText). xterm's keydown-229 snapshot
+  // diff — newValue.replace(oldValue,'') — returns the WHOLE line once oldValue
+  // is no longer a substring of newValue, so the correction lands twice unless
+  // one owner sends it. The device model listens on the textarea exactly as
+  // xterm does; #137360's guard decides whether the keydown reaches it at all.
+  it("lands a picked keyboard correction exactly once (#138081)", async () => {
+    const { ptyLine, term, textarea } = await openMobileChat();
+
+    let snapshot = textarea.value;
+    textarea.addEventListener("keydown", (e) => {
+      if (e.keyCode === 229) snapshot = textarea.value;
+    });
+    textarea.addEventListener("input", () => {
+      const value = textarea.value;
+      if (value !== snapshot) {
+        term.dataListener(value.replace(snapshot, ""));
+        snapshot = value;
+      }
+    });
+
+    const keystroke = (inputType: string, edit: () => void, data: string | null) => {
+      const keydown = new KeyboardEvent("keydown", { key: "Process", bubbles: true, cancelable: true });
+      Object.defineProperty(keydown, "keyCode", { value: 229 });
+      textarea.dispatchEvent(keydown);
+      textarea.dispatchEvent(new InputEvent("beforeinput", { inputType, data, bubbles: true, cancelable: true }));
+      edit();
+      textarea.dispatchEvent(new InputEvent("input", { inputType, data, bubbles: true, cancelable: true }));
+    };
+    const insertAt = (text: string) =>
+      keystroke("insertText", () => textarea.setRangeText(text, textarea.selectionStart, textarea.selectionEnd, "end"), text);
+
+    for (const ch of "helo") insertAt(ch);
+    // The correction the user picked for "helo": two separate input events.
+    keystroke("deleteContentBackward", () => textarea.setRangeText("", textarea.selectionStart - 1, textarea.selectionStart, "end"), null);
+    insertAt("lo ");
+
+    expect(textarea.value).toBe("hello ");
+    expect(ptyLine()).toBe("hello ");
+  });
+
+  // Picking a suggestion for a reduplicated word: Gboard sends the minimal
+  // diff, so the inserted text can equal the last word left on the line
+  // (`ok ha` + `ha `) or start with the whole line (`ha` + `ha!`). The
+  // deletion already reached the PTY; the insertion is a plain append.
+  it.each([
+    ["ok haja", 2, "ha ", "ok haha "],
+    ["hajo", 2, "ha!", "haha!"],
+  ])("does not re-delete after a replayed deletion: %j", async (typed, removed, inserted, expected) => {
+    const { deleteBack, ptyLine, textarea, type } = await openMobileChat();
+
+    for (const ch of typed) type(ch);
+    deleteBack(removed);
+    type(inserted);
+
+    expect(textarea.value).toBe(expected);
+    expect(ptyLine()).toBe(expected);
+  });
+
+  it("keeps the hidden textarea in step with input xterm forwards itself", async () => {
+    const { term, textarea, type } = await openMobileChat();
+
+    type("đ");
+    type("ã");
+    // xterm consumes a Backspace keydown: it sends DEL and cancels the event,
+    // so the textarea would keep text the line no longer has.
+    term.dataListener("\x7f");
+    expect(textarea.value).toBe("đ");
+
+    // A mouse report is not typed input and leaves the line alone.
+    term.dataListener("\x1b[<64;10;5M");
+    expect(textarea.value).toBe("đ");
+
+    // Enter, ^C, ^U and cursor keys (history recall) leave a line the
+    // textarea cannot model; the IME must start from empty, not stale text.
+    for (const boundary of ["\r", "\x03", "\x15", "\x1b[A"]) {
+      type("ab");
+      term.dataListener(boundary);
+      expect(textarea.value).toBe("");
+    }
   });
 });

@@ -76,6 +76,29 @@ describe('terminalSetup helpers', () => {
 })
 
 describe('configureTerminalKeybindings', () => {
+  it('uses target-native separators for Windows keybindings paths', async () => {
+    // The assertions below are Windows-target path products: APPDATA arrives
+    // with forward slashes to prove the target dialect is applied
+    // unconditionally, so these backslash paths must hold from any host OS.
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }))
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      env: { APPDATA: 'C:/Users/me/AppData/Roaming' } as NodeJS.ProcessEnv,
+      fileOps: { mkdir, readFile, writeFile },
+      platform: 'win32'
+    })
+
+    const configDir = 'C:\\Users\\me\\AppData\\Roaming\\Code\\User'
+    const keybindingsFile = `${configDir}\\keybindings.json`
+
+    expect(result.success).toBe(true)
+    expect(mkdir).toHaveBeenCalledWith(configDir, { recursive: true })
+    expect(readFile).toHaveBeenCalledWith(keybindingsFile, 'utf8')
+    expect(writeFile).toHaveBeenCalledWith(keybindingsFile, expect.any(String), 'utf8')
+  })
+
   it('writes missing bindings into a VS Code style keybindings file', async () => {
     const mkdir = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }))
@@ -399,7 +422,8 @@ describe('configureTerminalKeybindings', () => {
   it('suppresses terminal setup prompts inside SSH sessions', async () => {
     await expect(
       shouldPromptForTerminalSetup({
-        env: { SSH_CONNECTION: '1 2 3 4', TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv
+        env: { SSH_CONNECTION: '1 2 3 4', TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
+        platform: 'linux'
       })
     ).resolves.toBe(false)
   })

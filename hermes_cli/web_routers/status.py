@@ -6,6 +6,7 @@ Extracted from ``hermes_cli.web_server``; app state and helpers are late-bound t
 """
 
 import concurrent.futures
+import threading
 import importlib
 import logging
 import re
@@ -75,7 +76,34 @@ def _safe_call(mod, fn_name: str, default):
         return default
 
 
+# Cache only the advisory session count, never gateway liveness/busy/drainable.
+# A slow lineage scan must not spawn another scan on every desktop poll.
+_STATUS_COUNT_CACHE: dict[str, tuple[float, int]] = {}
+_STATUS_COUNT_LOCK = threading.Lock()
+_STATUS_COUNT_TTL = 5.0
+
+
 def _count_status_active_sessions() -> int:
+    from hermes_state import _default_db_path
+    key = str(_default_db_path())
+    cached = _STATUS_COUNT_CACHE.get(key)
+    if cached is not None and time.monotonic() - cached[0] < _STATUS_COUNT_TTL:
+        return cached[1]
+    if not _STATUS_COUNT_LOCK.acquire(blocking=False):
+        return cached[1] if cached is not None else 0
+    try:
+        # Recheck after acquisition: another request may have just refreshed it.
+        cached = _STATUS_COUNT_CACHE.get(key)
+        if cached is not None and time.monotonic() - cached[0] < _STATUS_COUNT_TTL:
+            return cached[1]
+        count = _count_status_active_sessions_uncached()
+        _STATUS_COUNT_CACHE[key] = (time.monotonic(), count)
+        return count
+    finally:
+        _STATUS_COUNT_LOCK.release()
+
+
+def _count_status_active_sessions_uncached() -> int:
     """Best-effort status garnish. Opens read-only (via the shared stale-schema heal) so
     /api/status never routinely writes to state.db while another Hermes process uses it."""
     from hermes_state import _default_db_path
@@ -91,6 +119,48 @@ def _count_status_active_sessions() -> int:
                    and (now - s.get("last_active", s.get("started_at", 0))) < 300)
     finally:
         db.close()
+
+
+_STATUS_CONFIG_CACHE: dict[tuple[str, str], tuple[tuple[int, ...], float, Any]] = {}
+_STATUS_CONFIG_LOCK = threading.Lock()
+_STATUS_CONFIG_TTL = 5.0
+
+
+def _config_status_fingerprint(path: Path) -> tuple[int, ...]:
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _cached_status_config_read(kind: str, reader):
+    # Status is advisory; strict readers before a config write retain their uncached path.
+    path = get_config_path()
+    key = (kind, str(path))
+    with _STATUS_CONFIG_LOCK:
+        try:
+            before = _config_status_fingerprint(path)
+        except OSError:
+            return reader()
+        cached = _STATUS_CONFIG_CACHE.get(key)
+        if (cached is not None and cached[0] == before
+                and time.monotonic() - cached[1] < _STATUS_CONFIG_TTL):
+            return cached[2]
+        version = reader()
+        try:
+            after = _config_status_fingerprint(path)
+        except OSError:
+            return version
+        if before == after:
+            _STATUS_CONFIG_CACHE[key] = (after, time.monotonic(), version)
+        return version
+
+
+def _cached_status_config_version() -> tuple[int, int]:
+    return _cached_status_config_read("version", check_config_version)
+
+
+def _cached_status_configured_platforms() -> set[str]:
+    # Repeated polls only need the configured names, not a full gateway-config rebuild.
+    return _cached_status_config_read("platforms", _load_configured_gateway_platforms)
 
 
 async def _status_active_sessions() -> int:
@@ -304,7 +374,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     remote_health_body: dict | None = liveness.health_body
 
     try:
-        configured = await run_in_threadpool(_load_configured_gateway_platforms)
+        configured = await run_in_threadpool(_cached_status_configured_platforms)
     except Exception:
         configured = None
 
@@ -498,7 +568,7 @@ async def get_status(profile: Optional[str] = None):
         status_scope.__enter__()
 
     try:
-        current_ver, latest_ver = check_config_version()
+        current_ver, latest_ver = await run_in_threadpool(_cached_status_config_version)
         gateway = await _resolve_gateway_status(profile_dir, _GATEWAY_HEALTH_URL)
         gateway_running, gateway_state = gateway["gateway_running"], gateway["gateway_state"]
 

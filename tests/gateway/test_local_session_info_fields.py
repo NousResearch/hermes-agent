@@ -25,12 +25,25 @@ async def test_session_info_carries_the_classic_cli_fields(tmp_path, monkeypatch
     authority.db.set_session_title('s', 'Some Title')
     info = local_session_info(authority, SessionRef('p', 's'))
     assert info['title'] == 'Some Title'
+    assert info['provider'] == 'custom'
     assert isinstance(info['started_at'], float) and isinstance(info['last_active_at'], float)
     assert info['yolo'] is False and info['api_mode'] == 'chat_completions' and info['tool_count'] == 3
     assert info['credential_hint'] == 'sk-a...1234' and 'abcdefgh' not in str(info)
     from tui_gateway.contracts.registry import CANONICAL_METHODS
     CANONICAL_METHODS['session.info'].result.model_validate(
         {**info, 'profile_name': 'default', 'desktop_protocol': 'hermes-gateway-v1', 'lazy': False})
+
+
+def test_lazy_session_info_uses_the_policy_route_provider(tmp_path):
+    """Regression for #139015: resumed Desktop sessions need the picker route identity."""
+    from gateway.session_local import _session_provider
+    from gateway.session_policy import build_policy
+
+    policy = build_policy({'cwd': str(tmp_path)}, {'model': {'default': 'model', 'provider': 'custom'}})
+    auto_policy = build_policy({'cwd': str(tmp_path)}, {'model': {'default': 'model', 'provider': 'auto'}})
+
+    assert _session_provider(None, None, policy) == 'custom'
+    assert _session_provider(None, None, auto_policy) == ''
 
 
 def test_local_viewer_title_republishes_session_info(monkeypatch):

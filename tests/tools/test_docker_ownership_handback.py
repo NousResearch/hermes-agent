@@ -165,7 +165,8 @@ def test_root_container_teardown_hands_every_sandbox_mount_back_before_removal(
     if scenario.startswith("persist"):  # a running container: strip bits/caps in place, give nothing away
         if scenario == "persist-shared":
             monkeypatch.setenv("HERMES_HOME", str(tmp_path / "root" / "profiles" / "other"))
-        monkeypatch.setattr(docker_env.DockerEnvironment, "_find_reusable_container", lambda *a: ("fake-cid", "running"))
+        monkeypatch.setattr(docker_env.DockerEnvironment, "_find_reusable_container",
+                            lambda self, *a: ("fake-cid", "running", self._runtime_fp))
         if scenario == "persist-gone":
             docker_env.reap_orphan_containers(max_age_seconds=0)
             assert not os.path.exists(sandbox)

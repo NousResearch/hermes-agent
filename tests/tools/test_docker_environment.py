@@ -60,6 +60,7 @@ def _make_dummy_env(**kwargs):
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
         snap_compat=kwargs.get("snap_compat", False),
+        image_pinned=kwargs.get("image_pinned", False),
     )
 
 
@@ -446,8 +447,10 @@ def test_snap_compat_drops_only_init_and_no_new_privileges(monkeypatch):
     assert "--init" in default and "no-new-privileges" in default
     assert "--init" not in compat and "no-new-privileges" not in compat
 
-    def strip(argv):  # everything except the two flags and the random container name
-        return [a for a in argv if a not in ("--init", "--security-opt", "no-new-privileges") and not a.startswith("hermes-")]
+    def strip(argv):  # ignore only the opt-out flags and per-run random name/path
+        label_path = argv[argv.index("--label-file") + 1]
+        ignored = ("--init", "--security-opt", "no-new-privileges", "--label-file", label_path)
+        return [a for a in argv if a not in ignored and not a.startswith("hermes-")]
 
     assert strip(default) == strip(compat)
 
@@ -764,6 +767,7 @@ def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tm
     first = _make_dummy_env(**config)
     second = _make_dummy_env(**config)
     assert first._labels["hermes-environment"] == second._labels["hermes-environment"]
+    assert first._runtime_fp == second._runtime_fp
     # The safe copy really is per-construction volatile: proof the stability above
     # comes from canonicalization, not from the mount happening to be stable.
     mounts = []
@@ -776,6 +780,7 @@ def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tm
     changed = dict(config, volumes=["volume-b:/workspace"])
     third = _make_dummy_env(**changed)
     assert third._labels["hermes-environment"] != first._labels["hermes-environment"]
+    assert third._runtime_fp != first._runtime_fp
 
 
 def test_labels_attribute_populated_after_init(monkeypatch):
@@ -790,6 +795,7 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     labels = dict(env._labels)
     environment_label = labels.pop("hermes-environment")
+    runtime_label = labels.pop("hermes-runtime-fingerprint")
     assert labels == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
@@ -797,6 +803,8 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-egress": "off",
     }
     assert re.fullmatch(r"[0-9a-f]{24}", environment_label)
+    assert runtime_label == env._runtime_fp
+    assert re.fullmatch(r"[0-9a-f]{24}", runtime_label)
 
 
 @pytest.mark.parametrize("changed_setting", ["image", "volumes", "hermes_home"])
@@ -944,6 +952,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_container_runtime_fingerprint",
+        lambda self, cid: getattr(self, "_runtime_fp", ""),
+    )
     return calls
 
 
@@ -1027,6 +1040,7 @@ def test_reuse_probe_format_is_podman_compatible(monkeypatch):
     posture via label FILTERS instead."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/podman")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(docker_env, "_runtime_reuse_fingerprint", lambda image, args, **kw: "podman-runtime-fp")
 
     calls = []
 
@@ -1054,6 +1068,8 @@ def test_reuse_probe_format_is_podman_compatible(monkeypatch):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":
                 return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+            if sub == "inspect":
+                return subprocess.CompletedProcess(cmd, 0, stdout="podman-runtime-fp\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
@@ -1257,8 +1273,6 @@ def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
     rm_cmd = cleanup_calls[0]
     assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
     assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
-
-
 
 
 # ── Cleanup correctness (issue #20561) ────────────────────────────

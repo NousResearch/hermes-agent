@@ -5,7 +5,8 @@ import {
   isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
-  reconnectBackoffDelayMs
+  reconnectBackoffDelayMs,
+  registryBackendScopeKey
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
@@ -551,7 +552,7 @@ export function useGatewayBoot({
         // post-reconnect event.
         // A manual retry may finish after the user has moved to another route.
         if (!manual || (isActivePrimary() && gatewayActivationEpoch() === manual.activationEpoch)) {
-          reconcileBusyStatesOnReconnect()
+          reconcileBusyStatesOnReconnect(undefined, registryBackendScopeKey(primaryConnectionId, conn.profile))
           await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
           await callbacksRef.current.refreshSessions().catch(() => undefined)
         }

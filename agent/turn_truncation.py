@@ -343,6 +343,59 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         _retry.restart_with_length_continuation = True
         return st.done("break")
 
+    # ── Truncation exhaustion → fallback (mirror of
+    # _content_filter_fallback above): a primary that hit
+    # finish_reason=length on 4 straight continuation attempts is in
+    # runaway generation — further attempts on the same backend re-hit
+    # the same loop. Consult the fallback chain and let a different
+    # model compose the final response from the transcript before
+    # giving up.
+    if filled is None and agent._fallback_index < len(agent._fallback_chain):
+        agent._vprint(
+            f"{agent.log_prefix}↻ Response still truncated "
+            f"after 4 continuations — activating fallback "
+            f"provider...",
+            force=True, diagnostic=True,
+        )
+        agent._emit_diagnostic_status(
+            "Response still truncated after 4 continuation "
+            "attempts; switching to fallback provider..."
+        )
+        if agent._try_activate_fallback():
+            # Drop this turn's whole continuation trail (fragment rows +
+            # unanswered nudges): the fallback composes a fresh answer from
+            # the clean transcript. Rolling back to the last assistant row
+            # would keep the earlier fragments — including the "continue,
+            # don't restart" nudge — while clearing
+            # truncated_response_parts means their text is never assembled,
+            # so the fallback would return only the remaining tail.
+            _turn_start = (
+                st.current_turn_user_idx + 1
+                if isinstance(st.current_turn_user_idx, int)
+                and st.current_turn_user_idx >= 0
+                else 0
+            )
+            st.messages[_turn_start:] = [
+                m for m in st.messages[_turn_start:]
+                if not (
+                    isinstance(m, dict)
+                    and (
+                        m.get("_length_continuation_fragment")
+                        or m.get("_length_continuation_nudge")
+                    )
+                )
+            ]
+            messages = st.messages
+            agent._session_messages = messages
+            agent._ephemeral_reasoning_off = False
+            st.length_continue_retries = 0
+            st.truncated_response_parts = []
+            st.retry_count = 0
+            st.compression_attempts = 0
+            _retry.primary_recovery_attempted = False
+            _retry.restart_with_rebuilt_messages = True
+            return st.done("break")
+
     # Unanswered continue nudges made every later turn re-truncate: drop the trail.
     partial_response = collapse_continuation_trail(
         agent, messages, st.current_turn_user_idx, finish_reason="length",

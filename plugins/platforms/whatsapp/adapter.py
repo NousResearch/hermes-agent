@@ -1124,7 +1124,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             # Whose bridge holds the port is checked before anything is posted: on a shared port another profile's
             # bridge would deliver from that profile's WhatsApp account. A bridge without ``session`` predates the field.
             async with session.get(
-                f"http://localhost:{bridge_port}/health",
+                f"http://127.0.0.1:{bridge_port}/health",
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 if resp.status != 200:
@@ -1144,7 +1144,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
             async def _post(path, payload, total, error_label=None):
                 """``(messageId, None)`` on 200, else ``(None, error_dict)`` (body read only when labelled)."""
-                url = f"http://localhost:{bridge_port}/{path}"
+                url = f"http://127.0.0.1:{bridge_port}/{path}"
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=total)) as resp:
                     if resp.status == 200:
                         return (await resp.json()).get("messageId"), None

@@ -633,6 +633,37 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
 
 
 @pytest.mark.asyncio
+async def test_blocks_windows_appdata_credential_stores(tmp_path: Path, monkeypatch):
+    """On Windows gcloud and the GitHub CLI keep credentials under %APPDATA% (~/AppData/Roaming),
+    not ~/.config, so the home-relative credential dirs must name those too."""
+    from agent.context_references import preprocess_context_references_async
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+    roaming = tmp_path / "AppData" / "Roaming"
+    adc = roaming / "gcloud" / "application_default_credentials.json"
+    adc.parent.mkdir(parents=True)
+    adc.write_text('{"refresh_token": "GCLOUD-SECRET"}\n', encoding="utf-8")
+    hosts = roaming / "GitHub CLI" / "hosts.yml"
+    hosts.parent.mkdir(parents=True)
+    hosts.write_text("github.com:\n    oauth_token: GH-SECRET\n", encoding="utf-8")
+
+    result = await preprocess_context_references_async(
+        'inspect @file:AppData/Roaming/gcloud/application_default_credentials.json '
+        'and @file:"AppData/Roaming/GitHub CLI/hosts.yml"',
+        cwd=tmp_path,
+        allowed_root=tmp_path,
+        context_length=100_000,
+    )
+
+    assert "GCLOUD-SECRET" not in result.message
+    assert "GH-SECRET" not in result.message
+    assert sum("sensitive credential" in warning for warning in result.warnings) == 2
+
+
+@pytest.mark.asyncio
 async def test_canonical_guard_fails_closed_when_lookup_raises(tmp_path: Path, monkeypatch):
     """If the canonical read guard raises, the reference must fail CLOSED.
 

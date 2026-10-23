@@ -8,7 +8,6 @@ checkout — the same trust level as the terminal tool.
 
 from __future__ import annotations
 
-import os
 import signal
 import subprocess
 import time
@@ -125,40 +124,29 @@ def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bo
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
-    """SIGTERM the app's process group (``start_new_session=True`` on POSIX; just the
-    direct child on Windows, which lacks ``os.killpg``), SIGKILL after 10s."""
+    """SIGTERM the app and every descendant it spawned, SIGKILL after 10s.
+
+    ``agent.deadline.kill_process_tree``, the helper the cron script path already terminates
+    through, not a local ``killpg``: ``start_new_session=True`` is a POSIX-only no-op and
+    ``os.killpg`` does not exist on Windows, so the old fallback stopped the direct child only.
+    Under ``shell=True`` that child is ``cmd.exe`` and the app itself is a grandchild — it
+    survived, kept the readiness port bound so the NEXT run could not bind it, and held the
+    inherited stdout write end open so the caller's read waited for an EOF that never came.
+    The helper keeps the invariant this function was built around: it signals a process group
+    only when the child leads one, so a child sharing the runner's group cannot take the runner
+    down with it.
+    """
     if proc.poll() is not None:
         return
-    killpg = getattr(os, "killpg", None)
-    getpgid = getattr(os, "getpgid", None)
-    pgid = None
-    if killpg is not None and getpgid is not None:
-        try:
-            pgid = getpgid(proc.pid)
-        except (ProcessLookupError, PermissionError):
-            pass
-    if pgid is not None and pgid != proc.pid:
-        # The child does not lead its own group, so it shares ours: killpg would
-        # signal the whole runner process tree. Signal the direct child only.
-        pgid = None
-
-    def stop(sig: int, fallback: Callable[[], None]) -> None:
-        if pgid is not None:
-            killpg(pgid, sig)  # windows-footgun: ok — POSIX-only branch (pgid only set when killpg exists)
-        else:
-            fallback()
-
-    try:
-        stop(signal.SIGTERM, proc.terminate)
-    except (ProcessLookupError, PermissionError):
+    from agent.deadline import kill_process_tree
+    # Windows ignores *sig* (taskkill /F is already a hard stop), so the escalation below is a
+    # POSIX courtesy: give the app its SIGTERM shutdown path before SIGKILL.
+    if not kill_process_tree(proc.pid, sig=signal.SIGTERM):
         return
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        try:
-            stop(getattr(signal, "SIGKILL", signal.SIGTERM), proc.kill)
-        except (ProcessLookupError, PermissionError):
-            pass
+        kill_process_tree(proc.pid)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -180,8 +168,11 @@ def _run_start_phase(
     finally:
         _terminate_process_group(proc)
         try:
-            output = proc.stdout.read() or "" if proc.stdout is not None else ""
-        except (OSError, ValueError):
+            # Bounded, like the cron path's own drain: a descendant the tree-kill could not reach
+            # (taskkill reports access-denied) still holds the pipe write end, and reading to EOF
+            # would never return. The readiness verdict is reported either way.
+            output = proc.communicate(timeout=10)[0] or ""
+        except (OSError, ValueError, subprocess.TimeoutExpired):
             output = ""
     return ReadinessResult(url, ready, status, time.monotonic() - started, error, _tail(output))
 

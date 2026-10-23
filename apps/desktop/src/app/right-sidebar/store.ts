@@ -1,12 +1,19 @@
 import { atom } from 'nanostores'
 
 import { persistBoolean, storedBoolean } from '@/lib/storage'
+import { modeBound } from '@/store/interface-mode'
 
 const TAKEOVER_KEY = 'hermes.desktop.terminalTakeover'
 
-export const $terminalTakeover = atom(storedBoolean(TAKEOVER_KEY, false))
+// Simple mode rests the terminal closed without touching this preference; ⌃`
+// still brings it up for the session.
+const $terminalTakeoverPref = atom(storedBoolean(TAKEOVER_KEY, false))
 
-$terminalTakeover.subscribe(active => persistBoolean(TAKEOVER_KEY, active))
+$terminalTakeoverPref.subscribe(active => persistBoolean(TAKEOVER_KEY, active))
+
+export const $terminalTakeover = modeBound('terminalOpen', $terminalTakeoverPref, active =>
+  $terminalTakeoverPref.set(active)
+)
 
 export const setTerminalTakeover = (active: boolean) => $terminalTakeover.set(active)
 

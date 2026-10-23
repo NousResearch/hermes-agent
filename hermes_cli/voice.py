@@ -109,13 +109,8 @@ def format_voice_record_key_for_status(raw: Any) -> str:
     return prefix + key[0].upper() + key[1:]
 
 
-from tools.voice_mode import (
-    create_audio_recorder,
-    is_voice_stop_phrase,
-    is_whisper_hallucination,
-    play_audio_file,
-    transcribe_recording,
-)
+from tools.voice_mode_transcript import is_voice_stop_phrase, is_whisper_hallucination
+from tools.voice_mode import create_audio_recorder, play_audio_file, transcribe_recording
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +332,7 @@ def start_continuous(
     auto_restart: bool = True,
     max_recording_seconds: float = 0.0,
     on_stop_phrase: Optional[Callable[[str], None]] = None,
+    on_partial: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Start a VAD-driven continuous recording loop.
 
@@ -344,6 +340,7 @@ def start_continuous(
     non-positive / non-numeric disables the cap. ``on_stop_phrase`` receives the stripped
     transcript when the user utters a bare stop phrase (``voice.stop_phrases``); the loop halts
     first, so the consumer only reflects "voice off" — like the manual stop control.
+    ``on_partial`` receives live STT text while the user speaks (``stt.streaming``).
     """
     global _continuous_active, _continuous_recorder, _continuous_auto_restart, _continuous_no_speech_count
     global _continuous_callbacks
@@ -364,6 +361,7 @@ def start_continuous(
         if _continuous_recorder is None:
             _continuous_recorder = create_audio_recorder()
         rec = _continuous_recorder
+        rec.on_live_partial = on_partial
         rec._silence_threshold = silence_threshold
         rec._silence_duration = silence_duration
         # Same numeric-with-bool-excluded guard as cli.py:_voice_start_recording.
@@ -582,7 +580,7 @@ def _speak_streaming(text: str, stop_event: Optional[threading.Event]) -> bool:
 
     if resolve_streaming_provider(_load_tts_config()) is None:
         return False
-    text_queue: "queue.Queue" = queue.Queue()
+    text_queue: queue.Queue = queue.Queue()
     text_queue.put(text)
     text_queue.put(None)  # end-of-text sentinel
     done_event = threading.Event()

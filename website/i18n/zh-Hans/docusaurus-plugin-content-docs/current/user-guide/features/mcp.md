@@ -6,6 +6,9 @@ description: "通过 MCP 将 Hermes Agent 连接到外部工具服务器，并�
 
 # MCP（模型上下文协议）
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 MCP 让 Hermes Agent 连接到外部工具服务器，使 agent 能够使用 Hermes 本身之外的工具——GitHub、数据库、文件系统、浏览器栈、内部 API 等等。
 
 如果你曾经希望 Hermes 使用某个已经存在于其他地方的工具，MCP 通常是最简洁的方式。
@@ -24,7 +27,7 @@ MCP 让 Hermes Agent 连接到外部工具服务器，使 agent 能够使用 Her
 
 ```bash
 cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
+python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 ```
 
 2. 在 `~/.hermes/config.yaml` 中添加一个 MCP 服务器：
@@ -407,7 +410,7 @@ Inspect the project root and explain the directory layout.
 
 ```bash
 # 验证 MCP 依赖已安装（标准安装已包含）
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 node --version
 npx --version
@@ -486,106 +489,28 @@ mcp_servers:
 
 ## 将 Hermes 作为 MCP 服务器运行
 
-除了连接**到** MCP 服务器，Hermes 也可以**作为** MCP 服务器运行。这让其他支持 MCP 的 agent（Claude Code、Cursor、Codex 或任何 MCP 客户端）能够使用 Hermes 的消息能力——列出会话、读取消息历史，以及跨所有已连接平台发送消息。
-
-### 适用场景
-
-- 你希望 Claude Code、Cursor 或其他编程 agent 通过 Hermes 发送和读取 Telegram/Discord/Slack 消息
-- 你需要一个单一的 MCP 服务器，同时桥接 Hermes 所有已连接的消息平台
-- 你已经有一个运行中的 Hermes gateway，并已连接各平台
-
-### 快速开始
+Hermes 也可以**作为** MCP 服务器运行，让 Claude Code、Claude Desktop、Cursor、Codex 或任何 MCP 客户端列出和读取你的消息会话、等待新消息、跨所有已连接平台发送消息，并可选地调用 Hermes 自己的网页、浏览器、视觉、图像生成、技能和 TTS 工具。该功能现由官方 **mcp-serve** 插件提供：
 
 ```bash
-hermes mcp serve
+hermes plugins install mcp-serve
 ```
-
-这会启动一个 stdio MCP 服务器。进程生命周期由 MCP 客户端（而非你）管理。
-
-### MCP 客户端配置
-
-将 Hermes 添加到你的 MCP 客户端配置中。例如，在 Claude Code 的 `~/.claude/claude_desktop_config.json` 中：
 
 ```json
 {
   "mcpServers": {
     "hermes": {
       "command": "hermes",
-      "args": ["mcp", "serve"]
+      "args": ["mcp-serve"]
     }
   }
 }
 ```
 
-或者，如果你将 Hermes 安装在特定位置：
-
-```json
-{
-  "mcpServers": {
-    "hermes": {
-      "command": "/home/user/.hermes/hermes-agent/venv/bin/hermes",
-      "args": ["mcp", "serve"]
-    }
-  }
-}
-```
-
-### 可用工具
-
-MCP 服务器暴露 10 个工具，与 OpenClaw 的 channel bridge 接口一致，并额外提供一个 Hermes 专属的 channel 浏览器：
-
-| 工具 | 描述 |
-|------|-------------|
-| `conversations_list` | 列出活跃的消息会话。可按平台过滤或按名称搜索。 |
-| `conversation_get` | 通过 session key 获取某个会话的详细信息。 |
-| `messages_read` | 读取某个会话的近期消息历史。 |
-| `attachments_fetch` | 从特定消息中提取非文本附件（图片、媒体）。 |
-| `events_poll` | 从指定游标位置轮询新的会话事件。 |
-| `events_wait` | 长轮询/阻塞，直到下一个事件到达（接近实时）。 |
-| `messages_send` | 通过平台发送消息（例如 `telegram:123456`、`discord:#general`）。 |
-| `channels_list` | 列出所有平台上可用的消息目标。 |
-| `permissions_list_open` | 列出本次 bridge 会话中观察到的待审批请求。 |
-| `permissions_respond` | 允许或拒绝待审批请求。 |
-
-### 事件系统
-
-MCP 服务器包含一个实时事件桥，轮询 Hermes 的会话数据库以获取新消息。这让 MCP 客户端能够近实时感知新来的会话：
-
-```
-# 轮询新事件（非阻塞）
-events_poll(after_cursor=0)
-
-# 等待下一个事件（阻塞，直到超时）
-events_wait(after_cursor=42, timeout_ms=30000)
-```
-
-事件类型：`message`、`approval_requested`、`approval_resolved`
-
-事件队列存储在内存中，在 bridge 连接时开始工作。较旧的消息可通过 `messages_read` 获取。
-
-### 选项
-
-```bash
-hermes mcp serve              # 普通模式
-hermes mcp serve --verbose    # 在 stderr 输出调试日志
-```
-
-### 工作原理
-
-MCP 服务器直接从 Hermes 的会话存储（`~/.hermes/sessions/sessions.json` 和 SQLite 数据库）读取会话数据。后台线程轮询数据库以获取新消息，并维护一个内存事件队列。发送消息时，使用与 Hermes agent 本身相同的 `send_message` 基础设施。
-
-读取操作（列出会话、读取历史、轮询事件）**不需要** gateway 运行。发送操作**需要** gateway 运行，因为平台适配器需要活跃连接。
-
-### 当前限制
-
-- 内嵌的 `hermes mcp serve` 目前只暴露 **stdio-only** MCP 服务器。如果你需要 HTTP MCP 服务器，请运行单独的适配器——或者，更常见的做法是使用 Hermes 的 MCP **客户端**侧，它已经同时支持 stdio 和 HTTP（`mcp_servers.yaml` / `config.yaml` 中的 `url` + `headers`；参见上方的 [HTTP 服务器](#http-servers)）。
-- 事件轮询间隔约 200ms，通过基于 mtime 优化的数据库轮询实现（文件未变化时跳过处理）
-- 暂不支持 `claude/channel` 推送通知协议
-- 仅支持纯文本发送（`messages_send` 不支持媒体/附件发送）
+它以前内置为 `hermes mcp serve`。配置了 `"args": ["mcp", "serve"]` 的 MCP 客户端需改为 `["mcp-serve"]`；工具名称和参数保持不变，`hermes mcp serve` 现在会提示新的写法和安装命令。工具列表、`--tools` 模式及其安全限制见[插件 README](https://github.com/NousResearch/hermes-official-plugins/tree/main/mcp-serve)。
 
 ## 相关文档
 
-- [在 Hermes 中使用 MCP](/guides/use-mcp-with-hermes)
-- [CLI 命令](/reference/cli-commands)
-- [斜杠命令](/reference/slash-commands)
-- [常见问题](/reference/faq)
+- [在 Hermes 中使用 MCP](../../guides/use-mcp-with-hermes.md)
+- [CLI 命令](../../reference/cli-commands.md)
+- [斜杠命令](../../reference/slash-commands.md)
+- [常见问题](../../reference/faq.md)

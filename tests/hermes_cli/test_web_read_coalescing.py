@@ -30,7 +30,7 @@ async def test_profiles_burst_leaves_threadpool_status_responsive(monkeypatch):
     release = threading.Event()
     calls = []
 
-    def slow_profiles():
+    def slow_profiles(**_kwargs):  # the router passes ``lazy_skill_count=True``
         calls.append(1)
         assert release.wait(3)
         return ["example"]

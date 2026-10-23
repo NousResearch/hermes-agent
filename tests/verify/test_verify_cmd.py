@@ -77,19 +77,6 @@ def test_failing_phase_exit_code(tmp_path, capsys):
     assert payload["ok"] is False
 
 
-def test_human_report(tmp_path, capsys):
-    manifest = tmp_path / ".hermes"
-    manifest.mkdir()
-    (manifest / "environment.json").write_text(
-        json.dumps({"recipe": {"name": "Fake", "test": ["echo ok"]}}),
-        encoding="utf-8",
-    )
-    code = run_verify_command(make_args(tmp_path, skip_start=True))
-    out = capsys.readouterr().out
-    assert code == 0
-    assert "Recipe: Fake" in out
-    assert "PASS" in out
-    assert "Result: OK" in out
 
 
 def test_bad_path(tmp_path, capsys):

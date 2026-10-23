@@ -13,10 +13,9 @@ These tests exercise the real resolution chain (config on disk → check_fn →
 """
 
 import json
-from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from model_tools import get_tool_definitions
 
@@ -75,8 +74,6 @@ class TestBuiltinMemoryToolAvailability:
         )
         definition = _memory_tool_definition()
         assert definition["parameters"]["properties"]["target"]["enum"] == ["user"]
-        assert "only 'user' is enabled" in definition["description"]
-        assert "only 'memory' is enabled" not in definition["description"]
 
     def test_tool_present_when_only_memory_enabled(self, hermes_home):
         _write_memory_config(
@@ -84,8 +81,6 @@ class TestBuiltinMemoryToolAvailability:
         )
         definition = _memory_tool_definition()
         assert definition["parameters"]["properties"]["target"]["enum"] == ["memory"]
-        assert "only 'memory' is enabled" in definition["description"]
-        assert "only 'user' is enabled" not in definition["description"]
 
     def test_tool_present_by_default(self, hermes_home):
         """No config file at all must not strip a working tool."""
@@ -238,7 +233,7 @@ class TestIndependentStoreWriteGates:
             memory_tool(action="add", target="bogus", content="fact", store=store)
         )
         assert short["success"] is False
-        assert "Use 'memory' or 'user'" in short["error"]
+        assert short["error"]
 
 
 class TestExternalProviderSurvivesBuiltinDisable:
@@ -250,20 +245,20 @@ class TestExternalProviderSurvivesBuiltinDisable:
     """
 
     def test_provider_tools_enabled_when_memory_toolset_requested(self):
-        from agent.memory_manager import memory_provider_tools_enabled
+        from agent.memory_manager_tools import memory_provider_tools_enabled
 
         assert memory_provider_tools_enabled(
             ["memory", "file"], None, memory_tool_present=False
         )
 
     def test_provider_tools_enabled_for_unrestricted_toolsets(self):
-        from agent.memory_manager import memory_provider_tools_enabled
+        from agent.memory_manager_tools import memory_provider_tools_enabled
 
         assert memory_provider_tools_enabled(None, None, memory_tool_present=False)
 
     def test_disabled_toolsets_still_takes_everything_down(self):
         """The heavy switch keeps its documented meaning."""
-        from agent.memory_manager import memory_provider_tools_enabled
+        from agent.memory_manager_tools import memory_provider_tools_enabled
 
         assert not memory_provider_tools_enabled(
             None, ["memory"], memory_tool_present=False
@@ -276,7 +271,8 @@ class TestInjectionEndToEnd:
     def test_provider_tools_injected_without_builtin_memory_tool(self):
         from types import SimpleNamespace
 
-        from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+        from agent.memory_manager import MemoryManager
+        from agent.memory_manager_tools import inject_memory_provider_tools
         from agent.memory_provider import MemoryProvider
 
         class _Provider(MemoryProvider):

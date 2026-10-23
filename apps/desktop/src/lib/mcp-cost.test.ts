@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { estimateServerTokens, mcpServerUsagePrefix, sanitizeMcpNameComponent, serverUsageCount } from './mcp-cost'
+import { estimateServerTokens, sanitizeMcpNameComponent, serverUsageCount } from './mcp-cost'
 
 describe('estimateServerTokens', () => {
   it('sums ceil(schema_chars / 4) over tools', () => {
@@ -46,10 +46,6 @@ describe('name mapping', () => {
     expect(sanitizeMcpNameComponent('github-mcp')).toBe('github_mcp')
     expect(sanitizeMcpNameComponent('a.b c/d')).toBe('a_b_c_d')
     expect(sanitizeMcpNameComponent('plain_ok9')).toBe('plain_ok9')
-  })
-
-  it('builds the mcp__<server>__ registry prefix', () => {
-    expect(mcpServerUsagePrefix('linear-app')).toBe('mcp__linear_app__')
   })
 })
 

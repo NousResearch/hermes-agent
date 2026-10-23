@@ -108,6 +108,44 @@ class TestFleetRestartTimeoutIsolation:
 
         assert seen == ["hermes-serve", "hermes-serve-work", "hermes-gateway"]
 
+    def test_hermes_dashboard_units_are_included(self):
+        # #125297 — the same blind spot for the systemd-supervised dashboard: the
+        # unit pass skipped hermes-dashboard*, so a successful update left the
+        # dashboard on pre-update code with outcome "deferred" and nothing
+        # restarted it. Reconciliation already credits hermes-dashboard{,-<profile>}
+        # unit restarts; the pass must produce one.
+        seen: list[str] = []
+
+        _for_each_systemd_gateway_unit(
+            "\n".join(
+                [
+                    "ssh.service loaded active running",
+                    "hermes-dashboard.service loaded active running",
+                    "hermes-dashboard-work.service loaded active running",
+                    "hermes-serve.service loaded active running",
+                    "",
+                ]
+            ),
+            process_unit=seen.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+        )
+
+        assert seen == ["hermes-dashboard", "hermes-dashboard-work", "hermes-serve"]
+
+    def test_hermes_dashboard_near_prefix_is_rejected(self):
+        # Same strict shape on the dashboard side: a bare
+        # ``startswith("hermes-dashboard")`` gate would also accept the
+        # unrelated ``hermes-dashboardd.service``.
+        seen: list[str] = []
+
+        _for_each_systemd_gateway_unit(
+            _list_units_stdout(["hermes-dashboardd", "hermes-dashboard-work"]),
+            process_unit=seen.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+        )
+
+        assert seen == ["hermes-dashboard-work"]
+
     def test_hermes_server_near_prefix_is_rejected(self):
         # Review on #83595: a bare ``startswith("hermes-serve")`` gate also
         # accepts the unrelated ``hermes-server.service``. Only the exact

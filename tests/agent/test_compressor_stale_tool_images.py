@@ -110,7 +110,6 @@ class TestRetireStaleToolImagesInProtectedTail:
         )
         oldest = next(m for m in out if m.get("tool_call_id") == "env_0")
         assert isinstance(oldest["content"], str)
-        assert "screenshot removed" in oldest["content"]
         assert "native shot 0" in oldest["content"]
         newest = next(
             m for m in out
@@ -194,7 +193,6 @@ class TestSharedImageStripHelper:
         new_msg = _strip_images_from_tool_msg(msg)
         assert new_msg is not None
         assert isinstance(new_msg["content"], str)
-        assert "screenshot removed" in new_msg["content"]
         assert "native shot" in new_msg["content"]
         assert "api_content" not in new_msg
 

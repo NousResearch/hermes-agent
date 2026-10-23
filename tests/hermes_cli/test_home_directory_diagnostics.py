@@ -7,7 +7,7 @@ import pytest
 from hermes_cli import config
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("subdir", (".", *config._HERMES_HOME_SUBDIRS))
 def test_unavailable_directory_links_are_diagnosed_without_creating_targets(tmp_path, monkeypatch, subdir):
     home = tmp_path / "hermes"
@@ -35,7 +35,7 @@ def test_unavailable_directory_links_are_diagnosed_without_creating_targets(tmp_
     assert str(home) in config._HERMES_HOME_ENSURED
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("linked", ("plain", "logs", "home"))
 def test_initialization_preserves_external_directory_modes(tmp_path, monkeypatch, linked):
     home = tmp_path / "hermes"
@@ -67,7 +67,7 @@ def test_initialization_preserves_external_directory_modes(tmp_path, monkeypatch
         assert (home / "logs").stat().st_mode & 0o777 == 0o700
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("existing", (False, True))
 def test_symlinked_parent_above_home_is_not_an_operator_home_link(
     tmp_path, monkeypatch, existing
@@ -104,7 +104,7 @@ def test_symlinked_parent_above_home_is_not_an_operator_home_link(
         assert mode == 0o700, f"{name} should be 0700, got 0o{mode:o}"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_aliased_parent_still_leaves_an_operator_home_link_alone(tmp_path, monkeypatch):
     """An operator-owned link at the home boundary keeps owning the mode, aliased parent or not."""
     real_root = tmp_path / "real"

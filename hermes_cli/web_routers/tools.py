@@ -6,7 +6,6 @@ monkeypatching on web_server stays authoritative.
 """
 
 import asyncio
-import shutil
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional
@@ -47,7 +46,7 @@ def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
     return _env_value(env_var).strip()
 
 
-def _terminal_backend_rows() -> List[Dict[str, str]]:
+def _terminal_backend_rows() -> list[dict[str, str]]:
     """Built-in picker rows plus plugin-registered backends, computed per request
     so a plugin installed after server start still shows up."""
     from hermes_cli.web_server_profiles import _TERMINAL_BACKENDS
@@ -55,25 +54,31 @@ def _terminal_backend_rows() -> List[Dict[str, str]]:
 
 
 def _probe_docker_backend(_cfg) -> tuple:
-    if not shutil.which("docker"):
-        return ("needs_setup", "Docker CLI not found — install Docker Desktop or docker-ce.")
+    """Health-check the docker terminal backend the same way the agent resolves it.
+
+    ``find_docker()`` honors ``HERMES_DOCKER_BINARY``, then ``docker`` / ``podman``
+    on PATH. The probe uses ``version`` (not ``info --format {{.ServerVersion}}``)
+    because Podman has no ServerVersion field and the agent already probes with
+    ``version``.
+    """
+    from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
+    from tools.environments.remote_common import run_capture
+
+    docker_exe = find_docker()
+    if not docker_exe:
+        return (
+            "needs_setup",
+            "Docker CLI not found — install Docker Desktop, docker-ce, or Podman.",
+        )
+    runtime = docker_runtime_name(docker_exe)
     try:
-        proc = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2)
-        if proc.returncode == 0:
+        if run_capture([docker_exe, "version"], timeout=2).returncode == 0:
             return ("ready", "")
-        return ("needs_setup", "Docker daemon not reachable — start Docker and retry.")
+        return ("needs_setup", f"{runtime} not reachable — {docker_runtime_start_hint(docker_exe)}.")
     except subprocess.TimeoutExpired:
-        return ("needs_setup", "Docker daemon not responding (timed out).")
+        return ("needs_setup", f"{runtime} not responding (timed out).")
     except Exception as exc:
-        return ("unavailable", f"Docker probe failed: {exc}")
-
-
-def _probe_singularity_backend(_cfg) -> tuple:
-    if shutil.which("singularity") or shutil.which("apptainer"):
-        return ("ready", "")
-    return ("needs_setup", "Neither singularity nor apptainer found on PATH.")
+        return ("unavailable", f"{runtime} probe failed: {exc}")
 
 
 def _probe_ssh_backend(terminal_cfg: dict) -> tuple:
@@ -113,7 +118,6 @@ def _probe_daytona_backend(_cfg) -> tuple:
 _BACKEND_PROBES = {
     "local": lambda _cfg: ("ready", ""),
     "docker": _probe_docker_backend,
-    "singularity": _probe_singularity_backend,
     "ssh": _probe_ssh_backend,
     "modal": _probe_modal_backend,
     "daytona": _probe_daytona_backend,
@@ -191,7 +195,8 @@ def _find_toolset_provider_row(
 
 
 def _require_known_toolset(name: str) -> None:
-    """400 for toolset keys outside the effective configurable set."""
+    """400 for toolset keys outside the effective configurable set. Call it inside the target
+    profile's scope, like ``GET /api/tools/toolsets``: plugin toolsets are registered per profile."""
     from hermes_cli.tools_config import _get_effective_configurable_toolsets
 
     if name not in {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}:
@@ -274,12 +279,12 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
         _CONFIG_ONLY_TOOLSETS, _get_platform_tools, _save_platform_tools,
         _toolset_configuration_platform)
 
-    _require_known_toolset(name)
     target_platform = _toolset_configuration_platform(name)
     scope_profile = body.profile or profile
 
     def _run():
         with config_write_scope(scope_profile):
+            _require_known_toolset(name)
             config = load_config()
             if name in _CONFIG_ONLY_TOOLSETS:
                 # Config-only capabilities (stt) toggle their own section's
@@ -340,10 +345,9 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
     from hermes_cli.config import get_env_value
     from hermes_cli.nous_subscription import get_nous_subscription_features
 
-    _require_known_toolset(name)
-
     def _read():
         with _profile_scope(profile):
+            _require_known_toolset(name)
             config = load_config()
             cat = TOOL_CATEGORIES.get(name)
             providers = []
@@ -370,6 +374,9 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                         "env_vars": env_vars,
                         "post_setup": prov.get("post_setup"),
                         "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+                        # Set on the "Nous Subscription" rows: the GUI tells the gateway row apart
+                        # from a BYOK row of the same vendor (both carry web_backend "firecrawl").
+                        "managed_nous_feature": prov.get("managed_nous_feature"),
                         "is_active": is_active,
                         # Server-side readiness: zero-env-var rows are NOT
                         # automatically ready (logged-out Nous rows, never-run
@@ -390,17 +397,25 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                 "name": name, "has_category": cat is not None, "providers": providers,
                 "active_provider": active_provider}
             if name == "web":
-                # Resolve active backends exactly as the web_search/web_extract
-                # dispatchers do, so badges reflect what a call would hit now.
+                # Resolve active backends exactly as the web_search/web_extract dispatchers do, so badges
+                # reflect what a call would hit now — plus whether that call rides the Nous Tool Gateway
+                # or the user's own key (the managed and BYOK Firecrawl rows share one backend name).
                 try:
-                    from tools.web_tools import _get_extract_backend, _get_search_backend
+                    from plugins.web.firecrawl.provider import is_managed_route
+                    from tools.web_tools import _get_extract_backend, _get_search_backend, _managed_web_search
 
                     search_backend = _get_search_backend()
                     extract_backend = _get_extract_backend()
+                    search_managed = _managed_web_search() or (
+                        search_backend == "firecrawl" and is_managed_route("search"))
+                    extract_managed = extract_backend == "firecrawl" and is_managed_route("extract")
                 except Exception:
                     search_backend = extract_backend = None
+                    search_managed = extract_managed = False
                 payload["active_search_backend"] = search_backend
                 payload["active_extract_backend"] = extract_backend
+                payload["search_via_nous"] = bool(search_managed)
+                payload["extract_via_nous"] = bool(extract_managed)
         return payload
 
     return await asyncio.to_thread(_read)
@@ -494,8 +509,6 @@ async def select_toolset_provider(
     from hermes_cli.nous_subscription import (
         MANAGED_FEATURE_COVERAGE_CATEGORY, get_nous_subscription_features)
 
-    _require_known_toolset(name)
-
     if body.capability is not None:
         if name != "web":
             raise _bad_request("capability selection is only supported for the web toolset")
@@ -509,6 +522,7 @@ async def select_toolset_provider(
 
     def _run():
         with _profile_scope(body.profile or profile):
+            _require_known_toolset(name)
             with _CONFIG_MUTATION_LOCK:
                 config = load_config()
                 if body.capability is not None:
@@ -524,14 +538,19 @@ async def select_toolset_provider(
                         raise _bad_request(f"Provider {body.provider!r} has no web backend key")
                     if body.capability not in web_provider_capabilities(backend):
                         raise _bad_request(f"{body.provider} does not support {body.capability}")
-                    _dict_section(config, "web")[f"{body.capability}_backend"] = backend
+                    # The managed row's web_backend names the vendor serving it ("firecrawl"); writing that
+                    # would read as the user's OWN Firecrawl key. Its pin is "nous" (gateway route).
+                    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
+                    _dict_section(config, "web")[f"{body.capability}_backend"] = (
+                        NOUS_MANAGED_PROVIDER if prov.get("managed_nous_feature") else backend)
                 else:
                     try:
                         apply_provider_selection(name, body.provider, config)
                     except KeyError as exc:
                         raise _bad_request(str(exc).strip('"'))
                 save_config(config)
-                response: Dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
+                response: dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
                 if body.capability is not None:
                     response["capability"] = body.capability
 
@@ -566,10 +585,9 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
     can't write arbitrary env vars; a blank value means "leave unchanged"."""
     from hermes_cli.config import get_env_value, save_env_value
 
-    _require_known_toolset(name)
-
     def _run():
         with _profile_scope(body.profile or profile):
+            _require_known_toolset(name)
             config = load_config()
             allowed: set[str] = {
                 e["key"]
@@ -581,8 +599,8 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
                 raise _bad_request(
                     f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}")
 
-            saved: List[str] = []
-            skipped: List[str] = []
+            saved: list[str] = []
+            skipped: list[str] = []
             for key, value in body.env.items():
                 if value and value.strip():
                     try:
@@ -608,12 +626,17 @@ async def run_toolset_post_setup(
     ``profile`` is threaded so hooks see the drawer's HERMES_HOME."""
     from hermes_cli.tools_config import valid_post_setup_keys
 
-    _require_known_toolset(name)
-    if body.key not in valid_post_setup_keys():
-        raise _bad_request(f"Unknown post-setup key: {body.key}")
+    scope_profile = body.profile or profile
 
+    def _validate():
+        # Plugin toolsets and plugin providers' post-setup keys are both per profile.
+        _require_known_toolset(name)
+        if body.key not in valid_post_setup_keys():
+            raise _bad_request(f"Unknown post-setup key: {body.key}")
+
+    await scoped_to_thread(scope_profile, _validate)
     result = spawn_profile_action(
-        body.profile or profile, ["tools", "post-setup", body.key], "tools-post-setup",
+        scope_profile, ["tools", "post-setup", body.key], "tools-post-setup",
         log_msg="Failed to spawn tools post-setup", prefix="Failed to run post-setup")
     result["key"] = body.key
     return result
@@ -650,16 +673,18 @@ async def get_terminal_backends(profile: Optional[str] = None):
 async def select_terminal_backend(
     body: TerminalBackendSelect, profile: Optional[str] = None):
     """Persist ``terminal.backend``.  A backend that still needs setup is
-    allowed — the picker shows guidance instead of blocking, like the CLI."""
+    allowed — the picker shows guidance instead of blocking, like the CLI.
+    Validated inside the target profile's scope, like the GET: plugin backends
+    are registered per profile."""
     backend = (body.backend or "").strip().lower()
-    valid_names = {row["name"] for row in _terminal_backend_rows()}
-    if backend not in valid_names:
-        raise _bad_request(
-            f"Unknown terminal backend: {body.backend!r}. "
-            f"Use one of: {', '.join(sorted(valid_names))}")
 
     def _run():
         with config_write_scope(body.profile or profile):
+            valid_names = {row["name"] for row in _terminal_backend_rows()}
+            if backend not in valid_names:
+                raise _bad_request(
+                    f"Unknown terminal backend: {body.backend!r}. "
+                    f"Use one of: {', '.join(sorted(valid_names))}")
             config = load_config()
             _dict_section(config, "terminal")["backend"] = backend
             save_config(config)
@@ -688,26 +713,3 @@ async def grant_computer_use_permissions(profile: Optional[str] = None):
         profile, ["computer-use", "permissions", "grant"], "computer-use-grant",
         log_msg="Failed to spawn computer-use permissions grant",
         prefix="Failed to request permissions")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import logging  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'LateState': ('hermes_cli.web_deps', 'LateState'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -8,6 +8,7 @@ sibling's loop that never hears anything again.
 """
 
 import asyncio
+import logging
 import sys
 import threading
 import types
@@ -27,6 +28,12 @@ def _inject_fake_lark_module(monkeypatch, connect=None):
     client_mod = types.ModuleType("lark_oapi.ws.client")
     client_mod.loop = SimpleNamespace(name="sdk-default-loop")
     client_mod.websockets = SimpleNamespace(connect=connect)
+
+    class Client:  # the SDK class whose receive loop the isolation shim wraps
+        async def _receive_message_loop(self):
+            await asyncio.sleep(3600)
+
+    client_mod.Client = Client
     lark.ws = lark_ws
     lark_ws.client = client_mod
     monkeypatch.setitem(sys.modules, "lark_oapi", lark)
@@ -38,6 +45,7 @@ def _inject_fake_lark_module(monkeypatch, connect=None):
 
 def _adapter_stub(**overrides):
     stub = SimpleNamespace(
+        _loop=None,
         _ws_thread_loop=None,
         _ws_reconnect_nonce=None,
         _ws_reconnect_interval=None,
@@ -95,6 +103,171 @@ def test_two_concurrent_clients_each_use_their_own_loop_and_overrides(monkeypatc
     assert getattr(feishu_adapter._ws_isolation_state, "connect_kwargs", None) is None
 
 
+def test_dead_receive_loop_unparks_start_and_exits_the_thread(monkeypatch, caplog):
+    """#113662: with the SDK's reconnect ladder disabled, a receive-loop death
+    used to strand ``start()`` in ``run_until_complete(_select())`` forever —
+    the thread stayed alive on a deaf socket and the supervisor's executor
+    future never completed. The isolation wrap must stop the worker loop so
+    ``start()`` raises and the thread exits for the supervisor to rebuild."""
+    client_mod = _inject_fake_lark_module(monkeypatch)
+
+    class FakeSDKClient:
+        def __init__(self):
+            self._auto_reconnect = False
+
+        async def _receive_message_loop(self):
+            # Mirror lark_oapi 1.6.8: bare raise out of an unawaited create_task
+            # (reconnect ladder disabled, or its ClientException re-raise).
+            await asyncio.sleep(0.01)
+            raise ConnectionError("simulated half-open peer")
+
+        def start(self):
+            loop = client_mod.loop
+
+            async def _select():  # the SDK's forever-parked select loop
+                while True:
+                    await asyncio.sleep(3600)
+
+            loop.create_task(self._receive_message_loop())
+            loop.run_until_complete(_select())
+
+    client_mod.Client = FakeSDKClient
+    stub = _adapter_stub()
+
+    def run():
+        feishu_adapter._run_official_feishu_ws_client(FakeSDKClient(), stub)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    # On main the thread parks inside start() forever and this assert fails.
+    assert not thread.is_alive()
+    # The executor future completes: _run_official_feishu_ws_client ran its
+    # full teardown, which is what _supervise_websocket_thread awaits.
+    assert stub._ws_thread_loop is None
+    # The root cause is logged (with traceback) next to the supervisor's
+    # rebuild line instead of dying unretrieved in the SDK's bare create_task.
+    deaths = [r for r in caplog.records if "receive loop died" in r.getMessage()]
+    assert deaths, "expected the receive-loop death to be logged"
+    assert deaths[0].exc_info is not None
+    assert "simulated half-open peer" in caplog.text
+
+
+def test_receive_loop_death_during_disconnect_is_not_an_error(monkeypatch, caplog):
+    """``disconnect()`` clears ``_running`` and sends the CLOSE frame itself, so the
+    receive loop ending with ``ConnectionClosedOK`` is the expected shutdown path —
+    it must not be reported as a died link (ERROR + traceback) on every graceful stop."""
+    client_mod = _inject_fake_lark_module(monkeypatch)
+
+    class FakeSDKClient:
+        async def _receive_message_loop(self):
+            await asyncio.sleep(0.01)
+            raise ConnectionError("sent 1000 (OK); then received 1000 (OK)")
+
+        def start(self):
+            loop = client_mod.loop
+
+            async def _select():
+                while True:
+                    await asyncio.sleep(3600)
+
+            loop.create_task(self._receive_message_loop())
+            loop.run_until_complete(_select())
+
+    client_mod.Client = FakeSDKClient
+    stub = _adapter_stub(_running=False)  # disconnect() already flipped it
+
+    thread = threading.Thread(
+        target=lambda: feishu_adapter._run_official_feishu_ws_client(FakeSDKClient(), stub), daemon=True
+    )
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR and "receive loop" in r.getMessage()]
+    assert errors == [], [r.getMessage() for r in errors]
+
+
+def test_receive_loop_normal_return_keeps_start_parked(monkeypatch):
+    """The exit-notify wrap must only fire on an exception. When the SDK's own
+    reconnect ladder succeeds, the old receive loop *returns* (a fresh one was
+    scheduled by ``_connect``) — stopping the loop there would tear down the
+    healthy rebuilt link on every transient blip."""
+    client_mod = _inject_fake_lark_module(monkeypatch)
+    returned = threading.Event()
+    loop_holder = {}
+
+    class FakeSDKClient:
+        async def _receive_message_loop(self):
+            await asyncio.sleep(0.01)
+            returned.set()  # ladder reconnected: coroutine returns normally
+
+        def start(self):
+            loop = client_mod.loop
+            # Resolve the real worker loop from inside the thread (the module
+            # global is a thread-local proxy that falls back off-thread).
+            loop_holder["loop"] = asyncio.get_event_loop()
+
+            async def _select():
+                while True:
+                    await asyncio.sleep(3600)
+
+            loop.create_task(self._receive_message_loop())
+            loop.run_until_complete(_select())
+
+    client_mod.Client = FakeSDKClient
+    stub = _adapter_stub()
+
+    def run():
+        feishu_adapter._run_official_feishu_ws_client(FakeSDKClient(), stub)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert returned.wait(timeout=10)
+    thread.join(timeout=0.5)
+    assert thread.is_alive()  # start() stays parked on the rebuilt link
+    # Clean teardown for the test process: stop the worker loop from this
+    # (foreign) thread, then let the thread's own finally block close it out.
+    loop_holder["loop"].call_soon_threadsafe(loop_holder["loop"].stop)
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+
+def test_sdk_reconnect_ladder_publishes_retrying(monkeypatch):
+    """#113662, live path: with ``_auto_reconnect`` on, a receive-loop error runs
+    the SDK's own ``_reconnect()`` ladder inside the WS thread — the thread does
+    not die, so the supervisor never publishes ``retrying``. The SDK's
+    ``on_reconnecting`` observer must hop to the adapter loop and publish it."""
+    _inject_fake_lark_module(monkeypatch)
+    adapter_loop = asyncio.new_event_loop()
+
+    class FakeSDKClient:
+        def __init__(self):
+            self.on_reconnecting = lambda: None  # SDK default: no-op observer
+
+        def start(self):
+            self.on_reconnecting()  # what lark_oapi ``_reconnect()`` fires first
+
+    client = FakeSDKClient()
+    stub = _adapter_stub(_loop=adapter_loop, _running=True, _ws_client=client, status_writes=[])
+    stub._write_runtime_status_safe = lambda context, **kw: stub.status_writes.append(kw["platform_state"])
+    stub._ws_link_retrying = types.MethodType(feishu_adapter.FeishuAdapter._ws_link_retrying, stub)
+
+    thread = threading.Thread(target=feishu_adapter._run_official_feishu_ws_client, args=(client, stub), daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    async def drain():
+        for _ in range(100):
+            if stub.status_writes:
+                break
+            await asyncio.sleep(0.01)
+
+    adapter_loop.run_until_complete(drain())
+    adapter_loop.close()
+    assert stub.status_writes == ["retrying"]
+
+
 def _supervisor_stub():
     stub = SimpleNamespace(
         _running=True,
@@ -103,7 +276,9 @@ def _supervisor_stub():
         _ws_restart_backoff=0.01,
         connect_calls=0,
         connect_should_fail=0,
+        status_writes=[],
     )
+    stub._write_runtime_status_safe = lambda context, **kw: stub.status_writes.append(kw["platform_state"])
 
     async def _connect_websocket():
         stub.connect_calls += 1
@@ -142,9 +317,12 @@ def test_supervisor_restarts_a_dead_ws_thread_with_backoff():
             await task
         except asyncio.CancelledError:
             pass
-        return stub.connect_calls
+        return stub
 
-    assert asyncio.run(scenario()) == 2  # failed restart, then a successful one
+    stub = asyncio.run(scenario())
+    assert stub.connect_calls == 2  # failed restart, then a successful one
+    # The lost link is published as ``retrying`` (``connected`` is re-stamped by ``_ws_link_up``).
+    assert stub.status_writes[0] == "retrying"
 
 
 def test_supervisor_stops_when_disconnect_nils_the_client():

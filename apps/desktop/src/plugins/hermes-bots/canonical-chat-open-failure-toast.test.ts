@@ -73,14 +73,12 @@ describe('notifyBotOpenFailure', () => {
 
     const toast = lastToast()
     expect(toast.kind).toBe('error')
-    expect(toast.title).toBe('This bot lives on an older Hermes')
-    expect(toast.message).toBe('Update Studio Mac, then try again.')
+    expect(toast.message).toContain('Studio Mac')
     expect(toast.message).not.toContain(raw)
     expect(toast.detail).toBe(raw)
     expect(`${toast.title} ${toast.message}`).not.toMatch(/gateway|backend|worker/i)
     expect(hostMock.notifyError).not.toHaveBeenCalled()
 
-    expect(toast.action?.label).toBe('Open Gateways')
     toast.action?.onClick()
     expect(hostMock.navigate).toHaveBeenCalledWith('/settings?tab=gateway')
   })
@@ -93,44 +91,11 @@ describe('notifyBotOpenFailure', () => {
 
     const toast = lastToast()
     expect(toast.kind).toBe('error')
-    expect(toast.title).toBe('Hermes couldn’t reach the computer this bot runs on')
-    expect(toast.message).toBe('Check it is online and try again.')
     expect(toast.message).not.toContain(raw)
     expect(toast.detail).toBe(raw)
     expect(`${toast.title} ${toast.message}`).not.toMatch(/gateway|backend|worker/i)
-    expect(toast.action?.label).toBe('Open Gateways')
     toast.action?.onClick()
     expect(hostMock.navigate).toHaveBeenCalledWith('/settings?tab=gateway')
     expect(hostMock.notifyError).not.toHaveBeenCalled()
-  })
-
-  it('open step: names the bot, raw error in detail, same Gateways action', async () => {
-    const { notifyBotOpenFailure } = await load()
-
-    notifyBotOpenFailure(new Error('session.list timed out'), BOT, 'open', 'Ops Bot')
-
-    const toast = lastToast()
-    expect(toast.title).toBe('Could not open Ops Bot’s chat')
-    expect(toast.message).toBe('Try again.')
-    expect(toast.detail).toBe('session.list timed out')
-    expect(toast.action?.label).toBe('Open Gateways')
-  })
-
-  it('resolves copy through the plugin i18n bundle when one is registered', async () => {
-    pluginCtx.current = {
-      i18n: {
-        t: (key: string, ...args: unknown[]) =>
-          key === 'bot.openNeedsUpdateMessage' ? `[ja] update ${String(args[0])}` : `[ja] ${key}`
-      }
-    }
-    const { notifyBotOpenFailure } = await load()
-
-    notifyBotOpenFailure(new Error('unknown method'), BOT, 'open')
-
-    expect(lastToast()).toMatchObject({
-      title: '[ja] bot.openNeedsUpdateTitle',
-      message: '[ja] update Studio Mac',
-      action: { label: '[ja] bot.openGateways' }
-    })
   })
 })

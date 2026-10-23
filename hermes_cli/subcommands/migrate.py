@@ -29,8 +29,7 @@ def build_migrate_parser(subparsers) -> None:
 
     migrate_relay = migrate_subparsers.add_parser(
         "relay", help="Convert legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* exporter vars into relay-plugins.toml",
-        description="The NeMo Relay cutover stopped reading the legacy exporter variables; a .env that still "
-            "carries them (and no HERMES_NEMO_RELAY_PLUGINS_TOML) exports nothing. Generate "
+        description="The NeMo Relay cutover stopped reading the legacy exporter variables. Generate "
             "<hermes home>/relay-plugins.toml from them, point HERMES_NEMO_RELAY_PLUGINS_TOML at it, "
             "and comment the legacy lines out. `hermes update` runs this for every profile automatically.")
     migrate_relay.add_argument(

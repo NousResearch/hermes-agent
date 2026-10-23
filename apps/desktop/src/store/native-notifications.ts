@@ -1,9 +1,12 @@
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { persistString, storedString } from '@/lib/storage'
 
+import { recordFeatureToggle } from './desktop-metrics'
 import { $gateway } from './gateway'
+import { $hapticsMuted } from './haptics'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import {
   answerApproval,
@@ -13,7 +16,7 @@ import {
   sessionApprovalRequests
 } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
-import { $activeSessionId } from './session'
+import { $activeSessionId, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
 import { storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
@@ -92,11 +95,13 @@ function writePrefs(next: NativeNotificationPrefs) {
 }
 
 export function setNativeNotifyEnabled(enabled: boolean) {
+  recordFeatureToggle('native_notifications', $nativeNotifyPrefs.get().enabled, enabled)
   writePrefs({ ...$nativeNotifyPrefs.get(), enabled })
 }
 
 export function setNativeNotifyKind(kind: NativeNotificationKind, on: boolean) {
   const prev = $nativeNotifyPrefs.get()
+  recordFeatureToggle('notification_kind', prev.kinds[kind], on)
   writePrefs({ ...prev, kinds: { ...prev.kinds, [kind]: on } })
 }
 
@@ -153,6 +158,29 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
   // Completion kinds: only the active session, only while away — so a busy
   // gateway (messaging, kanban, cron) can't spam a toast per background session.
   return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
+}
+
+/** Last-resort label for a session the renderer has no row for (yet): the id
+ *  tail still tells three parked approvals apart. */
+const shortSessionId = (id: string) => `#${id.slice(-6)}`
+
+/** Blocking prompts name their session in the title ("Approval needed — Fix the
+ *  flaky test") so parallel parked approvals stay tellable apart; the caller's
+ *  `title` stays the bare fallback for a prompt with no session. */
+const NAMED_TITLE_KEYS: Partial<Record<NativeNotificationKind, string>> = {
+  approval: 'notifications.native.approvalTitleNamed',
+  input: 'notifications.native.inputTitleNamed'
+}
+
+/** Sidebar naming order (title → preview → short id) via the locale's
+ *  named-title template; the runtime id the caller already passes is the whole
+ *  hint needed. */
+function withSessionLabel(namedKey: string, runtimeSessionId: string): string {
+  const storedId = storedSessionIdForRuntimeId(runtimeSessionId) ?? runtimeSessionId
+  const row = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedId))
+  const name = row?.title?.trim() || row?.preview?.trim() || shortSessionId(storedId)
+
+  return translateNow(namedKey, name.length > 80 ? `${name.slice(0, 80).trimEnd()}…` : name)
 }
 
 export interface NativeNotificationAction {
@@ -214,6 +242,9 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     return false
   }
 
+  const namedKey = input.sessionId ? NAMED_TITLE_KEYS[input.kind] : undefined
+  const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
+
   void window.hermesDesktop?.notify({
     actions: input.actions,
     activate: input.activate,
@@ -223,9 +254,10 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     kind: input.kind,
     notifyId: input.notifyId,
     sessionId: input.sessionId ?? undefined,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: input.tag,
-    title: input.title
+    title
   })
 
   return true
@@ -331,7 +363,8 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
     icon: input.icon,
     kind: 'plugin',
     notifyId,
-    silent: input.silent,
+    // The app-sounds mute also silences OS notification sounds.
+    silent: $hapticsMuted.get() || input.silent,
     tag: pluginId,
     title: input.title
   })

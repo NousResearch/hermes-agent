@@ -105,11 +105,11 @@ lm_eval --model hf \
 **Step 3: Run evaluation**
 
 ```bash
-# Full MMLU evaluation (57 subjects)
+# Full MMLU evaluation (57 subjects), standard 5-shot evaluation
 lm_eval --model hf \
   --model_args pretrained=meta-llama/Llama-2-7b-hf \
   --tasks mmlu \
-  --num_fewshot 5 \  # 5-shot evaluation (standard)
+  --num_fewshot 5 \
   --batch_size 8 \
   --output_path results/ \
   --log_samples  # Save individual predictions
@@ -168,16 +168,17 @@ Training Progress Tracking:
 Evaluate every N training steps:
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # eval_checkpoint.sh
 
 CHECKPOINT_DIR=$1
 STEP=$2
 
+# 0-shot for speed
 lm_eval --model hf \
   --model_args pretrained=$CHECKPOINT_DIR/checkpoint-$STEP \
   --tasks gsm8k,hellaswag \
-  --num_fewshot 0 \  # 0-shot for speed
+  --num_fewshot 0 \
   --batch_size 16 \
   --output_path results/step-$STEP.json
 ```
@@ -272,7 +273,7 @@ microsoft/phi-2
 **Step 2: Run evaluations**
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # eval_all_models.sh
 
 TASKS="mmlu,gsm8k,hellaswag,truthfulqa"

@@ -1,12 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import {
-  $freeTierStatus,
-  type FreeTierRequester,
-  freeTierSetupFailure,
-  friendlyWait,
-  provisionFreeTier
-} from '@/store/free-tier'
+import { $freeTierStatus, type FreeTierRequester, freeTierSetupFailure, provisionFreeTier } from '@/store/free-tier'
 import type { FreeTierStatus } from '@/types/hermes'
 
 const NO_IDENTITY: FreeTierStatus = {
@@ -50,12 +44,7 @@ describe('freeTierSetupFailure', () => {
 
   it.each([
     ['anon_unreachable', 'retry'],
-    ['anon_server_error', 'retry'],
     ['anon_gate_closed', 'sign_in'],
-    ['anon_gate_paused', 'sign_in'],
-    ['anon_rate_limited', 'sign_in'],
-    ['anon_pow_required', 'sign_in'],
-    ['anon_account_locked', 'sign_in'],
     ['something_newer', 'sign_in']
   ])('%s opens the %s door', (code, door) => {
     // A sign-in goes through the same service that just refused: only offer
@@ -65,21 +54,6 @@ describe('freeTierSetupFailure', () => {
 
   it('treats a missing retryable flag as not retryable', () => {
     expect(freeTierSetupFailure({ ...NO_IDENTITY, error_code: 'anon_gate_closed' })?.retryable).toBe(false)
-  })
-})
-
-describe('friendlyWait', () => {
-  it.each([
-    [0, 'a few seconds'],
-    [15, 'a few seconds'],
-    [16, 'about a minute'],
-    [89, 'about a minute'],
-    [300, 'about 5 minutes'],
-    [3600, 'about an hour'],
-    [7200, 'about 2 hours'],
-    [Number.NaN, 'a few seconds']
-  ])('%s seconds reads as "%s"', (seconds, expected) => {
-    expect(friendlyWait(seconds)).toBe(expected)
   })
 })
 

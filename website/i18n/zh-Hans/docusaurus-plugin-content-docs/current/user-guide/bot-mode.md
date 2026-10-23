@@ -50,7 +50,7 @@ Bot 模式**内置于[桌面应用](./desktop)**中，**默认开启**——无�
 - **模型与 provider 锁定**——为 Bot 指定专属模型。Hermes 支持的任意 provider/model 组合都可以使用，不同的 Bot 可以并排运行在不同的模型上。留空则继承自启动 profile。
 - **自定义 SOUL.md**——Bot 的人格与常驻指令。
 - **按技能、按工具集、按 MCP 服务器逐项启用**——精确勾选这个专精 Bot 需要的能力。
-- **共享密钥**——默认情况下，新 Bot 与主 profile 共用一个 OAuth/token 池，这样凭据刷新不会互相失效。（较旧的 gateway 会改为复制凭据——依然可用，只是分叉了。）
+- **从主 profile 复制 API 密钥**——默认开启。每个 Bot 都拥有自己的凭据存储：静态 API 密钥会被复制进来，而一次性 OAuth 登录（Anthropic、OpenAI Codex、xAI）不会被复制——请用 `hermes -p <name> auth add <provider>` 在 Bot 内登录。详见[每个 profile 各自拥有凭据](./profiles.md)。
 
 ### 选择它运行在哪台机器上（"Create on"）
 
@@ -114,7 +114,7 @@ Routines 本质上就是命名空间为 `[bot:<name>] <routine>` 的普通 [Herm
 - **不是每个 Bot 都会回复每一条消息。** 是否发言由每个成员自己决定——一个 Bot 只有在有新内容可补充时才会回复，否则就跳过；@提及特定成员会把这一轮范围限定到他们身上。你可以预期被 @提及 的成员（或任何有话要说的成员）会发言，其余的保持安静。
 - **关闭 Desktop 后房间仍会继续运行。** 当一个房间的所有成员都位于同一个 gateway 上时，该 gateway 会通过一个持久的驱动器来负责轮次调度：关闭 Hermes Desktop（或失去它的连接）不会让讨论中途停止，Desktop 重新连接时只需从房间日志中补上进度即可。适用这种情况时，gateway 上的 `groups.capabilities` 会报告 `driver: true`。成员跨多台机器的房间则不同：每个成员的轮次运行在它自己的 gateway 上，*Bot 之间的消息*一节中描述的跨连接信使机制仍然适用于它们。
 - **房间可以跨越多台机器。** New Group Chat 选择器可以从任意已注册的连接中挑选 Bot；每个成员的发言都运行在它自己的机器上，在它自己那台机器的房间会话里。跨机器的成员在房间和其他成员的对话记录中都带有设备徽标（`dixie · Mac Mini`），消除歧义的 `@name-device` handle 在房间提及中同样有效——因此两台机器上同名的 agent 永远不会混淆。
-- **插件可以观察成员的工作。** 持久的房间日志会记录 `turn.started` 和 `turn.settled`；成员在这两者之间做的事情（工具、审批、流式文本）会通过 [`on_room_member_activity`](/user-guide/features/hooks#on_room_member_activity) 钩子投射给插件，并附带房间、成员和轮次坐标，因此社区客户端无需读取 Hermes 内部实现，就能在 Group Chat 之上构建工具卡片和实时成员状态。
+- **插件可以观察成员的工作。** 持久的房间日志会记录 `turn.started` 和 `turn.settled`；成员在这两者之间做的事情（工具、审批、流式文本）会通过 [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) 钩子投射给插件，并附带房间、成员和轮次坐标，因此社区客户端无需读取 Hermes 内部实现，就能在 Group Chat 之上构建工具卡片和实时成员状态。
 
 ## Bot 之间的消息
 
@@ -166,9 +166,9 @@ Bot 间投递是按次调用的：接收方 Bot 会在它下一次运行时取�
 ```bash
 hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
 hermes peer list
-hermes peer dm spark < /tmp/dm.txt        # 消息内容来自一个文件(不经过 shell 解释)
-hermes peer dm spark/researcher < /tmp/dm.txt   # 多路复用 peer 上的指定 profile
-hermes peer run spark --idempotency-key ticket-123 < /tmp/long-task.txt
+hermes peer dm spark < ~/.hermes/cache/scratch/dm.txt        # 消息内容来自一个文件(不经过 shell 解释)
+hermes peer dm spark/researcher < ~/.hermes/cache/scratch/dm.txt   # 多路复用 peer 上的指定 profile
+hermes peer run spark --idempotency-key ticket-123 < ~/.hermes/cache/scratch/long-task.txt
 hermes peer status spark run_abc123
 hermes peer stop spark run_abc123
 ```
@@ -220,11 +220,13 @@ hermes peer stop spark run_abc123
 
 完整的多连接指南请参阅[将 Desktop 连接到多个 Hermes 实例](./multi-connection-desktop)。
 
-## Warm Bot Backends（同时运行多少个 Bot）
+## 本地 Bot 与 gateway（同时运行多少个 Bot）
 
-每个本地 Bot 都运行在自己的后端进程中，Desktop 最多同时保留 **设置 → Advanced → Warm Bot Backends** 个后端存活（默认 3 个，每个约 60 MB）。空闲的后端会在该设置旁边的空闲超时（默认 10 分钟）后被回收；`desktop.log` 中紧跟空闲回收消息之后出现的 `Hermes backend for profile "<name>" exited (1)` 一行就是这次清理，而不是崩溃。当所有槽位都被占用时，你打开的 Bot 会最多等待 30 秒以获得一个槽位，然后以 *timed out waiting for a free local slot* 失败。
+Desktop 不会为每个 Bot 运行一个后端。每台主机只有一个 gateway 进程，负责所有本地 profile 的会话：当你打开一个本地 Bot 时，Desktop 会为该 profile 运行 `hermes gateway ensure --json`，它会附加到正在运行的 gateway；如果还没有进程服务该 profile，就启动它。随后 Desktop 通过 WebSocket（`/api/ws`）使用一次性 ticket 连接它。Desktop 端没有后端池，没有“同时保持多少个 Bot 预热”的设置，也没有空闲回收——打开另一个 Bot 从不需要等待槽位，读取另一个 Bot 的历史也只是向同一个 gateway 发一个请求。
 
-读取另一个 Bot 的聊天历史以及后台的记录刷新**不会**占用槽位——只有交互式打开或正在运行的轮次才会。如果你在驾驭一支庞大的队伍（成员众多的群聊，或跨多个 profile 的 Kanban 派发），请把 Warm Bot Backends 调高到你预期同时活跃的 Bot 数量，并为机器配备相应的内存。把它设得比你实际使用的 profile 数量还高，只会增加启动开销。
+gateway 的生命周期与 Desktop 窗口无关。关闭窗口或退出 Desktop 只会丢弃连接，绝不会停止 gateway，因此你的消息平台 bot、Routines 和进行中的轮次都会继续运行，Desktop 下次打开时会重新附加。要停止它，请显式运行 `hermes gateway stop`。如果 gateway 在 Desktop 运行期间重启（更新、崩溃，或 `hermes gateway stop` 之后再次打开），Desktop 会重新运行一次 `gateway ensure` 并重新连接。标记为 `gateway.standalone: true` 的 profile 会保留自己的 gateway；Desktop 以同样方式附加到它。
+
+**设置 → Connections** 中的远程 gateway、SSH 主机和 Hermes Cloud 实例是独立的主机，拥有各自的进程；它们的 Bot 运行在那台机器上（参见上文*跨机器的 Bot*），而不是本机的 gateway 上。
 
 ## 关闭它
 

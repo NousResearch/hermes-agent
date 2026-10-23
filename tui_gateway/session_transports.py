@@ -35,6 +35,48 @@ def _session_has_live_transport(session: dict | None, *, excluding=None) -> bool
     return any(peer is not excluding for peer in _session_live_transports(session))
 
 
+def _transport_auth_user_id(transport) -> str | None:
+    """``<provider>:<user id>`` the WS-upgrade credential authenticated for ``transport``, or None for the legacy
+    token, stdio and the PTY child's server-internal credential. The prefix keeps a basic-auth ``alice`` and an
+    OIDC ``alice`` apart."""
+    from gateway.session_identity import is_authenticated_identity
+    identity = getattr(transport, "auth_identity", None)
+    if is_authenticated_identity(identity):
+        return f"{str(identity['provider']).strip()}:{str(identity['user_id']).strip()}"
+    return None
+
+
+def _session_auth_user_id(session: dict | None) -> str | None:
+    """The login ``session`` was created under, stamped on the record as ``auth_user_id``. A second window turns
+    the transport slot into a FanoutTransport, which names no login, so only a record without the slot reads
+    its transport."""
+    session = session or {}
+    if "auth_user_id" in session:
+        return session["auth_user_id"]
+    return _transport_auth_user_id(session.get("transport"))
+
+
+def _session_client_answers_requests(sid: str) -> bool:
+    """Whether a server→client request for *sid* can be answered: False only when every live WebSocket
+    client attached to the session is a build that never sent ``client.capabilities`` (Desktop / dashboard
+    update separately from this backend; the stdio TUI ships with it). No attached client is still True — the
+    question waits in ``open_requests`` for the reconnect replay. Compute-host relays and other non-client
+    transports never count."""
+    from tui_gateway import server_requests
+    from tui_gateway.ws import WSTransport
+    clients = [peer for peer in _session_live_transports(_sessions.get(sid)) if isinstance(peer, WSTransport)]
+    return not clients or any(server_requests.answers_requests(peer) for peer in clients)
+
+
+def _session_answering_clients(sid: str) -> list:
+    """The live WebSocket clients attached to *sid* that advertised answering server→client requests:
+    the windows whose unanimous "not shown here" settles a window-owned request (server_requests.py)."""
+    from tui_gateway import server_requests
+    from tui_gateway.ws import WSTransport
+    return [peer for peer in _session_live_transports(_sessions.get(sid))
+            if isinstance(peer, WSTransport) and server_requests.answers_requests(peer)]
+
+
 def _warn_foreign_login(session: dict, transport) -> None:
     """Ownership is not enforced; a second login sharing a session is only logged, and the agent keeps the
     creator's user id."""

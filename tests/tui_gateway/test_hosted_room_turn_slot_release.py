@@ -17,7 +17,7 @@ from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE
 
 
 class _InlineThread:
-    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
         self._target, self._args, self._kwargs = target, args, kwargs or {}
 
     def start(self):

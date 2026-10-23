@@ -41,7 +41,7 @@ def _validate_workdir(workdir: str) -> str | None:
     for ch in workdir or "":
         if not _is_safe_workdir_char(ch):
             return (
-                f"Blocked: workdir contains disallowed character {repr(ch)}. "
+                f"Blocked: workdir contains disallowed character {ch!r}. "
                 "Use a simple filesystem path without shell metacharacters."
             )
     return None
@@ -141,6 +141,83 @@ def _foreground_background_guidance(command: str) -> str | None:
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
 
 
+# `&` spellings that are not backgrounding: and-lists, fd redirects (`2>&1`, `>&2`, `&>`, `&>>`,
+# `<&3`) and the stderr pipe `|&`.
+_NON_BACKGROUND_AMP_RE = re.compile(r"&&|\d*[<>]&(?:\d+|-)?|&>>?|\|&")
+_TRAILING_AMP_ONLY_RE = re.compile(r"\s&\s*$")
+# Executable substitutions run code the quote-masking cannot see into (`"$(sleep 9 & echo $!)"`
+# hides a second, untracked background job), so any spelling of one refuses the conversion. Raw
+# substring match on purpose: a false refusal is today's behaviour, a false conversion is not.
+_EXECUTABLE_SUBSTITUTION_MARKERS = ("$(", "`", "<(", ">(")
+
+
+def _strip_trailing_amp(command: str) -> str:
+    """*command* minus its final `&` and the UNESCAPED whitespace right before it.
+
+    A backslash-escaped space is part of the last argument (`trailing\\ ` is the word `trailing `),
+    so trimming stops at the first whitespace byte preceded by an odd run of backslashes.
+    """
+    body = command.rstrip()[:-1]
+    end = len(body)
+    while end and body[end - 1].isspace():
+        backslashes = len(body[:end - 1]) - len(body[:end - 1].rstrip("\\"))
+        if backslashes % 2:
+            break
+        end -= 1
+    return body[:end]
+
+
+def _approval_identity(command: str) -> tuple:
+    """Everything the approval path keys a decision on for *command*: hardline verdict, the
+    dangerous pattern key/description (what session/permanent approvals are stored under), the
+    sudo-stdin floor, runtime self-delete, the user's deny rules and the permanent allowlist."""
+    from agent.runtime_self_protection import command_deletes_runtime
+    from tools.approval import _command_matches_permanent_allowlist, _match_user_deny_rule
+    from tools.approval_detection import _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command
+    return (
+        tuple(detect_hardline_command(command)),
+        tuple(detect_dangerous_command(command)),
+        tuple(_check_sudo_stdin_guard(command)),
+        command_deletes_runtime(command),
+        _match_user_deny_rule(command),
+        bool(_command_matches_permanent_allowlist(command)),
+    )
+
+
+def trailing_amp_background_command(command: str) -> str | None:
+    """The command without its trailing `&` when that `&` is its ONLY backgrounding, else None.
+
+    Only the unambiguous shape converts: one line, one and-or list or pipeline (`a && b | c &`
+    backgrounds the whole list in bash, exactly what background=true runs), nothing after the
+    `&`. Inline `a & b`, `;` sequences, multi-line scripts/heredocs, nohup/disown/setsid and any
+    executable substitution (`$(...)`, backticks, `<(...)`/`>(...)`) keep the refusal: the tool
+    cannot prove there is no other background job or that later commands don't depend on a
+    readiness check. Quoted `&` (and inert heredoc bodies) never count. Conversion must leave
+    the approval identity untouched, otherwise the refusal stands.
+    """
+    if not isinstance(command, str) or _looks_like_help_or_version_command(command):
+        return None
+    if any(marker in command for marker in _EXECUTABLE_SUBSTITUTION_MARKERS):
+        return None
+    unquoted = _strip_quotes(command)
+    if not _TRAILING_AMP_ONLY_RE.search(unquoted) or not command.rstrip().endswith("&"):
+        return None
+    body = unquoted.rstrip()[:-1]
+    if "\n" in body or "\r" in body or ";" in body or "#" in body or _SHELL_LEVEL_BACKGROUND_RE.search(body):
+        return None
+    if "&" in _NON_BACKGROUND_AMP_RE.sub("", body):
+        return None
+    stripped = _strip_trailing_amp(command)
+    if not stripped.strip():
+        return None
+    # Approval runs on what executes (the stripped command). Some patterns key on the `&` itself
+    # (`hermes gateway run &` = gateway outside its service manager), and approvals are stored per
+    # pattern key, so a different key would let a pre-approval for another category pass.
+    if _approval_identity(command) != _approval_identity(stripped):
+        return None
+    return stripped
+
+
 def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes: int) -> Optional[str]:
     """Best-effort script read: host filesystem first, then a bounded
     ``env.execute('head -c ... < path')`` for remote backends. Binary content
@@ -204,9 +281,11 @@ def gateway_lifecycle_block(
         return None
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
-        contains_gateway_lifecycle_command_or_referenced_script,
+        HOST_INTERPRETER_KILL_REJECTION,
+        contains_host_interpreter_kill,
         contains_launchctl_submit_command,
         lifecycle_scan_root_within_budget,
+        scan_gateway_lifecycle,
     )
     # Keep the specific launchctl diagnostic when this optional pre-scan fits the
     # budget. The full fail-closed guard below still runs when it does not, so
@@ -226,12 +305,30 @@ def gateway_lifecycle_block(
         guard_cwd_base = getattr(env, "cwd", None) or cwd
     guard_cwd = _resolve_command_cwd(
         workdir=workdir, default_cwd=guard_cwd_base, session_key=session_key, env_type=env_type,
+        mounted_host=getattr(env, "host_cwd", None),
+        env=env,
     )
-    if contains_gateway_lifecycle_command_or_referenced_script(
+    unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
-    ):
+    )
+    if unsafe and refusal:
+        # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,
+        # size, device, live SQLite, cloud placeholder). Say so, or the model rewords and retries
+        # the same command in a loop (#113944).
+        return _blocked_json(
+            f"Blocked: the lifecycle guard could not scan this command or referenced script: {refusal}. "
+            "Nothing in the command is known to contain a gateway lifecycle command, but a "
+            "script the command executes must be scannable (a regular text file under 1 MiB) "
+            "before it can run inside the gateway process.",
+            "error",
+        )
+    if unsafe:
+        # Name the ownership-scoped route for image-name kills: the intent is almost always "stop
+        # MY background job", and re-rolling the same over-broad spelling is what takes the gateway down.
+        if lifecycle_scan_root_within_budget(command) and contains_host_interpreter_kill(command):
+            return _blocked_json(HOST_INTERPRETER_KILL_REJECTION, "error")
         return _blocked_json(
             "Blocked: command or referenced script cannot restart, stop, or "
             "uninstall the gateway from inside the gateway process. The gateway would "

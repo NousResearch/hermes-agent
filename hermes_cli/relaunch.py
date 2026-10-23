@@ -124,7 +124,7 @@ def relaunch(
     if sys.platform == "win32":
         import subprocess
         try:
-            result = subprocess.run(new_argv)
+            result = subprocess.run(new_argv, check=False)
             sys.exit(result.returncode)
         except KeyboardInterrupt:
             sys.exit(130)
@@ -139,4 +139,7 @@ def relaunch(
             )
             sys.exit(1)
     else:
+        from hermes_cli.observability.shared_metrics_startup import mark_in_place_relaunch
+
+        mark_in_place_relaunch()
         os.execvp(new_argv[0], new_argv)

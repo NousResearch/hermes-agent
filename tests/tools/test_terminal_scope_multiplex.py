@@ -24,7 +24,7 @@ from tools.terminal_scope import (
     set_terminal_scope,
     terminal_env,
 )
-from tools import browser_tool_cloud as bt_cloud
+from tools import browser_session_cloud as bs_cloud
 
 _LAUNCH_CWD = "/home/launch-user/private"
 _LAUNCH_VOLUMES = '["/host/secret:/data:rw"]'
@@ -95,7 +95,7 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
     import tools.terminal_tool as tt
     from agent import runtime_cwd
     from gateway.platforms import base as gbase
-    from tools import browser_tool, env_probe, file_tools_paths
+    from tools import env_probe, file_tools_paths
 
     b_cwd = tmp_path / "b-work"
     b_cwd.mkdir()
@@ -110,14 +110,16 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
         assert cfg["cwd"] == str(b_cwd)
         assert cfg["docker_volumes"] == []
         assert cfg["docker_shared_container_key"] == ""
-        assert tt._resolve_container_task_id(None) == "default"
+        # Session-less (cron) work for routed B keys B's own environment, never the launch
+        # profile's shared "default" one (which carries A's env and terminal policy).
+        assert tt._resolve_container_task_id(None) == f"home:{os.path.realpath(home)}"
         assert gbase._parse_docker_volume_mounts() == []
         assert not any(
             "alpha-shared" in c for c in gbase._docker_sandbox_dir_candidates("agent:bee:x")
         )
         assert file_tools_paths._configured_terminal_cwd() == str(b_cwd)
         assert runtime_cwd.resolve_agent_cwd() == b_cwd
-        assert bt_cloud._is_local_backend() is True
+        assert bs_cloud.is_local_backend() is True
         # env_probe bails out with "" for remote backends; a local profile
         # must not be treated as remote just because the launch env is docker.
         assert env_probe._resolve_terminal_backend() == "local"
@@ -141,6 +143,30 @@ def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
         assert cfg["ssh_host"] == ""
         assert cfg["cwd"] != _LAUNCH_CWD
     assert json.loads(os.environ["TERMINAL_DOCKER_VOLUMES"])  # A unchanged
+
+
+def test_persistent_docker_routed_profile_keeps_one_container(tmp_path):
+    """Persistent Docker is profile-scoped: a routed profile's session-less (cron) work must key the
+    SAME container as its session-bound work, and never another profile's."""
+    import gateway.run as gw
+    import tools.terminal_tool as tt
+    from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+
+    docker = "terminal:\n  backend: docker\n  container_persistent: true\n"
+    keys = {}
+    for name in ("bee", "wasp"):
+        home = _profile(tmp_path, name, docker)
+        with gw._profile_runtime_scope(home):
+            cron_key = tt._resolve_container_task_id(None)
+            tokens = set_session_vars(session_key=f"agent:{name}:chat", profile=name)
+            try:
+                session_key = tt._resolve_container_task_id(None)
+            finally:
+                clear_session_vars(tokens)
+                reset_session_vars()
+        assert cron_key == session_key == f"profile:{name}"
+        keys[name] = cron_key
+    assert keys["bee"] != keys["wasp"]
 
 
 def test_malformed_profile_config_refuses_execution(tmp_path):
@@ -172,7 +198,7 @@ def test_gateway_runtime_scope_resets_on_error(tmp_path):
 
 
 def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
     home = _profile(tmp_path, "dash", "terminal:\n  backend: local\n")

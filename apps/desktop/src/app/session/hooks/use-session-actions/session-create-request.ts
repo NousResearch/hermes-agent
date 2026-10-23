@@ -96,7 +96,8 @@ export async function desktopSessionCreateParams(
   capturedRoute = resolveNewChatOwnerRoute(),
   requestedProfile?: string,
   legacyProfileIntent = false,
-  includeComposerSelection = true
+  includeComposerSelection = true,
+  cwdExplicit = $currentCwdExplicit.get()
 ): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
@@ -136,7 +137,7 @@ export async function desktopSessionCreateParams(
     ...(cwd && { cwd }),
     // #52589: explicit provenance for the shipped cwd — an inherited app-global
     // workspace must not override the target profile's configured terminal.cwd.
-    ...(cwd && { cwd_explicit: $currentCwdExplicit.get() }),
+    ...(cwd && { cwd_explicit: cwdExplicit }),
     ...(profile ? { profile: capturedRoute?.targetProfile || profile } : {}),
     ...(includeComposerSelection
       ? {

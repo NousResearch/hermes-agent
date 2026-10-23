@@ -30,5 +30,8 @@ ENV_OVERRIDES = (
 AUTHZ = {
     "allowed_users_env": "MATRIX_ALLOWED_USERS",
     "allow_all_env": "MATRIX_ALLOW_ALL_USERS",
+    # m.notice senders arrive with SessionSource.is_bot (adapter); "mentions"/"all" admits
+    # them past the human allowlist, "none" stays authorization-only (#143370).
+    "allow_bots_env": "MATRIX_ALLOW_BOTS",
     "allowlist_suppresses_pairing": True,
 }

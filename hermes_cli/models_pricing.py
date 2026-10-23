@@ -13,6 +13,7 @@ import json
 import os
 import time
 import urllib.request
+from datetime import UTC, datetime
 from typing import Any, Optional
 from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
 
@@ -536,6 +537,7 @@ _STATIC_PRICING_SCOPES = {
     "novita": _novita_pricing_scope,
     "kilocode": _kilo_pricing_scope,
     "fireworks": lambda: _FIREWORKS_PRICING_KEY,
+    "deepseek": lambda: _DEEPSEEK_PRICING_KEY,
 }
 
 
@@ -609,7 +611,7 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
         cache_key, _url = _deepinfra_catalog_url()
         return _fetch_deepinfra_pricing() if cache_key in _deepinfra_catalog_cache else {}
     cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
-    if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks"):
+    if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks", "deepseek"):
         cache_key = _STATIC_PRICING_SCOPES[normalized]()
     return (_cached_catalog(cache_key) or {}) if cache_key else {}
 
@@ -713,11 +715,108 @@ def _fetch_deepinfra_pricing(timeout: float = 5.0, *, force_refresh: bool = Fals
     return result
 
 
+_DEEPSEEK_PRICING_KEY = "models.dev/deepseek"
+# DeepSeek bills peak and off-peak rates; off-peak is half of peak. Peak is 01:00-04:00 and
+# 06:00-10:00 UTC, Monday-Friday; every other hour (and the whole weekend) is off-peak.
+_DEEPSEEK_PEAK_WINDOWS_UTC = ((1, 4), (6, 10))
+# A gateway process outlives the window it read, so a cached table is trusted for minutes, not hours.
+_DEEPSEEK_PRICING_TTL_SECONDS = 900.0
+
+# Chinese public holidays are off-peak for the whole day. The State Council publishes the year's
+# calendar ahead of time (holidays plus the 調休 make-up workdays); this community mirror carries it
+# as one small JSON document per year, and an ``isOffDay`` entry is what DeepSeek calls a holiday.
+_CN_HOLIDAY_URL = "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{year}.json"
+_CN_HOLIDAY_TTL_SECONDS = 12.0 * 3600.0
+_cn_holiday_cache: dict[int, tuple[float, frozenset[str]]] = {}
+
+
+def _cn_holiday_days(year: int) -> frozenset[str]:
+    """``{"2026-02-17", ...}`` ISO dates that are Chinese public holidays, ``frozenset()`` when the
+    calendar cannot be read — an unreachable mirror leaves the peak rate in place, which over-states
+    the cost rather than quoting a discount the bill will not honor."""
+    cached = _cn_holiday_cache.get(year)
+    if cached is not None and time.monotonic() < cached[0]:
+        return cached[1]
+
+    days: frozenset[str] = frozenset()
+    try:
+        payload = _get_json(_CN_HOLIDAY_URL.format(year=year), {"Accept": "application/json"}, 5.0)
+        if isinstance(payload, dict):
+            days = frozenset(
+                str(entry["date"])
+                for entry in payload.get("days") or []
+                if isinstance(entry, dict) and entry.get("isOffDay") and entry.get("date")
+            )
+    except Exception:
+        days = frozenset()
+
+    _cn_holiday_cache[year] = (time.monotonic() + _CN_HOLIDAY_TTL_SECONDS, days)
+    return days
+
+
+def deepseek_peak_active(now: Optional[datetime] = None) -> bool:
+    """Whether DeepSeek's peak rate applies at *now* (default: right now, UTC).
+
+    Weekends are off-peak in full, and so are Chinese public holidays. The holiday calendar is only
+    consulted on a weekday already inside a peak window, so the common path — nights, weekends,
+    the 04:00-06:00 gap — never touches the network.
+    """
+    moment = now or datetime.now(UTC)
+    if moment.weekday() >= 5:  # Saturday/Sunday
+        return False
+    if not any(start <= moment.hour < end for start, end in _DEEPSEEK_PEAK_WINDOWS_UTC):
+        return False
+    return moment.date().isoformat() not in _cn_holiday_days(moment.year)
+
+
+def _fetch_deepseek_pricing(*, force_refresh: bool = False) -> dict[str, dict[str, str]]:
+    """DeepSeek picker pricing: the models.dev ``deepseek`` cost block (DeepSeek's off-peak list
+    rate) doubled while the peak window is open.
+
+    DeepSeek's own pricing page is client-rendered — its HTML carries no numbers — so the registry
+    Hermes already reads server-side is the source, and its shared 1h cache keeps a menu render
+    free of network I/O. The windows and the 1:2 ratio are DeepSeek's published rules. The result
+    is cached shorter than the window granularity so a long-lived process re-reads at 04:00/06:00/
+    10:00 UTC instead of quoting the previous window's rate.
+    """
+    _remember_provider_cache_key("deepseek", _DEEPSEEK_PRICING_KEY)
+
+    if not force_refresh:
+        cached = _cached_catalog(_DEEPSEEK_PRICING_KEY)
+        if cached is not None:
+            return cached
+
+    factor = 2.0 if deepseek_peak_active() else 1.0
+    result: dict[str, dict[str, str]] = {}
+    try:
+        from agent.models_dev import _get_provider_models
+
+        for mid, entry in (_get_provider_models("deepseek") or {}).items():
+            cost = entry.get("cost") if isinstance(entry, dict) else None
+            if not isinstance(cost, dict):
+                continue
+            inp, out = cost.get("input"), cost.get("output")
+            if inp is None and out is None:
+                continue
+            row = {
+                "prompt": _per_token(float(inp or 0) * factor),
+                "completion": _per_token(float(out or 0) * factor),
+            }
+            if cost.get("cache_read"):
+                row["input_cache_read"] = _per_token(float(cost["cache_read"]) * factor)
+            result[str(mid)] = row
+    except Exception:
+        result = {}
+
+    return _cache_catalog(_DEEPSEEK_PRICING_KEY, result, _DEEPSEEK_PRICING_TTL_SECONDS)
+
+
 _PRICING_FETCHERS = {
     "openrouter": _fetch_openrouter_pricing,
     "ai-gateway": _fetch_ai_gateway_pricing_for_provider,
     "novita": _fetch_novita_pricing_for_provider,
     "deepinfra": _fetch_deepinfra_pricing,
+    "deepseek": _fetch_deepseek_pricing,
     "fireworks": _fetch_fireworks_pricing_for_provider,
     "kilocode": _fetch_kilocode_pricing_for_provider,
     "nous": _fetch_nous_pricing_for_provider,

@@ -559,3 +559,20 @@ def test_brief_install_prints_the_pin_and_outcome_and_a_restart_hint_only_for_a_
     assert not any(isinstance(p, Panel) for p in printed)
     assert "maintained by" not in text and "Cloning" not in text
     assert ("Restart the gateway" in text) is bool(gateway_pid)
+
+
+def test_repin_example_preparation_keeps_the_reviewed_manifest(world):
+    """Preparation cannot create a higher-priority manifest after the consent preview."""
+    repo = world["repo"]
+    (repo / "plugin.yaml").rename(repo / "plugin.yml")
+    world["state"]["pin"] = _commit(repo, "use yml manifest")
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    assert entry is not None
+    target, reviewed, _name = cat.install_catalog_entry(entry, force=False)
+    (repo / "plugin.yaml.example").write_text(
+        "name: cat-plugin\nversion: 1.0.0\ndescription: d\nprovides_tools: [inert_marker]\n")
+    world["state"]["pin"] = _commit(repo, "add manifest example")
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] is True
+    assert pc._read_manifest(target) == reviewed
+    assert not (target / "plugin.yaml").exists()

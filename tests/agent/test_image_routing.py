@@ -660,7 +660,7 @@ class TestCodexContextVariantVisionLookup:
 
         seen = []
 
-        def fake_caps(provider, model, allow_network=False):
+        def fake_caps(provider, model, allow_network=False, config=None):
             seen.append(model)
             return SimpleNamespace(supports_vision=True) if model == "gpt-5.6-sol" else None
 
@@ -670,3 +670,57 @@ class TestCodexContextVariantVisionLookup:
         # Ineligible alias: looked up verbatim, no capability gained.
         assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
         assert seen[-1] == "gpt-5.5-900k"
+
+
+class TestCatalogProviderAliasVisionLookup:
+    """Issue #135701: a named custom provider reaches the models.dev catalog through its
+    ``catalog_provider`` alias, so the vision lookup must key the catalog probe on the
+    requested identity (and hand it the in-memory config) — the canonicalized ``"custom"``
+    slug has no alias to resolve and the image silently detours to a text description."""
+
+    CFG = {
+        "model": {"provider": "custom:myrelay", "default": "openai/gpt-4o"},
+        "providers": {"myrelay": {"base_url": "https://openrouter.ai/api/v1", "catalog_provider": "openrouter"}},
+    }
+
+    def test_catalog_probe_keys_on_requested_identity(self, monkeypatch):
+        from types import SimpleNamespace
+        from agent import image_routing, models_dev
+
+        seen = []
+
+        def fake_caps(provider, model, allow_network=False, config=None):
+            seen.append((provider, config))
+            return SimpleNamespace(supports_vision=True) if provider == "custom:myrelay" else None
+
+        monkeypatch.setattr(models_dev, "get_model_capabilities", fake_caps)
+        assert _lookup_supports_vision(
+            "custom", "openai/gpt-4o", self.CFG, requested_provider="custom:myrelay"
+        ) is True
+        assert seen == [("custom:myrelay", self.CFG)]
+
+    def test_requested_alias_decides_native_route(self, monkeypatch):
+        from types import SimpleNamespace
+        from agent import image_routing, models_dev
+
+        monkeypatch.setattr(
+            models_dev, "get_model_capabilities",
+            lambda provider, model, allow_network=False, config=None:
+                SimpleNamespace(supports_vision=provider == "custom:myrelay"),
+        )
+        assert image_routing.decide_image_input_mode(
+            "custom", "openai/gpt-4o", self.CFG, requested_provider="custom:myrelay"
+        ) == "native"
+
+    def test_no_requested_identity_keeps_canonical_provider(self, monkeypatch):
+        from types import SimpleNamespace
+        from agent import image_routing, models_dev
+
+        seen = []
+        monkeypatch.setattr(
+            models_dev, "get_model_capabilities",
+            lambda provider, model, allow_network=False, config=None:
+                (seen.append(provider), SimpleNamespace(supports_vision=None))[1],
+        )
+        assert _lookup_supports_vision("custom", "openai/gpt-4o", self.CFG) is None
+        assert seen == ["custom"]

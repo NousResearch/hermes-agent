@@ -1,18 +1,18 @@
 name: burnclock
 repo: https://github.com/jersilb/burnclock-hermes
-sha: "80dbfd197a14dd1531ef2d30bb38a6dea4450f82"
+sha: "bb4981294fcd95301ab184d5d7d7dd4a9e825851"
 title: Burnclock
-description: "Status-bar chip showing the provider balance and runway tracked by the MIT burnclock CLI, read from its local badge cache. Requires the CLI (pip install burnclock); the plugin makes no network calls and reads no credentials. Disclosure — runs a read-only shell command (cat of burnclock's local cache file) in your active local session every 60 seconds; balances come from the separately installed burnclock CLI (PyPI `burnclock`), which you configure with your provider keys and run yourself."
+description: "Status-bar chip and left-nav dashboard for the MIT burnclock CLI. The chip reads burnclock's local badge cache; the dashboard adds balance, runway, budget and the DeepSeek Flash off-peak clock, with an explicit refresh. Requires the separately installed burnclock CLI (pip install burnclock) and a populated cache. Disclosure — the chip runs a read-only shell command (cat of the cache) in your active local session every 60 seconds; the dashboard runs the pure-clock offpeak subcommand every 60 seconds, and its explicit Refresh button may invoke burnclock to collect balances using keys you configured separately. The plugin reads no credentials itself."
 maintainer: jersilb
 tier: community
 category: desktop
-version: "0.1.0"
+version: "0.2.0"
 requires_hermes: ">=0.22.0"
 platforms: [macos]
 docs_url: https://github.com/jersilb/burnclock-hermes
-image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/80dbfd197a14dd1531ef2d30bb38a6dea4450f82/docs/banner.png
+image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/bb4981294fcd95301ab184d5d7d7dd4a9e825851/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/jersilb/burnclock-hermes/80dbfd197a14dd1531ef2d30bb38a6dea4450f82/docs/chip.png
+  - https://raw.githubusercontent.com/jersilb/burnclock-hermes/bb4981294fcd95301ab184d5d7d7dd4a9e825851/docs/chip.png
 capabilities:
   provides_tools: []
   provides_hooks: []

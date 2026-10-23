@@ -120,6 +120,41 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 | **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
 | **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
 
+### Configure contribution remotes
+
+Start from a local checkout of the canonical repository. If you do not already
+have one, clone it before preparing the PM developer environment:
+
+```bash
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+```
+
+Contributors with write access may keep the canonical repository as `origin`.
+External contributors should create a fork, use the fork as `origin`, and keep
+the canonical repository as `upstream`:
+
+1. Create a fork with GitHub's **Fork** button or
+   `gh repo fork NousResearch/hermes-agent --clone=false`.
+2. From your local checkout, configure the remotes:
+
+```bash
+git remote rename origin upstream
+git remote add origin https://github.com/YOUR_USERNAME/hermes-agent.git
+git remote -v
+```
+
+If `origin` already points to your fork, keep it and add only the missing
+`upstream` remote:
+
+```bash
+git remote add upstream https://github.com/NousResearch/hermes-agent.git
+```
+
+If GitHub returns `403` while `gh` is authenticated with a fine-grained
+personal access token, create the fork in the web UI or reauthenticate `gh`
+with OAuth using `gh auth login --web -p https`.
+
 ### PM developer environment
 
 Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
@@ -960,6 +995,45 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 ---
 
 ## Pull Request Process
+
+### Fork, branch, and open a PR
+
+External contributors should first complete
+[Configure contribution remotes](#configure-contribution-remotes). Start each
+change from the latest upstream `main`:
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git checkout -b fix/my-description
+```
+
+Contributors with write access who kept the canonical repository as `origin`
+can replace `upstream` with `origin` in these commands.
+
+Make the change, commit it using the format described below, then push the
+branch to your fork and open the pull request against the canonical repository:
+
+```bash
+git add <changed-files>
+git commit -m "fix(scope): description"
+git push -u origin HEAD
+gh pr create --repo NousResearch/hermes-agent
+```
+
+Complete the pull request template with the reason for the change, related
+issue, concrete changes, and verification steps. CI runs automatically after
+the pull request is opened. Address review feedback with additional commits.
+
+To keep a fork current before starting the next change:
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
+```
 
 ### Branch naming
 

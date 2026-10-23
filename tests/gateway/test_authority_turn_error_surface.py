@@ -75,6 +75,17 @@ def test_rate_limited_turn_completes_with_rate_limit_and_reset_time():
         {k: v for k, v in complete.items() if k not in ('content', 'admission_id', 'outcome')})
 
 
+def test_usage_window_refusal_completes_with_the_window_card():
+    limit = {'limit': 'weekly', 'suggestions': [{'model': 'nous/free-model', 'label': 'Free model'}]}
+    refusal = {'failure_reason': 'billing', 'failure_retryable': False, 'error': 'HTTP 402',
+               'usage_window_message': "You've hit your weekly limit.", 'failure_resets_at': 1900000000.0,
+               'usage_limit': limit}
+    surface = _complete(*_authority_turn(Platform.LOCAL, refusal))['error_surface']
+    assert (surface['code'], surface['message'], surface['resets_at']) == (
+        'usage_window', "You've hit your weekly limit.", 1900000000.0)
+    assert surface['usage_limit'] == limit
+
+
 def test_a_managed_worker_turn_carries_the_free_tier_failure_to_the_owner():
     from agent.managed_worker import accept_result, encode_frame, read_frame, result_frame
 

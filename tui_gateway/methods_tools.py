@@ -499,7 +499,7 @@ def _plugin_command_handler(name: str, session=None):
         return None
 
 
-def _run_plugin_command(handler, arg: str, session, runtime_session_id) -> str:
+def _run_plugin_command(handler, arg: str, session=None, sid: str = "") -> str:
     """Run a plugin slash-command handler under the session's ``HERMES_SESSION_*`` binding.
 
     Plugin handlers read ``get_session_env()`` for the chat/session they serve; these RPCs run on
@@ -508,15 +508,18 @@ def _run_plugin_command(handler, arg: str, session, runtime_session_id) -> str:
     #108698; ``_set_session_context`` is the turn path's own seam."""
     key = str(session.get("session_key") or "") if session else ""
     tokens = _set_session_context(key, cwd=str(session.get("cwd") or "")) if session else []
+    # ctx.ask_choice: the ``clarify`` server request this backend's clarify tool sends.
+    choices = _tools_mod("hermes_cli.plugin_choices")
     try:
         session = session or {}
         home = session.get("profile_home") or _tools_mod("hermes_constants").get_hermes_home()
-        with _tools_mod("hermes_cli.plugins_loader")._plugin_home_scope(home):
+        with _tools_mod("hermes_cli.plugins_loader")._plugin_home_scope(home), \
+                choices.bind_asker(choices.clarify_asker(lambda questions: _clarify_block(sid, questions))):
             dispatch = _tools_mod("hermes_cli.plugin_command_dispatch")
             context = dispatch.plugin_command_context(
                 session_id=getattr(session.get("agent"), "session_id", None) or key, session_key=key,
                 platform=_session_source(session) if session else None, task_id=key,
-                stored_session_id=key, runtime_session_id=runtime_session_id if session else None,
+                stored_session_id=key, runtime_session_id=(sid or None) if session else None,
                 surface=session.get("source") or "tui")
             result = dispatch.invoke_plugin_command(handler, arg, **context)
             return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(result) or "")
@@ -599,7 +602,7 @@ def _dispatch_plugin(rid, params, session, name, arg):
         if params.get("session_id") and session is None:
             return _err(rid, 4001, "session not found")
         with contextlib.suppress(Exception):
-            output = _run_plugin_command(handler, arg, session, params.get("session_id"))
+            output = _run_plugin_command(handler, arg, session, params.get("session_id", ""))
             return _ok(rid, {"type": "plugin", "output": output})
     return None
 
@@ -1210,12 +1213,9 @@ def _container_checkpoint_refusal(session, mgr, cwd) -> str | None:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
-    if action in {"status", "use"}:
-        from tools.browser_use_cli import is_browser_use_cli_mode, set_browser_use_mode
-        if action == "use":
-            set_browser_use_mode(params.get("enabled", True) is not False)
+    if action == "status":
         url = _resolve_browser_cdp_url()
-        return _ok(rid, {"connected": bool(url), "url": url, "browser_use": is_browser_use_cli_mode()})
+        return _ok(rid, {"connected": bool(url), "url": url})
     if action == "disconnect":
         return _browser_disconnect(rid)
     if action == "connect":

@@ -190,6 +190,41 @@ def agent_imports_in_use(home: Path, *, process_env: bool = False) -> bool:
     return (home / "import-sync.json").is_file()
 
 
+
+def _home_env(home: Path, name: str, *, process_env: bool) -> str:
+    """*name* as *home*'s dotenv layers resolve it (:func:`~hermes_cli.env_loader.resolve_home_dotenv`),
+    else, with *process_env* and for the launch home only, the process environment."""
+    from hermes_cli.env_loader import resolve_home_dotenv
+    value = resolve_home_dotenv(home).get(name, "").strip()
+    if not value and process_env:
+        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        if hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home()):
+            value = os.environ.get(name, "").strip()
+    return value
+
+
+def camofox_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run its Camofox backend for *home*, read the way core selected it
+    (``tools/browser_camofox.is_camofox_mode``): a CDP endpoint (``browser.cdp_url`` or
+    ``BROWSER_CDP_URL``) won over Camofox; a stored selection (``browser.cloud_provider``, or
+    ``use_gateway`` = the managed row) decided alone, Camofox only when it names ``camofox``; with
+    none stored, ``CAMOFOX_URL`` in its dotenv layers (the process env too for the launch home with
+    *process_env*). ``browser.camofox`` settings never selected it: a leftover block without an
+    address ran browser_exec. Config is the raw config.yaml, as core read it; read-only."""
+    from utils import is_truthy_value
+    browser = _read_config(home).get("browser")
+    browser = browser if isinstance(browser, dict) else {}
+    if str(browser.get("cdp_url") or "").strip() or _home_env(home, "BROWSER_CDP_URL", process_env=process_env):
+        return False
+    if is_truthy_value(browser.get("use_gateway")):
+        return False
+    provider = browser.get("cloud_provider")
+    selected = str(provider).strip().lower() if provider is not None else ""
+    if selected:
+        return selected == "camofox"
+    return bool(_home_env(home, "CAMOFOX_URL", process_env=process_env))
+
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -209,6 +244,12 @@ class LeftCoreFeature:
     toolsets: tuple[str, ...] = ()
     # Platforms whose core default composite (``hermes-<platform>``) never carried those toolsets.
     off_platforms: tuple[str, ...] = ()
+    # Core-era toolsets the plugin's toolsets replace while core keeps the name for something else
+    # (core's ``browser`` is browser_exec now; Camofox's tools live in the plugin's ``camofox``). The
+    # one-time scope conversion treats them as the plugin's toolsets for "did core carry it" and turns
+    # them off in the home: a saved platform list naming one names the plugin's toolsets instead, and
+    # ``agent.disabled_toolsets`` takes them for platforms on a default composite.
+    replaces_toolsets: tuple[str, ...] = ()
     # Gateway platform the plugin ships: a running gateway serves it only after a restart.
     platform: str = ""
     # Channel ownership core declared for that platform, kept while the plugin is absent (migration
@@ -234,6 +275,11 @@ class LeftCoreFeature:
     plugin_key: str = ""
     # ``terminal.backend`` value the plugin registers: unknown-backend errors name the install command.
     terminal_backend: str = ""
+    # Config schema version that shipped without the feature, for a row whose conversion changes what a
+    # home runs (``replaces_toolsets``): only a home from before it ran the core feature, so the row fires
+    # only while the home's config is below it or when that version's config step found the feature in
+    # use (:func:`record_core_use`). A newer home that sets the plugin up itself keeps core's toolsets.
+    left_at: int = 0
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -264,6 +310,17 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         plugin="mcp-serve", label="Hermes as an MCP server", in_use=lambda home, **_: False,
         unchanged="the conversation tools keep their names; MCP clients change their args to [\"mcp-serve\"]",
         command="mcp-serve", old_command="hermes mcp serve",
+    ),
+    LeftCoreFeature(
+        # CAMOFOX_URL is an address, not a credential: core kept it out of children only through its
+        # `category: tool` OPTIONAL_ENV_VARS entry (the Tier 2 provider blocklist), as HASS_URL. The
+        # bearer token is a credential.
+        plugin="camofox", label="Camofox browser backend", in_use=camofox_in_use,
+        unchanged="CAMOFOX_URL, the browser.camofox settings and the browser_navigate/browser_click/... tool "
+                  "names are unchanged; they are the `camofox` toolset now, and core's `browser` toolset "
+                  "(browser_exec) is turned off in this profile",
+        secret_env=("CAMOFOX_API_KEY",), private_env=("CAMOFOX_URL",),
+        toolsets=("camofox",), off_platforms=("webhook",), replaces_toolsets=("browser",), left_at=52,
     ),
     LeftCoreFeature(
         plugin="singularity", label="Singularity/Apptainer terminal backend", in_use=singularity_in_use,
@@ -355,6 +412,14 @@ _attempted: set[str] = set()
 _undelivered: dict[str, list[str]] = {}
 
 
+def defer_startup_notice(message: str) -> None:
+    """Hand *message* to the active home's first agent (its startup-warning sink, through
+    :func:`recover_at_startup`), once. For boot-path work that runs before any agent exists."""
+    from hermes_constants import get_hermes_home, hermes_home_key
+    logger.warning(message)
+    _undelivered.setdefault(hermes_home_key(Path(get_hermes_home())), []).append(message)
+
+
 def plugin_present(plugin: str, home: Path) -> bool:
     """Installed in *home* (enabled or not: a user who disabled it chose to). Read-only."""
     return (home / "plugins" / plugin).is_dir()
@@ -364,7 +429,7 @@ def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
     """Whether core resolved *feature*'s toolsets on for a platform selecting *selection*: named
     directly, or through a ``hermes`` / ``hermes-<platform>`` composite that included them."""
     def carries(name: str) -> bool:
-        if name in feature.toolsets or name == "hermes":
+        if name in feature.toolsets or name in feature.replaces_toolsets or name == "hermes":
             return True
         return name.startswith("hermes-") and name[len("hermes-"):].replace("-", "_") not in feature.off_platforms
     return any(carries(str(name)) for name in selection)
@@ -374,6 +439,38 @@ _SCOPED_KEY = "_left_core_scoped"  # config.yaml: rows whose toolset scope this 
 # config.yaml: rows this home has had installed (by the migration, or by the user before it ran).
 # Never written before the plugin dir exists, so a home whose install never succeeded keeps retrying.
 _INSTALLED_KEY = "_left_core_installed"
+
+
+# config.yaml: rows whose ``left_at`` config step found the core feature in use in this home.
+_USED_KEY = "_left_core_used"
+
+
+def record_core_use(home: Path, config: dict, version: int) -> bool:
+    """Config step *version* hook, before it writes *config* (*home*'s raw config.yaml, still showing the
+    core-era setup): mark every row that left core at *version* and that *home* uses. Returns whether
+    *config* changed. The launch home's process env counts, as at agent start."""
+    used = [feature for feature in LEFT_CORE if feature.left_at == version
+            and not _marked(config, _USED_KEY, feature) and feature.in_use(home, process_env=True)]
+    for feature in used:
+        _mark(config, _USED_KEY, feature)
+    return bool(used)
+
+
+def _predates_split(home: Path, feature: LeftCoreFeature) -> bool:
+    """*home* ran *feature* in core: its config is still below ``left_at`` (this pass ran before the
+    config step), that step recorded the feature in use, or config.yaml is missing or unstamped. Every
+    config.yaml Hermes writes carries a stamp, and the first save that stamps one records the rows in use
+    (``config_version_stamp.note_first_stamp``), so only a home from before the split lacks it; core ran
+    the feature there from its .env alone."""
+    if not feature.left_at:
+        return True
+    config = _read_config(home)
+    if _marked(config, _USED_KEY, feature) or "_config_version" not in config:
+        return True
+    try:
+        return int(config["_config_version"]) < feature.left_at
+    except (TypeError, ValueError):
+        return False
 
 
 def _marked(config: dict, key: str, feature: LeftCoreFeature) -> bool:
@@ -390,13 +487,35 @@ def _mark(config: dict, key: str, feature: LeftCoreFeature) -> None:
     config[key] = sorted({*(map(str, done) if isinstance(done, list) else ()), feature.plugin})
 
 
+def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
+    """Turn *feature*'s ``replaces_toolsets`` off in *config*: every saved platform list naming one names
+    the plugin's toolsets instead (so turning core's toolset back on later stays that platform's choice),
+    and ``agent.disabled_toolsets`` takes them, which also covers platforms on a default composite. One the
+    user had already disabled there disables the plugin's toolsets too (they are on by default)."""
+    from agent.skill_utils import parse_config_string_list
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    replaced = set(feature.replaces_toolsets)
+    saved = config.get("platform_toolsets")
+    for platform, value in (saved.items() if isinstance(saved, dict) else ()):
+        selection = parse_platform_toolsets_value(value)
+        if selection is not None and replaced & set(map(str, selection)):
+            kept = [item for item in selection if str(item) not in replaced]
+            saved[platform] = kept + [ts for ts in feature.toolsets if ts not in map(str, kept)]
+    agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    disabled = parse_config_string_list(agent.get("disabled_toolsets")) if agent.get("disabled_toolsets") else []
+    turned_off = replaced if replaced.isdisjoint(disabled) else replaced | set(feature.toolsets)
+    agent["disabled_toolsets"] = [*disabled, *sorted(turned_off - set(disabled))]
+    config["agent"] = agent
+
+
 def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     """Keep *feature*'s core-era toolset scope, and mark it installed once its plugin is in *home*,
     in one config write.
 
     Scope: record the toolsets in ``known_plugin_toolsets[platform]`` (= off) for every platform
     where core had them off: a saved ``platform_toolsets`` list that does not carry them, or no list
-    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone. A one-time
+    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone, except that
+    a row's ``replaces_toolsets`` go off everywhere (:func:`_turn_off_replaced`). A one-time
     conversion per home and row, independent of installation: a plugin installed before the update
     (it stays inert on a core that still ships the feature) still needs it. Completion is marked
     under ``_left_core_scoped`` so a later run never undoes a choice the user made since
@@ -404,6 +523,7 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     from hermes_cli.config import atomic_config_write, read_user_config_raw
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
     path = home / "config.yaml"
+    created = not path.exists()
     config = read_user_config_raw(path)
     installed = plugin_present(feature.plugin, home) and not _marked(config, _INSTALLED_KEY, feature)
     if _scope_kept(config, feature) and not installed:
@@ -428,8 +548,22 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
                 known[platform] = sorted({*map(str, current), *missing})
         if known:
             config["known_plugin_toolsets"] = known
+        if feature.replaces_toolsets:
+            _turn_off_replaced(config, feature)
         _mark(config, _SCOPED_KEY, feature)
+    if created:
+        _stamp_created(home, config)
     atomic_config_write(path, config)
+
+
+def _stamp_created(home: Path, config: dict) -> None:
+    """A missing config.yaml reads as the current schema, so no config step ever ran on this home: the file
+    the conversion creates carries that stamp (unstamped, every boot warns it predates the support floor)
+    and, as a plain save's first stamp does, the rows in use, or the stamp makes the home look post-split."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.config_version_stamp import note_first_stamp
+    config["_config_version"] = DEFAULT_CONFIG["_config_version"]
+    note_first_stamp(home, {}, config)
 
 
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False,
@@ -445,6 +579,9 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         if _marked(_read_config(home), _INSTALLED_KEY, feature):
             continue
         if not feature.in_use(home, process_env=process_env):
+            continue
+        if not _predates_split(home, feature):
+            _say_post_split(home, feature, say=say, backoff=backoff)
             continue
         present = plugin_present(feature.plugin, home)
         try:
@@ -468,6 +605,17 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             continue
         out.append(feature)
     return out
+
+
+def _say_post_split(home: Path, feature: LeftCoreFeature, *, say: Callable[[str], None], backoff: bool) -> None:
+    """*home* uses *feature* while its stamp says it never ran it in core (a newer home, or a Nix-managed
+    config.yaml stamped at activation): nothing is converted or installed, but a home without the plugin is
+    told where the feature went. Starts repeat it on the install backoff (``_note_failure``)."""
+    if plugin_present(feature.plugin, home) or (backoff and _failed_recently(home, feature.plugin)):
+        return
+    _note_failure(home, feature.plugin)
+    say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this profile does not "
+        f"have, so it is off. Run `{_install_command(feature.plugin, home)}`.")
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
@@ -580,7 +728,8 @@ def _gateway_serves(home: Path) -> bool:
 def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[str]:
     """Agent/gateway start hook for the active home: one attempt per process per home. With *say*
     (an agent's startup-warning sink) outcomes are delivered now, together with any a gateway-start
-    attempt queued for this home; without it they are logged and queued for the home's first agent.
+    attempt or boot maintenance (:func:`defer_startup_notice`) queued for this home; without it they are
+    logged and queued for the home's first agent.
     Returns installed plugin names."""
     from agent.safe_worker_policy import worker_config_snapshot
     if worker_config_snapshot() is not None:

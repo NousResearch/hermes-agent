@@ -123,6 +123,8 @@ def refresh_agent_mcp_tools(
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
+    from agent.delegation_backends import adopt_built_backend, saved_backend
+    built_backend = saved_backend()
     new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
@@ -143,7 +145,14 @@ def refresh_agent_mcp_tools(
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
         staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+    backend_before = getattr(agent, "_delegation_backend", None)
+    published_gen = getattr(agent, "_tool_snapshot_generation", -1)
+    stale = isinstance(published_gen, int) and snapshot_generation < published_gen  # a newer snapshot won
+    if prefix_registered is None and not stale:  # a rebuild: route on the backend its new delegate_task is from
+        adopt_built_backend(agent, new_defs, built_backend)
     if added is None:
+        if getattr(agent, "_delegation_backend", None) != backend_before:
+            persist_agent_tool_names(agent)  # only the backend moved (two backends build one schema): pin it
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order
     return added
@@ -176,7 +185,10 @@ def persist_agent_tool_names(agent) -> None:
     if not db or not session_id:
         return
     try:
-        db.update_session_tool_names(session_id, {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)})
+        pin = {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)}
+        if isinstance(backend := getattr(agent, "_delegation_backend", None), str) and backend:
+            pin["delegation_backend"] = backend  # what its delegate_task was built from: the session routes on it
+        db.update_session_tool_names(session_id, pin)
     except Exception:
         logger.debug("tool_names persist skipped", exc_info=True)
 
@@ -260,6 +272,9 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
         with _agent_tools_lock:
             agent.tools = merged
             agent.valid_tool_names = merged_names
+    if isinstance(saved, dict) and saved.get("delegation_backend"):
+        from agent.delegation_backends import adopt_built_backend
+        adopt_built_backend(agent, pinned, saved["delegation_backend"])
     if not same_code or merged != list(pinned):
         persist_agent_tool_names(agent)
     return changed

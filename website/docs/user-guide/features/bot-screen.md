@@ -28,7 +28,7 @@ running as that user — another bot on the same host, and the bot's own
 `terminal` tool included — can reach them directly, bypassing the pane and the
 lease. The lease is a tool-level fence on `computer_use` and the browser tools,
 not an OS one. One boundary is wider than the OS user: Chromium's DevTools
-port (the dock's Browser and every agent-browser launch advertise one on
+port (the dock's Browser and every Chromium Hermes launches advertise one on
 loopback so the agent can attach) is reachable by **any** local user on the
 host, and Chromium offers no per-user restriction for it. Running each bot as
 its own OS user is out of scope; if that isolation matters to you, or the host
@@ -178,9 +178,9 @@ controller drops back to watching.
 ## Browser sessions that survive the handoff
 
 While the screen runs, the bot's browser tool and the dock's **Browser** icon are
-the same browser: the Chromium agent-browser drives, with one persistent
+the same browser: the Chromium `browser_exec` drives, with one persistent
 user-data-dir per bot (`<HERMES_HOME>/bot-desktop/browser-profile`; set
-`AGENT_BROWSER_PROFILE` to pin your own — `~` expands, and a relative path such
+`browser.user_data_dir` to pin your own — `~` expands, and a relative path such
 as `pin` resolves against that bot's `HERMES_HOME`, i.e. `<HERMES_HOME>/pin`).
 Click Browser during a takeover and you
 are in the bot's own windows and cookie jar; what you sign in to is what the bot
@@ -191,28 +191,28 @@ The dock is seeded **once**, the first time the screen starts for a profile.
 The guard is the panel layout file
 `<HERMES_HOME>/bot-desktop/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml`:
 while it exists the launcher leaves the panel alone, so changing
-`AGENT_BROWSER_EXECUTABLE_PATH` or `AGENT_BROWSER_PROFILE` and restarting the
+`browser.executable_path` or `browser.user_data_dir` and restarting the
 screen does not re-pin the Browser icon. Delete that file and the dock is
 rebuilt on the next `screen start` from whatever is installed then.
 
 Which Chromium the dock and the bot use: an explicit
-`AGENT_BROWSER_EXECUTABLE_PATH` wins; otherwise Hermes uses the PM-managed
+`browser.executable_path` wins; otherwise Hermes uses the PM-managed
 Chromium and falls back to a system `chromium` / `google-chrome`. A non-root
 user on a host with `kernel.apparmor_restrict_unprivileged_userns=1` (Ubuntu
 23.10 and later) gets the reverse order, because there the managed build cannot
 set up its sandbox and exits with `FATAL: No usable sandbox!`, while the
 distro's Chromium ships with an AppArmor profile that allows it. If the pick is
-wrong for your host, set `AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium` (or
-your Chrome path) in the gateway's environment. The official Docker image
-points `AGENT_BROWSER_EXECUTABLE_PATH` at PM's pinned full Chromium, which can
-draw a window, so the dock's Browser icon uses it; the `-desktop` tags also
-carry the distro `chromium` — set
-`AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium` on hosts that refuse the
-pinned build's sandbox. A Playwright *headless shell* is never used for the
+wrong for your host, set `browser.executable_path: /usr/bin/chromium` (or
+your Chrome path) in the bot's `config.yaml`. The official Docker image
+records PM's pinned full Chromium in `/etc/hermes/chromium-executable-path`;
+that build can draw a window, so the dock's Browser icon uses it. The
+`-desktop` tags also carry the distro `chromium` — set
+`browser.executable_path: /usr/bin/chromium` on hosts that refuse the pinned
+build's sandbox. A Playwright *headless shell* is never used for the
 icon: when it is the only browser, the pane / `screen status` report **no
 headed browser** until you install a headed one (`apt-get install chromium`).
-The dock icon starts the browser with the same sandbox settings agent-browser
-uses in that container, so the human's Browser and the bot's browser are one
+The dock icon starts the browser with the same sandbox settings Hermes's
+Chromium launcher uses in that container, so the human's Browser and the bot's browser are one
 and the same.
 
 ## CLI
@@ -259,7 +259,7 @@ it, so the restarted gateway re-attaches to a still-running sandbox, and
 The sandbox needs the desktop stack. `nousresearch/hermes-sandbox:desktop` is
 the default image for every container backend (Docker, Modal, Daytona,
 Singularity): the `nikolaik/python-nodejs` base (Python 3.13 / Node 26) plus
-TigerVNC, the Xfce components, a headed Chromium, `agent-browser`, `cua-driver`
+TigerVNC, the Xfce components, a headed Chromium, `cua-driver`
 and the everyday tools that base lacked (jq, ripgrep, fd, tmux, rsync, sudo for
 the image's `pn` user). Its default user is root, like the old default, so
 shell workflows do not change. An image you pinned yourself is left alone, and
@@ -284,13 +284,13 @@ admin raised `sessiondir max size`. This path is verified against the Apptainer
 documentation, not exercised live.
 
 An SSH host is whatever you point the backend at, so it carries the stack
-itself: the same binaries (TigerVNC, Xfce, `cua-driver`, `agent-browser` with a
-Chromium it can find), reachable from a **non-interactive login session**. That
+itself: the same binaries (TigerVNC, Xfce, `cua-driver`, a headed Chromium),
+reachable from a **non-interactive login session**. That
 last part is where a host built from the desktop image differs from `docker exec`:
 a Dockerfile `ENV` never reaches an ssh session, so the image also writes
 `PLAYWRIGHT_BROWSERS_PATH` to `/etc/environment` for PAM to apply. A host of
-your own needs the equivalent, or `agent-browser` reports "Chrome not found"
-over ssh while working in a local shell.
+your own needs the equivalent, or the browser finds no Chromium over ssh
+while working in a local shell.
 
 **Upgrading from the previous default.** A Docker sandbox you already have is
 kept, not replaced: when `docker_image` is unset and a persisted container runs

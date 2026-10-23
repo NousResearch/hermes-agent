@@ -267,18 +267,6 @@ class CLITuiRuntimeMixin:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
 
-    def _show_startup_browser_notice(self):
-        """Main's ``_show_browser_backend_notice``; on a gateway session the gateway computed the notice
-        (and its once-per-24h stamp) with the session's tools, so it is printed from the snapshot."""
-        inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
-        if inventory is None or "browser_backend_notice" not in inventory:
-            self._show_browser_backend_notice()
-            return
-        notice = inventory.get("browser_backend_notice")
-        if notice:
-            from gateway.warning_notifications import render_notification
-            render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
-
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
         from cli import _accent_hex, _detect_light_mode
@@ -299,7 +287,6 @@ class CLITuiRuntimeMixin:
             raise SystemExit(2) from None
         self.show_banner()
         self._show_security_advisories()
-        self._show_startup_browser_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A

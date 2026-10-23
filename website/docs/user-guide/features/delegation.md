@@ -10,6 +10,15 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, i
 
 Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
 
+The desktop card shows the confidence of a reported child cost instead of implying precision the runtime does not have:
+
+- **Actual** — the provider/runtime reported a concrete amount.
+- **Estimated** — Hermes calculated a value from available usage and pricing data; use it for planning, not invoice reconciliation.
+- **Unknown** — the amount is not trustworthy; the card says **cost unavailable** and never renders it as `$0.0000`.
+- **Legacy events** without `cost_status` keep their previous amount display for compatibility.
+
+This makes delegation spend easier to govern and forecast without claiming accounting accuracy. Provider coverage, pricing metadata, and legacy event shapes still limit what Hermes can know; an estimated or unavailable value should be treated accordingly.
+
 ## Completion delivery
 
 Messaging gateways acknowledge background completions only after their adapter actually

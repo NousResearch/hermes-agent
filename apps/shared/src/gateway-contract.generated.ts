@@ -55,9 +55,11 @@ export interface BillingStateResult {
   payment_method?: BillingPaymentMethod | null
   monthly_cap?: BillingMonthlyCap | null
   auto_reload?: BillingAutoReload | null
+  keep_going_on_credits?: boolean | null
   portal_url?: string | null
   error?: string | null
   usage?: UsageModel | null
+  plan_usage?: PlanUsage | null
 }
 export interface BillingCardInfo {
   brand: string
@@ -100,6 +102,25 @@ export interface BillingAutoReloadCard {
   last4?: string | null
 }
 export type AutoReloadCardKind = 'canonical' | 'distinct' | 'none'
+/** ``hermes_cli/model_picker_usage.py::PickerUsage.to_payload`` — usage-window plan chrome. */
+export interface PlanUsage {
+  kind: string
+  plan?: string | null
+  gauges?: PlanUsageGauge[]
+  top_tier_model_ids?: string[]
+  featured_model_ids?: string[]
+  paused_reason?: string | null
+  credits_pay?: boolean | null
+}
+/** One server allowance on ``ModelOptionProvider.plan_usage``, in the server's order. ``label`` is the server's id (``day`` / ``week`` / ``month`` / ``top_tier`` have client words; any other id shows ``title``). ``scope``: which models a full one stops (``all`` / ``top_tier``). */
+export interface PlanUsageGauge {
+  label: string
+  left_fraction: number
+  style: string
+  resets_at_ms?: number | null
+  scope?: string
+  title?: string
+}
 /** ``_serialize_subscription_state``; the view's fallback emits only ``ok / logged_in / error``. */
 export interface SubscriptionStateResult {
   ok: boolean
@@ -115,6 +136,7 @@ export interface SubscriptionStateResult {
   portal_url?: string | null
   error?: string | null
   usage?: UsageModel | null
+  plan_usage?: PlanUsage | null
 }
 export type SubscriptionContext = 'personal' | 'team'
 export interface CurrentSubscription {
@@ -261,6 +283,10 @@ export interface BillingMutationResult {
   actor?: string | null
   code?: string | null
   recovery?: string | null
+}
+export interface BillingKeepGoingOnCreditsParams {
+  profile?: string | null
+  enabled?: boolean
 }
 export interface BillingStepUpParams {
   profile?: string | null
@@ -579,7 +605,15 @@ export interface Usage {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  plan_gauge?: PlanGauge | null
   [key: string]: unknown
+}
+/** ``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar. */
+export interface PlanGauge {
+  id: string
+  label: string
+  used_bp: number
+  resets_at_ms?: number | null
 }
 export interface McpServerStatus {
   name?: string
@@ -644,6 +678,7 @@ export interface FreeTierStatusResult {
   retry_after?: number | null
   challenge?: FreeTierChallengePayload | null
   nudge_due_in?: number | null
+  connector_nudge_due_in?: number | null
 }
 /** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
 export interface FreeTierChallengePayload {
@@ -674,6 +709,10 @@ export interface FreeTierProvisionResult {
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
+}
+export interface FreeTierClaimNudgeParams {
+  profile?: string | null
+  kind?: 'trial' | 'connector'
 }
 export interface FreeTierClaimNudgeResult {
   claimed: boolean
@@ -806,6 +845,8 @@ export interface ModelOptionProvider {
   free_tier_pending?: boolean | null
   free_tier_row?: boolean | null
   unavailable_models?: string[] | null
+  plan_usage?: PlanUsage | null
+  usage_levels?: Record<string, string> | null
   limit?: ProviderLimit | null
   usage?: ProviderUsage | null
   [key: string]: unknown
@@ -1585,14 +1626,20 @@ export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
 }
-/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). */
+/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
 export interface RoomDriverStatus {
   running: boolean
   working: boolean
   blocked: boolean
   counts: Record<string, number>
   pending_actions: Record<string, unknown>[]
+  member_activity?: RoomMemberActivity[]
   peer_routes: PeerRouteStatus[]
+}
+/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. */
+export interface RoomMemberActivity {
+  member_id: string
+  status: string
 }
 export interface PeerRouteStatus {
   room_id: string
@@ -1914,6 +1961,7 @@ export interface GatewayCapabilitiesResult {
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
+  desktop_local?: boolean
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
@@ -3475,7 +3523,9 @@ export interface SessionUsageResult {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  plan_gauge?: PlanGauge | null
   credits_lines?: string[] | null
+  credits_usage_window?: boolean | null
   [key: string]: unknown
 }
 export interface SessionContextBreakdownParams {
@@ -4520,6 +4570,7 @@ export interface PluginCatalogLookupEntry {
   repo: string
   sha: string
   subdir: string
+  tier?: string
 }
 export interface CanonicalShellExecParams {
   session_id: string
@@ -4674,6 +4725,7 @@ export interface SessionStats {
   model: string
   provider: string
   fallback_model?: string | null
+  plan_gauge?: PlanGauge | null
 }
 export interface RollbackSessionDiffParams {
   session_id: string
@@ -5645,7 +5697,7 @@ export interface BillingBlock {
   message: string
   unverified?: boolean | null
 }
-/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts). */
+/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts, + ``usage_limit`` on a usage-window plan's limit). */
 export interface ErrorSurface {
   layer: string
   code: string
@@ -5653,7 +5705,30 @@ export interface ErrorSurface {
   provider?: string | null
   model?: string | null
   resets_at?: number | null
+  usage_limit?: UsageLimit | null
   [key: string]: unknown
+}
+/** ``agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and the one-click ways on (switch to a recommended model, use / add credits). */
+export interface UsageLimit {
+  gauge_id: string
+  scope: string
+  limit_name: string
+  resets_at_ms?: number | null
+  message: string
+  suggestions?: UsageLimitSuggestion[]
+  credits?: UsageLimitCredits | null
+  current_model?: string
+}
+/** ``agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit. */
+export interface UsageLimitSuggestion {
+  model: string
+  label: string
+  note: string
+  provider?: string
+}
+/** ``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance). */
+export interface UsageLimitCredits {
+  action: string
 }
 /** Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are unproven, never negative acknowledgements. ``complete`` permits retiring the whole local turn only when the original turn boundary, every row and final body are still accounted for; compaction, redirects and partial writes conservatively leave it false. Row ids are scoped to the owning profile's store, as in ``SessionMessage.row_id``. */
 export interface PersistedTurn {
@@ -5695,6 +5770,7 @@ export interface SessionUsagePayload {
   model?: string | null
   provider?: string | null
   fallback_model?: string | null
+  plan_gauge?: PlanGauge | null
 }
 /** ``prompt_turn._invoke_agent`` ``_on_session_title`` hook. */
 export interface SessionTitlePayload {
@@ -5993,6 +6069,8 @@ export interface RpcMethods {
   'billing.charge': { params: BillingChargeParams; result: BillingChargeResult }
   /** Poll one charge by id. */
   'billing.charge_status': { params: BillingChargeStatusParams; result: BillingChargeStatusResult }
+  /** Window plans: turn 'Keep going on credits' on/off (billing:manage). */
+  'billing.keep_going_on_credits': { params: BillingKeepGoingOnCreditsParams; result: BillingMutationResult }
   /** Read-only billing view (no scope); the Nous free tier is answered locally without a portal call. */
   'billing.state': { params: ProfileParams; result: BillingStateResult }
   /** Run the billing:manage device flow; the URL/code arrive via billing.step_up.verification. */
@@ -6096,7 +6174,7 @@ export interface RpcMethods {
   /** Report a browser window outcome for the matching pending attempt; mint remains authoritative. */
   'free_tier.challenge_result': { params: FreeTierChallengeResultParams; result: FreeTierChallengeResult }
   /** Claim the due sign-in offer; true for exactly one caller each time an offer comes due. */
-  'free_tier.claim_nudge': { params: ProfileParams; result: FreeTierClaimNudgeResult }
+  'free_tier.claim_nudge': { params: FreeTierClaimNudgeParams; result: FreeTierClaimNudgeResult }
   /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
   'free_tier.provision': { params: ProfileParams; result: FreeTierProvisionResult }
   /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */
@@ -6503,6 +6581,7 @@ export const RPC_METHODS = [
   'billing.auto_reload',
   'billing.charge',
   'billing.charge_status',
+  'billing.keep_going_on_credits',
   'billing.state',
   'billing.step_up',
   'bot_relay.deliver',

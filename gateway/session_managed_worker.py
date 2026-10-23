@@ -579,6 +579,18 @@ async def _spawn_registered_worker(authority, ref, row):
     return worker, process
 
 
+async def admit_managed(authority, ref, row, policy):
+    """The ingress route into a managed worker. A removed folder is refused before a worker exists,
+    like the in-process runner: a worker failing in its policy scope reads as a LOST execution
+    (``unknown``) and parks every follower behind it."""
+    from gateway.session_policy import workspace_ready, workspace_unavailable_result
+    if not workspace_ready(policy):
+        result = workspace_unavailable_result(policy)
+        authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
+        return result['final_response']
+    return await execute_managed(authority, ref, row, policy)
+
+
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.

@@ -9,10 +9,13 @@ runs sync httpx connects through the process-wide Happy Eyeballs racer
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import socket
 import sys
 import threading
+import time
+import weakref
 from typing import Any, Optional
 
 from hermes_bootstrap import _happy_eyeballs_create_connection
@@ -36,6 +39,79 @@ _SHARED_TRANSPORTS_MAX = 32
 # owning client's in-flight connections on a shared pool.
 HERMES_TRANSPORT_OWNER_EXT = "hermes_transport_owner"
 
+# Windows does not wake a ``recv()`` already blocked on a socket that another thread shut down
+# (#143704): a stale-stream or no-progress watchdog's ``_shutdown_socket`` left the reader parked
+# until the read timeout. There the owner reads in short slices and stops once the socket is marked
+# aborted, so only the owner thread ever touches its own descriptor (shutdown-only rule, #30858).
+_INTERRUPTIBLE_READS = sys.platform == "win32"
+_ABORT_POLL_SECONDS = 0.25
+_INTERRUPTIBLE_CLASSES: Optional[tuple] = None
+# Sockets ``agent_runtime_helpers._shutdown_socket`` has aborted from a stranger thread.
+_ABORTED_SOCKETS: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+def mark_socket_aborted(sock: Any) -> None:
+    """Record that a watchdog shut ``sock`` down; the owner's abortable read stops on its next slice."""
+    with contextlib.suppress(TypeError):
+        _ABORTED_SOCKETS.add(sock)
+
+
+def socket_aborted(sock: Any) -> bool:
+    try:
+        return sock in _ABORTED_SOCKETS
+    except TypeError:
+        return False
+
+
+def _interruptible_classes() -> tuple:
+    """``(stream_cls, backend_cls)``: httpcore's sync stream/backend with abortable reads."""
+    global _INTERRUPTIBLE_CLASSES
+    if _INTERRUPTIBLE_CLASSES is None:
+        from httpcore import ReadError, ReadTimeout, SyncBackend
+        from httpcore._backends.sync import SyncStream
+
+        class _InterruptibleSyncStream(SyncStream):
+            def read(self, max_bytes: int, timeout: Optional[float] = None) -> bytes:
+                deadline = None if timeout is None else time.monotonic() + timeout
+                while True:
+                    wait = _ABORT_POLL_SECONDS
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise ReadTimeout("timed out")
+                        wait = min(wait, remaining)
+                    try:
+                        return super().read(max_bytes, wait)
+                    except ReadTimeout:
+                        if socket_aborted(self._sock):
+                            raise ReadError("connection aborted: the socket was shut down") from None
+
+            def start_tls(self, *args, **kwargs):
+                stream = super().start_tls(*args, **kwargs)
+                return type(self)(stream._sock) if type(stream) is SyncStream else stream
+
+        class _InterruptibleSyncBackend(SyncBackend):
+            def connect_tcp(self, *args, **kwargs):
+                return _InterruptibleSyncStream(super().connect_tcp(*args, **kwargs)._sock)
+
+        _INTERRUPTIBLE_CLASSES = (_InterruptibleSyncStream, _InterruptibleSyncBackend)
+    return _INTERRUPTIBLE_CLASSES
+
+
+def _sync_stream(sock):
+    """httpcore sync stream for a connected socket: abortable reads on Windows."""
+    if _INTERRUPTIBLE_READS:
+        return _interruptible_classes()[0](sock)
+    from httpcore._backends.sync import SyncStream
+    return SyncStream(sock)
+
+
+def _enable_interruptible_reads(transport) -> None:
+    """Install the abortable-read backend on one sync httpx transport (Windows; see above)."""
+    pool = getattr(transport, "_pool", None)
+    if pool is not None and hasattr(pool, "_network_backend"):
+        pool._network_backend = _interruptible_classes()[1]()
+
 
 class _HappyEyeballsSyncBackend:
     """httpcore sync backend with concurrent IPv6/IPv4 connection fallback."""
@@ -52,7 +128,6 @@ class _HappyEyeballsSyncBackend:
     def connect_tcp(self, host: str, port: int, timeout: Optional[float] = None, local_address: Optional[str] = None,
                     socket_options=None):
         from httpcore import ConnectError, ConnectTimeout
-        from httpcore._backends.sync import SyncStream
         source_address = None if local_address is None else (local_address, 0)
         try:
             sock = _happy_eyeballs_create_connection((host, port), timeout, source_address=source_address,
@@ -61,7 +136,7 @@ class _HappyEyeballsSyncBackend:
             raise ConnectTimeout(str(exc)) from exc
         except OSError as exc:
             raise ConnectError(str(exc)) from exc
-        return SyncStream(sock)
+        return _sync_stream(sock)
 
     def connect_unix_socket(self, *args, **kwargs):
         return self._default_backend().connect_unix_socket(*args, **kwargs)
@@ -311,7 +386,9 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 transport = transport_cls(verify=verify, limits=direct_limits)
                 # Async transports race natively (anyio happy_eyeballs_delay=0.25).
                 if happy_eyeballs:
-                    _enable_happy_eyeballs(transport)
+                    _enable_happy_eyeballs(transport)  # its streams are abortable on Windows too
+                elif _INTERRUPTIBLE_READS and not async_mode:
+                    _enable_interruptible_reads(transport)
                 return transport
 
             if async_mode:

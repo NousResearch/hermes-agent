@@ -237,7 +237,9 @@ class TestLiveTerminalPickerProviders:
         ):
             result = provider_model_ids("alibaba-token-plan")
 
-        assert "qwen3.8-max-0902" in result  # real curated floor still served offline
+        from providers import get_provider_profile
+
+        assert result == list(get_provider_profile("alibaba-token-plan").fallback_models)
         assert result
 
     def test_non_terminal_providers_keep_the_union_merge(self):

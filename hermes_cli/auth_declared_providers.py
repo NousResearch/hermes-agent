@@ -8,7 +8,6 @@ it, so catalog probes and runtime resolution must be able to read its own key po
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -23,6 +22,9 @@ def default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
 
 
 def provider_env_base_url(pconfig: Any) -> str:
+    """Read endpoint overrides from the same profile scope as provider keys."""
+    from agent.secret_scope import get_secret_str
+
     if pconfig.id == "actual":
         from hermes_cli.config import read_raw_config
         from hermes_cli.providers import normalize_provider
@@ -32,7 +34,7 @@ def provider_env_base_url(pconfig: Any) -> str:
             configured_url = str(model.get("base_url") or "").strip()
             if configured_url:
                 return configured_url
-    return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    return get_secret_str(pconfig.base_url_env_var).strip() if pconfig.base_url_env_var else ""
 
 
 def resolve_declared_api_key_provider(provider_id: str) -> dict[str, Any]:

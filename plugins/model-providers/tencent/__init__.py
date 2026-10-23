@@ -49,7 +49,7 @@ class TencentTokenPlanProfile(ProviderProfile):
                     break
             return list(dict.fromkeys(models))
         except Exception as exc:
-            logger.debug("fetch_models(tencent-tokenplan): %s", exc)
+            logger.debug("fetch_models(tencent-tokenplan): %s", exc, exc_info=True)
             return None
 
 

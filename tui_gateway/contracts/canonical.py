@@ -12,9 +12,11 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef, Usage
+from .common import McpServerStatus, OpenModel, PlanGauge, ProfileParams, ProjectRef, Usage
 from .events import SkinPayload
-from .groups_bot_relay import RoomParams, RoomTaskReceipt
+from .groups_bot_relay import (
+    GroupsPeerInviteResult, GroupsPeerRegisterResult, GroupsPeerRevokeResult, RoomParams, RoomTaskReceipt,
+)
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
 from .registry import canonical_method, method
 
@@ -575,6 +577,44 @@ _DISCARD_DOC = "Discard one indeterminate room task after explicit user confirma
 canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
 # The standalone route forwards it to the room's owning gateway (#145960), like the byte verbs.
 method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
+
+
+# Cross-gateway members: the shared names, with the keys the gateway accepts. Grant ids and
+# lifetimes past ``ttl_seconds`` are the target's to choose, and the room's home derives a route's
+# trace and cancellation identity itself (``gateway/session_group_peers.py``).
+
+
+class CanonicalGroupsPeerInviteParams(RoomParams):
+    home_install_id: str
+    authority_gateway_id: str
+    authority_epoch: int
+    member_id: str
+    ttl_seconds: float = 3600
+
+
+canonical_method("groups.peer.invite", params=CanonicalGroupsPeerInviteParams, result=GroupsPeerInviteResult,
+                 doc="Operator only: mint one room grant for a member of another gateway's room.")
+
+
+class CanonicalGroupsPeerRevokeParams(ProfileParams):
+    grant: str
+
+
+canonical_method("groups.peer.revoke", params=CanonicalGroupsPeerRevokeParams, result=GroupsPeerRevokeResult,
+                 doc="Operator only: revoke one grant this gateway issued, by its exact room scope.")
+
+
+class CanonicalGroupsPeerRegisterParams(RoomParams):
+    member_id: str
+    target_url: str
+    target_profile: str
+    grant: str
+    catalog: dict[str, JsonValue]  # a RoomLinkCatalog mapping; ``GatewayRoomCatalog.from_mapping`` is exact
+
+
+canonical_method("groups.peer.register", params=CanonicalGroupsPeerRegisterParams,
+                 result=GroupsPeerRegisterResult,
+                 doc="Bind a target grant to the room's pinned peer member after a live scoped probe.")
 
 
 # Shared-name overrides load after the authority-only value shapes above.

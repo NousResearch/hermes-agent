@@ -4996,6 +4996,28 @@ export interface WorkerPersistParams {
 }
 /** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
 export type WorkerPersistResult = Record<string, unknown>
+export interface CanonicalGroupsPeerInviteParams {
+  profile?: string | null
+  room_id: string
+  home_install_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  member_id: string
+  ttl_seconds?: number
+}
+export interface CanonicalGroupsPeerRevokeParams {
+  profile?: string | null
+  grant: string
+}
+export interface CanonicalGroupsPeerRegisterParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  target_url: string
+  target_profile: string
+  grant: string
+  catalog: Record<string, unknown>
+}
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
@@ -6892,6 +6914,12 @@ export interface CanonicalRpcMethods {
   'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
   /** Discard one indeterminate room task after explicit user confirmation. */
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
+  /** Operator only: mint one room grant for a member of another gateway's room. */
+  'groups.peer.invite': { params: CanonicalGroupsPeerInviteParams; result: GroupsPeerInviteResult }
+  /** Bind a target grant to the room's pinned peer member after a live scoped probe. */
+  'groups.peer.register': { params: CanonicalGroupsPeerRegisterParams; result: GroupsPeerRegisterResult }
+  /** Operator only: revoke one grant this gateway issued, by its exact room scope. */
+  'groups.peer.revoke': { params: CanonicalGroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
@@ -6962,6 +6990,9 @@ export const CANONICAL_RPC_METHODS = [
   'groups.attachment.upload',
   'groups.create',
   'groups.discard',
+  'groups.peer.invite',
+  'groups.peer.register',
+  'groups.peer.revoke',
   'groups.retry',
   'image.attach_bytes',
   'kanban.run',

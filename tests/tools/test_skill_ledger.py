@@ -42,6 +42,11 @@ def ledger_env(tmp_path, monkeypatch):
     monkeypatch.setattr(skill_usage, "get_hermes_home", lambda: home)
     monkeypatch.setattr(skill_manager_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [skills_dir])
+    # Pin the cwd-dependent trusted-project roots to empty so path-validation's allow/deny
+    # verdict cannot vary with the test runner's working directory (deterministic tests).
+    # The remaining roots (local + create_dir + external) flow from the real source functions,
+    # which individual tests monkeypatch as needed for their scenario.
+    monkeypatch.setattr(skill_utils, "get_project_skills_dirs", lambda: [])
     return {"home": home, "skills": skills_dir}
 
 
@@ -780,3 +785,347 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
         assert survivors == seq[len(seq) - len(survivors):], (
             f"writer {k}: rows missing from the middle — a concurrent sweep dropped an append"
         )
+
+
+# ---------------------------------------------------------------------------
+# File-tool writes (write_file / patch) into a live skills tree — the
+# skill_manage bypass. Entries must carry REAL before/after manifests so the
+# mutation is recoverable, not just attributed.
+# ---------------------------------------------------------------------------
+
+
+def _seed_skill_file(skills_dir, name="obs-gap", body="Original body."):
+    skill_md = skills_dir / name / "SKILL.md"
+    skill_md.parent.mkdir(parents=True, exist_ok=True)
+    skill_md.write_text(
+        VALID_SKILL_CONTENT.replace("name: my-skill", f"name: {name}").replace(
+            "Original body.", body),
+        encoding="utf-8")
+    return skill_md
+
+
+def test_classify_file_tool_target_skills_tree(ledger_env):
+    from tools import skill_ledger
+
+    skill_md = _seed_skill_file(ledger_env["skills"])
+    info = skill_ledger.classify_file_tool_target(str(skill_md))
+    assert info is not None
+    assert info["skill"] == "obs-gap"
+    assert info["path"] == str(skill_md.resolve())
+    # A supporting file resolves to the containing skill, not the root.
+    ref = skill_md.parent / "references" / "api.md"
+    ref.parent.mkdir()
+    ref.write_text("x", encoding="utf-8")
+    ref_info = skill_ledger.classify_file_tool_target(str(ref))
+    assert ref_info is not None and ref_info["skill"] == "obs-gap"
+
+
+def test_classify_file_tool_target_skips_sidecars_transients_and_outsiders(ledger_env, tmp_path):
+    from tools import skill_ledger
+
+    for rel in (".usage.json", ".curator_ledger.jsonl", ".hub/lock.json",
+                ".archive/old-skill/SKILL.md", "some-skill/.venv/pyvenv.cfg"):
+        p = ledger_env["skills"] / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}", encoding="utf-8")
+        assert skill_ledger.classify_file_tool_target(str(p)) is None, rel
+    outsider = tmp_path / "notes.txt"
+    outsider.write_text("hi", encoding="utf-8")
+    assert skill_ledger.classify_file_tool_target(str(outsider)) is None
+    assert skill_ledger.classify_file_tool_target("relative/path.md") is None
+
+
+def test_write_file_create_in_skills_tree_is_ledgered(ledger_env, monkeypatch):
+    """A brand-new skill file written by the generic write_file tool appends a
+    ledger entry (action='write_file') whose rollback removes the created file."""
+    from tools import skill_ledger
+    from tools.file_tools import write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    target = ledger_env["skills"] / "obs-gap" / "SKILL.md"
+    content = VALID_SKILL_CONTENT.replace("name: my-skill", "name: obs-gap")
+    result = json.loads(write_file_tool(str(target), content))
+    assert not result.get("error"), result
+    assert target.exists()
+
+    rows = [r for r in skill_ledger.list_entries() if r.get("skill") == "obs-gap"]
+    assert len(rows) == 1
+    entry = rows[0]
+    assert entry["action"] == "write_file"
+    assert entry["evidence"].get("source") == "write_file"
+    assert entry["before"] == []  # a creation, not a hollow capture
+    assert any(i["path"].endswith("SKILL.md") for i in entry["after"])
+
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    assert not target.exists()
+
+
+def test_patch_in_skills_tree_captures_before_and_rolls_back(ledger_env, monkeypatch):
+    """The discriminator for the bypass fix: a patch-tool modification must carry
+    the PRE-WRITE content in its before manifest, and single-entry rollback must
+    restore that content byte-for-byte (an entry with before=[] would instead
+    DELETE the patched file)."""
+    import hashlib
+
+    from tools import skill_ledger
+    from tools.file_tools import patch_tool, write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    target = ledger_env["skills"] / "obs-gap" / "SKILL.md"
+    content = VALID_SKILL_CONTENT.replace("name: my-skill", "name: obs-gap")
+    assert not json.loads(write_file_tool(str(target), content)).get("error")
+    original = target.read_text(encoding="utf-8")
+
+    patched = json.loads(patch_tool(
+        mode="replace", path=str(target),
+        old_string="Original body.", new_string="Patched body."))
+    assert not patched.get("error"), patched
+    assert "Patched body." in target.read_text(encoding="utf-8")
+
+    patch_rows = [r for r in skill_ledger.list_entries(skill="obs-gap")
+                  if r["action"] == "patch"]
+    assert len(patch_rows) == 1
+    entry = patch_rows[0]
+    assert entry["evidence"].get("source") == "patch"
+    before_paths = {i["path"]: i["sha256"] for i in entry["before"]}
+    assert str(target.resolve()) in before_paths, (
+        "a file-tool modification must capture its before-state — before=[] makes "
+        "rollback delete the file and leaves the pre-write version unrecoverable")
+    assert before_paths[str(target.resolve())] == hashlib.sha256(
+        original.encode("utf-8")).hexdigest()
+
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_file_tool_write_outside_skills_tree_is_not_ledgered(ledger_env, tmp_path, monkeypatch):
+    from tools import skill_ledger
+    from tools.file_tools import write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    outsider = tmp_path / "notes.txt"
+    result = json.loads(write_file_tool(str(outsider), "hello"))
+    assert not result.get("error"), result
+    assert outsider.exists()
+    assert skill_ledger.list_entries() == []
+
+
+def _pin_named_profile_layout(tmp_path, monkeypatch):
+    """The REAL named-profile layout: HERMES_HOME=<root>/profiles/active, with the sibling
+    tree at <root>/profiles/sibling — OUTSIDE the active home, exactly where the #129222
+    review found rollback refused."""
+    from tools import skill_ledger
+
+    root = tmp_path / "root"
+    active_home = root / "profiles" / "active"
+    active_skills = active_home / "skills"
+    active_skills.mkdir(parents=True)
+    monkeypatch.setattr(skill_ledger, "get_hermes_home", lambda: active_home)
+    monkeypatch.setenv("HERMES_HOME", str(active_home))
+    return root, active_home
+
+
+def test_file_tool_write_in_sibling_profile_is_attributed(ledger_env, monkeypatch, tmp_path):
+    """A direct write into ANOTHER profile's skills tree (the documented fallback the
+    cross-profile not-found error teaches) still lands in the acting profile's ledger,
+    with the owning tree named in evidence, and rolls back — with the sibling tree placed
+    OUTSIDE the active home, the layout that made this unrecoverable pre-fix (#129222)."""
+    from tools import skill_ledger
+    from tools.file_tools import patch_tool
+
+    _root, active_home = _pin_named_profile_layout(tmp_path, monkeypatch)
+    sibling_skills = tmp_path / "root" / "profiles" / "sibling" / "skills"
+    target = _seed_skill_file(sibling_skills, name="shared-skill")
+    original = target.read_text(encoding="utf-8")
+    # The sibling tree is NOT under the active home — the pre-fix vacuous layout had it inside.
+    assert not str(target).startswith(str(active_home))
+
+    patched = json.loads(patch_tool(
+        mode="replace", path=str(target),
+        old_string="Original body.", new_string="Patched body.", cross_profile=True))
+    assert not patched.get("error"), patched
+
+    rows = [r for r in skill_ledger.list_entries() if r.get("skill") == "shared-skill"]
+    assert len(rows) == 1
+    assert rows[0]["evidence"].get("skills_root", "").endswith(
+        str(Path("profiles") / "sibling" / "skills"))
+    ok, msg = skill_ledger.rollback_entry(rows[0]["id"])
+    assert ok is True, msg
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_sibling_profile_delete_rolls_back(ledger_env, monkeypatch, tmp_path):
+    """The sharp end of the #129222 finding: a V4A delete of a sibling-tree file leaves a
+    before=1/after=0 entry; rollback must restore the file byte-for-byte, not refuse the
+    entry as out-of-home."""
+    from tools import skill_ledger
+    from tools.file_tools import patch_tool
+
+    _pin_named_profile_layout(tmp_path, monkeypatch)
+    sibling_skills = tmp_path / "root" / "profiles" / "sibling" / "skills"
+    target = _seed_skill_file(sibling_skills, name="doomed-skill")
+    original = target.read_text(encoding="utf-8")
+
+    v4a = f"*** Begin Patch\n*** Delete File: {target}\n*** End Patch\n"
+    deleted = json.loads(patch_tool(mode="patch", patch=v4a, cross_profile=True))
+    assert not deleted.get("error"), deleted
+    assert not target.exists(), "the delete must really happen for this test to mean anything"
+
+    rows = [r for r in skill_ledger.list_entries() if r.get("skill") == "doomed-skill"]
+    assert len(rows) == 1
+    ok, msg = skill_ledger.rollback_entry(rows[0]["id"])
+    assert ok is True, msg
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_begin_file_tool_write_skips_entry_when_before_capture_fails(ledger_env, monkeypatch):
+    """A modification whose before-state cannot be captured gets NO entry rather than
+    a hollow before=[] one (which rollback would read as 'delete this file')."""
+    from tools import skill_ledger
+
+    skill_md = _seed_skill_file(ledger_env["skills"])
+    monkeypatch.setattr(skill_ledger, "capture_before", lambda *a, **k: None)
+    assert skill_ledger.begin_file_tool_write(str(skill_md)) is None
+
+
+def test_sibling_ledger_counts_names_other_profiles(ledger_env, monkeypatch):
+    from tools import skill_ledger
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    assert skill_ledger.sibling_ledger_counts() == []
+    sibling = ledger_env["home"] / "profiles" / "warden" / "skills"
+    sibling.mkdir(parents=True)
+    (sibling / ".curator_ledger.jsonl").write_text('{"id": "abc"}\n' * 3, encoding="utf-8")
+    counts = skill_ledger.sibling_ledger_counts()
+    assert ("warden", 3) in counts
+    # The active profile's own ledger is never listed as a sibling.
+    skill_ledger.append_entry("edit", "my-skill", before=[], after=[])
+    labels = [label for label, _ in skill_ledger.sibling_ledger_counts()]
+    assert ledger_env["home"].name not in labels or ledger_env["home"].name == "home"
+# Coverage is a property of the MUTATION, not of skill_manage()
+# ---------------------------------------------------------------------------
+
+
+def test_direct_handler_caller_leaves_a_ledger_entry(ledger_env):
+    """The dashboard editor (PUT /api/skills/content) and
+    agent.learning_mutations.edit_node drive ``_edit_skill`` directly and never
+    reach skill_manage. A mutation that changes a skill and leaves no ledger
+    entry is the bug: the write path is audited, whichever entry point used it."""
+    from tools import skill_ledger
+    from tools.skill_manager_tool import _edit_skill
+
+    assert _create()["success"] is True
+    edited = _edit_skill(
+        "my-skill", VALID_SKILL_CONTENT.replace("Original body.", "Edited by caller."))
+    assert edited["success"] is True
+
+    rows = [r for r in skill_ledger.list_entries(skill="my-skill") if r["action"] == "edit"]
+    assert len(rows) == 1, "direct handler call left no ledger entry"
+    entry = rows[0]
+    assert entry["before"] and entry["after"]
+
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    skill_md = ledger_env["skills"] / "my-skill" / "SKILL.md"
+    assert skill_md.read_text(encoding="utf-8") == VALID_SKILL_CONTENT
+
+
+def test_captured_external_mutation_rolls_back(ledger_env, tmp_path, monkeypatch):
+    """A mutation the tool itself captured for a skill under skills.external_dirs
+    must be reversible — otherwise the ledger mints entries that can never be
+    rolled back, which is the opposite of an audit trail."""
+    from agent import skill_utils
+    from tools import skill_ledger
+    from tools.skill_manager_tool import skill_manage
+
+    external = tmp_path / "vault"
+    skill_dir = external / "ext-one"
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    original = VALID_SKILL_CONTENT.replace("name: my-skill", "name: ext-one")
+    skill_md.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(skill_utils, "get_all_skills_dirs",
+                        lambda: [ledger_env["skills"], external])
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [external])
+    before_hash = hashlib.sha256(skill_md.read_bytes()).hexdigest()
+
+    edited = json.loads(skill_manage(
+        action="edit", name="ext-one",
+        content=original.replace("Original body.", "Edited body.")))
+    assert edited["success"] is True
+    assert skill_md.read_text(encoding="utf-8") != original
+
+    entry = [r for r in skill_ledger.list_entries(skill="ext-one")
+             if r["action"] == "edit"][0]
+    assert any(Path(i["path"]).name == "SKILL.md" for i in entry["before"])
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    assert hashlib.sha256(skill_md.read_bytes()).hexdigest() == before_hash
+
+
+def test_captured_create_dir_mutation_rolls_back(ledger_env, tmp_path, monkeypatch):
+    """A mutation the tool itself captured for a skill under a configured
+    ``skills.create_dir`` outside HERMES_HOME must be reversible — the same
+    defect as the external-dirs case: without the root in the allowed set the
+    ledger mints an entry that can never be rolled back."""
+    from agent import skill_utils
+    from tools import skill_ledger
+    from tools.skill_manager_tool import skill_manage
+
+    fleet = tmp_path / "fleet"
+    skill_dir = fleet / "fleet-one"
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    original = VALID_SKILL_CONTENT.replace("name: my-skill", "name: fleet-one")
+    skill_md.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(skill_utils, "get_all_skills_dirs",
+                        lambda: [ledger_env["skills"], fleet])
+    monkeypatch.setattr(skill_utils, "get_skill_create_dir", lambda: fleet)
+    before_hash = hashlib.sha256(skill_md.read_bytes()).hexdigest()
+
+    edited = json.loads(skill_manage(
+        action="edit", name="fleet-one",
+        content=original.replace("Original body.", "Edited body.")))
+    assert edited["success"] is True
+    assert skill_md.read_text(encoding="utf-8") != original
+
+    entry = [r for r in skill_ledger.list_entries(skill="fleet-one")
+             if r["action"] == "edit"][0]
+    assert any(Path(i["path"]).name == "SKILL.md" for i in entry["before"])
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    assert hashlib.sha256(skill_md.read_bytes()).hexdigest() == before_hash
+
+
+def test_rollback_refuses_paths_outside_every_configured_root(ledger_env, tmp_path, monkeypatch):
+    """Anti-tamper: the allowed set is resolved from CONFIG, never from the entry,
+    so widening it for external dirs and create_dir does not make rollback a
+    write-anywhere primitive. With create_dir unset, a path under no configured
+    root is still refused, and nothing is written (no pre-rollback safety entry
+    is appended)."""
+    from agent import skill_utils
+    from tools import skill_ledger
+
+    external = tmp_path / "vault"
+    external.mkdir()
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [external])
+    monkeypatch.setattr(skill_utils, "get_skill_create_dir", lambda: None)
+
+    outside = tmp_path / "outside" / "SKILL.md"
+    outside.parent.mkdir()
+    outside.write_text("untouched", encoding="utf-8")
+    entry_id = skill_ledger.append_entry(
+        "patch", "evil",
+        before=[{"path": str(outside), "sha256": skill_ledger._store_blob(outside.read_bytes())}],
+        after=[])
+    assert entry_id is not None
+
+    ok, msg = skill_ledger.rollback_entry(entry_id)
+    assert ok is False
+    assert "outside" in msg
+    assert outside.read_text(encoding="utf-8") == "untouched"
+    assert not [r for r in skill_ledger.list_entries() if r["action"] == "pre-rollback"]

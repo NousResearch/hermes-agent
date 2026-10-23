@@ -48,7 +48,7 @@ class CommentsConfig:
     enabled: bool = True
     policy: str = "pairing"
     allow_from: frozenset = field(default_factory=frozenset)
-    documents: Dict[str, CommentDocumentRule] = field(default_factory=dict)
+    documents: dict[str, CommentDocumentRule] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ class _MtimeCache:
 
     def __init__(self, path: Path | Callable[[], Path]):
         self._resolve = path if callable(path) else (lambda: path)
-        self._entries: Dict[Path, tuple[float, dict]] = {}
+        self._entries: dict[Path, tuple[float, dict]] = {}
 
     def invalidate(self) -> None:
         self._entries.pop(self._resolve(), None)
@@ -189,7 +189,7 @@ def pairing_remove(user_open_id: str) -> bool:
     return _mutate_pairing(user_open_id, add=False)
 
 
-def pairing_list() -> Dict[str, Any]:
+def pairing_list() -> dict[str, Any]:
     """Return the approved dict  {user_open_id: {approved_at: ...}}."""
     approved = _pairing_cache.load().get("approved", {})
     return dict(approved) if isinstance(approved, dict) else {}

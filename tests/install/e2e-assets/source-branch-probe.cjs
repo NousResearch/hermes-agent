@@ -131,6 +131,19 @@ if (process.env.HERMES_E2E_SOURCE_ROOT && process.env.HERMES_E2E_SOURCE_GIT) {
   }
   const custom = Symbol.for('nodejs.util.promisify.custom')
   childProcess.execFile[custom] = (file, args, options) => original[custom](file, select(args), options)
+  // HEAD's Electron main is one ESM bundle: checkout-source.ts bound
+  // promisify(execFile) at load, before installSourceBranchProbe runs in the
+  // packaged app, so neither hook above reaches it. Every child still goes
+  // through ChildProcess.prototype.spawn, whose args carry argv0 first.
+  const proto = childProcess.ChildProcess.prototype
+  const spawnChild = proto.spawn
+  proto.spawn = function (options) {
+    const rest = Array.isArray(options?.args) ? options.args.slice(1) : null
+    const selected = rest && select(rest)
+    return spawnChild.call(this, selected && selected !== rest
+      ? { ...options, args: [options.args[0], ...selected] }
+      : options)
+  }
   // v2026.9.21 does its source check in Electron: remote get-url selects
   // GitHub's public REST API unless its real Git process sees staged origin.
   // Redirect only the legacy check's two Git reads, not arbitrary subprocesses.

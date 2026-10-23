@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 NEUTRAL_PERSONALITY_NAMES = frozenset({"", "none", "default", "neutral"})
 
 #: Built-in personalities, available on every surface without any config.
-BUILTIN_PERSONALITIES: Dict[str, str] = {
+BUILTIN_PERSONALITIES: dict[str, str] = {
     "helpful": "You are a helpful, friendly AI assistant.",
     "concise": "You are a concise assistant. Keep responses brief and to the point.",
     "technical": "You are a technical expert. Provide detailed, accurate technical information.",
@@ -34,7 +34,7 @@ BUILTIN_PERSONALITIES: Dict[str, str] = {
 }
 
 
-def _get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
+def _get(cfg: Optional[dict[str, Any]], *keys: str, default: Any = None) -> Any:
     """Nested dict lookup tolerant of None/non-dict intermediate nodes."""
     node: Any = cfg
     for key in keys:
@@ -83,10 +83,10 @@ def normalize_personality_name(value: Any) -> str:
     return "" if name in NEUTRAL_PERSONALITY_NAMES else name
 
 
-def available_personalities(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def available_personalities(cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Built-ins overlaid by the user's personalities: root ``personalities`` then
     ``agent.personalities`` (later wins). Root entries were silently ignored (#9636)."""
-    merged: Dict[str, Any] = dict(BUILTIN_PERSONALITIES)
+    merged: dict[str, Any] = dict(BUILTIN_PERSONALITIES)
     for user in (_get(cfg, "personalities", default={}), _get(cfg, "agent", "personalities", default={})):
         if not isinstance(user, dict):
             continue
@@ -97,7 +97,7 @@ def available_personalities(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, A
     return merged
 
 
-def resolve_personality(value: Any, cfg: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+def resolve_personality(value: Any, cfg: Optional[dict[str, Any]] = None) -> tuple[str, str]:
     """Resolve a requested personality to ``(canonical_name, prompt_text)``."""
     name = normalize_personality_name(value)
     if not name:
@@ -109,13 +109,13 @@ def resolve_personality(value: Any, cfg: Optional[Dict[str, Any]] = None) -> Tup
     return name, render_personality_prompt(personalities[name])
 
 
-def active_personality_name(cfg: Optional[Dict[str, Any]]) -> str:
+def active_personality_name(cfg: Optional[dict[str, Any]]) -> str:
     """The currently selected personality name ('' when none is active)."""
     name = normalize_personality_name(_get(cfg, "display", "personality", default=""))
     return name if name and name in available_personalities(cfg) else ""
 
 
-def resolve_ephemeral_system_prompt(cfg: Optional[Dict[str, Any]]) -> str:
+def resolve_ephemeral_system_prompt(cfg: Optional[dict[str, Any]]) -> str:
     """Session overlay: ``display.personality`` when it names a known personality, else the
     user-owned ``agent.system_prompt``. Callers still prefer ``HERMES_EPHEMERAL_SYSTEM_PROMPT``."""
     name = active_personality_name(cfg)

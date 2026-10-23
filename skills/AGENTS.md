@@ -31,7 +31,7 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
    Check: `len(re.search(r'^description: (.*)$', text, re.M).group(1)) <= 60`.
 2. **Prose references native Hermes tools or the MCP servers the skill expects, in backticks**
    (`terminal`, `web_extract`, `read_file`, `patch`, `search_files`, `vision_analyze`,
-   `browser_navigate`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →
+   `browser_exec`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →
    `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` →
    `search_files target='files'`. MCP dependencies are named with setup in `## Prerequisites`.
    Third-party CLIs and pipelines are fine inside script files, not as the headline surface.

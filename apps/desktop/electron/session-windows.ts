@@ -71,9 +71,12 @@ function chatWindowWebPreferences(preloadPath: string) {
 // HUD's buildHudWindowUrl): without it a pop-out/watch window adopts the
 // PRIMARY profile and resolves the session id against the wrong backend
 // (#82768, #61286). Absent → unchanged primary adoption.
-function buildSessionWindowUrl(sessionId: string, { devServer, profile, rendererIndexPath, watch }: any = {}) {
+function buildSessionWindowUrl(
+  sessionId: string,
+  { connectionId, devServer, profile, rendererIndexPath, watch }: any = {}
+) {
   const profileKey = typeof profile === 'string' ? profile.trim() : ''
-  const query = `?win=secondary${watch ? '&watch=1' : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}`
+  const query = `?win=secondary${watch ? '&watch=1' : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}${connectionId !== undefined ? `&connectionId=${encodeURIComponent(connectionId ?? '')}` : ''}`
   const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {

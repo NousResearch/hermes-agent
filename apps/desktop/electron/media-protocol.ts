@@ -73,6 +73,29 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
   return { connectionId, filePath, mode, profile }
 }
 
+/**
+ * The file name a native save of a `hermes-media://` URL should offer. The
+ * media path rides percent-encoded in the URL, so Chromium's own guess flattens
+ * the whole path into the name (`C__Users_me_Videos_clip.mp4`). Returns null
+ * for any other URL so ordinary downloads keep Chromium's name.
+ */
+export function mediaProtocolDownloadName(rawUrl: string): null | string {
+  let target: MediaProtocolTarget
+
+  try {
+    if (new URL(rawUrl).protocol !== `${MEDIA_PROTOCOL}:`) {
+      return null
+    }
+
+    target = parseMediaProtocolTarget(rawUrl)
+  } catch {
+    return null
+  }
+
+  // Media paths come from the agent's OS: split on both separators.
+  return target.filePath.split(/[\\/]/).filter(Boolean).pop() || null
+}
+
 export function isStreamableMediaPath(filePath: string): boolean {
   const lower = filePath.toLowerCase()
 

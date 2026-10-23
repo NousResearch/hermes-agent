@@ -98,7 +98,7 @@ assert not continuations.pending_jobs()
     try:
         for program, args in [(producer, [url, str(tmp_path)]), (consumer, [])]:
             result = subprocess.run([sys.executable, "-c", program, *args], env=env, cwd=tmp_path,
-                                    capture_output=True, text=True, timeout=90)
+                                    capture_output=True, text=True, timeout=90, check=False)
             assert result.returncode == 0, result.stdout + result.stderr
     finally:
         server.shutdown()

@@ -19,6 +19,7 @@ from hermes_state_common import (
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
+from hermes_state_fts import fts_layout_current, fts_layout_drift
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -643,7 +644,13 @@ class SessionSearchMixin:
             return "teardown_incomplete"
         if self._fts_external_index_empty_with_messages(conn):
             return "backfill_incomplete"
-        self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=conn)
+        current = fts_layout_current(conn)
+        if not current and fts_layout_drift(conn):
+            return "layout_drift"
+        # Not current with no older layout left means a definition this code does not recognise (a newer
+        # release's): the work is done, but the stamp is not this release's to write.
+        if current:
+            self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=conn)
         _delete_meta(conn, "fts_optimize_available")
         conn.execute("UPDATE schema_version SET version = ? WHERE version < ?", (SCHEMA_VERSION, SCHEMA_VERSION))
         return None
@@ -826,7 +833,7 @@ class SessionSearchMixin:
         # left-to-right without backtracking); a leftover unmatched quote becomes whitespace.
         _quoted_parts: list = []
 
-        def _hold(m: "re.Match[str]") -> str:
+        def _hold(m: re.Match[str]) -> str:
             _quoted_parts.append(m.group(0))
             return f"\x00Q{len(_quoted_parts) - 1}\x00"
 

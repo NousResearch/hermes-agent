@@ -29,7 +29,7 @@ def launch_context(tmp_path, monkeypatch):
 
 
 def launch(context, *, env_type="local", env=None, pty=False, notify=False, watch=None, opted=True, persist=False):
-    registry, scope, identity, cwd = context
+    _registry, scope, identity, cwd = context
     return json.loads(spawn_background_process(
         command="printf 'transport done'", env=env, env_type=env_type,
         effective_task_id=scope.task_id, task_id=scope.task_id, session_key="",
@@ -45,7 +45,7 @@ def launch(context, *, env_type="local", env=None, pty=False, notify=False, watc
     (False, True, None, False), (False, False, None, False),
 ])
 def test_local_pipe_and_pty_keep_interactive_notifications_off(launch_context, pty, notify, watch, opted, persist):
-    registry, scope, identity, cwd = launch_context
+    registry, _scope, _identity, _cwd = launch_context
     data = launch(launch_context, pty=pty, notify=notify, watch=watch, opted=opted, persist=persist)
     assert not data.get("error"), data
     session = registry.get(data["session_id"])
@@ -66,7 +66,7 @@ def test_local_pipe_and_pty_keep_interactive_notifications_off(launch_context, p
 @pytest.mark.parametrize("backend", ["docker", "ssh"])
 @pytest.mark.parametrize("outcome", ["success", "no_pid", "launch_error", "lost", "unknown_exit"])
 def test_sandbox_transport_success_and_failure_contract(launch_context, backend, outcome):
-    registry, scope, identity, cwd = launch_context
+    registry, _scope, identity, cwd = launch_context
 
     class Backend:
         def __init__(self):
@@ -116,13 +116,12 @@ def test_local_launch_failure_does_not_create_a_completion(launch_context, monke
 
 
 def test_kill_revokes_a_completion_persisted_during_signalling(launch_context, monkeypatch):
-    registry, scope, identity, cwd = launch_context
+    registry, _scope, identity, _cwd = launch_context
     session = processes.ProcessSession(id="proc_signal_race", command="build", cron_continuation=identity)
     registry._running[session.id] = session
 
     def finish_during_signal(session, session_id, consume_output):
         registry._finish_exited(session, 0)
-        return None
 
     monkeypatch.setattr(registry, "_signal_kill", finish_during_signal)
     result = registry.kill_process(session.id)
@@ -135,7 +134,7 @@ def test_kill_revokes_a_completion_persisted_during_signalling(launch_context, m
 
 
 def test_reader_and_kill_race_persist_only_one_cancelled_result(launch_context):
-    registry, scope, identity, cwd = launch_context
+    registry, _scope, identity, _cwd = launch_context
     # Real registry transition under contention, without timing a live shell.
     session = processes.ProcessSession(id="proc_race", command="build", exited=True,
         exit_code=-15, completion_reason="killed", cron_continuation=identity)
@@ -165,7 +164,7 @@ def test_reader_and_kill_race_persist_only_one_cancelled_result(launch_context):
 
 
 def test_checkpoint_recovery_preserves_cron_identity_and_does_not_enable_notifications(launch_context):
-    registry, scope, identity, cwd = launch_context
+    registry, _scope, identity, _cwd = launch_context
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     session = processes.ProcessSession(id="proc_checkpoint", command="test child", pid=child.pid,
         host_start_time=registry._safe_host_start_time(child.pid), cron_continuation=identity,

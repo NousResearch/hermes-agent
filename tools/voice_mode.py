@@ -448,7 +448,7 @@ def thinking_sound_enabled() -> bool:
         return True
 
 
-def _synth_thinking_blip(np, frequency: float) -> "Any":
+def _synth_thinking_blip(np, frequency: float) -> Any:
     """One soft 'blub': short sine with a downward glide and a click-free envelope."""
     duration = 0.16
     n = int(SAMPLE_RATE * duration)
@@ -1187,7 +1187,7 @@ def listen_for_speech(
     # from the opening TTS passage, but later louder passages exceed the
     # stale floor and false-trigger.  The rolling window keeps the floor
     # current so only genuinely louder-than-playback speech trips the VAD.
-    floor_window: "deque[float]" = deque(maxlen=max(calib_blocks, 100))  # ~3s rolling
+    floor_window: deque[float] = deque(maxlen=max(calib_blocks, 100))  # ~3s rolling
     pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
     consecutive = 0
     min_floor = 0.0  # baseline from initial calibration; floor never drops below this

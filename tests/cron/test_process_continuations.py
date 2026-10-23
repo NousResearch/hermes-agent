@@ -50,7 +50,7 @@ if sys.argv[5] == 'cancelled':
     registry.kill_process(session.id)
 """
     spawned = subprocess.run([sys.executable, "-c", program, job["id"], execution["id"],
-                              command, str(tmp_path), outcome], capture_output=True, text=True, timeout=30)
+                              command, str(tmp_path), outcome], capture_output=True, text=True, timeout=30, check=False)
     assert spawned.returncode == 0, spawned.stderr
     process_id = spawned.stdout.strip()
     assert continuations.pending_jobs() == []  # Parent turn still owns the task.
@@ -93,7 +93,7 @@ from cron import continuations, executions
 job = json.load(sys.stdin)
 job['execution_id'] = executions.create_execution(job['id'], source='continuation')['id']
 assert continuations.claim_job(job)
-"""], input=json.dumps(ready[0]), capture_output=True, text=True, timeout=30)
+"""], input=json.dumps(ready[0]), capture_output=True, text=True, timeout=30, check=False)
         assert claim.returncode == 0, claim.stderr
         assert executions.recover_interrupted_executions() == 1
     scheduler.tick(verbose=False)

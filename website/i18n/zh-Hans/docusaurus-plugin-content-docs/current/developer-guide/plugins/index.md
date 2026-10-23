@@ -512,15 +512,15 @@ ctx.register_tool(
 
 ### 覆盖内置工具
 
-要用你自己的实现替换内置工具（例如将默认浏览器工具替换为有头 Chrome CDP 后端，或将 `web_search` 替换为自定义企业索引），传入 `override=True`：
+要用你自己的实现替换内置工具（例如将 `web_search` 替换为自定义企业索引），传入 `override=True`：
 
 ```python
 def register(ctx):
     ctx.register_tool(
-        name="browser_navigate",             # 与内置工具同名
-        toolset="plugin_my_browser",         # 你自己的 toolset 命名空间
+        name="web_search",                   # 与内置工具同名
+        toolset="plugin_my_search",          # 你自己的 toolset 命名空间
         schema={...},
-        handler=my_custom_navigate,
+        handler=my_corporate_search,
         override=True,                       # 显式启用覆盖
     )
 ```
@@ -552,6 +552,7 @@ def register(ctx):
 | [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | 每次 `run_conversation` 调用结束 + CLI 退出 | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | 忽略 |
 | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/网关销毁活跃会话 | `session_id: str \| None, platform: str` | 忽略 |
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | 网关切换新会话键（`/new`、`/reset`） | `session_id: str, platform: str` | 忽略 |
+| [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | 会话删除或主动归档提交后（所有入口、sweep、prune） | `session_id: str, reason: str, profile: str \| None`，可选 `deleted_ids: list[str]`、`sessions_dir: str` | 忽略 |
 
 大多数钩子是即发即忘的观察者——其返回值被忽略。例外是 `pre_llm_call`，它可以向对话中注入上下文。
 

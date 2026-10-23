@@ -1,0 +1,17 @@
+name: adaption
+repo: https://github.com/adaptionlabs/adaption-hermes-plugin
+sha: 958ad2e9077107be1919a5365541caa4e0acdcc8
+description: "Dataset import, adaptation, augmentation, translation, synthetic generation, and AutoScientist fine-tuning through the hosted Adaption MCP. Portable Agent Plugins v1 package with three workflow skills; the MCP server is added separately with OAuth (or an API key for headless use). Disclosure — skill-only, no code; the MCP tools call api.prod.adaptionlabs.ai, and launches spend Adaption credits (the skills request a cost estimate first, Hermes does not enforce it). Hermes does not prompt before those tools unless the server is configured with trust: untrusted."
+maintainer: adaptionlabs
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/adaptionlabs/adaption-hermes-plugin#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -85,7 +85,7 @@ def test_invalid_execution_cannot_launch_a_command(monkeypatch, mode):
 
 @pytest.mark.parametrize("status", ["claimed", "running", "completed", "failed", "unknown", "pruned"])
 def test_only_terminal_parent_attempts_are_eligible(status):
-    job, identity, result = ready_job()
+    _job, identity, _result = ready_job()
     with executions._transaction() as conn:
         if status == "pruned":
             conn.execute("DELETE FROM executions WHERE id=?", (identity["execution_id"],))
@@ -156,7 +156,7 @@ print(json.dumps({'claimed': bool(claimed), 'id': job['execution_id']}))
     def compete():
         start.wait(timeout=20)
         completed = subprocess.run([sys.executable, "-c", program], input=json.dumps(queued),
-                                   capture_output=True, text=True, timeout=30)
+                                   capture_output=True, text=True, timeout=30, check=False)
         assert completed.returncode == 0, completed.stderr
         return json.loads(completed.stdout)
 
@@ -193,7 +193,7 @@ executions.mark_execution_running(job['execution_id'])
 os._exit(23)
 """
     completed = subprocess.run([sys.executable, "-c", program, boundary], input=json.dumps(queued),
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, timeout=30, check=False)
     assert completed.returncode == 23, completed.stderr
     assert executions.recover_interrupted_executions() == 1
     assert executions.list_executions(job_id=queued["id"])[0]["status"] == "unknown"
@@ -204,7 +204,7 @@ def test_completion_and_receipt_stay_in_the_spawning_profile(tmp_path):
     original = get_hermes_home()
     home_a, home_b = tmp_path / "a", tmp_path / "b"
     with profile(home_a):
-        job, identity, result = ready_job()
+        _job, identity, _result = ready_job()
         session = ProcessSession(id="proc_profile", command="build", exited=True,
                                  exit_code=0, output_buffer="PRIVATE_A", cron_continuation=identity)
     with profile(home_b):
@@ -267,6 +267,7 @@ def test_bad_receipt_does_not_block_other_completions(payload):
 @pytest.mark.parametrize("failure", ["failure", "timeout", "exception", "unreachable", "delivery", "empty"])
 def test_continuation_failure_is_final_without_changing_schedule(monkeypatch, quiet_scheduler, failure):
     job, _, _ = ready_job()
+    jobs.update_job(job["id"], {"deliver": "telegram:123"})
     before = jobs.get_job(job["id"])
     delivered = []
 
@@ -287,8 +288,11 @@ def test_continuation_failure_is_final_without_changing_schedule(monkeypatch, qu
 
     monkeypatch.setattr(scheduler, "run_job", run)
     monkeypatch.setattr(scheduler, "_deliver_result", deliver)
+    from cron.delivery_queue import drain
     scheduler.tick(verbose=False)
+    drain(lambda job, text, for_failure: deliver(job, text))
     scheduler.tick(verbose=False)
+    drain(lambda job, text, for_failure: deliver(job, text))
     after = jobs.get_job(job["id"])
     assert after["next_run_at"] == before["next_run_at"]
     assert after["repeat"] == before["repeat"]
@@ -397,6 +401,7 @@ def test_execution_creation_failure_does_not_consume_the_completion(monkeypatch)
 @pytest.mark.parametrize("mutation", ["delete", "pause"])
 def test_job_mutation_during_continuation_does_not_resurrect_job(monkeypatch, quiet_scheduler, mutation):
     job, _, _ = ready_job()
+    jobs.update_job(job["id"], {"deliver": "telegram:123"})
     delivered = []
 
     def run(job, **kw):
@@ -409,6 +414,8 @@ def test_job_mutation_during_continuation_does_not_resurrect_job(monkeypatch, qu
     monkeypatch.setattr(scheduler, "run_job", run)
     monkeypatch.setattr(scheduler, "_deliver_result", lambda *a, **kw: delivered.append(a))
     scheduler.tick(verbose=False)
+    from cron.delivery_queue import drain
+    drain(lambda *a: delivered.append(a))
     if mutation == "delete":
         assert jobs.get_job(job["id"]) is None
         assert len(delivered) == 1

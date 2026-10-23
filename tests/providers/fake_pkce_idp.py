@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 
 class FakeIdP:
-    def __init__(self) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
         self.codes: dict[str, str] = {}          # code -> code_challenge
         self.refresh_tokens: set[str] = set()
         self.token_requests: list[dict] = []
@@ -46,6 +46,8 @@ class FakeIdP:
                 body = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
                 form = {k: v[0] for k, v in body.items()}
                 idp.token_requests.append(form)
+                if idp.token_answer is not None:
+                    return self._json(*idp.token_answer)
                 grant = form.get("grant_type")
                 if grant == "authorization_code":
                     challenge = idp.codes.pop(form.get("code", ""), None)
@@ -61,8 +63,11 @@ class FakeIdP:
                 idp.issued += 1
                 refresh = f"rt-{idp.issued}-{secrets.token_hex(4)}"
                 idp.refresh_tokens.add(refresh)
-                self._json(200, {"access_token": f"at-{idp.issued}-{secrets.token_hex(4)}",
-                                 "refresh_token": refresh, "expires_in": 3600, "token_type": "Bearer"})
+                payload = {"access_token": f"at-{idp.issued}-{secrets.token_hex(4)}",
+                           "refresh_token": refresh, "expires_in": 3600, "token_type": "Bearer"}
+                if idp.granted_scope is not None:
+                    payload["scope"] = idp.granted_scope
+                self._json(200, payload)
 
             def _json(self, status, payload):
                 data = json.dumps(payload).encode()
@@ -73,11 +78,28 @@ class FakeIdP:
                 self.wfile.write(data)
 
         self.override_state: str | None = None
-        self.server = HTTPServer(("127.0.0.1", 0), Handler)
-        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.granted_scope: str | None = None  # ``scope`` echoed in token responses (None = omitted)
+        self.token_answer: tuple[int, dict] | None = None  # (status, JSON) answered to every token POST instead
+        self.server = HTTPServer((host, port), Handler)
+        self.base = f"http://{host}:{self.server.server_address[1]}"
         self._thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
 
-    def start(self) -> "FakeIdP":
+    def start(self, *, tls_dir=None, name: str | None = None) -> FakeIdP:
+        """Serve; with *tls_dir*, over HTTPS with a throwaway CA written there (``self.ca_pem`` to trust).
+        *name* is the DNS name the certificate (and ``self.base``) use instead of the bound address."""
+        if tls_dir is not None:
+            import ssl
+            from pathlib import Path
+
+            from tests.fakes.providers.oauth_token_server import make_test_ca
+
+            host, port = self.server.server_address[:2]
+            ca = make_test_ca(Path(tls_dir), [name or host])
+            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            context.load_cert_chain(ca.leaf_pem, ca.leaf_key)
+            self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
+            self.base = f"https://{name or host}" + ("" if port == 443 else f":{port}")
+            self.ca_pem = ca.ca_pem
         self._thread.start()
         return self
 

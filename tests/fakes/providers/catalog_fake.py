@@ -85,7 +85,7 @@ class CatalogFake:
         self._stop = threading.Event()
         self._server: ThreadingHTTPServer | None = None
 
-    def __enter__(self) -> "CatalogFake":
+    def __enter__(self) -> CatalogFake:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         server.daemon_threads = True
         self._server = server

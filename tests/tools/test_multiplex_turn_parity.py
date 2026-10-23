@@ -129,8 +129,8 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
     """Config-derived singletons (redaction switch, aux unhealthy marks, LSP service, browser
     engine/headed flags, MCP stderr log path) are keyed by the routed profile home."""
     from agent import auxiliary_client, lsp, redact
-    from tools import browser_tool_cloud, mcp_tool_config
-    from tools.browser_tool_lifecycle import cleanup_all_browsers
+    from tools import browser_session_cloud, mcp_tool_config
+    from tools.browser_session_lifecycle import cleanup_all_browsers
 
     a, b = two_homes
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)  # launch profile opted out
@@ -152,10 +152,10 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
         lsp.shutdown_service()
 
     cleanup_all_browsers()
-    assert _under(a, browser_tool_cloud._get_browser_engine) == "chrome"
-    assert _under(b, browser_tool_cloud._get_browser_engine) == "lightpanda"
-    assert _under(a, browser_tool_cloud._is_headed_mode) is False
-    assert _under(b, browser_tool_cloud._is_headed_mode) is True
+    assert _under(a, browser_session_cloud.get_browser_engine) == "auto"  # "chrome" is an alias of auto
+    assert _under(b, browser_session_cloud.get_browser_engine) == "lightpanda"
+    assert _under(a, browser_session_cloud.is_headed_mode) is False
+    assert _under(b, browser_session_cloud.is_headed_mode) is True
 
     mcp_tool_config._mcp_stderr_log_fh.clear()
     try:

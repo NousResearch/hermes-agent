@@ -709,8 +709,8 @@ def test_prompt_delta_is_bounded_to_max_delta_lines(
     assert "Message 29." in task.payload["prompt"]
 
 
-def test_attachment_payload_is_rejected_by_local_text_only_boundary():
-    with pytest.raises(discussion.DiscussionValidationError, match="unknown fields"):
+def test_incomplete_attachment_metadata_is_rejected():
+    with pytest.raises(discussion.DiscussionValidationError, match="missing fields"):
         discussion.validate_user_payload({
             "text": "Review.",
             "thread_id": "thread-1",

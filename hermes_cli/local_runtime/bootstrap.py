@@ -68,7 +68,7 @@ def assets_dir() -> Path:
     return models_dir() / "assets"
 
 
-def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]":
+def staged_in(models_dir: Path, *, require_complete: bool = True) -> list[Path]:
     """Servable GGUFs in a directory: single files, plus split GGUFs once by their first part.
     With ``require_complete`` a split counts only when EVERY part is on disk — a mid-download split
     is not servable and must not surface anywhere as a model."""
@@ -89,7 +89,7 @@ def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]
     return out
 
 
-def adopt_legacy_models() -> "list[Path]":
+def adopt_legacy_models() -> list[Path]:
     """Move GGUFs left in the old per-profile ``<profile home>/models`` layout (and its assets/)
     into the machine-scoped dirs, so everything downstream keeps reading one directory.
 
@@ -133,12 +133,12 @@ def adopt_legacy_models() -> "list[Path]":
     return moved
 
 
-def staged_models() -> "list[Path]":
+def staged_models() -> list[Path]:
     """Servable staged models (continuation parts, incomplete splits and assets/ never count)."""
     return staged_in(models_dir())
 
 
-def staged_model_ids() -> "list[str]":
+def staged_model_ids() -> list[str]:
     return [model_id_from_stem(p.stem) for p in staged_models()]
 
 
@@ -208,19 +208,21 @@ def refresh_local_runtime() -> bool:
         return False
 
 
-def _admitted_models_max(mdir: Path, configured: int) -> int:
+def _admitted_models_max(mdir: Path, configured: int, engine_tag: str | None = None) -> int:
     """Residency cap to hand the router: derived from the hardware budget, ``models_max`` as a ceiling.
 
     A cap of "four" on a card that holds one model is how a second child ends up paged (WDDM) and
     silently slow — llama.cpp evicts its LRU before an incoming load only when the cap says the
     card is full. A probe miss or an unpriceable model keeps the configured count: this must never
-    block a boot.
+    block a boot. On Windows unified memory, free commit bounds the count too.
     """
     try:
         from hermes_cli.local_runtime.hardware import probe_budget
         from hermes_cli.local_runtime.presets import admitted_residency_count
 
-        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured)
+        capacity = probe_budget(planning=True)
+        live = _launch_budget(capacity) if capacity.uma else None
+        cap = admitted_residency_count(mdir, capacity, configured, live=live, engine_tag=engine_tag)
     except Exception as exc:
         logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
         return configured
@@ -230,7 +232,8 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
     return cap
 
 
-def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
+def _generate_presets(mdir: Path, preset_path: Path, residents: int = 1, *,
+                      engine_tag: str | None = None) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -243,13 +246,16 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     Degradation ladder on failure: a STALE policy still beats no policy — stock fit (f16 KV at max
     context, no placement) is the silent-busy-wait failure on Windows. Keep serving with the
     previous INI when one exists; only a first boot with no INI at all falls to stock fit.
+    ``residents`` is the router's model count, which splits the prompt-cache room on Windows
+    unified memory.
     """
     from hermes_cli.local_runtime.hardware import probe_budget
     from hermes_cli.local_runtime.presets import generate_presets
 
     try:
         capacity = probe_budget(planning=True)
-        for entry in generate_presets(mdir, capacity, preset_path, live=_launch_budget(capacity)):
+        for entry in generate_presets(mdir, capacity, preset_path, live=_launch_budget(capacity),
+                                      residents=residents, engine_tag=engine_tag):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -303,7 +309,8 @@ def refit_idle_presets(sup) -> bool:
     last = sup._refit_usable
     if last is not None and abs(live.usable_vram_bytes - last) < _REFIT_STEP_BYTES:
         return False
-    text = render_presets(plan_presets(models_dir(), capacity, live=live))
+    text = render_presets(plan_presets(models_dir(), capacity, live=live, residents=sup.models_max,
+                                       engine_tag=_SERVING_ENGINE.tag if _SERVING_ENGINE is not None else None))
     # Held across the write and the reload so a restart can't spawn between them; everything
     # slow ran above.
     with sup._lifecycle_lock:
@@ -399,7 +406,7 @@ def _cross_process_boot_lock(timeout_s: float = 130.0):
         os.close(fd)
 
 
-def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
+def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
     falls back to configured providers."""
@@ -453,11 +460,12 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
-            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
+            models_max = _admitted_models_max(mdir, int(section.get("models_max", 4)), engine.tag)
+            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", models_max,
+                                            engine_tag=engine.tag)
 
             sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
-                                        models_max=_admitted_models_max(
-                                            mdir, int(section.get("models_max", 4))),
+                                        models_max=models_max,
                                         port=int(section.get("port", 0)) or None)
             try:
                 sup.start()

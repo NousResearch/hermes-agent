@@ -62,7 +62,7 @@ def run_one(scenario: dict[str, Any], mode: str, rep: int, out_dir: Path) -> dic
     hermes_home = base.setup_isolated_home(enabled, listing=("auto" if mode == "listing" else "off"))
     os.environ["HERMES_HOME"] = str(hermes_home)
     base.reset_module_state()
-    n_registered = base.register_fake_tools()
+    base.register_fake_tools()
 
     base.FIXTURE_NOTES.parent.mkdir(parents=True, exist_ok=True)
     base.FIXTURE_NOTES.write_text("Hello from the test fixture.\n", encoding="utf-8")

@@ -251,6 +251,10 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
                       "compression_count": getattr(compressor, "compression_count", 0) if compressor is not None else 0,
                       "runtime": "codex_app_server", "thread_id": thread_id, "turn_id": turn_id,
                   }))
+    if not force:
+        # Hermes-forced compactions are recorded by their compress_context attempt; this one Codex ran alone.
+        from agent.compaction_events import publish_provider_native
+        publish_provider_native(agent)
     return True
 
 
@@ -725,7 +729,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
     # api_mode is mutable. Explicit-True check matches compress_context().
     if getattr(agent, "compression_checkpoint_required", False) is True:
-        from agent.conversation_compression import _checkpoint_blocked
+        from agent.conversation_compression_checkpoint import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)

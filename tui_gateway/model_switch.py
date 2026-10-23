@@ -51,7 +51,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> "_TurnScopes":
+def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> _TurnScopes:
     """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
     return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
@@ -109,7 +109,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
         raise
 
 
-def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
+def _release_profile_runtime_scope_tokens(scopes: _TurnScopes | None) -> None:
     """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
     not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
     context (a fail-open scope leak on the teardown path). The first failure is re-raised after
@@ -305,6 +305,9 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         session.pop("one_turn_model_restore", None)
 
 
+LARGE_MODEL_NOTICE_KEY = "model.large_notice"
+
+
 def _apply_model_switch(
     sid: str, session: dict, raw_input: str, *, confirm_expensive_model: bool = False,
     pin_session_override: bool = True, parsed_flags: Any | None = None,
@@ -380,6 +383,12 @@ def _apply_model_switch(
             from_provider=_switch_away_provider(agent, explicit_provider, current_provider),
             to_provider=result.target_provider, surface=_session_source(session), from_model=current_model,
             session_id=getattr(agent, "session_id", None))
+    if (notice := getattr(result, "usage_notice", "")) and sid:
+        # Window plans, Large model: a warning, never a confirm. The existing notice event, so desktop
+        # (toast) and TUI (status line) show it for every switch path, live or applied at turn start.
+        _emit("notification.show", sid, {
+            "text": f"⚠ {notice}", "level": "warn", "kind": "ttl", "ttl_ms": 8000,
+            "key": LARGE_MODEL_NOTICE_KEY, "id": LARGE_MODEL_NOTICE_KEY})
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,

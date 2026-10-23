@@ -100,7 +100,7 @@ export const arChat = {
       '/init': 'فحص المستودع لإنشاء تعليمات AGENTS.md أو تحديثها',
       '/suggestions': 'مراجعة عمليات الأتمتة المقترحة وقبولها أو رفضها',
       '/blueprint': 'إعداد أتمتة من قالب مخطط',
-      '/browser': 'إدارة متصفح الوكيل [connect|disconnect|status|use]',
+      '/browser': 'إدارة متصفح الوكيل [connect|disconnect|status]',
       '/palette': 'فتح لوحة الأوامر',
       '/usage': 'عرض استخدام الرموز وحدود الطلبات؛ reset يسترد إعادة ضبط محفوظة لحدود Codex',
       '/subscription': 'عرض خطة Nous وتغييرها في المتصفح',
@@ -133,11 +133,6 @@ export const arChat = {
     editingQueuedInComposer: 'جار تحرير رسالة في الطابور',
     restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
     restoredDraftUndo: 'تراجع',
-    localSetup: {
-      title: 'يمكن تشغيل هذا على جهازك',
-      text: (model: string) => `${model} يناسب هذا الجهاز. مجاني، وتبقى المحادثات على جهازك.`,
-      action: 'أرني'
-    },
     queueEdit: 'تحرير الرسالة المجدولة',
     queueExpand: 'توسيع',
     queueCollapse: 'طي',

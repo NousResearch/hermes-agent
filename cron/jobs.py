@@ -26,12 +26,13 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from cron.jobs_outcome import record_run_outcome
+from cron.jobs_invariants import _validate_job_mode_invariants
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
@@ -184,7 +185,7 @@ def _current_cron_store() -> _CronStorePaths:
 
 
 @contextlib.contextmanager
-def use_cron_store(home: Union[str, Path]):
+def use_cron_store(home: str | Path):
     """Route cron storage to ``home`` without mutating process globals."""
     token = _cron_store_override.set(
         _CronStorePaths.for_dir(Path(home).expanduser().resolve() / "cron"))
@@ -472,11 +473,6 @@ _PAYLOAD_FIELDS = frozenset({"prompt", "script", "skill", "skills", "no_agent"})
 EMPTY_PAYLOAD_ERROR = (
     "Cron job has nothing to run: the prompt is blank and no script or "
     "skill(s) are set. Provide a prompt, a script, or at least one skill."
-)
-
-NO_AGENT_WITHOUT_SCRIPT_ERROR = (
-    "no_agent=True requires a script — with no agent and no script "
-    "there is nothing for the job to run."
 )
 
 
@@ -817,7 +813,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
-            dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(schedule)
             # Naive timestamps become aware in the CONFIGURED Hermes timezone (not server-local):
             # the due-check compares against hermes_time.now().
             # Make naive timestamps timezone-aware at parse time so the stored value doesn't depend on the
@@ -846,7 +842,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
                 f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
         now = _hermes_now()
         # Durations measure elapsed time, not wall-clock hours across a DST transition.
-        run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
+        run_at = (now.astimezone(UTC) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
         return _interval_schedule(parse_duration(schedule))
@@ -873,28 +869,28 @@ def _ensure_aware(dt: datetime) -> datetime:
 
 def _elapsed_seconds(later: datetime, earlier: datetime) -> float:
     """Return elapsed seconds between aware instants, independent of wall time."""
-    return (later.astimezone(timezone.utc) - earlier.astimezone(timezone.utc)).total_seconds()
+    return (later.astimezone(UTC) - earlier.astimezone(UTC)).total_seconds()
 
 
 def _instant_after(left: datetime, right: datetime) -> bool:
     """Whether *left* is a later absolute instant than *right*."""
-    return left.astimezone(timezone.utc) > right.astimezone(timezone.utc)
+    return left.astimezone(UTC) > right.astimezone(UTC)
 
 
 def _instant_at_or_before(left: datetime, right: datetime) -> bool:
     """Whether *left* is at or before *right* as an absolute instant."""
-    return left.astimezone(timezone.utc) <= right.astimezone(timezone.utc)
+    return left.astimezone(UTC) <= right.astimezone(UTC)
 
 
 def _instant_before(left: datetime, right: datetime) -> bool:
     """Whether *left* is an earlier absolute instant than *right*."""
-    return left.astimezone(timezone.utc) < right.astimezone(timezone.utc)
+    return left.astimezone(UTC) < right.astimezone(UTC)
 
 
 def _seconds_after(dt: datetime, seconds: float) -> datetime:
     """*dt* plus real *seconds*, in *dt*'s zone. Aware ``+ timedelta`` is wall-clock arithmetic
     that drops ``fold``, so inside a fall-back hour it lands an hour off."""
-    return (dt.astimezone(timezone.utc) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
+    return (dt.astimezone(UTC) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
 
 
 def _parse_aware(value: Any) -> Optional[datetime]:
@@ -1191,7 +1187,7 @@ def compute_next_run(schedule: dict[str, Any], last_run_at: Optional[str] = None
         if minutes is None:
             return None
         # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
-        next_run = base_time.astimezone(timezone.utc) + timedelta(minutes=minutes)
+        next_run = base_time.astimezone(UTC) + timedelta(minutes=minutes)
         return next_run.astimezone(base_time.tzinfo).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")
@@ -1388,15 +1384,12 @@ def load_jobs() -> list[dict[str, Any]]:
             # shape; the repair below rewrites it with replace=True.
             skipped = [k for k, v in jobs.items() if not isinstance(v, dict)]
             if skipped:
-                notes.append("Skipping %d non-dict entr%s in id-keyed jobs map: %s" % (
-                    len(skipped), "y" if len(skipped) == 1 else "ies",
-                    ", ".join(map(repr, skipped))))
+                notes.append(f"Skipping {len(skipped):d} non-dict entr{('y' if len(skipped) == 1 else 'ies')} in id-keyed jobs map: {', '.join(map(repr, skipped))}")
             jobs = [{**v, "id": v.get("id") or k} for k, v in jobs.items() if isinstance(v, dict)]
             repair = "id-keyed jobs map flattened to list"
             unmergeable = True
         elif not isinstance(jobs, list):
-            notes.append("Replacing invalid jobs.json 'jobs' field (%s) with an empty list"
-                         % type(jobs).__name__)
+            notes.append(f"Replacing invalid jobs.json 'jobs' field ({type(jobs).__name__}) with an empty list")
             jobs = []
             repair = "invalid jobs field replaced with list"
             unmergeable = True
@@ -1411,9 +1404,7 @@ def load_jobs() -> list[dict[str, Any]]:
         # Every reader and the due scan index records as dicts: one junk entry would crash the
         # whole tick and freeze every healthy sibling job, so skip it like the id-keyed map does.
         # Types only: the raw values are arbitrary file content and must not reach the logs.
-        notes.append("Skipping %d non-object entr%s in jobs.json (types: %s)" % (
-            len(junk), "y" if len(junk) == 1 else "ies",
-            ", ".join(sorted({type(j).__name__ for j in junk}))))
+        notes.append(f"Skipping {len(junk)} non-object entr{'y' if len(junk) == 1 else 'ies'} in jobs.json (types: {', '.join(sorted({type(j).__name__ for j in junk}))})")
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
     for job in jobs:
@@ -1774,27 +1765,6 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
 }
 
 
-def _validate_job_mode_invariants(
-    monitor_script: Optional[str],
-    monitor_url: Optional[str],
-    no_agent: bool,
-    script: Optional[str],
-) -> None:
-    """Execution-mode invariants shared by create_job and update_job (no bypass via the update
-    door)."""
-    if monitor_script and monitor_url:
-        raise ValueError(
-            "monitor_script and monitor_url are mutually exclusive — a job "
-            "can only have one monitor source.")
-    if (monitor_script or monitor_url) and no_agent:
-        raise ValueError(
-            "monitor_script/monitor_url cannot be combined with no_agent=True — "
-            "the whole point of a monitor job is to suppress or wake the AGENT "
-            "based on source changes. Use a plain no_agent script job instead.")
-    if no_agent and not script:
-        raise ValueError(NO_AGENT_WITHOUT_SCRIPT_ERROR)
-
-
 def _oneshot_past_grace_error(run_at: Any) -> ValueError:
     return ValueError(
         f"Requested one-shot time {run_at} is more than "
@@ -1829,7 +1799,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
-    context_from: Optional[Union[str, list[str]]] = None,
+    context_from: Optional[str | list[str]] = None,
     enabled_toolsets: Optional[list[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
@@ -2426,6 +2396,7 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
+    execution_id: Optional[str] = None,
     model_unreachable: bool = False,
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
@@ -2453,6 +2424,8 @@ def mark_job_run(
     (cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
+        if execution_id is not None and execution_id in job.get("canonical_completions", []):
+            return True
         if expected_fire_owner is not None:
             claim = job.get("fire_claim")
             if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
@@ -2467,6 +2440,9 @@ def mark_job_run(
                      ("manual_run_at", "manual_run_prompt", "pending_slot", "run_claim")
                      if key in job} if continuation else {}
         record_run_outcome(job, success, error, delivery_error, status, now)
+        if execution_id is not None:
+            from cron.scheduler_authority import replayable_completions as live
+            job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
         if continuation:
             job.update(preserved)
             save_jobs(jobs)
@@ -2716,7 +2692,7 @@ def _machine_id() -> str:
 def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
     manual: bool = False, return_job: bool = False,
-) -> Union[bool, dict[str, Any]]:
+) -> bool | dict[str, Any]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
     fence + file lock: reject missing/terminal/paused jobs unless ``force`` (explicit manual

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import hashlib
 import json
 import re
@@ -150,7 +150,7 @@ class BuildRequest:
             canary = re.fullmatch(r"v\d+\.\d+\.\d+\+canary\.(20\d{6}T\d{6}Z)", tag)
             if canary:
                 release_epoch = int(datetime.strptime(canary.group(1), "%Y%m%dT%H%M%SZ")
-                                    .replace(tzinfo=timezone.utc).timestamp())
+                                    .replace(tzinfo=UTC).timestamp())
             else:
                 claim_tag = os.environ.get("RELEASE_CLAIM_TAG", "")
                 # The payload version stays plain; the claim must name the same
@@ -337,7 +337,7 @@ def prepare_in_worker(request: BuildRequest) -> Path:
     request.validate_channel()
     python, node, env = prepare_tools(request.source, request.work, request.cache, os.environ)
     env = identity_environment(request, request.variant, env)
-    native_toolchain = Path(env["UV_CACHE_DIR"]).name
+    native_toolchain = Path(env["UV_CACHE_DIR"]).resolve().name
     run([str(node), "scripts/build/node-deps.mjs", "--source", str(request.source), "--reuse",
          "--native-toolchain", native_toolchain,
          *[arg for name in request.workspaces() for arg in ("--workspace", name)]], cwd=request.source, env=env)

@@ -43,6 +43,108 @@ function derive(status: DesktopUpdateStatus | null, apply: UpdateApplyState = ID
 }
 
 describe('deriveUpdateStatus', () => {
+  it('names the stable release only when the checkout is on it', () => {
+    const latestRelease = en.settings.about.channel.latestRelease
+
+    const stable = {
+      supported: true,
+      behind: 0,
+      channel: 'stable',
+      sourceVersion: '0.21.6',
+      targetSha: 'a'.repeat(40),
+      aheadOfRelease: false
+    }
+
+    const on = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      latestRelease,
+      status: { ...stable, currentSha: 'a'.repeat(40) },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(on.line).toBe('You’re on the latest stable release (v0.21.6).')
+
+    // Ahead of the release (forward-only): the check pins the target to HEAD, so
+    // targetSha === currentSha; aheadOfRelease keeps it from claiming the release.
+    const ahead = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      latestRelease,
+      status: { ...stable, targetSha: 'b'.repeat(40), currentSha: 'b'.repeat(40), aheadOfRelease: true },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(ahead.line).toBe(en.updates.latestBody)
+
+    // An older checker omits the field and may also pin an ahead checkout to HEAD: never name the release.
+    const older = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      latestRelease,
+      status: { ...stable, currentSha: 'a'.repeat(40), aheadOfRelease: undefined },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(older.line).toBe(en.updates.latestBody)
+    expect(derive({ supported: true, behind: 0, branch: 'main' }).line).toBe(en.updates.latestBody)
+  })
+
+  it('names a stable release the updater refuses as held, never an update', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      held: en.settings.about.channel.heldBody,
+      latestRelease: en.settings.about.channel.latestRelease,
+      status: {
+        supported: true,
+        behind: 0,
+        updateAvailable: false,
+        held: 'downgrade',
+        channel: 'stable',
+        sourceVersion: '0.22.2',
+        targetSha: 'd'.repeat(40),
+        currentSha: 'e'.repeat(40),
+        aheadOfRelease: false,
+        rollback: false
+      },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(view.updateAvailable).toBe(false)
+    expect(view.tone).toBe('idle')
+    expect(view.line).toBe(en.settings.about.channel.heldBody('v0.22.2'))
+  })
+
+  it('names a stable release the checkout already contains as a rollback, never a new update', () => {
+    const status = {
+      supported: true,
+      behind: -1,
+      channel: 'stable',
+      sourceVersion: '0.21.7',
+      updateAvailable: true,
+      aheadOfRelease: false
+    }
+
+    const view = (rollback: boolean) =>
+      deriveUpdateStatus({
+        apply: IDLE_APPLY,
+        checking: false,
+        rollback: en.settings.about.channel.rollbackBody,
+        status: { ...status, rollback },
+        target: 'client',
+        u: en.updates
+      }).line
+
+    expect(view(true)).toBe(en.settings.about.channel.rollbackBody('v0.21.7'))
+    expect(view(true)).not.toBe(en.updates.updateReadyUnknown)
+    expect(view(false)).toBe(en.updates.updateReadyUnknown)
+  })
+
   it('never-checked: idle tone, invites a check', () => {
     const view = derive(null)
 

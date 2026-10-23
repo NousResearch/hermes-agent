@@ -3,7 +3,7 @@
 import asyncio
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import sys
@@ -139,7 +139,7 @@ def make_message(*, channel, content: str, mentions=None, msg_type=None):
         mentions=list(mentions or []),
         attachments=[],
         reference=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         channel=channel,
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
@@ -943,7 +943,6 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     adapter.config.extra["history_backfill"] = True
     adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] context")
 
-    bot_user = adapter._client.user
     dm_channel = SimpleNamespace(
         id=999,
         name=None,

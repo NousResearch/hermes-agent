@@ -249,7 +249,7 @@ def _repair_backup_headroom_bytes(total_bytes: int) -> int:
     return max(_REPAIR_BACKUP_MIN_FREE_BYTES, int(total_bytes * _REPAIR_BACKUP_FREE_FRACTION))
 
 
-def _disk_budget(db_path: Path, refusal: str) -> "tuple[Optional[str], int, int, int]":
+def _disk_budget(db_path: Path, refusal: str) -> tuple[Optional[str], int, int, int]:
     """``(error, bundle_bytes, free_bytes, headroom_bytes)`` for *db_path*'s volume (main file plus every PRESENT
     sidecar); *error* is set (and the sizes zero) on stat()/disk_usage() failure. Fails CLOSED: the nearly-full
     volume these guards exist for is exactly where they are most likely to fail."""
@@ -319,7 +319,7 @@ def _repair_ledger_path(db_path: Path) -> Path:
     return db_path.with_name(db_path.name + ".repair-attempts.json")
 
 
-def _db_fingerprint(db_path: Path) -> "Optional[str]":
+def _db_fingerprint(db_path: Path) -> Optional[str]:
     """Cheap identity for a damaged DB file: size + a bounded content sample.
 
     EXCLUDES mtime: a malformed-schema DB still accepts writes, so live writers, checkpoints and the
@@ -340,7 +340,7 @@ def _db_fingerprint(db_path: Path) -> "Optional[str]":
     return _read_offline(db_path, "fingerprint", _sample)
 
 
-def _backup_content_identity(db_path: Path) -> "Optional[str]":
+def _backup_content_identity(db_path: Path) -> Optional[str]:
     """Recovery-image identity for forensic-backup dedupe: whole file + sidecars.
 
     A DIFFERENT relation from :func:`_db_fingerprint` (never conflate them): the fingerprint answers "same
@@ -366,7 +366,7 @@ def _backup_content_identity(db_path: Path) -> "Optional[str]":
     return _read_offline(db_path, "backup-identity", _digest)
 
 
-def _read_repair_ledger(db_path: Path) -> "dict[str, Any]":
+def _read_repair_ledger(db_path: Path) -> dict[str, Any]:
     with contextlib.suppress(OSError, ValueError):
         raw = json.loads(_repair_ledger_path(db_path).read_text(encoding="utf-8"))
         return raw if isinstance(raw, dict) else {}
@@ -405,7 +405,7 @@ def _persistent_repair_exhausted_error(db_path: Path) -> str:
             f"Delete {_repair_ledger_path(db_path).name} to force another automatic attempt.")
 
 
-def _record_repair_outcome(db_path: Path, *, repaired: bool, fingerprint: "Optional[str]" = None) -> None:
+def _record_repair_outcome(db_path: Path, *, repaired: bool, fingerprint: Optional[str] = None) -> None:
     """Update the persistent attempt ledger after a repair pass. Never raises.
 
     Keys on the post-attempt fingerprint (what the NEXT exhaustion probe sees). If a live connection makes it
@@ -432,7 +432,7 @@ def _record_repair_outcome(db_path: Path, *, repaired: bool, fingerprint: "Optio
         logger.warning("Could not update state.db repair ledger: %s", exc)
 
 
-def _existing_malformed_backups(db_path: Path) -> "list[Path]":
+def _existing_malformed_backups(db_path: Path) -> list[Path]:
     """Timestamped forensic backups of *db_path*, newest first."""
     prefix = f"{db_path.name}.malformed-backup-"
     try:
@@ -461,7 +461,7 @@ def _publish_backup_bundle(db_path: Path, staging: Path, backup_path: Path) -> N
     main = (db_path, staging, backup_path)
     sidecars = [(sidecar, staging.with_name(staging.name + suffix), backup_path.with_name(backup_path.name + suffix))
                 for suffix, sidecar in zip(_DB_SIDECAR_SUFFIXES, _sidecars(db_path)) if sidecar.exists()]
-    published: "list[Path]" = []
+    published: list[Path] = []
     try:
         for src, staged, _dst in (main, *sidecars):
             shutil.copy2(src, staged)
@@ -475,7 +475,7 @@ def _publish_backup_bundle(db_path: Path, staging: Path, backup_path: Path) -> N
         raise
 
 
-def _backup_db_file(db_path: Path) -> "tuple[Optional[Path], Optional[str]]":
+def _backup_db_file(db_path: Path) -> tuple[Optional[Path], Optional[str]]:
     """Raw-copy a (possibly malformed) DB plus sidecars to a timestamped backup.
 
     Raw bytes on purpose: the DB won't open cleanly, so preserve them exactly for forensics. Returns ``(backup_path,
@@ -534,7 +534,19 @@ def _backup_db_file(db_path: Path) -> "tuple[Optional[Path], Optional[str]]":
         return None, f"backup copy failed: {exc}"
 
 
-def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> None:
+def _rw_or_vanished(p: Path) -> bool:
+    """True when *p* is read-write for this user OR no longer exists.
+
+    The preflight lists the files first and checks them after, and a live sibling connection's last ``close()``
+    unlinks ``-wal``/``-shm`` in between (a concurrent quarantine can rename ``state.db`` aside the same way).
+    ``os.access`` on the vanished path returns False, which is "gone", not "read-only". The final re-check covers
+    a sidecar that vanished and was recreated by the next opener before ``exists()`` ran.
+    """
+    mode = os.R_OK | os.W_OK
+    return os.access(p, mode) or not p.exists() or os.access(p, mode)
+
+
+def preflight_db_writability(db_path: Path, *, db_label: str = "state.db", directory_only: bool = False) -> None:
     """Refuse-or-repair read-only DB files BEFORE the first connection opens.
 
     A stray read-only ``state.db`` / ``-wal`` / ``-shm`` (sudo run, restored backup, copied dotfiles) otherwise
@@ -553,8 +565,9 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
         home = Path(get_hermes_home()).resolve()
     # SQLite needs a writable directory in every journal mode (WAL/SHM sidecars, or the DELETE-mode journal).
     sidecars = (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm"))
-    for p, is_dir in [(db_path.parent, True), *((p, False) for p in (db_path, *sidecars) if p.is_file())]:
-        if (is_dir and not p.is_dir()) or os.access(p, os.R_OK | os.W_OK):
+    files = () if directory_only else tuple((p, False) for p in (db_path, *sidecars) if p.is_file())
+    for p, is_dir in [(db_path.parent, True), *files]:
+        if (is_dir and not p.is_dir()) or _rw_or_vanished(p):
             continue
         x = "x" if is_dir else ""
         in_scope = False

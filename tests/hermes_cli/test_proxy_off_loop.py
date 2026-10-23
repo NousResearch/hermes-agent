@@ -149,7 +149,7 @@ class _RecordingAdapter(UpstreamAdapter):
         )
 
 
-async def _start_runner(app: "web.Application"):
+async def _start_runner(app: web.Application):
     """Spin up an aiohttp app on an ephemeral localhost port. Returns (runner, base_url)."""
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
@@ -160,7 +160,7 @@ async def _start_runner(app: "web.Application"):
     return runner, f"http://127.0.0.1:{port}"
 
 
-def _build_fake_upstream(captured: dict[str, Any]) -> "web.Application":
+def _build_fake_upstream(captured: dict[str, Any]) -> web.Application:
     async def echo(request):
         body = await request.read()
         captured["requests"].append(
@@ -175,7 +175,7 @@ def _build_fake_upstream(captured: dict[str, Any]) -> "web.Application":
 
 def _build_rejecting_upstream(
     captured: dict[str, Any], *, reject_status: int, accept_bearer: str
-) -> "web.Application":
+) -> web.Application:
     """Upstream that rejects every bearer except ``accept_bearer``.
 
     Drives ``handle_proxy``'s ``status in {401, 429}`` branch: the first forward

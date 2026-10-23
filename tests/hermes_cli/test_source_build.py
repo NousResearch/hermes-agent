@@ -145,7 +145,7 @@ def source_checkout(tmp_path, monkeypatch):
     scripts = root / "scripts" / "build"
     scripts.mkdir(parents=True)
     repository = Path(__file__).resolve().parents[2]
-    for name in ("node-deps.mjs", "freshness.mjs", "frontend-common.mjs"):
+    for name in ("node-deps.mjs", "electron-runtime.mjs", "freshness.mjs", "frontend-common.mjs"):
         shutil.copy2(repository / "scripts/build" / name, scripts / name)
     (root / ".gitignore").write_text("node_modules/\n**/dist/\n", encoding="utf-8")
     return root, acquired
@@ -348,6 +348,25 @@ def test_unbuilt_desktop_is_named_on_one_whole_line(source_products, monkeypatch
         build_update_products(root, desktop=True)
     lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
     assert [line for line in lines if line.startswith("Desktop app build owed:")] == [expected]
+
+
+@pytest.mark.platforms("linux")
+def test_desktop_dependency_failure_still_builds_the_tui_and_web_ui(source_products, capsys):
+    # A host whose compiler rejects a Desktop-only native addon (node-pty on g++ 9) used to lose
+    # every frontend with it: the union npm ci failed and nothing was built.
+    from hermes_cli.source_build import ProductBuildError, build_update_products
+
+    root, _ = source_products
+    manifest = root / "apps/desktop/package.json"
+    manifest.write_text(json.dumps({**json.loads(manifest.read_text()), "scripts": {"postinstall": "exit 1"}}))
+    with pytest.raises(ProductBuildError) as failure:
+        build_update_products(root, desktop=True)
+    assert [name for name, _ in failure.value.failures] == ["desktop dependencies"]
+    assert [event["step"] for event in _events(root)] == ["deps", "tui", "web"]
+    assert not (root / "node_modules/apps-desktop").exists()
+    out = capsys.readouterr().out
+    assert "Desktop app build owed: desktop dependencies failed" in out
+    assert "hermes uninstall --gui" in out
 
 
 @pytest.mark.platforms("linux")

@@ -14,11 +14,14 @@ import type {
   ToolsConfigureResponse
 } from '../../../gatewayTypes.js'
 import { t } from '../../../i18n/runtime.js'
+import { appendTranscriptMessage } from '../../../lib/messages.js'
 import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
+import { turnController } from '../../turnController.js'
 import { noSkillsInstalled } from '../../userMessages.js'
+import { canonicalTools } from '../canonicalSessionCommands.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -68,8 +71,20 @@ export const opsCommands: SlashCommand[] = [
     help: 'stop background processes',
     name: 'stop',
     run: (_arg, ctx) => {
+      // Registry busy policy `interrupt_then_dispatch` (classic /stop, Desktop /stop): end the
+      // running turn first, then stop this session's processes — session-scoped on the shared
+      // owner, never the legacy registry-wide kill_all (every chat's, every profile's).
+      if (ctx.gateway.gw?.isCanonical && ctx.ui.busy && ctx.sid) {
+        void turnController.interruptTurn({
+          appendMessage: msg => ctx.transcript.setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
+          gw: ctx.gateway.gw,
+          sid: ctx.sid,
+          sys: ctx.transcript.sys
+        })
+      }
+
       ctx.gateway
-        .rpc<ProcessStopResponse>('process.stop', {})
+        .rpc<ProcessStopResponse>('process.stop', ctx.sid ? { session_id: ctx.sid } : {})
         .then(
           ctx.guarded<ProcessStopResponse>(r => {
             const killed = Number(r.killed ?? 0)
@@ -87,10 +102,31 @@ export const opsCommands: SlashCommand[] = [
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
-      // Parse arg: `now` / `always` skip the confirmation gate.
-      // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()
 
+      // The shared owner serves a session-scoped reload.mcp: it reconciles only this profile's
+      // servers and moves this session to a new policy generation when idle (session_ancillary.py).
+      // It has no persistent opt-out (`always`), so `always` confirms this once like `now`.
+      if (ctx.gateway.gw?.isCanonical) {
+        const confirm = ['always', 'approve', 'now', 'once', 'yes'].includes(a)
+
+        return void ctx.gateway
+          .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid, ...(confirm ? { confirm: true } : {}) })
+          .then(
+            ctx.guarded<ReloadMcpResponse>(r =>
+              ctx.transcript.sys(
+                r.message ||
+                  (r.status === 'confirm_required'
+                    ? t('slashCmd.ops.reloadMcp.confirmRequired')
+                    : t('slashCmd.ops.reloadMcp.reloaded'))
+              )
+            )
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      // Parse arg: `now` / `always` skip the confirmation gate.
+      // `always` additionally persists approvals.mcp_reload_confirm=false.
       const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }
@@ -131,8 +167,9 @@ export const opsCommands: SlashCommand[] = [
     help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
     name: 'reload',
     run: (_arg, ctx) => {
+      // The shared gateway serves `/reload` for one session this client controls.
       ctx.gateway
-        .rpc<ReloadEnvResponse>('reload.env', {})
+        .rpc<ReloadEnvResponse>('reload.env', ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {})
         .then(
           ctx.guarded<ReloadEnvResponse>(r => {
             const n = Number(r.updated ?? 0)
@@ -147,21 +184,14 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'manage the agent browser [connect|disconnect|status|use]',
+    help: 'manage the agent browser [connect|disconnect|status]',
     name: 'browser',
     run: (arg, ctx) => {
       const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
       const action = rawAction.toLowerCase()
 
-      if (!['connect', 'disconnect', 'status', 'use'].includes(action)) {
+      if (!['connect', 'disconnect', 'status'].includes(action)) {
         return ctx.transcript.sys(t('slashCmd.ops.browser.usage'))
-      }
-
-      // `/browser use [on|off]` — same arguments as the classic CLI.
-      const mode = action === 'use' ? (rest[0] ?? 'on').toLowerCase() : undefined
-
-      if (mode && mode !== 'on' && mode !== 'off') {
-        return ctx.transcript.sys(t('slashCmd.ops.browser.useUsage'))
       }
 
       const sid = ctx.sid ?? null
@@ -175,8 +205,7 @@ export const opsCommands: SlashCommand[] = [
         .rpc<BrowserManageResponse>('browser.manage', {
           action,
           session_id: sid,
-          ...(url && { url }),
-          ...(mode && { enabled: mode === 'on' })
+          ...(url && { url })
         })
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
@@ -186,22 +215,12 @@ export const opsCommands: SlashCommand[] = [
               r.messages?.forEach(message => ctx.transcript.sys(message))
             }
 
-            if (action === 'use') {
-              ctx.transcript.sys(
-                t(mode === 'on' ? 'slashCmd.ops.browser.useEnabled' : 'slashCmd.ops.browser.useDisabled')
-              )
-
-              return ctx.transcript.sys(t('slashCmd.ops.browser.newSessionsOnly'))
-            }
-
             if (action === 'status') {
-              ctx.transcript.sys(
+              return ctx.transcript.sys(
                 r.connected
                   ? t('slashCmd.ops.browser.connected', r.url || t('slashCmd.ops.browser.urlUnavailable'))
                   : t('slashCmd.ops.browser.notConnected')
               )
-
-              return r.browser_use ? ctx.transcript.sys(t('slashCmd.ops.browser.modeBrowserUse')) : undefined
             }
 
             if (action === 'disconnect') {
@@ -284,11 +303,20 @@ export const opsCommands: SlashCommand[] = [
       }
 
       const hash = first
-      const filePath = rest.join(' ').trim()
+      // Main's --all/--force: a whole-tree restore also reverts hand-edits. A flag, never a path.
+      const isAll = (arg: string) => ['--all', '--force'].includes(arg.toLowerCase())
+
+      const filePath = rest
+        .filter(arg => !isAll(arg))
+        .join(' ')
+        .trim()
+
+      const all = !filePath && rest.some(isAll)
 
       return ctx.gateway
         .rpc<RollbackRestoreResponse>('rollback.restore', {
           ...(filePath ? { file_path: filePath } : {}),
+          ...(all ? { all } : {}),
           hash,
           session_id: ctx.sid
         })
@@ -303,6 +331,20 @@ export const opsCommands: SlashCommand[] = [
             const target = filePath || t('slashCmd.ops.rollback.workspaceTarget')
             const detail = r.reason || r.message || r.restored_to || t('slashCmd.ops.rollback.restoredDetail')
             ctx.transcript.sys(t('slashCmd.ops.rollback.restored', target, detail))
+
+            // What a safe whole-tree restore left alone, as main's CLI lists it: the first five paths.
+            const summarize = (paths: string[]) =>
+              paths.slice(0, 5).join(', ') + (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
+
+            for (const [key, paths] of [
+              ['keptUserEdits', r.skipped_user_edits],
+              ['keptOversize', r.skipped_oversize],
+              ['failedDeletes', r.failed_deletes]
+            ] as const) {
+              if (paths?.length) {
+                ctx.transcript.sys(t(`slashCmd.ops.rollback.${key}`, summarize(paths)))
+              }
+            }
 
             if ((r.history_removed ?? 0) > 0) {
               ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
@@ -720,6 +762,12 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    help: 'manage connector accounts: list, rename, add another, reconnect, remove',
+    name: 'connectors',
+    run: () => patchOverlayState({ connectors: true })
+  },
+
+  {
     help: 'view & toggle plugins (no arg opens the hub; enable/disable <name> for direct toggle)',
     name: 'plugins',
     run: (arg, ctx, cmd) => {
@@ -752,6 +800,18 @@ export const opsCommands: SlashCommand[] = [
     name: 'tools',
     run: (arg, ctx, cmd) => {
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
+
+      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        // The shared gateway freezes a session's toolsets at launch (the classic CLI refuses the
+        // same change): say so instead of answering enable/disable with the unchanged list.
+        if (subcommand === 'disable' || subcommand === 'enable') {
+          return ctx.transcript.sys(t('canonical.controls.notAvailable', `tools ${subcommand}`))
+        }
+
+        ctx.ran?.()
+
+        return canonicalTools(ctx)
+      }
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {
         ctx.gateway.gw

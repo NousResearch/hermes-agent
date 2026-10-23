@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import logging
 from contextvars import copy_context
 from dataclasses import dataclass, replace
 from threading import Lock, Thread, current_thread
 from typing import Any, Optional
+from datetime import UTC
 
 _pricing_prewarm_lock = Lock()
 _pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] = {}
@@ -27,7 +29,7 @@ class ConfigContext:
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
         current_base_url: Optional[str] = None,
-    ) -> "ConfigContext":
+    ) -> ConfigContext:
         """Copy with TRUTHY overrides applied: the TUI reads agent attributes that may be empty strings
         before an agent is spawned — empties must not clobber the disk-config values."""
         overrides = (("current_provider", current_provider), ("current_model", current_model),
@@ -265,12 +267,14 @@ def _apply_limits(rows: list[dict]) -> None:
     from hermes_cli.auth import read_credential_pool
 
     def iso(epoch: float) -> str:
-        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+        return datetime.fromtimestamp(epoch, UTC).isoformat()
 
     pooled = {slug for slug, entries in read_credential_pool().items() if entries}
     for row in rows:
         slug = str(row.get("slug") or "")
-        if slug not in pooled or row.get("is_user_defined"):
+        # Window plans say their limits in plan_usage (gauges + limit line); a credential cooldown chip
+        # beside them would show a second, unrelated reset time.
+        if slug not in pooled or row.get("is_user_defined") or row.get("plan_usage"):
             continue
         try:
             state = load_pool(slug).limit_state(row.get("models") or [])
@@ -361,7 +365,7 @@ _EXHAUSTED_WINDOW_PERCENT = 100.0
 def _iso_from_epoch(epoch: float) -> str:
     from datetime import datetime, timezone
 
-    return datetime.fromtimestamp(float(epoch), timezone.utc).isoformat()
+    return datetime.fromtimestamp(float(epoch), UTC).isoformat()
 
 
 def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
@@ -540,6 +544,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
+    from agent.codex_service_tiers import ultrafast_offered
     from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
@@ -564,7 +569,8 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             fast = resolve_fast_mode_overrides(
                 model, provider=slug, base_url=row.get("api_url")) is not None
             entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
-            if fast and model_supports_ultrafast(model):
+            if fast and model_supports_ultrafast(model) and ultrafast_offered(
+                    model, provider=slug, base_url=row.get("api_url")):
                 entry["ultrafast"] = True
 
             if reasoning and read_reasoning_catalog is not None:
@@ -859,6 +865,43 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
+def _attach_nous_plan_usage(row: dict, *, warm: bool):
+    """Stamp ``plan_usage`` from the portal snapshot (window plans only) and return the PickerUsage (or
+    None). A cache-only open reads the last snapshot at any age: the 60s account cache has usually lapsed
+    by the time someone opens the composer menu. Accounts without a window plan get nothing."""
+    try:
+        from hermes_cli.model_picker_usage import nous_picker_usage
+        usage = nous_picker_usage(warm=warm, any_age=not warm)
+    except Exception:
+        logging.getLogger(__name__).debug("Nous plan usage unavailable", exc_info=True)
+        return None
+    if usage is not None:
+        row["plan_usage"] = usage.to_payload()
+        # Main's subscription-usage chip (`usage.windows`): the same gauge for a window
+        # plan, so it warns near a limit in the existing slot. Once an allowance is full the picker's limit
+        # line says it (with what happens next), so the chip would only repeat it; paused plans say so in
+        # the plan line.
+        if not usage.paused_reason and not row.get("usage") and not any(g.left_fraction <= 0.0 for g in usage.gauges):
+            windows = [_plan_usage_window(g) for g in usage.gauges if g.resets_at_ms]
+            if windows:
+                row["usage"] = {"windows": windows}
+    return usage
+
+
+def _plan_usage_window(g) -> dict:
+    """One window-plan allowance in main's ``ProviderUsageWindow`` shape. The label is Hermes's row title
+    (``Today``), like the other providers' English window labels."""
+    from datetime import datetime
+    from agent.usage_gauges import WindowGauge, gauge_title
+    return {
+        "label": gauge_title(WindowGauge(g.label, g.scope, g.title or g.label, 0)),
+        "used_percent": round(g.used_fraction * 100.0, 2),
+        "resets_at": datetime.fromtimestamp(g.resets_at_ms / 1000, UTC).isoformat(),
+        "scope": "account" if g.scope == "all" else "model",
+    }
+
+
+# health: allow CC -- usage-window plans: one branch attaches plan usage to the Nous row (built in _attach_nous_plan_usage); over target on main
 def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cached_only: bool = False) -> None:
     """Set ``row["pricing"] = {model_id: {input, output, cache | None, free}}``; for Nous also
     ``free_tier`` (account is free-tier) and ``unavailable_models`` (paid models a free user can't pick).
@@ -894,6 +937,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
         except Exception:
             raw_pricing = {}
         cached_nous_tier: Optional[bool] = None
+        plan_usage = _attach_nous_plan_usage(row, warm=not cached_only) if slug == "nous" else None
         if slug == "nous" and cached_only:
             cached_nous_tier = get_cached_nous_free_tier()
             if cached_nous_tier is None:
@@ -953,9 +997,17 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             except Exception:  # tier detection failed — fail open (no gating)
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+            if plan_usage is not None:
+                from hermes_cli.model_picker_usage import usage_levels
+                # The gateway's per-plan word per model (free / low / medium / top_tier).
+                row["usage_levels"] = usage_levels(list(models), raw_pricing)
+                # Top-tier marks from the gateway (it decides, not the client).
+                row["plan_usage"] = plan_usage.with_pricing({m: raw_pricing.get(m) for m in models}).to_payload()
+                # Window plans: the picker shows the usage word, not per-token prices.
+                row.pop("pricing", None)
 
 
-def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
+def _local_runtime_row(ctx: ConfigContext) -> dict | None:
     """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
     before the server runs (selection starts it via the runtime_provider seam). The row's id comes from
     the provider registry's own definition, never a local literal: a row the resolver can't resolve is

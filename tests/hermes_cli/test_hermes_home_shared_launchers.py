@@ -138,7 +138,7 @@ def test_dead_exe_never_shadows_kept_cmd(tmp_path, monkeypatch):
     local.mkdir(parents=True)
     _write_dead_exe(local / "hermes.exe", tmp_path / "gone" / "python.exe")
     (local / "hermes.cmd").write_text(
-        '@echo off\r\n"%s" -I -c "eA==" %%*\r\n' % default_python, encoding="utf-8")
+        f'@echo off\r\n"{default_python}" -I -c "eA==" %*\r\n', encoding="utf-8")
     assert _launchers._launcher_python(local / "hermes.exe") == tmp_path / "gone" / "python.exe"
 
     _isolate(tmp_path, monkeypatch, temp_home)

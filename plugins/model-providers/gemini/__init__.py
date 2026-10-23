@@ -36,6 +36,22 @@ class GeminiProfile(ProviderProfile):
         budget = long_decode_max_output_tokens(context.get("model") or "", context.get("reasoning_config"))
         return {"thinking_config": raw, **({"max_output_tokens": budget} if budget and is_native_gemini_base_url(base_url) else {})}
 
+    def fetch_models(
+        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Native AI Studio catalogs use ``?key=`` and ``models[].name``.
+
+        The OpenAI-compat ``.../v1beta/openai`` surface, Vertex, and every other host keep
+        the base class Bearer + ``data[].id`` probe. Query auth is not applied outside the
+        exact native Generative Language host.
+        """
+        from hermes_cli.models import _fetch_native_gemini_models, _is_native_gemini_base_url
+
+        effective = (base_url or "").strip() or self.base_url
+        if _is_native_gemini_base_url(effective):
+            return _fetch_native_gemini_models(api_key=api_key, base_url=effective, timeout=timeout)
+        return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+
 
 gemini = GeminiProfile(
     name="gemini", aliases=("google", "google-gemini", "google-ai-studio"), api_mode="chat_completions",

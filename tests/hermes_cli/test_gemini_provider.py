@@ -170,3 +170,153 @@ class TestGeminiModelsDev:
         assert "gemini-live-2.5-flash" not in result     # noise: live-
         assert "gemini-2.5-flash-preview-04-17" not in result  # noise: dated preview
 
+
+class _CatalogResp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return self._body
+
+
+class TestNativeGeminiProbe:
+    """Native AI Studio probing uses ?key= and models[].name.
+
+    The OpenAI-compat surface stays on Bearer + data[].id. The key must not appear
+    in the URL returned to callers.
+    """
+
+    def test_native_base_url_detected(self):
+        from hermes_cli.models import _is_native_gemini_base_url
+
+        assert _is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta")
+        assert _is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta/")
+
+    def test_openai_compat_and_other_hosts_excluded(self):
+        from hermes_cli.models import _is_native_gemini_base_url
+
+        assert not _is_native_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+        assert not _is_native_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+        assert not _is_native_gemini_base_url("https://api.openai.com/v1")
+        assert not _is_native_gemini_base_url(
+            "https://aiplatform.googleapis.com/v1beta1/publishers/google"
+        )
+        assert not _is_native_gemini_base_url("")
+        assert not _is_native_gemini_base_url(None)
+
+    def test_probe_uses_query_auth_and_catalog_urlopen(self):
+        from hermes_cli import models
+
+        captured = {}
+
+        def _fake_urlopen(req, timeout=5.0, ssl_context=None):
+            captured["url"] = req.full_url
+            captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _CatalogResp(
+                b'{"models": [{"name": "models/gemini-2.5-pro"},'
+                b' {"name": "models/gemini-2.0-flash"}, {"name": ""}, "skip"]}'
+            )
+
+        models._probe_neg_cache.clear()
+        with patch.object(models, "_urlopen_model_catalog_request", _fake_urlopen):
+            result = models.probe_api_models(
+                api_key="sek/ret+=",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+            )
+
+        assert "key=sek%2Fret%2B%3D" in captured["url"]
+        assert "sek/ret+=" not in captured["url"]
+        assert "authorization" not in captured["headers"]
+        assert result["models"] == ["gemini-2.5-pro", "gemini-2.0-flash"]
+        assert result["probed_url"] == "https://generativelanguage.googleapis.com/v1beta/models"
+        assert "sek" not in (result["probed_url"] or "")
+
+    def test_probe_failure_returns_none_without_raising(self):
+        from hermes_cli import models
+
+        def _boom(req, timeout=5.0, ssl_context=None):
+            raise OSError("catalog down")
+
+        models._probe_neg_cache.clear()
+        with patch.object(models, "_urlopen_model_catalog_request", _boom):
+            result = models.probe_api_models(
+                api_key="secret-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+            )
+        assert result["models"] is None
+        assert "secret-key" not in (result["probed_url"] or "")
+
+    def test_probe_openai_compat_uses_generic_bearer_path(self):
+        from hermes_cli import models
+
+        captured = {}
+
+        def _fake_urlopen(req, timeout=5.0, ssl_context=None):
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.header_items())
+            return _CatalogResp(b'{"data": [{"id": "models/gemini-2.5-pro"}]}')
+
+        models._probe_neg_cache.clear()
+        with patch.object(models, "_urlopen_model_catalog_request", _fake_urlopen):
+            result = models.probe_api_models(
+                api_key="secret-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+
+        assert "?key=" not in captured["url"]
+        assert captured["headers"].get("Authorization") == "Bearer secret-key"
+        assert result["models"] == ["models/gemini-2.5-pro"]
+
+    def test_profile_fetch_models_uses_query_auth(self):
+        import providers
+
+        from hermes_cli import models
+
+        profile = providers.get_provider_profile("gemini")
+        assert profile is not None
+        captured = {}
+
+        def _fake_urlopen(req, timeout=5.0, ssl_context=None):
+            captured["url"] = req.full_url
+            captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _CatalogResp(b'{"models": [{"name": "models/gemini-2.5-pro"}]}')
+
+        with patch.object(models, "_urlopen_model_catalog_request", _fake_urlopen):
+            result = profile.fetch_models(
+                api_key="secret-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+            )
+        assert result == ["gemini-2.5-pro"]
+        assert "key=secret-key" in captured["url"]
+        assert "authorization" not in captured["headers"]
+
+    def test_profile_openai_compat_keeps_bearer(self, monkeypatch):
+        import providers
+
+        profile = providers.get_provider_profile("gemini")
+        captured = {}
+
+        def _fake_open(req, timeout=5.0, **kwargs):
+            captured["url"] = req.full_url
+            captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _CatalogResp(b'{"data": [{"id": "gemini-2.5-pro"}]}')
+
+        monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", _fake_open)
+        result = profile.fetch_models(
+            api_key="secret-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        )
+        assert "?key=" not in captured["url"]
+        assert captured["headers"].get("authorization") == "Bearer secret-key"
+        assert result == ["gemini-2.5-pro"]
+

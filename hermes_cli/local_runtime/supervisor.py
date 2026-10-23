@@ -74,6 +74,11 @@ def _stable_port() -> int:
         return _free_port()
 
 
+def _api_key_path() -> Path:
+    """The stable endpoint key's home — also the file llama-server reads at spawn."""
+    return runtimes_root() / ".api_key"
+
+
 def _stable_api_key() -> str:
     """One key for the life of the install, persisted beside the runtimes.
 
@@ -81,7 +86,7 @@ def _stable_api_key() -> str:
     per-boot key strands every resumed session on HTTP 401 exactly as a per-boot port would on
     connection errors.
     """
-    key_path = runtimes_root() / ".api_key"
+    key_path = _api_key_path()
     with suppress(OSError):
         existing = key_path.read_text(encoding="utf-8-sig").strip()
         if len(existing) >= 16:
@@ -94,6 +99,33 @@ def _stable_api_key() -> str:
         logger.warning("could not persist api key (%s); sessions will need "
                        "a re-pick after restart", exc)
     return key
+
+
+def _api_key_args(api_key: str) -> list[str]:
+    """Hand the router its key by file, never by argv.
+
+    argv is world-readable in ``ps``, and _spawn() appends the launch command to
+    llama-server.log, which never passes through RedactingFormatter — so ``--api-key <value>``
+    persists the secret in two places that ignore security.redact_secrets. ``--api-key-file``
+    closes both: the file is the one _stable_api_key() already persisted, and llama-server reads
+    one key per line. A home the key could not be written to leaves argv as the only way to
+    authenticate the loopback endpoint, and _spawn_log_line() masks that fallback.
+    """
+    key_path = _api_key_path()
+    with suppress(OSError):
+        if key_path.read_text(encoding="utf-8-sig").strip() == api_key:
+            return ["--api-key-file", str(key_path)]
+    return ["--api-key", api_key]
+
+
+def _spawn_log_line(cmd: list[str]) -> str:
+    """The spawn line is the one thing written outside the log redactor: mask the key."""
+    masked = list(cmd)
+    if "--api-key" in masked:
+        index = masked.index("--api-key") + 1
+        if index < len(masked):
+            masked[index] = "***"
+    return str(masked)
 
 
 @lru_cache(maxsize=16)
@@ -178,7 +210,7 @@ class LlamaServerSupervisor:
             str(exe),
             "--host", "127.0.0.1",
             "--port", str(self.port),
-            "--api-key", self.api_key,
+            *_api_key_args(self.api_key),
             "--models-max", str(self.models_max),
             # Residency contract: a chat request to a staged-but-unloaded model loads it (slow
             # first token) instead of a bare 400/404 after an eject.
@@ -201,7 +233,7 @@ class LlamaServerSupervisor:
             # The crash-restart loop calls _spawn repeatedly; each restart would leak one fd.
             _quiet(self._log_handle.close)
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
-        self._log_handle.write(f"\n# spawn: {cmd}\n")
+        self._log_handle.write(f"\n# spawn: {_spawn_log_line(cmd)}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
         self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,

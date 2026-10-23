@@ -675,9 +675,9 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is a provider failure envelope, not normal content.
 
     Must be short (envelopes are 1-3 lines) AND start with the marker, so prose citing a status code misses."""
-    if not text:
-        return False
-    body = str(text).strip()
+    from agent.turn_failure_copy import strip_provider_context_line
+    # Only the original envelope counts toward the cap: config-sized context fields can't defeat it.
+    body = strip_provider_context_line(str(text or "").strip())
     if len(body) > 400 or body.count("\n") > 4:
         return False
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))

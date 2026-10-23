@@ -31,7 +31,7 @@ from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_
 from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
     CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
-    provider_label_for, site_copy, stamp_failure,
+    provider_context_line, provider_label_for, site_copy, stamp_failure,
 )
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_recovery_codex import _is_codex_token_expired, _recover_stale_codex_reasoning
@@ -1129,7 +1129,7 @@ def nonretryable_client_error_result(
         _final_response = nonretryable_copy(
             classified, provider=provider, model=model, summary=_nonretryable_summary,
             prefix_suggestion=_prefix_suggestion,
-        )
+        ) + "\n" + provider_context_line(provider, model, base_url)
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
     # "Provider error" and offers Retry instead of a re-login.
@@ -1261,6 +1261,8 @@ def max_retries_exhausted_result(
             _free_tier_kind = _welcome_surface_kind(classified)
         elif _outage := _welcome_outage_copy(agent, base_url, classified):
             _final_response, _free_tier_kind = _outage, "outage"
+        else:
+            _final_response += "\n" + provider_context_line(provider, model, base_url)
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.

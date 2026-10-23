@@ -9,6 +9,7 @@ trailing "Provider said:" / "Details:" line.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
@@ -460,6 +461,29 @@ def nonretryable_copy(
     body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
                            relogin=oauth_relogin_command(provider))
     return f"{body}\n\nProvider said: {summary}"
+
+
+def provider_context_line(provider: Any, model: Any, base_url: Any, limit: int = 120) -> str:
+    """The "(provider: …, model: …, endpoint: …)" line appended to terminal API failures.
+
+    The fields come from user configuration and are unbounded, so each is clipped; the
+    gateway sanitizer strips this exact line shape before its length heuristic
+    (``gateway/run.py``)."""
+    def clip(value: Any) -> str:
+        text = str(value or "unknown")
+        return text if len(text) <= limit else text[: limit - 1] + "…"
+
+    return f"(provider: {clip(provider)}, model: {clip(model)}, endpoint: {clip(base_url)})"
+
+
+# Stripped by the gateway sanitizer before its length heuristic: the fields are unbounded user
+# config, so counting them would let a long endpoint push a raw provider envelope past the guard.
+_PROVIDER_CONTEXT_LINE_RE = re.compile(r"\n\(provider: [^\n]*, model: [^\n]*, endpoint: [^\n]*\)\s*$")
+
+
+def strip_provider_context_line(text: str) -> str:
+    """``text`` without a trailing :func:`provider_context_line`."""
+    return _PROVIDER_CONTEXT_LINE_RE.sub("", text)
 
 
 def content_policy_copy(*, label: str, summary: str) -> str:

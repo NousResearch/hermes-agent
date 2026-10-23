@@ -657,7 +657,13 @@ class _KanbanNotification:
         self.platform_str = (sub["platform"] or "").lower()
         self.task_id = sub["task_id"]
         self.sub_profile = sub.get("notifier_profile") or ""
-        self.title = (task.title if task else sub["task_id"])[:120]
+        # The task title is worker/creator-authored text and rides into the chat body, so it
+        # gets the same scrub as a review reason: credentials redacted, local paths replaced,
+        # length bounded. Without this a task titled with a token or an absolute path
+        # published it to the channel. Empty title falls back to the task id, never to
+        # "None" or an empty parenthesis.
+        raw_title = (task.title if task else "") or ""
+        self.title = _safe_review_reason(raw_title, 120) or sub["task_id"]
         self.board_tag = t("gateway.kanban.ping.board_tag", board=self.board_slug) if self.board_slug else ""
         # Attribute the ping to the worker that did the work.
         tag = t("gateway.kanban.ping.assignee_tag", assignee=task.assignee) if task and task.assignee else ""

@@ -1,8 +1,10 @@
 """A completion receipt publishes native lifecycle facts and typed worker claims only.
 
-Regression for the Run 148 incident: a completed task's Telegram ping carried either
-nothing at all, or the worker's unrestricted prose verbatim (so a credential, a private
-path or a "merged" claim could reach an external channel).
+Regression, reduced from an observed production incident: a completed task's Telegram ping
+carried either nothing at all, or the worker's unrestricted prose verbatim (so a credential,
+a private path or a "merged" claim could reach an external channel). The task id, summary
+and verdicts below are SYNTHETIC — they reproduce the shape of the offending input, not the
+real task's content.
 
 The receipt now has a fixed shape: typed self-report fields the worker may set, each
 labelled as the worker's own claim, plus a fixed next step pointing at the Kanban task.
@@ -19,15 +21,15 @@ from gateway.kanban_watchers_notifier import (
     _fmt_completed,
 )
 
-TASK_ID = "t_8664d5a1"
+TASK_ID = "t_example01"
 
-# The real run 148 summary: legitimate engineering prose plus typed verdict fields.
-RUN_148_SUMMARY = """SUMMARY: AI Colleague V1 P0 review disposition work is complete
+# Synthetic stand-in for the offending summary: prose plus typed verdict fields.
+SYNTHETIC_COMPLETION_SUMMARY = """SUMMARY: AI Colleague V1 P0 review disposition work is complete
 NEXT_STEP: Host must repair the operator label before any human can review
 KANBAN_STATUS: PASS
 PYTEST_STATUS: PASS
 REVIEW_RESULT: PASS
-COMMIT: 0d9b98e
+COMMIT: abc1234
 BLOCKERS: none"""
 
 
@@ -52,7 +54,7 @@ class _Note:
 
 
 def test_run_148_renders_readable_typed_state_and_a_next_step():
-    rendered = _receipt(RUN_148_SUMMARY)
+    rendered = _receipt(SYNTHETIC_COMPLETION_SUMMARY)
 
     assert t("gateway.kanban.ping.completion.state.done") in rendered
     assert t("gateway.kanban.ping.completion.review.self_pass") in rendered
@@ -61,10 +63,10 @@ def test_run_148_renders_readable_typed_state_and_a_next_step():
 
 
 def test_run_148_free_text_never_reaches_the_channel():
-    rendered = _receipt(RUN_148_SUMMARY)
+    rendered = _receipt(SYNTHETIC_COMPLETION_SUMMARY)
 
     # The worker's prose fields are not published at all.
-    for prose in ("operator label", "must repair", "review disposition work is complete", "0d9b98e"):
+    for prose in ("operator label", "must repair", "review disposition work is complete", "abc1234"):
         assert prose not in rendered
 
 
@@ -152,7 +154,7 @@ def test_a_worker_pass_is_never_rendered_as_a_verified_review():
 
 
 def test_widget_keeps_the_heading_and_carries_no_raw_result():
-    msg, wake_handoff, _ = _fmt_completed(_Ev(), _Note(RUN_148_SUMMARY))
+    msg, wake_handoff, _ = _fmt_completed(_Ev(), _Note(SYNTHETIC_COMPLETION_SUMMARY))
 
     assert msg.startswith("✔")
     assert TASK_ID in msg
@@ -248,3 +250,73 @@ def test_review_requested_keeps_the_internal_wake_handoff():
     assert wake_handoff == "SUMMARY: implemented the change"
     # ...and it is the ONLY place that text was kept: the message never carries it.
     assert "implemented the change" not in msg
+
+
+# --- title boundary -------------------------------------------------------
+# The task title is authored outside the notifier (creator/worker) and rides into the chat
+# body. The scrub lives in the notification constructor, so these exercise the REAL
+# construction path rather than a hand-set attribute.
+
+class _Sub(dict):
+    pass
+
+
+def _note_with_task_title(title):
+    from gateway.kanban_watchers_notifier import _KanbanNotification
+
+    task = type("T", (), {"title": title, "assignee": None})()
+    d = {
+        "sub": _Sub(task_id=TASK_ID, platform="telegram", chat_id="1", board="ai-colleague"),
+        "task": task,
+    }
+    return _KanbanNotification(None, d, platform_cls=None, sub_fail_counts={})
+
+
+@pytest.mark.parametrize(
+    "title, leaked",
+    [
+        ("deploy fix ghp_abcdefghijklmnopqrstuvwxyz012345", "ghp_abcdefghijklmnopqrstuvwxyz012345"),
+        ("see /Users/example/private/report.txt", "/Users/example"),
+        ("https://user:hunter2@example.invalid/x", "hunter2"),
+    ],
+)
+def test_task_title_is_scrubbed_before_rendering(title, leaked):
+    note = _note_with_task_title(title)
+    msg, _, _ = _fmt_completed(_Ev(), note)
+    assert leaked not in msg
+    assert leaked not in note.title
+
+
+def test_missing_task_title_falls_back_to_task_id():
+    note = _note_with_task_title(None)
+    assert note.title == TASK_ID
+    msg, _, _ = _fmt_completed(_Ev(), note)
+    assert "None" not in msg
+
+
+# --- ordinary Hermes worker (no typed self-report fields) ------------------
+# A normal worker never emits REVIEW_RESULT/PYTEST_STATUS/KANBAN_STATUS. The receipt must
+# still say what actually happened (native lifecycle) and where to look, without inventing
+# a review verdict, a merge or a delivery.
+
+def test_ordinary_worker_gets_native_status_and_a_next_step():
+    msg, _, _ = _fmt_completed(_Ev(), _Note("SUMMARY: fixed the flaky test"))
+    assert TASK_ID in msg
+    # The native lifecycle is the message opening: "✔ <head> done — <title>". The title is
+    # the native task title, not the worker's summary prose.
+    assert "done" in msg.casefold()
+    assert "review disposition" in msg
+    # No typed fields were reported, so no verdict label may appear.
+    for key in (
+        "gateway.kanban.ping.completion.label.review",
+        "gateway.kanban.ping.completion.label.tests",
+        "gateway.kanban.ping.completion.label.kanban_status",
+    ):
+        assert t(key) not in msg
+
+
+def test_ordinary_worker_is_never_reported_as_reviewed_merged_or_delivered():
+    msg, _, _ = _fmt_completed(_Ev(), _Note("SUMMARY: fixed the flaky test"))
+    lowered = msg.casefold()
+    for claim in ("approved", "merged", "delivered", "passed", "verified"):
+        assert claim not in lowered

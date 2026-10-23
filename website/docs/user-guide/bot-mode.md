@@ -168,10 +168,11 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Who answers a message that names nobody** is a Room settings choice on gateway-owned rooms: **Everyone** (the default), a **lead** that hands the message on, or **Pick who answers automatically**. The automatic choice makes one short tool-less model call over the room purpose and notes, each member's role (its profile description) and the last few messages, and the room shows **Assigned to X** above the replies. @mentions, `@all`/`@everyone`, scheduled posts and replies inside an existing thread never reach that call, and a failed or unreadable answer falls back to everyone. Route the call to a cheap model with `auxiliary.group_router` (`hermes model` → auxiliary → Group router).
 - Each member keeps its own persistent room session, so room context survives like any other conversation.
 - **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.
-- **Gateway group chats keep running when you close the Desktop.** On a connection whose gateway runs group chats (Desktop's own gateway, or a `hermes serve` / `hermes dashboard` backend reached over SSH, URL or Cloud), a new group chat whose bots all belong to the active connection is a *gateway group chat*: the gateway owns its log and schedules its turns through a durable driver, so closing Hermes Desktop (or losing its connection) does not stop a discussion, and the group chat catches up from the log when you reopen it. Its header shows who is working and what the group chat waits on (approvals, replies that need attention), the group chat says when its group driver is unavailable, and the header offers **Stop** while work is active, and **Rename** and **Disband**, only where the gateway lists those methods; an approval shows the command it would allow (or, for a plugin approval rule, the plugin's description) before you choose **Allow once**. A message the gateway refuses before posting it comes back for editing; one that may already have been sent offers **Retry**, which never posts it twice; **Stop** also stops a message still sending. A standalone `hermes serve` / `hermes dashboard` backend forwards group chat requests when a gateway serves the profile. The root gateway fences and imports existing standalone group chats from `shared-state.db` into its `state.db` once, so those group chats have one owner and remain reachable. Without an owning gateway, standalone group chats stay with their standalone backend. Both routes support attachments; **Discard** appears only when the owning gateway advertises it. Older servers that do not advertise file methods hide upload and disable download. Every other group chat is a *classic group chat*: Desktop runs its rounds, so it pauses while Desktop is closed. Group chats whose members span several machines are classic: each member's turns run on its own gateway, and the cross-connection courier described under *bot-to-bot messaging* applies to them. A group chat saved as Desktop-driven keeps that engine after membership edits, and an older group chat whose bots span connections opens in that workspace too. For a classic group chat that reaches the migration gate on a gateway connection, Desktop first opens that gateway's group chat of the same name when there is one; otherwise it does not run there. Instead it says what to do: when its bots are on this connection it offers **Start new group**, a fresh gateway group chat with the same bots that does not copy the earlier messages; when they are on other computers it names those connections, so you can switch to the one where they run and start a group there, or start a new group with bots from this connection. Its earlier messages stay readable below, read only. A connection whose Hermes is too old for group chats, or that can't be reached, says so and offers **Retry**.
+- **Gateway group chats keep running when you close the Desktop.** On a connection whose gateway runs group chats (Desktop's own gateway, or a `hermes serve` / `hermes dashboard` backend reached over SSH, URL or Cloud), a new group chat whose bots all belong to the active connection is a *gateway group chat*: the gateway owns its log and schedules its turns through a durable driver, so closing Hermes Desktop (or losing its connection) does not stop a discussion, and the group chat catches up from the log when you reopen it. Its header shows who is working and what the group chat waits on (approvals, replies that need attention), the group chat says when its group driver is unavailable, and the header offers **Stop** while work is active, and **Rename** and **Disband**, only where the gateway lists those methods; an approval shows the command it would allow (or, for a plugin approval rule, the plugin's description) before you choose **Allow once**. A message the gateway refuses before posting it comes back for editing; one that may already have been sent offers **Retry**, which never posts it twice; **Stop** also stops a message still sending. A standalone `hermes serve` / `hermes dashboard` backend forwards group chat requests when a gateway serves the profile. The root gateway fences and imports existing standalone group chats from `shared-state.db` into its `state.db` once, so those group chats have one owner and remain reachable. Without an owning gateway, standalone group chats stay with their standalone backend. Both routes support attachments; **Discard** appears only when the owning gateway advertises it. Older servers that do not advertise file methods hide upload and disable download. Every other group chat is a *classic group chat*: Desktop runs its rounds, so it pauses while Desktop is closed. Group chats whose members span several machines are classic: each member's turns run on its own gateway, and the cross-connection courier described under *bot-to-bot messaging* applies to them. A group chat saved as Desktop-driven keeps that engine after membership edits, and an older group chat whose bots span connections opens in that workspace too. For a classic group chat that reaches the migration gate on a gateway connection, Desktop first opens that gateway's group chat of the same name when there is one; otherwise it does not run there. Instead it says what to do: when its bots are on this connection it offers **Start new group**, a fresh gateway group chat with the same bots that does not copy the earlier messages; when they are on other computers it names those connections, so you can switch to the one where they run and start a group there, or start a new group with bots from this connection. Its earlier messages stay readable below, read only. A connection whose Hermes is too old for group chats, or that can't be reached, says so and offers **Retry**. A gateway-owned group chat can also seat a Bot from another computer's gateway (see *Bots from another gateway in a gateway-owned Group Chat* below): its log and turn schedule stay on the home gateway, so it keeps running while Desktop is closed as long as both gateways run.
 
 - **Mentions read as identities.** In the transcript a routed `@bot` mention, the human handoff `@user`, and the broadcasts `@everyone` / `@all` render as inline references (accent text, not pills); unknown `@words` and e-mail addresses stay plain. Hover a Bot's message and use **Reply to @handle** to seed `@handle ` into the composer, so your next send goes to that Bot only (when a same-named Bot from a Connection shares the room, the tag is device-qualified, e.g. `@reviewer-mini` / `@reviewer-local`) — **Reply in thread** still continues the whole thread. If a reply box for a *different* thread is open, **Reply to** seeds the main composer instead and so starts a fresh thread; use **Reply in thread** to continue that thread.
 - **Rooms can span machines.** New Group Chat offers Bots from every registered connection, each with a device badge. A selection on the active connection becomes a room that connection's gateway owns (it keeps running when you close the Desktop). A selection that mixes connections — one Bot on this device plus one on another gateway is enough — becomes a Desktop-driven room, and the dialog says so before you create it: it runs while this Desktop is open, each member's turns run on its own machine and room session, and members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts. A selection made entirely of Bots on one other connection is not created from here: add a Bot from the active connection, or switch to that connection first. A member's turn that outlives this Desktop, because you quit or it crashed mid-turn, finishes on the member's own machine: the room posts that reply the next time it is driven, and does not re-drive the member while it is still working.
+- **Gateway-owned group chats can span machines too.** A gateway-owned group chat can seat a text-only bot from another gateway through JSON-RPC (see [bots from another gateway in a gateway-owned group chat](#bots-from-another-gateway-in-a-gateway-owned-group-chat)); it keeps running with Desktop closed. New group chat in Desktop currently creates a Desktop-driven group chat for a selection that mixes connections.
 - **Rooms show the same identity as the roster.** Transcript rows, the “X is thinking…” line and Activity rows resolve each member's title and avatar by its owning connection and profile — re-titling a Bot or changing its picture updates every room it sits in, remote members keep their own titles, and two same-named Bots on different connections never borrow each other's avatar. When two members would still read identically, Activity appends the connection label (`Reviewer · Mac Mini`).
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
 - **What a member says outside the room still reaches it.** Each member's room session is an ordinary Hermes session (titled `Group: <room> · <thread>`), so you can resume it from the CLI, a routine can post into it, or the Bot's own tools can write to it. When you open the room, and again each time the room drives that member, whatever those writers added since the room last looked — your questions and the member's answers — is posted into the room log under that member's name, once, in the thread the session belongs to; a window restart does not repeat it. The room's own turn prompts and their replies are never duplicated this way, and neither are the agent's housekeeping rows (context compaction notes, routine deliveries, delegation results) or the member's reactions to them. The room starts watching a session the first time it sees it: what was already in that session by then is not replayed, so a room restored on a second Desktop does not re-post its members' history.
@@ -304,6 +305,97 @@ viewer, not a relay. A gateway behind home NAT can dial out to a public peer
 a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
+
+### Bots from another gateway in a gateway-owned Group Chat
+
+A Group Chat your gateway owns (its *home*) can seat a Bot that lives on another
+gateway (its *member gateway*). The member's turns run on its own machine; the
+home keeps the room, its log and its schedule, even with Desktop closed. This is set up over the gateways'
+JSON-RPC; New Group Chat in Desktop does not offer gateway-owned peer setup yet.
+
+Limits: text only (a message with files fails that member's turn, visibly), and
+only the member gateway's `default` profile.
+
+**On the member gateway**, `groups.capabilities` must report `room_link.enabled: true`.
+That needs the `api_server` platform with durable run storage, an advertised
+endpoint (`gateway.room_link_url`, reachable from the home), and approvals not
+turned off (`approvals.mode: off` is refused; `manual` asks a person, `smart` may
+approve on its own). Otherwise `room_link.reason` names the first missing piece.
+Keep its `room_link.catalog`; the home pins it, endpoint included.
+
+1. **Create the room on the home** with the member pinned to that catalog:
+
+   ```json
+   {"jsonrpc":"2.0","id":1,"method":"groups.create","params":{"room_id":"ROOM_ID","name":"Review","members":[
+     {"member_id":"host","profile":"default","handle":"host"},
+     {"member_id":"reviewer","profile":"default","handle":"reviewer","target":{
+       "kind":"peer","peer_id":"spark","installation_id":"CATALOG_INSTALLATION_ID",
+       "profile":"default","capability_digest":"CATALOG_DIGEST"}}]}}
+   ```
+
+   Until step 3, that member's turns fail with `peer room route is unavailable`.
+2. **Invite from the member gateway.** On an operator connection there (its local
+   gateway socket or a dashboard connection), mint a grant scoped to that one room
+   and member, using the `authority_gateway_id` and `authority_epoch` the room was
+   created with:
+
+   ```json
+   {"jsonrpc":"2.0","id":2,"method":"groups.peer.invite","params":{"room_id":"ROOM_ID","member_id":"reviewer",
+     "home_install_id":"HOME_GATEWAY_ID","authority_gateway_id":"HOME_GATEWAY_ID","authority_epoch":1}}
+   ```
+
+   `ttl_seconds` (60 to 86,400, default 3,600) is optional; the grant id and its status
+   lifetime are the member gateway's to choose.
+3. **Register on the home** with the grant, the catalog and the catalog's own
+   endpoint URL as `target_url`. The home sends the grant to no other URL. It probes
+   the member gateway first and refuses a grant for another room, member, profile,
+   catalog or URL (`peer_target_mismatch`), a member it cannot reach
+   (`peer_unreachable`) or a revoked grant (`room_reauthorization_required`):
+
+   ```json
+   {"jsonrpc":"2.0","id":3,"method":"groups.peer.register","params":{"room_id":"ROOM_ID","member_id":"reviewer",
+     "target_url":"CATALOG_ENDPOINT_URL","target_profile":"default",
+     "grant":"GRANT","catalog":{"...":"the catalog from the member gateway"}}}
+   ```
+
+To renew access, invite again and register the new grant: the route keeps its
+identity, so work already accepted stays the same run on the member gateway. The
+earlier grant stays valid until it expires. `groups.peer.revoke` with a grant, on
+the member gateway, revokes that room member's access. Disbanding the room
+(`groups.disband`) ends it on the home even while a member gateway is down: the
+room's routes are dropped at once, and nothing more is sent under them. The home
+then owes each member gateway a revoke for every grant registered for the room
+(including a longer-lived one that a later grant replaced), and for a grant whose
+registration lost the race with Disband or arrived after it. It keeps that debt
+through a restart and its room driver retries it, with backoff up to an hour apart,
+until the member gateway answers that the grant is revoked or unknown there, or the
+grant expires on its own; a member gateway that answers with a fault of its own is
+asked again. A grant that was invited but never registered is the member gateway's
+to revoke.
+
+**A lost reply never runs a turn twice.** The home sends each turn under the
+idempotency key `room:<task>:<generation>`. If the member gateway's answer is lost,
+or its replay cannot connect, the turn stays uncertain on that same key until the
+home can read it back, rather than starting it again. A turn whose member gateway
+stays unreachable is deferred after a minute, which frees the room for the next
+message. **Retry** on that turn asks the member gateway for the same attempt: it
+posts the reply if the run finished (unless a newer message in that thread has
+superseded it, as for any late reply), follows the run if it is still going, and
+never starts another attempt. Discard is not offered for a member on another
+gateway. A turn still running when it reaches its time limit is stopped, as it would
+be on the home. This holds while the member gateway still keeps the run's record: it
+forgets a finished run once the grant's status lifetime has passed, so a replay
+after that (a Retry under a new grant much later) can start the turn again.
+
+**Stop never claims more than the member gateway confirmed.** A turn is recorded as
+cancelled only once its gateway confirms the run ended. Stop of a deferred turn asks
+that gateway to stop the run the home knows of; if it cannot confirm (the gateway is
+down, or the home never learned the run's id), the turn stays deferred, and nothing
+is sent that could start it. A Stop of a running turn that its gateway does not
+confirm within a minute stops holding the room: the turn is recorded as deferred,
+not cancelled, and the room takes the next message. Disband never waits on a member
+gateway: it drops that member's route, so the home sends nothing more for the turn,
+and the grant's revoke follows once the member gateway answers.
 
 ### Transferring hosted room authority
 

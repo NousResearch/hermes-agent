@@ -510,8 +510,12 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
-            # termux's deb carries a -1 revision after the upstream version
-            return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}-1_aarch64.deb"
+            # Termux names the deb after the upstream version only. It used to
+            # append a packaging revision ("..._26.7.0-1_aarch64.deb"); that
+            # suffix is gone from the pool, so a "-1" template 404s and blocks
+            # `pm lock --bump node <ver>` for the whole matrix (verified
+            # 2026-10-23: the index lists nodejs_26.12.1_aarch64.deb).
+            return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}_aarch64.deb"
         plat = _NODE_PLAT[target]
         ext = "zip" if target.startswith("win32") else "tar.xz"
         base = (

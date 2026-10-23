@@ -577,6 +577,7 @@ import {
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  nativeOpacityFor,
   normalizeState as normalizeTranslucency,
   opacityNeedsSetting,
   translucencySupportedOn,
@@ -1497,7 +1498,11 @@ nativeTheme.themeSource = readPersistedThemeSource()
 // — a matte blur with full-contrast text. macOS uses vibrancy; Windows 11
 // uses DWM acrylic/mica/tabbed. Persisted so a cold launch applies it at
 // window creation, before the renderer reports its value.
-// macOS + Windows only; `setOpacity` is a no-op on Linux.
+// macOS + Windows only. Electron documents `setOpacity` as a no-op on Linux,
+// but a Linux window really does render faded when handed the value: X11
+// carries it as `_NET_WM_WINDOW_OPACITY` and a native Wayland surface
+// composites it into the frame. So the platform gate has to be applied to the
+// value itself — see nativeOpacityFor — and not just to the Settings row.
 const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
 
 function readPersistedTranslucency() {
@@ -1535,7 +1540,7 @@ const translucencyBackedWindows = new WeakSet()
 // window's own opacity is the record of whether that door was ever opened; see
 // opacityNeedsSetting for why it matters that it stays shut.
 function applyWindowOpacity(win) {
-  const opacity = windowOpacityFor(translucencyState)
+  const opacity = nativeOpacityFor(translucencyState, TRANSLUCENCY_SUPPORTED)
 
   if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
     win.setOpacity(opacity)
@@ -1635,7 +1640,7 @@ function chatWindowSurfaceOptions() {
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
     ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
-    ...windowOpacityOptions(translucencyState),
+    ...windowOpacityOptions(translucencyState, TRANSLUCENCY_SUPPORTED),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
 }

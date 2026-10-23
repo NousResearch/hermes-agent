@@ -8,7 +8,7 @@ description: >-
   API, with federation-invite support). Mode is picked automatically by
   which credential is configured. No extra SDKs -- aiohttp for bot mode,
   httpx for user mode, both already Hermes dependencies.
-maintainer: chefboyrdave21
+maintainer: smilinTux
 tier: community
 category: platform
 docs_url: https://github.com/smilinTux/hermes-nextcloud-talk#readme

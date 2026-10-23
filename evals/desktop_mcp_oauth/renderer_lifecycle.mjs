@@ -6,9 +6,10 @@ import path from 'node:path'
 const repo = process.argv[2],
   out = process.argv[3],
   scenario = process.argv[4] || 'approved'
-const require = createRequire(path.join(repo, 'package.json'))
+// esbuild and Playwright come from the desktop workspace that declares them.
+const require = createRequire(path.join(repo, 'apps/desktop/package.json'))
 const { build } = require('esbuild')
-const { chromium } = require('playwright')
+const { chromium } = require('@playwright/test')
 const requests = []
 const rpcCalls = []
 const nativeCalls = []

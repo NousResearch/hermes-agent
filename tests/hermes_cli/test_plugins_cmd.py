@@ -54,6 +54,16 @@ def test_portable_install_gate_accepts_present_app_and_refuses_missing(tmp_path:
         _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
 
 
+def test_install_gate_skips_foreign_plugin_json_when_native_manifest_present(tmp_path: Path) -> None:
+    # A foreign-harness plugin.json (no Agent Plugins $schema) beside a valid native
+    # plugin.yaml must not fail the install gate: the native manifest wins everywhere
+    # else in the plugin system (#125927).
+    (tmp_path / "plugin.yaml").write_text("name: example-plugin\n", encoding="utf-8")
+    (tmp_path / "plugin.json").write_text(json.dumps({"name": "example-plugin"}), encoding="utf-8")
+
+    _refuse_unavailable_portable_plugin("example-plugin", tmp_path)  # must not raise
+
+
 # ── _sanitize_plugin_name ─────────────────────────────────────────────────
 
 
@@ -770,6 +780,48 @@ class TestSubdirInstallE2E:
         assert manifest["name"] == "portable.test"
         assert target == (plugins_dir / "portable.test").resolve()
         assert pc._resolve_plugin_key("portable.test") == "portable.test"
+
+    def test_installs_native_plugin_beside_foreign_plugin_json(self, tmp_path, monkeypatch):
+        """A native root ``plugin.yaml`` installs even when a foreign harness also ships a
+        root ``plugin.json`` holding only ``{"name": ...}`` (#125927, ponytail-style)."""
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        import subprocess as sp
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "multi-harness-repo"
+        repo_root.mkdir()
+        (repo_root / "plugin.yaml").write_text(
+            "name: ponytail\nmanifest_version: 1\ndescription: A multi-harness plugin\n",
+            encoding="utf-8",
+        )
+        (repo_root / "plugin.json").write_text(
+            json.dumps({"name": "ponytail"}), encoding="utf-8"
+        )
+        (repo_root / "__init__.py").write_text("# plugin entry\n", encoding="utf-8")
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
+        plugins_dir = tmp_path / "home/plugins"
+        monkeypatch.setenv("HERMES_HOME", str(plugins_dir.parent))
+
+        # The full install — clone, manifest read, version check, scan, availability gate,
+        # publish — must succeed; the foreign plugin.json must not fail the portable gate.
+        target, manifest, name = pc._install_plugin_core(f"file://{repo_root}", force=False)
+
+        assert name == "ponytail"
+        assert manifest.get("name") == "ponytail"
+        assert target == (plugins_dir / "ponytail").resolve()
+        assert (target / "plugin.yaml").exists()
+        assert (target / "plugin.json").exists()
 
     @pytest.fixture(autouse=True)
     def _isolated_publication(self, client):

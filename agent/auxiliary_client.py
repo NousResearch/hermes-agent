@@ -8051,7 +8051,7 @@ def call_llm(
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
             )
-        if stream and semaphore is not None:
+        if stream and semaphore is not None and not hasattr(response, "choices"):  # completed response, not a stream
             stream_semaphore = semaphore
             semaphore = None
             return _release_sync_semaphore_after_stream(response, stream_semaphore)

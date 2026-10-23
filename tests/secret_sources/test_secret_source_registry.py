@@ -163,6 +163,31 @@ class TestApplyAll:
         assert report.provenance["API_KEY"].shape == "mapped"
         assert report.provenance["API_KEY"].overrode_env is False
 
+    def test_launch_only_key_is_protected_from_sources(self, tmp_path):
+        """A user-configured source supplying HERMES_MANAGED_DIR is skipped (#135200): the
+        managed scope's directory is a launch-environment decision, not user policy."""
+        reg.register_source(
+            _make_source(
+                name="vaulty",
+                secrets={"HERMES_MANAGED_DIR": "/user/controlled", "A": "1"},
+            )
+        )
+        env = {"HERMES_MANAGED_DIR": "/launch/admin"}
+        report = reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ=env)
+        assert env["HERMES_MANAGED_DIR"] == "/launch/admin"
+        assert env["A"] == "1"  # control: the source's other secrets still apply
+        assert "HERMES_MANAGED_DIR" in report.sources[0].skipped_protected
+
+    def test_launch_only_key_not_set_by_source_without_launch_value(self, tmp_path):
+        """Same skip when the launch environment never set the key: a secret source must
+        not introduce it either."""
+        reg.register_source(
+            _make_source(name="vaulty", secrets={"HERMES_MANAGED_DIR": "/user/controlled"})
+        )
+        env: dict = {}
+        reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ=env)
+        assert "HERMES_MANAGED_DIR" not in env
+
 
 
 

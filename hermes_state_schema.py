@@ -1018,6 +1018,7 @@ class SessionSchemaMixin:
             self._run_data_migrations(cursor, row[0], fts5_available)
 
         self._ensure_unique_title_index(cursor)
+        self._ensure_session_handles(cursor)
         if fts5_available:
             self._init_fts(cursor)
             self._stamp_settled_fts_layout(cursor)
@@ -1199,6 +1200,14 @@ class SessionSchemaMixin:
             )
         except sqlite3.OperationalError as exc:
             logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
+
+    def _ensure_session_handles(self, cursor: sqlite3.Cursor) -> None:
+        """Unique handle index, then handles for one bounded slice of rows without one (legacy rows and
+        raw-INSERT creators); the partial NULL index keeps the probe free once every row has one."""
+        from hermes_state_handles import HANDLE_INDEX_SQL, HANDLE_MISSING_INDEX_SQL, backfill_handles
+        cursor.execute(HANDLE_INDEX_SQL)
+        cursor.execute(HANDLE_MISSING_INDEX_SQL)
+        backfill_handles(cursor)
 
     def _ensure_unique_title_index(self, cursor: sqlite3.Cursor) -> None:
         """Unique title index. Older DBs may hold duplicate titles from before the constraint.

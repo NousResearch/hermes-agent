@@ -570,14 +570,15 @@ class AuthorityConnection:
             from gateway.session_local_title import resolve_titled_session
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
         else:
-            # The TUI exit hint abbreviates canonical local IDs to ``local-`` plus 16 hex
-            # characters. Resolve only that family before authorization so a unique hint reaches
-            # the same durable local route as its full ID; ambiguous and missing prefixes retain
-            # the normal not_found result.
+            # The TUI exit hint names a session by its handle, or abbreviates a canonical local ID to
+            # ``local-`` plus 16 hex. Resolve only those before authorization so a unique hint reaches
+            # the same durable local route as its full ID; ambiguous and missing ones stay not_found.
             if re.fullmatch(r'local-[0-9a-f]{16}', ref.session_id):
                 resolved_id = self.authority.db.resolve_session_id(ref.session_id)
                 if resolved_id is not None:
                     ref = SessionRef(ref.profile_id, resolved_id)
+            elif resolved_id := self.authority.db.get_session_id_by_handle(ref.session_id):
+                ref = SessionRef(ref.profile_id, resolved_id)
             from gateway.session_local_migration import resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES

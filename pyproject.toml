@@ -82,6 +82,9 @@ dependencies = [
   # Applied at index AND query time so morphological variants match
   # ("issues" finds create_issue).
   "snowballstemmer==3.1.1; python_version >= '3.14'",
+  # Session handles (hermes_state_handles.py): curated adjective/animal word lists for names like
+  # tidy-amber-otter. Pure Python, BSD-2, zero dependencies; imported only when a handle is minted.
+  "coolname==5.0.0; python_version >= '3.14'",
   # Requirement and version checks must work in lean installs without
   # relying on another package to bring packaging in transitively.
   "packaging==26.0; python_version >= '3.14'",

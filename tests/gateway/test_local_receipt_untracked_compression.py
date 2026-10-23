@@ -350,7 +350,7 @@ async def test_a_restore_with_nothing_to_adopt_checks_the_stored_entry_once(tmp_
 
 @pytest.mark.asyncio
 async def test_the_resume_hint_the_tui_prints_opens_the_session(tmp_path, monkeypatch):
-    """The TUI's exit epilogue prints ``_short_resume_id`` (``local-`` + 16 hex); in-TUI ``/resume``
+    """The TUI's exit epilogue prints ``_short_resume_id`` (the session's handle); in-TUI ``/resume``
     sends that hint as ``session_id``."""
     from gateway.session_local import create_local_session
     from hermes_cli.main_tui_launch import _short_resume_id
@@ -360,7 +360,7 @@ async def test_the_resume_hint_the_tui_prints_opens_the_session(tmp_path, monkey
         ref = create_local_session(authority, connection.actor, {'request_id': 'r', 'source': 'tui',
                                                                  'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
         hint = _short_resume_id(authority.db, ref.session_id)
-        assert hint != ref.session_id and len(hint) == 22
+        assert hint == authority.db.get_session(ref.session_id)['handle']
         reply = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': hint}})
         assert 'error' not in reply, reply
         assert reply['result']['session_id'] == ref.session_id

@@ -1,8 +1,6 @@
-"""The TUI exit epilogue names a canonical session as compactly as main did (PR #106742 row 36).
-
-Main printed ``hermes --tui --resume 20261012_185208_a67483`` (22 chars). A canonical local session is
-keyed ``local-`` + 64 hex (70 chars); the epilogue prints its unique 22-char prefix, and ``--resume``
-accepts that prefix back.
+"""The TUI exit epilogue names a session as compactly as it can: its handle (``tidy-amber-otter``),
+else for a canonical ``local-`` + 64 hex id its unique 22-char prefix (PR #106742 row 36), which
+``--resume`` accepts back.
 """
 import pytest
 
@@ -19,6 +17,12 @@ def _seed(home, sid, tokens=(300, 60)):
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
+    """A store whose environment has no handle word list, so rows keep no handle (the id fallbacks)."""
+    import hermes_state_handles
+
+    def unavailable(*_args):
+        raise ImportError("coolname")
+    monkeypatch.setattr(hermes_state_handles, 'handle_for', unavailable)
     home = tmp_path / '.hermes'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -81,3 +85,18 @@ def test_branch_child_epilogue_counts_the_branched_conversation(home, capsys):
     out = capsys.readouterr().out
     assert f'--resume {child[:22]}' in out
     assert 'Tokens:         360 (in 300, out 60' in out
+
+
+def test_epilogue_prints_the_handle_and_resume_takes_it(tmp_path, monkeypatch, capsys):
+    from hermes_cli.main import _resolve_session_by_name_or_id
+    from hermes_cli.main_tui_launch import _print_tui_exit_summary
+    from hermes_state_handles import handle_for
+    home = tmp_path / '.hermes'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    sid = 'local-' + 'cd' * 32
+    _seed(home, sid)
+    _print_tui_exit_summary(sid)
+    handle = handle_for(sid)
+    assert f'hermes --tui --resume {handle}\n' in capsys.readouterr().out
+    assert _resolve_session_by_name_or_id(handle) == sid

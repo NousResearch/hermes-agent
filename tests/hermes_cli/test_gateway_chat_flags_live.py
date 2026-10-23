@@ -66,8 +66,11 @@ def test_continue_latest_footer_and_tool_listing(tmp_path):
 
             first, sid_a = hermes("chat", "-q", "in repo a", cwd=repo_a)
             assert first.returncode == 0 and "RECOVERY_ACK_in repo a" in first.stdout and sid_a, first
-            # Main's single-query exit block: how to continue the session it just printed.
-            assert f"Resume this session with:\n  hermes --resume {sid_a}" in first.stdout, first.stdout
+            # The single-query exit block names the session by its handle, and that handle resumes it.
+            hint = first.stdout.split("Resume this session with:\n  hermes --resume ", 1)[1].split()[0]
+            assert hint != sid_a, first.stdout
+            again, again_sid = hermes("chat", "--resume", hint, "-q", "by handle", "-Q", cwd=repo_a)
+            assert again.returncode == 0 and again_sid == sid_a, again
             quiet, sid_b = hermes("chat", "-q", "in repo b", "-Q", cwd=repo_b)
             assert quiet.returncode == 0 and "Resume this session" not in quiet.stdout, quiet
 

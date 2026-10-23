@@ -35,7 +35,8 @@ for action in ('list', 'stats', 'pinned', 'export'):
     assert result in (None, 0), text
     assert 'Error:' not in text, text
     if action == 'list':
-        assert ('observation-fixture' if POPULATED else 'No sessions found.') in text, text
+        from hermes_state_handles import handle_for
+        assert (handle_for('observation-fixture') if POPULATED else 'No sessions found.') in text, text
     if action == 'stats':
         assert ('Total sessions: 1' if POPULATED else 'Total sessions: 0') in text, text
     if action == 'pinned':

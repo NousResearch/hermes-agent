@@ -22,7 +22,7 @@ def cmd_sessions_lazy(args, **kwargs):
 def _add_rename_and_discard(sessions_subparsers) -> None:
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title")
-    sessions_rename.add_argument("session_id", help="Session ID to rename")
+    sessions_rename.add_argument("session_id", help="Session handle or ID to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
     from hermes_cli.sessions_discard import add_discard_parser
     add_discard_parser(sessions_subparsers)
@@ -116,7 +116,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _flag(sessions_export, "--force", help="md/qmd only: overwrite an existing export file")
 
     sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete.add_argument("session_id", help="Session handle or ID to delete")
     add_yes_flag(sessions_delete, "Skip confirmation")
 
     sessions_prune = sessions_subparsers.add_parser(

@@ -198,12 +198,13 @@ async def test_gui_and_acp_list_under_the_policy_label_and_the_agent_surface(
         created = await _call(owner, 'session.create', request_id=surface, source=surface,
                               cwd=str(tmp_path), toolsets=[], model='m')
         sid = created['session_id']
+        listed_as = authority.db.get_session(sid)['handle']  # `sessions list` names a session by its handle
         for label in labels:
-            assert sid in _listed(authority.db, label, capsys), (surface, label, 'before peer')
+            assert listed_as in _listed(authority.db, label, capsys), (surface, label, 'before peer')
         live = authority.sessions[sid]
         store._record_gateway_session_peer(sid, live.route, live.source)
         for label in labels:
-            assert sid in _listed(authority.db, label, capsys), (surface, label, 'after peer')
+            assert listed_as in _listed(authority.db, label, capsys), (surface, label, 'after peer')
     finally:
         await owner.close()
         store.close_all_db_handles()
@@ -218,8 +219,9 @@ async def test_oneshot_keeps_its_own_created_source_and_stays_out_of_cli(tmp_pat
                               cwd=str(tmp_path), toolsets=[], model='m')
         sid = created['session_id']
         assert authority.db.get_session(sid)['created_source'] == 'oneshot'
-        assert sid not in _listed(authority.db, 'cli', capsys)
-        assert sid in _listed(authority.db, 'oneshot', capsys)
+        listed_as = authority.db.get_session(sid)['handle']
+        assert listed_as not in _listed(authority.db, 'cli', capsys)
+        assert listed_as in _listed(authority.db, 'oneshot', capsys)
     finally:
         await owner.close()
         store.close_all_db_handles()

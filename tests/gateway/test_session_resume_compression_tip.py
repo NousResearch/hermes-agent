@@ -49,6 +49,7 @@ async def test_session_resume_still_remaps_legacy_cli_source(monkeypatch):
                 'id': tip_id, 'source': 'cli', 'chat_id': owner_id,
             } if sid == tip_id else None,
             get_compression_tip=lambda sid: tip_id,
+            get_session_id_by_handle=lambda handle: None,
         ),
         sessions={owner_id: SimpleNamespace(source=SimpleNamespace(platform=None), route=f'agent:main:cli:dm:{owner_id}')},
         authorize=lambda *a, **k: None,

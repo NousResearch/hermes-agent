@@ -44,8 +44,11 @@ _SHORT_RESUME_LEN = 22
 
 
 def _short_resume_id(db, session_id: str) -> str:
-    """The 22-char prefix of a canonical ``local-…`` id when it names only that session (``--resume``
-    resolves a unique prefix back); every other id, or an ambiguous prefix, prints whole."""
+    """The session's handle when it has one; else the 22-char prefix of a canonical ``local-…`` id when it
+    names only that session (``--resume`` resolves a unique prefix back); else the whole id."""
+    session = db.get_session(session_id) or {}
+    if session.get("handle"):
+        return session["handle"]
     if not session_id.startswith("local-") or len(session_id) <= _SHORT_RESUME_LEN:
         return session_id
     short = session_id[:_SHORT_RESUME_LEN]

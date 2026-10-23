@@ -95,7 +95,7 @@ Examples:
     hermes --cli                  Force the classic REPL (overrides display.interface: tui)
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
-    hermes --resume <session_id>  Resume a specific session by ID
+    hermes --resume <session>     Resume a session by handle, ID or title
     hermes --resume latest        Resume the most recent session (same as -c)
     hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
     hermes setup                  Run setup wizard
@@ -173,7 +173,7 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     add("-t", "--toolsets", default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.")
     add("--resume", "-r", metavar="SESSION", default=None, help=(
-        "Resume a previous session by ID or title, or pass 'latest' for "
+        "Resume a previous session by handle, ID or title, or pass 'latest' for "
         "the most recent session (workspace-scoped, like -c with no name)"))
     add("--no-restore-cwd", action="store_true", default=False,
         help="Don't cd into a resumed session's recorded working directory.")
@@ -273,7 +273,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "Output format for single-query mode (-q). 'text' prints the final response as plain text (default). "
         "'stream-json' emits newline-delimited JSON events (JSONL), implies --quiet, and cannot be combined with --tui."))
     add("--resume", "-r", metavar="SESSION_ID", default=SUPPRESS, help=(
-        "Resume a previous session by ID (shown on exit), or 'latest' "
+        "Resume a previous session by handle or ID (shown on exit), or 'latest' "
         "for the most recent session"))
     add("--no-restore-cwd", action="store_true", default=SUPPRESS,
         help="Don't cd into a resumed session's recorded working directory.")

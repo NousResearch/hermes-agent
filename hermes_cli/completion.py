@@ -4,7 +4,20 @@ completion scripts never go stale; no extra dependencies."""
 from __future__ import annotations
 
 import argparse
+import shlex
+import sys
+from pathlib import Path
 from typing import Any
+
+# Flags whose value is a session (handle, id or title) and sessions actions that take one.
+_SESSION_FLAGS = ("-r", "--resume", "-c", "--continue")
+_SESSION_ACTIONS = ("delete", "rename")
+
+
+def _session_command() -> str:
+    """The command a Tab press runs: this interpreter on the stdlib-only completer, no Hermes import."""
+    script = Path(__file__).with_name("session_complete.py")
+    return f"{shlex.quote(sys.executable)} -I -S {shlex.quote(str(script))}"
 
 
 def _walk(parser: argparse.ArgumentParser) -> dict[str, Any]:
@@ -82,6 +95,26 @@ _hermes_profiles() {{
     echo "$profiles"
 }}
 
+_hermes_sessions() {{
+    {_session_command()} "$1" "${{COMP_WORDS[@]}}" 2>/dev/null | cut -f1
+}}
+
+# True when the word being completed is the session argument of `sessions delete|rename`, wherever
+# options (-p NAME, -y) sit between the words.
+_hermes_session_arg() {{
+    local i w cmd= act= n=0
+    for ((i=1; i<COMP_CWORD; i++)); do
+        w=${{COMP_WORDS[i]}}
+        case "$w" in
+            -p|--profile) ((i++)); continue ;;
+            -*) continue ;;
+        esac
+        if [[ -z $cmd ]]; then cmd=$w; elif [[ -z $act ]]; then act=$w; else ((n++)); fi
+    done
+    [[ $cmd == sessions && $n -eq 0 ]] && case "$act" in {'|'.join(_SESSION_ACTIONS)}) return 0 ;; esac
+    return 1
+}}
+
 _hermes_completion() {{
     local cur prev
     COMPREPLY=()
@@ -91,6 +124,18 @@ _hermes_completion() {{
     # Complete profile names after -p / --profile
     if [[ "$prev" == "-p" || "$prev" == "--profile" ]]; then
         COMPREPLY=($(compgen -W "$(_hermes_profiles)" -- "$cur"))
+        return
+    fi
+
+    # Session handles after -r/--resume, -c/--continue and as the argument of sessions delete|rename
+    case "$prev" in
+        {'|'.join(_SESSION_FLAGS)})
+            COMPREPLY=($(compgen -W "$(_hermes_sessions "$cur")" -- "$cur"))
+            return
+            ;;
+    esac
+    if [[ $cur != -* ]] && _hermes_session_arg; then
+        COMPREPLY=($(compgen -W "$(_hermes_sessions "$cur")" -- "$cur"))
         return
     fi
 
@@ -121,6 +166,24 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
     sub_cases: list[str] = []
     for cmd, info in subcommands:
         if not info["subcommands"]:
+            continue
+        if cmd == "sessions":
+            sub_str = _zsh_describe_lines(info["subcommands"], " " * 24)
+            sub_cases.append(
+                f"                sessions)\n"
+                f"                    case ${{line[2]}} in\n"
+                f"                        {'|'.join(_SESSION_ACTIONS)})\n"
+                f"                            _hermes_sessions\n"
+                f"                            ;;\n"
+                f"                        *)\n"
+                f"                            local -a sessions_cmds\n"
+                f"                            sessions_cmds=(\n"
+                f"{sub_str}\n"
+                f"                            )\n"
+                f"                            _describe 'sessions command' sessions_cmds\n"
+                f"                            ;;\n"
+                f"                    esac\n"
+                f"                    ;;")
             continue
         if cmd == "profile":
             # Complete actions, then profile names for actions that accept a profile argument.
@@ -166,6 +229,19 @@ _hermes_profiles() {{
     _describe 'profile' profiles
 }}
 
+_hermes_sessions() {{
+    local -a sessions
+    local row
+    for row in ${{(f)"$({_session_command()} "$PREFIX" "${{words[@]}}" 2>/dev/null)"}}; do
+        if [[ $row == *$'\t'* ]]; then
+            sessions+=("${{row%%$'\t'*}}:${{row#*$'\t'}}")
+        else
+            sessions+=("$row")
+        fi
+    done
+    _describe -V 'session' sessions
+}}
+
 _hermes() {{
     local context state line
     typeset -A opt_args
@@ -174,6 +250,8 @@ _hermes() {{
         '(-)'{{-h,--help}}'[Show help and exit]' \\
         '(-)'{{-V,--version}}'[Show version and exit]' \\
         '(-)'{{-p,--profile}}'[Profile name]:profile:_hermes_profiles' \\
+        '(-r --resume)'{{-r,--resume}}'[Resume a session by handle, ID or title]:session:_hermes_sessions' \\
+        '(-c --continue)'{{-c,--continue}}'[Continue the latest or a named session]::session:_hermes_sessions' \\
         '1:command:->commands' \\
         '*::arg:->args'
 
@@ -215,12 +293,22 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
         "    end",
         "end",
         "",
+        "# Helper: session handles and titles, newest first",
+        "function __hermes_sessions",
+        "    set -l cur (commandline -ct)  # quoted below: an empty token stays one (empty) argument",
+        f"    {_session_command()} \"$cur\" (commandline -opc) 2>/dev/null",
+        "end",
+        "",
         "# Disable file completion by default",
         "complete -c hermes -f",
         "",
         "# Complete profile names after -p / --profile",
         "complete -c hermes -f -s p -l profile"
         " -d 'Profile name' -xa '(__hermes_profiles)'",
+        "",
+        "# Complete session handles after -r/--resume and -c/--continue",
+        "complete -c hermes -f -n 'string match -qr -- \"^(-r|--resume|-c|--continue)$\" (commandline -opc)[-1]'"
+        " -a '(__hermes_sessions)'",
         "",
         "# Top-level subcommands"]
     for cmd, info in subcommands:
@@ -238,6 +326,13 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
                 f"complete -c hermes -f "
                 f"-n '__fish_seen_subcommand_from {cmd}' "
                 f"-a {sc} -d '{_clean(sinfo.get('help', ''))}'")
+        if cmd == "sessions":
+            for action in _SESSION_ACTIONS:
+                lines.append(
+                    f"complete -c hermes -f "
+                    f"-n '__fish_seen_subcommand_from {action}; "
+                    f"and __fish_seen_subcommand_from sessions' "
+                    f"-a '(__hermes_sessions)'")
         if cmd == "profile":  # profile names for the actions that take one
             for action in sorted(_PROFILE_NAME_ACTIONS):
                 lines.append(

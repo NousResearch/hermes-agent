@@ -1195,9 +1195,11 @@ class CLISessionMixin:
             duration_str = t("cli.shared.duration_m_rest", minutes=minutes, rest=duration_str)
 
         session_title = None
+        resume_id = self.session_id
         if self._session_db:
             with contextlib.suppress(Exception):
                 session_title = self._session_db.get_session_title(self.session_id)
+                resume_id = (self._session_db.get_session(self.session_id) or {}).get("handle") or resume_id
 
         print(t("cli.session.exit_resume_hint"))
         # Session IDs are profile-constrained: non-default profiles need `-p <profile>` in
@@ -1208,7 +1210,7 @@ class CLISessionMixin:
         except Exception:
             _active_profile = "default"
         profile_flag = "" if _active_profile in ("default", "custom") else f" -p {_active_profile}"
-        print(f"  hermes --resume {self.session_id}{profile_flag}")
+        print(f"  hermes --resume {resume_id}{profile_flag}")
         if session_title:
             print(f"  hermes -c \"{session_title}\"{profile_flag}")
         print()

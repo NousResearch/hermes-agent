@@ -1355,15 +1355,15 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
 
 
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
-    """Resolve a session title or ID to a session ID (None if neither matches).
+    """Resolve a session ID, handle or title to a session ID (None if nothing matches).
 
     A compression root is followed forward to its latest continuation so an
     old root ID (exit summary, notes) resumes at the live tip.
     """
     with _session_db() as db:
-        # Exact session ID first, then title (with auto-latest for lineage).
-        session = db.get_session(name_or_id)
-        resolved_id = session["id"] if session else db.resolve_session_by_title(name_or_id)
+        # Exact session ID, then handle, then title (with auto-latest for lineage).
+        resolved_id = ((db.get_session(name_or_id) or {}).get("id") or db.get_session_id_by_handle(name_or_id)
+                       or db.resolve_session_by_title(name_or_id))
         if not resolved_id and name_or_id.startswith("local-"):
             # The TUI epilogue prints a canonical session's unique 22-char prefix.
             resolved_id = db.resolve_session_id(name_or_id)

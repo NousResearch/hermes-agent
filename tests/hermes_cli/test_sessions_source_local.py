@@ -35,7 +35,7 @@ def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_pa
     capsys.readouterr()
     _cmd_list(db, Namespace(limit=20, source="cli", workspace=None))
     listed = capsys.readouterr().out
-    assert "chain-tip" in listed and "chain-root" not in listed
+    assert db.get_session("chain-tip")["handle"] in listed and db.get_session("chain-root")["handle"] not in listed
     assert "chain-tip" in [row["id"] for row in SurfaceLabelReader(db).search_sessions(source="cli", limit=10)]
     _cmd_stats(db, Namespace())
     assert "cli: 3 sessions" in capsys.readouterr().out  # stats counts every segment

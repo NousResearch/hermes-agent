@@ -61,6 +61,7 @@ class TestExitSummaryResumeHint:
         cli_obj = _make_cli()
         fake_db = MagicMock()
         fake_db.get_session_title.return_value = "My Cool Session"
+        fake_db.get_session.return_value = {"handle": None}
         cli_obj._session_db = fake_db
 
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="dev"):

@@ -367,6 +367,8 @@ class SessionCompressionMixin:
                 (parent["archived"] or 0) if continuation else 0,
                 (parent["auto_archived"] or 0) if continuation else 0),
         )
+        from hermes_state_handles import mint_handle
+        mint_handle(conn, child_session_id)
 
     def publish_compression_child(
         self, *, parent_session_id: str, child_session_id: str, source: str,

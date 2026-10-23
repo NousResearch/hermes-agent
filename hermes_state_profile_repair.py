@@ -256,11 +256,16 @@ class SessionProfileRepairMixin:
             if title is not None and conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
                 suffix = f" ({session_id[-12:]})"
                 session["title"] = title[:self.MAX_TITLE_LENGTH - len(suffix)] + suffix
+            handle = session.get("handle")
+            if handle and conn.execute("SELECT 1 FROM sessions WHERE handle = ?", (handle,)).fetchone():
+                session["handle"] = None
             session["system_prompt_hash"] = self._store_system_prompt(conn, payload.get("system_prompt"))
             if payload.get("tool_pin") is not None or len(session.get("tool_names") or "") == 64:
                 # A pin hash means nothing in this store: re-store the pin, or drop an unresolvable ref.
                 session["tool_names"] = self._store_system_prompt(conn, payload.get("tool_pin"))
             self._insert_row(conn, "sessions", session, skip=frozenset())
+            from hermes_state_handles import mint_handle
+            mint_handle(conn, session_id)
             for message in payload.get("messages") or []:
                 self._insert_row(conn, "messages", {**message, "session_id": session_id}, skip=_MESSAGE_MOVE_SKIP)
             for usage in payload.get("usage") or []:

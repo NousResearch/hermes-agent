@@ -873,10 +873,12 @@ class SessionSessionsMixin:
         return dict(row) if row else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
-        """Exact id, else the single unambiguous prefix match, else None."""
+        """Exact id, else an exact handle, else the single unambiguous id prefix match, else None."""
         exact = self.get_session(session_id_or_prefix)
         if exact:
             return exact["id"]
+        if by_handle := self.get_session_id_by_handle(session_id_or_prefix):
+            return by_handle
         matches = self._read_all(
             "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
             (f"{_escape_like(session_id_or_prefix)}%",),
@@ -1138,7 +1140,7 @@ class SessionSessionsMixin:
                 continue
             merged = dict(s)
             for key in (
-                "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
+                "id", "handle", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
                 "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
             ):
                 if key in tip_row:

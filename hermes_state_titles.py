@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from typing import Any, Dict, Optional
 
 from agent.message_sanitization import _sanitize_surrogates
@@ -199,6 +200,13 @@ class SessionTitlesMixin:
             "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
             "WHERE s.title = ?", (title,))
         return self._session_row_dict(row) if row else None
+
+    def get_session_id_by_handle(self, handle: str) -> Optional[str]:
+        try:
+            row = self._read_one("SELECT id FROM sessions WHERE handle = ?", ((handle or "").strip().lower(),))
+        except sqlite3.OperationalError:  # a read-only open of a store no writer has upgraded yet: no handles
+            return None
+        return row["id"] if row else None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""

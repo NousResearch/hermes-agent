@@ -193,7 +193,8 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
         # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL.
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
+            requested = None if getattr(agent, "_fallback_activated", False) else attr("requested_provider")
+            provider = canonical_custom_identity(base_url=base_url, model=model or None, requested=requested) or provider
         except Exception:
             logger.debug("custom provider identity lookup failed", exc_info=True)
     reasoning_config = getattr(agent, "reasoning_config", None)

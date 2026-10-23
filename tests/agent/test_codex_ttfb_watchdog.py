@@ -444,6 +444,66 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
     if mode == "retry_no_event":
         assert attempts["count"] == 2
 
+def test_post_retry_event_stall_hits_idle_watchdog(tmp_path, monkeypatch):
+    # 128167: run_codex_stream retries internally after a transport failure, which
+    # arms retry_started_ts. When the retried stream emits then stalls, the event-idle
+    # watchdog must still kill it. Previously the idle kill was scoped to the first
+    # attempt only, so a post-retry stall survived until the 600s-plus stale budget
+    # (the turn-liveness watchdog fired first at ~610s on receiving stream response).
+    import httpx
+    from agent import chat_completion_helpers as h
+    from agent import relay_llm
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    _shorten_implicit_idle_watchdog(monkeypatch, h)
+    monkeypatch.setattr(agent, '_compute_non_stream_stale_timeout', lambda *a, **k: 30.0)
+    closes = []
+    calls = {'count': 0}
+
+    class _StallingStream:
+        final_response = None
+        def __init__(self, events):
+            self._events = events
+        def __iter__(self):
+            for ev in self._events:
+                yield ev
+            while getattr(agent, '_active_codex_stream_request_token', None) is not None:
+                time.sleep(0.02)
+            raise ConnectionError('retired stalled retry')
+        def close(self):
+            pass
+
+    def _fake_stream(request, factory, **kwargs):
+        calls['count'] += 1
+        if calls['count'] == 1:
+            raise httpx.ReadTimeout('connect dropped before first byte')
+        on_created = kwargs.get('on_stream_created')
+        on_chunk = kwargs.get('on_chunk')
+        if callable(on_created):
+            on_created(object())
+        events = [
+            SimpleNamespace(type='response.created'),
+            SimpleNamespace(type='response.reasoning_text.delta', delta='step'),
+        ]
+        if callable(on_chunk):
+            for ev in events:
+                on_chunk(ev)
+        return _StallingStream(events)
+
+    def _never_open(**kwargs):
+        raise AssertionError('retried stream must come from the fake, not the wire')
+
+    _install_codex_event_stream(agent, monkeypatch, _never_open, closes)
+    monkeypatch.setattr(relay_llm, 'stream', _fake_stream)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match='no SSE events'):
+        h.interruptible_api_call(
+            agent, {'model': 'gpt-5.6-sol', 'input': 'x' * 40_004}
+        )
+    assert time.monotonic() - started < 15
+    assert calls['count'] == 2
+    assert 'codex_stream_idle_kill' in closes
+
 
 @pytest.mark.parametrize(
     "stale_timeout",

@@ -263,8 +263,12 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
     def _signal_fn(pid, sig):
         killed.append((pid, sig))
 
-    # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
-    import hermes_cli.kanban_db as _kb
+    # We bypass _pid_alive by stubbing it so the grace-poll exits fast. Patch the module the
+    # dispatch call below actually resolves (``kbd._kb``): another test file's fixture drops
+    # ``hermes_cli.*`` from ``sys.modules``, so a re-import here can hand us a different
+    # kanban_db object than the one ``kbd`` holds and the stub would leave the real probe —
+    # this live test process — answering "alive".
+    _kb = kbd._kb
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
 

@@ -114,9 +114,10 @@ end-to-end and exposes no knobs:
 
 Right-click the status bar and enable **System resources** to see live GPU
 utilization, GPU memory, and RAM while local models run. Each installed
-NVIDIA GPU is listed on its own. Model fit still follows the first GPU —
-the managed runtime does not split one model across cards. The context meter
-always reflects the window the model is actually running with.
+NVIDIA GPU is listed on its own there, and on Local Models → This machine.
+Model fit still follows the first GPU — the managed runtime does not split
+one model across cards. The context meter always reflects the window the
+model is actually running with.
 
 ## Finding more models
 

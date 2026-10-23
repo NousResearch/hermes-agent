@@ -194,3 +194,43 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     paths = [match.path for match in result.matches]
     assert any("visible.txt" in path for path in paths)
     assert all("protected.txt" not in path for path in paths)
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("search_root", ["home", "ancestor", "relative"])
+def test_filename_directory_supplement_excludes_protected_subtrees(
+    tmp_path, monkeypatch, search_root
+):
+    home = tmp_path / "Users" / "alice"
+    safe = home / "work" / "Downloads" / "speed.py"
+    safe.mkdir(parents=True)
+    script = home / "work" / "speed.py"
+    script.write_text("pass\n")
+    for name in PROTECTED_NAMES:
+        (home / name / "speed.py").mkdir(parents=True)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
+    roots = {"home": str(home), "ancestor": str(home.parent), "relative": "."}
+
+    result = ops.search("*speed*.py", path=roots[search_root], target="files")
+
+    assert result.error is None
+    assert result.warning
+    paths = {str(Path(ops.env.cwd, path).resolve()) for path in result.files}
+    assert paths == {str(safe), str(script)}
+
+
+@pytest.mark.platforms("macos")
+def test_filename_directory_supplement_allows_explicit_protected_root(tmp_path, monkeypatch):
+    home = tmp_path / "Users" / "alice"
+    pictures = home / "Pictures"
+    directory = pictures / "speed.py"
+    directory.mkdir(parents=True)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
+
+    result = ops.search("*speed*.py", path=str(pictures), target="files")
+
+    assert result.error is None
+    assert result.warning is None
+    assert result.files == [str(directory)]

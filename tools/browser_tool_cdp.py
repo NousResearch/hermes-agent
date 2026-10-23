@@ -55,16 +55,28 @@ _live_overrides: dict[str, str] = {}
 _live_overrides_lock = threading.Lock()
 
 
+def _unbound_on_multiplex() -> bool:
+    """Whether this context has no profile bound while the process serves several profiles.
+
+    A bare ``threading.Thread`` or a stdlib executor that did not copy the caller's context has
+    no home override of its own; on a multiplexed host it must not answer with the launch
+    profile's endpoint, the way ``get_secret`` fails closed. Single-profile processes are
+    unchanged (#134889 GW-26).
+    """
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override
+    return get_hermes_home_override() is None and is_multiplex_active()
+
+
 def live_cdp_override() -> str:
     """The current profile's live ``/browser connect`` endpoint, or "".
 
     On a multiplexed gateway a context with no profile bound (a bare ``threading.Thread`` or stdlib
     executor that did not copy the caller's context) answers "" rather than the launch profile's
     endpoint, the way ``get_secret`` fails closed. Single-profile processes are unchanged."""
-    from agent.secret_scope import is_multiplex_active
-    from hermes_constants import get_hermes_home_override, hermes_home_key
-    if get_hermes_home_override() is None and is_multiplex_active():
+    if _unbound_on_multiplex():
         return ""
+    from hermes_constants import hermes_home_key
     with _live_overrides_lock:
         return _live_overrides.get(hermes_home_key(), "")
 
@@ -115,6 +127,10 @@ def _get_cdp_override_raw() -> str:
     :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every startup's
     schema build with no error.
     """
+    if _unbound_on_multiplex():
+        # The configured endpoint belongs to a profile, and this context has none: the launch
+        # profile's ``browser.cdp_url`` is not this thread's to connect to (#134889 GW-26).
+        return ""
     env_override = live_cdp_override() or env_cdp_url()
     return env_override or _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
 

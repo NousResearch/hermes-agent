@@ -213,7 +213,7 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
     # Plant the stale file at wherever the server will actually bind
     # (in-home OR the temp-dir fallback, depending on path length).
     bind, _ = resolve_server_socket_path(home)
-    bind.parent.mkdir(parents=True, exist_ok=True)
+    bind.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     bind.touch()  # crashed predecessor's leftover
 
     async def scenario():
@@ -463,18 +463,11 @@ def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, m
 
     released = threading.Event()
 
-    class _SilentPipe:  # accepts the request, never answers
-        def write(self, _data):
-            return None
+    def _silent_native_client(_home, _request, _timeout):  # accepts the request, never answers
+        released.wait(10)
+        return b""
 
-        def read(self, _n):
-            released.wait(10)
-            return b""
-
-        def close(self):
-            return None
-
-    monkeypatch.setattr(control_socket, "open", lambda *_a, **_k: _SilentPipe(), raising=False)
+    monkeypatch.setattr("gateway.runtime_bootstrap_windows.query_runtime_control", _silent_native_client)
     start = time.monotonic()
     try:
         assert control_socket._query_windows_pipe(home, b"{}\n", 0.3) is None

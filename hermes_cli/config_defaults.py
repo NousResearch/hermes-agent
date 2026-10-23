@@ -393,6 +393,10 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        # Opt-in (#34545): when true and web_extract is available, browser_navigate's
+        # description tells the model to use web_extract for non-interactive fetches.
+        # Browser tools stay registered. HERMES_PREFER_FETCH_OVER_BROWSER overrides this.
+        "prefer_fetch_over_browser": False,
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
         "extract_char_limit": 15000,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract

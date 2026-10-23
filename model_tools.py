@@ -275,7 +275,9 @@ def _tool_defs_cache_key(
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
-        bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
+        bool(os.environ.get("HERMES_KANBAN_TASK")),
+        os.environ.get("HERMES_PREFER_FETCH_OVER_BROWSER"),
+        bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
     )
 
@@ -367,15 +369,60 @@ def _discord_rewriter(schema_fn_name: str):
     return _rewrite
 
 
+# Opt-in (#34545). The static "prefer a lightweight tool" line is advisory and is
+# often ignored when browser_navigate and web_extract are both registered.
+_PREFER_FETCH_DIRECTIVE = (
+    "IMPORTANT: this deployment is configured to prefer web_extract"
+    " for non-interactive content retrieval. Use web_extract to fetch"
+    " page or document content from a URL. Only use browser_navigate"
+    " when the task requires interaction the fetch tools cannot do —"
+    " logging in, clicking, filling/submitting forms, JS-rendered or"
+    " scroll-dependent content."
+)
+
+
+def _prefer_fetch_over_browser() -> bool:
+    """Whether browser_navigate should defer plain fetches to web_extract.
+
+    Reads ``web.prefer_fetch_over_browser`` (default false). ``HERMES_PREFER_FETCH_OVER_BROWSER``
+    overrides config when set. Any failure stays false so the advisory hint is unchanged.
+    """
+    env = os.environ.get("HERMES_PREFER_FETCH_OVER_BROWSER")
+    if env is not None:
+        return env.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from hermes_cli.config import load_config as _load
+
+        cfg = _load() or {}
+        web_cfg = cfg.get("web")
+        if not isinstance(web_cfg, dict):
+            return False
+        return bool(web_cfg.get("prefer_fetch_over_browser", False))
+    except Exception as exc:
+        logger.debug("Could not resolve web.prefer_fetch_over_browser: %s", exc)
+        return False
+
+
 def _rewrite_browser_navigate(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Static schema is toolset-neutral; name the lightweight retrieval tools only when they are present
-    (#39797: a hard "prefer web_search" overrode the user's SOUL.md and was hallucinated when web was off)."""
+    (#39797: a hard "prefer web_search" overrode the user's SOUL.md and was hallucinated when web was off).
+
+    When ``web.prefer_fetch_over_browser`` is on and ``web_extract`` is actually available, append a
+    directive so plain HTTP fetches use web_extract. The browser tool stays registered either way.
+    """
     web_tools = [name for name in ("web_search", "web_extract") if name in available]
     if not web_tools:
         return td
     noun = "tool" if len(web_tools) == 1 else "tools"
-    hint = f" Available lightweight retrieval {noun}: {' and '.join(web_tools)}."
-    return _fn_def({**td["function"], "description": td["function"].get("description", "") + hint})
+    desc = td["function"].get("description", "")
+    desc += f" Available lightweight retrieval {noun}: {' and '.join(web_tools)}."
+    if (
+        "web_extract" in available
+        and _prefer_fetch_over_browser()
+        and _PREFER_FETCH_DIRECTIVE not in desc
+    ):
+        desc += " " + _PREFER_FETCH_DIRECTIVE
+    return _fn_def({**td["function"], "description": desc})
 
 
 def _rewrite_browser_cdp(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:

@@ -1,10 +1,10 @@
 """Single source of truth for the agent working directory.
 
-`TERMINAL_CWD` is the runtime carrier for the configured working directory (`terminal.cwd`
-is bridged to it once at gateway/cron startup; the local CLI leaves it unset and relies on
-the launch dir). Reading it in one place keeps the system prompt, tool surfaces, and
-context-file discovery agreeing on where the agent lives. Multi-session gateways can pin a
-logical cwd via `_SESSION_CWD`.
+`TERMINAL_CWD` is the runtime carrier for the working directory: gateway and cron bridge
+`terminal.cwd` into it, while a local CLI carries its launch dir (see `claim_local_cli_cwd`).
+Reading it in one place keeps the system prompt, tool surfaces, and context-file discovery
+agreeing on where the agent lives. Multi-session gateways can pin a logical cwd via
+`_SESSION_CWD`.
 """
 
 import logging
@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 _UNSET: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
+
+# A local CLI runs where it was launched (#19214): the shell cwd, ``--in DIR`` or a resumed
+# session's directory, later moved by ``-w``, ``/worktree`` and ``/resume``. Each of those writes
+# TERMINAL_CWD, and a later config bridge (dotenv reload, the terminal tool's fallback) must not
+# re-pin it to ``terminal.cwd``, which stays the gateway/cron default (#86411). Process-local:
+# gateways, cron, ACP and the dashboard never claim it.
+_cli_owns_cwd = False
 
 # The package/source root (<root>/agent/runtime_cwd.py). A backend launched from or
 # self-spawned into this tree (desktop default) must never let an os.getcwd() fallback
@@ -57,6 +64,26 @@ def scoped_session_cwd() -> str:
 def reset_session_cwd(token: Token) -> None:
     """Restore the logical cwd that was active before the matching ``set_session_cwd``."""
     _SESSION_CWD.reset(token)
+
+
+def claim_local_cli_cwd() -> None:
+    """Mark this process as a local CLI that owns its working directory (``_cli_owns_cwd``).
+
+    Called once the launch dir is final. Every ``hermes`` process bridges config at import, before
+    it knows it is a CLI, so a ``terminal.cwd`` already written to TERMINAL_CWD yields to it here.
+    """
+    global _cli_owns_cwd
+    _cli_owns_cwd = True
+    if (os.environ.get("TERMINAL_ENV") or "local") == "local" and os.environ.get("TERMINAL_CWD", "").strip():
+        os.environ["TERMINAL_CWD"] = os.getcwd()
+
+
+def config_owns_terminal_cwd(value: Any, backend: str, *, process_global: bool) -> bool:
+    """Whether a ``terminal.cwd`` value may set TERMINAL_CWD: never a launch-dir placeholder, nor a
+    process-wide bridge in a local CLI that claimed its working directory."""
+    if str(value or "").strip() in {".", "auto", "cwd"}:
+        return False
+    return not (process_global and _cli_owns_cwd and backend == "local")
 
 
 def scope_terminal_cwd() -> str:

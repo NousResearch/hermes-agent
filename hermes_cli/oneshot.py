@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from agent.runtime_cwd import claim_local_cli_cwd
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -278,6 +279,9 @@ def run_oneshot(
     # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
     # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
+    # Like `hermes chat`: run in the launch dir (after --in / a resumed session's restore), never re-pinned
+    # to terminal.cwd by a later config bridge.
+    claim_local_cli_cwd()
 
     # Nothing here drains process_registry.completion_queue (only cli.py's process_loop and the
     # gateway watchers do), so left unbound delegate_task would be forced background and every

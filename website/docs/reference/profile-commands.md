@@ -87,7 +87,7 @@ Creates a new profile.
 | `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
 | `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone`, `--clone-from`, or `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.hermes`), use `hermes skills opt-out` / `hermes skills opt-in`. |
 
-Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
+Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. Interactive local sessions start where you launch them (or in `--in DIR`); to give the profile's gateway and cron sessions a specific project, set `terminal.cwd` in that profile's `config.yaml`.
 
 **Examples:**
 
@@ -176,7 +176,7 @@ Displays details about a profile including its home directory, configured model,
 
 The skills count here (and in `hermes profile list`) is counted on the spot. The Desktop and dashboard profile lists are polled every few seconds, so they show the last known count instead and refresh it in the background — a freshly started backend may briefly show `0` skills for a profile until the first background count lands, and a skill you just installed appears in those lists within about a minute.
 
-This shows the profile's Hermes home directory, not the terminal working directory. Terminal commands start from `terminal.cwd` (or the launch directory on the local backend when `cwd: "."`).
+This shows the profile's Hermes home directory, not the terminal working directory. Interactive local sessions start in their launch directory; gateway, cron and remote-backend sessions start from `terminal.cwd`.
 
 | Argument | Description |
 |----------|-------------|

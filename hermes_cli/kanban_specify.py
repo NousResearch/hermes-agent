@@ -24,7 +24,9 @@ from hermes_cli import kanban_db_connect as kbc
 
 from utils import env_int
 
-HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(1500, env_int("HERMES_KANBAN_SPECIFY_MAX_TOKENS", 6000))
+HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
+    1500, env_int("HERMES_KANBAN_SPECIFY_MAX_TOKENS", 6000)
+)
 
 # The specifier must SEE the whole brief to preserve it: real triage cards on
 # the shared board have been authored at 8 KB - 49 KB, and a 4,000-char clamp
@@ -35,8 +37,12 @@ HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(1500, env_int("HERMES_KANBAN_SPECIFY_MAX_
 # DOES bite, the user prompt carries an explicit truncation marker (see
 # ``_task_prompt_fields``) so the model knows the brief is partial instead of
 # silently summarising half of it.
-HERMES_KANBAN_SPECIFY_MAX_BODY_CHARS = max(1, env_int("HERMES_KANBAN_SPECIFY_MAX_BODY_CHARS", 100_000))
-HERMES_KANBAN_SPECIFY_MAX_TITLE_CHARS = max(1, env_int("HERMES_KANBAN_SPECIFY_MAX_TITLE_CHARS", 2_000))
+HERMES_KANBAN_SPECIFY_MAX_BODY_CHARS = max(
+    1, env_int("HERMES_KANBAN_SPECIFY_MAX_BODY_CHARS", 100_000)
+)
+HERMES_KANBAN_SPECIFY_MAX_TITLE_CHARS = max(
+    1, env_int("HERMES_KANBAN_SPECIFY_MAX_TITLE_CHARS", 2_000)
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +161,7 @@ def _profile_author(default: str = "specifier") -> str:
     """Same identity contract as ``hermes_cli.kanban._profile_author``; ``$USER`` as the last
     resort for a human running the CLI outside any profile."""
     from hermes_cli.profiles import current_profile_name
+
     return current_profile_name() or os.environ.get("USER") or default
 
 
@@ -188,8 +195,17 @@ def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
     }
 
 
-def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
-              max_tokens: int, timeout: int, log: logging.Logger = logger) -> tuple[Optional[str], str]:
+def _call_aux(
+    verb: str,
+    task_id: str,
+    *,
+    aux_task: str,
+    system: str,
+    user: str,
+    max_tokens: int,
+    timeout: int,
+    log: logging.Logger = logger,
+) -> tuple[Optional[str], str]:
     """One auxiliary LLM call; ``(reply_text, "")`` or ``(None, reason)``.
 
     ``call_llm`` applies all ``auxiliary.<aux_task>.*`` config (provider/model/
@@ -206,22 +222,32 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     # OpenRouter/Portal sticky key) are omitted — the OpenCode Go relay rejects that with 400
     # MissingSessionID (#112043). Declare a per-task scope, but only when none is already bound so an
     # in-turn caller keeps its conversation's key.
-    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
-    affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+    from agent.portal_tags import (
+        get_affinity_scope,
+        reset_affinity_scope,
+        set_affinity_scope,
+    )
+
+    affinity_token = (
+        None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+    )
     try:
         # Route through call_llm so auxiliary.triage_specifier.* config (provider/model/base_url,
         # extra_body, reasoning_effort, retries) all apply — the direct-create path dropped extra_body
         # (#35566).
         resp = call_llm(
             task=aux_task,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
             temperature=0.3,
             max_tokens=max_tokens,
             timeout=timeout,
         )
     except Exception as exc:
         suffix = " — skipping" if verb == "specify" else ""
-        log.info("%s: API call failed for %s (%s)%s", verb, task_id, exc, suffix)
+        log.warning("%s: API call failed for %s (%s)%s", verb, task_id, exc, suffix)
         return None, f"LLM error: {type(exc).__name__}"
     finally:
         if affinity_token is not None:
@@ -246,9 +272,13 @@ def specify_task(
         return SpecifyOutcome(task_id, False, reason)
 
     raw, reason = _call_aux(
-        "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,
+        "specify",
+        task_id,
+        aux_task="triage_specifier",
+        system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(**_task_prompt_fields(task)),
-        max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS, timeout=timeout or 120,
+        max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS,
+        timeout=timeout or 120,
     )
     if raw is None:
         return SpecifyOutcome(task_id, False, reason)
@@ -275,12 +305,16 @@ def specify_task(
         )
     if not ok:
         # Race: promoted/archived between our read and the write.
-        return SpecifyOutcome(task_id, False, "task moved out of triage before promotion")
+        return SpecifyOutcome(
+            task_id, False, "task moved out of triage before promotion"
+        )
     return SpecifyOutcome(task_id, True, "specified", new_title=new_title)
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     """Task ids in the triage column; ``tenant`` narrows the sweep."""
     with kbc.connect_closing() as conn:
-        tasks = kb.list_tasks(conn, status="triage", tenant=tenant, include_archived=False)
+        tasks = kb.list_tasks(
+            conn, status="triage", tenant=tenant, include_archived=False
+        )
     return [t.id for t in tasks]

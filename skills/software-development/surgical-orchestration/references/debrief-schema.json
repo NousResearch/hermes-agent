@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebriefPayload",
+  "type": "object",
+  "required": ["directory", "modifiedFiles", "diffHash"],
+  "properties": {
+    "directory": { "type": "string" },
+    "modifiedFiles": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "diffHash": { "type": "string" },
+    "errorSignature": { "type": "string" }
+  },
+  "additionalProperties": false
+}

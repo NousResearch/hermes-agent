@@ -1,4 +1,7 @@
 from unittest.mock import Mock, patch
+
+import pytest
+
 from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_cdp as bt_cdp
 from tools import browser_tool_session as bt_session
@@ -12,6 +15,32 @@ VERSION_URL = f"{HTTP_URL}/json/version"
 
 
 class TestResolveCdpOverride:
+    @pytest.mark.parametrize(("raw", "version_url"), (
+        (HTTP_URL + "/", VERSION_URL),
+        (VERSION_URL, VERSION_URL),
+        ("http://cdp.example/slot/one/cdp?tok=synthetic", "http://cdp.example/slot/one/cdp/json/version?tok=synthetic"),
+        ("http://cdp.example/json/version?tok=synthetic", "http://cdp.example/json/version?tok=synthetic"),
+        ("http://cdp.example/json/version/?tok=synthetic", "http://cdp.example/json/version?tok=synthetic"),
+    ))
+    def test_discovery_appends_json_version_to_the_path_and_keeps_the_query(self, raw, version_url):
+        from tools.browser_tool_cdp import _resolve_cdp_override
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
+
+        with patch("requests.get", return_value=response) as mock_get:
+            assert _resolve_cdp_override(raw) == WS_URL
+
+        mock_get.assert_called_once_with(version_url, timeout=10)
+
+    def test_malformed_discovery_url_falls_back_to_the_raw_endpoint(self):
+        raw = "http://[::1:9222"
+        with patch("requests.get") as get, patch("tools.browser_tool.logger.warning") as warning:
+            assert bt_cdp._resolve_cdp_override(raw) == raw
+        get.assert_not_called()
+        warning.assert_called_once()
+
     def test_keeps_full_devtools_websocket_url(self):
         from tools.browser_tool_cdp import _resolve_cdp_override
 

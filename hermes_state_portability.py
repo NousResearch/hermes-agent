@@ -471,7 +471,8 @@ class SessionPortabilityMixin:
             # stamped even on ended segments.
             donor_db.reopen_session(seg_id)
             donor_db.end_session(seg_id, "adopted_by_profile")
-            donor_db.set_session_archived(seg_id, True)
+            # The session lives on in the adopting profile: not a delete for plugins.
+            donor_db.set_session_archived(seg_id, True, notify=False)
             return True
         except Exception:
             logger.warning("failed to retire donor segment %s after adoption", seg_id, exc_info=True)

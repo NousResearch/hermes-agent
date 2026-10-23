@@ -288,3 +288,31 @@ def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_pa
         server.close()
     assert injected.get("reply") == {"echo": "injected"}, injected.get("error")
     assert server._error is None, server._error
+
+
+@pytest.mark.platforms("windows")
+def test_client_reads_a_real_gateway_pipes_owner_dacl_and_session(tmp_path):
+    """The facts the client half judges a server by when it cannot open the server process
+    (#140706), read from a live gateway pipe through the client's own handle: owner this user, or
+    Administrators when this process is elevated; a DACL of exactly this user; this session."""
+    import _winapi
+    import gateway.runtime_bootstrap_windows as rbw
+    from gateway.control_socket import windows_pipe_name
+    from hermes_dir_acl import process_is_elevated
+    server = rbw.NativeControlServer(tmp_path, lambda raw, subject: b'{}\n')
+    server.start()
+    try:
+        handle = _winapi.CreateFile(windows_pipe_name(tmp_path), 0xC0000000, 0, _winapi.NULL,
+                                    _winapi.OPEN_EXISTING, 0, _winapi.NULL)
+        try:
+            own = rbw._process_sid(os.getpid())
+            owner, aces = rbw._pipe_security(handle)
+            assert owner == own or (owner == rbw._ADMINISTRATORS_SID and process_is_elevated()), owner
+            assert aces == ((rbw._ACCESS_ALLOWED_ACE, own),)
+            assert rbw._pipe_server_session(handle) == rbw._session_of(os.getpid())
+            # Same token on both ends: attached, whichever owner this runner's token gives the pipe.
+            assert rbw._peer_subject(handle, server=True) == 'sid:' + own
+        finally:
+            _winapi.CloseHandle(handle)
+    finally:
+        server.close()

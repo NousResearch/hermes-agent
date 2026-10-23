@@ -298,29 +298,33 @@ class SessionGatewayMixin:
         namespaces the index per sessions_dir so two stores never share routing state."""
         if not session_key or not entry_json:
             return
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         self._write_sql(
-            """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
-               SELECT ?, ?, ?, ? WHERE NOT EXISTS (
-                   SELECT 1 FROM state_meta WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))
+            f"""INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
+               SELECT :scope, :key, :entry, :now WHERE NOT {ROUTE_RETIRED_SQL}
                ON CONFLICT(scope, session_key) DO UPDATE SET
                    entry_json = excluded.entry_json,
                    updated_at = excluded.updated_at""",
-            (scope, session_key, entry_json, time.time(), entry_json),
+            {'scope': scope, 'key': session_key, **route_retired_params(session_key, entry_json, time.time())},
         )
 
-    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> None:
+    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> set[str]:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
-        are removed); other scopes untouched."""
+        are removed); other scopes untouched. Returns the keys skipped as retired routes, which
+        the sessions.json mirror must leave out too."""
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         now = time.time()
+        rows = [{'scope': scope, 'key': k, **route_retired_params(k, v, now)} for k, v in entries.items() if k and v]
         def _do(conn):
             conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
+            if rows:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM state_meta "
-                    "WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))",
-                    [(scope, k, v, now, v) for k, v in entries.items() if k and v])
-        self._execute_write(_do)
+                    "SELECT :scope, :key, :entry, :now WHERE NOT " + ROUTE_RETIRED_SQL,
+                    rows)
+            kept = {r[0] for r in conn.execute("SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,))}
+            return {row['key'] for row in rows} - kept
+        return self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
@@ -403,25 +407,20 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed, many=True)
         return len(doomed)
 
-    def retire_gateway_routes(self, session_ids) -> None:
-        """Publish deletion fences for *session_ids* in THIS (routing) database and drop the
-        routes naming them, in one transaction. Routing saves skip any entry whose session id
-        carries a marker here, so a whole-index snapshot taken before a delete in another
-        profile's store cannot restore the route when it is saved after it."""
+    def retire_gateway_routes(self, session_ids, *, namespace, expiring=()) -> None:
+        """Publish routing fences for *session_ids*, retired in the profile whose routing keys use
+        *namespace*, in THIS (routing) database and drop that profile's routes naming them, in one
+        transaction (``fence_shared_routes``). Routing saves skip a fenced route, so a whole-index
+        snapshot taken before a delete in another profile's store cannot restore it when it is
+        saved after it. The fence is not this store's own deletion marker: this profile's creates,
+        binds and generation walks stay free. *expiring* ids (a sweep's) age out at the horizon."""
         ids = sorted({str(sid) for sid in session_ids if sid})
         if not ids:
             return
 
         def _do(conn):
-            from hermes_state_mutation_retirement import RETIRED_PREFIX, entry_session_id
-            retired = json.dumps({"retired_at": time.time()})
-            conn.executemany("INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)",
-                             [(RETIRED_PREFIX + sid, retired) for sid in ids])
-            targets = set(ids)
-            doomed = [(row[0], row[1]) for row in conn.execute(
-                "SELECT scope, session_key, entry_json FROM gateway_routing").fetchall()
-                if entry_session_id(row[2]) in targets]
-            conn.executemany("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed)
+            from hermes_state_mutation_retirement import fence_shared_routes
+            fence_shared_routes(conn, namespace, ids, expiring=expiring)
         self._execute_write(_do)
 
     def prune_never_active_keyed_sessions(

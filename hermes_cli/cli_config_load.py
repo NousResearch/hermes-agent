@@ -80,12 +80,12 @@ def _parse_service_tier_config(raw: str) -> str | None:
 
 
 # terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
-# singularity, modal, daytona and vercel_sandbox only (ignored for local/ssh).
+# modal, daytona, vercel_sandbox and container plugin backends (ignored for local/ssh).
 _TERMINAL_ENV_MAPPINGS = {
     key: f"TERMINAL_{key.upper()}"
     for key in (
         "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
-        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime", "vercel_image",
+        "docker_forward_env", "modal_image", "daytona_image", "vercel_runtime", "vercel_image",
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
         "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
@@ -187,8 +187,7 @@ def _cli_config_defaults():
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {
             "env_type": "local", "cwd": ".", "home_mode": "auto", "lifetime_seconds": 300,  # cwd "." -> os.getcwd()
-            "docker_image": img, "docker_forward_env": [], "singularity_image": f"docker://{img}",
-            "modal_image": img, "daytona_image": img, "docker_volumes": [],
+            "docker_image": img, "docker_forward_env": [], "modal_image": img, "daytona_image": img, "docker_volumes": [],
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",
         },
@@ -209,6 +208,7 @@ def _cli_config_defaults():
             "resume_display": "full", "resume_exchanges": 10, "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200, "resume_max_assistant_lines": 3, "resume_skip_tool_only": True,
             "show_reasoning": True, "reasoning_full": False, "streaming": True, "busy_input_mode": "interrupt",
+            "cli_layout": "modern",
             "persistent_output": True, "persistent_output_max_lines": 200,
             # Also clear scrollback on redraw/resize recovery; off because users prefer history.
             "cli_rebuild_scrollback_on_redraw": False,

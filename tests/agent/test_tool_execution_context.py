@@ -21,6 +21,7 @@ class Agent:
     _delegate_parent_ref: object = None
     valid_tool_names: object = None
     _memory_manager: object = None
+    tool_progress_callback: object = None
 
 
 def test_nested_identity_is_immutable_and_restored(tmp_path):
@@ -94,11 +95,16 @@ def test_boolean_ancestor_depth_is_invalid():
     assert actual["lineage_valid"] is False
 
 
-def test_managed_dispatch_binds_worker_identity_in_actual_thread(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fails", [False, True])
+def test_managed_dispatch_binds_worker_identity_in_actual_thread(tmp_path, monkeypatch, fails):
     from agent import tool_executor as executor
+    from agent.tool_progress_relay import current_tool_progress
+    from tools.connectors.data_use import record_data_use
 
     root = Agent("root")
     child = Agent("worker", 1, weakref.ref(root))
+    events = []
+    child.tool_progress_callback = lambda *args, **kwargs: events.append((args, kwargs))
     child._tool_guardrails = SimpleNamespace(
         before_call=lambda *args: SimpleNamespace(allows_execution=True))
     monkeypatch.setattr(executor, "_pre_tool_block", lambda agent, ref: (None, ref.args))
@@ -108,17 +114,39 @@ def test_managed_dispatch_binds_worker_identity_in_actual_thread(tmp_path, monke
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             def dispatch():
-                actual = executor._dispatch_authorized_once(
-                    child, SimpleNamespace(), ref,
-                    execute=lambda args: dict(current_tool_execution_context()),
-                    scope_block=None, display_index=None, begin_execution=None,
-                    authorization_gate=None,
-                )
+                observed = []
+                state = SimpleNamespace()
+
+                def execute(args):
+                    observed.append(dict(current_tool_execution_context()))
+                    current_tool_progress()(1, 1, "complete")
+                    record_data_use(["no_training"])
+                    if fails:
+                        raise RuntimeError("tool failed")
+                    return observed[-1]
+
+                def run():
+                    return executor._dispatch_authorized_once(
+                        child, state, ref, execute=execute,
+                        scope_block=None, display_index=None, begin_execution=None,
+                        authorization_gate=None,
+                    )
+
+                if fails:
+                    with pytest.raises(RuntimeError, match="tool failed"):
+                        run()
+                else:
+                    assert run() == observed[-1]
                 assert not current_tool_execution_context()["lineage_valid"]
-                return actual
+                assert current_tool_progress() is None
+                assert state.data_use == frozenset({"no_training"})
+                return observed[-1]
             actual = pool.submit(copy_context().run, dispatch).result(timeout=10)
     finally:
         reset_hermes_home_override(token)
     assert actual["session_id"] == "worker" and actual["root_session_id"] == "root"
     assert actual["profile_home"] == str(tmp_path)
     assert actual["task_id"] == "worker-task" and actual["tool_call_id"] == "worker-call"
+    assert len(events) == 1
+    assert events[0][0] == ("tool.progress", "probe", "complete", None)
+    assert events[0][1]["tool_call_id"] == "worker-call"

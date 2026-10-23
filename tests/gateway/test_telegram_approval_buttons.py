@@ -1,5 +1,6 @@
 """Tests for Telegram inline keyboard approval buttons."""
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -144,7 +145,7 @@ class TestTelegramExecApproval:
             allow_permanent=False,
         )
 
-        assert buttons == [t(f"platform.telegram.approval.action_{c}") for c in ("once", "session", "deny")]
+        assert buttons == [t(f"platform.telegram.approval.action_{c}") for c in ("once", "session", "changes", "deny")]
 
 
 
@@ -355,4 +356,137 @@ class TestTelegramApprovalCallback:
         assert runner.last_source is not None
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
+
+
+def _changes_query(approval_id: int):
+    query = AsyncMock()
+    query.data = f"ea:changes:{approval_id}"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.message.message_id = 88
+    query.message.text = "Command approval"
+    query.message.chat.type = "private"
+    query.from_user = MagicMock()
+    query.from_user.id = 7675116888
+    query.from_user.first_name = "Daniel"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    update = MagicMock()
+    update.callback_query = query
+    return query, update
+
+
+class TestTelegramRequestChangesButton:
+    """Request Changes keeps the approval pending and forwards typed feedback."""
+
+    @pytest.mark.asyncio
+    async def test_inline_keyboard_includes_request_changes_button(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=99))
+        captured = []
+
+        def _spy(text, callback_data=None, **kwargs):
+            captured.append(callback_data)
+            return SimpleNamespace(text=text, callback_data=callback_data)
+
+        monkeypatch.setattr("plugins.platforms.telegram.adapter.InlineKeyboardButton", _spy)
+        monkeypatch.setattr("plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows)
+        await adapter.send_exec_approval(
+            chat_id="12345", command="DELETE FROM strava_activities",
+            session_key="agent:main:telegram:direct:7675116888",
+            description="SQL DELETE without WHERE")
+        for choice in ("once", "session", "always", "changes", "deny"):
+            assert any(cb and cb.startswith(f"ea:{choice}:") for cb in captured), captured
+
+    @pytest.mark.asyncio
+    async def test_smart_deny_has_no_changes_button(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=99))
+        captured = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data=None, **kwargs: captured.append(callback_data) or text)
+        monkeypatch.setattr("plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows)
+        await adapter.send_exec_approval(
+            chat_id="12345", command="curl example.test", session_key="s", smart_denied=True)
+        assert captured
+        assert not any(cb and ":changes:" in cb for cb in captured)
+
+    @pytest.mark.asyncio
+    async def test_changes_click_keeps_approval_pending(self):
+        from tools import clarify_gateway as cg
+
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:direct:7675116888"
+        approval_id = 7
+        adapter._approval_state[approval_id] = session_key
+        query, update = _changes_query(approval_id)
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "7675116888"}):
+            await adapter._handle_callback_query(update, MagicMock())
+        assert approval_id in adapter._approval_state
+        pending = cg.get_pending_for_session(session_key)
+        assert pending is not None and pending.awaiting_text is True
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        cg.clear_session(session_key)
+        await asyncio.sleep(0.05)
+
+    @pytest.mark.asyncio
+    async def test_changes_bridge_resolves_with_feedback(self):
+        from tools import approval as approval_module
+        from tools import clarify_gateway as cg
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:direct:bridge-test"
+        approval_id = 42
+        adapter._approval_state[approval_id] = session_key
+        approval_module._gateway_queues.clear()
+        ap_entry = _ApprovalEntry({"command": "DELETE FROM x"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(ap_entry)
+        _query, update = _changes_query(approval_id)
+        with patch.object(cg, "get_clarify_timeout", return_value=5):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "7675116888"}):
+                await adapter._handle_callback_query(update, MagicMock())
+            await asyncio.sleep(0.05)
+            assert cg.resolve_gateway_clarify(f"approval-changes-{approval_id}", "Use INSERT OR REPLACE instead of DELETE")
+            for _ in range(50):
+                if ap_entry.event.is_set():
+                    break
+                await asyncio.sleep(0.05)
+        assert ap_entry.event.is_set()
+        assert isinstance(ap_entry.result, dict)
+        assert ap_entry.result["choice"] == "changes"
+        assert "INSERT OR REPLACE" in ap_entry.result["feedback"]
+        assert approval_id not in adapter._approval_state
+        approval_module._gateway_queues.clear()
+
+    @pytest.mark.asyncio
+    async def test_changes_bridge_cancel_degrades_to_deny(self):
+        from tools import approval as approval_module
+        from tools import clarify_gateway as cg
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:direct:cancel-test"
+        approval_id = 77
+        adapter._approval_state[approval_id] = session_key
+        approval_module._gateway_queues.clear()
+        ap_entry = _ApprovalEntry({"command": "rm -rf /tmp"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(ap_entry)
+        _query, update = _changes_query(approval_id)
+        with patch.object(cg, "get_clarify_timeout", return_value=5):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "7675116888"}):
+                await adapter._handle_callback_query(update, MagicMock())
+            await asyncio.sleep(0.05)
+            cg.resolve_gateway_clarify(f"approval-changes-{approval_id}", "CANCEL")
+            for _ in range(50):
+                if ap_entry.event.is_set():
+                    break
+                await asyncio.sleep(0.05)
+        assert ap_entry.event.is_set()
+        assert ap_entry.result == "deny"
+        approval_module._gateway_queues.clear()
 

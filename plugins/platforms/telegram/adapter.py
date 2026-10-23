@@ -4247,6 +4247,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # Shorter than the base wording on purpose: two buttons share a row on mobile.
         return {choice: t(f"platform.telegram.approval.action_{choice}") for choice in ("once", "session", "always", "deny")}
 
+    def _exec_approval_actions(
+            self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> list[tuple[str, str, str]]:
+        """Shared choice set, plus Request Changes before Deny (not on a smart-deny override).
+
+        Smart deny stays once/deny: that prompt is an owner override for one operation,
+        not a revision loop. Changes never approves the command.
+        """
+        actions = super()._exec_approval_actions(
+            allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
+        if smart_denied:
+            return actions
+        changes = (t("platform.telegram.approval.action_changes"), "changes", "")
+        if actions and actions[-1][1] == "deny":
+            return [*actions[:-1], changes, actions[-1]]
+        return [*actions, changes]
+
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
@@ -4747,11 +4763,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         parts = data.split(":", 2)
         if len(parts) != 3:
             return
-        choice = parts[1]  # once, session, always, deny
+        choice = parts[1]  # once, session, always, changes, deny
         try:
             approval_id = int(parts[2])
         except (ValueError, IndexError):
             await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
+            return
+        if choice == "changes":
+            # Keep the approval pending while free-text feedback is captured.
+            await self._handle_approval_changes_click(query, cb, approval_id)
+            return
+        pending = self._approval_state.get(approval_id)
+        if isinstance(pending, dict) and pending.get("status") == "capturing":
+            if await self._callback_authorized(query, cb, _unauthorized()):
+                await query.answer(text=_toast("platform.telegram.approval.toast_already_capturing"))
             return
         session_key = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, _unauthorized(),
@@ -4785,6 +4810,101 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))
+
+    async def _handle_approval_changes_click(self, query, cb: dict[str, Any], approval_id: int) -> None:
+        """Start request-changes capture without popping the pending approval."""
+        if not await self._callback_authorized(query, cb, _unauthorized()):
+            return
+        state = self._approval_state.get(approval_id)
+        if isinstance(state, dict):
+            if state.get("status") == "capturing":
+                await query.answer(text=_toast("platform.telegram.approval.toast_already_capturing"))
+                return
+            session_key = state.get("session_key")
+        else:
+            session_key = state
+        if not session_key:
+            await query.answer(text=_toast("platform.telegram.approval.toast_already_resolved"))
+            return
+        # Mark capturing before the bridge so a second click cannot race it.
+        self._approval_state[approval_id] = {"session_key": session_key, "status": "capturing"}
+        await self._begin_approval_changes_capture(query, approval_id, str(session_key))
+
+    async def _begin_approval_changes_capture(self, query, approval_id: int, session_key: str) -> None:
+        """Edit the card and bridge the next typed reply into ``resolve_gateway_approval``.
+
+        The approval entry stays pending (status capturing) until the bridge resolves
+        or fails. Failure denies, so the agent thread cannot hang on a dead capture.
+        """
+        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+        clarify_id = f"approval-changes-{approval_id}"
+        try:
+            from tools import clarify_gateway as clarify_mod
+            clarify_mod.register(
+                clarify_id=clarify_id, session_key=session_key,
+                question="What changes would you like to the command?", choices=None)
+        except Exception as exc:
+            logger.error("[%s] cannot start request-changes capture: %s", self.name, exc)
+            self._approval_state.pop(approval_id, None)
+            await self._deny_changes_capture(session_key)
+            await query.answer(text=_toast("platform.telegram.approval.toast_changes_failed"))
+            return
+        prompt = t("approval.changes_telegram_prompt")
+        await query.answer(text=t("approval.changes_resolved_short")[:_TOAST_LIMIT])
+        original = getattr(query.message, "text", None) or ""
+        await self._edit_html_quiet(
+            query,
+            f"{_html.escape(original)}\n\n<i>{_html.escape(prompt)}</i>\n"
+            f"<i>{_html.escape(t('platform.telegram.approval.awaiting_feedback', user=user_display))}</i>")
+        timeout = float(clarify_mod.get_clarify_timeout() or 600)
+        task = asyncio.create_task(self._bridge_approval_changes(
+            clarify_mod, clarify_id, timeout, session_key, approval_id, user_display, original,
+            getattr(query.message, "chat_id", None), getattr(query.message, "message_id", None)))
+        task.add_done_callback(_consume_abandoned_task)
+
+    @staticmethod
+    async def _deny_changes_capture(session_key: str) -> None:
+        try:
+            from tools.approval import resolve_gateway_approval
+            resolve_gateway_approval(session_key, "deny")
+        except Exception:
+            logger.debug("request-changes deny fallback failed", exc_info=True)
+
+    async def _bridge_approval_changes(
+        self, clarify_mod, clarify_id: str, timeout: float, session_key: str, approval_id: int,
+        user_display: str, original: str, chat_id, message_id,
+    ) -> None:
+        """Forward clarify text to the approval resolver. ``cancel`` and silence deny."""
+        loop = asyncio.get_running_loop()
+        try:
+            response = await loop.run_in_executor(None, clarify_mod.wait_for_response, clarify_id, timeout)
+        except Exception as exc:
+            logger.error("[%s] approval-changes bridge wait failed (session=%s): %s", self.name, session_key, exc)
+            response = None
+        self._approval_state.pop(approval_id, None)
+        feedback = (response or "").strip()
+        sentinels = {getattr(clarify_mod, "CANCELLED", ""), getattr(clarify_mod, "SKIPPED", "")}
+        if feedback in sentinels or feedback.lower() == "cancel":
+            feedback = ""
+        from tools.approval import resolve_gateway_approval
+        if feedback:
+            resolve_gateway_approval(session_key, "changes", feedback=feedback)
+            body = (
+                f"{_html.escape(original)}\n\n"
+                f"<b>{_html.escape(t('approval.changes_resolved', user=user_display))}</b>\n"
+                f"<pre>{_html.escape(feedback)}</pre>"
+            )
+        else:
+            resolve_gateway_approval(session_key, "deny")
+            label = t("platform.telegram.approval.changes_denied", user=user_display)
+            body = f"{_html.escape(original)}\n\n<i>{_html.escape(label)}</i>"
+        if chat_id is None or message_id is None or not self._bot:
+            return
+        try:
+            await self._bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=body, parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.debug("approval-changes final edit failed", exc_info=True)
 
     async def _handle_slash_confirm_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """``sc:<choice>:<confirm_id>`` — resolve a slash-command confirmation."""

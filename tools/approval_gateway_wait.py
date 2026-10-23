@@ -34,7 +34,9 @@ class _ApprovalEntry:
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
-        self.result: str | None = None  # "once"|"session"|"always"|"deny"
+        # "once"|"session"|"always"|"deny", or {"choice": "changes", "feedback": ...}
+        # while the entry is still queued. Waiters see a normalized string choice.
+        self.result: str | dict | None = None
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
         # Why the prompt was withdrawn with nobody answering (interrupt cause, session teardown);
@@ -88,10 +90,32 @@ def _cancel_cause(state: str, entry) -> str | None:
     return None
 
 
+def split_changes_choice(choice):
+    """Normalize one approval answer to ``(choice, feedback)``.
+
+    A request-changes payload with text stays ``("changes", text)``. Empty
+    feedback degrades to ``("deny", None)`` so it can never be granted. Every
+    other answer is returned unchanged.
+    """
+    if isinstance(choice, dict) and choice.get("choice") == "changes":
+        feedback = str(choice.get("feedback") or "").strip()
+        if feedback:
+            return "changes", feedback
+        return "deny", None
+    return choice, None
+
+
 def _finish(payload: dict, resolved: bool, choice: str | None, reason, **extra) -> dict:
     """Fire the post hook and build the decision dict. Unresolved (timeout) and
     a None choice both mean the user never answered; ``cancelled`` carries the
-    cause when the prompt was withdrawn rather than answered."""
+    cause when the prompt was withdrawn rather than answered.
+
+    A queued request-changes payload is normalized here: the waiter sees
+    ``choice="changes"`` plus ``feedback``, never a dict it might grant.
+    """
+    choice, feedback = split_changes_choice(choice)
+    if feedback:
+        extra["feedback"] = feedback
     _ctx._fire_approval_hook("post_approval_response", **payload, choice=_hook_choice(resolved, choice, extra), **extra)
     return {"resolved": resolved, "choice": choice, "reason": reason, **extra}
 
@@ -100,6 +124,9 @@ def _hook_choice(resolved: bool, choice: str | None, extra: dict) -> str:
     """Observer-facing outcome of a wait: the choice, else ``cancelled`` / ``timeout``."""
     if extra.get("cancelled"):
         return "cancelled"
+    choice, _feedback = split_changes_choice(choice)
+    if not isinstance(choice, str):
+        choice = None
     return (choice or "timeout") if resolved else "timeout"
 
 

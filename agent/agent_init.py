@@ -1106,12 +1106,11 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
 
-    # Capture the registry generation FIRST so a concurrent refresh can detect staleness.
-    try:
-        from tools.registry import registry as _snapshot_registry
-        agent._tool_snapshot_generation = _snapshot_registry._generation
-    except Exception:
-        agent._tool_snapshot_generation = 0
+    # Capture the registry generation FIRST so a concurrent refresh can detect staleness, and the delegation
+    # backend this delegate_task is built from: the session routes on it (agent/delegation_backends.py).
+    from agent.delegation_backends import saved_backend
+    from tools.registry import registry as _snapshot_registry
+    agent._tool_snapshot_generation, agent._delegation_backend = _snapshot_registry._generation, saved_backend()
     import model_tools
     from toolsets import agent_tool_drops, session_disabled_toolsets
     disabled_toolsets = session_disabled_toolsets(disabled_toolsets, getattr(agent, "platform", None))
@@ -1379,7 +1378,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
-    from agent.memory_manager import inject_memory_provider_tools
+    from agent.memory_manager_tools import inject_memory_provider_tools
     inject_memory_provider_tools(agent)
 
 
@@ -2132,7 +2131,7 @@ def _inject_context_engine_tools(agent):
         _existing_tool_names = {
             t.get("function", {}).get("name") for t in agent.tools if isinstance(t, dict)
         }
-        from agent.memory_manager import normalize_tool_schema
+        from agent.memory_manager_tools import normalize_tool_schema
         for _raw_schema in agent.context_compressor.get_tool_schemas():
             _schema = normalize_tool_schema(_raw_schema)
             if _schema is None:

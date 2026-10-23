@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, ProjectRef
+from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
@@ -83,7 +83,8 @@ class SessionMutateParams(Params):
     """``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;
     ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.
     ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite
-    the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project."""
+    the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``
+    (``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes)."""
 
     session_id: str
     request_id: str
@@ -105,7 +106,7 @@ class SessionMutateResult(OpenModel):
 
 canonical_method("session.mutate", params=SessionMutateParams, result=SessionMutateResult,
                  doc="Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, "
-                     "delete, rewind, reset, model, reasoning, workspace, compress, import).")
+                     "delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).")
 
 
 class SessionPruneParams(Params):
@@ -168,7 +169,6 @@ class SessionInventoryFields(Result):
     tool_availability: dict[str, JsonValue] | None = None
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
-    browser_backend_notice: str | None = None
     unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
 
 
@@ -182,6 +182,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     desktop_protocol: str
     profile_name: str
     cwd: str | None = None
+    # An ACP session's edit approval policy (``session.mutate edit_policy``): ask / workspace_session / session.
+    edit_approval_policy: Literal["ask", "workspace_session", "session"] | None = None
     launch_request: dict[str, JsonValue] | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
@@ -234,6 +236,7 @@ class SessionStats(Result):
     model: str
     provider: str
     fallback_model: str | None = None
+    plan_gauge: PlanGauge | None = None
 
 
 canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,
@@ -262,6 +265,28 @@ class RollbackSessionDiffResult(Result):
 canonical_method("rollback.session_diff", params=RollbackSessionDiffParams, result=RollbackSessionDiffResult,
                  doc="The classic CLI's /diff session: everything changed since the session's earliest "
                      "retained checkpoint, as data for its terminal renderer.")
+
+
+class SessionExportParams(Params):
+    """``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``)."""
+
+    session_id: str
+    profile: str | None = None
+    format: str = "json"
+    redact: bool = False
+
+
+class SessionExportResult(Result):
+    """``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default
+    file name. The client writes it (the gateway may be remote); nothing is written on the host."""
+
+    format: str
+    filename: str
+    content: str
+
+
+canonical_method("session.export", params=SessionExportParams, result=SessionExportResult,
+                 doc="The /save transcript rendered for the client to write (the gateway writes nothing).")
 
 
 class SessionAutomationParams(Params):

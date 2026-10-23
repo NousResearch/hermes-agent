@@ -40,7 +40,8 @@ def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
     cli, workers, output = _cli(monkeypatch)
     states = iter([
         anon_auth.Code("https://example.test/sign-in", "CODE-1", 900, 5),
-        anon_auth.Completed(email="person@example.test", model="model-1", model_changed=True),
+        anon_auth.Completed(email="person@example.test", model="model-1", model_changed=True,
+                            handoff=("Your apps moved to person@example.test: Gmail.",)),
     ])
     monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: states)
     monkeypatch.setattr(
@@ -57,7 +58,8 @@ def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
     ]
     assert workers[0][0].started is True
     assert workers[0][0].target() == (
-        "Signed in as person@example.test.\nDefault model is now model-1.")
+        "Signed in as person@example.test.\nYour apps moved to person@example.test: Gmail.\n"
+        "Default model is now model-1.")
 
 @pytest.mark.parametrize(
     "terminal,initial_model,expected_model",
@@ -65,7 +67,7 @@ def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
         (anon_auth.Completed(model="model-1", model_changed=True), anon_auth.GUEST_MODEL, "model-1"),
         (anon_auth.Completed(model="model-1", model_changed=True),
          "openrouter/some-model", "openrouter/some-model"),
-        (anon_auth.Declined(), anon_auth.GUEST_MODEL, anon_auth.GUEST_MODEL),
+        (anon_auth.Cancelled(), anon_auth.GUEST_MODEL, anon_auth.GUEST_MODEL),
     ],
 )
 def test_the_drain_only_moves_the_free_tier_model_on_completion(

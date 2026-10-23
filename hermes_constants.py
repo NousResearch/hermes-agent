@@ -63,6 +63,33 @@ def _get_platform_default_hermes_home() -> Path:
     return _platform_default_hermes_home(os.environ, Path.home)
 
 
+def _account_home() -> Path:
+    """The OS account's home from the password database, never ``$HOME``: harnesses and profile isolation
+    repoint HOME (root under ``sudo`` has uid 0 too, which keeps the #108674 remap). Falls back to the
+    shared real-home resolver where pwd cannot answer."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX-only module inside try/except
+    except (ImportError, KeyError, OSError, AttributeError):
+        return Path(get_real_home())
+
+
+def account_default_hermes_home() -> Path:
+    """The platform default of the OS ACCOUNT, never of a foreign process ``HOME``.
+
+    Host service identities (``systemctl --user`` units, LaunchAgents) belong to the account, and their
+    definitions are found under the account home. A process started with ``HOME=<scratch>`` used to call
+    ``<scratch>/.hermes`` native, name the bare ``hermes-gateway`` unit, and stop the account's real
+    gateway through it. When the process HOME is the account home the two answers are the same home.
+    """
+    account = _account_home()
+    try:
+        same = Path.home().resolve() == account.resolve()
+    except (OSError, RuntimeError):
+        same = False
+    return _get_platform_default_hermes_home() if same else _platform_default_hermes_home(os.environ, lambda: account)
+
+
 def _hermes_root_of(native_home: Path, env_path: Path | None) -> Path:
     """The root that holds *env_path*: the native home, a custom root, or *env_path* itself."""
     if env_path is None:
@@ -585,22 +612,6 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     from pm import env_for
 
     return env_for("npm", base_env=env)
-
-
-def agent_browser_runnable(path: str | None) -> bool:
-    """True when *path* is an agent-browser CLI that runs (``--version`` exits 0).
-
-    Dead/wrong-arch/hung binaries are rejected so callers try the next candidate.
-
-    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough: agent-browser's npm
-    ``postinstall`` re-points a *global* install symlink (e.g. ``/opt/homebrew/bin/agent-browser``) at our
-    local ``node_modules/agent-browser/bin/...`` binary, which then disappears on the next ``hermes update``
-    — leaving a **dangling symlink** that ``which`` still reports but exec fails on with exit 127 (issue
-    #48521). Callers that trust such a path silently break every browser tool.
-    """
-    if not path:
-        return False
-    return _is_executable_file(path) and _version_probe_ok(path)
 
 
 def _legacy_path_has_content(path: Path) -> bool:

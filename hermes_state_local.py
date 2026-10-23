@@ -56,11 +56,20 @@ def commit_local_session(db, *, epoch, receipt):
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()
-        conn.execute('''INSERT INTO sessions(id,source,user_id,session_key,chat_id,chat_type,
-            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,'dm',?,?,?,?,?)
+        # Auxiliary usage inserts created_source='unknown' when it creates the row
+        # (record_auxiliary_usage carries no surface). The creator upsert repairs
+        # 'unknown', but this DO NOTHING insert does not, so the surface is stamped here.
+        # The agent's own accounting passes its surface (turn_usage._agent_session_source)
+        # and is not that writer. gui's in-process agent is desktop; a managed worker
+        # creates with the policy label gui.
+        from gateway.session_policy import created_surface
+        created = created_surface(policy['source'])
+        conn.execute('''INSERT INTO sessions(id,source,created_source,user_id,session_key,chat_id,chat_type,
+            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,?,'dm',?,?,?,?,?)
             ON CONFLICT(id) DO NOTHING''',
-            (sid, policy['source'], receipt['principal_id'], route, entry['origin']['chat_id'],
-             policy['model'], _row_cwd(policy), db._own_profile_name(), _json(entry['origin']), started))
+            (sid, policy['source'], created, receipt['principal_id'], route,
+             entry['origin']['chat_id'], policy['model'], _row_cwd(policy), db._own_profile_name(),
+             _json(entry['origin']), started))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
@@ -78,8 +87,11 @@ def commit_local_session(db, *, epoch, receipt):
 def client_request(request_json, derived=None):
     """A frozen create request as the client sent it: an owner-resolved ``-m`` route (``model_requested``)
     compares by the name the client typed, not by the model and the *derived* fields (a receipt from
-    before ``route_derived``: the endpoint) its ``${VAR}`` refs expanded to at the time."""
+    before ``route_derived``: the endpoint) its ``${VAR}`` refs expanded to at the time. ``desktop_local``
+    (``gateway.session_policy.LOCAL_DESKTOP_CHAT``), which an earlier owner stamped into the request, was
+    never sent."""
     request = json.loads(request_json)
+    request.pop('desktop_local', None)
     if derived is None:
         request.pop('route_derived', None)
     if 'model_requested' in request:

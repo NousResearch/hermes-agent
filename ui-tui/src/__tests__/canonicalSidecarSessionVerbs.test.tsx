@@ -72,7 +72,7 @@ async function overlayKey(gw: GatewayClient, key: string, expected = '/agents ki
 
 const SITES: [string, () => Promise<void>][] = [
   [
-    'session.ts::/voice tts (the owner\'s /voice handler holds the session state)',
+    'session.ts::/voice tts (read-aloud runs only in a sidecar turn)',
     async () => {
       patchUiState({ sid: 'owner' })
       const { gw, request } = owner()
@@ -87,9 +87,7 @@ const SITES: [string, () => Promise<void>][] = [
         voice: { setVoiceEnabled: vi.fn(), setVoiceRecordKey: vi.fn(), setVoiceTts: vi.fn() }
       } as never)('/voice tts')
       await new Promise(resolve => setImmediate(resolve))
-      // The session's voice state is the owner's: `/voice tts` runs its `/voice` handler, never the
-      // sidecar's voice.toggle.
-      expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice tts', session_id: 'owner' })
+      expect(sys).toHaveBeenCalledWith('/voice tts is not available on the shared gateway yet')
       expect(request.mock.calls.some(([method]) => method === 'voice.toggle')).toBe(false)
     }
   ],

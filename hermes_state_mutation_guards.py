@@ -9,6 +9,13 @@ from hermes_state_runtime import RuntimeStoreError
 MUTATION_GUARD_REFUSALS = (SessionTurnLeaseLostError, SessionCompressionInProgressError)
 
 
+def busy_refusal(exc):
+    """The client-facing refusal for one of ``MUTATION_GUARD_REFUSALS``. A held compression lock
+    is named in ``field``: Stop does not end it, so clients say to wait instead."""
+    compressing = isinstance(exc, SessionCompressionInProgressError)
+    return RuntimeStoreError('session_busy', field='compression' if compressing else None)
+
+
 def require_not_executing(conn, session_ids):
     """Refuse while a turn is running (or its outcome is unknown) on any of ``session_ids``.
     Queued admissions are allowed: a follower waits on the logical owner and simply runs

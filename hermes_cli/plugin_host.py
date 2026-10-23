@@ -291,12 +291,14 @@ class PluginHost:
                                            "attr": attr, "args": encode(list(args)), "kwargs": encode(kwargs)})
 
     def asgi_request(self, plugin_name: str, dashboard_dir: str, api_file: str, method: str, path: str,
-                     query: str, headers: list, body: bytes, *, timeout: Optional[float] = None) -> dict[str, Any]:
+                     query: str, headers: list, body: bytes, *, timeout: Optional[float] = None,
+                     authenticated: bool = False) -> dict[str, Any]:
         """One dashboard ``/api/plugins/<name>/`` request, served by the plugin's router in the host;
         ``TimeoutError`` when no answer comes within ``timeout`` seconds (the host is left running)."""
         self.ensure_started()
         return self._call("asgi", {"plugin": plugin_name, "dashboard_dir": dashboard_dir, "api_file": api_file,
                                    "method": method, "path": path, "query": query,
+                                   "authenticated": authenticated is True,
                                    "headers": [list(h) for h in headers], "body": encode(body)},
                           timeout=timeout)
 
@@ -531,6 +533,13 @@ def _holds_live_handle(value: Any) -> bool:
 
     encoded = encode(value, refs)
     return found or (isinstance(encoded, dict) and "__opaque__" in encoded)
+
+
+def is_hosted_object(obj: Any) -> bool:
+    """``obj`` is a proxy for a plugin object whose code runs in the plugin host (``plugins.isolation:
+    host``): its methods run there and anything they return that is not plain data arrives as an
+    :class:`Opaque` placeholder."""
+    return "__hermes_plugin_host_ref__" in vars(type(obj))
 
 
 def _run_on_gateway_loop(coro: Any) -> Any:

@@ -121,6 +121,19 @@ def _action(state: LivenessState, app_name: str, gpu_label: str) -> tuple[str, R
     return actions[state]
 
 
+_AVAILABILITY_PROBLEMS: dict[str, LivenessState] = {
+    "missing_app": "missing_app",
+    "unsupported_os": "missing_app",
+    "unsupported_gpu": "unsupported_gpu",
+    "version_too_old": "version_too_old",
+}
+
+
+def availability_problem(available: Availability) -> LivenessState | None:
+    """The unavailable state an install-time availability verdict maps to; None when it is not a problem."""
+    return _AVAILABILITY_PROBLEMS.get(available.state)
+
+
 def status(server_name: str) -> Status | None:
     """Return the current unavailable state for a registered declaration."""
     decl = declaration.lookup(server_name)
@@ -128,12 +141,9 @@ def status(server_name: str) -> Status | None:
         return None
     available = availability(decl)
     live = liveness_for(server_name)
-    if available.state in {"missing_app", "unsupported_os"}:
-        state: LivenessState = "missing_app"
-    elif available.state == "unsupported_gpu":
-        state = "unsupported_gpu"
-    elif available.state == "version_too_old":
-        state = "version_too_old"
+    problem = availability_problem(available)
+    if problem is not None:
+        state: LivenessState = problem
     elif live.kind == "interactive_session" and not facts.interactive_session():
         state = "no_interactive_session"
     elif live.kind == "server_json":
@@ -170,8 +180,13 @@ def describe(decl: declaration.Declaration, available: Availability, liveness_st
     app_name = display_name or decl.name
     gpu = declaration.gpu_label(decl.required_gpu)
     action, _retry = _action(liveness_state, app_name, gpu)
-    if liveness_state == "missing_app":
+    if liveness_state == "missing_app" and available.state == "unsupported_os":
+        reason = f"{app_name} is not supported on this operating system."
+        action = "Use a supported operating system."
+    elif liveness_state == "missing_app":
         reason = f"{app_name} is not installed."
+        if available.min_version:
+            action = f"Install {app_name} {available.min_version} or newer, then try again."
     elif liveness_state == "unsupported_gpu":
         reason = f"{app_name} needs {gpu}; none was found on this machine."
     elif liveness_state == "version_too_old":

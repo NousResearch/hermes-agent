@@ -1,0 +1,25 @@
+name: token-lens
+repo: https://github.com/patrickluvsoj/hermes-token-lens
+sha: cd370f7c6ef9279ae044269943ce2b7532a8c753
+description: "Token consumption analytics for Hermes: records exact per-call usage from pre/post_api_request hooks, decomposes every request into categories (system prompt, built-in and per-MCP-server tool schemas, skills, memory, history, tool results, output, reasoning) calibrated to billed totals, and adds a Token Lens dashboard tab plus a Sessions-page card with deterministic and AI-evaluated token-reduction suggestions; `hermes token-lens refresh` runs a suggestion refresh from the CLI. Disclosure — records per-API-call token counts (no message text) from pre/post_api_request hooks into token_lens.db at the Hermes home root (per-call rows kept 90 days, rollups kept), and reads Hermes's state.db read-only for session token totals and, during the optional dashboard history import, message text for estimation only; after 10 recorded sessions it automatically calls your configured main model through Hermes's plugin LLM facade every 5 sessions (up to two calls per refresh, capped at 50,000 tokens by meta_budget_tokens), sending aggregated token statistics plus the names of your enabled MCP servers and plugins, and auto-applies the model's proposed category regex rules and rubric changes (logged to token_lens.EVOLUTION.md; evolve_rules: false turns this off); the dashboard's refresh button spawns a detached `hermes token-lens refresh` process that logs to logs/token-lens-refresh.log; its data paths follow the HERMES_HOME environment variable rather than the active profile, so in a multi-profile gateway every profile records into the launch profile's database; no third-party network calls, no telemetry."
+maintainer: patrickluvsoj
+tier: community
+category: general
+requires_hermes: ">=0.16.0"
+docs_url: https://github.com/patrickluvsoj/hermes-token-lens#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/patrickluvsoj/hermes-token-lens/cd370f7c6ef9279ae044269943ce2b7532a8c753/docs/screenshots/token-lens-tab.png
+  - https://raw.githubusercontent.com/patrickluvsoj/hermes-token-lens/cd370f7c6ef9279ae044269943ce2b7532a8c753/docs/screenshots/entry-card.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_finalize
+    - on_session_start
+    - post_api_request
+    - pre_api_request
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

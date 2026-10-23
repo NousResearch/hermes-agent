@@ -37,9 +37,10 @@ import { atom } from 'nanostores'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
+import { forgetPluginPreviewAccess } from '@/store/plugin-preview-grants'
 
 import { trackGatewayEventDisposers } from './events'
-import { createPluginContext, type HermesPlugin } from './plugin'
+import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
@@ -456,10 +457,13 @@ export async function loadRuntimePlugin(
       throw new Error(`duplicate id "${plugin.id}", already loaded from ${owner.file ?? owner.kind}`)
     }
 
+    const capabilities = declaredCapabilities(plugin)
+
     const record = {
       id: plugin.id,
       name: plugin.name ?? plugin.id,
       description: plugin.description,
+      capabilities,
       kind: options.kind ?? 'disk',
       file: options.file,
       packageName: options.packageName,
@@ -493,7 +497,7 @@ export async function loadRuntimePlugin(
       try {
         result = trackGatewayEventDisposers(
           dispose => disposers.push(dispose),
-          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose), capabilities))
         )
       } catch (error) {
         failRegistration(error)
@@ -961,11 +965,13 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
 }
 
 /** Forget a disk entry whose folder is gone: unload its registration, drop
- *  its inventory rows, stop its file watch. */
+ *  its inventory rows and its preview-script grants, stop its file watch. */
 function retireDiskPlugin(file: string, record: DiskPlugin): void {
   if (record.id) {
     unloadRuntimePlugin(record.id)
     dropPlugin(record.id)
+    // A later plugin reusing this id must ask the user again, never inherit.
+    forgetPluginPreviewAccess(record.id)
   }
 
   dropOriginRecord(record.origin, record)
@@ -1007,6 +1013,20 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   retireDiskPlugin(file, record)
+
+  // A reinstall under the same id must ask for its folders again (ctx.files).
+  // A revoke that fails is reported: the plugin's row is gone, so the user
+  // could not revoke it there any more.
+  if (record.id) {
+    try {
+      await window.hermesDesktop?.pluginFiles?.revoke(record.id)
+    } catch (error) {
+      return {
+        ok: false,
+        error: `removed, but its folder access could not be revoked: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+  }
 
   return { ok: true }
 }

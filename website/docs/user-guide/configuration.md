@@ -222,11 +222,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes ships six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Vercel Sandbox. Plugins add more, such as the official [Singularity/Apptainer](#singularityapptainer-backend) backend.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | <plugin backend>
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
@@ -235,7 +235,6 @@ terminal:
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell
   sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
-  singularity_image: "docker://nousresearch/hermes-sandbox:desktop"  # Container image for Singularity backend
   modal_image: "nousresearch/hermes-sandbox:desktop"                 # Container image for Modal backend
   daytona_image: "nousresearch/hermes-sandbox:desktop"               # Container image for Daytona backend
 ```
@@ -297,7 +296,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
-| **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| **singularity** (plugin) | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
 
@@ -603,7 +602,11 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 ### Singularity/Apptainer Backend
 
-Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
+Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available. It is the official [`singularity` plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity) (formerly built into core; `hermes update` installs it for profiles that already use it):
+
+```bash
+hermes plugins install singularity
+```
 
 ```yaml
 terminal:
@@ -614,11 +617,11 @@ terminal:
   container_persistent: true       # Writable overlay persists across sessions
 ```
 
-**Requirements:** `apptainer` or `singularity` binary in `$PATH`.
+**Requirements:** the `singularity` plugin and an `apptainer` or `singularity` binary in `$PATH`.
 
 **Image handling:** Docker URLs (`docker://...`) are automatically converted to SIF files and cached. Existing `.sif` files are used directly.
 
-**Scratch directory:** Resolved in order: `TERMINAL_SCRATCH_DIR` → `TERMINAL_SANDBOX_DIR/singularity` → `/scratch/$USER/hermes-agent` (HPC convention) → `~/.hermes/sandboxes/singularity`.
+**Scratch directory:** Resolved in order: `TERMINAL_SCRATCH_DIR` → `/scratch/$USER/hermes-agent` when `/scratch` is writable (HPC convention) → `TERMINAL_SANDBOX_DIR/singularity` (default `~/.hermes/sandboxes/singularity`).
 
 **Isolation:** Uses `--containall --no-home` for full namespace isolation without mounting the host home directory.
 
@@ -631,7 +634,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
-- **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
+- **Singularity** — Needs the `singularity` plugin (`hermes plugins install singularity`) and `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
@@ -700,7 +703,7 @@ Anything listed in `docker_forward_env` becomes visible to commands run inside t
 
 ### Running the Container as Your Host User
 
-By default Docker containers run as `root` (UID 0). Files created inside `/workspace` or other bind-mounts end up owned by root on the host, so after a session you have to `sudo chown` them before you can edit them from your host editor. On Linux, when Hermes stops and removes a root container, it first hands the files in its own sandbox bind mounts (`/root` and `/workspace` under `TERMINAL_SANDBOX_DIR`) back to your user (not your `docker_volumes` or mounted host directory; skipped on rootless Docker and userns-remap). The `terminal.docker_run_as_host_user` flag fixes this for every mount and for long-lived containers that are never removed:
+By default Docker containers run as `root` (UID 0). Files created inside `/workspace` or other bind-mounts end up owned by root on the host, so after a session you have to `sudo chown` them before you can edit them from your host editor. On Linux, when Hermes stops and removes a root container, it first hands the files in its own sandbox bind mounts (`/root` and `/workspace` under `TERMINAL_SANDBOX_DIR`) back to your user (not your `docker_volumes` or mounted host directory; skipped on rootless Docker and userns-remap). Those sandbox files also lose setuid/setgid bits and file capabilities, whatever their owner, so nothing the container left there runs with elevated rights when you execute it on the host; a long-lived container that is never removed gets that strip (without any owner change) whenever a session detaches from it or reattaches, and before the stale-container sweep removes it. The `terminal.docker_run_as_host_user` flag fixes this for every mount and for long-lived containers that are never removed:
 
 ```yaml
 terminal:
@@ -786,7 +789,7 @@ export TERMINAL_LOCAL_PERSISTENT=false              # local
 | SSH | `TERMINAL_SSH_PERSISTENT`, else `terminal.persistent_shell` (`TERMINAL_PERSISTENT_SHELL`) | `true` |
 | Local | `TERMINAL_LOCAL_PERSISTENT` | `true` |
 
-Docker, Singularity, Modal, Daytona, Vercel Sandbox and plugin backends ignore these settings.
+Docker, Modal, Daytona, Vercel Sandbox and plugin backends (Singularity included) ignore these settings.
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 
@@ -1145,6 +1148,43 @@ message. The user receives a rejection notice and must resend. Hermes does not
 automatically requeue the message because doing so without durable ordering and
 idempotency could process it twice. Non-positive values use the 5-second
 default.
+
+## Gateway Restart Drain
+
+When the gateway stops or restarts (SIGTERM, `hermes update`, `hermes gateway stop`, or the final
+phase of `hermes gateway restart` / `/restart`), `agent.restart_drain_timeout` is how many seconds
+it lets in-flight chat turns keep running before it interrupts them:
+
+```yaml
+agent:
+  restart_drain_timeout: 0          # default: interrupt in-flight chat turns at once
+  cron_drain_timeout: 30            # floor for cron jobs and api_server (/v1) runs
+  restart_after_turn_timeout: 1800  # /restart and `gateway restart`: wait for turns BEFORE stopping
+```
+
+With the default `0`, a restart interrupts a running turn immediately. The turn settles as
+interrupted and is never run again; the TUI and Desktop show a "Gateway restarting" (or "Gateway
+shutting down") notice on that turn, and you send the message again once Hermes reconnects.
+Queued messages behind it are kept and run in order on the new gateway.
+
+Set a positive value if you would rather let turns finish:
+
+```yaml
+agent:
+  restart_drain_timeout: 60
+```
+
+A longer drain makes every restart and update wait up to that long. `HERMES_RESTART_DRAIN_TIMEOUT`
+overrides the config value.
+
+:::caution systemd `TimeoutStopSec`
+The generated systemd unit sizes `TimeoutStopSec` from this value: the larger of
+`restart_drain_timeout` and `cron_drain_timeout` + 10 s, plus 30 s of headroom, and at least 60 s
+(`gateway/restart.py`, `resolve_systemd_timeout_stop_sec`). If you raise `restart_drain_timeout`,
+re-run `hermes gateway install` so the unit picks up the new budget. Otherwise systemd SIGKILLs the
+gateway in the middle of its drain. launchd caps its stop timeout at 60 s, so on macOS the drain
+is limited to what fits inside that.
+:::
 
 ## Session Stall Watchdog
 
@@ -2105,7 +2145,7 @@ tool_loop_guardrails:
 Hard stops are designed to catch **replays** — the same call, unchanged, with nothing happening in between — not legitimate iteration:
 
 - **Edit → re-run is never a loop.** Any successful mutating call (`write_file`, `patch`, a green `terminal`/`execute_code`, a browser action, a job/message/cron mutation) marks progress for every failing call still being counted. The next identical retry (re-running a red test after a fix, re-snapshotting after a click) starts a fresh streak instead of accumulating toward a block.
-- **Distinct red commands are diagnosis, not a loop.** For tools whose non-zero exit is ordinary output (`terminal`, `execute_code`, process pollers, `browser_navigate`, `web_extract`) the `same_tool_failure` threshold only warns and never halts. Only an exact-args replay with no intervening change, or an identical-result streak, can stop them.
+- **Distinct red commands are diagnosis, not a loop.** For tools whose non-zero exit is ordinary output (`terminal`, `execute_code`, process pollers, `browser_exec`, `web_extract`) the `same_tool_failure` threshold only warns and never halts. Only an exact-args replay with no intervening change, or an identical-result streak, can stop them.
 - **A halt ends the turn, not the session.** The agent replies with which guardrail fired and why; replying "continue" resumes with fresh per-turn counters.
 
 ### Per-turn runaway-loop caps
@@ -2775,37 +2815,68 @@ web:
 
 ## Browser
 
-Configure browser automation behavior:
+Configure browser automation behavior. Every browser key lives under `browser:`;
+see the [Browser feature page](./features/browser.md) for how the browser sources
+(local Chromium, cloud providers, Lightpanda, `/browser connect`, real profile) fit together.
 
 ```yaml
 browser:
-  inactivity_timeout: 120        # Seconds before auto-closing idle sessions
-  command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
-  record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
-  # Optional CDP override — when set, Hermes attaches directly to your own
-  # Chromium-family browser (via /browser connect) rather than starting a headless browser.
+  inactivity_timeout: 120        # Seconds before an idle browser is closed
+  command_timeout: 30            # Chromium launch timeout floor (seconds)
+  headed: false                  # true = visible Chromium window (local); keeps the browser open between turns
+  engine: auto                   # auto (Chromium) | lightpanda ("chrome" is accepted as auto)
+  # Local Chromium launched by Hermes
+  executable_path: ""            # Chromium binary override; "" = the packaged Chromium
+  user_data_dir: ""              # Persistent profile shared by every session; "" = fresh profile per session
+  chromium_args: []              # Extra Chromium command-line flags, e.g. ["--lang=de-DE"]
+  # Cloud browser selection (written by `hermes tools` → Browser Automation)
+  cloud_provider: local          # local | browserbase | browser-use | firecrawl | nous | <provider plugin>; unset = autodetect from credentials
+  auto_local_for_private_urls: true  # With a cloud provider, open LAN/localhost URLs in a local Chromium
+  allow_private_urls: false      # Allow private/internal addresses (localhost, 192.168.x.x, ...)
+  # Optional CDP override — when set, the browser tools attach to your own
+  # Chromium-family browser (as /browser connect does) instead of launching one.
   cdp_url: ""
-  # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
-  # are handled when a CDP backend is attached (Browserbase, local Chromium-family
-  # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
+  use_real_profile: false        # Browse on a managed copy of your real browser profile (opt-in)
+  # Dialog supervisor — how native JS dialogs (alert / confirm / prompt / beforeunload) are handled
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
-  camofox:
-    managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
-    user_id: ""                  # Optional externally managed Camofox userId
-    session_key: ""              # Optional session key sent when Hermes creates a tab
-    adopt_existing_tab: false    # Reuse an existing tab for this identity before creating one
 ```
+
+**Executable resolution.** Hermes launches the first Chromium it finds:
+`browser.executable_path` → the Chromium installed by Hermes's package manager
+(`hermes pm install chromium`) → `/etc/hermes/chromium-executable-path` (official
+Docker image) → a system `chromium` / `chromium-browser` on `PATH` (Termux and
+platforms without a packaged build). With none, the browser tool reports a hint
+instead of failing silently.
+
+**Turning browsing off.** There is no browser config switch: disable the `browser`
+toolset with `hermes tools` (or `hermes tools disable browser [--platform NAME]`).
 
 **Dialog policies:**
 
-- `must_respond` (default) — capture the dialog, surface it in `browser_snapshot.pending_dialogs`, and wait for the agent to call `browser_dialog(action=...)`. After `dialog_timeout_s` seconds with no response, the dialog is auto-dismissed to prevent the page's JS thread from stalling forever.
-- `auto_dismiss` — capture, dismiss immediately. The agent still sees the dialog record in `browser_snapshot.recent_dialogs` with `closed_by="auto_policy"` after the fact.
+- `must_respond` (default) — capture the dialog and wait for the agent to call `browser_dialog(action=...)`. After `dialog_timeout_s` seconds with no response, the dialog is auto-dismissed to prevent the page's JS thread from stalling forever.
+- `auto_dismiss` — capture, dismiss immediately.
 - `auto_accept` — capture, accept immediately. Useful for pages with aggressive `beforeunload` prompts.
 
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
-The browser toolset supports multiple providers. See the [Browser feature page](./features/browser.md) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
+**Removed keys (migrated automatically).** `browser.backend` is gone — `browser_exec` is the
+only browser path. An old `backend: off` (quoted or not) is removed with a one-time notice to
+disable the `browser` toolset instead, shown by `hermes update` or, when Hermes migrated the config as it
+started, as a warning at the start of the first session. Any other value is removed with a note naming it
+and what replaced it (`camofox`: the Camofox plugin, `local`: the packaged Chromium browser_exec launches,
+a cloud name: `browser.cloud_provider`).
+`snapshot_threshold`, `record_sessions`, `allow_unsafe_evaluate` and `restrict_evaluate`
+belonged to the removed built-in browser tools and no longer have an effect. The
+`browser.camofox.*` keys are read by the Camofox plugin (`hermes plugins install camofox`), not by core.
+The old `AGENT_BROWSER_*` environment variables are no longer read; on update their values
+are copied from the profile's `.env` into the matching keys when those keys are unset
+(`AGENT_BROWSER_EXECUTABLE_PATH` → `executable_path`, `AGENT_BROWSER_PROFILE` → `user_data_dir`,
+`AGENT_BROWSER_ARGS` → `chromium_args`, `AGENT_BROWSER_HEADED` → `headed`, `AGENT_BROWSER_ENGINE` → `engine`).
+`engine: auto` and `headed: false` count as unset, because the environment variable overrode them
+before. A relative `AGENT_BROWSER_PROFILE` was resolved against the working directory, so it is
+written as that absolute path (the working directory of the process that migrated the config), with a
+notice, shown the same way, naming the path it pinned so you can check your browser logins are there.
 
 ## Timezone
 
@@ -2871,7 +2942,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, `browser_navigate`, and any tool that accesses URLs.
+When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, browser navigation, and any tool that accesses URLs.
 
 Domain rules support:
 - Exact domains: `admin.example.com`
@@ -2954,6 +3025,10 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
+  backend: default                          # Delegation strategy routing each task: "default" = the keys below, or a plugin backend (model_map, profile_routes, ...)
+  # backends:                               # Each plugin backend's own settings, keyed by its backend name
+  #   model_map:
+  #     options: [...]
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
@@ -2970,6 +3045,8 @@ delegation:
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
   oneshot_max_children: 2                   # Total subagents a one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited. Interactive and gateway sessions are never capped by this.
 ```
+
+**Delegation strategy (`backend`):** `delegation.backend` picks the strategy plugin that decides each subagent's route. `default` follows the keys below (or the parent's route when they are empty). Plugin strategies such as `model_map` (a named model per task) and `profile_routes` (a Hermes profile per task) read their settings from `delegation.backends.<backend name>`. A backend whose plugin is missing or disabled fails closed: `delegate_task` returns a tool error naming it and the fix (`/delegation default`, or `hermes config set delegation.backend default`) instead of running children on another route. A backend route without its own `fallback_providers` uses `delegation.fallback_providers`. See [Subagent Delegation → Delegation strategies](features/delegation.md#delegation-strategies-delegationbackend).
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 

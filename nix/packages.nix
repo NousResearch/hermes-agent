@@ -37,6 +37,7 @@
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
+        inherit pmPackages;
         inherit
           rev
           branch
@@ -66,7 +67,7 @@
           "voice"
         ]
         # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
-        ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ "matrix" ];
       };
     in
     {
@@ -74,6 +75,7 @@
         node-gyp =
           (pkgs.callPackage ./lib.nix {
             inherit (pkgs) npm-lockfile-fix;
+            inherit pmPackages;
           }).node-gyp;
         default = full;
 

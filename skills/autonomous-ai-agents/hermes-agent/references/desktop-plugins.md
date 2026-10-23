@@ -114,6 +114,14 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   After registering one, TELL the model it exists (a bundled skill or the
   user's instructions) — it won't discover the name on its own.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
+- `ctx.files` — the only file door: the plugin's own data folder (`'data'`) and
+  folders the user grants through `ctx.files.requestFolder()` (the app's
+  picker; listed and revocable under Capabilities ▸ Plugins). Calls take a
+  folder handle plus a RELATIVE path (`list`, `stat`, `readText`,
+  `readDataUrl`, `writeText(…, { exclusive })`, `rename`, `trash`) and resolve
+  `{ ok, … }` / `{ ok: false, error }`; `..`, absolute paths, escaping
+  symlinks and Hermes' own data are refused by the main process. Never call
+  `window.hermesDesktop` file methods from a plugin.
 - `ctx.os` — the curated OS door, attributed to your plugin:
   `ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? })`
   posts a native OS notification. Fires only while the user is away from Hermes

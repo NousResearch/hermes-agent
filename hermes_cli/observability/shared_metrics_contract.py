@@ -138,7 +138,7 @@ SKILL_POST_PATCH_STATES = frozenset({"no_new_patch", "not_applicable", "reused_a
 CLIENT_OS_FAMILIES = frozenset({"linux", "macos", "unknown", "windows"})
 CLIENT_ARCHITECTURES = frozenset({"arm", "arm64", "unknown", "x86", "x86_64"})
 CLIENT_INSTALL_METHODS = frozenset({
-    "apt", "docker", "git", "home-manager", "homebrew", "nixos", "pip", "unknown",
+    "apt", "docker", "git", "home-manager", "homebrew", "microsoft-store", "nixos", "pip", "unknown",
 })
 CLIENT_RESOURCE_KEYS = frozenset({"architecture", "hermes_version", "install_method", "os_family"})
 
@@ -156,9 +156,15 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
 # The Tool Search bridge tools are not in a toolset; every hosted connector tool reads ``connector``.
 BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_describe", "tool_search"})
-# Deleted with the old setup flow. v4 only adds values, and rows that v0.21.6/7 saved with these names
-# must still package; recording maps through the live sets (tool_metric_name, toolset_metric_name).
-RETIRED_TOOL_NAMES = frozenset({"setup_choose", "start_chat"})
+# Deleted core tools: setup_choose/start_chat with the old setup flow; the built-in browser_* tools with
+# agent-browser (the camofox plugin's same-named tools record as ``plugin``). v4 only adds values, and rows
+# older releases saved with these names must still package; recording maps through the live sets
+# (tool_metric_name, toolset_metric_name).
+RETIRED_TOOL_NAMES = frozenset({
+    "setup_choose", "start_chat",
+    "browser_back", "browser_click", "browser_console", "browser_get_images", "browser_navigate",
+    "browser_press", "browser_scroll", "browser_snapshot", "browser_type", "browser_vision",
+})
 RETIRED_TOOLSET_NAMES = frozenset({"setup", "start_chat"})
 _LIVE_TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
 TOOL_NAMES = _LIVE_TOOL_NAMES | RETIRED_TOOL_NAMES
@@ -279,8 +285,9 @@ DELEGATION_OUTCOMES = frozenset({"cancelled", "failed", "partial", "success"})
 DELEGATION_DEPTHS = frozenset({"1", "2", "3", "gte_4"})
 DELEGATION_MODES = frozenset({"background", "foreground"})
 EXECUTION_KINDS = frozenset({"browser", "code", "terminal"})
-# Shipped browser backends: tools/browser_{camofox,lightpanda,tool_cdp,tool_cloud,extension_router}.py
-# plus the bundled cloud providers in plugins/browser/.
+# Browser backend labels: tools/browser_{lightpanda,session_cdp,session_cloud}.py plus the bundled cloud
+# providers in plugins/browser/. ``camofox`` (now the catalog plugin) and ``extension`` (the removed
+# browser-extension control) stay as legacy values: removing a shipped schema value breaks older relays.
 BROWSER_BACKENDS = frozenset({
     "browser-use", "browserbase", "camofox", "cdp", "extension", "firecrawl", "lightpanda", "local", "other",
 })

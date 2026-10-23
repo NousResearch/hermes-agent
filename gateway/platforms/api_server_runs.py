@@ -536,8 +536,6 @@ class _RunLaunch:
     session_history_delivery: bool
     agent_kwargs: dict  # ``_create_agent`` keyword arguments (prompt, model overrides, route, room policy)
     request_profile: Any
-    browser_control_principal: Any
-    browser_control_transport_family: Any
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
     admission: Any = None
     walked_from: Optional[str] = None  # the swept stored session the chain moved past (``bind_api_steps``)
@@ -826,8 +824,6 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
-        browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
@@ -835,6 +831,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     # Under session authority the same call admits the turn to the Bot Chat's own FIFO, which is
     # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    _retarget_to_delivered_chat(self, launch, admitted)
     if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
         refused = await _admit_run_to_authority(
             self, launch, run_id, session_history_delivery, _declared_selected,
@@ -852,6 +849,15 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+
+
+def _retarget_to_delivered_chat(self, launch: _RunLaunch, admitted) -> None:
+    """The owner moved an API-held "Bot Chat" title aside and the turn landed in the local chat it
+    minted (MSG-21): the run record (and its idempotency replay) names that chat, not the old row."""
+    delivered = admitted[1].get("session_id") if admitted is not None else None
+    if delivered and delivered != launch.session_id:
+        launch.session_id = delivered
+        self._set_run_status(launch.run_id, "queued", session_id=delivered)
 
 
 def _run_usage(agent) -> dict[str, int]:
@@ -902,8 +908,6 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
                 profile=run.request_profile or "",
-                browser_control_principal=run.browser_control_principal,
-                browser_control_transport_family=run.browser_control_transport_family,
                 # #98619 audited opt-in: the /v1/runs session id is wake-capable only when its
                 # own continuation path reloads session history — an explicit body/chained
                 # session id or a declared X-Hermes-Session-Key conversation (both load

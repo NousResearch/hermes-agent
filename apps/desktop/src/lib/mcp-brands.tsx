@@ -102,11 +102,6 @@ export const MCP_BRAND_ICONS: Record<string, McpBrand> = {
   zapier: { Icon: SiZapier, color: '#FF4A00' }
 }
 
-/** Inline-glyph color for a brand: monochrome marks inherit the surrounding
- *  text color; branded marks use the brand color. */
-export const brandGlyphStyle = (brand: McpBrand): { color: string } | undefined =>
-  brand.monochrome ? undefined : { color: brand.color }
-
 /** The same brand under every spelling a connector arrives with: catalog slug
  *  (`unreal-engine`), registry id (`unreal_engine`), display name (`Unreal
  *  Engine`). Compare on letters and digits alone so none of them miss. */

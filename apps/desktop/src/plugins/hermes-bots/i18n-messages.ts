@@ -145,6 +145,7 @@ export type BotsMessages = {
     /** Re-opens the forever-chat on purpose. A plain row click only returns to
      *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
     openBotChat: string
+    openBotChatInNewTab: string
     /** Screen-reader label for the row spinner while a cold bot chat opens. */
     openingChat: string
     /** Row context menu: pin/hide toggles, their toasts, and the groups entry. */

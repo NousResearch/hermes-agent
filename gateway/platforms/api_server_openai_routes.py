@@ -68,7 +68,13 @@ def _result_flags(result: Any) -> tuple:
             bool(result.get("failed")), result.get("error"))
 
 
-def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None) -> str:
+def _budget_exhausted(result: Any) -> bool:
+    """The turn ran out of its iteration budget; its final text is the agent's own wrap-up."""
+    reason = str(result.get("turn_exit_reason") or "") if isinstance(result, dict) else ""
+    return reason.startswith(("budget_exhausted", "max_iterations_reached("))
+
+
+def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None, *, budget_exhausted=False) -> str:
     """OpenAI ``finish_reason``: "length" for truncation, "error" for failure, else "stop"."""
     # OpenAI uses "length" for truncation, "stop" for normal completion, and downstream SDKs accept "error"
     # / custom codes. See issue #22496.
@@ -76,6 +82,10 @@ def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None) 
         return "length"
     if agent_error is not None or is_failed or (not completed and err_msg):
         return "error"
+    # "cancelled" means the user interrupted; a budget-capped turn stopped short of the task instead,
+    # and a broker reading "cancelled" discards a usable wrap-up answer.
+    if budget_exhausted:
+        return "length"
     return 'cancelled' if not completed else 'stop'
 
 
@@ -114,10 +124,12 @@ def _response_status(result):
     return 'completed'
 
 
-def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str) -> dict[str, Any]:
-    return {
-        "completed": completed, "partial": is_partial, "failed": is_failed, "error": err_msg,
-        "error_code": "output_truncated" if finish_reason == "length" else "agent_error"}
+def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str, *,
+                   budget_exhausted: bool = False) -> dict[str, Any]:
+    error_code = ("iteration_budget_exhausted" if budget_exhausted and finish_reason == "length"
+                  else "output_truncated" if finish_reason == "length" else "agent_error")
+    return {"completed": completed, "partial": is_partial, "failed": is_failed, "error": err_msg,
+            "error_code": error_code}
 
 
 def _transformed_notice() -> str:
@@ -969,7 +981,8 @@ class OpenAICompatRoutesMixin:
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
-        finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg)
+        budget_exhausted = _budget_exhausted(result)
+        finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, budget_exhausted=budget_exhausted)
         # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
         # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
         # id the agent actually resolved, so headerless clients still learn where the turn went.
@@ -1000,7 +1013,8 @@ class OpenAICompatRoutesMixin:
             response_data["choices"][0]["message"]["reasoning_content"] = reasoning_text
         if is_partial or is_failed or not completed:
             response_data["hermes"] = _hermes_extras(
-                completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
+                completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason,
+                budget_exhausted=budget_exhausted)
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg and not presentation_muted:
@@ -1149,7 +1163,9 @@ class OpenAICompatRoutesMixin:
             if agent_error is not None:
                 is_failed = True
                 err_msg = err_msg or str(agent_error)
-            finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error)
+            budget_exhausted = _budget_exhausted(result)
+            finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error,
+                                           budget_exhausted=budget_exhausted)
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
             presentation_muted = (
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
@@ -1174,7 +1190,8 @@ class OpenAICompatRoutesMixin:
                         "message": err_msg,
                         "type": type(agent_error).__name__ if agent_error else "agent_error"}
                 finish_chunk["hermes"] = _hermes_extras(
-                    completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
+                    completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason,
+                    budget_exhausted=budget_exhausted)
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):

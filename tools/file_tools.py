@@ -138,11 +138,9 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     env = getattr(file_ops, "env", None)
     if env is None:
         return True
-    try:
-        from tools.environments.local import LocalEnvironment
-    except ImportError:
-        return True
-    return isinstance(env, LocalEnvironment)
+    from tools.environments.base import env_uses_host_filesystem
+
+    return env_uses_host_filesystem(env)
 
 
 # V4A file headers: group 1 = header prefix, 2 = op, 3 = path. ``\s*`` after

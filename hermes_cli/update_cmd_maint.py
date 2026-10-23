@@ -134,15 +134,14 @@ def _print_fts_optimize_available_notice() -> None:
     if size_gb < 0.5:
         return
     db = None
-    needs_upgrade = False
+    legacy_inline = False
+    drift: list[str] = []
     try:
         db = SessionDB(db_path=db_path, read_only=True)
         # read_only opens skip schema init; probe the stored layout directly.
-        row = db._conn.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'messages_fts'"
-        ).fetchone()
-        needs_upgrade = bool(row) and db._db_needs_fts_storage_upgrade(db._conn)
+        from hermes_state_fts import fts_layout_drift
+        drift = fts_layout_drift(db._conn)
+        legacy_inline = db._db_has_legacy_inline_fts(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash
         # tables remain. Re-running resumes it, so offer the command again.
         interrupted = bool(
@@ -165,7 +164,7 @@ def _print_fts_optimize_available_notice() -> None:
         if db is not None:
             with suppress(Exception):
                 db.close()
-    if not needs_upgrade and not interrupted:
+    if not drift and not interrupted:
         return  # current layout already present (fresh/optimized)
 
     if interrupted:
@@ -179,22 +178,34 @@ def _print_fts_optimize_available_notice() -> None:
         print("    hermes sessions optimize-storage")
         return
 
-    est_reclaim = size_gb * 0.6
     print()
-    if mode == "require":
-        print("◆ Session database upgrade required")
-        print(
-            f"  Your search index uses the OLD storage layout and should be "
-            f"upgraded. The new layout typically frees ~60% of state.db "
-            f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
-            f"required for continued optimal operation."
-        )
+    if legacy_inline:
+        # The ~60% figure was measured for this transition only (inline copies of every message dropped).
+        est_reclaim = size_gb * 0.6
+        if mode == "require":
+            print("◆ Session database upgrade required")
+            print(
+                f"  Your search index uses the OLD storage layout and should be "
+                f"upgraded. The new layout typically frees ~60% of state.db "
+                f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
+                f"required for continued optimal operation."
+            )
+        else:
+            print("◆ Reclaim ~60% of your session database disk")
+            print(
+                f"  Your search index uses the old storage layout. Upgrading it "
+                f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
+                f"of your current {size_gb:.1f} GB."
+            )
     else:
-        print("◆ Reclaim ~60% of your session database disk")
+        if mode == "require":
+            print("◆ Search index rebuild required by your notice policy")
+        else:
+            print("◆ Search index update available")
         print(
-            f"  Your search index uses the old storage layout. Upgrading it "
-            f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
-            f"of your current {size_gb:.1f} GB."
+            "  Your search index is on the compact layout from an earlier "
+            "optimization, but a later release changed it. Running the "
+            "command again rebuilds it in the current layout."
         )
     print("  Run when convenient:  hermes sessions optimize-storage")
     print(
@@ -273,7 +284,8 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
-    already restarted, so a Serve-only install isn't restarted a second time here.
+    already handled (restarted, declined, or failed; each already reported), so a Serve-only
+    install isn't restarted a second time here and a declined or failed unit isn't retried (#141021).
 
     See #83595.
     """
@@ -878,8 +890,8 @@ def _refresh_cua_driver_after_update() -> None:
 
 
 def _install_default_tools_after_update() -> None:
-    """Give the install its optional default tools: the PM defaults (agent-browser +
-    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
+    """Give the install its optional default tools: the PM defaults (Chromium,
+    cua-driver). browser_exec's engine (browser-harness) is a venv dependency.
 
     Runs at the end of both the installers (via the source completion) and
     ``hermes update``: a source update re-syncs only the venv, so a tool that became

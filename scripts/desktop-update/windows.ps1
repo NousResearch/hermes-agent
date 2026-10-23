@@ -72,6 +72,7 @@ param(
     [int]$ProbeTimeoutSeconds = 60,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
+    [switch]$SelfTestRelaunchWindow,
     [switch]$SelfTestMarker,
     [switch]$SelfTestWorkingDirectory,
     [string]$HandoffRun = "",
@@ -89,7 +90,7 @@ if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey
 }
 $targetArgs = if ($Channel) { @("--channel", $Channel.ToLowerInvariant()) } else { @("--branch", $Branch) }
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestRelaunchWindow -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain without a checkout.
     throw "-InstallRoot is required"
@@ -742,6 +743,56 @@ function Wait-DesktopExit([int]$Seconds) {
     return -not (Test-DesktopAlive)
 }
 
+function Show-DesktopWindow {
+    # Bring the relaunched Desktop's window to the foreground, and make sure it is
+    # actually VISIBLE. Returns $false only when the process died, which is a
+    # failed launch; a timeout is a visibility miss, not a failed launch.
+    #
+    # Two properties of the underlying API this has to work around:
+    #
+    #  * Process.MainWindowHandle is Zero unless the process owns a window that
+    #    IsWindowVisible. Electron creates its BrowserWindow hidden and shows it
+    #    on `ready-to-show`, so during startup a real HWND exists that this
+    #    property reports as "no window" — verified directly: a process owning
+    #    four windows, none visible, reports MainWindowHandle 0. Polling it is
+    #    still the right way to WAIT for the app to show something, but the
+    #    timeout is a real outcome and must be reported rather than swallowed:
+    #    silently expiring leaves a running Desktop with no window while the
+    #    handoff reports a clean relaunch.
+    #  * SW_RESTORE un-minimizes an existing window; it is not the "make this
+    #    visible" call for one that was never shown. SW_SHOWNORMAL does both.
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [int]$TimeoutSeconds = 20
+    )
+
+    if (-not $script:Win32) { return $true }
+
+    [HermesHandoff.Win32]::AllowSetForegroundWindow($ProcessId) | Out-Null
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $hwnd = [System.IntPtr]::Zero
+        try {
+            $proc = Get-Process -Id $ProcessId -ErrorAction Stop
+            $hwnd = $proc.MainWindowHandle
+        } catch {
+            Write-HandoffLog "WARNING: relaunched desktop exited before its window appeared"
+            return $false
+        }
+        if ($hwnd -ne [System.IntPtr]::Zero) {
+            [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+            [HermesHandoff.Win32]::ShowWindow($hwnd, 1) | Out-Null  # SW_SHOWNORMAL
+            [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+            Write-HandoffLog "focused relaunched desktop window"
+            return $true
+        }
+        Start-Sleep -Milliseconds 400
+    }
+
+    Write-HandoffLog ("WARNING: relaunched desktop (pid $ProcessId) is running but produced no visible window within ${TimeoutSeconds}s - the app is up with no GUI. Reopening Hermes from the Start menu restores the existing window.")
+    return $true
+}
+
 function Start-DesktopRelaunch {
     # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
     # the pid exists, or the fallback spawn returned a live process). The
@@ -783,32 +834,12 @@ function Start-DesktopRelaunch {
             # main window once it exists. A WMI-spawned process starts
             # unfocused, and Windows only lets the CURRENT foreground
             # owner (us, while the progress window is up / just closed)
-            # delegate that right. Poll briefly for the window: Electron
-            # takes a couple seconds to create it.
+            # delegate that right.
             try {
-                if ($script:Win32) {
-                    [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$r.ProcessId) | Out-Null
-                    $deadline = (Get-Date).AddSeconds(20)
-                    while ((Get-Date) -lt $deadline) {
-                        $hwnd = [System.IntPtr]::Zero
-                        try {
-                            $p = Get-Process -Id $r.ProcessId -ErrorAction Stop
-                            $hwnd = $p.MainWindowHandle
-                        } catch {
-                            # Process died before showing a window — that is a
-                            # failed launch, not merely an unfocused one.
-                            Write-HandoffLog "WARNING: relaunched desktop exited before its window appeared"
-                            $spawned = $false
-                            break
-                        }
-                        if ($hwnd -ne [System.IntPtr]::Zero) {
-                            [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                            [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
-                            Write-HandoffLog "focused relaunched desktop window"
-                            break
-                        }
-                        Start-Sleep -Milliseconds 400
-                    }
+                if (-not (Show-DesktopWindow -ProcessId ([int]$r.ProcessId))) {
+                    # Process died before showing a window — that is a
+                    # failed launch, not merely an unfocused one.
+                    $spawned = $false
                 }
             } catch {
                 Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
@@ -842,21 +873,7 @@ function Start-DesktopRelaunch {
                     # starts unfocused and only the current foreground owner
                     # (us) can delegate that right.
                     try {
-                        if ($script:Win32) {
-                            [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$fresh[0].Id) | Out-Null
-                            $focusDeadline = (Get-Date).AddSeconds(20)
-                            while ((Get-Date) -lt $focusDeadline) {
-                                $hwnd = [System.IntPtr]::Zero
-                                try { $hwnd = (Get-Process -Id $fresh[0].Id -ErrorAction Stop).MainWindowHandle } catch { break }
-                                if ($hwnd -ne [System.IntPtr]::Zero) {
-                                    [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                                    [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
-                                    Write-HandoffLog "focused relaunched desktop window"
-                                    break
-                                }
-                                Start-Sleep -Milliseconds 400
-                            }
-                        }
+                        [void](Show-DesktopWindow -ProcessId ([int]$fresh[0].Id))
                     } catch {
                         Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
                     }
@@ -1233,6 +1250,113 @@ $finalCode = 1
 $manualAction = $false
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
+
+# ── -SelfTestRelaunchWindow: prove the relaunch focus path reports what it did ──
+# Guards the state this fixture was written from. After an update the Desktop
+# process is up but owns only HIDDEN windows, and Process.MainWindowHandle
+# returns Zero unless a window is visible -- so the poll never yields a handle,
+# the loop expires, and with no timeout branch nothing is logged at all. The
+# hand-off then reports a clean relaunch while the user has a running app and
+# no window. Exits before any marker/desktop machinery, like the others.
+#
+# Three arms, each a real child process:
+#
+#   visible -- creates and shows a window. Must log "focused relaunched desktop
+#              window" and return $true.
+#   hidden  -- creates a window and never shows it (the observed failure). Must
+#              log the timeout WARNING and still return $true: the process is
+#              running, so this is a visibility miss, not a failed launch, and
+#              the caller must not fall through to launching a second instance.
+#   dead    -- exits immediately. Must log "exited before its window appeared"
+#              and return $false so the caller can fall back.
+#
+# The child signals readiness with a file once its window exists, and the probe
+# only runs after that. Without the handshake the arm races PowerShell's own
+# startup (Add-Type of WinForms alone can take seconds) and a genuinely visible
+# window reads as a timeout -- which is what the first version of this fixture
+# did, on this machine.
+if ($SelfTestRelaunchWindow) {
+    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $windowTimeout = 3
+    if ($env:HERMES_SELFTEST_WINDOW_TIMEOUT) { $windowTimeout = [int]$env:HERMES_SELFTEST_WINDOW_TIMEOUT }
+    $powershell = Join-Path $PSHOME "powershell.exe"
+    $stamp = [Guid]::NewGuid().ToString("N")
+    $childPs1 = Join-Path $TempDir "hermes-relaunch-window-$stamp.ps1"
+    # A literal here-string: the child's own $f/$Mode must not expand here.
+    $childSource = @'
+param([string]$Mode, [string]$ReadyFile)
+if ($Mode -eq "dead") { exit 0 }
+Add-Type -AssemblyName System.Windows.Forms
+$f = New-Object System.Windows.Forms.Form
+$f.Text = "HermesRelaunchProbe"
+$f.Width = 640
+$f.Height = 480
+$null = $f.Handle
+if ($Mode -eq "visible") { $f.Show() | Out-Null }
+# Signal only once the HWND exists (and is shown, for the visible arm).
+Set-Content -LiteralPath $ReadyFile -Value "ready" -Encoding UTF8
+if ($Mode -eq "visible") {
+    # A form with no message loop never finishes rendering; pump it so the
+    # window is genuinely on screen rather than a pending Show().
+    $until = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $until) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 100
+    }
+} else {
+    Start-Sleep -Seconds 30
+}
+'@
+    Set-Content -LiteralPath $childPs1 -Value $childSource -Encoding UTF8
+
+    $results = @()
+    foreach ($mode in @("visible", "hidden", "dead")) {
+        $readyFile = Join-Path $TempDir "hermes-relaunch-ready-$stamp-$mode"
+        Remove-Item -LiteralPath $readyFile -Force -ErrorAction SilentlyContinue
+        $before = @(Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue).Count
+        $child = Start-Process -FilePath $powershell `
+            -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
+                            "-Mode", $mode, "-ReadyFile", $readyFile) `
+            -PassThru
+        # Wait for the window to exist rather than guessing at startup cost.
+        $readyDeadline = (Get-Date).AddSeconds(45)
+        while ((Get-Date) -lt $readyDeadline) {
+            if (Test-Path -LiteralPath $readyFile) { break }
+            if ($child.HasExited) { break }
+            Start-Sleep -Milliseconds 200
+        }
+        $shown = Show-DesktopWindow -ProcessId ([int]$child.Id) -TimeoutSeconds $windowTimeout
+        $tail = ((@(Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue) |
+            Select-Object -Skip $before) -join " | ")
+        $results += [pscustomobject]@{ Mode = $mode; Returned = $shown; Logged = $tail }
+        try { if (-not $child.HasExited) { $child | Stop-Process -Force -ErrorAction SilentlyContinue } } catch {}
+        Remove-Item -LiteralPath $readyFile -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $childPs1 -Force -ErrorAction SilentlyContinue
+
+    $visible = @($results | Where-Object { $_.Mode -eq "visible" })[0]
+    $hidden  = @($results | Where-Object { $_.Mode -eq "hidden" })[0]
+    $dead    = @($results | Where-Object { $_.Mode -eq "dead" })[0]
+
+    $failures = @()
+    if (-not $visible.Returned) { $failures += "visible: expected `$true" }
+    if ($visible.Logged -notmatch "focused relaunched desktop window") { $failures += "visible: expected the focus log line" }
+    if (-not $hidden.Returned) { $failures += "hidden: expected `$true -- the process is up, this is a visibility miss" }
+    if ($hidden.Logged -notmatch "no visible window") { $failures += "hidden: expected the timeout WARNING naming the symptom" }
+    if ($dead.Returned) { $failures += "dead: expected `$false" }
+    if ($dead.Logged -notmatch "exited before its window appeared") { $failures += "dead: expected the exited-before-window WARNING" }
+
+    foreach ($r in $results) {
+        Write-Host "SELF-TEST relaunch-window[$($r.Mode)] returned=$($r.Returned)"
+        if ($r.Logged) { Write-Host "  log: $($r.Logged)" }
+    }
+    if ($failures.Count -gt 0) {
+        foreach ($f in $failures) { Write-Host "SELF-TEST FAIL: $f" }
+        exit 1
+    }
+    Write-Host "SELF-TEST relaunch-window: all arms passed"
+    exit 0
+}
 
 # ── -SelfTestUi: drive the shim to both terminal states, no update ─────────
 # Manual QA for the Edge shell without a checkout or a real update. Exits

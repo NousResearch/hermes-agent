@@ -85,7 +85,7 @@ class DurableTurnLease:
             self.turn_active = True
         # Stamp the activity clock at turn entry: `_last_activity_ts` persists across turns, so
         # without this the watchdog would measure idle from the PREVIOUS turn and abort a fresh one.
-        self.agent._touch_activity("starting new turn")
+        self.agent._touch_activity("starting new turn", progress=True)
         from hermes_cli.observability.shared_metrics_process import arm_turn
         arm_turn(self.agent)
         from agent.periodic_scheduler import schedule
@@ -142,16 +142,16 @@ class DurableTurnLease:
     def commit_liveness_abort(self, snapshot, message: str) -> bool:
         """Commit point for the watchdog's stall observation.
 
-        Revalidates the observed ``(generation, timestamp)`` under the SAME lock ``_touch_activity``
+        Revalidates the observed progress ``(generation, timestamp)`` under the SAME lock ``_touch_activity``
         uses, so a turn that resumed while the stall was logged is never hard-cancelled; the
-        revalidated generation is consumed by ``interrupt(require_generation=...)`` with the first
+        revalidated generation is consumed by ``interrupt(require_progress_generation=...)`` with the first
         publication in ONE critical section. If ``interrupt`` raises, the abort declines FAIL-CLOSED.
         Returns False when stale or already winding down."""
         agent = self.agent
         with agent._liveness_activity_lock():
-            current_generation = getattr(agent, "_turn_liveness_activity_generation", 0)
-            if (current_generation, getattr(agent, "_last_activity_ts", None)) != (
-                snapshot.generation, snapshot.activity_ts
+            current_generation = getattr(agent, "_turn_liveness_progress_generation", 0)
+            if (current_generation, getattr(agent, "_last_progress_ts", None)) != (
+                snapshot.progress_generation, snapshot.progress_ts
             ):
                 return False
         with self._lock:
@@ -160,7 +160,7 @@ class DurableTurnLease:
         try:
             published = agent.interrupt(
                 message, hard_cancel=True, tool_reason="turn liveness watchdog",
-                require_generation=current_generation,
+                require_progress_generation=current_generation,
             )
         except Exception:
             logger.debug("Turn liveness abort interrupt raised; declining the abort", exc_info=True)

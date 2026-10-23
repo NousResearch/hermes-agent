@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union, cast
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.local_prompt_progress import (
@@ -2699,12 +2699,14 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
+    from agent.async_stream import coerce_sync_stream
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
-    create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))
+    def create(request: dict[str, Any]) -> Any:
+        return coerce_sync_stream(client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client)))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return create(kwargs)
@@ -8052,6 +8054,9 @@ def call_llm(
                 stream=stream, stream_options=stream_options, route_info=route_info,
             )
         if stream and semaphore is not None:
+            from agent.async_stream import _release_sync_semaphore_after_stream, coerce_sync_stream
+
+            response = cast(Iterable[object], coerce_sync_stream(response))
             stream_semaphore = semaphore
             semaphore = None
             return _release_sync_semaphore_after_stream(response, stream_semaphore)
@@ -8060,19 +8065,6 @@ def call_llm(
         if latency_info is not None:
             latency_info["summary_generation_ms"] = _elapsed_ms(request_started_at)
         if semaphore is not None:
-            semaphore.release()
-
-
-def _release_sync_semaphore_after_stream(stream: Any, semaphore: threading.BoundedSemaphore):
-    """Release a permit only after a streaming response is consumed or closed."""
-    try:
-        yield from stream
-    finally:
-        try:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
-        finally:
             semaphore.release()
 
 

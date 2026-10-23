@@ -695,6 +695,7 @@ def check_api_server_requirements() -> bool:
 
 
 _CORS_HEADERS = {
+    "Access-Control-Expose-Headers": "Location, X-Request-Id, Idempotency-Key",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
 _SECURITY_HEADERS = {
@@ -750,6 +751,8 @@ if AIOHTTP_AVAILABLE:
         response = await handler(request)
         for k, v in _SECURITY_HEADERS.items():
             response.headers.setdefault(k, v)
+        # Browsers may cache authenticated JSON. SSE already sets no-cache; setdefault keeps that.
+        response.headers.setdefault("Cache-Control", "no-store")
         return response
 else:
     cors_middleware = body_limit_middleware = security_headers_middleware = None  # type: ignore

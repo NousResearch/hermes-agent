@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -182,6 +185,93 @@ def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
         assert kb.parent_ids(conn, ready_child) == [parent]
         assert kb.parent_ids(conn, running_child) == []
         assert kb.parent_ids(conn, worker) == [parent]
+
+
+def test_worker_archive_and_promote_are_fenced_to_its_own_card(kanban_home, monkeypatch):
+    """t_47889b48: a dispatcher-spawned worker may terminate/re-route only its own card.
+
+    ``complete``/``block``/``schedule`` take the scope fence from ``_worker_run_id_for``;
+    ``archive`` and ``promote`` had none, so a worker shell could archive a sibling card
+    (releasing its children via ``recompute_ready``, reaping its workspace, terminating its
+    worker) or promote another lane's card into dispatch. ``archive --rm`` is the same verb's
+    irreversible half and takes the same fence.
+    """
+    with kbc.connect_closing() as conn:
+        own = kb.create_task(conn, title="own card")
+        foreign = kb.create_task(conn, title="foreign card")
+        # Both blocked so `promote` reaches its ownership check, not the status precondition.
+        assert kb.block_task(conn, own, reason="awaiting input", kind="needs_input")
+        assert kb.block_task(conn, foreign, reason="awaiting input", kind="needs_input")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own)
+    refusal = f"worker is scoped to task {own}; refusing to mutate {foreign}"
+    foreign_calls = {
+        "archive": lambda: kc._cmd_archive(
+            argparse.Namespace(task_ids=[foreign], purge_ids=None)),
+        "archive --rm": lambda: kc._cmd_archive(
+            argparse.Namespace(task_ids=[], purge_ids=[foreign])),
+        "promote": lambda: kc._cmd_promote(
+            argparse.Namespace(task_id=foreign, ids=None, reason=["probe"], dry_run=False, json=False)),
+    }
+    for verb, call in foreign_calls.items():
+        with pytest.raises(ValueError, match=refusal):
+            call()
+        with kbc.connect_closing() as conn:
+            assert kb.get_task(conn, foreign).status == "blocked", verb
+
+    # A mixed bulk call is refused whole: the own id must not be archived before the
+    # foreign one trips the fence.
+    with pytest.raises(ValueError, match=refusal):
+        kc._cmd_archive(argparse.Namespace(task_ids=[own, foreign], purge_ids=None))
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, own).status == "blocked"
+
+    # The same verbs on the worker's OWN card still work (the fence is scope, not worker-blind).
+    assert kc._cmd_promote(
+        argparse.Namespace(task_id=own, ids=None, reason=["probe"], dry_run=False, json=False)) == 0
+    assert kc._cmd_archive(argparse.Namespace(task_ids=[own], purge_ids=None)) == 0
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, own).status == "archived"
+
+
+def test_foreign_archive_and_promote_are_refused_by_the_real_cli(tmp_path, monkeypatch):
+    """The fence must hold at process granularity: real argparse + ``kanban_command``.
+
+    A worker subprocess gets the ``complete``/``block`` shape — exit 1, scope named on
+    stderr, victim untouched. The chat/cron/human lane (no ``HERMES_KANBAN_TASK``) keeps
+    working on any card, so the guard cannot break operator recovery.
+    """
+    db = tmp_path / "board.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    with kbc.connect_closing() as conn:
+        own = kb.create_task(conn, title="own card")
+        foreign = kb.create_task(conn, title="foreign card")
+        assert kb.block_task(conn, foreign, reason="awaiting input", kind="needs_input")
+
+    root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "HERMES_KANBAN_DB": str(db), "HERMES_KANBAN_BOARD": "default"}
+    env.pop("HERMES_KANBAN_RUN_ID", None)
+    refusal = f"worker is scoped to task {own}; refusing to mutate {foreign}"
+
+    def cli(call_env: dict, *arguments: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "kanban", *arguments],
+            cwd=str(root), env=call_env, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+
+    for arguments in (("archive", foreign), ("promote", foreign, "probe")):
+        proc = cli({**env, "HERMES_KANBAN_TASK": own}, *arguments)
+        assert proc.returncode != 0, (arguments, proc.stdout, proc.stderr)
+        assert refusal in proc.stderr, (arguments, proc.stdout, proc.stderr)
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, foreign).status == "blocked"
+        assert kb.get_task(conn, own).status == "ready"
+
+    proc = cli(env, "archive", foreign)
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, foreign).status == "archived"
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):

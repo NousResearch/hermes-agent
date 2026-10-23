@@ -14,7 +14,7 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -867,6 +867,27 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _enforce_worker_scope(task_ids: Iterable[str]) -> None:
+    """Apply ``_worker_run_id_for``'s scope fence to verbs that have no run id to prove.
+
+    ``complete``/``block``/``schedule`` prove both scope and run identity; ``archive`` and
+    ``promote`` terminate or re-route a card's lifecycle but carry no run CAS, so they only
+    need the scope half. Both are cross-card hazards a worker shell must not reach:
+    ``archive`` releases the card's children (``recompute_ready``), reaps its workspace and
+    terminates a running worker, and ``promote`` moves another lane's card straight into
+    dispatch. Checked for every id BEFORE the first mutation, so a mixed bulk call cannot
+    half-apply. Humans, cron and orchestrators have no ``HERMES_KANBAN_TASK`` and are
+    unaffected.
+    """
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not env_tid:
+        return
+    foreign = [tid for tid in task_ids if tid != env_tid]
+    if foreign:
+        raise ValueError(
+            f"worker is scoped to task {env_tid}; refusing to mutate {', '.join(foreign)}")
+
+
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Goal judge for every terminal worker handoff (including review).
 
@@ -1136,6 +1157,8 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     # Dedupe while preserving order; positional task_id always first.
     ids = list(dict.fromkeys(_bulk_ids(args)))
     dry_run = bool(args.dry_run)
+    # Another lane's card is not this worker's to route; refused before any DB work.
+    _enforce_worker_scope(ids)
 
     results: list[dict[str, object]] = []
     with kbc.connect_closing() as conn:
@@ -1168,6 +1191,8 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         return _err("choose either task_ids to archive or --rm archived task_ids")
     if not ids and not purge_ids:
         return _err("at least one task_id is required")
+    # `--rm` is the same verb's harder half (irreversible row delete), so it takes the same fence.
+    _enforce_worker_scope([*ids, *purge_ids])
     with kbc.connect_closing() as conn:
         if purge_ids:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",

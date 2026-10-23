@@ -86,10 +86,6 @@ def codex_backend(monkeypatch):
 
 
 class TestMetadata:
-
-
-
-
     def test_setup_schema_has_no_required_env_vars(self, provider):
         """#102144: the keyless row must declare the shared Codex OAuth bootstrap hook (otherwise setup
         saves the backend without ever signing in) and its hint must name a command that exists."""
@@ -98,6 +94,30 @@ class TestMetadata:
         assert schema["post_setup"] == "openai_codex"
         assert "hermes auth add openai-codex" in schema["post_setup_hint"]
         assert "hermes auth codex`" not in schema["post_setup_hint"]
+
+    def test_models_catalog_includes_gpt_image_2_and_2_5(self, provider):
+        models = provider.models
+        assert "gpt-image-2-medium" in models
+        assert models["gpt-image-2-medium"]["api_model"] == "gpt-image-2"
+        assert models["gpt-image-2-medium"]["quality"] == "medium"
+
+        assert "gpt-image-2.5-flare" in models
+        assert models["gpt-image-2.5-flare"]["api_model"] == "gpt-image-2.5-flare"
+        assert models["gpt-image-2.5-flare"]["quality"] == "auto"
+
+        assert "gpt-image-2.5-flare-high" in models
+        assert models["gpt-image-2.5-flare-high"]["api_model"] == "gpt-image-2.5-flare"
+        assert models["gpt-image-2.5-flare-high"]["quality"] == "high"
+
+        assert "gpt-image-2.5-sunburst" in models
+        assert models["gpt-image-2.5-sunburst"]["api_model"] == "gpt-image-2.5-sunburst"
+        assert models["gpt-image-2.5-sunburst"]["quality"] == "auto"
+
+        assert "gpt-image-2.5-sunburst-high" in models
+        assert models["gpt-image-2.5-sunburst-high"]["api_model"] == "gpt-image-2.5-sunburst"
+        assert models["gpt-image-2.5-sunburst-high"]["quality"] == "high"
+
+        assert provider.default_model_id == "gpt-image-2-medium"
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -301,6 +321,44 @@ class TestGenerate:
 
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
+
+    def test_text_to_image_posts_gpt_image_2_5_flare(self, provider, codex_backend):
+        result = provider.generate("a cat", model="gpt-image-2.5-flare")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2.5-flare"
+        assert result["quality"] == "auto"
+
+        (request,) = codex_backend["requests"]
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-image-2.5-flare"
+        assert body["quality"] == "auto"
+
+    def test_text_to_image_posts_gpt_image_2_5_sunburst_high(self, provider, codex_backend):
+        result = provider.generate("a dog", model="gpt-image-2.5-sunburst-high")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2.5-sunburst-high"
+        assert result["quality"] == "high"
+
+        (request,) = codex_backend["requests"]
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-image-2.5-sunburst"
+        assert body["quality"] == "high"
+
+    def test_env_var_override_selects_gpt_image_2_5(self, provider, codex_backend, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2.5-flare-max")
+
+        result = provider.generate("a fox")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2.5-flare-max"
+        assert result["quality"] == "max"
+
+        (request,) = codex_backend["requests"]
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-image-2.5-flare"
+        assert body["quality"] == "max"
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

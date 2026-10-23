@@ -160,6 +160,18 @@ class TestExtractCacheBustingConfig:
         assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
         assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
 
+    def test_platform_compression_overrides_bust_cache(self):
+        from gateway.run import GatewayRunner
+
+        signature = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)[
+            "compression.platform_overrides"
+        ]
+        telegram = {"compression": {"platform_overrides": {"telegram": {"threshold": 0.35}}}}
+        slack = {"compression": {"platform_overrides": {"slack": {"threshold_tokens": 60_000}}}}
+
+        assert signature(telegram) == {"telegram": {"threshold": 0.35}}
+        assert signature(telegram) != signature(slack)
+
     def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
         """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so
         migrating to `checkpoints: {enabled: true}` must not change the signature."""

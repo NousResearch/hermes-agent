@@ -221,7 +221,17 @@ def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        if hasattr(tarfile, "data_filter"):
+            try:
+                tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+                return
+            except TypeError:
+                pass
+        for member in tf.getmembers():
+            target_path = os.path.realpath(os.path.join(real_dest, member.name))
+            if os.path.commonpath([target_path, real_dest]) != real_dest:
+                continue
+            tf.extract(member, dest)
 
 
 def extract(archive: Path, dest: Path) -> None:

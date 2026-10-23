@@ -133,12 +133,15 @@ class TestSendTelegramStandaloneProxy:
         ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
-        # Make sure macOS system-proxy auto-detection (scutil) can't kick in.
-        # Stub the probe itself rather than claiming the host is Linux — that
-        # keeps this assertion true on the macOS runner too, where a real
-        # scutil proxy would otherwise be picked up.
+        # Make sure macOS system-proxy auto-detection (scutil) and the Windows
+        # registry probe can't kick in. Stub the probes themselves rather than
+        # claiming the host is Linux — that keeps this assertion true on every
+        # runner, where a real system proxy would otherwise be picked up.
         monkeypatch.setattr(
             "gateway.platforms.base._detect_macos_system_proxy", lambda: None
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._detect_windows_system_proxy", lambda: None
         )
 
         bot = _make_bot()

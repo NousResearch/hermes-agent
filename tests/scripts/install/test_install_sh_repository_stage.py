@@ -39,7 +39,7 @@ def _run(tmp_path: Path, body: str, *, env: dict | None = None, **kwargs) -> sub
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\nsleep() {{ :; }}\n{body}\n"
     full_env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                     HERMES_INSTALL_DIR=(tmp_path / "install").as_posix(), **(env or {}))
-    return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, timeout=60, **kwargs)
+    return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, timeout=60, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
 
 
 def _stage(tmp_path: Path, origin: Path, *, commit: str = "", extra_env: dict | None = None,
@@ -51,7 +51,7 @@ def _stage(tmp_path: Path, origin: Path, *, commit: str = "", extra_env: dict | 
 def test_piped_one_liner_runs_the_installer():
     """`curl ... | bash` has an empty BASH_SOURCE; under `set -u` the entry guard must still run main."""
     result = subprocess.run(["bash", "-s", "--", "--manifest"], input=INSTALL_SH.read_bytes(),
-                            capture_output=True, timeout=30)
+                            capture_output=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr.decode()
     assert json.loads(result.stdout)["protocol_version"] == 1
 
@@ -146,11 +146,19 @@ def test_pinned_fresh_clone_publishes_nothing_when_the_pin_fails(tmp_path):
     assert not list(tmp_path.glob(".hermes-clone-*"))
 
 
-def test_commitless_checkout_is_moved_aside_and_recloned(tmp_path):
+@pytest.mark.parametrize("damage", ["commitless", "lost_head", "dangling_gitdir_file"])
+def test_unusable_checkout_is_moved_aside_and_recloned(tmp_path, damage):
+    """An interrupted clone, or a .git a killed update left unreadable (the state `hermes update`
+    tells the user to repair by rerunning the installer): moved aside, never deleted, then cloned."""
     origin = _origin(tmp_path / "origin")
     install = tmp_path / "install"
     install.mkdir()
-    _git(install, "init", "-q")
+    if damage == "dangling_gitdir_file":
+        (install / ".git").write_text(f"gitdir: {tmp_path / 'gone'}\n")
+    else:
+        _git(install, "init", "-q")
+        if damage == "lost_head":
+            (install / ".git" / "HEAD").unlink()
     (install / "keep").write_text("user file")
     result = _stage(tmp_path, origin)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -168,7 +176,7 @@ def test_unmerged_index_is_cleared_then_stashed(tmp_path):
     _git(install, "checkout", "-q", "main")
     _commit(install, "ours")
     subprocess.run(["git", "-C", str(install), "-c", "user.email=t@t", "-c", "user.name=t", "merge", "conflict"],
-                   capture_output=True)
+                   capture_output=True, check=False)
     assert _git(install, "ls-files", "--unmerged")
     _commit(origin, "two")
     result = _stage(tmp_path, origin)

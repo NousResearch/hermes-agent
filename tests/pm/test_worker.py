@@ -17,9 +17,9 @@ from tests.pm._range_server import RangeHandler, dl_server, url
 from tests.pm.test_runtime_wheelhouse import locked_wheelhouse
 from tests.pm._fixtures import (
     _wheel,
-    build_worker as build_worker,
-    client as client,
-    isolated_python as isolated_python,
+    build_worker as build_worker,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    client as client,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 # Spawns children with a home it builds itself; the parent's must stay real.
@@ -542,7 +542,7 @@ def test_cold_manager_build_does_not_bootstrap_a_worker(client, tmp_path, monkey
     python = pm.stage_manager_runtime(python=Path(sys.executable), destination=tmp_path / "manager",
                                      project=project, wheelhouse=wheels, offline=True)
     result = subprocess.run([str(python), "-I", "-c", "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     with pytest.raises(FileExistsError):
         pm.stage_manager_runtime(python=Path(sys.executable), destination=python.parent.parent)
@@ -563,7 +563,7 @@ def test_worker_side_environment_reuses_and_keeps_selection_on_failed_tool(clien
     assert environment_python("proof", root=root) is None
     executable = client.ensure_python_tool("proof", requirements, "side-proof", root=root, explicit=True)
     assert python_tool("proof", "side-proof", root=root) == executable
-    result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
+    result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "real side dependency"
     selected = environment_python("proof", root=root)
@@ -599,7 +599,7 @@ def test_unknown_worker_operation_is_not_dispatched(client, monkeypatch, tmp_pat
         worker = Path(client.__file__).with_name("worker.py")
         result = subprocess.run(client.runtime_command(worker), input=json.dumps(request) + "\n",
                                 capture_output=True, text=True, encoding="utf-8", timeout=30,
-                                env=client.runtime_environment())
+                                env=client.runtime_environment(), check=False)
         assert result.returncode == 0, result.stderr
         response = json.loads(result.stdout)
         assert response["error"]["type"] == "KeyError", response

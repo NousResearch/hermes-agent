@@ -4,7 +4,7 @@ Canonical history stays untouched. We persist only fingerprints of rejected opaq
 signature/data values, then filter those blocks from each rebuilt request copy. This is
 needed beyond the immediate retry because context selection and process resume can rebuild
 from canonical history later. The state belongs to one session (and is carried onto its
-compression continuation); it applies only where Anthropic signs the blocks.
+compression continuation); it applies only where the upstream signs the blocks.
 
 The fingerprinting is deliberately coarse: one signature 400 marks every signed block in the
 rejected request, so the session falls back to stripping that history (one cache miss, then
@@ -43,13 +43,13 @@ def _fingerprint(block: Any) -> str | None:
 
 
 def tracks_rejected_thinking(agent: Any) -> bool:
-    """Native Anthropic signatures only: Kimi, DeepSeek and third-party routes keep their own replay
-    contract and the one-request ``reasoning_details`` repair."""
-    from agent.anthropic_thinking_policy import anthropic_thinking_route
+    """Signed-replay routes only (Anthropic and its cloud platforms, MiniMax): Kimi, DeepSeek and
+    third-party routes keep their own replay contract and the one-request ``reasoning_details`` repair."""
+    from agent.anthropic_thinking_policy import SIGNED_REPLAY_ROUTES, anthropic_thinking_route
 
     return getattr(agent, "api_mode", None) == "anthropic_messages" and anthropic_thinking_route(
         getattr(agent, "base_url", None), getattr(agent, "model", None)
-    ) == "native"
+    ) in SIGNED_REPLAY_ROUTES
 
 
 def rejected_thinking_fingerprints(session_db: Any, session_id: Any) -> set[str]:

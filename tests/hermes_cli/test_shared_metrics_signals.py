@@ -374,8 +374,8 @@ def _poll(provider, status, body):
 
 
 def _guest_sign_in(token_status, token_body):
-    """The Desktop free-tier sign-in (guest promotion): the real ``run_sign_in`` generator recorded
-    onto a dashboard session; the promotion completes, the token poll gets ``token_*`` until expiry."""
+    """The Desktop sign-in over a free tier: the real ``run_sign_in`` generator recorded onto a
+    dashboard session; the token poll gets ``token_*`` until expiry."""
     def run(monkeypatch):
         import httpx
 
@@ -387,13 +387,10 @@ def _guest_sign_in(token_status, token_body):
         monkeypatch.setattr(auth_device_flow, "time", fake_time)
         monkeypatch.setattr(anon_auth, "current_nous_state", lambda: {
             "auth_method": anon_auth.ANON_AUTH_METHOD, "anon_token": "t", "portal_base_url": "https://p"})
-        monkeypatch.setattr(anon_auth, "guest_enabled", lambda: True)
         monkeypatch.setattr(anon_auth, "_anon_headers", dict)
         replies = {
             "/api/oauth/device/code": (200, {"device_code": "d", "user_code": "U", "verification_uri": "https://p/v",
                                              "verification_uri_complete": "https://p/v?c=U", "expires_in": 30, "interval": 1}),
-            "/api/anonymous/promotion-intent": (200, {"claim_code": "C", "claim_url": "/claim", "interval": 1}),
-            "/api/anonymous/promotion-status": (200, {"status": "completed"}),
             "/api/oauth/token": (token_status, token_body)}
 
         def reply(request):
@@ -612,7 +609,7 @@ def test_diff_and_record_run_off_the_callers_lock_in_the_owning_profile(marks, m
     monkeypatch.setattr(disabled_metrics, "config_transitions", slow)
     token = set_hermes_home_override(str(tmp_path / "b"))
     try:
-        with threading.Lock():  # the caller's write lock (the dashboard's _CONFIG_MUTATION_LOCK)
+        with threading.Lock():  # noqa: PLW2101 -- inert on purpose: a stand-in for the caller's _CONFIG_MUTATION_LOCK, which record_config_saved documents running outside of; the caller's write lock (the dashboard's _CONFIG_MUTATION_LOCK)
             disabled_metrics.record_config_saved({}, {"memory": {"memory_enabled": False}})
             assert marks.rows == []  # returned without diffing
     finally:

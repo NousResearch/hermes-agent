@@ -101,6 +101,7 @@ def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> Non
         stderr=subprocess.STDOUT,
         text=True,
         timeout=60,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stdout
@@ -195,6 +196,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         encoding="utf-8",
         errors="replace",
         timeout=60,
+        check=False,
     )
 
     assert handoff.exists(), (
@@ -260,7 +262,7 @@ def test_detached_grandchild_is_killed_by_runner(tmp_path: Path) -> None:
         [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
          "--paths", str(probe_dir), "-j", "1", "--file-timeout", "30"],
         cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        encoding="utf-8", errors="replace", timeout=60,
+        encoding="utf-8", errors="replace", timeout=60, check=False,
     )
     pid = json.loads(handoff.read_text(encoding="utf-8-sig"))["pid"]
     deadline = time.monotonic() + 5.0
@@ -311,6 +313,7 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
         encoding="utf-8",
         errors="replace",
         timeout=60,
+        check=False,
     )
 
 
@@ -330,6 +333,7 @@ def test_help_prints_usage_without_discovering_or_running_tests(
         encoding="utf-8",
         errors="replace",
         timeout=10,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stdout
@@ -411,6 +415,7 @@ def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
         stderr=subprocess.STDOUT,
         text=True,
         timeout=60,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stdout
@@ -442,6 +447,36 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
 
 
 
+def test_fail_on_skip_fails_a_run_with_any_skip_even_beside_an_xfail(tmp_path: Path) -> None:
+    """--fail-on-skip reads the parsed skip count, not the progress line.
+
+    The remote-backends lane once grepped the line for an ``<n>s,`` suffix,
+    which an xfail printed after the skip (``1✓ 1s 1xf, ...``) hid.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_skipprobe.py").write_text(
+        "import pytest\n\n"
+        "def test_runs():\n    assert True\n\n"
+        "def test_skips():\n    pytest.skip('host not wired')\n\n"
+        "@pytest.mark.xfail(strict=True)\ndef test_xfails():\n    assert False\n"
+    )
+    plain = _run_runner(probe_dir)
+    assert plain.returncode == 0, plain.stdout
+    assert "1s 1xf," in plain.stdout, plain.stdout
+
+    gated = _run_runner(probe_dir, "--fail-on-skip")
+    assert gated.returncode == 1, gated.stdout
+    assert "1 test SKIPPED under --fail-on-skip" in gated.stdout
+    assert "test_skipprobe.py  (1 skipped)" in gated.stdout
+
+
+def test_fail_on_skip_passes_a_run_without_skips(tmp_path: Path) -> None:
+    proc = _run_runner(_make_probe_dir(tmp_path), "--fail-on-skip")
+    assert proc.returncode == 0, proc.stdout
+    assert "SKIPPED" not in proc.stdout
+
+
 @pytest.mark.parametrize("form,expected", [
     ("positional", ["alpha", "beta"]), ("bare-k", ["alpha"]),
     ("node-id", ["alpha"]), ("explicit-k", ["beta"]),
@@ -469,7 +504,7 @@ def test_runner_selection_records_actual_test_identity(tmp_path, form, expected)
     }[form]
     runner = _probe_root(tmp_path) / "scripts/run_tests_parallel.py"
     result = subprocess.run([sys.executable, str(runner), *arguments, "-j", "1", "--file-timeout", "30"],
-                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60)
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert sorted(path.name for path in receipt.iterdir()) == expected
 
@@ -499,7 +534,7 @@ def test_passthrough_ignore_drops_files_the_runner_hands_pytest_explicitly(
             "path": ["--ignore=tests/probe/test_gated_skipme.py"]}[ignore]
     runner = root / "scripts/run_tests_parallel.py"
     result = subprocess.run([sys.executable, str(runner), *pick, "-j", "1", "--file-timeout", "30", "--", *flag],
-                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60)
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert sorted(path.name for path in receipt.iterdir()) == ["keep"], result.stdout
     assert "excluded 1 test file" in result.stdout, result.stdout
@@ -585,6 +620,7 @@ def test_files_from_dash_reads_the_list_from_stdin(tmp_path: Path) -> None:
         input=f"{probe_dir / 'test_flagprobe.py'}\n",
         cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stdout
     assert "Running 1 test files" in proc.stdout, proc.stdout

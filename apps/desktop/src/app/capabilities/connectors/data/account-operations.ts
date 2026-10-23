@@ -8,14 +8,27 @@ import { atom } from 'nanostores'
 
 import type { ProfileScope } from '@/hermes'
 import { type ConnectionTarget, parseConnectionTarget } from '@/store/connection-request'
+import { noteFreeTierAppConnected } from '@/store/free-tier-sign-in'
+import { activeGatewayConnectionId } from '@/store/gateway'
+import { normalizeProfileKey } from '@/store/profile'
 
 import { invalidateConnectors } from './keys'
 import { accountOperationStatus } from './rpc'
+
+/** What started an operation, so a retry sends the same request and the backend reuses that operation. */
+export interface AccountOperationRequest {
+  alias?: string
+  connectionId?: string
+  reconnect: boolean
+}
 
 export interface AccountOperation {
   connectors: string[]
   deadlineAt: number
   opId: string
+  request: AccountOperationRequest
+  /** Where the browser's return shows the user; absent means the app's Connectors page. */
+  returnRoute?: string
   scope: ProfileScope
   seq: number
   settled: boolean
@@ -44,24 +57,62 @@ function resumeConnect(slugs: readonly string[]): void {
 const parseTargets = (targets: ConnectionUpdatePayload['targets']): ConnectionTarget[] =>
   targets.map(parseConnectionTarget).filter((target): target is ConnectionTarget => target !== null)
 
+// A bare profile name rides the active connection, so `'home'` and `{connectionId: <active>, profile: 'home'}` are
+// the same backend and must match.
+function resolvedScopeKey(scope: ProfileScope): string {
+  const active = activeGatewayConnectionId() ?? 'local'
+
+  if (scope instanceof Object) {
+    return `${(scope.connectionId ?? '').trim() || 'local'}::${normalizeProfileKey(scope.profile)}`
+  }
+
+  return `${active}::${normalizeProfileKey(scope)}`
+}
+
+/** The open (else newest) operation for one app in one profile scope; other profiles' sign-ins are not this one's. */
 export function accountOperationFor(
   operations: Readonly<Record<string, AccountOperation>>,
-  slug: string
+  slug: string,
+  scope: ProfileScope
 ): AccountOperation | null {
-  const mine = Object.values(operations).filter(operation => operation.connectors.includes(slug))
+  const key = resolvedScopeKey(scope)
+
+  const mine = Object.values(operations).filter(
+    operation => operation.connectors.includes(slug) && resolvedScopeKey(operation.scope) === key
+  )
 
   return mine.find(operation => !operation.settled) ?? mine[mine.length - 1] ?? null
 }
 
+const RETRYABLE: readonly ConnectionTarget['state'][] = ['failed', 'expired']
+
+/**
+ * An open operation whose every target failed or expired: nothing waits on a browser, and the backend keeps it
+ * open so the same request can mint a fresh link. Only that request may run again; another account may not start.
+ */
+export const retryable = (operation: AccountOperation | null): operation is AccountOperation =>
+  operation !== null &&
+  !operation.settled &&
+  operation.targets.length > 0 &&
+  operation.targets.every(target => RETRYABLE.includes(target.state))
+
+/** The account a retryable operation repairs, by the id its request named; null for an add or an app-level start. */
+export const retryableAccount = (operation: AccountOperation | null): null | string =>
+  retryable(operation) ? (operation.request.connectionId ?? null) : null
+
 export function startAccountOperation(
   scope: ProfileScope,
   connectors: readonly string[],
-  snapshot: ConnectorsConnectResult
+  snapshot: ConnectorsConnectResult,
+  request: AccountOperationRequest = { reconnect: false },
+  returnRoute?: string
 ): AccountOperation {
   const operation: AccountOperation = {
     connectors: [...connectors],
     deadlineAt: snapshot.deadline_at,
     opId: snapshot.op_id,
+    request,
+    returnRoute,
     scope,
     seq: snapshot.seq,
     settled: snapshot.settled,
@@ -162,5 +213,11 @@ function refetchOnSettle(operation: AccountOperation): void {
     return
   }
 
-  invalidateConnectors(operation.scope, 'list', 'accounts')
+  // The first connect can create the identity the page opened without, so its bundled catalog and
+  // empty rules are re-read too.
+  invalidateConnectors(operation.scope, 'list', 'accounts', 'catalog', 'policy')
+
+  if (operation.targets.some(target => target.state === 'connected')) {
+    noteFreeTierAppConnected()
+  }
 }

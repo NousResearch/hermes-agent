@@ -69,7 +69,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     agent._reasoning_echo_flag = bool(entry.get("reasoning_echo", False))
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
-    from agent.turn_recovery import reset_codex_reasoning_replay
+    from agent.turn_recovery_codex import reset_codex_reasoning_replay
     reset_codex_reasoning_replay(agent)
     agent._fallback_activated = True
 
@@ -101,7 +101,7 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
         _apply_primary_runtime_fields, _rebuild_primary_client, _restore_runtime_capabilities,
     )
     _apply_primary_runtime_fields(agent, rt)
-    from agent.turn_recovery import reset_codex_reasoning_replay
+    from agent.turn_recovery_codex import reset_codex_reasoning_replay
     reset_codex_reasoning_replay(agent)
     _restore_runtime_capabilities(agent, rt)
     agent._use_prompt_caching = rt["use_prompt_caching"]

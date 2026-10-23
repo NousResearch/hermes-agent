@@ -188,6 +188,7 @@ class TestRewriteIsValidBash:
             ["bash", "-n", "-c", rewritten],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, (
             f"rewrite produced invalid bash: {rewritten!r}\n{result.stderr}"
@@ -197,7 +198,8 @@ class TestRewriteIsValidBash:
         # End-to-end: the command after the backgrounded compound must run.
         rewritten = rewrite("echo first && true & echo SECOND_RAN")
         result = subprocess.run(
-            ["bash", "-c", rewritten], capture_output=True, text=True
+            ["bash", "-c", rewritten], capture_output=True, text=True,
+            check=False,
         )
         assert result.returncode == 0
         assert "SECOND_RAN" in result.stdout

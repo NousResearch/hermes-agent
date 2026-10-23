@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, renderHook, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 
-import { paragraphPlainText, TranscriptDirectiveLeaf } from './transcript-directive'
+import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
 
 describe('paragraphPlainText', () => {
   it('passes through a plain string', () => {
@@ -49,6 +49,17 @@ describe('TranscriptDirectiveLeaf', () => {
     }
   })
 
+  it('renders every claimed directive in one paragraph, in order', () => {
+    const dispose = contribution()
+
+    try {
+      render(<TranscriptDirectiveLeaf text='::demo{label="one"} ::demo{label="two"}' />)
+      expect(screen.getAllByTestId('demo-card').map(card => card.textContent)).toEqual(['one', 'two'])
+    } finally {
+      dispose()
+    }
+  })
+
   it('renders nothing for an unclaimed directive', () => {
     const { container } = render(<TranscriptDirectiveLeaf text="::nobody-home" />)
 
@@ -72,6 +83,29 @@ describe('TranscriptDirectiveLeaf', () => {
       render(<TranscriptDirectiveLeaf text="::demo" />)
       // The chip fallback renders the contribution id, not a dead subtree.
       expect(screen.getByRole('button')).toBeTruthy()
+    } finally {
+      dispose()
+    }
+  })
+})
+
+describe('useResolvedParagraph', () => {
+  it('lifts a claimed directive out of the sentence around it', () => {
+    const dispose = registry.register({
+      id: 'test:inline',
+      area: TRANSCRIPT_DIRECTIVE_AREA,
+      source: 'plugin:test',
+      data: { name: 'inline', render: () => null } satisfies TranscriptDirectiveContribution
+    })
+
+    try {
+      const { result } = renderHook(() => useResolvedParagraph('See ::inline{x="1"} and ::other here'))
+
+      expect(result.current).toEqual([
+        { kind: 'prose', text: 'See ' },
+        { kind: 'directive', source: '::inline{x="1"}' },
+        { kind: 'prose', text: ' and ::other here' }
+      ])
     } finally {
       dispose()
     }

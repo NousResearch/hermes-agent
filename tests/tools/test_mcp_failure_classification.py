@@ -13,13 +13,10 @@ import logging
 
 import pytest
 
-from tools.mcp_tool import (
-    InvalidMcpUrlError,
-    MCPServerTask,
-    NonMcpEndpointError,
-    _classify_mcp_failure,
-    _unwrap_exception_group,
-)
+from tools.mcp_tool_errors import (
+    InvalidMcpUrlError, NonMcpEndpointError, _auth_error_detail, _classify_mcp_failure, _mcp_call_failed_message,
+    _unwrap_exception_group)
+from tools.mcp_tool import MCPServerTask
 
 
 def _group(*excs, msg="unhandled errors in a TaskGroup") -> BaseExceptionGroup:
@@ -68,6 +65,67 @@ class TestClassifyMcpFailure:
         # Classification must apply to the UNWRAPPED root cause.
         g = _group(_group(FileNotFoundError("cmd not found")))
         assert _classify_mcp_failure(g) == "permanent"
+
+
+# ── _auth_error_detail / _mcp_call_failed_message ────────────────────────────
+
+class TestAuthErrorSurfacing:
+    def test_registration_detail_surfaces(self):
+        """The actionable registration guidance raised by the DCR guard must
+        reach the needs_reauth tool error (GH#78190)."""
+        pytest.importorskip("mcp.client.auth")
+        from mcp.client.auth import OAuthRegistrationError
+
+        exc = OAuthRegistrationError(
+            "MCP OAuth 'gmail': this provider does not support automatic "
+            "client registration ... add it under config.yaml "
+            "mcp_servers.<name>.oauth (client_id, client_secret), then run "
+            "`hermes mcp login gmail`."
+        )
+        detail = _auth_error_detail(exc)
+        assert detail.startswith(" ")
+        assert "config.yaml" in detail
+        assert "client_id" in detail
+
+    def test_registration_detail_unwraps_group(self):
+        """The transport raises the auth error inside a TaskGroup wrapper —
+        the detail must still be found."""
+        pytest.importorskip("mcp.client.auth")
+        from mcp.client.auth import OAuthRegistrationError
+
+        exc = OAuthRegistrationError("config.yaml guidance")
+        assert "config.yaml" in _auth_error_detail(_group(exc))
+
+    def test_non_registration_no_detail(self):
+        assert _auth_error_detail(ValueError("nope")) == ""
+        assert _auth_error_detail(_group(TimeoutError("t"))) == ""
+
+    def test_mcp_call_failed_message_unwraps_group(self):
+        """The generic error path must surface the group root cause instead
+        of the opaque TaskGroup wrapper text."""
+        pytest.importorskip("mcp.client.auth")
+        from mcp.client.auth import OAuthRegistrationError
+
+        exc = OAuthRegistrationError("registration guidance text")
+        msg = _mcp_call_failed_message(_group(exc))
+        assert "OAuthRegistrationError" in msg
+        assert "registration guidance text" in msg
+        assert "TaskGroup" not in msg
+
+    def test_needs_reauth_tool_error_carries_guidance(self, monkeypatch):
+        """Through the real recovery handler: an unrecoverable registration
+        failure returns needs_reauth WITH the guard's guidance."""
+        pytest.importorskip("mcp.client.auth")
+        import json
+        from mcp.client.auth import OAuthRegistrationError
+        from tools import mcp_tool_handlers as handlers
+
+        monkeypatch.setattr(handlers._loop, "_run_on_mcp_loop", lambda *_a, **_k: False)
+        out = json.loads(handlers._handle_auth_error_and_retry(
+            "gmail", OAuthRegistrationError("Create an OAuth client (config.yaml)."),
+            lambda: None, "call_tool"))
+        assert out["needs_reauth"] is True
+        assert "requires re-authentication. Create an OAuth client (config.yaml). Run" in out["error"]
 
 
 # ── Keepalive failure log surfaces the root cause ────────────────────────────
@@ -156,7 +214,7 @@ def test_permanent_failure_parks_without_retry_ladder(monkeypatch, tmp_path, cap
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())
@@ -188,6 +246,9 @@ def test_initial_auth_failure_parks_and_revives_after_relogin(
     from tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
+
+    from tools import mcp_tool_config as _config
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"figma": {"command": "x"}})
 
     _real_sleep = asyncio.sleep
 
@@ -253,7 +314,7 @@ def test_initial_auth_failure_parks_and_revives_after_relogin(
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())

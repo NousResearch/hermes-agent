@@ -1,0 +1,18 @@
+name: provider-status
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: 4bc502523a597a673c852a3b09e1c7e4dced1e6f
+subdir: public/provider-status
+description: "Status-bar quota tracking for 17 providers: Tavily, OpenCode Go, DeepSeek, GLM (z.ai), OpenRouter, Grok (xAI), Codex (OpenAI), OpenAI, Anthropic, Groq, Cerebras, Moonshot Kimi, MiniMax, Google Gemini, Hugging Face, Mistral, and Qwen. DeepSeek and GLM show peak/off-peak gauges and countdowns. Includes OAuth and multi-key pools. This edition does not rotate Hermes environment keys on exhaust, and an expired OAuth token asks for a new login. Codex and Grok checks use their CLI client identity and user-agent. Disclosure — Reads provider API keys from the Hermes .env and its own config.json and calls each enabled provider's own usage or billing endpoint; Codex and Grok sign-ins use those CLIs' OAuth client identity and user-agent, keep the plugin's tokens in its install folder, and ask for a new login on expiry. When the Discord gateway runs, the bot's Discord presence (visible to everyone in servers the bot shares) is updated every 20 seconds by default with tokens/sec, context-window use and the active provider's name with its remaining quota or dollar credit balance (model and running tool are opt-in); turn it off with plugins.entries.provider-status.settings.discord_presence_enabled: false. /pulse and the agent_pulse tool report process-wide telemetry (model, provider, current tool, quota) to anyone allowed to call them on a gateway. Writes a secret-free quota-cache.json into its install folder and reads Hermes config.yaml for the active model."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/provider-status
+version: "1.6.4"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/4bc502523a597a673c852a3b09e1c7e4dced1e6f/public/provider-status/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: [agent_pulse]
+  provides_hooks: [pre_api_request, post_api_request, api_request_error, pre_tool_call, post_tool_call, pre_llm_call, post_llm_call]
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.4"

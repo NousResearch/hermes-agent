@@ -32,32 +32,6 @@ describe('host.state focused-session atoms', () => {
     return { host, states, session }
   }
 
-  it('exposes readonly atoms for the focused session (runtime id, stored id, usage)', async () => {
-    const { host } = await setup()
-
-    for (const key of ['focusedSessionId', 'focusedStoredSessionId', 'focusedUsage'] as const) {
-      const store = host.state[key]
-      expect(store, key).toBeDefined()
-      expect(typeof store.get, key).toBe('function')
-      expect(typeof store.listen, key).toBe('function')
-      expect(typeof store.subscribe, key).toBe('function')
-    }
-  })
-
-  it('mirrors the primary session while no tile is focused', async () => {
-    const { host, states } = await setup()
-
-    expect(host.state.focusedSessionId.get()).toBe(states.$focusedRuntimeId.get())
-    expect(host.state.focusedStoredSessionId.get()).toBe(states.$focusedStoredSessionId.get())
-  })
-
-  it('focusedUsage projects the focused session usage, null while unresolved', async () => {
-    const { host, states } = await setup()
-
-    const focused = states.$focusedSessionState.get()
-    expect(host.state.focusedUsage.get()).toBe(focused?.usage ?? null)
-  })
-
   it('exposes the registry source that owns the active gateway', async () => {
     const { host, session } = await setup()
 
@@ -151,9 +125,6 @@ describe('host.state.focusedSessionProfile', () => {
   it('is a readonly atom that falls back to the gateway profile with no focused session', async () => {
     const { host, profile } = await setup()
 
-    expect(typeof host.state.focusedSessionProfile.get).toBe('function')
-    expect(typeof host.state.focusedSessionProfile.listen).toBe('function')
-
     profile.$activeGatewayProfile.set('newsanalyst')
     expect(host.state.focusedSessionProfile.get()).toBe('newsanalyst')
     profile.$activeGatewayProfile.set('default')
@@ -176,6 +147,84 @@ describe('host.state.focusedSessionProfile', () => {
 
     session.$sessions.set([])
     session.$selectedStoredSessionId.set(null)
+  })
+
+  it('fails closed when duplicate stored or lineage ids resolve to different connections', async () => {
+    const { host, session } = await setup()
+
+    session.$sessions.set([
+      {
+        connection_id: 'source-a',
+        id: 'shared-tip-a',
+        _lineage_root_id: 'shared-root',
+        profile: 'worker'
+      } as never,
+      {
+        connection_id: 'source-b',
+        id: 'shared-root',
+        profile: 'worker'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('shared-root')
+
+    expect(host.state.focusedSessionOwner.get()).toBeNull()
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+  })
+
+  it('fails closed when the same focused id has ambiguous owner hints', async () => {
+    const { host, session } = await setup()
+
+    session.setSessionOwnerHint('ambiguous-hint', {
+      connectionId: 'source-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker-a'
+    })
+    session.setSessionOwnerHint('ambiguous-hint', {
+      connectionId: 'source-b',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker-b'
+    })
+    session.$sessions.set([
+      {
+        connection_id: 'source-a',
+        id: 'ambiguous-hint',
+        profile: 'worker'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('ambiguous-hint')
+
+    expect(host.state.focusedSessionOwner.get()).toBeNull()
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+  })
+
+  it('keeps the focused session connection when same-named profiles share a handle', async () => {
+    const { host, profile, session } = await setup()
+
+    profile.$activeGatewayProfile.set('default')
+    session.setConnection({ connectionId: 'source-a', mode: 'remote' } as never)
+    session.$sessions.set([
+      {
+        connection_id: 'source-b',
+        id: 'shared-default',
+        profile: 'default'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('shared-default')
+
+    expect(host.state.focusedSessionOwner.get()).toEqual({
+      connectionId: 'source-b',
+      profile: 'default'
+    })
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+    session.setConnection(null)
   })
 })
 

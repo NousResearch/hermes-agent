@@ -73,18 +73,16 @@ class TestBudgetExcludesReasoningDetailsEnvelope:
             f"thinking prose charged twice (delta {both - once} tokens)"
         )
 
-    def test_codex_reasoning_items_still_charged(self):
-        """Codex Responses genuinely replays these on every request (#55572);
-        the exclusion is scoped to reasoning_details only."""
+    def test_codex_encrypted_content_is_opaque_to_local_estimates(self):
+        """Ciphertext is priced by the provider's own count, never by its bytes (a native
+        compaction checkpoint alone is ~5M chars, #100611): the budget walk and the trigger
+        estimator both charge it ~0, so only real usage ever prices it (#104462)."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+
         base = {"role": "assistant", "content": "hi"}
-        loaded = dict(
-            base,
-            codex_reasoning_items=[{"encrypted_content": "e" * 20_000}],
-        )
-        assert (
-            _estimate_msg_budget_tokens(loaded) - _estimate_msg_budget_tokens(base)
-            > 4_000
-        )
+        loaded = dict(base, codex_reasoning_items=[{"type": "reasoning", "encrypted_content": "e" * 20_000}])
+        assert _estimate_msg_budget_tokens(loaded) - _estimate_msg_budget_tokens(base) < 50
+        assert estimate_messages_tokens_rough([loaded]) - estimate_messages_tokens_rough([base]) < 50
 
 
 class TestReasoningDetailsTextChars:

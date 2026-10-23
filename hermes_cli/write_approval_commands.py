@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""Shared handlers for the /memory and /skills write-approval subcommands.
-
-Both the interactive CLI (``cli.py``) and the gateway (``gateway/run.py``) call
-into this module so the pending-review UX (list / approve / reject / diff /
-mode) lives in one place. Each caller owns only its surface concerns:
-formatting the returned text and, for the gateway, persisting config + evicting
-the cached agent on a mode change.
-
-Every public handler returns a plain text string suitable for both a terminal
-and a chat message. Skill diffs are intentionally NOT inlined here — the
-``diff`` handler returns the full diff for the CLI pager, but on a messaging
-platform the gateway truncates it and points the user at the dashboard / file.
-"""
+"""Shared handlers for the /memory and /skills write-approval subcommands."""
 
 from __future__ import annotations
 
@@ -27,9 +15,9 @@ def _fmt_state(subsystem: str) -> str:
     return f"{subsystem}.write_approval = {'on' if on else 'off'}"
 
 
-# ---------------------------------------------------------------------------
-# Formatting helpers
-# ---------------------------------------------------------------------------
+_DEFAULT_LIMIT = 20
+_SUMMARY_CLIP = 80
+
 
 def _fmt_pending_list(subsystem: str) -> str:
     return _fmt_pending_list_inner(subsystem, show_all=False)
@@ -39,147 +27,108 @@ def _fmt_all_pending_list(subsystem: str) -> str:
     return _fmt_pending_list_inner(subsystem, show_all=True)
 
 
-_DEFAULT_LIMIT = 20
-_SUMMARY_CLIP = 80
-
-
 def _fmt_pending_list_inner(subsystem: str, show_all: bool) -> str:
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
     total = len(records)
-    show = records if show_all else records[:_DEFAULT_LIMIT]
+    visible = records if show_all else records[:_DEFAULT_LIMIT]
     lines = [f"Pending {subsystem} writes ({total}):"]
     if subsystem == wa.SKILLS:
-        _fmt_skills_grouped(lines, show)
+        _fmt_skills_grouped(lines, visible)
     else:
-        for r in show:
-            _fmt_one_record(lines, r)
+        for record in visible:
+            _fmt_one_record(lines, record)
+            if subsystem == wa.MEMORY:
+                lines.extend(f"      {line}" for line in _matched_entries(record["payload"]))
     if not show_all and total > _DEFAULT_LIMIT:
-        lines.append("")
-        lines.append(f"… and {total - _DEFAULT_LIMIT} more — /{subsystem} pending --all")
-    lines.append("")
-    where = "/{s} approve <id>".format(s=subsystem)
-    lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")
+        lines.extend(["", f"… and {total - _DEFAULT_LIMIT} more — /{subsystem} pending --all"])
+    lines.extend(["", f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>"])
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
 
 
-def _fmt_one_record(lines: list[str], r: dict) -> None:
-    origin = r.get("origin", "foreground")
+def _fmt_one_record(lines: list[str], record: dict) -> None:
+    origin = record.get("origin", "foreground")
     tag = " [auto]" if origin == "background_review" else ""
-    summary = (r.get("summary") or "").strip()
+    summary = (record.get("summary") or "").strip()
     if len(summary) > _SUMMARY_CLIP:
         summary = summary[:_SUMMARY_CLIP].rstrip() + "…"
-    lines.append(f"  {r['id']}{tag}  {summary}")
+    lines.append(f"  {record['id']}{tag}  {summary}")
 
 
 def _fmt_skills_grouped(lines: list[str], records: list[dict]) -> None:
-    """Group pending skill records by skill name, flagging collisions."""
     by_name: dict[str, list[dict]] = {}
-    action_order: list[str] = []
-    for r in records:
-        name = _extract_skill_name(r)
+    names: list[str] = []
+    for record in records:
+        name = _extract_skill_name(record)
         if name not in by_name:
             by_name[name] = []
-            action_order.append(name)
-        by_name[name].append(r)
-    for name in action_order:
+            names.append(name)
+        by_name[name].append(record)
+    for name in names:
         group = by_name[name]
         if len(group) == 1:
             _fmt_one_record(lines, group[0])
         else:
-            actions = ", ".join(r.get("action", "?") for r in group)
+            actions = ", ".join(record.get("action", "?") for record in group)
             lines.append(f"  ⚠ {name}  ({len(group)} pending: {actions})")
-            for r in group:
-                _fmt_one_record(lines, r)
+            for record in group:
+                _fmt_one_record(lines, record)
 
 
-def _extract_skill_name(r: dict) -> str:
-    """Extract the skill name from a pending record, preferring the canonical payload.name."""
-    payload = r.get("payload", {})
+def _extract_skill_name(record: dict) -> str:
+    payload = record.get("payload", {})
     name = payload.get("name", "")
     if name:
         return str(name).strip()[:60]
-    summary = (r.get("summary") or "").strip()
+    summary = (record.get("summary") or "").strip()
     match = re.match(r"^(create|update|patch|delete)\s+(.+?)(?:\s*[—–-].*)?$", summary, re.IGNORECASE)
     if match:
         return match.group(2).strip()
-    name = payload.get("old_string", "").split("\n")[0][:40]
-    return name[:40] if name else summary[:40]
+    fallback = payload.get("old_string", "").split("\n")[0][:40]
+    return fallback or summary[:40]
 
 
-# ---------------------------------------------------------------------------
-# Subcommand dispatch
-# ---------------------------------------------------------------------------
 
 def handle_pending_subcommand(
-    subsystem: str,
-    args: List[str],
-    *,
-    memory_store=None,
-    set_mode_fn=None,
-) -> Optional[str]:
-    """Dispatch a /memory or /skills subcommand.
+    subsystem: str, args: list[str], *, memory_store=None, set_mode_fn=None) -> Optional[str]:
+    """Dispatch a /memory or /skills write-approval subcommand.
 
-    Args:
-        subsystem: ``memory`` or ``skills``.
-        args: tokens after the slash command (e.g. ``["approve", "a1b2"]``).
-        memory_store: live MemoryStore for applying approved memory writes
-            (CLI passes ``self.agent._memory_store``; gateway applies against a
-            freshly loaded store).
-        set_mode_fn: optional callable ``(enabled: bool) -> None`` that
-            persists the new write_approval boolean to config (gateway provides
-            this; CLI uses its own ``save_config_value`` and passes a closure).
-
-    Returns a text string to show the user. Returns None when the args are not
-    a write-approval subcommand (caller falls through to its other handling,
-    e.g. /skills search).
+    ``memory_store`` applies approved memory writes (CLI passes its live store; gateway a freshly
+    loaded one); ``set_mode_fn`` persists the write_approval boolean. Returns text for the user,
+    or None when the args are not a write-approval subcommand so the caller falls through to its
+    other handling (e.g. /skills search).
     """
     if not args:
-        # Bare /memory or /skills with no sub → show pending + gate state.
         return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
-
-    sub = args[0].lower()
-    rest = args[1:]
-
+    sub, rest = args[0].lower(), args[1:]
     if sub == "pending":
         show_all = len(rest) >= 1 and rest[0].lower() in {"--all", "-a", "all"}
-        if show_all:
-            return _fmt_all_pending_list(subsystem)
-        return _fmt_pending_list(subsystem)
-
+        return (_fmt_all_pending_list(subsystem) if show_all else _fmt_pending_list(subsystem))
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
-
     if sub in {"reject", "deny", "drop"}:
         return _reject(subsystem, rest)
-
     if sub == "diff" and subsystem == wa.SKILLS:
         return _diff(rest)
-
     if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
         return _set_approval(subsystem, rest, set_mode_fn)
-
     return None  # not ours — caller handles
 
 
-def _resolve_one(subsystem: str, rest: List[str]):
+def _usage(subsystem: str) -> str:
+    return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
+
+
+def _approve(subsystem: str, rest: list[str], memory_store) -> str:
     if not rest:
-        return None, f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
-    return rest[0], None
-
-
-def _approve(subsystem: str, rest: List[str], memory_store) -> str:
-    target, err = _resolve_one(subsystem, rest)
-    if err or target is None:
-        return err or f"Usage: /{subsystem} approve <id>"
-
+        return _usage(subsystem)
+    target = rest[0]
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
-
     if target.lower() == "all":
         targets = list(records)
     else:
@@ -188,81 +137,106 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
 
-    applied, failed = 0, []
+    applied, failed, overwritten, patched, removed = 0, [], [], [], []
     for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
+        ok, msg, result = _apply_one(subsystem, rec, memory_store)
         if ok:
             wa.discard_pending(subsystem, rec["id"])
             applied += 1
+            overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
+            patched.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "patched"))
+            removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
         else:
             failed.append(f"{rec['id']}: {msg}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
+    if overwritten:
+        # A memory 'replace' overwrites the WHOLE matched entry (#117952); the approver
+        # is the last person who can notice a clause went missing, so show what was lost.
+        out.append("Overwrote entire entry (re-add anything you still need):")
+        out.extend(overwritten)
+    if patched:
+        # A patch keeps the rest of the entry, so show it as it was, not as lost text.
+        out.append("Patched entry (as it was before the edit):")
+        out.extend(patched)
+    if removed:
+        out.append("Removed entry (re-add anything you still need):")
+        out.extend(removed)
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)
     return "\n".join(out)
 
 
+def _changed_entries(result: dict, kind: str) -> list[str]:
+    """Full text of every entry a memory write changed, single-op or batch shape."""
+    single = result.get(f"{kind}_entry")
+    if kind == "patched" and single is None:
+        single = result.get("patched_entry_before")
+    batch = result.get(f"{kind}_entries") or {}
+    return ([single] if single else []) + [batch[k] for k in sorted(batch, key=int)]
+
+
+def _matched_entries(payload) -> list[str]:
+    """The full entry each staged memory replace/remove is pinned to: the summary shows only
+    the old_text search string, and approval applies to this entry, not to that search."""
+    from tools.memory_tool import destructive_ops
+    return [f"{op['action']}s entry: {op['matched_entry']}" if op.get("matched_entry")
+            else f"{op['action']}: unpinned legacy target \u2014 reject and recreate before approving"
+            for op in destructive_ops(payload)]
+
+
 def _apply_one(subsystem: str, rec, memory_store):
+    """``(ok, error, result)`` — *result* is the applier's full payload (empty on exceptions)."""
     payload = rec.get("payload", {})
     try:
         if subsystem == wa.MEMORY:
             if memory_store is None:
-                return False, "memory store unavailable"
+                return False, "memory store unavailable", {}
             from tools.memory_tool import apply_memory_pending
             result = apply_memory_pending(payload, memory_store)
-            return bool(result.get("success")), result.get("error", "")
         else:
             from tools.skill_manager_tool import apply_skill_pending
             result = json.loads(apply_skill_pending(payload))
-            return bool(result.get("success")), result.get("error", "")
+        return bool(result.get("success")), result.get("error", ""), result
     except Exception as e:
-        return False, str(e)
+        return False, str(e), {}
 
 
-def _reject(subsystem: str, rest: List[str]) -> str:
-    target, err = _resolve_one(subsystem, rest)
-    if err or target is None:
-        return err or f"Usage: /{subsystem} reject <id>"
+def _reject(subsystem: str, rest: list[str]) -> str:
+    if not rest:
+        return _usage(subsystem)
+    target = rest[0]
     if target.lower() == "all":
-        n = 0
-        for rec in wa.list_pending(subsystem):
-            if wa.discard_pending(subsystem, rec["id"]):
-                n += 1
+        n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
         return f"Rejected {n} pending {subsystem} write(s)."
     if wa.discard_pending(subsystem, target):
         return f"Rejected pending {subsystem} write '{target}'."
     return f"No pending {subsystem} write with id '{target}'."
 
 
-def _diff(rest: List[str]) -> str:
+def _diff(rest: list[str]) -> str:
     if not rest:
         return "Usage: /skills diff <id>"
     rec = wa.get_pending(wa.SKILLS, rest[0])
     if not rec:
         return f"No pending skill write with id '{rest[0]}'."
-    diff = wa.skill_pending_diff(rec)
-    header = f"# Pending skill write {rec['id']}: {rec.get('summary', '')}\n"
-    return header + "\n" + diff
+    return f"# Pending skill write {rec['id']}: {rec.get('summary', '')}\n\n" + wa.skill_pending_diff(rec)
 
 
-def _set_approval(subsystem: str, rest: List[str], set_mode_fn) -> str:
-    """Turn the approval gate on/off for a subsystem.
+_APPROVAL_VALUES = {
+    **dict.fromkeys(("on", "true", "yes", "1", "enable", "enabled"), True),
+    **dict.fromkeys(("off", "false", "no", "0", "disable", "disabled"), False)}
 
-    ``set_mode_fn`` (when provided) persists the new boolean to config.
-    """
+
+def _set_approval(subsystem: str, rest: list[str], set_mode_fn) -> str:
+    """Turn the approval gate on/off for a subsystem."""
     if not rest:
         return (f"{_fmt_state(subsystem)}\n"
                 f"Set with: /{subsystem} approval <on|off>")
     arg = rest[0].strip().lower()
-    truthy = {"on", "true", "yes", "1", "enable", "enabled"}
-    falsey = {"off", "false", "no", "0", "disable", "disabled"}
-    if arg in truthy:
-        enabled = True
-    elif arg in falsey:
-        enabled = False
-    else:
+    enabled = _APPROVAL_VALUES.get(arg)
+    if enabled is None:
         return f"Invalid value '{arg}'. Use: on or off."
     if set_mode_fn is None:
         val = "true" if enabled else "false"

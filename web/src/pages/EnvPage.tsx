@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
+import { removeDeletedEnvVarFromState } from "@/lib/env-state";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -38,6 +39,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -710,7 +712,7 @@ export default function EnvPage() {
       });
       showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
     } catch (e) {
-      showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
+      showToast(`${t.config.failedToSave} ${key}: ${errorMessage(e)}`, "error");
     } finally {
       setSaving(null);
     }
@@ -722,14 +724,7 @@ export default function EnvPage() {
         setSaving(key);
         try {
           await api.deleteEnvVar(key);
-          setVars((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  [key]: { ...prev[key], is_set: false, redacted_value: null },
-                }
-              : prev,
-          );
+          setVars((prev) => removeDeletedEnvVarFromState(prev, key));
           setEdits((prev) => {
             const n = { ...prev };
             delete n[key];
@@ -742,7 +737,7 @@ export default function EnvPage() {
           });
           showToast(`${key} ${t.common.removed}`, "success");
         } catch (e) {
-          showToast(`${t.common.failedToRemove} ${key}: ${e}`, "error");
+          showToast(`${t.common.failedToRemove} ${key}: ${errorMessage(e)}`, "error");
           throw e;
         } finally {
           setSaving(null);

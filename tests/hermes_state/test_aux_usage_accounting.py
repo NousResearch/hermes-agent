@@ -96,7 +96,24 @@ class TestRecordAuxiliaryUsage:
         tasks = sorted(r["task"] for r in rows)
         assert tasks == ["", "title_generation"]
 
+    def test_existing_row_keeps_null_created_source_and_backfills_profile(self, db):
+        """Skipping the unknown upsert must not skip the NULL profile_name backfill.
 
+        source and created_source stay as they are. A NULL profile_name is filled
+        with this store's profile, the same value the upsert would have written.
+        """
+        db.create_session("s1", source="local")
+        db._own_profile_name = lambda: "default"
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET created_source=NULL, profile_name=NULL WHERE id=?",
+                ("s1",))
+            db._conn.commit()
+        db.record_auxiliary_usage("s1", "compression", model="m", input_tokens=1)
+        row = db.get_session("s1")
+        assert row["source"] == "local"
+        assert row["created_source"] is None
+        assert row["profile_name"] == "default"
 
 
 class TestSchemaMigrationV22:
@@ -234,11 +251,7 @@ class TestAmbientAccountingContext:
 
 class TestAnalyticsAuxRows:
     def test_aux_usage_rows_and_merge(self, db):
-        from hermes_cli.web_server import (
-            _aux_task_summary,
-            _aux_usage_rows,
-            _merge_aux_into_by_model,
-        )
+        from hermes_cli.web_server_profiles import _aux_task_summary, _aux_usage_rows, _merge_aux_into_by_model
 
         db.create_session("s1", source="cli")
         db.update_token_counts(

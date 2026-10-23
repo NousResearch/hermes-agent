@@ -59,9 +59,11 @@ hermes tools
 
 ```yaml
 image_gen:
+  provider: fal                 # 选 Nous Subscription 时为 `nous`
   model: fal-ai/flux-2/klein/9b
-  use_gateway: false            # 使用 Nous Subscription 时为 true
 ```
+
+`image_gen.provider` 是唯一的选择键：`nous` 走托管网关，厂商名（如 `fal`）走直连。运行时始终按该选择路由——`provider: nous` 时 `.env` 里的 `FAL_KEY` 会被忽略；`provider: fal` 而缺少 `FAL_KEY` 会直接报错并提示运行 `hermes tools`，不会静默回退。（旧的 `use_gateway` 键已废弃，读取时 `true` 等同于 `nous`。）
 
 ### GPT-Image 画质档位
 

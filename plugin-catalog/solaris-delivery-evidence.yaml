@@ -1,0 +1,17 @@
+name: solaris-delivery-evidence
+repo: https://github.com/Shaisolaris/solaris-delivery-evidence
+sha: e686e951bf8997ecc7389fd9c02cfdd6867d11e5
+description: "One local skill to record command outcomes and reject stale delivery evidence using input/output hashes and work-order receipts. Disclosure — explicitly requested recording executes the caller's command with normal host permissions, reads named workspace inputs/outputs and writes local receipts and command logs. Work-order run creates project scaffolding; verification is read-only unless a report output is requested. No automatic network calls, credential reads, hooks, background jobs or telemetry. Labels are unauthenticated; hash consistency does not certify correctness or enforce a sandbox."
+maintainer: Shaisolaris
+tier: community
+category: automation
+docs_url: https://github.com/Shaisolaris/solaris-delivery-evidence/tree/e686e951bf8997ecc7389fd9c02cfdd6867d11e5
+version: "0.64.0"
+readme: true
+platforms: [linux, macos]
+title: Solaris Delivery Evidence
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

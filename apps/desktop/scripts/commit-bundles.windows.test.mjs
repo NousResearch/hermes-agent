@@ -28,7 +28,13 @@ function fixture(kit) {
   fs.copyFileSync(path.join(repo, 'apps/desktop/product-identity.cjs'), path.join(desktop, 'product-identity.cjs'))
   fs.writeFileSync(path.join(desktop, 'package.json'), JSON.stringify({ name: 'fixture', version: '0.21.1' }))
   fs.writeFileSync(path.join(desktop, 'electron-builder.config.cjs'), `module.exports=${JSON.stringify({ directories: { buildResources: kit }, toolsets: { winCodeSign: { url: 'file://' + kit } } })}\n`)
-  fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
+  // Mirror both install trees so the copied desktop files resolve their
+  // dependencies exactly as they do in the checkout, hoisted or not.
+  for (const dir of ['', 'apps/desktop']) {
+    if (fs.existsSync(path.join(repo, dir, 'node_modules'))) {
+      fs.symlinkSync(path.join(repo, dir, 'node_modules'), path.join(root, dir, 'node_modules'), 'junction')
+    }
+  }
   // Assembly does not depend on production artwork or the icon build step.
   const iconsScript = path.join(root, 'fixture-icons.ps1')
   fs.writeFileSync(iconsScript, String.raw`

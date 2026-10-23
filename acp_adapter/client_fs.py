@@ -425,12 +425,28 @@ def run_command_via_client(
                 "ide_terminal": True,
             }, ensure_ascii=False)
 
-        ok = (exit_code or 0) == 0
+        ok = exit_code == 0
+        if ok:
+            status = "success"
+            error = ""
+        elif exit_code is not None:
+            status = "nonzero_exit"
+            error = f"exited with code {exit_code}"
+        elif signal:
+            # ACP: exit_code may be null when the process was terminated by a
+            # signal. Do not collapse that into a 0 / success.
+            status = "killed"
+            error = f"killed by signal {signal}"
+        else:
+            # No exit code and no signal observed from the client; do not
+            # fabricate a 0 for an exit nobody reported.
+            status = "error"
+            error = "IDE terminal reported no exit status"
         return json.dumps({
             "output": output,
-            "exit_code": exit_code if exit_code is not None else 0,
-            "error": "" if ok else (f"exited with code {exit_code}" if exit_code is not None else f"killed by signal {signal}"),
-            "status": "success" if ok else "nonzero_exit",
+            "exit_code": exit_code,
+            "error": error,
+            "status": status,
             "truncated": truncated,
             "signal": signal,
             "ide_terminal": True,

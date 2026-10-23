@@ -603,6 +603,7 @@ working but are **deprecated** in favor of the consent flow:
 | `llm.agent_id_override` | `llm.allow_agent_id_override` |
 | `llm.profile_override` | `llm.allow_profile_override` |
 | `llm.task_override` | `llm.allow_task_override` |
+| `llm.side_question` | `llm.allow_side_question` |
 | `gateway.platform_actions` | `allow_platform_actions` |
 
 A gate is open when *either* the capability is granted *or* the legacy key is

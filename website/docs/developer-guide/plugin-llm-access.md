@@ -519,6 +519,80 @@ don't have to:
   loop on `complete()` for every gateway message without thinking
   about token spend.
 
+## Asking the session's own agent (`ctx.side_question`)
+
+`ctx.llm` runs a fresh call that knows only what the plugin sends it.
+`ctx.side_question` asks the session's *own* agent instead: the same
+model, the same system prompt (memory included) and the whole
+conversation so far, plus one question from the plugin. It replays
+the request the turn just sent, so the provider's prompt cache is
+still warm and the call is mostly cache reads.
+
+Reach for it when the answer depends on the conversation itself:
+suggesting the user's next prompt, labelling what the turn did,
+deciding whether the session needs a follow-up. For anything that
+doesn't need the session, use `ctx.llm`: it is cheaper and has no
+lease rules.
+
+```python
+import threading
+
+
+def register(ctx):
+    def on_post_llm_call(**kwargs):
+        token = kwargs.get("side_question_token")
+        if token is None:  # no consented plugin loaded, or not a user turn
+            return
+        # post_llm_call is time-bounded: never wait for the model inside the hook.
+        threading.Thread(target=_suggest, args=(token,), daemon=True).start()
+
+    def _suggest(token):
+        answer = ctx.side_question(
+            token, "Suggest the user's most likely next prompt in one short line.")
+        if answer:
+            ctx.state.set("next_prompt", answer)
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
+The plugin must declare the capability in `plugin.yaml` and the user
+must grant it (the consent screen shows: "Ask your agent a short
+question after each turn. It sees the whole session, including
+memory, and spends your main model's tokens."):
+
+```yaml
+capabilities:
+  - llm.side_question
+```
+
+### Lease rules
+
+* `post_llm_call` receives `side_question_token` (a string) when at
+  least one loaded plugin holds the capability, else `None`.
+* **One attempt per turn, shared by every plugin.** Every plugin's
+  hook gets the same token; the first `ctx.side_question` call spends
+  it, whether it succeeds or not. A plugin without the capability gets
+  `None` back and does not spend it.
+* The token expires after **60 seconds**, and as soon as the session
+  starts its next turn.
+* `prompt` is a non-empty string of at most **4096 characters**.
+* `timeout` defaults to **15 seconds** and is capped at 60.
+
+### What you get back
+
+The text of the agent's reply, or `None`. `None` means the call was
+refused or failed: a Mixture-of-Agents runtime, an agent-as-provider
+runtime (ACP, external-process providers, the Codex app-server), a
+request that carries provider-executed (server-side) tools, a
+timeout, a provider error, or an empty reply. There are no retries
+and no fallback model.
+
+The call never runs a tool (tool calls in the reply are dropped) and
+never writes to the transcript. Its tokens are billed to the session
+and recorded in its usage as `side_question`. You can't pick the
+model, tools, system prompt or output length: changing any of them
+would miss the warm cache. Ask for brevity in the prompt.
+
 ## Where this fits in the plugin surface
 
 Existing `ctx.*` methods extend an existing Hermes subsystem:

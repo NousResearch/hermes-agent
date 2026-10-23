@@ -312,3 +312,82 @@ def test_refresh_prompts_unknown_session_fails(profile, monkeypatch, capsys):
         main_mod.main()
     assert exc.value.code == 1
     assert "No session matches" in capsys.readouterr().out
+
+
+def _count_builds(monkeypatch):
+    from run_agent import AIAgent
+    builds = []
+    original = AIAgent._build_system_prompt
+    monkeypatch.setattr(AIAgent, "_build_system_prompt",
+                        lambda self, *a, **k: builds.append(1) or original(self, *a, **k))
+    return builds
+
+
+def _bot_chat_branch_once(monkeypatch):
+    """Take the Bot Chat capability-refresh branch on the next restore only (its real trigger needs
+    a Bot Chat capability fingerprint; the branch body is what is under test)."""
+    import agent.conversation_loop as cl
+    once = []
+    monkeypatch.setattr(cl, "_bot_chat_prompt_stale", lambda agent, prompt: not once and once.append(1) is None)
+    monkeypatch.setattr(cl, "_refresh_bot_chat_tools", lambda agent: None)
+    return once
+
+
+def test_warm_agent_that_restored_its_prompt_adopts_a_later_refresh(profile, monkeypatch):
+    srv, home, project = profile
+    history, first = _turn(srv, home, "chat-r", "hello", [])
+    warm = _agent(srv, home, "chat-r")  # a gateway/TUI restart, then the agent stays warm
+    try:
+        history, restored = _turn(srv, home, "chat-r", "again", history, agent=warm)
+        assert restored == first
+        _update_profile(home, project)
+        _refresh_prompts(monkeypatch, home)
+        history, refreshed = _turn(srv, home, "chat-r", "new?", history, agent=warm)
+        _assert_updated(refreshed)
+    finally:
+        warm.close()
+
+
+def test_warm_agent_without_a_request_never_rebuilds(profile, monkeypatch):
+    srv, home, project = profile
+    warm = _agent(srv, home, "chat-w")
+    try:
+        history, first = _turn(srv, home, "chat-w", "hello", [], agent=warm)
+        _update_profile(home, project)  # files change, the verb is not run
+        builds = _count_builds(monkeypatch)
+        for text in ("two", "three", "four"):
+            history, system = _turn(srv, home, "chat-w", text, history, agent=warm)
+            assert system == first
+        assert builds == []
+    finally:
+        warm.close()
+
+
+def test_warm_agent_rebuilt_by_a_bot_chat_refresh_still_adopts_a_later_refresh(profile, monkeypatch):
+    srv, home, project = profile
+    history, _ = _turn(srv, home, "chat-bot", "hello", [])
+    once = _bot_chat_branch_once(monkeypatch)
+    warm = _agent(srv, home, "chat-bot")
+    try:
+        history, _ = _turn(srv, home, "chat-bot", "again", history, agent=warm)
+        assert once == [1]
+        _update_profile(home, project)
+        _refresh_prompts(monkeypatch, home)
+        history, refreshed = _turn(srv, home, "chat-bot", "anything new?", history, agent=warm)
+        _assert_updated(refreshed)
+    finally:
+        warm.close()
+
+
+def test_a_bot_chat_rebuild_satisfies_a_pending_refresh(profile, monkeypatch):
+    srv, home, project = profile
+    history, _ = _turn(srv, home, "chat-bot2", "hello", [])
+    _update_profile(home, project)
+    _refresh_prompts(monkeypatch, home)
+    _bot_chat_branch_once(monkeypatch)
+    history, rebuilt = _turn(srv, home, "chat-bot2", "again", history)
+    _assert_updated(rebuilt)
+    builds = _count_builds(monkeypatch)
+    history, third = _turn(srv, home, "chat-bot2", "third", history)
+    assert third == rebuilt
+    assert builds == []

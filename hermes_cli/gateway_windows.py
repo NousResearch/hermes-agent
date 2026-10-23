@@ -353,7 +353,7 @@ def _stable_gateway_working_dir(project_root: Path) -> str:
 # ── Script rendering
 
 def _gateway_run_argv(python_exe: str, profile_arg: str) -> list[str]:
-    """``python -m hermes_cli.main [--profile X] gateway run`` — shared by every launcher renderer."""
+    """Legacy module invocation for externally owned Python environments."""
     argv = [python_exe, "-m", "hermes_cli.main"]
     if profile_arg:
         argv.extend(profile_arg.split())
@@ -375,29 +375,46 @@ def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
     )
 
 
-def _launcher_pythonpath_entries(extra_pythonpath: list[str]) -> list[str]:
-    return [
-        _preserve_hermes_home_path(Path(__file__).resolve().parent.parent),
-        *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath],
-    ]
+def _gateway_launch_spec(python_path: str, hermes_home: str, profile_arg: str) -> tuple[list[str], dict[str, str]]:
+    """Share the CLI's bootstrap for managed installs, retaining external venv ownership.
+
+    Persist the store interpreter and source root, never a selected dependency generation.
+    The native Python command also keeps VBS free of cmd.exe/CTRL_CLOSE_EVENT intermediaries.
+    """
+    from hermes_cli._launchers import resolve_store_python, runtime_command
+    from hermes_cli.gateway import PROJECT_ROOT
+
+    env = {"HERMES_HOME": hermes_home, **dict(_GATEWAY_ENV)}
+    # Publication must not capture a caller's temporary HERMES_RUNTIME_DIR.
+    store_python = resolve_store_python(PROJECT_ROOT, publication=True)
+    if store_python is not None:
+        argv = runtime_command(
+            PROJECT_ROOT, [*shlex.split(profile_arg), "gateway", "run"],
+            python=_preserve_hermes_home_path(store_python), home=hermes_home,
+        )
+        return argv, env
+
+    python_exe, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    env["VIRTUAL_ENV"] = _preserve_hermes_home_path(venv_dir)
+    env["PYTHONPATH"] = os.pathsep.join(
+        _preserve_hermes_home_path(entry) for entry in (PROJECT_ROOT, *extra_pythonpath)
+    )
+    return _gateway_run_argv(python_exe, profile_arg), env
 
 
 def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
     """Build the ``gateway.cmd`` wrapper (CRLF-terminated). No PATH overrides (rewriting PATH breaks
     Homebrew/nvm-style installs), no ``start`` (extra wrapper process muddles lifecycle/status), no
     ``--replace`` (repeated /Run calls must be idempotent, not takeover loops)."""
-    python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
-    pythonpath = ";".join([*_launcher_pythonpath_entries(extra_pythonpath), "%PYTHONPATH%"])
+    argv, env = _gateway_launch_spec(python_path, hermes_home, profile_arg)
+    pythonpath = env.pop("PYTHONPATH", None)
     lines = [
         "@echo off",
         f"rem {_TASK_DESCRIPTION}",
         f"cd /d {_quote_cmd_script_arg(working_dir)}",
-        f'set "HERMES_HOME={hermes_home}"',
-        *[f'set "{k}={v}"' for k, v in _GATEWAY_ENV],
-        # VIRTUAL_ENV lets the gateway's own python detection find the venv.
-        f'set "VIRTUAL_ENV={_preserve_hermes_home_path(venv_dir)}"',
-        f'set "PYTHONPATH={pythonpath}"',
-        " ".join(_quote_cmd_script_arg(a) for a in _gateway_run_argv(python_exe_path, profile_arg)),
+        *[f'set "{k}={v}"' for k, v in env.items()],
+        *([f'set "PYTHONPATH={pythonpath};%PYTHONPATH%"'] if pythonpath is not None else []),
+        " ".join(_quote_cmd_script_arg(a) for a in argv),
         "exit /b 0",
     ]
     return "\r\n".join(lines) + "\r\n"
@@ -418,12 +435,12 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     console-subsystem descendant (git, gh, node, …) so none of them allocate a visible flashing conhost
     (#54220/#56747; the previous console-less pythonw.exe gateway forced exactly that per-descendant flash).
     No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
-    ``_resolve_detached_python``).
+    ``_gateway_launch_spec``).
     """
-    python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    argv, env = _gateway_launch_spec(python_path, hermes_home, profile_arg)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
-    command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
-    static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
+    command_line = subprocess.list2cmdline(argv)
+    static_pythonpath = env.pop("PYTHONPATH", None)
     q = _quote_vbs_string
     lines = [
         f"' {_TASK_DESCRIPTION}",
@@ -431,20 +448,23 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         "Dim sh, env, existing_pp",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
-        f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
-        *[f"env.Item({q(k)}) = {q(v)}" for k, v in _GATEWAY_ENV],
-        f"env.Item({q('VIRTUAL_ENV')}) = {q(_preserve_hermes_home_path(venv_dir))}",
-        # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%`` at runtime.
-        f"existing_pp = env.Item({q('PYTHONPATH')})",
-        "If Len(existing_pp) > 0 Then",
-        f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath + os.pathsep)} & existing_pp",
-        "Else",
-        f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
-        "End If",
+        *[f"env.Item({q(k)}) = {q(v)}" for k, v in env.items()],
+    ]
+    if static_pythonpath is not None:
+        # External installs still prepend their source/venv import paths at launch time.
+        lines.extend([
+            f"existing_pp = env.Item({q('PYTHONPATH')})",
+            "If Len(existing_pp) > 0 Then",
+            f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath + os.pathsep)} & existing_pp",
+            "Else",
+            f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
+            "End If",
+        ])
+    lines.extend([
         f"sh.CurrentDirectory = {q(working_dir)}",
         # Window style 0 = hidden; bWaitOnReturn False = detached/async.
         f"sh.Run {q(command_line)}, 0, False",
-    ]
+    ])
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -714,13 +734,11 @@ def _build_gateway_argv(home: Path | None = None) -> tuple[list[str], str, dict[
     """Build (argv, working_dir, env_overlay) for the gateway subprocess — the same logical command
     as gateway.cmd, assembled as a native argv so no cmd.exe layer sits in between."""
     _assert_windows()
-    from hermes_cli.gateway import PROJECT_ROOT
-
     python_path, working_dir, hermes_home, profile_arg = _launcher_settings(home)
-    python_exe, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
-    env_overlay = {"HERMES_HOME": hermes_home, **dict(_GATEWAY_ENV), "VIRTUAL_ENV": _preserve_hermes_home_path(venv_dir)}
-    _prepend_pythonpath(env_overlay, [_preserve_hermes_home_path(p) for p in (PROJECT_ROOT, *extra_pythonpath)])
-    return _gateway_run_argv(python_exe, profile_arg), working_dir, env_overlay
+    argv, env_overlay = _gateway_launch_spec(python_path, hermes_home, profile_arg)
+    if "PYTHONPATH" in env_overlay:
+        _prepend_pythonpath(env_overlay, [env_overlay["PYTHONPATH"]])
+    return argv, working_dir, env_overlay
 
 
 def windowless_gateway_restart_spec(run_argv: list[str], home: str | None = None) -> tuple[list[str], str, dict[str, str]]:

@@ -73,6 +73,17 @@ def _positive_int(value: Any, *, reject: tuple = (bool,)) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
+def parse_compact_threshold(value: Any) -> Optional[int]:
+    """Preserve automatic mode when loading initial or live compression config."""
+    parsed = _positive_int(value, reject=(bool, float))
+    if value is not None and parsed is None:
+        logger.warning(
+            "Invalid compression.codex_responses_compact_threshold=%r; "
+            "using the automatic threshold derived from local compression.", value,
+        )
+    return parsed
+
+
 def resolve_compact_threshold(configured_threshold: Any, local_trigger_tokens: Any = None) -> int:
     """Resolve automatic mode or clamp an explicit native threshold.
 

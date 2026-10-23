@@ -5743,11 +5743,9 @@ def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> di
 # ── Centralized LLM Call API: call_llm()/async_call_llm() own resolve → cached client → shape
 # request → call → return. Every auxiliary LLM consumer should use these.
 
-# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key) -> (client, default_model, loop)
-# Loop identity is NOT part of the key: stale-loop entries are replaced in place on async hits,
-# bounding growth to one entry per provider config (avoids fd accumulation in gateways).
-# This bounds cache growth to one entry per unique provider config rather than one per (config ×
-# event-loop), which previously caused unbounded fd accumulation in long-running gateway processes (#10200).
+# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key, loop) ->
+# (client, default_model, loop). Async transports are owned by their creating loop, so loop identity
+# must keep a concurrent caller from closing an in-flight client it cannot safely reuse (#137365).
 _client_cache: dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
 _CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
@@ -5797,7 +5795,9 @@ def _client_cache_key(
     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
     # Profile home leads the key: callers that omit api_key (pool / Nous auth.json paths) would
     # otherwise share one client across multiplex profiles holding different credentials.
+    loop_key = id(_current_event_loop()) if async_mode else None
     return (hermes_home_key(), provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key,
+            loop_key,
             _borrowed_main_credential_key(provider, base_url, api_key, runtime))
 
 
@@ -6011,12 +6011,8 @@ def _get_cached_client(
 ) -> tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
-    Async clients bind to the loop they were created on, so every async hit validates the cached
-    loop is the current, open loop; stale entries are replaced in place (bounded, no cross-loop reuse).
-
-    This keeps cache size bounded to one entry per unique provider config, preventing the fd-exhaustion that
-    previously occurred in long-running gateways where recycled worker threads created unbounded entries
-    (#10200).
+    Async clients bind to their creating event loop, which is part of the cache key. Before a new
+    async client is built, closed-loop entries are cleaned up to bound gateway worker-loop churn.
     """
     # A bare llama.cpp alias keys on the live local endpoint: a restarted server (new port/key)
     # must not be served the old client, and a stopped one resolves to nothing, not a cloud client.
@@ -6044,6 +6040,8 @@ def _get_cached_client(
             # foreign loop stays force-neutered.
             _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
             del _client_cache[cache_key]
+    if async_mode:
+        cleanup_stale_async_clients()
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
     # and retry an exhausted key. A pinned ``custom:<name>`` peeks only its entry's rows.

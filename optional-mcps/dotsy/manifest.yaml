@@ -1,0 +1,31 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: dotsy
+description: >-
+  Build, edit, import, and publish websites via Dotsy's hosted MCP.
+source: https://api.dotsy.ai/docs
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (PKCE S256); Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.dotsy.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - dotsy
+  hosts:
+    - dotsy.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Dotsy (or run `hermes mcp login dotsy`). Approve access,
+  then restart the session so tools load.

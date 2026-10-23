@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
 
@@ -59,7 +60,10 @@ class PluginLlmUsage:
 
 @dataclass
 class PluginLlmCompleteResult:
-    """Result of :meth:`PluginLlm.complete`."""
+    """Result of :meth:`PluginLlm.complete`.
+
+    ``finish_reason`` preserves the provider token, or is ``None`` when unknown.
+    """
 
     text: str
     provider: str
@@ -67,6 +71,7 @@ class PluginLlmCompleteResult:
     agent_id: str
     usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
     audit: dict[str, Any] = field(default_factory=dict)
+    finish_reason: Optional[str] = None
 
 
 @dataclass
@@ -74,7 +79,9 @@ class PluginLlmStructuredResult:
     """Result of :meth:`PluginLlm.complete_structured`.
 
     ``parsed`` is set only when JSON output was requested AND the response was
-    valid JSON; ``content_type`` is then ``"json"``, otherwise ``"text"``."""
+    valid JSON; ``content_type`` is then ``"json"``, otherwise ``"text"``.
+    Parsing success does not imply natural completion: ``finish_reason`` retains
+    the provider token (including ``"length"``), or ``None`` when unknown."""
 
     text: str
     provider: str
@@ -84,6 +91,7 @@ class PluginLlmStructuredResult:
     parsed: Optional[Any] = None
     content_type: str = "text"
     audit: dict[str, Any] = field(default_factory=dict)
+    finish_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -376,6 +384,23 @@ def _extract_text(response: Any) -> str:
     return ""
 
 
+def _extract_finish_reason(response: Any) -> Optional[str]:
+    """Read the provider's first-choice finish reason without inventing one.
+
+    OpenAI-compatible clients expose choices as either model objects or mappings;
+    malformed and absent values are deliberately represented as ``None`` so a
+    plugin can distinguish an interrupted stream from a natural stop.
+    """
+    choices = (response.get("choices") if isinstance(response, Mapping)
+               else getattr(response, "choices", None))
+    if not isinstance(choices, (list, tuple)) or not choices:
+        return None
+    choice = choices[0]
+    raw = (choice.get("finish_reason") if isinstance(choice, Mapping)
+           else getattr(choice, "finish_reason", None))
+    return raw if isinstance(raw, str) and raw.strip() else None
+
+
 def _main_config_value(reader: str, default: str) -> str:
     """Read the current main provider/model via ``agent.auxiliary_client``."""
     try:
@@ -525,10 +550,15 @@ class PluginLlm:
         """Build the result object + audit dict and emit the INFO audit line."""
         real_provider, real_model, response = invoked
         text = _extract_text(response)
+        finish_reason = _extract_finish_reason(response)
         usage = _extract_usage(response)
         eff_task = kw["task"] or ""
         audit: dict[str, Any] = {"plugin_id": self._plugin_id, "purpose": purpose or "", "profile": kw["profile_override"] or ""}
-        fields: dict[str, Any] = dict(text=text, provider=real_provider, model=real_model, agent_id=agent_id or "default", usage=usage)
+        fields: dict[str, Any] = dict(
+            text=text, provider=real_provider, model=real_model,
+            agent_id=agent_id or "default", finish_reason=finish_reason, usage=usage,
+        )
+        audit["finish_reason"] = finish_reason
         fmt = f"plugin_llm.{name} plugin=%s provider=%s model=%s task=%s purpose=%s "
         log_args = [self._plugin_id, real_provider, real_model, eff_task, purpose or ""]
         cls: Any = PluginLlmCompleteResult

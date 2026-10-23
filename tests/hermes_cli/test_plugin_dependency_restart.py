@@ -126,8 +126,24 @@ def test_enable_reports_restart_when_the_running_gateway_cannot_import_the_depen
     assert result["gateway_reloaded"] is True
     assert result["restart_required"] is True
     assert result["activation"]["missing_dependencies"] == [REQ]
+    assert result["activation"]["missing_in"] == ["gateway"]
     assert "nothing of this plugin needs" not in hint
     assert "installed after the running gateway" in hint and "hermes gateway restart" in hint
+
+
+def test_restart_names_only_the_process_that_cannot_import(home, monkeypatch):
+    """A gateway restarted since the install imports the dependency; the Desktop backend booted
+    before it does not. The remedy is reopening the app, not restarting the gateway."""
+    _select_generation(home, with_dist=True)
+    _gateway_answers(monkeypatch, [{"name": "depprobe", "key": "depprobe", "activated_now": {}, "deferred": {}}])
+    monkeypatch.setattr(plugins_activation, "notify_serve_backend", lambda name, home: {"activation": {
+        "name": "depprobe", "key": "depprobe", "activated_now": {}, "deferred": {}, "missing_dependencies": [REQ]}})
+
+    result = plugins_activation.activate_plugin_now("depprobe", in_process=False)
+    hint = plugins_activation.activation_hint(result)
+
+    assert result["restart_required"] is True and result["activation"]["missing_in"] == ["backend"]
+    assert "desktop app" in hint and "hermes gateway restart" not in hint
 
 
 def test_enable_reports_repair_when_the_dependency_was_never_installed(home, monkeypatch):

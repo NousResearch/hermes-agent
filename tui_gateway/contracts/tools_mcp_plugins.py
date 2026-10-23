@@ -736,6 +736,11 @@ class PluginLiveNow(Result):
     skills: list[PluginLiveSkill] = Field(default_factory=list)
 
 
+class PluginRestartTarget(WireEnum):
+    gateway = "gateway"
+    backend = "backend"
+
+
 class PluginActivation(Result):
     """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
     kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``
@@ -744,8 +749,9 @@ class PluginActivation(Result):
     (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
     error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
     note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)
-    apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements the
-    process that answered cannot import (installed after it booted, or never) — only a restart loads them."""
+    apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a
+    running process cannot import (installed after it booted, or never); ``missing_in`` names which
+    processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them."""
 
     name: str
     key: str
@@ -753,6 +759,7 @@ class PluginActivation(Result):
     live_now: PluginLiveNow | None = None
     deferred: dict[str, list[str]] = Field(default_factory=dict)
     missing_dependencies: list[str] = Field(default_factory=list)
+    missing_in: list[PluginRestartTarget] = Field(default_factory=list)
 
 
 class OnboardingCatalogPlugin(Result):

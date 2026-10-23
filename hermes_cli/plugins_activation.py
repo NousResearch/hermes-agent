@@ -127,8 +127,9 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
     ``activation.live_now`` lists what is usable in open chats now; ``activation.deferred`` what waits
     for the next session. ``restart_required`` is True when no gateway answered (old gateway, not
     running), or when this process or the gateway cannot import the plugin's Python dependencies
-    (``activation.missing_dependencies``): a running process never switches to the dependency
-    generation an enable just installed, so only a restart loads them."""
+    (``activation.missing_dependencies``; ``activation.missing_in`` names which: ``gateway`` and/or
+    ``backend``, the Desktop / dashboard process): a running process never switches to the dependency
+    generation an enable just installed, so only restarting that process loads them."""
     from hermes_constants import get_hermes_home
     activation: Optional[dict[str, Any]] = load_and_go_live(name) if in_process else None
     if not in_process:
@@ -136,12 +137,14 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
     answer = reload_running_gateway()
     reloaded = bool(answer and answer.get("reloaded"))
     gateway_activation = find_activation((answer or {}).get("activations"), name) if reloaded else None
+    gaps = {"gateway": (gateway_activation or {}).get("missing_dependencies") or [],
+            "backend": (activation or {}).get("missing_dependencies") or []}
     if reloaded and activation is None:
         activation = gateway_activation
-    missing = sorted({*((activation or {}).get("missing_dependencies") or ()),
-                      *((gateway_activation or {}).get("missing_dependencies") or ())})
+    missing = sorted({*gaps["gateway"], *gaps["backend"]})
     if missing:
-        activation = {**(activation or {"name": name, "key": name}), "missing_dependencies": missing}
+        activation = {**(activation or {"name": name, "key": name}), "missing_dependencies": missing,
+                      "missing_in": [process for process, deps in gaps.items() if deps]}
     return {"gateway_reloaded": reloaded, "activation": activation,
             "restart_required": not reloaded or bool(missing)}
 
@@ -274,14 +277,16 @@ def _gateway_present() -> bool:
             or _installed_service_kind() is not None)
 
 
-def dependency_restart_hint(missing: list[str], *, gateway: bool) -> str:
-    """What to do when the running gateway / backend cannot import a plugin's dependencies. *gateway*:
-    the messaging gateway answered; otherwise only the Desktop / dashboard backend did, and restarting
-    a gateway that does not run would apply to nothing."""
+_RESTART_LINES = {"gateway": "  hermes gateway restart",
+                  "backend": "  quit and reopen the Hermes desktop app (or restart hermes dashboard)"}
+
+
+def dependency_restart_hint(missing: list[str], processes: list[str]) -> str:
+    """What to do when running processes cannot import a plugin's dependencies: one restart line per
+    process that reported the gap (``gateway`` / ``backend``), never one that can already import them."""
     from hermes_cli.plugins_loader import installed_in_selected_environment
     deps = ", ".join(missing)
-    restart = ("  hermes gateway restart" if gateway
-               else "  quit and reopen the Hermes desktop app (or restart hermes dashboard)")
+    restart = "\n".join(_RESTART_LINES[p] for p in processes)
     if installed_in_selected_environment(missing):
         return (f"Its Python dependencies ({deps}) were installed after the running gateway or dashboard "
                 "started, and a running process never switches dependency environments. Restart them to "
@@ -309,7 +314,7 @@ def activation_hint(result: dict[str, Any]) -> str:
     lines.extend(f"MCP server {s['name']} not connected: {s.get('error') or 'unknown error'}"
                  for s in live.get("mcp_servers") or () if not s.get("connected"))
     if missing := act.get("missing_dependencies"):
-        return "\n".join([*lines, dependency_restart_hint(missing, gateway=bool(result.get("gateway_reloaded")))])
+        return "\n".join([*lines, dependency_restart_hint(missing, act.get("missing_in") or [])])
     if not result.get("gateway_reloaded"):
         # Live in open chats, or no gateway runs or is installed for this profile (first-time setup):
         # a messaging gateway that starts later loads it at boot, so a restart applies to nothing.

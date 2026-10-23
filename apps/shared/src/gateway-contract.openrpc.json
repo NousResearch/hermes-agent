@@ -27032,7 +27032,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements the\nprocess that answered cannot import (installed after it booted, or never) \u2014 only a restart loads them.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.",
         "properties": {
           "name": {
             "title": "Name",
@@ -27078,6 +27078,13 @@
               "type": "string"
             },
             "title": "Missing Dependencies",
+            "type": "array"
+          },
+          "missing_in": {
+            "items": {
+              "$ref": "#/components/schemas/PluginRestartTarget"
+            },
+            "title": "Missing In",
             "type": "array"
           }
         },
@@ -27263,6 +27270,14 @@
         ],
         "title": "PluginLiveSkill",
         "type": "object"
+      },
+      "PluginRestartTarget": {
+        "enum": [
+          "gateway",
+          "backend"
+        ],
+        "title": "PluginRestartTarget",
+        "type": "string"
       },
       "PluginScanFinding": {
         "additionalProperties": false,

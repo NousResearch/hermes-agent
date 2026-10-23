@@ -109,6 +109,26 @@ class TestAutocompleteDevicePaths:
 
         assert files == ["real.txt"]
 
+    def test_explicit_prefix_relpath_valueerror_falls_back_to_absolute(self, tmp_path, monkeypatch):
+        """#127090 — the explicit ``@file:``/``@folder:`` branch must not raise either."""
+        import os
+
+        from hermes_cli import commands_completion as cc
+
+        real_file = tmp_path / "real.txt"
+        real_file.write_text("x", encoding="utf-8")
+
+        def _relpath(path, start=None):
+            # Windows: every entry sits on another mount than cwd (\\?\C: vs C:).
+            raise ValueError("path is on mount '\\\\?\\C:', start on mount 'C:'")
+
+        monkeypatch.setattr(cc.os.path, "relpath", _relpath)
+
+        word = f"@file:{tmp_path}{os.sep}"
+        texts = [c.text for c in cc.SlashCommandCompleter()._context_completions(word)]
+
+        assert f"@file:{real_file}" in texts
+
 
 class TestBrowserScreenshotPathRegex:
     """#83884 — Windows drive-letter screenshot paths must be detected."""

@@ -17,5 +17,5 @@ export const dePluginUpdate: PluginUpdateTranslations = {
   updateScanConfirm: 'Trotzdem aktualisieren',
   updateScanBlocked: name =>
     `Die Sicherheitsprüfung hat das Update von ${name} blockiert (Urteil „gefährlich“). Das lässt sich nicht übergehen.`,
-  updatedGit: name => `${name} wurde auf den neuesten Commit aktualisiert.`,
+  updatedGit: name => `${name} wurde auf den neuesten Commit aktualisiert.`
 }

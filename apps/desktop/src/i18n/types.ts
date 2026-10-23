@@ -94,7 +94,7 @@ export interface Translations extends NoticeTranslations {
     custom: (label: string) => string[]
   }
   connectors: ConnectorCardTranslations
-catalog: CatalogTranslations
+  catalog: CatalogTranslations
   connectorsPage: {
     title: string
     searchPlaceholder: (count: number) => string

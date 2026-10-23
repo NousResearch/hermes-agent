@@ -98,6 +98,7 @@ describe('/usage slash command', () => {
         ]
       })
     })
+
     await run('')
     expect(panel).not.toHaveBeenCalled()
     expect(sys.mock.calls.map(c => c[0])).toEqual([

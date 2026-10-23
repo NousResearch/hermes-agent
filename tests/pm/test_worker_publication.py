@@ -12,7 +12,11 @@ import pytest
 
 from pm.plugin_inputs import Candidates, Selection, StagedUpdate
 
-from tests.pm.test_worker import client, isolated_python, _current_environment
+from tests.pm.test_worker import (
+    _current_environment,
+    client as client,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+)
 from tests.pm._fixtures import installing_member, worker_toolchain
 
 
@@ -42,6 +46,23 @@ def test_worker_publishes_selection_even_when_dependencies_are_current(client, t
     assert result["venv_rebuild"]["ok"] is False
     assert json.loads((home / "logs/update_receipts/latest.json").read_text())["outcome"] == "ok"
 
+
+@pytest.mark.require_symlinks
+def test_selection_publication_keeps_a_symlinked_config(client, tmp_path, monkeypatch):
+    """Enabling a plugin rewrites the link's target; the home keeps its link into the dotfiles tree."""
+    home = tmp_path / "home"
+    home.mkdir()
+    tracked = tmp_path / "dotfiles" / "config.yaml"
+    tracked.parent.mkdir()
+    tracked.write_text('plugins:\n  enabled: [old]\n')
+    (home / "config.yaml").symlink_to(tracked)
+    _current_environment(tmp_path, monkeypatch, [])
+    client.sync_venv(explicit=True, plugins=Selection({
+        "home": str(home), "enabled": ["plain"], "disabled": ["old"], "extra_dirs": [],
+    }))
+    from utils import fast_safe_load
+    assert (home / "config.yaml").is_symlink()
+    assert fast_safe_load(tracked.read_text())["plugins"] == {"enabled": ["plain"], "disabled": ["old"]}
 
 
 @pytest.mark.parametrize("active", [False, True])

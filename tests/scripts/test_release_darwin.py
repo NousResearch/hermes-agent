@@ -95,6 +95,26 @@ def test_merges_native_legs_and_preserves_release_metadata():
     assert light_plan["key"] == f"{selection['directory']}/{selection['fileName']}"
 
 
+def test_published_feed_withholds_the_update_from_macs_below_the_desktop_floor():
+    # electron-updater skips an update when semver.lt(os.release(), minimumSystemVersion)
+    # and os.release() on macOS is the Darwin kernel: macOS 12 = 21.x, macOS 13 = 22.x.
+    from scripts.releases.semver import compare
+
+    legs, _bytes = _inputs()
+    feed = parse_mac_feed(merge_mac_feeds(legs, "v0.28.0")["text"])
+    floor = str(feed.get("minimumSystemVersion"))
+    assert compare("21.6.0", floor) < 0  # macOS 12.7 is not offered the update
+    assert compare("22.1.0", floor) >= 0  # macOS 13 is
+
+
+@pytest.mark.parametrize("line", ["", "    minimumSystemVersion: '13.3',\n"])
+def test_feed_floor_fails_closed_without_a_mappable_builder_floor(tmp_path, line):
+    config = tmp_path / "electron-builder.config.cjs"
+    config.write_text(f"module.exports = {{\n  mac: {{\n{line}  }}\n}}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="minimumSystemVersion"):
+        darwin.minimum_darwin_version(config)
+
+
 @pytest.mark.parametrize(
     "kind", ["missing", "version", "variant", "hash", "legacy", "traversal"]
 )

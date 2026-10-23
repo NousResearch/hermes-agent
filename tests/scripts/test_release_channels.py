@@ -500,6 +500,7 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         assert {p["arch"] for p in manifest["packages"]} == {"arm64", "x64"}
         assert all(p["artifact"]["key"].startswith(prefix) for p in manifest["packages"])
         assert all(f.is_file() for f in feeds)
+        assert json.loads(feeds[0].read_bytes())["minimumSystemVersion"] == "22.0.0"  # macOS 13 (Darwin 22)
         accepted = {"packages": []}
         for row in manifest["packages"]:
             accepted["packages"].append({"platform": "macos" if row["platform"] == "darwin" else "windows", "arch": row["arch"], "identity": row["identity"], "version": row["version"], "artifact": {"url": base + "/" + row["artifact"]["key"], "sha256": row["artifact"]["sha256"]}, **{k: row[k] for k in ("teamId", "publisher") if k in row}})

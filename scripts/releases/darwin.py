@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 from . import r2 as r2_module
@@ -10,6 +11,22 @@ from hermes_cli.update_channel import canary_timestamp, is_canary_tag
 
 ARCHES = ("arm64", "x64")
 _HASH_PATTERN = re.compile(r"^[A-Za-z0-9+/]{86}==$")
+_BUILDER_CONFIG = Path(__file__).resolve().parents[2] / "apps" / "desktop" / "electron-builder.config.cjs"
+
+
+def minimum_darwin_version(config: Path = _BUILDER_CONFIG) -> str:
+    """The builder's mac.minimumSystemVersion as the feed's Darwin-kernel floor.
+
+    electron-builder writes the macOS floor only into Info.plist, so an installed
+    client would still download an update its macOS cannot launch. electron-updater
+    skips an update when semver.lt(os.release(), minimumSystemVersion), and on macOS
+    os.release() is the Darwin version (macOS 13 = 22.x), so '13.0' publishes as
+    '22.0.0'. Fails closed: no feed is written without the floor."""
+    found = re.findall(r"^\s*minimumSystemVersion:\s*'(\d+)(?:\.0)?',?\s*$",
+                       config.read_text(encoding="utf-8-sig"), re.MULTILINE)
+    if len(found) != 1 or int(found[0]) < 11:
+        raise ValueError(f"Expected one mac minimumSystemVersion 'N.0' (N >= 11) in {config}")
+    return f"{int(found[0]) + 9}.0.0"
 
 
 def _darwin_feed(channel: str, light: bool = False) -> dict[str, Any]:
@@ -118,7 +135,7 @@ def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False,
         if first is None:
             first = leg
     assert first is not None
-    merged = {**first, "files": list(files.values())}
+    merged = {**first, "files": list(files.values()), "minimumSystemVersion": minimum_darwin_version()}
     if merged.get("path"):
         merged["path"] = f"/releases/tag/{archive or tag}/{merged['path']}"
     text = yaml.safe_dump(merged, width=100000, default_flow_style=False, sort_keys=False)

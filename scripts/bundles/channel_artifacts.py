@@ -98,7 +98,9 @@ def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
     feed = root / "darwin" / "stable-mac.yml"
     feed.parent.mkdir(parents=True, exist_ok=True)
     first = single(row for row in mac_files if row["url"].endswith("-arm64.zip"))
+    from scripts.releases.darwin import minimum_darwin_version
     # A neutral feed name avoids interpreting custom channel names as prereleases.
     feed.write_bytes(canonical_json({"version": request["version"], "files": mac_files,
-                                    "path": first["url"], "sha512": first["sha512"]}))
+                                    "path": first["url"], "sha512": first["sha512"],
+                                    "minimumSystemVersion": minimum_darwin_version()}))
     return manifest, [feed, descriptor]

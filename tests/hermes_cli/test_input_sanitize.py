@@ -17,6 +17,33 @@ class TestStripLeakedBracketedPasteWrappers:
         text = "literal[200~tag and literal[201~tag should stay"
         assert strip_leaked_bracketed_paste_wrappers(text) == text
 
+    def test_strips_a_repeated_degraded_opening_wrapper(self):
+        """A leak that emits the marker twice left one behind.
+
+        The boundary character is consumed and re-emitted by the substitution, so on the
+        second marker the preceding character is the first marker's "~" rather than a
+        boundary, and it never matched again.
+        """
+        assert strip_leaked_bracketed_paste_wrappers("[200~[200~hello") == "hello"
+        assert strip_leaked_bracketed_paste_wrappers("[200~[200~[200~hello") == "hello"
+        assert strip_leaked_bracketed_paste_wrappers("prefix [200~[200~hello") == "prefix hello"
+
+    def test_strips_repeated_degraded_wrapper_fragments(self):
+        assert strip_leaked_bracketed_paste_wrappers("00~00~hello") == "hello"
+        assert strip_leaked_bracketed_paste_wrappers("hello01~01~") == "hello"
+        assert (
+            strip_leaked_bracketed_paste_wrappers("00~00~00~hello world01~01~01~")
+            == "hello world"
+        )
+
+    def test_strips_a_repeated_wrapper_pair(self):
+        assert strip_leaked_bracketed_paste_wrappers("[200~[200~hello[201~[201~") == "hello"
+
+    def test_repeats_do_not_widen_the_boundary_rule(self):
+        """Repetition must not make an embedded literal strippable."""
+        text = "literal[200~[200~tag should stay"
+        assert strip_leaked_bracketed_paste_wrappers(text) == text
+
 
 class TestCollapseRepeatedInputArtifacts:
     def test_issue_62557_corruption_tail(self):

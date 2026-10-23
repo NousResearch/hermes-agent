@@ -23,6 +23,7 @@ from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_su
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
+from agent.prompt_refresh import rebuild_for_refresh, requested_epoch, stamp_prompt_epoch, stored_prompt_refresh_epoch
 from agent.prompt_caching import (
     build_prompt_cache_plan,
     effective_cache_ttl,
@@ -852,6 +853,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 persist_tools=True,
             )
             return
+        refresh_epoch = stored_prompt_refresh_epoch(agent, session_row)
+        if refresh_epoch:
+            # `hermes sessions refresh-prompts` ran after this prompt was built. Pin tools[] first
+            # (the refresh is about instructions; the frozen tool array stays), then rebuild once.
+            _restore_pinned_tools(agent, session_row)
+            rebuild_for_refresh(agent, system_message, conversation_history, refresh_epoch)
+            return
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
@@ -902,6 +910,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # surface's own build (the -q footprint, its tool_search catalog) would otherwise be
     # persisted over the pin below. Pinned first, so the prompt describes the tools sent.
     built_for_this_surface = _restore_pinned_tools(agent, session_row)
+    # Read before the build: a refresh request landing mid-build still fires next turn.
+    refresh_epoch = requested_epoch(agent)
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
     if conversation_history:
         record_prompt_rebuild(agent, stored_prompt, stored_state, agent._cached_system_prompt)
@@ -938,6 +948,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         "rebuild the system prompt and miss the prefix cache.",
         persist_tools=True,
     )
+    stamp_prompt_epoch(agent, refresh_epoch)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:

@@ -60,7 +60,7 @@ async def test_standalone_edits_commit_with_owner_guards(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, monkeypatch):
+async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, monkeypatch, caplog):
     app = _standalone_app(tmp_path, monkeypatch)
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         db.create_session('owned', source='cli')
@@ -72,6 +72,8 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
                 refused = await client.patch('/api/sessions/owned',
                                              json={'request_id': 'r1', 'expected_revision': 0, 'title': 'X'})
                 assert refused.status_code == 409, refused.text
+                # uvicorn logs no handled 4xx: the refusal itself must leave a server-side trace (#138915).
+                assert 'session write refused' in caplog.text
                 # A composed gateway whose authority is not up yet never falls back to a writer.
                 app.state.gateway_runner = object()
                 pending = await client.patch('/api/sessions/owned',

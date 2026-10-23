@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import time
 
 _COUNTERS = (("input_tokens", "session_input_tokens"), ("output_tokens", "session_output_tokens"),
              ("cache_read_tokens", "session_cache_read_tokens"),
@@ -57,6 +58,23 @@ def _rate_limit(agent):
     return None
 
 
+def plan_gauge(agent) -> dict | None:
+    """Window plans only: the allowance the status bar shows at a glance (today's, else the one that binds),
+    from the reply headers the agent already tracks — no extra round trip, None for everyone else."""
+    with contextlib.suppress(Exception):
+        state = getattr(agent, "_credits_state", None)
+        if getattr(state, "is_usage_window", False) is True:  # `is True`: a Mock agent's attribute is not a plan
+            binding = state.binding_gauge
+            day = next((g for g in state.gauges if g.id == "day" and g.scope == "all"), None)
+            # A full allowance is what blocks, so it wins over today's; a passed reset is no longer current.
+            gauge = binding if binding is not None and binding.full else (day or binding)
+            reset = getattr(gauge, "resets_at_ms", None)
+            if gauge is not None and not (isinstance(reset, int) and 0 < reset <= int(time.time() * 1000)):
+                return {"id": gauge.id, "label": gauge.label, "used_bp": int(gauge.used_bp),
+                        "resets_at_ms": gauge.resets_at_ms}
+    return None
+
+
 def usage_stats(agent) -> dict:
     """The frozen ``session.usage`` / ``session.stats`` dict; zeros before the first turn built an agent."""
     stats: dict = {key: int(getattr(agent, attr, 0) or 0) for key, attr in _COUNTERS}
@@ -80,6 +98,8 @@ def usage_stats(agent) -> dict:
                  model=str(getattr(agent, "model", "") or ""), provider=str(getattr(agent, "provider", "") or ""),
                  fallback_model=(str(getattr(agent, "model", "") or "") or None)
                  if getattr(agent, "_fallback_activated", False) is True else None)
+    if (gauge := plan_gauge(agent)) is not None:  # absent off a window plan, as on the embedded path
+        stats["plan_gauge"] = gauge
     return stats
 
 
@@ -124,7 +144,7 @@ def tui_usage(stats: dict) -> dict:
         usage.update(context_used=used, context_max=maximum,
                      context_percent=max(0, min(100, round(used / maximum * 100))),
                      context_source=source, context_estimated=source != "provider_usage")
-    if stats.get("context_length") is not None:
+    if stats.get("context_source") is not None:  # a compressor, sized or not (``_get_usage``'s ``if comp``)
         usage["compressions"] = stats.get("compression_count") or 0
     prompt_total, cache_read = stats.get("prompt_tokens") or 0, stats.get("cache_read_tokens") or 0
     if prompt_total > 0 and cache_read > 0:
@@ -134,7 +154,36 @@ def tui_usage(stats: dict) -> dict:
             usage[key] = round(float(stats[source_key]), 1)
     if isinstance(stats.get("active_subagents"), int):
         usage["active_subagents"] = stats["active_subagents"]
+    if isinstance(stats.get("plan_gauge"), dict):
+        usage["plan_gauge"] = stats["plan_gauge"]
     return usage
+
+
+def usage_frame(stats: dict) -> dict:
+    """The ``session.usage`` event payload: BOTH views of the same counters, in one frame.
+
+    ``SessionUsagePayload`` (``tui_gateway/contracts/events.py``) allows either view — the TUI
+    ``usage`` object (``server._start_usage_ticker``) or the session-cumulative counters at the top
+    level — and the readers on the far end want different halves. The classic CLI
+    (``hermes_cli.gateway_connection.SessionState.apply_event``) keeps the top-level counters
+    whenever they are present and ignores the nested view; ACP (``acp_adapter.gateway_server``)
+    reads only the top level; a Desktop bundle older than ``usageFromTick`` reads only
+    ``payload.usage``, so its context / cache-hit / tokens-per-second meters render their empty
+    placeholder for as long as the frame carries the counters alone. Publishing both serves every
+    viewer from one frame, and leaves the counters untouched for every existing consumer.
+
+    ``usage`` is the standard status-bar projection of the embedded ticker's ``server._get_usage``
+    view, with two exceptions: ``dev_credits_spent_micros`` (``HERMES_DEV_CREDITS`` only) is not
+    carried, and ``avg_latency_s`` / ``avg_tps`` are rounded from the counters' two decimals rather
+    than the raw values, so they can differ by 0.1 at a rounding boundary. A Desktop bundle that
+    reads only ``payload.usage`` fills its meters here too. The
+    top-level counters on this event are deprecated: new viewers read ``usage`` (or call
+    ``session.stats`` for the counters). Before they can be dropped, these readers must move off
+    them: the classic CLI's ``SessionState.apply_event`` → ``GatewayAgent.apply_session_usage``,
+    ACP's ``_project_usage`` (``usage_update`` / ``turn_usage``), and the flat branch of
+    ``usageFromTick`` (Desktop and Ink).
+    """
+    return {"usage": tui_usage(stats), **stats}
 
 
 def publish_usage(turn, agent, *, record: bool = False) -> None:
@@ -145,7 +194,7 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
         return
     with contextlib.suppress(Exception):
         stats = usage_stats(agent)
-        turn._publish_execution("session.usage", stats)
+        turn._publish_execution("session.usage", usage_frame(stats))
         if record:
             from gateway.session_results import execution_result
             captured = execution_result.get()

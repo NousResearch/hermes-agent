@@ -32,7 +32,8 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification, is_child_process_notification, should_surface_notification
+from tools.process_registry_notifications import (
+    format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_termination import ProcessTerminationMixin
@@ -84,7 +85,6 @@ WATCH_LIFETIME_MAX_HITS = 8
 # per process) and needs no strike/lifetime breaker. The floor exists so a model cannot turn
 # it into a 5-second poll; the output slice is capped like a completion notice.
 HEARTBEAT_MIN_SECONDS = 60
-HEARTBEAT_OUTPUT_CHARS = 2000
 HEARTBEAT_TICK_SECONDS = 5
 # Reader final drain after a reconcile saw the direct child exit: the exited child's unread tail is at
 # most one pipe buffer (Linux pipe-max-size default 1 MiB), and the reader publishes within one select
@@ -765,9 +765,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             session._heartbeat_total_at_last = session.total_output_chars
         if not output:
             return
-        if len(output) > HEARTBEAT_OUTPUT_CHARS:
-            cut = len(output) - HEARTBEAT_OUTPUT_CHARS
-            output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
+        output, omitted = heartbeat_output_tail(output)
         session._heartbeat_seq += 1
         notification = {
             **self._watch_event_base(session),
@@ -776,6 +774,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "interval": session.heartbeat_seconds,
             "elapsed": int(now - session.started_at) if session.started_at else 0,
             "output": output,
+            "omitted": omitted,
             "started_at": session.started_at,
         }
         _redact_process_result(notification)
@@ -1128,9 +1127,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     @staticmethod
     def _spawn_env(env_vars: dict) -> dict:
-        """Sanitized child env; PYTHONUNBUFFERED so tqdm/datasets-style buffering
-        doesn't hide progress from process(action="poll")."""
-        env = _terminal_env(_sanitize_subprocess_env(os.environ, env_vars))
+        """Sanitized child env from the session's client toolchain; PYTHONUNBUFFERED so poll sees progress."""
+        from agent.session_client_env import toolchain_environ
+        env = _terminal_env(_sanitize_subprocess_env(toolchain_environ(), env_vars))
         env["PYTHONUNBUFFERED"] = "1"
         return env
 
@@ -1292,24 +1291,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
-        try:
-            result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
-            output = result.get("output", "").strip()
-            session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
-            # No PID from the wrapper (syntax error, broken redirect): a failed launch,
-            # not a fake running session.
-            if session.pid is None:
-                session.mark_exited(int(result.get("returncode", -1)) or -1, "failed_start", "failed_start")
-                session.output_buffer = output
-        except Exception as e:
-            session.mark_exited(-1, "failed_start", "failed_start")
-            session.output_buffer = f"Failed to start: {e}"
-        if session.exited:
-            with self._lock:
-                self._prune_if_needed()
-        else:
-            self._track_started(
-                session, self._env_poller_loop, f"proc-poller-{session.id}", (env, log_path, pid_path, exit_path))
+        result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False)
+        output = result.get("output", "").strip()
+        session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
+        # No PID from the wrapper (no bash in the image, sandbox gone, broken redirect): the
+        # command never started, so raise like a failed Popen instead of returning a session.
+        if session.pid is None:
+            raise RuntimeError(f"launch wrapper exited {result.get('returncode')} without a PID: "
+                               f"{output or '(no output)'}")
+        self._track_started(
+            session, self._env_poller_loop, f"proc-poller-{session.id}", (env, log_path, pid_path, exit_path))
         return session
 
     # ----- Reader / Poller Threads -----
@@ -1320,8 +1311,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         blocks until EOF, landing "live" output in one burst at exit. Orphaned-pipe
         guard: a backgrounded grandchild (``node server.js &``) inherits our pipe's write
         end so EOF never arrives while it lives, which would park this thread and never
-        fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
-        after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
+        fire ``notify_on_complete``; on POSIX we wait on an ``fd_wait`` selector (no FD_SETSIZE
+        cap, #94928) and stop draining shortly after the direct child exits.
         Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net (#68915, #8340).
         """
         # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
@@ -1338,6 +1329,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 chunk = self._clean_shell_noise(chunk)
                 head_noise = not chunk.strip()
             self._ingest_output(session, chunk)
+        _waiter = None
         try:
             proc = session.process
             if proc is None or proc.stdout is None:
@@ -1359,20 +1351,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 fd = None
             if not (isinstance(fd, int) and fd >= 0):
                 fd = None
-            if fd is not None:
-                import select as _select
-                session._reader_selectable = True
+            from tools.environments.fd_wait import open_fd_waiter
+            _waiter = open_fd_waiter(fd) if fd is not None else None
+            session._reader_selectable = _waiter is not None
             idle_after_exit = 0
             drained_after_request = 0
             while True:
-                if fd is not None:
-                    try:
-                        # Once a finish is requested, read only what is already buffered: the exited
-                        # child's tail, never an orphaned grandchild's future writes.
-                        wait_s = 0 if session._reader_finish_requested.is_set() else 0.2
-                        ready, _, _ = _select.select([fd], [], [], wait_s)
-                    except (ValueError, OSError):
-                        break  # fd already closed
+                if _waiter is not None:
+                    # Once a finish is requested, read only what is already buffered: the exited
+                    # child's tail, never an orphaned grandchild's future writes.
+                    wait_s = 0 if session._reader_finish_requested.is_set() else 0.2
+                    ready = _waiter.wait(wait_s)
                     if not ready:
                         if session._reader_finish_requested.is_set():
                             break
@@ -1400,6 +1389,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
+            if _waiter is not None:
+                _waiter.close()
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
                 session.process.wait, lambda: session.process.returncode)
@@ -2039,8 +2030,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             exited, finalizing = session.exited, self._reader_finalizing(session)
         lines = full_output.splitlines()
         total_lines = len(lines)
-        # offset=None -> last N lines; an explicit offset=0 means the HEAD (don't
-        # conflate the two via falsiness).
         # An explicit offset=0 means "start from the first line" — previously it was conflated with the
         # default and silently returned the TAIL instead of the head (same falsy-coercion class as the
         # wait() timeout guard; salvaged from PR #60004, credit @isheng-eqi).
@@ -2549,11 +2538,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     # ----- Cleanup / Pruning -----
 
     def _prune_if_needed(self):
-        """Drop expired finished sessions, then the oldest survivor while over
-        MAX_PROCESSES. Must hold _lock. A session whose scope stop is still pending is kept
-        either way: it is kill_all's only handle on a scope that may hold live descendants."""
+        """Drop expired, then oldest-over-cap finished sessions (hold _lock); keep pending scope stops and unpublished notices."""
+        from tools.process_registry_awaiting import retained_for_delivery
         now = time.time()
-        prunable = {sid: s for sid, s in self._finished.items() if not getattr(s, "_scope_stop_pending", False)}
+        prunable = {sid: s for sid, s in self._finished.items()
+                    if not getattr(s, "_scope_stop_pending", False) and not retained_for_delivery(s)}
         expired = [sid for sid, s in prunable.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
         if over_cap and (survivors := [sid for sid in prunable if sid not in expired]):
@@ -2754,7 +2743,8 @@ def _handle_process(args, **kw):
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         handler, redact = _SESSION_ACTIONS[action]
-        result = handler(session_id, args)
+        from tools.process_registry_wait_policy import apply_wait_poll_policy
+        result = apply_wait_poll_policy(action, session_id, handler(session_id, args))
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 

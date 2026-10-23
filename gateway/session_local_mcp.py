@@ -42,8 +42,15 @@ def validate_servers(servers):
     from acp.schema import McpServerStdio, McpServerHttp, McpServerSse
     from pydantic import ValidationError
     kinds = {'stdio': McpServerStdio, 'http': McpServerHttp, 'sse': McpServerSse}
-    if not isinstance(servers, list) or len(servers) > 16 or len(_json(servers)) > 65536:
-        raise RuntimeStoreError('invalid_params')
+    if not isinstance(servers, list):
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail=f'must be a list, got {type(servers).__name__}')
+    if len(servers) > 16:
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail=f'at most 16 servers, got {len(servers)}')
+    if len(_json(servers)) > 65536:
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail='the serialized server list exceeds 65536 bytes')
     names = set()
     try:
         for spec in servers:
@@ -53,7 +60,14 @@ def validate_servers(servers):
                 raise ValueError('duplicate server')
             names.add(model.name)
     except (ValidationError, KeyError, AttributeError, TypeError, ValueError) as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        # Never the message: pydantic's carries ``input_value=`` and a server's argv may hold a credential.
+        if isinstance(exc, ValidationError):
+            why = '; '.join(f"{'.'.join(map(str, err['loc']))}: {err['type']}"
+                            for err in exc.errors(include_input=False))
+        else:
+            why = 'duplicate server' if str(exc) == 'duplicate server' else type(exc).__name__
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail=f'unusable server spec: {why}') from exc
 
 
 def private_editor_request(request, private):
@@ -475,7 +489,8 @@ async def prepare_branch_editor(authority, ref, servers, gate):
     request_id = 'branch:' + uuid.uuid4().hex
     child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
     policy, _ = await asyncio.to_thread(rebind_editor_mcp, authority, child, parent, servers)
-    policy = _child_secret_ref(authority, child, parent, policy)
+    # Hashed as the child is stored: a branch starts at Default (hermes_state_mutation_branch._child_policy).
+    policy = _child_secret_ref(authority, child, parent, replace(policy, edit_approval_policy='ask'))
     return {**gated, 'request_id': request_id, 'child': child, 'parent_editor_mcp_json': parent.editor_mcp_json,
             'editor_mcp_json': policy.editor_mcp_json, 'toolsets': list(policy.toolsets),
             'config_secret_ref': policy.config_secret_ref}, servers

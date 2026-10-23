@@ -91,13 +91,24 @@ test('canonical create retries retain identity', () => {
   const first = protocol.prepare('session.create', params)
   expect(first).toMatchObject({ source: 'gui', cwd: '/tmp', request_id: expect.any(String) })
   expect(protocol.prepare('session.create', { ...params })).toEqual(first)
-  expect(first).not.toHaveProperty('profile')
+  // RT-26: the picked profile rides the create, `default` included (a named launch profile would own it otherwise).
+  expect(first).toHaveProperty('profile', 'default')
   expect(protocol.prepare('session.create', { ...params, fast: true })).toMatchObject({ service_tier: 'priority' })
   const manual = protocol.prepare('session.create', { ...params, model: 'gpt-5', provider: 'custom' })
   expect(manual).toMatchObject({ model: 'gpt-5', provider: 'custom' })
   expect(protocol.prepare('session.create', { ...params, model: 'gpt-5', provider: 'custom' })).toEqual(manual)
   protocol.result('session.create', first, { session_id: 'canonical', stored_session_id: 'canonical' })
   expect(protocol.prepare('session.create', params).request_id).not.toBe(first.request_id)
+})
+
+// TUI-26: a bare stop phrase typed into a LOCAL voice chat (turned on by another viewer) ends the
+// chat on the owner and admits nothing; the owner answers `{voice_stopped: true}`.
+test('a voice_stopped prompt.submit reply is a settled no-admission receipt, never a mismatch', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  const params = protocol.prepare('prompt.submit', { session_id: 's', text: 'stop' })
+  const receipt = protocol.result('prompt.submit', params, { voice_stopped: true, extra: 'dropped' })
+  expect(receipt).toEqual({ voice_stopped: true, session_id: 's', submission_id: params.submission_id })
+  expect(() => protocol.result('prompt.submit', params, { voice_stopped: false })).toThrow('destination')
 })
 
 test('canonical receipts preserve admission identity and replay restores fenced controls', () => {

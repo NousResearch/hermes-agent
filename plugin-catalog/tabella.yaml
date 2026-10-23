@@ -1,0 +1,51 @@
+name: tabella
+repo: https://github.com/dyiapanis/tabella
+sha: b70f2097e551d16adfc2239ed3340956577aa161
+description: >-
+  Document lifecycle for agents in one package: create .docx/.xlsx/.pptx/.pdf/.odt/.ods/.odp
+  from structured JSON or raw HTML/CSS, convert between formats via pandoc + LaTeX, and read
+  any document — anydoc (Rust, office formats and text PDFs to Markdown, in-process) with
+  LiteParse + Tesseract OCR fallback for scanned PDFs and images, plus PDF text editing with
+  output-directory guards. Ships as an Agent Plugins v1 package (auto-discovered plugin.json +
+  mcp.json declaring a stdio MCP server — the client spawns it per the v1 lifecycle,
+  PLUGIN_ROOT/PLUGIN_DATA injected — plus an optional self-host streamable-HTTP server;
+  first run of either bootstraps the dependency venv). The HTTP lane binds to 127.0.0.1 only
+  and requires Bearer auth out of the box: a random token is generated into
+  PLUGIN_DATA on first run (TABELLA_TOKEN overrides); requests with an Origin
+  header or a non-JSON body are rejected, and model-supplied HTML cannot fetch
+  network or local-file resources (data: URIs only — the same fetcher now also
+  guards CSS input, not just HTML). Pandoc invocations are argument-safe:
+  extra_args is allowlisted (--toc, --number-sections, -V key=value) and
+  from_format/to_format are validated against the built-in format-name grammar
+  (^[a-z0-9_]+([+-][a-z0-9_]+)*$), closing pandoc's *.lua reader/writer
+  code-exec path; both servers re-exec into the dependency venv after
+  bootstrap. Disclosure — Python
+  deps (python-docx, openpyxl, python-pptx, weasyprint, odfpy, Pillow, lxml, PyMuPDF,
+  firecrawl-anydoc, liteparse — 10 direct packages, transitives included in a 25-package
+  closure) are pinned to exact versions with sha256 hashes in requirements-pinned.txt and
+  installed by scripts/setup.sh with --require-hashes into a venv under PLUGIN_DATA or
+  ~/.venvs/docs; system packages pandoc and texlive-xetex are required for PDF conversion
+  (weasyprint for HTML->PDF); OCR needs the tesseract binary; all conversion, reading, OCR
+  and PDF editing run locally with no network or telemetry; nothing is uploaded; read,
+  convert, and PDF-edit tools access exactly the filesystem paths you pass; doc_create_document
+  additionally containment-checks its output paths against the configured output directory
+  (escape warns). Linux is the tested platform.
+maintainer: dyiapanis
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/dyiapanis/tabella#readme
+version: "2.0.1"
+readme: true
+platforms:
+  - linux
+capabilities:
+  provides_tools:
+    - doc_read
+    - doc_read_meta
+    - doc_convert
+    - doc_create_document
+    - doc_edit_pdf
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

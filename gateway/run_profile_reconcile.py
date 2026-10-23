@@ -12,12 +12,18 @@ verb (``hermes_cli/profiles.py`` create/delete fire it through the control socke
 ``_profile_reconcile_watcher`` every ``_PROFILE_RESCAN_INTERVAL_SECS`` as the safety net. A served profile whose ``config.yaml``/``.env``
 changed since its adapters were last built is re-scanned too: creators make the profile first and add the
 bot token afterwards, and without this an adapter-less profile would stay adapter-less forever.
+
+The same watcher tick (on every gateway, multiplexed or not) re-syncs a home's shell hooks when its
+``shell-hooks-allowlist.json`` (or ``config.yaml``) changed: a non-TTY gateway skips unconsented hooks, so consent recorded
+afterwards must register them without a restart (#132993). That re-runs hook registration only, never
+an adapter rebuild.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -34,6 +40,13 @@ _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
 _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 
+def _stat_signature(path: Path) -> Optional[tuple]:
+    try:
+        return file_signature(os.stat(path))
+    except OSError:
+        return None
+
+
 def profile_serve_signature(home: Path) -> tuple:
     """Cheap change detector for a served profile's credentials/config: file signature per file."""
     sig = []
@@ -46,6 +59,16 @@ def profile_serve_signature(home: Path) -> tuple:
     return tuple(sig)
 
 
+def _added_profile_blocker(launch: Path) -> Optional[str]:
+    """Why a single-profile boot must not start multiplexing now that a second profile exists: the
+    ``gateway.auto_multiplex_migration: false`` opt-out on the default profile, else boot's preflight."""
+    from hermes_cli.gateway_migrate_guards import auto_migration_opted_out
+    from hermes_cli.gateway_multiplex_mode import AUTO_MIGRATION_OPTED_OUT_REASON, implicit_multiplex_blocker
+    if auto_migration_opted_out(launch):
+        return AUTO_MIGRATION_OPTED_OUT_REASON
+    return implicit_multiplex_blocker()
+
+
 class GatewayProfileReconcileMixin:
     """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
 
@@ -54,6 +77,8 @@ class GatewayProfileReconcileMixin:
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
     _profile_own_gateway_warned: Optional[set[str]] = None
     _profile_probe_timeout_warned: Optional[set[str]] = None
+    _hook_consent_signatures: Optional[dict[str, Optional[tuple]]] = None
+    _single_profile_blocker_logged: Optional[str] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -79,20 +104,59 @@ class GatewayProfileReconcileMixin:
     # ── watcher ───────────────────────────────────────────────────────────────────────────────────
 
     async def _profile_reconcile_watcher(self, interval: float = _PROFILE_RESCAN_INTERVAL_SECS) -> None:
-        """Supervised safety net: rescan ``profiles/`` every ``interval`` seconds (creators signal the
-        control socket for an immediate rescan). Returns at once, never respawned, when multiplexing is off."""
-        if not self._multiplex_on():
-            return
+        """Supervised safety net, every ``interval`` seconds: re-sync shell hooks whose consent changed
+        (every gateway), then rescan ``profiles/`` when multiplexing (creators signal the control
+        socket for an immediate rescan); a gateway standalone only because the host had one profile
+        starts multiplexing here once a second one exists."""
         while self._running:
             await asyncio.sleep(interval)
             if not self._running:
                 return
             try:
-                await self.reconcile_served_profiles(reason="watcher")
+                await self._sync_hooks_on_consent_change()
+                # A standalone gateway never runs a profile reconcile from the watcher, unless it is the
+                # single-profile boot that starts multiplexing in place for a newly created profile.
+                if self._multiplex_on() or await self._multiplex_for_added_profile():
+                    await self.reconcile_served_profiles(reason="watcher")
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("Served-profile reconcile failed; retrying next cycle", exc_info=True)
+
+    async def _sync_hooks_on_consent_change(self) -> None:
+        """Re-sync the shell hooks of each home (launch + served) whose consent allowlist or config
+        changed since the last tick, under that home's scope: hooks consented since start register, revoked ones stop
+        firing. A home seen for the first time syncs once (consent may have landed after startup
+        registered). Hook registration only: adapters and sessions are never touched."""
+        from hermes_constants import get_process_hermes_home
+        homes = {Path(h) for h in (get_process_hermes_home(), *(self._served_profile_homes or {}).values())}
+        self._hook_consent_signatures = await asyncio.to_thread(
+            self._resync_changed_hook_consent, homes, self._hook_consent_signatures or {})
+
+    def _resync_changed_hook_consent(self, homes, seen: dict) -> dict:
+        """Blocking half of ``_sync_hooks_on_consent_change``; returns the signatures it applied. The
+        key covers ``config.yaml`` too: a sync that read an empty/unreadable config applied nothing,
+        so its recovery must re-run it. A failed sync is left unrecorded and retried next tick."""
+        from agent.shell_hooks import ALLOWLIST_FILENAME, sync_from_config
+        from gateway.run import _load_gateway_config, _profile_runtime_scope
+        from gateway.run_turn import GatewayTurnMixin
+        current = {}
+        for home in (h.resolve() for h in homes):
+            sig = tuple(_stat_signature(home / name) for name in (ALLOWLIST_FILENAME, "config.yaml"))
+            if seen.get(str(home), ()) == sig:
+                current[str(home)] = sig
+                continue
+            load = partial(_load_gateway_config, home / "config.yaml")
+            scope = (_profile_runtime_scope(home) if self._multiplex_on()
+                     else GatewayTurnMixin._standalone_launch_scope())
+            try:
+                with scope:
+                    sync_from_config(load)
+            except Exception:  # health: allow BLE001 -- one home's failure never blocks the others
+                logger.warning("shell-hook re-sync failed for %s; retrying next cycle", home, exc_info=True)
+                continue
+            current[str(home)] = sig
+        return current
 
     # ── reconcile ─────────────────────────────────────────────────────────────────────────────────
 
@@ -106,7 +170,7 @@ class GatewayProfileReconcileMixin:
         from gateway.run import MultiplexConfigError
         from hermes_cli.profiles import profiles_to_serve
         result: dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason}
-        if not self._multiplex_on():
+        if not self._multiplex_on() and not await self._multiplex_for_added_profile():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
         if not self._running or self._served_profile_homes is None:
             # Startup enumerates profiles/ itself; a rescan before it finishes has nothing to diff against.
@@ -252,6 +316,8 @@ class GatewayProfileReconcileMixin:
             if isinstance(configs, dict):
                 configs.pop(name, None)
         if added:
+            from gateway.run_runtime import recover_served_native_rows
+            await recover_served_native_rows(self)
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
         return result
@@ -261,6 +327,71 @@ class GatewayProfileReconcileMixin:
         ``initialize_gateway_runtime`` parks into the same published ``name -> reason`` map."""
         from gateway.run_runtime import parked_profile_map
         return list(parked_profile_map(self))
+
+    async def _multiplex_for_added_profile(self) -> bool:
+        """Start multiplexing in place when this gateway booted standalone ONLY because the host had
+        one profile and a second now exists (#141623). Boot settles the mode once, so without this a
+        profile created afterwards (Desktop's New Agent, ``hermes profile create``) was never served:
+        every ticket, session and delete for it was refused until a manual restart.
+
+        No restart and no drain: the launch env is frozen and unscoped secret reads fail closed
+        (``activate_multi_profile_hosting``, the hosted-room precedent), the launch home becomes the
+        first entry of the reservation, and the caller's ordinary hot-serve reconcile serves the new
+        profile. Turns already running keep their bound scope; the launch profile's later work binds
+        its own scope through ``_standalone_launch_scope`` and the re-wired primary handlers. Any
+        other standalone verdict, or a preflight blocker now, leaves the gateway as it is; nothing is
+        latched, so the next rescan or watcher tick retries once the blocker clears. The switch is an
+        automatic migration, so ``gateway.auto_multiplex_migration: false`` holds it back the same way
+        (re-read on every rescan: setting it back to true converges without a restart). True when armed."""
+        from hermes_cli.gateway_multiplex_mode import (
+            AUTO_MIGRATION_OPTED_OUT_REASON, SINGLE_PROFILE_REASON, MultiplexDecision, log_multiplex_decision,
+            record_multiplex_decision, recorded_standalone_reason)
+        from hermes_cli.profiles import profiles_to_serve
+        from hermes_constants import get_default_hermes_root, get_process_hermes_home
+        # Serialized with reconcile: a second rescan (watcher + creator) resuming mid-activation
+        # reset the reservation the first one's reconcile had already grown.
+        async with self._reconcile_lock():
+            if self._multiplex_on():
+                return True  # a concurrent rescan activated while this one waited
+            if not self._running or getattr(self, "_draining", False):
+                return False  # shutdown began: never arm fail-closed secrets under drain-time work
+            if recorded_standalone_reason() not in (SINGLE_PROFILE_REASON, AUTO_MIGRATION_OPTED_OUT_REASON):
+                return False
+            launch = get_process_hermes_home().resolve()
+            if launch != get_default_hermes_root().resolve():
+                return False  # only the default home runs the multiplexer (``_launch_home_may_multiplex``)
+            if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
+                return False
+            blocker = await self._run_housekeeping_in_executor(_added_profile_blocker, launch)
+            if blocker is not None:
+                if blocker != self._single_profile_blocker_logged:
+                    logger.warning("[MULTIPLEX] A new profile exists but this gateway stays standalone: %s", blocker)
+                    self._single_profile_blocker_logged = blocker
+                if blocker == AUTO_MIGRATION_OPTED_OUT_REASON:
+                    # Published so `gateway ensure` refuses the new profile naming the opt-out (Desktop shows
+                    # that detail) instead of "only one profile exists".
+                    record_multiplex_decision(MultiplexDecision(False, "guard", blocker))
+                return False
+            if not self._running or getattr(self, "_draining", False):
+                return False  # shutdown began during the preflight await
+            from hermes_constants import hermes_home_key
+            from tools.mcp_tool_scope import rekey_unscoped_connections
+            from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+            activate_multi_profile_hosting()
+            rekey_unscoped_connections(hermes_home_key(launch))
+            self.config.multiplex_profiles = True
+            self.config._runtime_profile_homes = (("default", launch),)
+            registry = getattr(self, "session_authorities", None)
+            if registry is not None:
+                registry.multiplexed = True
+            for adapter in list(self.adapters.values()):
+                adapter.set_message_handler(self._primary_message_handler())
+                adapter.set_busy_session_handler(self._primary_busy_session_handler())
+                adapter.set_platform_event_handler(self._primary_platform_event_handler())
+            self._record_served_profiles("default", [("default", launch)])
+            log_multiplex_decision(MultiplexDecision(True, "default", "a second profile was created"))
+            logger.info("[MULTIPLEX] A second profile exists; serving every profile from this process (no restart)")
+            return True
 
     async def _serve_profile_runtime(self, name: str, home: Path) -> Optional[str]:
         """Grow the reservation by *home* and build its session authority (boot's per-secondary

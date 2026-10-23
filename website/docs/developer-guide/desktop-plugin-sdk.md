@@ -1223,6 +1223,35 @@ listener can't affect app dispatch. Every `host` door is async-safe: a sync thro
 from an internal helper (e.g. no desktop bridge in a plain browser) becomes a
 rejection your `.catch()` sees, never an error-boundary crash.
 
+#### Live tool progress — `tool.progress` {#tool-progress-event}
+
+While a tool call runs, an MCP server that sends `notifications/progress` (the
+MCP spec's progress channel; Hermes opts in by sending `_meta.progressToken` on
+every `tools/call`) reaches the renderer as a `tool.progress` event. The native
+tool row shows it as `42% · <message>` next to its timer; a plugin can render
+its own view:
+
+```javascript
+ctx.onEvent('tool.progress', ({ session_id, payload }) => {
+  // payload: { tool_id, name, progress, total, percent, message }
+  if (payload.name.startsWith('mcp__meshy__')) showRefineProgress(payload.tool_id, payload.percent, payload.message)
+})
+ctx.onEvent('tool.complete', ({ payload }) => clearRefineProgress(payload.tool_id))
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `tool_id` | `string` | The call id; the same `tool_id` as the call's `tool.start` / `tool.complete` |
+| `name` | `string` | Registered tool name (`mcp__<server>__<tool>`) |
+| `progress` | `number` | The server's raw progress value |
+| `total` | `number \| null` | The server's total, when it sent one |
+| `percent` | `number \| null` | `0`–`100` (rounded, clamped) when `total` is set, else `null` |
+| `message` | `string \| null` | The server's progress message |
+
+Events are throttled to at most one per 500 ms per call; the first update and
+the one that reaches `total` always arrive. They are never stored in the
+transcript, so a reopened session shows only the finished row.
+
 `ctx.os` is the curated OS door — every way a plugin reaches outside the app
 window, in one namespace attributed to your plugin. `ctx.os.notify` posts a
 **native OS notification** — the same Electron pipeline the app's own
@@ -1872,6 +1901,32 @@ address another plugin's API or a core route through it. `PluginRestOptions` is
 on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as
 an accelerator over polling, never a replacement. Every consumer needs a polling
 fallback anyway, since any socket can drop.
+
+How it authenticates depends on the backend: a token-mode remote gets the same
+`?token=` query credential the app's own sockets use; a **local gateway** (no
+static token) authenticates with the native grant your `ctx.rest` calls carry.
+Desktop's main process mints it for the active profile and attaches it as a
+header to that one dial, so it never appears in a URL your code sees. The grant
+is bound to your plugin's namespace and that profile; the gateway refuses the
+upgrade if the plugin is disabled for that profile (the launch profile's setting
+does not apply). A secondary profile's plugin that runs in its plugin host gets
+HTTP 501 instead, because the host does not carry websockets yet.
+
+When the socket gives up (your polling fallback is then the only feed):
+
+- **Keeps retrying**, with jittered backoff capped at 30 s, while Desktop can't
+  resolve the gateway connection or mint the grant yet, or dials fail to open.
+  The client can't tell a refused upgrade from a gateway that is restarting,
+  draining or being re-ensured, so the socket keeps retrying through a restart
+  of any length and reconnects once the gateway answers again.
+- **Stops after 5 in a row** of refusals that don't clear by themselves: Desktop
+  refusing to mint the grant for a permission reason (an unsafe gateway control
+  path or profile home), or your backend accepting the socket and closing it at
+  once. A socket that stays open resets the count.
+- **Starts again** when the active connection or profile changes, with a fresh
+  count, or when the view remounts. A profile switch also moves a live socket:
+  Desktop closes the one bound to the old profile, drops a grant still being
+  minted for it, and dials for the new profile.
 
 For gateway-wide data (not your own namespace), use `host.request` (JSON-RPC) and
 `host.onEvent` (the gateway event stream) instead.

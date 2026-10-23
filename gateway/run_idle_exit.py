@@ -72,8 +72,7 @@ def attached_client(runner):
 
 def _messaging_busy(runner) -> str | None:
     from gateway.config import Platform
-    local = {Platform.LOCAL}
-    live = [p for p in (getattr(runner, "adapters", None) or {}) if p not in local]
+    live = list(getattr(runner, "adapters", None) or {})
     for adapters in (getattr(runner, "_profile_adapters", None) or {}).values():
         live.extend(adapters)
     for pending in (getattr(runner, "_profile_failed_platforms", None) or {}).values():
@@ -81,8 +80,9 @@ def _messaging_busy(runner) -> str | None:
     live.extend(getattr(runner, "_failed_platforms", None) or {})
     config = getattr(runner, "config", None)
     if config is not None:
-        live.extend(p for p, cfg in config.platforms.items() if p not in local and getattr(cfg, "enabled", False))
-    return f"messaging {sorted({getattr(p, 'value', str(p)) for p in live})}" if live else None
+        live.extend(p for p, cfg in config.platforms.items() if getattr(cfg, "enabled", False))
+    live = {getattr(p, 'value', str(p)) for p in live if p != Platform.LOCAL}  # LOCAL never holds the gateway
+    return f"messaging {sorted(live)}" if live else None
 
 
 def _served_homes(runner) -> list[Path]:

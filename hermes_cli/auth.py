@@ -82,6 +82,7 @@ from hermes_cli.auth_codex import (
     _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
     refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
 from hermes_cli.auth_openrouter import _openrouter_pkce_login
+from hermes_cli.guest_handoff import note_store_write
 from hermes_cli.auth_qwen import (
     _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
@@ -631,8 +632,8 @@ def _lock_holder_hint(lock_path: Path) -> str:
             return ""
         except OSError:
             pass  # exists but is not signalable (e.g. EPERM): still a live holder
-    return (f"another hermes process (pid {pid}) probably still holds it "
-            "(e.g. a dashboard or a slow credential refresh)")
+    # No example holder: many stores use this lock; the caller's timeout_message names which one.
+    return f"another hermes process (pid {pid}) probably still holds it"
 
 
 def _stamp_lock_holder_pid(lock_file: Any) -> None:
@@ -861,9 +862,8 @@ def _provider_state_transaction(
             yield auth_store, _provider_state_in(_load_auth_store(source_path), provider_id), source_path
 
 
-def _store_provider_state(
-    auth_store: dict[str, Any], provider_id: str, state: dict[str, Any], *, set_active: bool = True,
-) -> None:
+def _store_provider_state(auth_store: dict[str, Any], provider_id: str, state: dict[str, Any], *, set_active: bool = True) -> None:
+    note_store_write(auth_store, provider_id, state)
     _store_section(auth_store, "providers")[provider_id] = state
     if set_active:
         auth_store["active_provider"] = provider_id

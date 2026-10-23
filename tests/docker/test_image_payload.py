@@ -29,6 +29,26 @@ print('PM interpreter and application dependencies load as hermes')
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_discord_voice_opus_codec_loads_as_runtime_user(built_image: str) -> None:
+    # Mirrors the Discord adapter's _load_opus_codec lookup.
+    probe = """
+import ctypes.util
+import discord
+
+path = ctypes.util.find_library('opus')
+assert path, 'libopus not found; Discord voice playback would be disabled'
+discord.opus.load_opus(path)
+assert discord.opus.is_loaded()
+discord.opus.Encoder()
+"""
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--user", "hermes",
+         "--entrypoint", "/opt/hermes/.venv/bin/python", built_image, "-c", probe],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_dashboard_ships_generated_icon_without_build_environment(built_image: str) -> None:
     probe = """
 from pathlib import Path

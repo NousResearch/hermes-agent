@@ -11,7 +11,6 @@ import contextlib
 import dataclasses
 import logging
 import os
-import shlex
 from typing import Optional, Union
 
 from agent.i18n import t
@@ -1056,10 +1055,8 @@ class GatewaySessionCommandsMixin:
             return self._session_db_unavailable_reply()
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
-        try:
-            parts = shlex.split(event.get_command_args().strip())
-        except ValueError as exc:
-            return t("gateway.resume.parse_error", error=exc)
+        from hermes_cli.session_listing import split_session_args
+        parts = split_session_args(event.get_command_args().strip())
         allow_all = "--all" in parts
         allow_cross_room = "--cross-room" in parts
         name = _strip_resume_name(parts)
@@ -1149,11 +1146,8 @@ class GatewaySessionCommandsMixin:
             return self._session_db_unavailable_reply()
         from hermes_cli.session_listing import (
             format_gateway_session_listing, parse_session_listing_args, query_session_listing)
-        try:
-            include_all, include_unnamed, target, search_query = parse_session_listing_args(
-                event.get_command_args().strip())
-        except ValueError as exc:
-            return t("gateway.resume.parse_error", error=exc)
+        include_all, include_unnamed, target, search_query = parse_session_listing_args(
+            event.get_command_args().strip())
         if search_query == "":
             return t("gateway.sessions.usage_search")
         if target:

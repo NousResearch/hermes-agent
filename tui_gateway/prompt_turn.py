@@ -797,8 +797,9 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
-    if "prelude" in run_params:
-        prelude = _onboarding_prelude(agent, st.history)
+    if "prelude" in run_params and st.resume_user_row_id is None:
+        from agent.onboarding_session import onboarding_prelude
+        prelude = onboarding_prelude(agent, st.history)
         if prelude is not None:
             run_kwargs["prelude"] = prelude
     _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text)
@@ -810,11 +811,14 @@ def _invoke_agent(
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
+            from agent.turn_failure_copy import retry_failure_row_ids
+            agent._resume_failure_row_ids = retry_failure_row_ids(st.history) if st.resume_user_row_id is not None else ()
             agent._resume_user_row_id = st.resume_user_row_id
             try:
                 st.result = agent.run_conversation(run_message, **st.run_kwargs)
             finally:
                 agent._resume_user_row_id = None
+                agent._resume_failure_row_ids = ()
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).

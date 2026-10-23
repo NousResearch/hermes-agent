@@ -75,9 +75,9 @@ def _project(cwd):
 
 def _cli_startup_notices(enabled):
     """The lines main's HermesCLI printed under its banner, computed where the tools run: the toolset
-    availability warning (``cli.py::_show_tool_availability_warnings``) and the Browser Use downgrade
-    notice (``_show_browser_backend_notice``). The classic CLI renders them with its own console."""
-    notices: dict = {"tool_availability_warnings": [], "browser_backend_notice": None}
+    availability warning (``cli.py::_show_tool_availability_warnings``). The classic CLI renders them
+    with its own console."""
+    notices: dict = {"tool_availability_warnings": []}
     with contextlib.suppress(Exception):
         from hermes_cli.tool_availability_notices import (
             current_terminal_backend, filter_to_enabled_toolsets, tool_availability_warning_lines)
@@ -89,9 +89,6 @@ def _cli_startup_notices(enabled):
         notices["tool_availability_warnings"] = tool_availability_warning_lines(
             unavailable, terminal_reason=terminal_backend_unavailable_reason(),
             terminal_backend=current_terminal_backend())
-    with contextlib.suppress(Exception):
-        from tools.browser_use_cli import default_downgrade_notice
-        notices["browser_backend_notice"] = default_downgrade_notice()
     return notices
 
 

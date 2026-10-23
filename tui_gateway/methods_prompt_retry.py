@@ -11,7 +11,7 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 _RETRY_FIELDS = (
-    "_row_id", "role", "content", "api_content", "tool_calls", "tool_call_id",
+    "_row_id", "display_kind", "data_use", "role", "content", "api_content", "tool_calls", "tool_call_id",
     "reasoning", "reasoning_content", "reasoning_details", "reasoning_opaque",
     "reasoning_text", "effect_disposition", "display_metadata", "extra_content", "_anthropic_content_blocks", "bedrock_content_blocks",
 )
@@ -27,6 +27,9 @@ def _retry_history_signature(history):
 
 def _retry_context_is_durable(history):
     """Replayed screenshots depend on external bytes/config, beyond the durable row signature."""
+    from agent.turn_failure_copy import retry_failure_row_ids
+    if retry_failure_row_ids(history) is None:
+        return False
     return not any(row.get("role") == "user" and isinstance(row.get(key), str)
                    and "[screenshot" in row[key]
                    for row in history for key in ("content", "api_content"))

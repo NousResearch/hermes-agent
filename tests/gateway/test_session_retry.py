@@ -11,7 +11,7 @@ from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, ToolCall, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['retry', 'regenerate', 'operator', 'changed', 'restart', 'storage', 'queued', 'follower', 'image-replay'])
+@pytest.mark.parametrize('mode', ['retry', 'retry-twice', 'regenerate', 'operator', 'changed', 'restart', 'storage', 'queued', 'follower', 'image-replay'])
 async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypatch, mode):
     import model_tools
     from gateway.run import GatewayRunner
@@ -20,6 +20,23 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
     from gateway.session_controls import AuthorityConnection
     from run_agent import AIAgent
 
+    from gateway import session_onboarding
+    original_arm = session_onboarding.arm_onboarding_turn
+
+    def arm(*args):
+        from gateway.session_retry import continuation
+        assert continuation.get() is None, "Retry repeated onboarding actions"
+        return original_arm(*args)
+
+    monkeypatch.setattr(session_onboarding, 'arm_onboarding_turn', arm)
+    import agent.delegation_backends as delegation
+    original_rebuild = delegation.apply_requested_tool_rebuild
+
+    def rebuild(agent):
+        assert getattr(agent, '_resume_user_row_id', None) is None, "Retry changed tool configuration"
+        return original_rebuild(agent)
+
+    monkeypatch.setattr(delegation, 'apply_requested_tool_rebuild', rebuild)
     effects = []
     ingress_effects = []
     failed = []
@@ -41,6 +58,12 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
         if not failed:
             failed.append(True)
             return Error(429, 'rate limit exceeded')
+        if mode == 'retry-twice' and len(failed) == 1:
+            failed.append(True)
+            return ToolCall('terminal', {'command': 'another count'}, text='Counting again')
+        if mode == 'retry-twice' and len(failed) == 2:
+            failed.append(True)
+            return Error(429, 'rate limit exceeded again')
         return Text('finished using count=1')
 
     original_run = AIAgent.run_conversation
@@ -123,6 +146,9 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
             assert snapshot['result']['inflight']['retry_token'] == token
             assert snapshot['result']['inflight']['user'] == 'count once then finish'
             before = authority.db.get_messages(authority.physical_target(ref))
+            from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
+            assert before[-1]['display_kind'] == FAILED_TURN_DISPLAY_KIND
+            boundary_id = before[-1]['id']
             if mode == 'queued':
                 monkeypatch.setattr(authority, '_schedule', lambda *args: None)
                 queued = await rpc('prompt.submit', session_id=sid, input_id='new', text='new intent')
@@ -184,7 +210,19 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
             duplicate = await rpc('prompt.retry', session_id=sid, retry_token=token)
             assert 'error' in duplicate, duplicate
             await asyncio.wait_for(authority.sessions[sid].task, 30)
-            assert effects == [1] * (2 if mode == 'regenerate' else 1)
+            if mode == 'retry-twice':
+                requests = provider.main_requests()
+                assert requests[-3]['messages'] == requests[-2]['messages']
+                terminal = [f['params']['payload'] for f in transport.frames
+                            if f.get('params', {}).get('type') == 'message.complete']
+                next_token = terminal[-1]['retry_token']
+                assert next_token != token
+                response = await rpc('prompt.retry', session_id=sid, retry_token=next_token)
+                assert 'result' in response, response
+                await asyncio.wait_for(authority.sessions[sid].task, 30)
+            assert effects == [1] * (2 if mode in {'regenerate', 'retry-twice'} else 1)
+            if mode != 'regenerate':
+                assert any(row['id'] == boundary_id for row in authority.db.get_messages(authority.physical_target(ref)))
             assert ingress_effects == []  # admitted viewer input never repeats the ingress hook
             terminal = [f['params']['payload'] for f in transport.frames
                         if f.get('params', {}).get('type') == 'message.complete']

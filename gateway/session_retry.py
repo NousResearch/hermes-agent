@@ -135,11 +135,14 @@ def resume_agent(agent):
         yield
         return
     resumed_history(agent)  # recheck immediately before invoking the model
+    from agent.turn_failure_copy import retry_failure_row_ids
+    agent._resume_failure_row_ids = retry_failure_row_ids(scope[2]['history'])
     agent._resume_user_row_id = scope[2]['user_row_id']
     try:
         yield
     finally:
         agent._resume_user_row_id = None
+        agent._resume_failure_row_ids = ()
 
 
 def retry_inflight(live, pending=()):

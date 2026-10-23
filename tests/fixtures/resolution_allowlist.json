@@ -333,11 +333,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/setup_terminal.py",
-    "symbol": "_setup_backend_singularity",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/setup_tts.py",
     "symbol": "_install_neutts_deps",
     "kind": "bare_which"
@@ -364,7 +359,7 @@
   },
   {
     "path": "hermes_cli/tools_config_post_setup.py",
-    "symbol": "_post_setup_agent_browser",
+    "symbol": "_post_setup_chromium",
     "kind": "bare_which"
   },
   {
@@ -406,11 +401,6 @@
   {
     "path": "hermes_cli/web_routers/git.py",
     "symbol": "_probe_gh_auth",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/web_routers/tools.py",
-    "symbol": "_probe_singularity_backend",
     "kind": "bare_which"
   },
   {
@@ -456,16 +446,6 @@
   {
     "path": "tools/browser_lightpanda.py",
     "symbol": "find_lightpanda_binary",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/browser_tool_install.py",
-    "symbol": "_chromium_installed",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/browser_tool_install.py",
-    "symbol": "_find_agent_browser",
     "kind": "bare_which"
   },
   {
@@ -519,11 +499,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/environments/singularity.py",
-    "symbol": "_find_singularity_executable",
-    "kind": "bare_which"
-  },
-  {
     "path": "tools/environments/ssh.py",
     "symbol": "_ensure_ssh_available",
     "kind": "bare_which"
@@ -571,11 +546,6 @@
   {
     "path": "tools/skillevaluator_scan.py",
     "symbol": "run_tier1_scan",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/terminal_tool_backends.py",
-    "symbol": "<module>",
     "kind": "bare_which"
   },
   {

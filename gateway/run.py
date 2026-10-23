@@ -2006,7 +2006,6 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
         "docker_image": "TERMINAL_DOCKER_IMAGE",
         "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
@@ -2898,15 +2897,14 @@ from gateway.session_worker_construct import checkpoint_agent_kwargs as _checkpo
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml (single source of truth), else temporary AIAgents (e.g. /compress)
-    use the hardcoded default, which fails under openai-codex."""
-    cfg = config if config is not None else _load_gateway_config()
-    model_cfg = cfg.get("model", {})
-    if isinstance(model_cfg, str):
-        return model_cfg
-    elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+    """The profile's model when nothing else names one: config.yaml (single source of truth), else the
+    claimed welcome trial's. Temporary AIAgents (e.g. /compress) otherwise use the hardcoded default,
+    which fails under openai-codex."""
+    from hermes_cli.anon_auth import trial_model
+    model_cfg = (config if config is not None else _load_gateway_config()).get("model", {})
+    if isinstance(model_cfg, dict):
+        model_cfg = model_cfg.get("default") or model_cfg.get("model")
+    return (model_cfg if isinstance(model_cfg, str) else "") or trial_model()
 
 
 def _channel_override_lookup_keys(
@@ -3982,11 +3980,10 @@ class GatewayRunner(
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
         _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
-        # #98619: an admitted API turn carries its session-id provenance in the admission settings,
-        # and its rebound browser-controller identity; every other platform leaves both undeclared.
+        # #98619: an admitted API turn carries its session-id provenance in the admission settings;
+        # every other platform leaves it undeclared.
         from gateway.session_api_turn import api_session_vars
-        _api_vars = api_session_vars()
-        _history_delivery = _api_vars.pop("session_history_delivery", None)
+        _history_delivery = api_session_vars().get("session_history_delivery")
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -4005,7 +4002,7 @@ class GatewayRunner(
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery, **_api_vars)
+            cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

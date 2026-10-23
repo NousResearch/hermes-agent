@@ -277,8 +277,8 @@ def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
         "covered": {},
     }
     assert [call[0] for call in calls] == [
-        [sys.executable, "-m", "hermes_cli.main", "-p", "coder", "gateway", "restart", "--interrupt"],
-        [sys.executable, "-m", "hermes_cli.main", "-p", "default", "gateway", "restart", "--interrupt"],
+        [sys.executable, "-m", "hermes_cli.main", "-p", "coder", "gateway", "restart", "--interrupt", "--detach"],
+        [sys.executable, "-m", "hermes_cli.main", "-p", "default", "gateway", "restart", "--interrupt", "--detach"],
     ]
     for _, kwargs in calls:
         assert kwargs["stdin"] is subprocess.DEVNULL
@@ -466,4 +466,4 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
     restarts = [json.loads(line) for line in ledger.read_text().splitlines()]
     assert [argv[argv.index("-p") + 1] for argv in restarts] == ["coder", "default"]
     for argv in restarts:
-        assert argv[-3:] == ["gateway", "restart", "--interrupt"]
+        assert argv[-4:] == ["gateway", "restart", "--interrupt", "--detach"]

@@ -689,9 +689,8 @@ def _managed_runtime_path_entries() -> list[str]:
     itself, so on a machine where Hermes provisioned its own toolchain a
     command the agent runs resolves a system copy instead — or nothing at all:
 
-    - the pm store's node/npm entries — installed to satisfy the desktop and
-      browser toolchain. ``tools/browser_tool.py`` already does this for its own
-      subprocesses; the agent's shell deserves the same.
+    - the pm store's node/npm entries — installed to satisfy the desktop
+      toolchain; the agent's shell deserves the same.
     - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
       and nothing has ever put that directory on PATH, so an install whose only
       uv is the managed one looks uv-less to both the agent and the model.
@@ -1009,7 +1008,7 @@ class LocalEnvironment(BaseEnvironment):
     the session snapshot preserves exported env vars across calls (unless
     ``persistent=False``); CWD persists via the stdout marker."""
 
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
     _profile_scoped_passthrough = True
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.

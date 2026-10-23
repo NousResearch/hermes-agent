@@ -18,7 +18,6 @@ export interface NoticeTranslations {
     /** reload.mcp left the chat's servers as they were: a turn was running or waiting. */
     mcpReloadDeferred: string
     /** A reloaded MCP server the chat does not run (no_mcp, an explicit pick, a platform allowlist). */
-    mcpReloadNotInChat: (server: string) => string
     /** Configured MCP servers that did not connect on reload. */
     mcpReloadUnavailable: (servers: string) => string
     /** An edit/restore/regenerate whose target compaction archived: the owner refused the rewind. */
@@ -33,6 +32,8 @@ export interface NoticeTranslations {
 
   /** Once per computer, after a timed sleep interrupted a turn with keep-awake off. */
   keepAwakeOffer: { title: string; message: string; action: string }
+  /** The sign-in offer after apps connect on the free tier without the welcome trial. */
+  connectorOffer: { heading: string; body: string }
 }
 
 export interface SessionCommandNotices {

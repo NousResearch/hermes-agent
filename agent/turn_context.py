@@ -1155,6 +1155,10 @@ def build_turn_context(
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
     active_system_prompt = agent._cached_system_prompt
+    # `/delegation <backend> --now`: after the pin restore, so a fresh agent rebuilds too.
+    from agent.delegation_backends import apply_requested_tool_rebuild
+    if not resuming:
+        apply_requested_tool_rebuild(agent)
 
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
     # gate as the protocol section); gate is session-stable, so cache-safe.
@@ -1288,6 +1292,12 @@ def build_api_messages(
     turn_now = agent._current_turn_timestamp
     split = current_turn_user_idx if has_current else 0
     canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
+    if getattr(agent, "_resume_user_row_id", None) is not None:
+        # The authenticated continuation excludes its proven durable failure notices.
+        # Keep the canonical list intact for persistence and the next ordinary user turn.
+        failure_row_ids = getattr(agent, "_resume_failure_row_ids", ())
+        if failure_row_ids:
+            canonical_messages = [row for row in canonical_messages if row.get("_row_id") not in failure_row_ids]
 
     api_messages = []
     for idx, msg in enumerate(canonical_messages):

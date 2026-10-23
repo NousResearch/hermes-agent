@@ -50,6 +50,9 @@ AUTOMATION_INTERRUPTED_NOTICE = (
     "An automated delivery was interrupted and was not run again. Some "
     "actions may already have run; verify their effects."
 )
+# Durable tail roles a failed turn leaves open: its accepted ``user`` row, or the ``tool`` row of a
+# call that ran before the failure. An ``assistant`` tail is already closed (a reply or a boundary).
+OPEN_TURN_TAIL_ROLES = frozenset({"user", "tool"})
 # ``messages.display_kind`` of that row: display-only (stripped before every provider request),
 # so renderers show a Hermes notice and room pollers never read it as the model's reply.
 FAILED_TURN_DISPLAY_KIND = "failed_turn"
@@ -73,6 +76,28 @@ def failed_turn_notice(turn_messages: Any) -> str:
         ):
             return PARTIAL_FAILED_TURN_NOTICE
     return FAILED_TURN_NOTICE
+
+
+def retry_failure_row_ids(history: list) -> tuple[int, ...] | None:
+    """Prove the Hermes failure boundaries in this user turn; None refuses continuation.
+
+    A continuation keeps these display rows in storage, but omits them on every model
+    request, including after another rate limit. Earlier user turns remain untouched.
+    Its caller authenticates the complete transcript before using these row addresses.
+    """
+    user = next((i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)
+    ids = []
+    for index, row in enumerate(history):
+        if user is None or index <= user or row.get("display_kind") != FAILED_TURN_DISPLAY_KIND:
+            continue
+        surface = (row.get("display_metadata") or {}).get("error_surface")
+        if (type(row.get("_row_id")) is not int or row.get("role") != "assistant" or row.get("tool_calls")
+                or row.get("content") != failed_turn_notice(history[user:index])
+                or not isinstance(surface, dict) or surface.get("layer") != "provider"
+                or surface.get("code") != "rate_limit"):
+            return None
+        ids.append(row["_row_id"])
+    return tuple(ids)
 
 
 def provider_label_for(provider: Any) -> str:
@@ -216,6 +241,12 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "didn't answer and retrying won't help. Check the account with the provider, or switch "
         "models with /model."
     ),
+    FailoverReason.data_policy_denied.value: (
+        "This conversation holds a result from a connected app that may only go to a model that "
+        "does not train on your data, and '{model}' on {label} can't promise that. Switch models "
+        "with /model, run /compress to summarize the result away, or start fresh with /new. If you "
+        "are on the free tier, no free model can take this content: upgrade, or use /compress or /new."
+    ),
     FailoverReason.upstream_blocked.value: (
         "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
@@ -260,6 +291,9 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (
         "the AI model service refused the request because of a policy on the account"
+    ),
+    FailoverReason.data_policy_denied.value: (
+        "{possessive} context holds a connected-app result that needs a model that does not train on data"
     ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",

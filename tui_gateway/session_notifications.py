@@ -430,27 +430,32 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
         return slug, f"slug:{slug}"
 
 
-def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
+def _kb_poll_board(_kb, slug: str, session_key: str, notifier_profile: str) -> list[tuple[str, str]]:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
     writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
     falls through so delivery is preserved)."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
+    # Unstamped legacy TUI rows still belong to their exact local session key; there is no gateway adapter for them.
     with contextlib.suppress(Exception):
-        if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
+        if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key, thread_id="",
+                                  notifier_profiles={notifier_profile}, include_unowned=True) == 0:
             return []
     try:
         conn = _kbc.connect(board=slug)
     except Exception:
         return []
-    texts: list = []
+    deliveries: list[tuple[str, str]] = []
     with contextlib.closing(conn):
         try:
-            subs = _kbn.list_notify_subs(conn)
+            subs = _kbn.list_notify_subs(conn, notifier_profiles={notifier_profile}, include_unowned=True)
         except Exception:
             return []
         for sub in subs:
             if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") != session_key:
+                continue
+            # Local sessions have no thread delivery surface. Never consume an anchor we cannot present to.
+            if sub.get("thread_id"):
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
@@ -463,19 +468,21 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             for ev in events:
                 text = _format_kanban_event_text(sub, task, ev, slug)
                 if text:
-                    texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
+                    deliveries.append((DiagnosticText(text) if diagnostic_event(ev) else text,
+                                       sub.get("delivery_mode") or "notify"))
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":
                 with contextlib.suppress(Exception):
                     _kbn.remove_notify_sub(conn, **sub_ident)
-    return texts
+    return deliveries
 
 
-def _collect_kanban_notifications(session: dict) -> list:
-    """Claim unseen terminal kanban events for this session's ``platform="tui"`` subscriptions (``kanban_create``
+def _collect_kanban_notifications(session: dict) -> list[tuple[str, str]]:
+    """Return (text, delivery_mode) for unseen terminal events on this session's ``platform="tui"`` subscriptions (``kanban_create``
     auto-subscribes with ``chat_id=HERMES_SESSION_KEY``; no "tui" messaging adapter exists, so this poller is the
-    delivery path). Same atomic cursor-claim as the gateway notifier: exactly-once even if a gateway polls the same DB.
+    delivery path). The atomic cursor claim prevents competing pollers from claiming the same event;
+    it is not a durable delivery receipt.
 
     See #59890.
     """
@@ -497,7 +504,9 @@ def _collect_kanban_notifications(session: dict) -> list:
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
+    from hermes_constants import profile_name_for_home
+    profile = profile_name_for_home(session.get("profile_home")) or _current_profile_name()
+    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, profile)]
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:
@@ -506,19 +515,22 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
 
 
 def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
-    """One kanban poll: emit new texts, buffer them, and run the buffered batch as a turn if idle. Events are
+    """One kanban poll: present passive notifications; buffer only requested wakes for an idle turn. Events are
     cursor-claimed (never re-queued), so they wait in the buffer instead of dropping the agent turn."""
     try:
-        texts = _collect_kanban_notifications(session)
+        deliveries = _collect_kanban_notifications(session)
     except Exception as exc:
         _notif_log_failure("kanban notification poll failed", exc)
-        texts = []
-    for text in texts:
+        deliveries = []
+    for text, mode in deliveries:
+        if mode == "wake":
+            continue
         from gateway.warning_notifications import DiagnosticText, render_notification
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
                             platform="tui", diagnostic=isinstance(text, DiagnosticText))
-    if texts:
-        session.setdefault("_kanban_pending", []).extend(texts)
+    wakes = [text for text, mode in deliveries if mode in {"notify+wake", "wake"}]
+    if wakes:
+        session.setdefault("_kanban_pending", []).extend(wakes)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
         return
     with session["history_lock"]:
@@ -728,7 +740,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     delivery path for platform="tui" rows.
 
     Also polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` for this session's TUI kanban
-    subscriptions and delivers terminal task events the same way (status.update + agent turn) — the delivery
+    subscriptions and delivers terminal task events according to their saved passive/wake mode — the delivery
     path tools/kanban_tools.py documents for platform="tui" rows (issue #59890).
     """
     from tools import async_delegation

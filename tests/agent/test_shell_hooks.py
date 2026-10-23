@@ -745,3 +745,78 @@ def test_unroutable_script_hook_names_the_remediation(tmp_path):
 
     assert result["returncode"] is None
     assert "interpreter" in result["error"] and "bash" in result["error"]
+
+
+# ── .py hook interpreter after a managed-runtime rotation ────────────────
+# _windows_script_argv takes the platform as data (its caller gates on IS_WINDOWS), so the
+# interpreter-picking branches are host-independent: sys.executable / shutil.which are monkeypatched
+# as data, never the platform. The real Windows spawn path stays covered by the marked tests above.
+
+
+class TestWindowsPythonInterpreterFallback:
+    """#134514: ``hermes update`` rotates the managed runtime by renaming ``tools/python-<ver>``
+    away, so a long-lived gateway's ``sys.executable`` can point at a path that no longer exists.
+    A ``fail_closed`` .py hook spawned with that dead path then refuses every ``terminal`` call.
+    The fix hands the hook to a live PATH python instead, mirroring the bash branch's
+    ``_find_bash`` — availability is widened, block policy never is."""
+
+    def _py_hook(self, tmp_path: Path) -> str:
+        return str(_write_script(tmp_path, "hook.py", "import json\n"))
+
+    def test_live_sys_executable_is_kept(self, tmp_path, monkeypatch):
+        live = tmp_path / "python.exe"
+        live.write_bytes(b"x")
+        monkeypatch.setattr(shell_hooks.sys, "executable", str(live))
+        monkeypatch.setattr(
+            shell_hooks.shutil, "which", lambda name: "/never/consulted"
+        )
+        assert shell_hooks._windows_script_argv([self._py_hook(tmp_path)]) == [
+            str(live),
+            self._py_hook(tmp_path),
+        ]
+
+    def test_rotated_runtime_falls_back_to_path_python(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            shell_hooks.sys, "executable", str(tmp_path / "rotated" / "python.exe")
+        )
+        path_python = tmp_path / "path-python.exe"
+        path_python.write_bytes(b"x")
+        monkeypatch.setattr(
+            shell_hooks.shutil,
+            "which",
+            lambda name: str(path_python) if name == "python" else None,
+        )
+        hook = self._py_hook(tmp_path)
+        assert shell_hooks._windows_script_argv([hook]) == [str(path_python), hook]
+
+    def test_store_alias_is_not_a_fallback(self, tmp_path, monkeypatch):
+        """The WindowsApps python.exe alias is a 0-byte reparse point that opens the Store
+        instead of running the hook — treating it as a hit would trade a loud lockout for
+        a silent no-op guard."""
+        dead = str(tmp_path / "rotated" / "python.exe")
+        monkeypatch.setattr(shell_hooks.sys, "executable", dead)
+        stub = tmp_path / "python.exe"
+        stub.write_bytes(b"")
+        monkeypatch.setattr(shell_hooks.shutil, "which", lambda name: str(stub))
+        assert shell_hooks._windows_script_argv([self._py_hook(tmp_path)]) == [
+            dead,
+            self._py_hook(tmp_path),
+        ]
+
+    def test_no_path_python_keeps_the_stale_executable(self, tmp_path, monkeypatch):
+        """Without any usable fallback the pre-fix behaviour stands: the spawn fails with
+        "command not found" and a fail_closed hook still blocks."""
+        dead = str(tmp_path / "rotated" / "python.exe")
+        monkeypatch.setattr(shell_hooks.sys, "executable", dead)
+        monkeypatch.setattr(shell_hooks.shutil, "which", lambda name: None)
+        assert shell_hooks._windows_script_argv([self._py_hook(tmp_path)]) == [
+            dead,
+            self._py_hook(tmp_path),
+        ]
+
+    def test_non_py_suffixes_stay_unrouted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            shell_hooks.sys, "executable", str(tmp_path / "rotated" / "python.exe")
+        )
+        argv = [str(_write_script(tmp_path, "hook.rb", "puts 1\n"))]
+        assert shell_hooks._windows_script_argv(argv) == argv

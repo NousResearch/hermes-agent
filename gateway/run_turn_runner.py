@@ -19,6 +19,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.auxiliary_unavailable import ProviderNotConfiguredError
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
@@ -176,6 +177,22 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
         # since a deleted bundle or unreadable store fails the same way until the host is fixed.
         return t("gateway.errors.generic_failed"), "host_error", False
     return t("gateway.errors.no_credentials"), auth_permanent, False
+
+
+def _free_tier_check_failure(runtime_kwargs: dict, platform: Platform, stream_consumer=None) -> Optional[dict]:
+    """The failed turn for an agent that could not be built because "auto" stood a keyless runtime in for
+    the free tier's pending browser check and no fallback entry could serve. None when the route that
+    failed is not that stand-in (a channel override or ``/model`` replaced it): its own error stands."""
+    from agent.turn_failure_copy import stamp_failure
+    from gateway.run_turn_prepare import free_tier_check_behind
+    check = free_tier_check_behind(runtime_kwargs)
+    if check is None:
+        return None
+    if stream_consumer is not None:
+        stream_consumer.finish()  # nothing will stream: release the consumer task now, not on its timeout
+    text, reason, retryable = _resolution_failure_reply(check, platform)
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": str(check)}, reason, retryable)
 
 
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
@@ -1296,9 +1313,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         runner._reasoning_config = reasoning_config
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
-        agent, reused_cached_agent = self._resolve_turn_agent(
-            turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
-        )
+        try:
+            agent, reused_cached_agent = self._resolve_turn_agent(
+                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+            )
+        except ProviderNotConfiguredError:
+            if (failed := _free_tier_check_failure(runtime_kwargs, ctx.source.platform, stream_consumer)) is None:
+                raise
+            return failed
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice

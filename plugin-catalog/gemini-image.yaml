@@ -1,0 +1,16 @@
+name: gemini-image
+repo: https://github.com/semirkabir/hermes-plugin-gemini-image
+sha: 80798cc90406e61d30998d9e9b64c98e65ce61c2
+description: Native Google AI Studio Gemini (Nano Banana) image generation and editing using your own GOOGLE_API_KEY or GEMINI_API_KEY.
+maintainer: semirkabir
+tier: community
+category: tools
+docs_url: https://github.com/semirkabir/hermes-plugin-gemini-image#readme
+version: "1.0.0"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GOOGLE_API_KEY

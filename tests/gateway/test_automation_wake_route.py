@@ -8,9 +8,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from gateway.session_identity import replace_source
-from hermes_state_runtime import get_session_admission, list_session_admissions
+from hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
 from tests.gateway.test_automation_compression_media import _admit_human, _discord_owner
-from tests.gateway.test_automation_notification_category import _authority, _native_owner
+from tests.gateway.test_automation_notification_category import _SOURCE, _authority, _native_owner
 
 
 @pytest.mark.asyncio
@@ -29,6 +29,21 @@ async def test_wake_admits_as_the_committed_turn_when_the_origin_drifted(tmp_pat
         human, wake = rows[0]['payload']['native_text_v1'], rows[-1]['payload']['native_text_v1']
         assert wake['source'] == {k: v for k, v in human['source'].items() if k != 'message_id'}
         assert wake['provenance'] == human['provenance']
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('thread_id', [None, '9'])
+async def test_wake_refuses_another_user_on_a_per_user_route(tmp_path, monkeypatch, thread_id):
+    fields = {**_SOURCE, 'chat_type': 'group', 'thread_id': thread_id}
+    _runner, authority, adapter, _source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', fields, group_sessions_per_user=True, thread_sessions_per_user=True)
+    try:
+        other = adapter.build_source(**{**fields, 'user_id': '7'})
+        event = MessageEvent(text='notice', source=other, internal=True, metadata=dict(metadata))
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await authority.admit_automation(adapter, event, 'notice')
     finally:
         authority.db.close()
 

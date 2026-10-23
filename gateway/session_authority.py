@@ -1132,30 +1132,33 @@ class SessionAuthority:
         route; None when the drain must exit (paused, or stopping with committed rows left queued)."""
         backoff, conflicted = 0.0, None
         while True:
+            # The refusal handling's own reads and writes share the claim's storage retry: the retry's
+            # claim conflicts on the same head again (``conflicted`` kept) and refuses that exact row.
             try:
-                row, first = await self._claim_next(ref, live)
-            except RuntimeStoreError as exc:
-                if exc.reason == 'unknown_execution':
-                    # An automation turn nobody is waiting on settles interrupted (GW-10); only a
-                    # person's lost turn keeps the FIFO paused for them to resolve.
-                    from gateway.session_unattended_unknown import settle_unattended_unknown
-                    if await settle_unattended_unknown(self, ref):
-                        continue
-                if exc.reason == 'admission_conflict':
-                    # A verdict on the head alone (its route or binding moved under it) that every drain
-                    # repeats: pausing behind it strands the FIFO for good. Refused only once the same head
-                    # conflicted twice, read after each: never a successor a cancel advanced the FIFO to.
-                    head = next((row['admission_id'] for row in list_session_admissions(
-                        self.db, session_id=ref.session_id) if row['status'] == 'queued'), None)
-                    if head is not None and head != conflicted:
-                        conflicted = head
-                        continue
-                    if head is not None and await self._refuse_head(ref, head, exc.reason):
-                        continue
-                import logging
-                logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
-                self._pause(ref, exc.reason)
-                return None
+                try:
+                    row, first = await self._claim_next(ref, live)
+                except RuntimeStoreError as exc:
+                    if exc.reason == 'unknown_execution':
+                        # An automation turn nobody is waiting on settles interrupted (GW-10); only a
+                        # person's lost turn keeps the FIFO paused for them to resolve.
+                        from gateway.session_unattended_unknown import settle_unattended_unknown
+                        if await settle_unattended_unknown(self, ref):
+                            continue
+                    if exc.reason == 'admission_conflict':
+                        # A verdict on the head alone (its route or binding moved under it) that every drain
+                        # repeats: pausing behind it strands the FIFO for good. Refused only once the same
+                        # head conflicted twice, read after each: never a successor a cancel advanced to.
+                        head = next((row['admission_id'] for row in list_session_admissions(
+                            self.db, session_id=ref.session_id) if row['status'] == 'queued'), None)
+                        if head is not None and head != conflicted:
+                            conflicted = head
+                            continue
+                        if head is not None and await self._refuse_head(ref, head, exc.reason):
+                            continue
+                    import logging
+                    logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
+                    self._pause(ref, exc.reason)
+                    return None
             except (OSError, sqlite3.OperationalError) as exc:
                 # A writer held past its patience or a full disk is transient, and every _schedule
                 # caller is event-driven: a dead drain would strand the committed head and hang its

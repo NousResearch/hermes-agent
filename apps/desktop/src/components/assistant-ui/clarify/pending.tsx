@@ -79,7 +79,8 @@ export function ClarifyToolPending({
   const [submitting, setSubmitting] = useState(false)
   const formRef = useRef<HTMLFormElement | null>(null)
   const disabled = submitting || !ready
-  const interaction = useClarifyPresentation(formRef, request, disabled, undelivered)
+
+  useClarifyPresentation(formRef, request, disabled, undelivered)
 
   // Locked answers (a reconnect replay, or text typed in the composer) stage
   // their questions. A newly locked answer replaces what the card staged, so
@@ -176,7 +177,6 @@ export function ClarifyToolPending({
   const canConfirm = answeredCount > 0
 
   const confirmAll = useCallback(async () => {
-    interaction()
     if (!request || !gateway) {
       notifyError(
         new Error(request ? copy.gatewayDisconnected : copy.notReady),
@@ -220,10 +220,9 @@ export function ClarifyToolPending({
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
-  }, [copy, gateway, interaction, onAnswered, questions, request, stagedAnswer])
+  }, [copy, gateway, onAnswered, questions, request, stagedAnswer])
 
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
-    interaction()
     setStaged(current => {
       const stage = current[question.qid] ?? emptyStage
 
@@ -237,10 +236,9 @@ export function ClarifyToolPending({
       // single-select stays mutually exclusive.
       return { ...current, [question.qid]: { choices: next, draft: question.multiSelect ? stage.draft : '' } }
     })
-  }, [interaction])
+  }, [])
 
   const draftFor = useCallback((question: ClarifyQuestion, value: string) => {
-    interaction()
     setStaged(current => {
       const stage = current[question.qid] ?? emptyStage
 
@@ -248,10 +246,9 @@ export function ClarifyToolPending({
       // edited; single-select stays mutually exclusive.
       return { ...current, [question.qid]: { choices: question.multiSelect ? stage.choices : [], draft: value } }
     })
-  }, [interaction])
+  }, [])
 
   const cancelAll = useCallback(async () => {
-    interaction()
     if (!request) {
       return
     }
@@ -259,7 +256,7 @@ export function ClarifyToolPending({
     onAnswered()
     // A response with no `answers` is the cancel-all (the plain Esc path).
     skipClarify(request)
-  }, [interaction, onAnswered, request])
+  }, [onAnswered, request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -273,9 +270,8 @@ export function ClarifyToolPending({
   )
 
   const clearStage = useCallback((question: ClarifyQuestion) => {
-    interaction()
     setStaged(current => ({ ...current, [question.qid]: emptyStage }))
-  }, [interaction])
+  }, [])
 
   const isStaged = useCallback((question: ClarifyQuestion) => stagedAnswer(question) !== null, [stagedAnswer])
 
@@ -304,9 +300,7 @@ export function ClarifyToolPending({
       data-clarify-batch={questions.length}
       data-clarify-batch-preview={ready ? undefined : ''}
       data-clarify-choices={ready ? questions[keys.activeQuestion]?.choices?.length || undefined : undefined}
-      onChangeCapture={interaction}
-      onKeyDownCapture={event => { interaction(); handleClarifySubmitShortcut(event) }}
-      onPointerDownCapture={interaction}
+      onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
       ref={formRef}
     >

@@ -11,6 +11,7 @@ for the same reason is skipped, and only the newest ``keep`` per reason survive,
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -29,6 +30,14 @@ _LEGACY_SIBLING_GLOBS = ("config.yaml.bak.[0-9]*", "config.yaml.corrupt.*.bak", 
 
 def backups_dir(config_path: Path) -> Path:
     return config_path.parent / BACKUPS_SUBDIR
+
+
+def _adopt_config_owner(path: Path, config_path: Path) -> None:
+    """Keep backups in a sudo-targeted profile writable by that profile's owner."""
+    if os.name == "nt" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    owner = config_path.stat()
+    os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
 
 
 def list_config_backups(config_path: Path, reason: Optional[str] = None) -> list[Path]:
@@ -52,6 +61,7 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
             return None
         root = backups_dir(config_path)
         root.mkdir(parents=True, exist_ok=True)
+        _adopt_config_owner(root, config_path)
         _sweep_legacy_siblings(config_path, root)
         existing = list_config_backups(config_path, reason)
         # Not filecmp.cmp: its process-wide cache keys on (size, mtime), so an equal-size edit
@@ -62,6 +72,7 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
         shutil.copy2(config_path, dest)
+        _adopt_config_owner(dest, config_path)
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest

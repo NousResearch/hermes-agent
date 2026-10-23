@@ -84,6 +84,7 @@ TOOLSETS = {
         ["x_search"],
     ),
     "vision": _ts("Image analysis and vision tools", ["vision_analyze"]),
+    "audio": _ts("Native audio analysis (opt-in)", ["audio_analyze"]),
     "video": _ts("Video analysis and understanding tools (opt-in, not in default toolset)", ["video_analyze"]),
     "image_gen": _ts("Creative generation tools (images)", ["image_generate"]),
     "video_gen": _ts(

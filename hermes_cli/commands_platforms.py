@@ -421,6 +421,21 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     return entries
 
 
+def slack_slash_command_pattern() -> re.Pattern[str]:
+    """Bolt matcher for every native slash the gateway can serve: ``slack_native_slashes()`` plus
+    skill slugs. Skills dispatch like gateway commands but live outside COMMAND_REGISTRY; without
+    them slack_bolt logs "Unhandled request", never acks, and Slack shows "app did not respond"
+    (#101871). Socket Mode only delivers manifest-declared slashes, so matching every skill slug
+    over-approves nothing."""
+    names = [name for name, _d, _h in slack_native_slashes()]
+    try:
+        from agent.skill_commands import get_skill_commands
+        names += [key.removeprefix("/") for key in get_skill_commands()]
+    except Exception:  # health: allow BLE001 -- a failed skill scan must not take Slack slashes down
+        logger.warning("[Slack] could not add skill slugs to the slash matcher", exc_info=True)
+    return re.compile(r"^/(?:" + "|".join(re.escape(n) for n in names) + r")$")
+
+
 def slack_app_manifest(
     request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
     """``features.slash_commands`` manifest portion only (decoupled from the rest of the manifest

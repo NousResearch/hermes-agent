@@ -12,5 +12,7 @@ export const zhPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptAccessLabel: '页面脚本',
   previewScriptAccessNone: '在页面上运行脚本前会先询问',
   previewScriptRevoke: (origin: string) => `撤销对 ${origin} 的访问`,
-  previewScriptRevoked: (plugin: string, origin: string) => `${plugin} 不能再在 ${origin} 上运行脚本。`
+  previewScriptRevoked: (plugin: string, origin: string) => `${plugin} 不能再在 ${origin} 上运行脚本。`,
+  previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
+    `无法保存此更改，因此它仅在 Hermes 重启前有效。目前 ${plugin} 在 ${origin} 上被阻止。`
 }

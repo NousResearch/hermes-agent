@@ -11,4 +11,5 @@ export interface PluginPreviewAccessTranslations {
   previewScriptAccessNone: string
   previewScriptRevoke: (origin: string) => string
   previewScriptRevoked: (plugin: string, origin: string) => string
+  previewScriptRevokeUnsaved: (plugin: string, origin: string) => string
 }

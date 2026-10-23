@@ -49,8 +49,11 @@ export function PluginPageAccess({ plugin, pluginName }: PluginPageAccessProps) 
               aria-label={copy.previewScriptRevoke(origin)}
               className="inline-flex size-4 items-center justify-center rounded-sm hover:bg-(--ui-control-hover-background) hover:text-foreground"
               onClick={() => {
-                revokePreviewScript(pluginId, origin)
-                notify({ kind: 'info', message: copy.previewScriptRevoked(pluginName, origin) })
+                if (revokePreviewScript(pluginId, origin)) {
+                  notify({ kind: 'info', message: copy.previewScriptRevoked(pluginName, origin) })
+                } else {
+                  notify({ kind: 'error', message: copy.previewScriptRevokeUnsaved(pluginName, origin) })
+                }
               }}
               type="button"
             >

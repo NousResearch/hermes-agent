@@ -17,6 +17,8 @@ import { readKey, writeKey } from '@/lib/storage'
  * app-level, not per profile.
  */
 
+const pairKey = (pluginId: string, origin: string) => `${pluginId}\n${origin}`
+
 /** pluginId -> origins the user allowed. */
 export type PreviewScriptGrants = Record<string, string[]>
 
@@ -60,10 +62,22 @@ function readStoredGrants(): PreviewScriptGrants {
 
 export const $previewScriptGrants = atom<PreviewScriptGrants>(readStoredGrants())
 
-function commitGrants(next: PreviewScriptGrants): void {
+/** Persist `next` and mirror what storage actually holds afterwards (writes
+ *  are best-effort: a full or blocked store keeps the old record). Returns
+ *  whether `next` was saved. */
+function commitGrants(next: PreviewScriptGrants): boolean {
   writeKey(GRANTS_KEY, JSON.stringify(next))
-  $previewScriptGrants.set(next)
+  const saved = readStoredGrants()
+
+  $previewScriptGrants.set(saved)
+
+  return JSON.stringify(saved) === JSON.stringify(next)
 }
+
+/** Revokes the user made in this window that storage refused to save. They
+ *  still bind here (the call asks again), so a failed write never leaves a
+ *  revoked plugin running silently. */
+const unsavedRevokes = new Set<string>()
 
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
@@ -76,7 +90,6 @@ if (typeof window !== 'undefined') {
 /** "Don't allow" answers for this app run, as `${pluginId}\n${origin}`. */
 const $sessionDenials = atom<ReadonlySet<string>>(new Set())
 
-const pairKey = (pluginId: string, origin: string) => `${pluginId}\n${origin}`
 
 /** A grant names a real web origin: `http(s)://host[:port]`, nothing else.
  *  Opaque origins (`null` for about:blank, data:, sandboxed frames) and
@@ -92,22 +105,33 @@ export function isGrantableOrigin(origin: string): boolean {
 }
 
 export function hasPreviewScriptGrant(pluginId: string, origin: string): boolean {
-  return readStoredGrants()[pluginId]?.includes(origin) ?? false
+  return (
+    !unsavedRevokes.has(pairKey(pluginId, origin)) && (readStoredGrants()[pluginId]?.includes(origin) ?? false)
+  )
 }
 
 export function grantPreviewScript(pluginId: string, origin: string): void {
   const grants = readStoredGrants()
   const current = grants[pluginId] ?? []
 
+  unsavedRevokes.delete(pairKey(pluginId, origin))
   commitGrants(current.includes(origin) ? grants : { ...grants, [pluginId]: [...current, origin] })
 }
 
-/** Revoke one origin, or every origin for the plugin when omitted. */
-export function revokePreviewScript(pluginId: string, origin?: string): void {
+/** Revoke one origin, or every origin for the plugin when omitted. Returns
+ *  false when storage refused the change (it still binds this window). */
+export function revokePreviewScript(pluginId: string, origin?: string): boolean {
   const { [pluginId]: current = [], ...rest } = readStoredGrants()
-  const kept = origin === undefined ? [] : current.filter(entry => entry !== origin)
+  const revoked = origin === undefined ? current : current.filter(entry => entry === origin)
+  const kept = current.filter(entry => !revoked.includes(entry))
 
-  commitGrants(kept.length > 0 ? { ...rest, [pluginId]: kept } : rest)
+  if (commitGrants(kept.length > 0 ? { ...rest, [pluginId]: kept } : rest)) {
+    return true
+  }
+
+  revoked.forEach(entry => unsavedRevokes.add(pairKey(pluginId, entry)))
+
+  return false
 }
 
 export interface PreviewScriptConsentRequest {

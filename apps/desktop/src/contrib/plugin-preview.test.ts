@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerPreviewScriptRunner } from '@/app/chat/right-rail/preview-script-runner'
 import { $rightRailActiveTabId } from '@/store/layout'
@@ -219,6 +219,26 @@ describe('ctx.preview.executeJavaScript', () => {
     await expect(
       ctx.preview.executeJavaScript("'use strict'; (function () { return this === undefined })()")
     ).resolves.toBe(true)
+  })
+
+  it("a revoke that storage refuses to save still binds this window and isn't shown as done", async () => {
+    openPage()
+    const { ctx, id } = pluginWith([CAPABILITY])
+
+    grantPreviewScript(id, 'https://mail.example.com')
+
+    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError')
+    })
+
+    expect(revokePreviewScript(id, 'https://mail.example.com')).toBe(false)
+    setItem.mockRestore()
+
+    // The settings list shows what is actually saved, and the call asks again.
+    expect($previewScriptGrants.get()[id]).toEqual(['https://mail.example.com'])
+    void ctx.preview.executeJavaScript('document.title').catch(() => {})
+    await expect.poll(() => $previewScriptConsentQueue.get().length).toBe(1)
+    expect(userCodeRuns()).toBe(0)
   })
 
   it('rejects when no preview page is open', async () => {

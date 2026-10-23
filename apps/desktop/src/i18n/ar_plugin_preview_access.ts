@@ -12,5 +12,7 @@ export const arPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptAccessLabel: 'نصوص الصفحة',
   previewScriptAccessNone: 'يسأل قبل تشغيل النصوص البرمجية على أي صفحة',
   previewScriptRevoke: (origin: string) => `إلغاء الوصول إلى ${origin}`,
-  previewScriptRevoked: (plugin: string, origin: string) => `لم يعد بإمكان ${plugin} تشغيل نصوص برمجية على ${origin}.`
+  previewScriptRevoked: (plugin: string, origin: string) => `لم يعد بإمكان ${plugin} تشغيل نصوص برمجية على ${origin}.`,
+  previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
+    `تعذّر حفظ هذا التغيير، لذا يسري فقط حتى إعادة تشغيل Hermes. ${plugin} محظور على ${origin} في الوقت الحالي.`
 }

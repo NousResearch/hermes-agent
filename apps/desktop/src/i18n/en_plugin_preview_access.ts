@@ -12,5 +12,7 @@ export const enPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptAccessLabel: 'Page scripts',
   previewScriptAccessNone: 'Asks before running scripts on a page',
   previewScriptRevoke: (origin: string) => `Revoke access to ${origin}`,
-  previewScriptRevoked: (plugin: string, origin: string) => `${plugin} can no longer run scripts on ${origin}.`
+  previewScriptRevoked: (plugin: string, origin: string) => `${plugin} can no longer run scripts on ${origin}.`,
+  previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
+    `Couldn't save that change, so it lasts only until Hermes restarts. ${plugin} is blocked on ${origin} for now.`
 }

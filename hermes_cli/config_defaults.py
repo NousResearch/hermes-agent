@@ -1982,6 +1982,14 @@ DEFAULT_CONFIG = {
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },
+    # Gateway session-content search. Empty embedding_model = fuzzy (FTS/trigram) only.
+    # A model plus embedding_base_url (OpenAI-compatible /embeddings) adds a semantic
+    # index beside state.db and fuses it with fuzzy hits via reciprocal rank fusion.
+    # The API key is SESSION_SEARCH_EMBEDDING_API_KEY, else OPENAI_API_KEY — never here.
+    "session_search": {
+        "embedding_model": "",
+        "embedding_base_url": "",
+    },
     # Tool Search replaces deferred tools in the model-facing array with the
     # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
     # Working-set core tools stay eager, while the explicit ``defer`` list below
@@ -2734,6 +2742,10 @@ OPTIONAL_ENV_VARS = {
     "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
         category="provider", advanced=True),
+    "SESSION_SEARCH_EMBEDDING_API_KEY": _env(
+        "API key for session-search embeddings when session_search.embedding_model is set. "
+        "Falls back to OPENAI_API_KEY. Leave empty for fuzzy-only search.",
+        "Session search embedding API key", password=True, category="provider", advanced=True),
     "GOOGLE_API_KEY": _prov("Google AI Studio API key (also recognized as GEMINI_API_KEY)",
         "Google AI Studio API key", "https://aistudio.google.com/app/apikey"),
     "GEMINI_API_KEY": _prov("Google AI Studio API key (alias for GOOGLE_API_KEY)", "Gemini API key",

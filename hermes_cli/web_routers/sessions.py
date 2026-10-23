@@ -30,6 +30,7 @@ from hermes_cli.web_routers._common import (
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_state_search_hybrid import content_search_matches
 
 list_router = APIRouter()
 search_router = APIRouter()
@@ -419,10 +420,14 @@ async def search_sessions(
                 for tok in re.findall(r'"[^"]*"|\S+', q.strip()))
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations when several hits collapse onto one root.
-            matches = db.search_messages(
-                query=prefix_query, source_filter=include_sources,
-                exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
-                fields=("session_id", "role", "snippet", "source", "model", "session_started"))
+            matches = content_search_matches(
+                db,
+                query=prefix_query,
+                source_filter=include_sources,
+                exclude_sources=exclude_list or None,
+                limit=max(safe_limit * 5, 50),
+                fields=("session_id", "role", "snippet", "source", "model", "session_started"),
+            )
             for m in matches:
                 if len(seen) >= safe_limit:
                     break

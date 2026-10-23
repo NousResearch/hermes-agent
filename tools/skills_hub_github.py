@@ -70,6 +70,24 @@ def _is_rate_limit_response(resp: httpx.Response) -> bool:
     )
 
 
+def _secondary_rate_limit_wait(resp: httpx.Response, backoff: float) -> Optional[float]:
+    """Seconds to wait on a transient secondary 403, or None when this is not one.
+
+    GitHub's secondary limiter returns 403 while ``X-RateLimit-Remaining`` is
+    still above zero, and clears in a few seconds. Remaining ``""`` or ``"0"``
+    is a missing header or real primary exhaustion, which must not take this path.
+    """
+    if resp.status_code != 403:
+        return None
+    remaining = resp.headers.get("X-RateLimit-Remaining", "")
+    if remaining in ("", "0"):
+        return None
+    retry_after = parse_retry_after_seconds(resp.headers)
+    if retry_after is not None:
+        return min(float(retry_after), 30.0)
+    return backoff
+
+
 class GitHubAuth:
     """GitHub API authentication, tried in priority order: GITHUB_TOKEN / GH_TOKEN (PAT), `gh auth token`
     (gh CLI), GitHub App JWT + installation token, then unauthenticated (60 req/hr, public repos only)."""
@@ -468,9 +486,10 @@ class GitHubSource(SkillSource):
         """GET against the GitHub API with retry/backoff on transient failures. Returns the final
         response (caller inspects status) or None when every attempt raised a transport error.
         Retries rate-limit 403/429 (waiting until ``Retry-After`` / ``X-RateLimit-Reset`` when present,
-        capped 60s — one shared limit zeroes every GitHub tap at once during an index build), 5xx, and
-        transport errors with exponential backoff. Terminal rate-limit exhaustion flags the instance so
-        an index build fails loud instead of silently shipping zero GitHub skills."""
+        capped 60s — one shared limit zeroes every GitHub tap at once during an index build), secondary
+        403s whose primary quota is not exhausted (capped 30s), 5xx, and transport errors with
+        exponential backoff. Terminal rate-limit exhaustion flags the instance so an index build fails
+        loud instead of silently shipping zero GitHub skills. A secondary 403 does not set that flag."""
         hdrs = headers if headers is not None else self.auth.get_headers()
         backoff = 1.0
         last_resp: Optional[httpx.Response] = None
@@ -498,13 +517,21 @@ class GitHubSource(SkillSource):
                     return self._github_get(url, params=params, headers=retry, timeout=timeout,
                                             max_retries=max_retries)
                 if resp.status_code in (403, 429):
-                    limited = _is_rate_limit_response(resp)
-                    if not limited or last_attempt:
-                        if limited:  # terminal exhaustion: flag the instance so callers fail loud
-                            self._rate_limited = True
-                            logger.warning("GitHub API rate limit exhausted (unauthenticated: 60 req/hr). "
-                                           "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr.")
-                        return resp
+                    secondary_wait = None if last_attempt else _secondary_rate_limit_wait(resp, backoff)
+                    if secondary_wait is not None:
+                        wait = secondary_wait
+                        logger.debug(
+                            "GitHub secondary rate limit on %s, waiting %.1fs (attempt %d/%d)",
+                            url, wait, attempt + 1, max_retries,
+                        )
+                    else:
+                        limited = _is_rate_limit_response(resp)
+                        if not limited or last_attempt:
+                            if limited:  # terminal exhaustion: flag the instance so callers fail loud
+                                self._rate_limited = True
+                                logger.warning("GitHub API rate limit exhausted (unauthenticated: 60 req/hr). "
+                                               "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr.")
+                            return resp
                     reset = resp.headers.get("X-RateLimit-Reset", "")
                     retry_after = parse_retry_after_seconds(resp.headers)
                     if retry_after is not None:

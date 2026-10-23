@@ -6354,7 +6354,7 @@ class TestStreamingApiCall:
         assert tc[0].function.name == "search"
         assert tc[1].function.name == "read"
 
-    def test_truncated_tool_call_args_no_finish_reason_routes_to_stub(self, agent):
+    def test_truncated_tool_call_args_no_finish_reason_routes_to_stub(self, agent, monkeypatch):
         # Stream delivers a tool call with incomplete JSON args and then ENDS
         # with no finish_reason (the SSE just stops — no terminator, no
         # [DONE]).  This is an upstream mid-tool-call drop, NOT an output cap.
@@ -6362,7 +6362,12 @@ class TestStreamingApiCall:
         # (id=PARTIAL_STREAM_STUB_ID, tool_calls=None so it can't execute,
         # finish_reason=length so the loop's continuation machinery fires with
         # chunking guidance) rather than stamping a normal 'length' truncation.
+        # Pin retries=0: with a fresh-connection budget left, the same drop
+        # re-streams once before honoring this contract (#126217; the re-stream
+        # path has its own tests) — this one pins the stub shape the caller
+        # gets once the budget is exhausted.
         from hermes_constants import PARTIAL_STREAM_STUB_ID
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
         ]
@@ -6399,12 +6404,16 @@ class TestStreamingApiCall:
         # Cut after the first digit of "timeout": 600. Every string is closed, so the
         # prefix repairs to valid JSON that carries timeout=6. Without a finish_reason
         # nothing says the model was done: retry, never run what happened to arrive.
+        # A deterministic truncation source (every fresh connection yields the same
+        # cut) re-streams across the whole attempt budget, then lands on the stub.
         from hermes_constants import PARTIAL_STREAM_STUB_ID
         raw = '{"command": "make deploy", "timeout": 6'
-        chunks = [_make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "terminal", raw)])]
-        if finish_reason:
-            chunks.append(_make_chunk(finish_reason=finish_reason))
-        agent.client.chat.completions.create.return_value = iter(chunks)
+        def _stream(*_a, **_k):
+            chunks = [_make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "terminal", raw)])]
+            if finish_reason:
+                chunks.append(_make_chunk(finish_reason=finish_reason))
+            return iter(chunks)
+        agent.client.chat.completions.create.side_effect = _stream
 
         resp = agent._interruptible_streaming_api_call({"messages": []})
 
@@ -6412,6 +6421,8 @@ class TestStreamingApiCall:
             assert resp.id == PARTIAL_STREAM_STUB_ID
             assert resp.choices[0].message.tool_calls is None
             assert resp._dropped_tool_names == ["terminal"]
+            # The cut re-arrived on every connection: full attempt budget consumed.
+            assert agent.client.chat.completions.create.call_count == 3
         else:
             args = resp.choices[0].message.tool_calls[0].function.arguments
             assert json.loads(args) == {"command": "make deploy", "timeout": 6}

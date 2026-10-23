@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  mobileBeforeInputCommit,
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
   updatePtyInputLine,
@@ -17,6 +18,40 @@ describe("shouldTreatInputAsMobileReplacement", () => {
     expect(shouldTreatInputAsMobileReplacement("insertText", "Kain", true)).toBe(true);
     expect(shouldTreatInputAsMobileReplacement("insertText", "K", true)).toBe(false);
     expect(shouldTreatInputAsMobileReplacement("insertText", "Kain", false)).toBe(false);
+  });
+});
+
+describe("mobileBeforeInputCommit", () => {
+  it("forwards mobile insertText commits, single-char included", () => {
+    // #137986: Gboard-on-Chrome taps arrive as insertText only; each one,
+    // including a lone letter, must become PTY input.
+    expect(mobileBeforeInputCommit("insertText", "a", true)).toBe("a");
+    expect(mobileBeforeInputCommit("insertText", "hello", true)).toBe("hello");
+  });
+
+  it("maps insertLineBreak to the carriage return xterm sends for Enter", () => {
+    // #137986 real-device evidence: browsers deliver insertLineBreak with
+    // data === null (the line break is the event itself), so the Enter
+    // branch must not depend on a non-empty payload.
+    expect(mobileBeforeInputCommit("insertLineBreak", null, true)).toBe("\r");
+    expect(mobileBeforeInputCommit("insertLineBreak", "\n", true)).toBe("\r");
+  });
+
+  it("stays off desktop browsers", () => {
+    expect(mobileBeforeInputCommit("insertText", "a", false)).toBeNull();
+    expect(mobileBeforeInputCommit("insertLineBreak", null, false)).toBeNull();
+  });
+
+  it("does not forward composition-in-progress or non-inserting events", () => {
+    // insertCompositionText carries the uncommitted buffer on
+    // composition-capable keyboards; forwarding it would leak half-typed
+    // text ahead of the authoritative compositionend commit.
+    expect(mobileBeforeInputCommit("insertCompositionText", "con", true)).toBeNull();
+    expect(mobileBeforeInputCommit("insertFromComposition", "hi", true)).toBeNull();
+    expect(mobileBeforeInputCommit("deleteContentBackward", null, true)).toBeNull();
+    expect(mobileBeforeInputCommit("insertText", "", true)).toBeNull();
+    expect(mobileBeforeInputCommit("insertText", null, true)).toBeNull();
+    expect(mobileBeforeInputCommit(undefined, "a", true)).toBeNull();
   });
 });
 

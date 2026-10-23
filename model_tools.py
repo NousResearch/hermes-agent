@@ -606,6 +606,32 @@ def _resolve_active_context_length() -> int:
 # Intercepted by the agent loop (need agent-level state); dispatch returns a stub error.
 _AGENT_LOOP_TOOLS = {"todo_list", "memory", "session_search", "delegate_task"}
 
+# Payload arg per tool and the bare no-ops a stalling model emits instead of the real call
+# (local models were seen sending ``{"command": ":"}`` for a third of terminal calls). Running
+# them "succeeds" with no output, so the model never learns its call was empty.
+_NOOP_PAYLOAD_ARGS = {
+    "terminal": ("command", frozenset({":", "true", "/bin/true", "/usr/bin/true", "exit 0"})),
+    "execute_code": ("code", frozenset({"pass", "...", "None"})),
+}
+
+
+def _noop_payload_error(function_name: str, function_args: dict[str, Any]) -> Optional[str]:
+    """Tool-error JSON when a terminal/execute_code call carries an empty or bare no-op payload."""
+    spec = _NOOP_PAYLOAD_ARGS.get(function_name)
+    if spec is None:
+        return None
+    arg, noops = spec
+    value = function_args.get(arg)
+    text = value.strip() if isinstance(value, str) else ""
+    if text and text not in noops:
+        return None
+    shown = f"an empty `{arg}`" if not text else f"the bare no-op {text!r} as `{arg}`"
+    return tool_error(
+        f"{function_name} was called with {shown}, so nothing ran. Re-emit the complete "
+        f"{function_name} call with the actual {arg} you intend to run in the `{arg}` argument."
+    )
+
+
 # Legacy tool-name aliases accepted at every dispatch seam (old sessions/saved
 # prompts keep working); schemas advertise only new names.
 _LEGACY_TOOL_ALIASES = {
@@ -937,6 +963,11 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return tool_error(f"{function_name} must be handled by the agent loop")
+
+        noop_error = _noop_payload_error(function_name, function_args)
+        if noop_error is not None:
+            return _emit(noop_error, status="blocked", error_type="noop_tool_args",
+                         error_message=f"empty or no-op {function_name} payload")
 
         function_args, blocked = _pre_dispatch_guards(function_name, function_args, skip_pre_tool_call_hook, ids, trace)
         if blocked is not None:

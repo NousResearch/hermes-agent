@@ -10,10 +10,13 @@ beforeEach(() => resetTurnState())
 it('shows a terminal bootstrap verdict and its remedy, never "still waiting"', () => {
   const statuses: string[] = []
 
-  reportGatewayStartTimeout('Command failed: python3 gateway_bootstrap.py --start\n' +
-    'gateway unavailable: bootstrap_dependencies\n' +
-    'dependency environment unavailable: no dependency environment is committed for this install\n' +
-    'gateway unavailable: run `hermes pm repair`, then restart the TUI\n', s => statuses.push(s))
+  reportGatewayStartTimeout(
+    'Command failed: python3 gateway_bootstrap.py --start\n' +
+      'gateway unavailable: bootstrap_dependencies\n' +
+      'dependency environment unavailable: no dependency environment is committed for this install\n' +
+      'gateway unavailable: run `hermes pm repair`, then restart the TUI\n',
+    s => statuses.push(s)
+  )
 
   const messages = getTurnState().activity.map(a => a.text)
 

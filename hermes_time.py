@@ -132,9 +132,10 @@ def get_timezone() -> Optional[ZoneInfo]:
 
 
 def get_timezone_name() -> str:
-    """The active profile's configured IANA timezone string, or ``""`` (server-local). Same
+    """The active profile's resolved IANA timezone string, or ``""`` (server-local fallback). Same
     resolution and cache as :func:`get_timezone`; for handing ``TZ`` to sandboxed children."""
-    return _timezone_entry()[0]
+    name, tz = _timezone_entry()
+    return name if tz is not None else ""
 
 
 def reset_cache() -> None:

@@ -349,9 +349,22 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     try:
         path.relative_to(scripts_dir_resolved)
     except ValueError:
+        # Print the resolved target whenever it differs from the caller's value. A symlink whose
+        # LINK sits in scripts/ but whose TARGET lives elsewhere satisfies every naive reading of
+        # the old message (".../scripts/foo.py is outside .../scripts") and reads as a Hermes bug
+        # rather than a fixable misconfiguration — the reporter had no way to see the escape.
+        shown = repr(script_path)
+        if raw.is_absolute() and str(path) != str(raw):
+            shown = f"{script_path!r} -> {str(path)!r}"
         return None, (
             f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
+            f"({scripts_dir_resolved}): {shown}. Cron runs only scripts stored inside that "
+            f"folder and checks the RESOLVED path, so a symlink pointing out of it (or a `..` "
+            f"segment) trips this even when the path you typed looks correct. Fix: move or copy "
+            f"the real file into {scripts_dir_resolved}, then point the job at it with "
+            f"`hermes cron edit <job>` — a bare filename like `myscript.py` is the normal form. "
+            f"If the script must live elsewhere, keep the real file in the scripts dir and "
+            f"symlink the OTHER way (outside path -> scripts dir), not into it."
         )
     if not path.exists():
         # Scripts resolve against THIS profile's scripts/ dir by design (profiles never share files),

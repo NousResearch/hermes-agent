@@ -9007,6 +9007,10 @@
             "default": 3600,
             "title": "Ttl Seconds",
             "type": "number"
+          },
+          "status_ttl_seconds": {
+            "title": "Status Ttl Seconds",
+            "type": "number"
           }
         },
         "required": [
@@ -20138,6 +20142,18 @@
             ],
             "default": null,
             "title": "Ttl Seconds"
+          },
+          "status_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Ttl Seconds"
           }
         },
         "title": "GroupsPeerInviteParams",

@@ -139,8 +139,8 @@ def test_peer_methods_enforce_operator_control_and_exact_params(gateway, monkeyp
         assert await call(reader, 'groups.peer.register', room_id='linked') == 'permission_denied'
         assert await call(gateway.owner, 'groups.peer.invite', **identity) == 'room_link_unavailable'
         monkeypatch.setenv('HERMES_ROOM_LINK_URL', 'http://127.0.0.1:9')
-        # Grant ids and lifetimes beyond ``ttl_seconds`` are the target's to choose.
-        for params in ({**identity, 'grant_id': 'chosen'}, {**identity, 'status_ttl_seconds': 86400},
+        # Grant ids are the target's to choose.
+        for params in ({**identity, 'grant_id': 'chosen'}, {**identity, 'status_ttl_seconds': None},
                        {**identity, 'authority_epoch': '1'}, {**identity, 'authority_epoch': True},
                        {**identity, 'authority_epoch': 0}, {**identity, 'authority_epoch': 2**63},
                        {**identity, 'member_id': ''}, {**identity, 'room_id': 'r' * 129},
@@ -219,6 +219,71 @@ async def test_register_binds_only_the_pinned_peer_after_a_live_scoped_probe(gat
     assert revoked == {'revoked': True}
     CANONICAL_METHODS['groups.peer.revoke'].result.model_validate(revoked)
     assert await call(gateway.owner, 'groups.peer.register', **register) == 'room_reauthorization_required'
+
+
+@pytest.mark.asyncio
+async def test_an_invitation_can_keep_its_route_renewable_past_its_first_dispatch_lifetime(gateway, monkeypatch, linked_peer):
+    """Renewal extends dispatch only within the operator's requested status horizon."""
+    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    _server, url, catalog, room = linked_peer
+    assert 'peer_renewal_horizon' in (await call(gateway.owner, 'groups.capabilities'))['features']
+    identity = dict(room_id=room['room_id'], member_id='reviewer', home_install_id=room['authority_gateway_id'],
+                    authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch'])
+    client, secret, month = PeerRunsHTTPClient(base_url=url, api_key=''), gateway_room_grant_secret(), 30 * 86400
+
+    async def renewal(**lifetimes):
+        invited = await call(gateway.owner, 'groups.peer.invite', **identity, **lifetimes)
+        CANONICAL_METHODS['groups.peer.invite'].params.model_validate({**identity, **lifetimes})
+        refreshed = await asyncio.to_thread(
+            client.refresh_grant, grant=invited['grant'], capability_digest=catalog['catalog_digest'],
+            execution_policy_digest=catalog['execution_policy']['policy_digest'])
+        return [decode_room_grant(secret, grant, permission='status')
+                for grant in (invited['grant'], refreshed['grant'])]
+
+    first, renewed = await renewal(ttl_seconds=60)
+    assert first['status_expires_at'] == first['expires_at']
+    assert renewed['expires_at'] == pytest.approx(first['expires_at'])
+    first, renewed = await renewal(ttl_seconds=60, status_ttl_seconds=month)
+    assert first['status_expires_at'] == pytest.approx(first['issued_at'] + month)
+    assert renewed['expires_at'] > first['expires_at'] + 23 * 3600
+    assert renewed['status_expires_at'] == first['status_expires_at']
+    for horizon in (True, '3600', 30, month + 1, float('nan'), float('inf'), None, 10**400):
+        assert await call(gateway.owner, 'groups.peer.invite', **identity, ttl_seconds=60,
+                          status_ttl_seconds=horizon) == 'invalid_params', horizon
+    assert await call(gateway.owner, 'groups.peer.invite', **identity, ttl_seconds=10**400) == 'invalid_params'
+    with pytest.raises(ValueError):  # absent means ttl_seconds; null is refused, as for ttl_seconds
+        CANONICAL_METHODS['groups.peer.invite'].params.model_validate({**identity, 'status_ttl_seconds': None})
+    horizon_schema = CANONICAL_METHODS['groups.peer.invite'].params.model_json_schema()['properties']['status_ttl_seconds']
+    assert 'default' not in horizon_schema and horizon_schema['type'] == 'number', horizon_schema
+
+
+@pytest.mark.asyncio
+async def test_disband_owes_a_renewable_invitation_until_its_status_horizon(gateway, monkeypatch, linked_peer):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    _server, url, catalog, room = linked_peer
+    invitation = await call(
+        gateway.owner, 'groups.peer.invite', room_id=room['room_id'], member_id='reviewer',
+        home_install_id=room['authority_gateway_id'], authority_gateway_id=room['authority_gateway_id'],
+        authority_epoch=room['authority_epoch'], ttl_seconds=60, status_ttl_seconds=30 * 86400)
+    original = invitation['grant']
+    renewed = await asyncio.to_thread(
+        PeerRunsHTTPClient(base_url=url, api_key='').refresh_grant, grant=original,
+        capability_digest=catalog['catalog_digest'],
+        execution_policy_digest=catalog['execution_policy']['policy_digest'])
+    registered = await call(gateway.owner, 'groups.peer.register', room_id=room['room_id'],
+                            member_id='reviewer', target_url=url, target_profile='default',
+                            grant=renewed['grant'], catalog=catalog)
+    assert registered['registered'], registered
+    assert 'tombstone' in await call(gateway.owner, 'groups.disband', room_id=room['room_id'])
+    assert hosted_room_links.load_room_links(gateway.db.db_path) == ()
+    # A restart after dispatch expiry must still repay the revoke through the status horizon.
+    restarted = CanonicalHostedRoomService(gateway.authority, None)
+    restarted.runtime.clock = lambda: renewed['expires_at'] + 1
+    assert await asyncio.to_thread(restarted.retry_owed_revokes) == 1
+    assert _owed(gateway.db.db_path) == []
+    for grant in (original, renewed['grant']):
+        assert await _grant_error(url, grant) == 'room_reauthorization_required'
 
 
 @pytest.mark.asyncio

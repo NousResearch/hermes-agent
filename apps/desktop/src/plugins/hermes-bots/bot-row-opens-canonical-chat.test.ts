@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as CanonicalChat from './canonical-chat'
 import type { RosterRow } from './types'
 
-const { openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
+const { notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
+  notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat: vi.fn(),
   prepareBotSource: vi.fn()
 }))
@@ -23,14 +24,14 @@ vi.mock('./canonical-chat', async () => ({
   CANONICAL_CHAT_TITLE: 'Bot Chat',
   ensureBotMetadata: vi.fn(async () => ({})),
   isStaleBotChatTile: (await vi.importActual<typeof CanonicalChat>('./canonical-chat')).isStaleBotChatTile,
-  notifyBotOpenFailure: vi.fn(),
+  notifyBotOpenFailure,
   openBotCanonicalChat,
   prepareBotSource,
   PROFILE_SESSION_LIST_LIMIT: 200
 }))
 
 const { host } = await import('@hermes/plugin-sdk')
-const { $openBotChat, $selectedBot } = await import('./bot-state')
+const { $openBotChat, $pendingBotOpen, $selectedBot } = await import('./bot-state')
 const { openRosterBot, trackInboundActivity } = await import('./roster-actions')
 const { $selectedStoredSessionId } = await import('@/store/session')
 
@@ -119,6 +120,29 @@ describe('a row click lands on the canonical chat, never a remembered side tab',
     await expect(openRosterBot(bot)).resolves.toBe(false)
 
     expect($openBotChat.get()).toBeNull()
+  })
+
+  it('a null canonical open without a roster hint reports failure and keeps the current conversation', async () => {
+    // #130980: an empty relay roster must not turn a canonical miss into a side chat.
+    openBotCanonicalChat.mockResolvedValueOnce(null)
+    const newChat = vi.spyOn(host, 'newChat').mockImplementation(() => undefined)
+    const navigate = vi.spyOn(host, 'navigate').mockImplementation(() => undefined)
+    $selectedStoredSessionId.set('current-conversation')
+
+    try {
+      await expect(openRosterBot(bot)).resolves.toBe(false)
+
+      expect(newChat).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+      expect($selectedStoredSessionId.get()).toBe('current-conversation')
+      expect($openBotChat.get()).toBeNull()
+      expect($pendingBotOpen.get()).toBeNull()
+      expect(notifyBotOpenFailure).toHaveBeenCalledWith(expect.any(Error), bot, 'open', expect.any(String))
+    } finally {
+      newChat.mockRestore()
+      navigate.mockRestore()
+      $selectedStoredSessionId.set(null)
+    }
   })
 })
 

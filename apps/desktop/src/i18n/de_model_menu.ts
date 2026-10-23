@@ -14,6 +14,13 @@ export const deModelMenu = {
   cacheRead: 'Cache-Lesung',
   priceTitle: (input: string, output: string, cache: string) =>
     `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : ''),
+  pricing: {
+    title: 'Preise',
+    titlePerMillion: 'Preise · pro 1 Mio. Tokens',
+    input: 'Eingabe',
+    output: 'Ausgabe',
+    free: 'Kostenlos'
+  },
   localSetup: {
     title: 'Lokal ausführen · kostenlos, privat',
     text: (model: string, size: string) => `${model} passt auf diesen Rechner · ${size} Download`,

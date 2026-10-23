@@ -14,6 +14,13 @@ export const jaModelMenu = {
   cacheRead: 'キャッシュ読み取り',
   priceTitle: (input: string, output: string, cache: string) =>
     `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : ''),
+  pricing: {
+    title: '料金',
+    titlePerMillion: '料金 · 100万トークンあたり',
+    input: '入力',
+    output: '出力',
+    free: '無料'
+  },
   localSetup: {
     title: 'ローカルで実行 · 無料・プライベート',
     text: (model: string, size: string) => `${model} はこのマシンで動きます · ${size} をダウンロード`,

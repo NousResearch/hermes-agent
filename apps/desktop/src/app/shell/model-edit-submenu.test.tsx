@@ -1,3 +1,4 @@
+import type { ModelPricing } from '@hermes/shared'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -30,6 +31,7 @@ function renderSubmenu(opts: {
   isActive?: boolean
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
+  pricing?: ModelPricing
   reasoning: boolean
 }) {
   return render(
@@ -45,6 +47,7 @@ function renderSubmenu(opts: {
             model="m1"
             onSelectModel={opts.onSelectModel ?? vi.fn()}
             onSetOptions={opts.onSetOptions}
+            pricing={opts.pricing}
             provider="p1"
             reasoning={opts.reasoning}
           />
@@ -127,5 +130,82 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
+  })
+})
+
+describe('ModelEditSubmenu pricing section', () => {
+  it('shows the input and output price', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: { free: false, input: '$3.00', output: '$15.00' },
+      reasoning: true
+    })
+
+    expect(screen.getByText('Input')).toBeTruthy()
+    expect(screen.getByText('$3.00')).toBeTruthy()
+    expect(screen.getByText('Output')).toBeTruthy()
+    expect(screen.getByText('$15.00')).toBeTruthy()
+  })
+
+  it('labels the section like the other submenu sections', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: { free: false, input: '$3.00', output: '$15.00' },
+      reasoning: true
+    })
+
+    expect(screen.getByText('Pricing · per 1M tokens')).toBeTruthy()
+  })
+
+  it('shows a sale badge when the model is discounted', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: {
+        discount_percent: 75,
+        free: false,
+        input: '$0.075',
+        output: '$0.30',
+        was_input: '$0.30',
+        was_output: '$1.20'
+      },
+      reasoning: true
+    })
+
+    expect(screen.getByText('−75%')).toBeTruthy()
+  })
+  it('shows only a free badge for free models', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: { free: true, input: '', output: '' },
+      reasoning: true
+    })
+
+    expect(screen.getByText('Pricing')).toBeTruthy()
+    expect(screen.getByText('Free')).toBeTruthy()
+    expect(screen.queryByText('Input')).toBeNull()
+  })
+  it('shows a dash for an unknown price, never $0', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: { free: false, input: '$1.25', output: '' },
+      reasoning: true
+    })
+
+    expect(screen.getByText('$1.25')).toBeTruthy()
+    expect(screen.getByText('—')).toBeTruthy()
+  })
+  it('hides the whole section when the model has no pricing', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true
+    })
+
+    expect(screen.queryByText(/Pricing/)).toBeNull()
   })
 })

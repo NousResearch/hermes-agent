@@ -20,6 +20,7 @@ import contextlib
 
 from hermes_cli.worktree_ops import release_lsp_clients
 from hermes_cli import kanban_treehouse as _kbth
+from hermes_cli.kanban_treehouse import TreehouseRequired
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task

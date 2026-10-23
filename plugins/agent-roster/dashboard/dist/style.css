@@ -1,0 +1,111 @@
+.agent-roster-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.agent-roster-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.agent-roster-header h1 {
+  margin: 0;
+  font-size: 1.8rem;
+}
+
+.agent-roster-header p {
+  margin: 0.25rem 0 0;
+  color: var(--muted-foreground, #6b7280);
+}
+
+.agent-roster-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.75rem;
+}
+
+.agent-roster-stat,
+.agent-roster-stage,
+.agent-roster-profile,
+.agent-roster-violation {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 0.75rem;
+  padding: 0.85rem;
+  background: var(--card, rgba(255, 255, 255, 0.03));
+}
+
+.agent-roster-stat-value {
+  font-size: 1.6rem;
+  font-weight: 800;
+}
+
+.agent-roster-stat-label,
+.agent-roster-stage small,
+.agent-roster-profile small {
+  color: var(--muted-foreground, #6b7280);
+  display: block;
+}
+
+.agent-roster-pipeline,
+.agent-roster-grid,
+.agent-roster-violations {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.agent-roster-pipeline {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.agent-roster-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.agent-roster-profile-top,
+.agent-roster-violation {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.agent-roster-profile-top {
+  justify-content: space-between;
+}
+
+.agent-roster-profile p,
+.agent-roster-violation p {
+  margin: 0.35rem 0;
+}
+
+.agent-roster-badge-danger,
+.agent-roster-badge-warning,
+.agent-roster-badge-muted {
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.agent-roster-badge-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.agent-roster-badge-warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+}
+
+.agent-roster-badge-muted {
+  background: rgba(107, 114, 128, 0.15);
+  color: #6b7280;
+}
+
+.agent-roster-error {
+  color: #ef4444;
+}

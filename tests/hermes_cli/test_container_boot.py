@@ -343,6 +343,31 @@ def test_a_standalone_profile_boots_its_own_slot_instead_of_folding_into_root(tm
     assert by_profile["default"].action == "started"
 
 
+def test_scoped_standalone_container_does_not_start_root_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A standalone-profile container must not instantiate the shared volume's root gateway.
+
+    The root desired state belongs to the other container in a shared-volume deployment; only the
+    selected standalone profile may autostart in this container.
+    """
+    hermes_home = tmp_path / "data"
+    hermes_home.mkdir()
+    _seed_default_root(hermes_home, state="running")
+    solo = _make_profile(hermes_home, "solo", state=None, desired_state="running")
+    (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
+    _make_profile(hermes_home, "coder", state=None, desired_state="running")
+    monkeypatch.setenv("HERMES_PROFILE", "solo")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=hermes_home, scandir=tmp_path / "svc", dry_run=True, container_argv=())
+
+    by_profile = {a.profile: a for a in actions}
+    assert "default" not in by_profile
+    assert by_profile["solo"].action == "started"
+    assert by_profile["coder"].action == "registered"
+
+
 def test_a_stopped_fleet_still_boots_nothing(tmp_path: Path) -> None:
     """Control: no autostart intent anywhere means no gateway is started — the crash-loop guard
     and the operator's `gateway stop` both keep working."""

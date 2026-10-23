@@ -114,31 +114,47 @@ def reconcile_profile_gateways(
     from hermes_cli.profiles import profile_is_standalone
     standalone = {name for name, entry, _prior in named if profile_is_standalone(entry)}
 
-    # A legacy `gateway run` container with no state yet seeds `running` (pre-s6 behavior).
-    legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
-        hermes_home, container_argv=container_argv, dry_run=dry_run)
-    default_prior_state = legacy_default_state or _read_desired_state(hermes_home)
-    # The root slot INHERITS every named slot's autostart intent, because it is the one process
-    # that serves them. Without this an image only ever driven as `hermes -p coder gateway start`
-    # booted with ZERO gateways: it has no root state (or "stopped"), every named slot is now
-    # registered down unconditionally, and every action reported "registered" — a container that
-    # looks healthy while nothing is listening.
-    fold = fold_named_slot_intent(
-        default_prior_state, ((name, prior) for name, _dir, prior in named if name not in standalone))
-    folded, default_should_start = list(fold.folded), fold.root_should_start
-    if folded and default_prior_state not in _AUTOSTART_STATES:
-        log.warning("%s", boot_notice(folded))
-    if not dry_run:
-        _cleanup_stale_runtime_files(hermes_home)
-        _register_service(scandir, "default", start=default_should_start)
-    actions.append(_slot_action("default", hermes_home, default_prior_state, default_should_start,
-                                folded_into_root=bool(folded)))
+    # A container pinned to one standalone profile must not reconcile the shared volume's root
+    # profile. Its gateway state belongs to the other container that owns the root slot; starting
+    # that slot here would create a second gateway in the same shared volume/PID-namespace topology.
+    scoped_profile = os.environ.get("HERMES_PROFILE")
+    scoped_standalone = scoped_profile if scoped_profile in standalone else None
+
+    folded: list[str] = []
+    default_prior_state: str | None = None
+    if scoped_standalone is None:
+        # A legacy `gateway run` container with no state yet seeds `running` (pre-s6 behavior).
+        legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
+            hermes_home, container_argv=container_argv, dry_run=dry_run)
+        default_prior_state = legacy_default_state or _read_desired_state(hermes_home)
+        # The root slot INHERITS every named slot's autostart intent, because it is the one process
+        # that serves them. Without this an image only ever driven as `hermes -p coder gateway start`
+        # booted with ZERO gateways: it has no root state (or "stopped"), every named slot is now
+        # registered down unconditionally, and every action reported "registered" — a container that
+        # looks healthy while nothing is listening.
+        fold = fold_named_slot_intent(
+            default_prior_state,
+            ((name, prior) for name, _dir, prior in named if name not in standalone),
+        )
+        folded, default_should_start = list(fold.folded), fold.root_should_start
+        if folded and default_prior_state not in _AUTOSTART_STATES:
+            log.warning("%s", boot_notice(folded))
+        if not dry_run:
+            _cleanup_stale_runtime_files(hermes_home)
+            _register_service(scandir, "default", start=default_should_start)
+        actions.append(_slot_action("default", hermes_home, default_prior_state, default_should_start,
+                                    folded_into_root=bool(folded)))
 
     for name, entry, prior_state in named:
         # Registered down unless standalone: any other started named slot IS a second gateway on this host.
         should_start = name in standalone and prior_state in _AUTOSTART_STATES
+        if scoped_standalone is not None and name != scoped_standalone:
+            should_start = False
         if not dry_run:
-            _cleanup_stale_runtime_files(entry)
+            # A shared volume may contain runtime files for profiles owned by another container. Only
+            # the current container's profile may have its PID-namespace-bound files cleaned here.
+            if scoped_standalone is None or name == scoped_standalone:
+                _cleanup_stale_runtime_files(entry)
             _register_service(scandir, name, start=should_start)
         actions.append(_slot_action(name, entry, prior_state, should_start,
                                     folded_into_root=name in folded))

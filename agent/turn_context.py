@@ -1143,6 +1143,10 @@ def build_turn_context(
         restore_or_build_system_prompt(agent, system_message, conversation_history)
     active_system_prompt = agent._cached_system_prompt
 
+    from agent.response_skip import inject as inject_response_skip
+    agent._response_skip_reason = None
+    inject_response_skip(agent, agent.tools, agent.valid_tool_names)
+
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
     # gate as the protocol section); gate is session-stable, so cache-safe.
     try:

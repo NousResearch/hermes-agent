@@ -28,19 +28,11 @@ _TRUTHY = frozenset({"true", "1", "yes"})
 _BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
-# ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS`` come from each platform's
-# ``PlatformEntry.allowed_users_env`` / ``allow_all_env`` (shared with the pairing allowlist mirror).
-# Platforms whose env allowlist turns the unauthorized-DM default from "pair" into "ignore". Names
-# only (the env var is still the plugin's): this is the historical set the allowlist-aware default
-# covered, so adding a platform here is a behaviour change (Yuanbao was never in it).
-_ALLOWLIST_SUPPRESSES_PAIRING = frozenset({
-    Platform.TELEGRAM, Platform.DISCORD, Platform.WHATSAPP, Platform.WHATSAPP_CLOUD, Platform.SLACK,
-    Platform.SIGNAL, Platform.EMAIL, Platform.SMS, Platform.MATTERMOST, Platform.MATRIX, Platform.DINGTALK,
-    Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES,
-    Platform.QQBOT,
-})
+# ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``, the group-chat allowlist env and
+# whether an allowlist suppresses pairing come from each platform's ``PlatformEntry``
+# (``allowed_users_env`` / ``allow_all_env`` / ``group_allowed_chats_env`` /
+# ``allowlist_suppresses_pairing``), so a plugin platform declares them like a bundled one.
 _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
-_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
 
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
@@ -57,6 +49,13 @@ def authz_field(name, field, entry):
     """Late-bound :func:`gateway.platform_env.authz_field` (entry field, else the bundled declaration)."""
     from gateway.platform_env import authz_field as _field
     return _field(name, field, entry)
+
+
+def _group_chat_env(platform, entry=None) -> str:
+    """The platform's group-chat allowlist env name (``PlatformEntry.group_allowed_chats_env``), or ""."""
+    if platform is None:
+        return ""
+    return authz_field(platform.value, "group_allowed_chats_env", entry or _registry_entry(platform)) or ""
 
 
 def _registry_entry(platform):
@@ -553,7 +552,7 @@ class GatewayAuthorizationMixin:
         # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
-            chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
+            chat_allowlist_env = _group_chat_env(source.platform)
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
             # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
@@ -681,7 +680,7 @@ class GatewayAuthorizationMixin:
 
         platform_allowlist = _auth_env(platform_allow_env)
         group_user_allowlist = _auth_env(_GROUP_USER_ENV.get(source.platform, "")) if is_group_or_forum else ""
-        group_chat_allowlist = _auth_env(_GROUP_CHAT_ENV.get(source.platform, "")) if is_group_or_forum else ""
+        group_chat_allowlist = _auth_env(_group_chat_env(source.platform, entry)) if is_group_or_forum else ""
         global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
 
         if not (platform_allowlist or group_user_allowlist or group_chat_allowlist or global_allowlist):
@@ -749,9 +748,11 @@ class GatewayAuthorizationMixin:
                 return "pair"
             if dm_policy in {"allowlist", "disabled"}:
                 return "ignore"
-            env_key = (authz_field(platform.value, "allowed_users_env", _registry_entry(platform)) or ""
-                       if platform in _ALLOWLIST_SUPPRESSES_PAIRING else "")
-            allowlist_keys = [env_key, _GROUP_USER_ENV.get(platform), _GROUP_CHAT_ENV.get(platform), *allowlist_keys]
+            entry = _registry_entry(platform)
+            # A group allowlist alone must not silence DM pairing: only platforms that opt in.
+            if authz_field(platform.value, "allowlist_suppresses_pairing", entry):
+                allowlist_keys = [authz_field(platform.value, "allowed_users_env", entry) or "",
+                                  _GROUP_USER_ENV.get(platform), _group_chat_env(platform, entry), *allowlist_keys]
         if any(key and _auth_env(key).strip() for key in allowlist_keys):
             return "ignore"
         return "pair"

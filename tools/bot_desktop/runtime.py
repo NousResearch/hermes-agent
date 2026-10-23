@@ -602,9 +602,11 @@ def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
     blocker = None
     image_switch = None
     if missing:
-        blocker = (f"The terminal backend's sandbox image lacks {', '.join(missing)}. Use "
-                   f"{sandbox_host.SANDBOX_IMAGE_HINT} as terminal.{where.backend}_image (the default sandbox base "
-                   f"plus the desktop stack), or set bot_desktop.placement: gateway.")
+        advice = sandbox_host.plugin_image_advice(where.backend) or (
+            f"use {sandbox_host.SANDBOX_IMAGE_HINT} as terminal.{where.backend}_image (the default sandbox base "
+            f"plus the desktop stack)")
+        blocker = (f"The terminal backend's sandbox image lacks {', '.join(missing)}. {advice[0].upper()}{advice[1:]}, "
+                   f"or set bot_desktop.placement: gateway.")
         if where.backend == "docker":
             # The usual reason on an upgraded install: the persisted container predates the default
             # flip and was kept on purpose. The pane offers the switch instead of a config hint.
@@ -654,7 +656,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
 
-    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/singularity;
+    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/a streaming plugin backend;
     ``sandbox_host``), or on the gateway host (the rest of this function). A sandbox backend that cannot host
     a screen refuses rather than silently falling back to the host beside it.
 

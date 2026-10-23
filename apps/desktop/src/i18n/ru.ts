@@ -1,13 +1,17 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { ruAuxTasks } from './ru_aux_tasks'
 import { ruBoot } from './ru_boot'
+import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
+import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
 import { ruModelMenu } from './ru_model_menu'
+import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
+import { ruNotifications } from './ru_notifications'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
@@ -37,6 +41,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+  catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
   firstRun: ruFirstRun,
@@ -190,15 +195,6 @@ export const ruOverrides = {
   },
   ...ruNotices,
 
-  billingBlock: {
-    titleNous: 'Кредиты Nous закончились',
-    titleProvider: provider => `Кредиты закончились — ${provider}`,
-    fallbackMessage: 'В вашем аккаунте закончились кредиты. Пополните баланс, чтобы продолжить.',
-    openBilling: 'Открыть биллинг',
-    addCredits: 'Пополнить кредиты',
-    dismiss: 'Скрыть'
-  },
-
   titlebar: {
     hideSidebar: 'Скрыть боковую панель',
     showSidebar: 'Показать боковую панель',
@@ -351,6 +347,37 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
+    billing: {
+      keepGoingOnCredits: {
+        title: 'Продолжать за кредиты',
+        description: 'Тратить кредиты, когда включённый объём закончится. Выключено: Hermes ждёт сброса.',
+        approveInBrowser:
+          'Чтобы изменить это, одобрите удалённые траты в браузере. Изменение применится сразу после одобрения.',
+        openAgain: 'Открыть снова',
+        cancel: 'Отмена',
+        approvedRetry: 'Удалённые траты одобрены, но изменение не сохранилось.',
+        tryAgain: 'Повторить'
+      },
+      state: {
+        usage: {
+          window: {
+            today: 'Сегодня',
+            week: 'Эта неделя',
+            month: 'Этот месяц',
+            topTier: 'Крупные модели (месяц)',
+            barLabel: title => `${title}: использовано включённого объёма`,
+            captionPaused: 'Приостановлено: платёж по подписке не прошёл',
+            captionPausedOther: 'Приостановлено: см. раздел «Оплата» на портале',
+            captionTopTierUsedUp: 'Месячный лимит исчерпан, остальное оплачивается кредитами',
+            captionTopTierUsedUpKeepGoingOff: 'Месячный лимит исчерпан, другие включённые модели работают',
+            captionResetsIn: duration => `Сброс через ${duration}`,
+            captionIncluded: 'Включённый объём',
+            valueUsed: percent => `использовано ${percent}`
+          }
+        }
+      }
+    },
     subpages: {
       appearanceTheme: 'Тема',
       appearanceTypography: 'Шрифты и масштаб',
@@ -429,52 +456,7 @@ export const ruOverrides = {
       plugins: 'Плагины'
     },
     plugins: ruPluginSettings.plugins,
-    notifications: {
-      title: 'Уведомления',
-      intro: 'Системные уведомления (не всплывающие внутри приложения). Настраивается для каждого устройства.',
-      enableAll: 'Включить уведомления',
-      enableAllDesc: 'Если выключено — все уведомления ниже будут заглушены.',
-      focusedHint: 'Оповещения о завершении срабатывают только пока Hermes в фоне.',
-      kinds: {
-        approval: {
-          label: 'Нужно одобрение',
-          description: 'Команда ожидает вашего одобрения или отклонения.'
-        },
-        input: {
-          label: 'Нужен ввод',
-          description: 'Hermes задал вопрос или требует пароль/секрет.'
-        },
-        turnDone: {
-          label: 'Ответ готов',
-          description: 'Ход завершился, пока Hermes был в фоне.'
-        },
-        turnError: {
-          label: 'Ход не удался',
-          description: 'Ошибки фоновых ходов.'
-        },
-        backgroundDone: {
-          label: 'Фоновая задача завершена',
-          description: 'Фоновая команда терминала выполнена.'
-        },
-        credits: {
-          label: 'Оповещения о кредитах',
-          description: 'Доступ к кредитам приостановлен или восстановлен.'
-        },
-        plugin: {
-          label: 'Уведомления плагинов',
-          description: 'Плагин приложения отправил уведомление, пока Hermes был в фоне.'
-        }
-      },
-      test: 'Отправить тестовое уведомление',
-      testTitle: 'Hermes',
-      testBody: 'Уведомления работают.',
-      testSent:
-        'Тест отправлен. Если ничего не появилось, проверьте разрешения на уведомления в системе и режим «Не беспокоить».',
-      testUnsupported: 'Эта система не поддерживает системные уведомления.',
-      completionSoundTitle: 'Звук завершения',
-      completionSoundDesc: 'Воспроизводится, когда ход агента завершён. Выберите пресет и прослушайте здесь.',
-      completionSoundPreview: 'Прослушать'
-    },
+    notifications: ruNotifications,
     sections: {
       model: 'Модель',
       chat: 'Чат',
@@ -1301,59 +1283,7 @@ export const ruOverrides = {
       deepLinkErrorUrl: 'Разрешены только URL серверов http:// и https://.',
       deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.'
     },
-    model: {
-      moaPreset: 'Пресет',
-      moaDescription:
-        'Настройте именованные пресеты, которые появятся как модели провайдера Mixture of Agents. Модель-агрегатор выполняет каждый шаг цикла инструментов; почти вся стоимость запуска списывается у её провайдера. По умолчанию референсные модели дают совет один раз на сообщение пользователя.',
-      moaAggregator: 'Модель-агрегатор',
-      moaAggregatorBilled: 'исполняющая модель · на неё приходится стоимость запуска',
-      moaReferenceHint: 'по умолчанию советует один раз за ход',
-      setupProviderFallback: 'провайдер',
-      setUpProvider: name => `Настроить ${name}`,
-      staleAuxBefore: (count, names) => `Вспомогательные задачи (${count}: ${names}) по-прежнему используют `,
-      staleAuxAfter: ', а не основную модель.',
-      staleAuxOtherProviders: 'других провайдеров',
-      moaEnabled: 'Включено',
-      moaSetDefault: 'Сделать основным',
-      moaNewPresetPlaceholder: 'новый пресет',
-      moaAddPreset: 'Добавить пресет',
-      customModel: 'Своя модель…',
-      customModelPlaceholder: 'ID модели',
-      chooseFromList: 'Выбрать из списка',
-      moaDefault: 'По умолчанию:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Отключить' : 'Включить'} референс ${index}`,
-      moaReferenceTitle: index => `Референс ${index}`,
-      moaAddReference: 'Добавить референсную модель',
-      loading: 'Загрузка конфигурации модели…',
-      appliesDesc:
-        'Применяется к новым сеансам. Для горячей смены модели в активном чате используйте выборщик модели в композере.',
-      provider: 'Провайдер',
-      model: 'Модель',
-      applying: 'Применение…',
-      defaultsLabel: 'По умолчанию',
-      reasoning: 'Рассуждения',
-      reasoningOff: 'Выкл',
-      speed: 'Скорость',
-      speedStandard: 'Стандартная',
-      defaultsFailed: 'Не удалось сохранить модель по умолчанию',
-      auxiliaryTitle: 'Вспомогательные модели',
-      resetAllToMain: 'Сбросить всё на основную',
-      staleAuxDismiss: 'Больше не показывать',
-      auxiliaryDesc:
-        'Вспомогательные задачи по умолчанию выполняются основной моделью. Назначьте отдельную модель любой задаче, чтобы переопределить.',
-      setToMain: 'На основную',
-      change: 'Изменить',
-      autoUseMain: 'авто · использовать основную модель',
-      inheritMainEffort: 'наследовать · усилие основной модели',
-      inheritsFrom: task => `наследует ${task}`,
-      followTask: task => `Как ${task}`,
-      providerDefault: '(по умолчанию провайдера)',
-      fallbackAdd: 'Добавить запасную',
-      fallbackEmpty: 'Запасных моделей нет — используется модель по умолчанию, если она не падает.',
-      notInCatalog: 'нет в списке моделей этого провайдера — вызовы могут уходить на запасную.',
-      moaTitle: 'Смесь агентов',
-      tasks: ruAuxTasks
-    },
+    model: ruModelSettings,
     providers: {
       connectAccount: 'Подключить аккаунт',
       haveApiKey: 'Ввести API-ключ вместо этого?',
@@ -1504,17 +1434,7 @@ export const ruOverrides = {
       }
     }
   },
-  skillDeepLink: {
-    installTitle: (name: string) => `Установить «${name}»?`,
-    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
-    installTo: 'Установить в',
-    thisComputer: 'Этот компьютер',
-    installing: 'Установка…',
-    installComplete: (name: string) => `«${name}» установлен`,
-    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-    installed: 'Установленные',
-    source: 'Источник'
-  },
+  skillDeepLink: ruSkillDeepLink,
   skills: {
     plugins: {
       pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
@@ -2806,43 +2726,6 @@ export const ruOverrides = {
     snippetsDesc: 'Выберите стартовый промпт, чтобы вставить в композер.',
     dropFiles: 'Перетащите файлы, чтобы прикрепить',
     dropSession: 'Перетащите, чтобы связать этот чат',
-    mcpSuggestions: {
-      label: server => `Добавить ${server}`,
-      tip: keyword => `Предложено, потому что вы упомянули «${keyword}» — нажмите, чтобы подключить`,
-      connecting: server => `Подключаем ${server}…`,
-      cancelTip: 'Нажмите, чтобы отменить',
-      added: server => `Добавлен ${server}`,
-      addedTip: 'Подключено — его инструменты готовы в этом чате',
-      connectFailed: server => `Не удалось подключить ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Использовать навык: ${skill}`,
-      tip: skill => `Вы упомянули «${skill}» — нажмите, чтобы начать с этого навыка`,
-      done: skill => `Добавлено /${skill}`,
-      doneTip: 'Навык загрузится при отправке'
-    },
-    githubSuggestions: {
-      label: 'Настроить GitHub',
-      tip: 'GitHub работает через навыки gh CLI здесь — нажмите, чтобы подключить аккаунт',
-      done: 'Добавлено /github-auth',
-      doneTip: 'Отправьте сообщение, и агент проведёт вас через вход в GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Переподключить ${server}`,
-      tip: server => `Недавний вызов ${server} завершился ошибкой соединения`,
-      working: server => `Переподключаем ${server}…`,
-      workingTip: 'Нажмите, чтобы отменить',
-      done: server => `Переподключено ${server}`,
-      doneTip: 'Свежие учётные данные активны в этом чате',
-      failed: server => `Не удалось переподключить ${server}`
-    },
-    cronSuggestions: {
-      label: 'Запланировать это',
-      tip: phrase => `«${phrase}» звучит как повторяющееся — запланируйте выполнение по расписанию`,
-      prefix: 'Настроить это как запланированную задачу:',
-      done: 'Отмечено для планирования',
-      doneTip: 'Отправьте, и агент создаст задачу'
-    },
     snippets: {
       codeReview: {
         label: 'Рецензия кода',
@@ -3234,7 +3117,32 @@ export const ruOverrides = {
     wasPrice: 'было',
     customModel: 'Своя модель',
     addCustomModelAction: 'Добавить свою модель…',
-    customModelPlaceholder: 'Введите id модели, например openai/gpt-5'
+    customModelPlaceholder: 'Введите id модели, например openai/gpt-5',
+    today: 'Сегодня',
+    week: 'Неделя',
+    month: 'Месяц',
+    topTier: 'Крупные модели (в месяц)',
+    included: 'Все модели ниже включены',
+    pausedRenewal: 'пауза: оплата не прошла',
+    pausedOther: 'пауза',
+    includedUsedUp: 'Включённый объём исчерпан',
+    limitReached: name => `Достигнут ${name}`,
+    limitNames: {
+      day: 'дневной лимит',
+      month: 'месячный лимит',
+      top_tier: 'месячный лимит крупных моделей',
+      week: 'недельный лимит'
+    },
+    limitThenCredits: 'платные модели теперь используют ваши кредиты (оплата по факту)',
+    limitThenCreditsLarge: 'крупные модели теперь используют ваши кредиты (оплата по факту)',
+    limitThenWait: 'до сброса только бесплатные модели',
+    limitThenWaitLarge: 'крупные модели приостановлены до сброса',
+    percentUsed: percent => `${percent} использовано`,
+    resetsIn: duration => `сброс через ${duration}`,
+    usageLevels: { free: 'Бесплатно', top_tier: 'Крупная' },
+    sectionRecommended: 'Рекомендуемые',
+    sectionOther: 'Другие модели',
+    largeFootnote: 'Крупные модели также расходуют месячный лимит крупных моделей.'
   },
 
   modelVisibility: {
@@ -3632,6 +3540,13 @@ export const ruOverrides = {
   },
   assistant: {
     thread: {
+      errorSwitchToModel: (model: string, note?: string) =>
+        note ? `Переключиться на ${model} (${note})` : `Переключиться на ${model}`,
+      errorSwitchModelFailed: 'Не удалось переключить модель',
+      errorUseCredits: 'Включить «Продолжать за кредиты»',
+      errorUseCreditsFailed: 'Не удалось включить «Продолжать за кредиты»',
+      errorAddCredits: 'Пополнить кредиты',
+      errorOpenBillingSettings: 'Открыть настройки оплаты',
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
       loadingResponse: 'Hermes загружает ответ',
@@ -3652,6 +3567,7 @@ export const ruOverrides = {
       branchNewChat: 'Ветка в новый чат',
       react: 'Реакция',
       dismissError: 'Скрыть ошибку',
+      errorCodes: ruErrorCodes,
       filesChanged: count => `${count} ${RU_PLURAL(count, 'файл изменён', 'файла изменено', 'файлов изменено')}`,
       reviewChanges: 'Проверить',
       readAloudFailed: 'Не удалось зачитать вслух',

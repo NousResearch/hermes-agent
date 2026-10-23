@@ -494,12 +494,12 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         pass
 
-    # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
-    # cross-platform creation time.  Quantize to centiseconds so repeated reads
-    # of the same process compare equal without float-precision fragility.
+    # No /proc (macOS / Windows): psutil, quantized to centiseconds for stable equality.
+    # process_birth: macOS's clock-step-stable kernel start (#140580); unchanged with no step.
     try:
         import psutil  # type: ignore
-        return round(psutil.Process(pid).create_time() * 100)
+        from hermes_cli.process_identity import process_birth
+        return round(process_birth(psutil.Process(pid)) * 100)
     except Exception:
         return None
 
@@ -1513,27 +1513,6 @@ def remove_pid_file() -> None:
         _clear_running_pid_cache()
 
 
-def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optional[int]) -> bool:
-    """True when a foreign scoped-lock record no longer names a live gateway: PID missing/dead,
-    start time changed (PID reuse), or the live process is not a gateway -- a readable cmdline says
-    so (also catches boot-time PID+start_time collisions; systemd spawns deterministically);
-    cmdline unreadable AND start_time unknown on either side => the lock record's own argv is the
-    only signal left. Stopped (SIGTSTP) processes look alive to _pid_exists; stale so --replace
-    works."""
-    if existing_pid is None or not _pid_exists(existing_pid):
-        return True
-    recorded_start = existing.get("start_time")
-    current_start = _get_process_start_time(existing_pid)
-    if _start_times_conflict(recorded_start, current_start):
-        return True
-    if not _looks_like_gateway_process(existing_pid):
-        if _read_process_cmdline(existing_pid) is not None:
-            return True
-        if None in (recorded_start, current_start) and not _record_looks_like_gateway(existing):
-            return True
-    return _process_is_stopped(existing_pid)
-
-
 def _process_is_stopped(pid: int) -> bool:
     """True for a stopped / tracing-stop state (T/t) in ``/proc/<pid>/status``."""
     with contextlib.suppress(OSError):
@@ -1548,6 +1527,8 @@ def acquire_scoped_lock(
 ) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity (one Telegram token across homes).
 
+    ``metadata={"owner_kind": "process"}`` allows a non-gateway owner such as
+    a setup process. Its PID/start-time identity still gates stale recovery.
     Raises :class:`gateway.status_lock_dir.ScopedLockDirUnusable` (logged once per dir with the repair) when this token may
     not use the lock dir at all."""
     lock_path = _get_scope_lock_path(scope, identity)
@@ -1562,6 +1543,8 @@ def acquire_scoped_lock(
 def _acquire_scoped_lock_at(
     lock_path: Path, scope: str, identity: str, metadata: Optional[dict[str, Any]]
 ) -> tuple[bool, Optional[dict[str, Any]]]:
+    from gateway.status_scoped_locks import _scoped_lock_record_is_stale
+
     make_user_dir(lock_path.parent, parents=True, exist_ok=True)
     # An existing lock this token may not read (left by an elevated gateway) must raise here:
     # ``_read_json_file`` would call it empty and O_EXCL "in use", a conflict with no holder.

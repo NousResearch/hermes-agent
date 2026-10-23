@@ -259,6 +259,29 @@ def test_provider_alias_spelling_and_auto_pick_keep_the_profiles_route(tmp_path,
         ('custom', 'http://localhost:1234/v1', 'sk-local')
 
 
+def test_bare_pick_of_a_shadowed_custom_entry_keeps_the_profiles_route(tmp_path, monkeypatch):
+    """#140107: an entry named like a canonical built-in (`providers: deepseek`, or the legacy
+    list) is shadowed by the built-in in raw provider resolution, so a Desktop pick of its row
+    arrives as the entry's bare key. Freezing that spelling pins the session to the built-in —
+    a different provider than the row the user picked — and drops the entry's endpoint and key
+    pointer with it. The entry's own alias set is what says the pick is the same route."""
+    from gateway.session_policy import build_policy
+    for var in ('DEEPSEEK_API_KEY', 'OPENAI_API_KEY'):
+        monkeypatch.delenv(var, raising=False)
+    new_style = {'providers': {'deepseek': {'name': 'deepseek', 'api': 'https://api.deepseek.com',
+                                            'key_env': 'DEEPSEEK_ENTRY_KEY', 'transport': 'chat_completions',
+                                            'default_model': 'deepseek-flash'}}}
+    legacy = {'custom_providers': [{'name': 'deepseek', 'base_url': 'https://api.deepseek.com',
+                                    'key_env': 'DEEPSEEK_ENTRY_KEY', 'model': 'deepseek-flash'}]}
+    for extra in (new_style, legacy):
+        cfg = {**extra, 'model': {'default': 'deepseek-flash', 'provider': 'custom:deepseek',
+                                  'base_url': 'https://api.deepseek.com', 'key_env': 'DEEPSEEK_ENTRY_KEY'}}
+        model = build_policy(dict(cwd=str(tmp_path), model='deepseek-flash', provider='deepseek'), cfg).config()['model']
+        assert model['provider'] == 'custom:deepseek', extra
+        assert model['base_url'] == 'https://api.deepseek.com', extra
+        assert model['key_env'] == 'DEEPSEEK_ENTRY_KEY', extra
+
+
 def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
     freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""

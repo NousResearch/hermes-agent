@@ -305,13 +305,20 @@ export function backendProcesses(sandbox: CoreSandbox): ProcInfo[] {
  * `hermes gateway stop` for the sandbox profile, run with the backend's own
  * interpreter (argv[0] of the live `gateway run`). Attach-mode Desktop never
  * owns the gateway, so this is how a test proves teardown works when asked.
+ * `interrupt` passes `--yes`: stop refuses while a turn is live unless told to
+ * interrupt it.
  */
-export function stopSandboxGateway(sandbox: CoreSandbox): { code: number | null; output: string } {
+export function stopSandboxGateway(
+  sandbox: CoreSandbox,
+  { interrupt = false }: { interrupt?: boolean } = {}
+): { code: number | null; output: string } {
   const [backend] = backendProcesses(sandbox)
   // argv[0], unquoted (a Windows command line quotes a path with spaces).
   const python = /^"([^"]+)"|^(\S+)/.exec(backend?.cmdline ?? '')?.slice(1).find(Boolean) || 'python3'
 
-  const result = spawnSync(python, ['-m', 'hermes_cli.main', 'gateway', 'stop'], {
+  const args = ['-m', 'hermes_cli.main', 'gateway', 'stop', ...(interrupt ? ['--yes'] : [])]
+
+  const result = spawnSync(python, args, {
     cwd: REPO_ROOT,
     env: coreAppEnv(sandbox),
     encoding: 'utf8',
@@ -339,6 +346,35 @@ export interface WsRecorder {
 
 export function recordWebSockets(page: Page): WsRecorder {
   const rec: WsRecorder = { sockets: [], events: [], sent: [] }
+
+  // A new main-frame document (reload, goto) tears down every socket the old
+  // one held, but Playwright forgets its sockets at that commit without
+  // emitting their 'close', so a pre-reload socket would read as live forever.
+  // Retire them at the commit. A same-document (hash) navigation has no
+  // navigation request, so it never retires a live socket.
+  let documentPending = false
+
+  page.on('request', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentPending = true
+    }
+  })
+  page.on('requestfailed', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentPending = false
+    }
+  })
+  page.on('framenavigated', frame => {
+    if (frame !== page.mainFrame() || !documentPending) {
+      return
+    }
+
+    documentPending = false
+
+    for (const entry of rec.sockets) {
+      entry.closed = true
+    }
+  })
 
   page.on('websocket', ws => {
     if (!ws.url().includes('/api/ws')) {

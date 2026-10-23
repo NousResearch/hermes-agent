@@ -107,6 +107,10 @@ class MessageEvent:
     # of ``internal``: these events still go through user authorization. Appended after
     # ``reply_expected`` for positional compat (see the field-order rule above).
     inherit_channel_pin: bool = False
+    # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
+    # ``message_id`` with new text, so native admission keys it apart from the original send.
+    # Appended for positional compat (see the field-order rule above).
+    edit_revision: Optional[str] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

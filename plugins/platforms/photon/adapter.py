@@ -635,10 +635,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     splits_long_messages = True
-    # Photon (iMessage) has no real edit API for already-sent messages.
-    # Mark it explicitly so streaming suppresses the visible cursor instead
-    # of leaving a stale tofu square (▉) behind when edit attempts fail.
-    SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
+    serial_receive_loop = True  # the /inbound NDJSON loop awaits each line before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))

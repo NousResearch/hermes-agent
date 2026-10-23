@@ -1,6 +1,7 @@
 import { foldPersonalityName } from '@/lib/personalities'
 import { asText, normalize } from '@/lib/text'
-import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
+import { localShowReasoning } from '@/store/reasoning-disclosure'
+import type { ConfigFieldSchema, HermesConfig, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
 import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
 
@@ -256,6 +257,32 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
   return clone
 }
 
+// Reasoning Blocks edits what local surfaces show, and they read the local key a local
+// `/reasoning show|hide` saves (`display.platforms.cli.show_reasoning`) before the global one.
+// The schema has no entry for that per-platform key, so the field stays on the global key and
+// shows the local value, and a change writes both.
+const LOCAL_SHOW_REASONING = 'display.platforms.cli.show_reasoning'
+
+/** The value a Settings field shows. A quoted Reasoning Blocks value reads as the gateway's `_norm_bool`. */
+export function configFieldValue(config: HermesConfigRecord, key: string): unknown {
+  if (key !== 'display.show_reasoning') {
+    return getNested(config, key)
+  }
+
+  const value = localShowReasoning((config as HermesConfig).display)
+
+  return typeof value === 'string' ? GATEWAY_TRUTHY.has(value.trim().toLowerCase()) : value
+}
+
+const GATEWAY_TRUTHY = new Set(['true', '1', 'yes', 'on', 'raw', 'verbose'])
+
+/** The config after a Settings field edit. */
+export function setConfigField(config: HermesConfigRecord, key: string, value: unknown): HermesConfigRecord {
+  const next = setNested(config, key, value)
+
+  return key === 'display.show_reasoning' ? setNested(next, LOCAL_SHOW_REASONING, value) : next
+}
+
 function personalityOptions(config: HermesConfigRecord): string[] {
   // The Python runtime (`hermes_cli.personality.available_personalities`) honours both
   // the root-level `personalities` block and `agent.personalities` (agent wins on a name
@@ -266,11 +293,14 @@ function personalityOptions(config: HermesConfigRecord): string[] {
   // whitespace-padded, or neutral-named block never surfaces a row the runtime can't
   // resolve, and a root/agent case clash dedupes to one canonical name (#123297).
   const customNames: string[] = []
+
   for (const key of ['personalities', 'agent.personalities']) {
     const block = getNested(config, key)
+
     if (isPlainObject(block)) {
       for (const name of Object.keys(block)) {
         const folded = foldPersonalityName(name)
+
         if (folded) {
           customNames.push(folded)
         }

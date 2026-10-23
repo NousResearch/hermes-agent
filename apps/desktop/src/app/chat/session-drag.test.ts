@@ -3,12 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane } from '@/components/pane-shell/tree/store'
+import { $pinnedSessionIds } from '@/store/layout'
 import { requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId } from '@/store/session'
+import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
+import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { startSessionDrag } from './session-drag'
+import { NO_PROJECT_ID } from './sidebar/projects/workspace-groups'
 
 /**
  * A session drop resolves its target by rect-testing the chat surfaces in the
@@ -31,6 +34,11 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
   closeTreePane: vi.fn()
 }))
 vi.mock('./composer/focus', () => ({ requestComposerInsertRefs: vi.fn() }))
+vi.mock('@/store/projects', () => ({
+  moveSessionToProject: vi.fn().mockResolvedValue(undefined),
+  projectIdForCwd: vi.fn(() => null)
+}))
+vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
 
 const ZONE = { left: 0, top: 0, right: 1000, bottom: 800 }
 const COMPOSER = { left: 100, top: 700, right: 900, bottom: 780 }
@@ -97,6 +105,8 @@ afterEach(() => {
   $layoutTree.set(null)
   $selectedStoredSessionId.set(null)
   $sessionTiles.set([])
+  $sessions.set([])
+  $pinnedSessionIds.set([])
 })
 
 describe('session drop targeting across stacked tabs', () => {
@@ -170,5 +180,169 @@ describe('session drop targeting across stacked tabs', () => {
 
     expect(requestFreshSession).toHaveBeenCalled()
     expect(closeTreePane).not.toHaveBeenCalled()
+  })
+})
+
+/** A sidebar project row, exactly as `ProjectOverviewRow` tags it. */
+function mountProjectRow(id: string, box = { left: 0, top: 0, right: 200, bottom: 40 }) {
+  const row = document.createElement('div')
+  row.dataset.sessionsProject = id
+  document.body.appendChild(row)
+  stubRect(row, box)
+
+  return row
+}
+
+describe('session drop targeting onto a sidebar project row', () => {
+  beforeEach(() => {
+    $sessions.set([{ id: 'dragged', cwd: '', _lineage_root_id: null } as never])
+  })
+
+  it('moves the dragged session to the project row it is dropped on', () => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+    mountProjectRow('proj-a')
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect(moveSessionToProject).toHaveBeenCalledWith('dragged', 'proj-a', 'default')
+    // A resolved project-row target takes priority: nothing else commits.
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(requestComposerInsertRefs).not.toHaveBeenCalled()
+  })
+
+  it('is not a target for Home — there is no folder to move into', () => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+    mountProjectRow(NO_PROJECT_ID)
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect(moveSessionToProject).not.toHaveBeenCalled()
+  })
+
+  it('is not a target for the session’s own current project', () => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+    mountProjectRow('proj-a')
+    vi.mocked(projectIdForCwd).mockReturnValue('proj-a')
+    $sessions.set([{ id: 'dragged', cwd: '/repos/proj-a', _lineage_root_id: null } as never])
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect(moveSessionToProject).not.toHaveBeenCalled()
+  })
+})
+
+/** The sidebar Pinned section, exactly as `SidebarSessionsSection` tags it. */
+function mountPinnedSection(box = { left: 0, top: 0, right: 200, bottom: 120 }) {
+  const section = document.createElement('div')
+  section.setAttribute('data-session-pin-drop', '')
+  document.body.appendChild(section)
+  stubRect(section, box)
+
+  return section
+}
+
+describe('session drop targeting onto the Pinned section', () => {
+  beforeEach(() => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+  })
+
+  it('pins the dragged session under its durable lineage id', () => {
+    $sessions.set([{ id: 'dragged', cwd: '', _lineage_root_id: 'root-1' } as never])
+    mountPinnedSection()
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect($pinnedSessionIds.get()).toEqual(['root-1'])
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(requestComposerInsertRefs).not.toHaveBeenCalled()
+  })
+
+  it('lights the section while hovered and clears it on release', async () => {
+    const section = mountPinnedSection()
+    const row = document.getElementById('row')!
+
+    startSessionDrag({ id: 'dragged', profile: 'default', title: 'Dragged chat' }, {
+      button: 0,
+      clientX: 0,
+      clientY: 0,
+      currentTarget: row,
+      pointerId: 1
+    } as unknown as ReactPointerEvent<HTMLElement>)
+    window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 100, clientY: 20 }))
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    expect(section.getAttribute('data-session-drop-hover')).toBe('true')
+
+    window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 20 }))
+    expect(section.hasAttribute('data-session-drop-hover')).toBe(false)
+  })
+
+  it('keeps an already-pinned session in place when its tile tab is dropped on Pinned', () => {
+    $sessions.set([{ id: 'dragged', cwd: '', _lineage_root_id: 'root-1' } as never])
+    $pinnedSessionIds.set(['root-1', 'other'])
+    const section = mountPinnedSection()
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect($pinnedSessionIds.get()).toEqual(['root-1', 'other'])
+    expect(section.hasAttribute('data-session-drop-hover')).toBe(false)
+  })
+
+  it('is not a target for a row dragged from inside Pinned — that reorders', () => {
+    const section = mountPinnedSection()
+    const row = document.getElementById('row')!
+    section.appendChild(row)
+
+    dragTo(row, 100, 20)
+
+    expect($pinnedSessionIds.get()).toEqual([])
+  })
+})
+
+describe('session drop targeting from Pinned back onto a session list', () => {
+  beforeEach(() => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+    $sessions.set([{ id: 'dragged', cwd: '', _lineage_root_id: 'root-1' } as never])
+    $pinnedSessionIds.set(['root-1'])
+  })
+
+  /** A pinned row sitting in Pinned (top), above the Recents list (below). */
+  function mountPinnedAndList() {
+    const pinned = mountPinnedSection({ left: 0, top: 0, right: 200, bottom: 100 })
+    const row = document.getElementById('row')!
+    pinned.appendChild(row)
+    const list = document.createElement('div')
+    list.setAttribute('data-session-unpin-drop', '')
+    document.body.appendChild(list)
+    stubRect(list, { left: 0, top: 100, right: 200, bottom: 600 })
+
+    return row
+  }
+
+  it('unpins a pinned row dropped onto the session list', () => {
+    dragTo(mountPinnedAndList(), 100, 300)
+
+    expect($pinnedSessionIds.get()).toEqual([])
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('leaves the pin alone when the pinned row is dropped back inside Pinned', () => {
+    dragTo(mountPinnedAndList(), 100, 50)
+
+    expect($pinnedSessionIds.get()).toEqual(['root-1'])
+  })
+
+  it('never unpins a row that was not dragged out of Pinned', () => {
+    mountPinnedAndList()
+    const outside = document.createElement('div')
+    document.body.appendChild(outside)
+
+    dragTo(outside, 100, 300)
+
+    expect($pinnedSessionIds.get()).toEqual(['root-1'])
   })
 })

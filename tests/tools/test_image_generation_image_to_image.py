@@ -37,7 +37,7 @@ def cfg_home(tmp_path, monkeypatch):
 
 
 def _write_cfg(home, cfg: dict):
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +113,9 @@ class TestMandatoryKeysSurviveWhitelist:
 class TestFalRouting:
     def _patch_submit(self, monkeypatch, image_tool, capture: dict):
         class _Handler:
+            def iter_events(self_inner, **_):
+                return iter(())
+
             def get(self_inner):
                 return {"images": [{"url": "https://out/img.png", "width": 1, "height": 1}]}
 
@@ -174,13 +177,13 @@ class TestFalRouting:
 
 class _EditCapableProvider(ImageGenProvider):
     def __init__(self):
-        self.received: Dict[str, Any] = {}
+        self.received: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
         return "editcap"
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {"modalities": ["text", "image"], "max_reference_images": 4}
 
     def generate(self, prompt, aspect_ratio="landscape", *, image_url=None,

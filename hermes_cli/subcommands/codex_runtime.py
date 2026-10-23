@@ -48,7 +48,7 @@ def build_codex_runtime_parser(subparsers) -> None:
         "--json", action="store_true", help="Print the migration report as JSON (for automation)")
     migrate_parser.set_defaults(func=cmd_codex_runtime_migrate)
 
-    def _print_help(args):  # noqa: ANN001 — bare `hermes codex-runtime` lists the actions
+    def _print_help(args):
         parser.print_help()
         return 0
 

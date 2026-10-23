@@ -933,6 +933,24 @@ class TestTranscribeXAI:
         data = call_kwargs.kwargs.get("data", call_kwargs[1].get("data", {}))
         assert data.get("language") == "fr"
         assert data.get("format") == "true"
+        assert data.get("model") == "grok-voice-transcribe-2.0"
+
+    def test_omitted_model_pins_transcribe_2(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        """xAI still defaults an omitted model to transcribe-1.0. Always send one."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        monkeypatch.delenv("STT_XAI_MODEL", raising=False)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+            _transcribe_xai(sample_ogg, "")
+
+        data = mock_post.call_args.kwargs["data"]
+        assert data.get("model") == "grok-voice-transcribe-2.0"
 
     def test_oauth_credentials_ignore_stt_base_url_override(
         self,
@@ -991,6 +1009,39 @@ class TestGetProviderXAI:
 # transcribe_audio — xAI dispatch
 # ============================================================================
 
+class TestTranscribeAudioXAIDispatch:
+    def test_model_default_is_voice_transcribe_2(self, sample_ogg, monkeypatch):
+        monkeypatch.delenv("STT_XAI_MODEL", raising=False)
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-2.0"
+
+    def test_config_model_overrides_default(self, sample_ogg):
+        config = {"provider": "xai", "xai": {"model": "grok-voice-transcribe-1.0"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-1.0"
+
+    def test_legacy_grok_stt_alias_uses_current_default(self, sample_ogg):
+        config = {"provider": "xai", "xai": {"model": "grok-stt"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-2.0"
 
 # ============================================================================
 # _transcribe_elevenlabs
@@ -1300,6 +1351,50 @@ class TestShellSafety:
         assert invocation["kwargs"].get("env") is not None
         assert not invocation["kwargs"].get("shell")
 
+    @pytest.mark.parametrize(
+        ("language", "expected"),
+        [("ZH", "zh"), ("zh-Hant", "zh"), ("繁體中文", "zh"), ("not-a-language", "en")],
+    )
+    def test_local_command_normalizes_language_or_uses_default(
+        self, monkeypatch, sample_wav, tmp_path, language, expected
+    ):
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV, _transcribe_local_command
+
+        output_dir = tmp_path / "transcript-output"
+        output_dir.mkdir()
+        monkeypatch.setenv(
+            LOCAL_STT_COMMAND_ENV,
+            "whisper {input_path} --language {language} --output_dir {output_dir}",
+        )
+
+        class _TempDir:
+            def __enter__(self):
+                return str(output_dir)
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        invocation = {}
+
+        def fake_run(command, **kwargs):
+            invocation["command"] = command
+            (output_dir / "transcript.txt").write_text("safe", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            "tools.transcription_local.tempfile.TemporaryDirectory", lambda prefix=None: _TempDir()
+        )
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "tools.transcription_tools._resolve_stt_language", lambda provider: language
+        )
+
+        result = _transcribe_local_command(sample_wav, "base")
+
+        assert result["transcript"] == "safe"
+        language_index = invocation["command"].index("--language") + 1
+        assert invocation["command"][language_index] == expected
+
 
 class TestLocalModelLock:
     """#24767 — concurrent first-use must not double-load the whisper model."""
@@ -1560,7 +1655,7 @@ class TestExplicitOpenaiSelectionError:
             "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
         )
         monkeypatch.setattr(
-            "tools.transcription_tools._load_stt_config", lambda: {}
+            "tools.transcription_tools._load_stt_config", dict
         )
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
              patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
@@ -1585,7 +1680,7 @@ class TestExplicitOpenaiSelectionError:
         without an explicit provider choice."""
         self._no_openai_credentials(monkeypatch)
         monkeypatch.setattr(
-            "tools.transcription_tools._load_stt_config", lambda: {}
+            "tools.transcription_tools._load_stt_config", dict
         )
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
              patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \

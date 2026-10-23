@@ -189,22 +189,20 @@ requires trust in that plugin and its dependencies.
 
 ## Optional security tools
 
-PM owns the pinned `bws`, `tirith`, and `iron-proxy` packages in
+PM owns the pinned `bws` and `iron-proxy` packages in
 `pm/security_packages.py`. Their versions, artifact URLs, and SHA-256 hashes
 come from `pm/lock.json`. Downloads and publication use the shared tool store,
 not private installers under `$HERMES_HOME/bin`.
 
-For Tirith and iron-proxy, PM also acquires pinned signature files and checks
-that the release checksums cover the pinned archive. Package staging calls the
-integration's signature checker. Cosign and GPG checks remain conditional on
-available executables. Locked provenance files must still be available and
+For iron-proxy, PM also acquires pinned signature files and checks that the
+release checksums cover the pinned archive. Package staging calls the
+integration's signature checker. The GPG check remains conditional on an
+available executable. Locked provenance files must still be available and
 match their hashes. An explicit signature rejection aborts installation.
 External executables remain outside PM's hash and signature guarantees.
 
 `bws` and iron-proxy honor an executable on `PATH` before checking PM selection.
-Tirith honors `security.tirith_path`, then uses `PATH` before its PM selection
-for the default name. An explicit Tirith path never triggers a replacement
-download. Lazy installation obeys PM policy. Explicit install commands check
+Lazy installation obeys PM policy. Explicit install commands check
 and repair managed entries, including requests with `--force`.
 
 ## Developer workflow {#developer-workflow}
@@ -315,12 +313,14 @@ Then activate it; there is no separate setup command to remember:
 | Shell | Enter | Leave |
 |---|---|---|
 | Bash | `source ./activate` | `deactivate` |
+| fish | `source ./activate.fish` | `deactivate` |
 | PowerShell | `. .\activate.ps1` | `deactivate` |
 
 The leading dot and space in PowerShell are required. Executing
 `.\activate.ps1` without dot-sourcing does not provide the same session scope.
-The POSIX script uses Bash syntax. Use Bash for this recipe rather than `sh`,
-fish, or assuming that a Zsh startup file has Bash semantics.
+`activate` uses Bash syntax. Use Bash for this recipe rather than `sh`, or
+assuming that a Zsh startup file has Bash semantics; fish has its own
+`activate.fish`, which behaves the same.
 
 Each activation invokes PM's install/sync path and trusts the recorded tool
 digest instead of re-hashing every entry. PM still installs a missing tool and
@@ -341,6 +341,17 @@ Start in a clean shell rather than nesting this inside another venv.
 `deactivate` restores the environment values captured by the activation script,
 and removes the function and the prompt prefix.
 It does not uninstall packages or stop processes that you started.
+
+To run one command or script in that environment without activating a shell,
+prefix it with `scripts/run-in-hermes-env`. It applies the same environment to
+that command only, syncing first when there is none to inherit or the inherited
+one is stale, and leaves your shell untouched. `scripts/run_tests.sh` re-runs
+itself this way, and the repo's Python scripts hand themselves to it from their
+shebang.
+
+```bash
+scripts/run-in-hermes-env python scripts/release.py --help
+```
 
 Verify the interpreter and source before doing work:
 
@@ -418,7 +429,7 @@ before starting another Python process.
 ### Syncing after you edit pyproject.toml
 
 1. Edit `pyproject.toml`. Pin every dependency as the
-   [Dependency Pinning Policy](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md#dependency-pinning-policy)
+   [Dependency Pinning Policy](https://github.com/NousResearch/hermes-agent/blob/main/pm/AGENTS.md#dependency-pinning-policy)
    requires. Express platform limits with PEP 508 markers, or gate a whole
    extra in `[tool.hermes.extras-platforms]`.
 2. Relock:
@@ -428,7 +439,7 @@ before starting another Python process.
    ```
 
    This re-resolves `uv.lock` from `pyproject.toml` with the same settings CI
-   checks, including the 14-day `exclude-newer` quarantine. It changes no
+   checks, including the 3-day `exclude-newer` release-age check. It changes no
    environment. When the lock is already current, it says so and writes
    nothing. (`hermes pm lock --bump NAME VERSION` is a different operation: it
    pins a managed tool in `pm/lock.json` and does not touch `uv.lock`.)
@@ -502,7 +513,10 @@ references. `--offline` and `--cache` control dependency acquisition.
 For application environment builds, PM must already be able to start in the
 invoking Python. These builds are not an interpreter bootstrap. They do not modify a running application's
 imports or replace its selected environment. Nix's declarative uv2nix builds
-remain Nix-owned. Package-manager commands for unrelated projects or agent
+remain Nix-owned: `nix develop` still builds its dependencies with uv2nix, but
+runs them on the interpreter `pm/lock.json` pins (uv2nix cannot build a venv
+against a tarball interpreter, so only the interpreter comes from the lock).
+Package-manager commands for unrelated projects or agent
 sandboxes do not manage Hermes itself.
 
 ## Commands
@@ -524,7 +538,7 @@ hermes pm install chromium
 | `pm doctor` | Check installed tool identities, files, and digests against the lock. |
 | `pm repair` | Rebuild the recorded Python dependency set in a new generation, validate it, then select it. Does not update pins, features, or plugin configuration. |
 | `pm status` | Print the latest sync/update receipt as JSON, or report that no receipt exists. |
-| `pm gc` | Remove unreferenced tool-store entries, eligible download partials, and unused lease-managed Python generations. |
+| `pm gc` | Remove unreferenced tool-store entries, eligible download partials, unused lease-managed Python generations, and the `installs/INSTALL_KEY/` state of deleted checkouts (a worktree removed from a `.worktrees/` dir that still exists, or a clone under the data root; checkouts this process cannot see, such as a host install viewed from a container sharing the data root, are kept, as is any state whose install lock or generation lease is still held). The worktree pruner that runs at startup reclaims those orphaned state dirs too. |
 
 `pm env` excludes inherited process variables, including credentials. Its
 output can still reveal local installation paths; review it before sharing.
@@ -537,10 +551,11 @@ not substitutes for an installed application's update mechanism.
 | Command | Effect |
 |---|---|
 | `pm lock` | Relock `uv.lock` from `pyproject.toml`. Changes no environment; writes nothing when the lock is current. |
-| `pm lock --bump NAME VERSION` | Resolve and hash supported target artifacts, then write the tool pin to `pm/lock.json`. |
-| `pm update [names...]` | Query upstream versions, change tool pins, and install changed tools. |
+| `pm lock --bump NAME VERSION` | Resolve and hash supported target artifacts, write the tool pin to `pm/lock.json`, and regenerate the bootstrap pins in `scripts/install.sh` and `scripts/install.ps1`. |
+| `pm update [names...]` | Query upstream versions, change tool pins, regenerate the installers' bootstrap pins, and install changed tools. |
 | `pm update --check` | Query without writing. Exit 1 can mean updates exist; inspect output to distinguish an error. |
 | `pm update --target TARGET` | Resolve versions for the specified target. |
+| `pm update --skip-target TARGET` | Leave TARGET's pins unchanged (repeatable), for example `linux-arm64-bionic` while the termux pool lags upstream. Later runs still report the package as current. `pm lock --bump NAME VERSION` re-pins every target at a version, and `pm update --termux` repins a retired `linux-arm64-bionic` row. |
 | `pm update --uv` / `--npm` | Also refresh the Python or npm dependency resolution. |
 | `pm update --termux [--check]` | Repin the termux pool archives the rolling pool has retired (the runtime-lib pin table and the bionic lock rows). `--check` reports without writing and exits 1 when a pin is retired. |
 | `pm install --target TARGET NAME...` | Stage explicit cross-target packages without recording them as the host's installed runtime. The win32 `git` target pins a self-extracting PortableGit archive: staging it runs the vendor extractor and therefore requires a Windows host. |
@@ -567,6 +582,21 @@ other permanent failures. A successful probe followed by a range GET 403 or 404
 retains the CDN fallback: one serial attempt at the missing ranges. Extraction,
 verification and publication are not repeated. Python and npm package requests
 remain under uv and npm's own retry policies.
+
+## Release age and package mirrors
+
+Every Python package Hermes itself depends on must be at least three days old
+when Hermes locks it (uv's `exclude-newer`, enforced by CI's lock check), so a
+freshly published, possibly compromised release cannot reach `uv.lock`. Users
+install from that lock, and installing or enabling a plugin never re-checks
+dates, so package mirrors that publish no upload times work. The one exemption
+is CA trust stores (`certifi`): a release that distrusts a compromised CA is
+locked the day it ships, since waiting keeps the bad root trusted. Set a mirror with `index-url` in `pip.conf`,
+which Hermes passes to uv, or with `UV_INDEX_URL`.
+
+`hermes pm lock` is the one step that applies the check. Run against a mirror
+without upload times, it stops with `has no publish time`; use
+`https://pypi.org/simple` for that step.
 
 ## Diagnostics
 

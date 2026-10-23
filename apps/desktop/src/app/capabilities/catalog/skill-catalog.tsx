@@ -9,6 +9,8 @@ import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILL
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
 
+import { skillSearchTerms } from '../skills/skills-data'
+
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
 import { type CatalogEntry, parseCatalog } from './catalog-data'
@@ -44,6 +46,8 @@ function ScopedSkillCatalog({
 }: SkillCatalogProps) {
   const { t } = useI18n()
   const h = t.skills.hub
+  // "Try …" nudges from the user's own skills: search reads categories, not just names.
+  const searchHints = useMemo(() => (skills.length ? skillSearchTerms(skills).map(term => t.common.tryHint(term)) : undefined), [skills, t])
   const mounted = useRef(true)
   const pending = useRef(new Set<string>())
   const [installing, setInstalling] = useState<ReadonlySet<string>>(new Set())
@@ -221,6 +225,18 @@ function ScopedSkillCatalog({
     [catalog]
   )
 
+  // The name guarantee above only holds for first-party namespaces, where a
+  // shared name is the same skill. Community feeds carry distinct skills that
+  // reuse popular names, so a community row whose name is taken by an installed
+  // skill is neither that skill nor installable beside it — hide it instead of
+  // showing it as installed. Rows already merged into an installed one (their
+  // id is the installed row's) stay visible.
+  const isSuperseded = useCallback(
+    (entry: CatalogEntry) =>
+      entry.source !== 'official' && !entry.id.startsWith('installed:') && catalog.skillsByName.has(entry.name),
+    [catalog]
+  )
+
   const installIdentifier = (entry: CatalogEntry) => catalog.officialFor(entry)?.identifier ?? entry.installIdentifier
 
   const identityPending = hasHubSkills && (hubPending || Boolean(hubError))
@@ -257,6 +273,7 @@ function ScopedSkillCatalog({
       installedPending={installedPending || identityPending}
       isInstalled={isInstalled}
       isInstalling={entry => installing.has(installIdentifier(entry) ?? '')}
+      isSuperseded={isSuperseded}
       kind="skills"
       matchInstalled={catalog.matchInstalled}
       notice={
@@ -301,6 +318,7 @@ function ScopedSkillCatalog({
 
         return skill ? renderInstalledDetail(skill) : null
       }}
+      searchHints={searchHints}
     />
   )
 }

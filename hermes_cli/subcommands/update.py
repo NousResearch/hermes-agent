@@ -81,9 +81,10 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help=(
             "Persist the update channel for THIS install (recorded per "
             "install in config.yaml under update.installs). Names are resolved "
-            "from the release archive, not a built-in list. Source installs "
-            "check out the published build's exact commit; main follows the "
-            "source branch. Package channels are baked into their identities."
+            "from the release archive, not a built-in list. Official source "
+            "checkouts default to 'stable' (the latest published vX.Y.Z "
+            "release, exact commit); 'main' follows the source branch. "
+            "Package channels are baked into their identities."
         ),
     )
     update_parser.add_argument(

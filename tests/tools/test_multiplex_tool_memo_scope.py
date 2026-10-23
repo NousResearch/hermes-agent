@@ -37,13 +37,12 @@ def _under(home, fn):
 
 def test_checkpoint_and_snapshot_paths_follow_active_profile(two_profiles):
     import tools.process_registry as pr
-    from tools.environments import modal, singularity
+    from tools.environments import modal
 
     prof_a, prof_b = two_profiles
     _under(prof_a, pr._checkpoint_path)  # warm under A
     assert _under(prof_b, pr._checkpoint_path) == prof_b / "processes.json"
     assert _under(prof_b, modal._snapshot_store) == prof_b / "modal_snapshots.json"
-    assert _under(prof_b, singularity._snapshot_store) == prof_b / "singularity_snapshots.json"
     assert _under(prof_a, pr._checkpoint_path) == prof_a / "processes.json"
 
 
@@ -70,7 +69,7 @@ def test_config_caches_are_keyed_by_profile(two_profiles):
 
 
 def test_skill_manage_schema_stable_but_creation_follows_active_profile(two_profiles):
-    import tools.skill_manager_tool  # noqa: F401  (registers skill_manage)
+    import tools.skill_manager_tool
     from tools.registry import registry
 
     prof_a, prof_b = two_profiles

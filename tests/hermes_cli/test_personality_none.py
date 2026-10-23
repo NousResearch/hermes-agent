@@ -117,7 +117,7 @@ class TestGatewayPersonalityNone:
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
             event = self._make_event("default")
-            result = await runner._handle_personality_command(event)
+            await runner._handle_personality_command(event)
 
         saved = yaml.safe_load(config_file.read_text())
         assert saved["agent"]["system_prompt"] == "manual forever"

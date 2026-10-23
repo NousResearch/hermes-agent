@@ -2,7 +2,7 @@
 
 Two invariants, both about the boundary a sandboxed user chose:
   1. A sandbox backend that cannot host a screen never falls back to the gateway host silently; it refuses
-     unless ``bot_desktop.placement: gateway`` opts in. Docker/ssh/singularity resolve to the sandbox.
+     unless ``bot_desktop.placement: gateway`` opts in. Docker/ssh resolve to the sandbox.
   2. Every RFB byte between the pane and a sandbox-hosted Xvnc, and cua-driver's MCP stdio, go through the
      terminal backend's exec prefix, never a host socket or a host binary.
 """
@@ -23,7 +23,6 @@ from tools.environments import streams
         ("auto", "local", placement.GATEWAY),
         ("auto", "docker", placement.TERMINAL),
         ("auto", "ssh", placement.TERMINAL),
-        ("auto", "singularity", placement.TERMINAL),
         ("auto", "modal", placement.REFUSED),
         ("auto", "daytona", placement.REFUSED),
         ("gateway", "modal", placement.GATEWAY),
@@ -197,7 +196,7 @@ def test_sandbox_screen_that_cannot_come_up_is_an_error_not_a_host_browser(monke
 
     _placed(monkeypatch, "terminal", "docker")
     monkeypatch.setattr(runtime, "sandbox_screen_running", lambda: False)
-    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    monkeypatch.setattr(runtime, "published_env", dict)
 
     def _boom(**kw):
         raise RuntimeError("Bot Desktop needs Xvnc inside the terminal backend's sandbox")

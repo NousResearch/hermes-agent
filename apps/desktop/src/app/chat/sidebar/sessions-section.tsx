@@ -624,7 +624,7 @@ export function SidebarSessionsSection({
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-visible')
 
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup className={cn(rootClassName, DROP_TARGET_RING)} {...sessionDropTargetProps(pinned)}>
       <SidebarSectionHeader
         action={headerAction}
         collapsible={collapsible}
@@ -643,6 +643,15 @@ export function SidebarSessionsSection({
     </SidebarGroup>
   )
 }
+
+// Painted imperatively by session-drag.ts while a session hovers a pin
+// (Pinned) or unpin (any other list) target — same ring as a project row drop
+// target.
+const DROP_TARGET_RING =
+  'rounded-[6px] data-[session-drop-hover=true]:outline-2 data-[session-drop-hover=true]:-outline-offset-2 data-[session-drop-hover=true]:outline-sidebar-ring'
+
+const sessionDropTargetProps = (pinned: boolean) =>
+  pinned ? { 'data-session-pin-drop': '' } : { 'data-session-unpin-drop': '' }
 
 interface SortableSessionRowProps {
   session: SessionInfo

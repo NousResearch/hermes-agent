@@ -160,3 +160,32 @@ def test_live_native_adapter_without_platform_block_is_not_treated_as_disabled()
         {"id": "j"}, Platform.DISCORD, "discord", {"platform": "discord", "chat_id": "C1"},
         {Platform.DISCORD: adapter}, config)
     assert resolved is None and "not configured/enabled" in err
+
+
+def test_bot_profile_route_delivers_satellite_cron_through_that_profiles_bot(tmp_path, monkeypatch):
+    """A route pinned to a secondary profile's bot (``bot_profile``) is that bot's topic/chat:
+    inbound already routes it to the satellite, so the satellite's cron output for the SAME
+    target must leave through that bot — never the default bot (the target does not exist
+    there; Telegram topics are per bot chat) and never when the named bot is not connected."""
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "fitness"
+    sat_home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True, "profile_routes": [
+        {"platform": "discord", "chat_id": "C1", "profile": "fitness", "bot_profile": "ops"}]}}), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    primary, ops_bot = _primary_adapter(), _primary_adapter()
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        routes = _primary_profile_routes_for_current_home()
+        shared = SharedRouteAdapters({Platform.DISCORD: primary}, routes, {"ops": {Platform.DISCORD: ops_bot}})
+        error, standalone = _run(_job("C1"), shared)
+        assert error is None, error
+        assert ops_bot.sent == ["C1"] and primary.sent == [] and standalone == []
+
+        # the named bot is not connected → fail closed, never the default bot
+        offline = SharedRouteAdapters({Platform.DISCORD: primary}, routes, {"ops": {}})
+        error, standalone = _run(_job("C1"), offline)
+        assert error is not None and primary.sent == []
+    finally:
+        reset_hermes_home_override(token)

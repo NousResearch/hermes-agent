@@ -6,7 +6,7 @@ maintainer: bmtrnavsky
 tier: community
 category: tools
 version: "0.5.0"
-requires_hermes: '>=0.21'
+requires_hermes: ">=0.21.0"
 docs_url: https://github.com/bmtrnavsky/storm-fusion-research-pipeline#readme
 image: https://raw.githubusercontent.com/bmtrnavsky/storm-fusion-research-pipeline/b1a492eb9cfd41b120db8ac6d8a97128901b87d2/docs/social-preview.png
 capabilities:

@@ -175,5 +175,25 @@ async def test_steer_agent_without_steer_method_falls_back():
     )
 
 
+@pytest.mark.asyncio
+async def test_steer_with_volatile_context_queues_its_own_turn():
+    """Text and its opaque capability must not be spliced into the active turn."""
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[sk] = running_agent
+    event = _make_event("/steer find coffee near me")
+    event.ephemeral_context_ref = object()
+
+    result = await runner._handle_message(event)
+
+    assert result is not None and "queued" in result.lower()
+    running_agent.steer.assert_not_called()
+    queued = adapter._pending_messages[sk]
+    assert queued.text == "find coffee near me"
+    assert queued.ephemeral_context_ref is event.ephemeral_context_ref
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

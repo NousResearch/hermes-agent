@@ -115,6 +115,7 @@ class HostedRoomRuntime:
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         task_progress: Callable[[str, str, int, Mapping[str, Any]], None] | None = None,
         remote_member: Callable[[str, str], bool] | None = None,
+        maintain: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
         active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float = 1830.0,
@@ -141,6 +142,7 @@ class HostedRoomRuntime:
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
         self.pending_action, self.task_progress, self.clock = pending_action, task_progress, clock
         self.remote_member = remote_member
+        self.maintain = maintain  # once per worker cycle, outside any room (owed grant revokes)
         for name, value in positive.items():
             setattr(self, name, float(value))
         self.max_concurrent_rooms = max_concurrent_rooms
@@ -492,6 +494,11 @@ class HostedRoomRuntime:
                     self._run_cycle()
                 except Exception as exc:  # keep independent rooms serviceable
                     self._record_error(f"worker cycle failed: {exc}")
+                if self.maintain is not None:
+                    try:
+                        self.maintain()
+                    except Exception as exc:  # health: allow BLE001 -- recorded; the next cycle retries
+                        self._record_error(f"worker maintenance failed: {exc}")
                 with self._status_lock:
                     self._cycles += 1
                 self._wake.wait(self.poll_interval_seconds)

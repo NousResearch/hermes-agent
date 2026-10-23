@@ -383,9 +383,10 @@ that gateway to stop the run the home knows of; if it cannot confirm (the gatewa
 down, or the home never learned the run's id), the turn stays deferred, and nothing
 is sent that could start it. A Stop of a running turn that its gateway does not
 confirm within a minute stops holding the room: the turn is recorded as deferred,
-not cancelled, and the room takes the next message. Disband never waits on a member
-gateway: it drops that member's route, so the home sends nothing more for the turn,
-and the grant's revoke follows once the member gateway answers.
+not cancelled, and the room takes the next message. Disband drops that member's
+route, so the home sends nothing more for the turn, and the grant's revoke follows
+once the member gateway answers. A deferred turn with a known run receipt may first
+wait for its exact Stop request, up to the client's 30-second timeout per member.
 
 ### Transferring hosted room authority
 

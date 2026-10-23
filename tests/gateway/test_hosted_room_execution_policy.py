@@ -221,7 +221,7 @@ def test_policy_drift_requires_reauthorization_without_retry():
         on_ready=lambda: None,
         on_reauthorization=lambda: reauthorization.append(True),
         on_unavailable=lambda: None,
-        on_refreshed=lambda grant, catalog=None: refreshed.append((grant, catalog)),
+        on_refreshed=lambda grant, catalog=None, previous=None: refreshed.append((grant, catalog)),
     )
 
     with pytest.raises(PeerRunsHTTPError) as caught:

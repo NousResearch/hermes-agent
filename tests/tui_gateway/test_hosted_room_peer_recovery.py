@@ -230,29 +230,13 @@ def test_stop_of_a_deferred_peer_turn_is_reported_once_its_gateway_confirms(tmp_
 
 def test_an_unconfirmed_peer_stop_holds_the_room_only_for_the_deferral_window(tmp_path: Path):
     """Stop of an uncertain peer turn waits for its gateway's acknowledgement, but a gateway that
-    stays unreachable holds the room and Disband only for the deferral window. The turn is then
-    deferred, never reported cancelled."""
-    now = [100.0]
-    db = tmp_path / "state.db"
-    peer = _UnreachablePeerClient()
-    service = _peer_room(db, peer)
-    service.runtime.clock = lambda: now[0]
-    service.runtime.lease_ttl_seconds = 1000
-    service.runtime.indeterminate_defer_seconds = 5
-    service.send(room_id="room-1", event_id="user-1",
-                 payload={"text": "@reviewer check this", "thread_id": "thread-1"})
-    task, = driver.list_tasks(db, room_id="room-1", status="queued")
-    binding = service.bindings()[0]
-    crashed = driver.acquire_lease(db, room_id="room-1", gateway_id=binding.gateway_id,
-        authority_epoch=binding.authority_epoch, process_generation="crashed-home", ttl_seconds=1,
-        clock=lambda: now[0])
-    driver.start_task(db, task["identity"], crashed, expected_cancel_generation=0, clock=lambda: now[0])
-    now[0] = 102.0
-    lease = service.runtime._ensure_lease(binding)
-    driver.recover_room(db, lease, clock=lambda: now[0])
+    stays unreachable holds the room only for the deferral window, and Disband not at all. The turn
+    is then deferred, never reported cancelled."""
+    turn = _crashed_turn(tmp_path, _UnreachablePeerClient())
+    service, db, task, binding, lease, now = turn.service, turn.db, turn.task, turn.binding, turn.lease, turn.now
 
-    with pytest.raises(RuntimeError, match="still stopping"):
-        service.stop_room("room-1", cancel_id="stop-uncertain", require_acknowledged=True)
+    # Disband's own wait covers this gateway's work only: the peer turn is fenced, not waited on.
+    assert service.stop_room("room-1", cancel_id="stop-uncertain", require_acknowledged=True) == 1
     assert driver.get_task(db, task["identity"])["status"] == "stopping"
     assert service.runtime._retry_stopping_tasks(binding, lease) is True
 

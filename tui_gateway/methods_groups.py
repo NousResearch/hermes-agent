@@ -307,7 +307,7 @@ def _(rid, params: dict, service) -> dict:
     """Register and probe one scoped target route on the room home."""
     from gateway.hosted_room_peer import (
         GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION, validate_room_link_url)
-    from gateway.hosted_rooms import local_authority_gateway_id, room_state
+    from gateway.hosted_rooms import RoomNotFoundError, local_authority_gateway_id, room_state
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     target_url, transport_security = validate_room_link_url(params.get("target_url"))
@@ -318,15 +318,25 @@ def _(rid, params: dict, service) -> dict:
         raise ValueError("target does not support a direct RoomLink")
     target_profile = str(params.get("target_profile") or "")
     grant = str(params.get("grant") or "")
+    room_id = str(params.get("room_id") or "")
+    member_id = str(params.get("member_id") or "")
+
+    def owe() -> None:
+        # Owed at the URL this handler probes (``hermes serve`` takes the caller's URL, as it always
+        # has), so a grant it was handed is never forgotten while it could still pass.
+        service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+    try:
+        home_room = room_state(service.db_path, room_id=room_id)
+    except RoomNotFoundError:
+        if service.ended_room(room_id) is not None:  # disbanded first: owed, never probed
+            owe()
+        raise
     client = PeerRunsHTTPClient(base_url=target_url, api_key="", receipt_db_path=service.db_path)
     probe = client.probe(grant=grant)
     # Frozen dataclass equality: an equal live catalog already passed the checks above.
     if GatewayRoomCatalog.from_mapping(probe.get("catalog")) != catalog:
         raise ValueError("target capability catalog changed during setup")
-    room_id = str(params.get("room_id") or "")
-    member_id = str(params.get("member_id") or "")
     home_install_id = local_authority_gateway_id()
-    home_room = room_state(service.db_path, room_id=room_id)
     expected_scope = {
         "room_id": room_id, "home_install_id": home_install_id,
         "authority_gateway_id": home_room.get("authority_gateway_id"),
@@ -345,9 +355,20 @@ def _(rid, params: dict, service) -> dict:
         execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id=str(params.get("cancellation_scope_id") or cancellation_scope_id),
         trace_id=str(params.get("trace_id") or trace_id), grant=grant)
-    service.register_peer_route(
-        room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
-        catalog=catalog)
+    with service.peer_route_lock:
+        # The probe took time: publish only while the room is still the one it was checked against.
+        try:
+            live = room_state(service.db_path, room_id=room_id)
+        except RoomNotFoundError:
+            live = None
+        if live is not None and (live["authority_gateway_id"], live["authority_epoch"]) == (
+                home_room["authority_gateway_id"], home_room["authority_epoch"]):
+            service.register_peer_route(
+                room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
+                catalog=catalog)
+        else:  # ended or moved after the probe, which showed the member this grant
+            owe()
+            raise RoomNotFoundError("hosted room ended or moved during registration")
     return _ok(rid, {
         "registered": True, "mode": "direct", "transport_security": transport_security,
         "target_install_id": catalog.installation_id, "target_profile": target_profile})
@@ -456,11 +477,13 @@ def _(rid, params: dict, service) -> dict:
         return disband_with_state()
     if existing.get("disbanded_at") is not None:
         return disband_with_state(existing)
-    service.stop_room(
-        room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
-        require_acknowledged=True)
-    service.revoke_room_routes(room_id)
-    return disband_with_state(existing)
+    # Registration publishes under this lock too, so no peer route appears mid-Disband.
+    with service.peer_route_lock:
+        service.stop_room(
+            room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
+            require_acknowledged=True)
+        service.revoke_room_routes(room_id)
+        return disband_with_state(existing)
 
 
 @_room_method("groups.stop", code=5116, service_code=4115)

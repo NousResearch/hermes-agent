@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -330,6 +331,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        peer_route_lock = threading.Lock()
 
         def register_peer_route(self, **kwargs):
             captured["registered"] = kwargs
@@ -366,6 +368,7 @@ def test_reregistered_peer_route_keeps_its_trace_identity(home, monkeypatch):
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        peer_route_lock = threading.Lock()
 
         def register_peer_route(self, **kwargs):
             routes.append(kwargs["route"])
@@ -931,6 +934,7 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        peer_route_lock = threading.Lock()
 
         def stop_room(self, room_id, **_kwargs):
             calls.append(("stop", room_id))
@@ -950,6 +954,7 @@ def test_failed_remote_revocation_keeps_room_recoverable(home, monkeypatch):
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        peer_route_lock = threading.Lock()
 
         def stop_room(self, _room_id, **_kwargs):
             return 1
@@ -975,6 +980,7 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        peer_route_lock = threading.Lock()
 
         def stop_room(self, _room_id, **kwargs):
             calls.append(("stop", kwargs["require_acknowledged"]))
@@ -1029,6 +1035,14 @@ def test_approve_routes_one_exact_peer_action(home, monkeypatch):
     }
 
 
+def _serve_owed():
+    """Revokes ``hermes serve`` still owes, as (room, member, target_url); the grant is not read."""
+    import sqlite3
+    with sqlite3.connect(hosted_rooms_default_db_path()) as conn:
+        return conn.execute("SELECT room_id, member_id, target_url FROM hosted_room_owed_revokes "
+                            "ORDER BY room_id, member_id").fetchall()
+
+
 def _serve_peer_client(monkeypatch, room, *, during_probe=lambda: None):
     from gateway.hosted_room_peer import catalog_mapping
     from gateway.hosted_rooms import local_authority_gateway_id
@@ -1052,3 +1066,33 @@ def _serve_peer_client(monkeypatch, room, *, during_probe=lambda: None):
     params = {"room_id": "room-1", "member_id": "member-peer", "target_url": "https://peer.example.test",
               "target_profile": "reviewer", "grant": "late.room.grant", "catalog": catalog}
     return params, probes
+
+
+@pytest.mark.parametrize("disband_at", ["before", "probe", "publication"])
+def test_serve_disband_and_register_never_leave_a_route_or_a_grant_behind(home, monkeypatch, disband_at):
+    """`hermes serve` publishes a route only while its room is live. A grant handed in for a room
+    that ended first is owed, never probed; one that Disband overtakes during the probe or before
+    publication is refused and owed too."""
+    from gateway import hosted_room_links
+    from tui_gateway import hosted_room_peer_transport
+    room = _create_room()
+
+    def disband():
+        _result(srv._methods["groups.disband"](9, {"room_id": "room-1"}))
+    if disband_at == "before":
+        disband()
+    params, probes = _serve_peer_client(
+        monkeypatch, room, during_probe=disband if disband_at == "probe" else lambda: None)
+    if disband_at == "publication":
+        identity = hosted_room_peer_transport.route_identity
+
+        def identity_then_disband(**kwargs):
+            result = identity(**kwargs)
+            disband()
+            return result
+        monkeypatch.setattr(hosted_room_peer_transport, "route_identity", identity_then_disband)
+    assert "error" in srv._methods["groups.peer.register"](3, params)
+    assert probes == ([] if disband_at == "before" else ["late.room.grant"])
+    assert hosted_room_links.load_room_links(hosted_rooms_default_db_path()) == ()
+    assert methods_groups.get_hosted_room_service().peer_routes == {}
+    assert _serve_owed() == [("room-1", "member-peer", "https://peer.example.test")]

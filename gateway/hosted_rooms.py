@@ -145,6 +145,22 @@ _SCHEMA_DDL = (
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
             PRIMARY KEY (room_id, member_id, target_profile)
+        )""",
+    # A revoke the home still owes a member's gateway for a grant whose route it dropped. Not a room
+    # dependent: it outlives the room's purge, and goes once revoked or past the grant's expiry. A held
+    # row is a longer-lived grant a later one replaced: it waits for the room's end (Disband).
+    """CREATE TABLE IF NOT EXISTS hosted_room_owed_revokes (
+            room_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            grant_digest TEXT NOT NULL,
+            target_url TEXT NOT NULL,
+            grant TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at REAL NOT NULL,
+            created_at REAL NOT NULL,
+            held INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (room_id, member_id, grant_digest)
         )""")
 # (table, required columns) parsed from the DDL, in the order _schema_is_current probes them.
 _REQUIRED_COLUMNS = tuple(
@@ -629,14 +645,24 @@ def list_room_link_records(db_path: DbPath) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def upsert_room_link_record(db_path: DbPath, *, record: Mapping[str, Any], max_links: int) -> None:
-    """Atomically insert or replace one private RoomLink record."""
+def upsert_room_link_record(
+    db_path: DbPath, *, record: Mapping[str, Any], max_links: int,
+    expiry: Callable[[str], float] | None = None) -> None:
+    """Atomically insert or replace one private RoomLink record. With ``expiry`` (when a grant dies), a
+    replaced grant that outlives its replacement is kept as a held owed revoke, so the room's end
+    still revokes the scope for as long as that grant could pass."""
     with _transaction(db_path, immediate=True) as conn:
         existing = conn.execute(
-            "SELECT 1 FROM hosted_room_links WHERE room_id=? AND member_id=?", (record["room_id"], record["member_id"])
-        ).fetchone()
+            "SELECT target_url, grant FROM hosted_room_links WHERE room_id=? AND member_id=?",
+            (record["room_id"], record["member_id"])).fetchone()
         if existing is None and int(conn.execute("SELECT COUNT(*) FROM hosted_room_links").fetchone()[0]) >= max_links:
             raise HostedRoomError("too many stored room links")
+        if (existing is not None and expiry is not None and existing["grant"] != record["grant"]
+                and expiry(str(existing["grant"])) > expiry(str(record["grant"]))):
+            _owe_revoke_locked(
+                conn, room_id=str(record["room_id"]), member_id=str(record["member_id"]),
+                target_url=str(existing["target_url"]), grant=str(existing["grant"]),
+                expires_at=expiry(str(existing["grant"])), now=_now(None), held=True)
         conn.execute("""INSERT INTO hosted_room_links(
                    room_id, member_id, target_url, target_profile, grant,
                    catalog_json, cancellation_scope_id, trace_id,
@@ -668,6 +694,76 @@ def delete_room_link_records(db_path: DbPath, *, room_id: str) -> int:
     """Delete persisted peer routes after their target grants are revoked."""
     with _transaction(db_path, immediate=True) as conn:
         return conn.execute("DELETE FROM hosted_room_links WHERE room_id=?", (room_id,)).rowcount
+
+
+def grant_digest(grant: str) -> str:
+    """The non-secret key an owed revoke is stored and logged under."""
+    return hashlib.sha256(grant.encode("utf-8")).hexdigest()
+
+
+_OWE_REVOKE = """INSERT INTO hosted_room_owed_revokes(
+        room_id, member_id, grant_digest, target_url, grant, expires_at, next_attempt_at, created_at, held)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(room_id, member_id, grant_digest) DO NOTHING"""
+
+
+def _owe_revoke_locked(
+    conn: sqlite3.Connection, *, room_id: str, member_id: str, target_url: str, grant: str,
+    expires_at: float, now: float, held: bool = False) -> None:
+    conn.execute(_OWE_REVOKE, (
+        room_id, member_id, grant_digest(grant), target_url, grant, float(expires_at), now, now, int(held)))
+
+
+def retire_room_link_records(
+    db_path: DbPath, *, room_id: str, expiry: Callable[[str], float], now: float | None = None) -> int:
+    """Drop one room's persisted peer routes, recording in the same transaction the revoke still owed
+    for each route's grant (``expiry`` reads when that grant dies), and releasing the room's held
+    ones. Returns the routes dropped."""
+    timestamp = _now(now)
+    with _transaction(db_path, immediate=True) as conn:
+        rows = conn.execute(
+            "SELECT member_id, target_url, grant FROM hosted_room_links WHERE room_id=?", (room_id,)).fetchall()
+        for row in rows:
+            grant = str(row["grant"])
+            _owe_revoke_locked(conn, room_id=room_id, member_id=str(row["member_id"]),
+                               target_url=str(row["target_url"]), grant=grant, expires_at=expiry(grant),
+                               now=timestamp)
+        conn.execute("DELETE FROM hosted_room_links WHERE room_id=?", (room_id,))
+        conn.execute("UPDATE hosted_room_owed_revokes SET held=0, next_attempt_at=? WHERE room_id=? AND held=1",
+                     (timestamp, room_id))
+    return len(rows)
+
+
+def owe_room_grant_revoke(
+    db_path: DbPath, *, room_id: str, member_id: str, target_url: str, grant: str, expires_at: float,
+    now: float | None = None) -> None:
+    """Record a revoke owed for a grant the home was handed but never stored as a route."""
+    with _transaction(db_path, immediate=True) as conn:
+        _owe_revoke_locked(conn, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+                           expires_at=expires_at, now=_now(now))
+
+
+def due_room_grant_revokes(db_path: DbPath, *, limit: int, now: float | None = None) -> list[dict[str, Any]]:
+    """Owed revokes due now, oldest first; one whose grant has expired is dropped instead."""
+    timestamp = _now(now)
+    with _transaction(db_path, immediate=True) as conn:
+        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE expires_at<=?", (timestamp,))
+        rows = conn.execute(
+            """SELECT room_id, member_id, grant_digest, target_url, grant, attempts FROM hosted_room_owed_revokes
+                WHERE held=0 AND next_attempt_at<=? ORDER BY next_attempt_at, created_at LIMIT ?""",
+            (timestamp, int(limit))).fetchall()
+    return [dict(row) for row in rows]
+
+
+def settle_room_grant_revoke(
+    db_path: DbPath, *, room_id: str, member_id: str, grant_digest: str, retry_at: float | None = None) -> None:
+    """Forget an owed revoke once done (``retry_at`` None), else schedule its next attempt."""
+    key = (room_id, member_id, grant_digest)
+    with _transaction(db_path, immediate=True) as conn:
+        if retry_at is None:
+            conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?", key)
+        else:
+            conn.execute("""UPDATE hosted_room_owed_revokes SET attempts=attempts+1, next_attempt_at=?
+                             WHERE room_id=? AND member_id=? AND grant_digest=?""", (float(retry_at), *key))
 
 
 def _claim_values(claims: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, str]:

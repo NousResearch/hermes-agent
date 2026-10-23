@@ -1564,9 +1564,12 @@ export const host = {
 
   composer: composerHost,
 
-  /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
+  /** Language: `host.i18n.registerAppLocale(id, { endonym, rtl?,
    *  translations })` adds a whole UI language at runtime (see `sdk/i18n.ts`);
-   *  `host.i18n.languageOptions()` lists what the switcher shows. */
+   *  `host.i18n.languageOptions()` lists what the switcher shows;
+   *  `host.i18n.locale()` / `subscribeLocale()` read the locale on screen and
+   *  follow switches — for re-labelling register-time contributions without
+   *  watching `<html lang>`. */
   i18n: i18nHost
 }
 

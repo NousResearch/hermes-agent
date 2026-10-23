@@ -39,6 +39,26 @@ async def test_context_breakdown_without_a_resident_agent_estimates_the_stored_f
 
 
 @pytest.mark.asyncio
+async def test_agentless_breakdown_refreshes_when_the_stored_prompt_or_tools_change(owner):
+    """A compute worker can freeze the prompt or tools pin without touching the transcript; the cached
+    agentless breakdown must not outlive either write."""
+    from gateway.session_tui_reads import _stored_id
+
+    sid = (await owner.call('session.create', request_id='refreeze', source='tui', cwd=str(owner.workdir)))['session_id']
+    db = owner.authority.db
+    stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
+    db.append_message(stored, 'user', 'hello')
+    before = await owner.call('session.context_breakdown', session_id=sid)
+    db.update_system_prompt(stored, 'You are Hermes. ' * 50)
+    prompted = await owner.call('session.context_breakdown', session_id=sid)
+    assert prompted['estimated_total'] > before['estimated_total'], prompted
+    db.update_session_tool_names(stored, {'version': 'v', 'tools': [
+        {'type': 'function', 'function': {'name': 'terminal', 'parameters': {'type': 'object'}}}]})
+    tooled = await owner.call('session.context_breakdown', session_id=sid)
+    assert 'tool_definitions' in {c['id'] for c in tooled['categories']}, tooled
+
+
+@pytest.mark.asyncio
 async def test_context_breakdown_measures_only_the_compression_tips_model_history(owner, monkeypatch):
     """The runtime id still names the compressed parent; neither its superseded segment nor the tip's
     session bookkeeping is model context, in the popover or the TUI's /context table."""

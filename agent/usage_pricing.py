@@ -535,13 +535,19 @@ def _pricing_entry_from_metadata(
 
     prompt = per_million("prompt")
     completion = per_million("completion")
+    cache_read = per_million("cache_read", "cached_prompt", "input_cache_read")
+    cache_write = per_million("cache_write", "cache_creation", "input_cache_write")
     request = _to_decimal(pricing.get("request"))
     if prompt is None and completion is None and request is None:
         return None
+    rates = (prompt, completion, cache_read, cache_write, request)
+    # Routed models use negative values as an unpriced sentinel (for example,
+    # OpenRouter's ``-1``). They are not billable rates.
+    if any(rate is not None and rate < _ZERO for rate in rates):
+        return None
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
-        cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
-        cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
+        cache_read_cost_per_million=cache_read, cache_write_cost_per_million=cache_write,
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
     )

@@ -229,3 +229,89 @@ def test_override_honored_when_caller_passes_no_custom_providers(tmp_path, monke
     from agent.model_metadata import get_model_context_length
 
     assert get_model_context_length(model, base_url=base_url, api_key="", provider="custom") == override
+
+
+class TestAdvertisedContextWindowFallback:
+    """With no config pin configured, the window the endpoint itself advertises on
+    ``/v1/models`` must answer the custom-provider resolver (#135603): the startup pin
+    and the gateway re-derivation fell through it to hardcoded catalog defaults (a
+    ``qwen``-named model on a 262K endpoint was pinned at 64K) even though the
+    endpoint published the real window. Config ``context_length`` keys stay
+    authoritative; only the no-pin gap is filled, reusing the cached endpoint probe.
+    """
+
+    BASE = "https://halogen.example/v1"
+    MODEL = "halogen-qwen3.8-flash-next"
+
+    def _entries(self, **extra):
+        return [{"base_url": self.BASE, **extra}]
+
+    def test_advertised_window_used_when_no_config_override(self, monkeypatch):
+        seen = {}
+
+        def fake_fetch(base_url, api_key="", force_refresh=False):
+            seen["base_url"], seen["api_key"] = base_url, api_key
+            return {self.MODEL: {"context_length": 262_144}}
+
+        monkeypatch.setattr("agent.model_metadata.fetch_endpoint_model_metadata", fake_fetch)
+        assert get_custom_provider_context_length(self.MODEL, self.BASE, self._entries(api_key="sk-test")) == 262_144
+        assert seen == {"base_url": self.BASE, "api_key": "sk-test"}
+
+    def test_key_env_resolved_for_the_probe(self, monkeypatch):
+        monkeypatch.setenv("TEST_HALOGEN_KEY", "sk-env")
+        monkeypatch.setattr(
+            "agent.model_metadata.fetch_endpoint_model_metadata",
+            lambda base_url, api_key="", force_refresh=False: {self.MODEL: {"context_length": 262_144}},
+        )
+        assert get_custom_provider_context_length(self.MODEL, self.BASE, self._entries(key_env="TEST_HALOGEN_KEY")) == 262_144
+
+    def test_config_override_beats_advertised_and_skips_probe(self, monkeypatch):
+        calls: list = []
+
+        def fake_fetch(*args, **kwargs):
+            calls.append(args)
+            return {self.MODEL: {"context_length": 262_144}}
+
+        monkeypatch.setattr("agent.model_metadata.fetch_endpoint_model_metadata", fake_fetch)
+        entries = self._entries(models={self.MODEL: {"context_length": 4096}})
+        assert get_custom_provider_context_length(self.MODEL, self.BASE, entries) == 4096
+        assert not calls
+
+    def test_entry_level_override_beats_advertised_and_skips_probe(self, monkeypatch):
+        calls: list = []
+
+        def fake_fetch(*args, **kwargs):
+            calls.append(args)
+            return {self.MODEL: {"context_length": 262_144}}
+
+        monkeypatch.setattr("agent.model_metadata.fetch_endpoint_model_metadata", fake_fetch)
+        assert get_custom_provider_context_length(self.MODEL, self.BASE, self._entries(context_length=4096)) == 4096
+        assert not calls
+
+    def test_probe_failure_returns_none(self, monkeypatch):
+        def boom(*args, **kwargs):
+            raise OSError("endpoint down")
+
+        monkeypatch.setattr("agent.model_metadata.fetch_endpoint_model_metadata", boom)
+        assert get_custom_provider_context_length(self.MODEL, self.BASE, self._entries()) is None
+
+    def test_route_without_matching_entry_never_probes(self, monkeypatch):
+        def fake_fetch(*args, **kwargs):
+            raise AssertionError("unknown routes must not be probed")
+
+        monkeypatch.setattr("agent.model_metadata.fetch_endpoint_model_metadata", fake_fetch)
+        assert get_custom_provider_context_length(self.MODEL, self.BASE, [{"base_url": "https://other.example/v1"}]) is None
+
+    def test_model_not_in_advertised_catalog_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.model_metadata.fetch_endpoint_model_metadata",
+            lambda *args, **kwargs: {"unrelated": {"context_length": 4096}, "also-unrelated": {"context_length": 8192}},
+        )
+        assert get_custom_provider_context_length(self.MODEL, self.BASE, self._entries()) is None
+
+    def test_single_model_catalog_serves_the_requested_model(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.model_metadata.fetch_endpoint_model_metadata",
+            lambda *args, **kwargs: {self.MODEL: {"context_length": 262_144}},
+        )
+        assert get_custom_provider_context_length("halogen-qwen3.8", self.BASE, self._entries()) == 262_144

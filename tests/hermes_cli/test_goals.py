@@ -929,10 +929,10 @@ class TestBlockedVerdict:
         assert decision["verdict"] == "blocked"
         assert decision["status"] == "paused"
         assert decision["should_continue"] is False
-        assert "unachievable" in decision["message"].lower()
+        assert "blocked" in decision["message"].lower()
         assert mgr.state is not None
         assert mgr.state.status == "paused"
-        assert "unachievable" in (mgr.state.paused_reason or "").lower()
+        assert "judge blocked" in (mgr.state.paused_reason or "").lower()
 
 
 def test_goal_session_db_is_the_registry_shared_handle(hermes_home):

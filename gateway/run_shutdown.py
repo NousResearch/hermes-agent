@@ -25,7 +25,8 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
-    effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
+    WINDOWS_RESTART_WATCHER, effective_stop_drain_timeout, effective_stop_watchdog_delay,
+    is_gateway_supervisor_process, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
@@ -66,55 +67,6 @@ def _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown: bool) -> bo
         )
         raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
     return True
-
-# Windows has no bash/setsid chain: a tiny detached Python watcher waits for the gateway PID to
-# exit (bounded), then spawns ``hermes gateway restart``.
-_WINDOWS_RESTART_WATCHER = """
-import os, subprocess, sys, time
-from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
-pid = int(sys.argv[1])
-restart_after_s = float(sys.argv[2])
-cmd = sys.argv[3:]
-deadline = time.monotonic() + restart_after_s
-
-def _alive(p):
-    # On Windows, os.kill(pid, 0) is NOT a no-op — it maps to
-    # GenerateConsoleCtrlEvent(0, pid) (bpo-14484). Use the
-    # Win32 handle-based existence check instead.
-    if os.name == 'nt':
-        import ctypes
-        k32 = ctypes.windll.kernel32
-        k32.OpenProcess.restype = ctypes.c_void_p
-        k32.WaitForSingleObject.restype = ctypes.c_uint
-        k32.GetLastError.restype = ctypes.c_uint
-        h = k32.OpenProcess(0x1000 | 0x100000, False, int(p))
-        if not h:
-            return k32.GetLastError() != 87
-        try:
-            return k32.WaitForSingleObject(h, 0) == 0x102
-        finally:
-            k32.CloseHandle(h)
-    try:
-        os.kill(int(p), 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-
-while time.monotonic() < deadline:
-    if not _alive(pid):
-        break
-    time.sleep(0.2)
-subprocess.Popen(
-    cmd,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    creationflags=windows_detach_flags_without_breakaway(),
-)
-""".strip()
 
 
 @contextmanager
@@ -168,6 +120,18 @@ def _effective_watchdog_leash(runner: object) -> float:
     launchd's live ``ExitTimeOut`` minus the dump margin. Lives here (not in gateway.restart)
     because restart.py cannot import shutdown_watchdog without a cycle."""
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
+
+
+def _supervised_signal_restart(runner: Any) -> bool:
+    """True when an unplanned SIGTERM/SIGINT will be followed by a restart.
+
+    ``_signal_initiated_shutdown`` alone only says the signal was not a planned stop or takeover.
+    The process comes back only when a supervisor with a restart policy owns it (systemd,
+    launchd, s6, or ``--external-supervisor``: :func:`gateway.restart.is_gateway_supervisor_process`).
+    A signal outside that mode (a plain ``docker stop``, a shell-launched gateway, OS shutdown)
+    is a real stop, so it keeps the "shutting down" wording and writes no restart marker.
+    """
+    return bool(getattr(runner, "_signal_initiated_shutdown", False)) and is_gateway_supervisor_process()
 
 
 class GatewayShutdownMixin(GatewaySessionEndMixin):
@@ -1026,7 +990,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = t("gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown")
+        will_restart = self._restart_requested or _supervised_signal_restart(self)
+        msg = t("gateway.shutdown.notice_restart" if will_restart else "gateway.shutdown.notice_shutdown")
         restart_key = None
         if restart_source is not None:
             with suppress(Exception):
@@ -1428,7 +1393,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         from hermes_cli._launchers import runtime_command
         watcher_argv = runtime_command(project_root,
             [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],
-            code=_WINDOWS_RESTART_WATCHER)
+            code=WINDOWS_RESTART_WATCHER)
         watcher_python = watcher_argv[0]
         popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=watcher_env)
         # Break away from the parent CLI's job object or be reaped when the CLI exits; a job without
@@ -2124,7 +2089,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         # Stuck-loop counter: sessions active across 3 consecutive restarts are auto-suspended next boot.
         if ctx.active_agents:
             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
-        if self._restart_requested and self._restart_command_source is None:
+        # A chat /restart (command source set) is acknowledged privately through .restart_notify.json.
+        # A source-less restart, including an unplanned signal under a supervisor that restarts us
+        # (_supervised_signal_restart), owes the home channels an "online" notice on the next boot.
+        # A planned `hermes gateway stop`, a takeover, or a signal with no restarting supervisor
+        # writes no marker.
+        if (self._restart_requested or _supervised_signal_restart(self)) and self._restart_command_source is None:
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
                 atomic_json_write(
                     _planned_restart_notification_path(),

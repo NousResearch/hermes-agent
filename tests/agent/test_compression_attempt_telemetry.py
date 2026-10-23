@@ -46,11 +46,15 @@ class _Agent:
         pass
 
 
-def _messages(secret_text="TOPSECRET_TRANSCRIPT_TEXT"):
+def _messages(secret_text="TOPSECRET_TRANSCRIPT_TEXT", pad=8000):
+    # ``pad`` keeps the reclaimable middle genuinely substantial: the pre-LLM
+    # expected-savings guard defers a compression attempt when the middle is a
+    # negligible fraction of the trigger, so a realistic transcript is required
+    # for the auto-compression telemetry paths exercised below.
     msgs = [{"role": "system", "content": "system prompt"}]
     for idx in range(10):
         msgs.append({"role": "user", "content": f"user message {idx} {secret_text}"})
-        msgs.append({"role": "assistant", "content": f"assistant reply {idx} {secret_text}"})
+        msgs.append({"role": "assistant", "content": f"assistant reply {idx} {secret_text}" + "x" * pad})
     return msgs
 
 

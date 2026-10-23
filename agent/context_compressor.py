@@ -1136,6 +1136,21 @@ _ACTIVE_TASK_MAX_CHARS = 1400
 # full protect_last_n would recreate the nothing-compactable large-tool-output case.
 _MAX_TAIL_MESSAGE_FLOOR = 8
 
+# Skip the LLM call when the compressible middle is below this fraction of the
+# threshold (and a prior ineffectiveness strike exists); dropping alone suffices.
+# See #60451.
+_FEASIBILITY_SKIP_MIDDLE_FRACTION = 0.10
+
+# Expected-savings guard: never pay for a summary when the reclaimable middle cannot cover the
+# over-threshold deficit — the protected head and tail dominate, so the pass cannot clear the
+# threshold and only burns wall time. Runs BEFORE the first attempt
+# (unlike _FEASIBILITY_SKIP_MIDDLE_FRACTION, which only armed after a strike) and DEFERS
+# without dropping messages. Forced runs and sessions near the hard context limit bypass it.
+# Conservative share of the middle a summary is assumed to reclaim.
+_DEFER_ASSUMED_RECLAIM_RATIO = 0.5
+# Within this fraction of the real context window the expected-savings defer is bypassed so a
+# smaller-but-still-useful reclaim can run before the provider's hard limit is hit.
+_RECLAIM_DEFER_HARD_LIMIT_MARGIN = 0.10
 # Under pressure, demote large tool outputs even inside the protected region but
 # keep this many trailing messages verbatim.
 _PRESSURE_KEEP_RECENT_MESSAGES = 3
@@ -2296,6 +2311,8 @@ class ContextCompressor(
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = self._last_feasibility_skip = False
+        # True when a pre-LLM expected-savings guard deferred a negligible-reclaim pass (no LLM, no drop).
+        self._last_reclaim_deferred = False
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         # Wall-clock probe deadline; 0.0 = unarmed (durable copy re-read via _load_anti_thrash_recovery_deadline).
@@ -2333,6 +2350,7 @@ class ContextCompressor(
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
         self._consecutive_overload_aborts = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
+        self._last_reclaim_deferred = False
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = self._fallback_probe_at = 0.0
         self._reset_proactive_prune_rearm()
         self.get_active_compression_failure_cooldown()
@@ -2718,6 +2736,7 @@ class ContextCompressor(
             # The overload budget rode those cooldowns; a new runtime restarts it too.
             self._reset_consecutive_overload_aborts()
         self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
+        self._last_reclaim_deferred = False
         # Runway was computed against the previous model's trigger; clear the durable copy too.
         self._reset_proactive_prune_rearm()
         self._clear_durable_proactive_prune_rearm()
@@ -5168,6 +5187,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_feasibility_skip = False
+        self._last_reclaim_deferred = False
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
@@ -5234,6 +5254,81 @@ Write only the summary body. Do not include any preamble or prefix."""
             "Summarizing turns %d-%d (%d turns), protecting %d head + %d tail messages",
             compress_start + 1, compress_end, n_turns, compress_start, tail_msgs,
         )
+
+    def _expected_savings_defer(
+        self, telemetry: dict[str, Any], turns_to_summarize: list[dict[str, Any]],
+        compress_start: int, compress_end: int, current_tokens: Optional[int],
+    ) -> bool:
+        """Defer a pass whose reclaimable middle cannot cover the deficit BEFORE paying for the summary.
+
+        The trigger can fire while the protected head and tail already hold nearly all the tokens:
+        the middle is then too small to reclaim the deficit, so the summary cannot clear the
+        threshold and merely burns wall time (measured: repeated low-reclaim passes at tens of
+        seconds each). This gate runs on the FIRST attempt too — unlike ``_feasibility_skip``,
+        which only arms after a prior ineffectiveness strike, letting that first expensive pass
+        through. It DEFERS (returns the transcript unchanged, no messages dropped, no summary
+        call) and re-defers while the compressible middle (at an assumed reclaim ratio) stays below the deficit,
+        so it does not re-scan every turn until real material accumulates.
+
+        Bypassed by ``force`` (manual ``/compress``) and when the session is near the provider's
+        hard context limit, where a smaller-but-still-worthwhile reclaim must be allowed.
+        """
+        if current_tokens is None or current_tokens < self.threshold_tokens:
+            # The defer only applies once the trigger actually fired: over the soft threshold
+            # there is a deficit to defend yet too little middle to clear it. Below the trigger
+            # (or with an unknown count) nothing should be reclaimed — keep legacy behavior and
+            # let the caller's should_compress() decide.
+            return False
+        if current_tokens >= self._reclaim_defer_hard_limit():
+            # Near the real window: never defer a reclaim that helps dodge the hard limit.
+            return False
+        middle_tokens = telemetry.get("middle_window_tokens")
+        middle_tokens = estimate_messages_tokens_rough(turns_to_summarize) if middle_tokens is None else middle_tokens
+        deficit = current_tokens - self.threshold_tokens
+        if middle_tokens * _DEFER_ASSUMED_RECLAIM_RATIO >= deficit:
+            # The middle can plausibly cover the deficit: do not defer.
+            return False
+        self._last_reclaim_deferred = True
+        telemetry["reclaim_deferred"] = True
+        telemetry["failure_class"] = "reclaim_deferred"
+        if not self.quiet_mode:
+            logger.info(
+                "Compression deferred: reclaimable middle (%d tokens at indices %d-%d) cannot cover "
+                "the %d-token deficit over the %d-token threshold — avoiding a summary with no material benefit.",
+                middle_tokens, compress_start, compress_end, current_tokens - self.threshold_tokens, self.threshold_tokens,
+            )
+        return True
+
+    def _reclaim_defer_hard_limit(self) -> int:
+        """Tokens at/above which the expected-savings defer is bypassed: within 10% of the real window."""
+        window = self._effective_input_window(self.context_length, self.max_tokens)
+        return int(window * (1.0 - _RECLAIM_DEFER_HARD_LIMIT_MARGIN))
+
+    def _feasibility_skip(
+        self, telemetry: dict[str, Any], turns_to_summarize: list[dict[str, Any]],
+        compress_start: int, compress_end: int,
+    ) -> bool:
+        """Pre-LLM skip after a real-usage ineffectiveness strike (reads the counter, never writes)."""
+        if self._ineffective_compression_count < 1:
+            return False
+        # Reuse the telemetry estimate so log and telemetry agree; None means the regions helper
+        # no-op'd (0 is valid).
+        middle_tokens = telemetry.get("middle_window_tokens")
+        middle_tokens = estimate_messages_tokens_rough(turns_to_summarize) if middle_tokens is None else middle_tokens
+        if middle_tokens >= int(self.threshold_tokens * _FEASIBILITY_SKIP_MIDDLE_FRACTION):
+            return False
+        self._last_feasibility_skip = True
+        self._prellm_skip_count += 1
+        telemetry["prellm_skip_count"] = self._prellm_skip_count
+        if not self.quiet_mode:
+            logger.warning(
+                "Compression: middle section (%d tokens at indices %d-%d) is below %.0f%% of threshold (%d tokens) — "
+                "skipping LLM summarization, proceeding with deterministic message dropping. prellm_skip_count=%d",
+                middle_tokens, compress_start, compress_end,
+                _FEASIBILITY_SKIP_MIDDLE_FRACTION * 100,
+                self.threshold_tokens, self._prellm_skip_count,
+            )
+        return True
 
     def _abort_on_summary_failure(
         self, telemetry: dict[str, Any], n_skipped: int, previous_summary_before_scan: Optional[str],
@@ -5535,6 +5630,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
+        if not force and self._expected_savings_defer(telemetry, turns_to_summarize, compress_start, compress_end, current_tokens):
+            # Deferred: return the transcript unchanged (no messages dropped, no summary call).
+            # The caller sees a no-op and arms its structural backoff, so it won't re-scan each turn.
+            return canonical_messages
         feasibility_skip = not force and (
             self._fallback_streak_skip(telemetry)
             or self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)

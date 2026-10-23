@@ -215,6 +215,13 @@ def check_api_response(
 
     relay_llm.complete_logical_call(api_request_id, outcome="success")
     agent._touch_activity(f"API call #{api_call_count} completed")
+
+    # Sync system prompt with the actual model that responded (handles relay fallback)
+    response_model = getattr(response, "model", None)
+    if response_model and isinstance(response_model, str) and response_model.strip():
+        from agent.chat_completion_helpers import rewrite_prompt_model_identity
+        rewrite_prompt_model_identity(agent, response_model.strip(), agent.provider)
+
     return _verdict("break")
 
 

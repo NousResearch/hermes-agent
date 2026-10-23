@@ -8,21 +8,44 @@
 // right-click menu all work).
 //
 // The chords follow VS Code (terminal.clipboard.contribution.ts): ⌘C/⌘V on
-// macOS, Ctrl+Shift+C/V elsewhere, plus plain Ctrl+C as copy ONLY when text is
+// macOS, Ctrl+Shift+C/V everywhere, plus plain Ctrl+C as copy ONLY when text is
 // selected — the "intelligent Ctrl-C" of Windows Terminal and Tabby. With no
 // selection Ctrl+C stays SIGINT, so interrupting a process never breaks.
+//
+// This map is the ONLY paste route on Windows, so its gaps are dead keys rather
+// than fallbacks. Electron installs an application menu on macOS alone
+// (main.ts: `IS_MAC ? setApplicationMenu(buildApplicationMenu()) :
+// setApplicationMenu(null)`), and — the same trap the Edit submenu's
+// `pasteAndMatchStyle` comment records — an accelerator with no menu entry is
+// never translated into an editor command. Without a `role: 'paste'` on
+// Windows/Linux, Chromium never runs Paste for Ctrl+V or Shift+Insert, so no
+// `paste` event ever reaches the listener xterm puts on its helper textarea.
+// Anything this function returns null for is a keystroke that lands on nothing.
+//
+// Hence the two chords below beyond VS Code's Linux row:
+//   • Shift+Insert — every platform. xterm deliberately declines it
+//     (Keyboard.ts case 45: "used to copy-paste on some systems") expecting the
+//     host to paste, and no shell binds it. Dictation tools reach for it first.
+//   • Ctrl+V — Windows only, matching VS Code, whose terminal binds Ctrl+V as
+//     the PRIMARY paste there with Ctrl+Shift+V secondary; the Ctrl+Shift-only
+//     row is Linux's, where Ctrl+V stays readline's quoted-insert.
 
 export type TerminalClipboardIntent = 'copy' | 'paste' | null
 
 export function terminalClipboardIntent(
   event: KeyboardEvent,
-  { hasSelection, isMac }: { hasSelection: boolean; isMac: boolean }
+  { hasSelection, isMac, isWindows }: { hasSelection: boolean; isMac: boolean; isWindows: boolean }
 ): TerminalClipboardIntent {
   if (event.type !== 'keydown' || event.altKey) {
     return null
   }
 
   const key = event.key.toLowerCase()
+
+  // Ahead of every Ctrl gate: Shift+Insert carries no Ctrl to gate on.
+  if (key === 'insert' && event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    return 'paste'
+  }
 
   if (isMac) {
     if (!event.metaKey || event.ctrlKey || event.shiftKey) {
@@ -40,6 +63,12 @@ export function terminalClipboardIntent(
 
   if (event.shiftKey) {
     return key === 'c' ? (hasSelection ? 'copy' : null) : key === 'v' ? 'paste' : null
+  }
+
+  // Bare Ctrl+V: paste on Windows (VS Code's primary chord there), left to the
+  // shell on Linux so readline keeps quoted-insert.
+  if (isWindows && key === 'v') {
+    return 'paste'
   }
 
   // Bare Ctrl+C: copy only when there's a selection to copy, else SIGINT.

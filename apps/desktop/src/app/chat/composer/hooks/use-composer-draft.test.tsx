@@ -21,7 +21,7 @@ import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
-import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import { type ComposerTarget, getActiveComposer, markActiveComposer, requestComposerInsert } from '../focus'
 import { caretOffsetInEditor, composerPlainText } from '../rich-editor'
 import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
@@ -559,6 +559,25 @@ describe('useComposerDraft — same-draft scope rekey preserves only the focused
 
     expect(composerPlainText(editor)).toBe('alpha beta\ngamma')
     expect(caretOffsetInEditor(editor)).toBe(composerPlainText(editor).length)
+  })
+
+  it('parks the caret on the empty line under a block insert that asks for it', async () => {
+    const view = renderDraft('lineage-root')
+    const editor = view.draft.editorRef.current!
+
+    editor.focus()
+    markActiveComposer('main')
+
+    act(() => requestComposerInsert('[Quoted from your previous message]\n> gamma', { caret: 'below', mode: 'block' }))
+
+    await waitFor(() => expect(composerPlainText(editor)).toContain('gamma'))
+
+    const text = composerPlainText(editor)
+
+    // The blank line is the point: without it the caret sits at the end of the
+    // quoted last line and the next keystroke edits the quote itself.
+    expect(text.endsWith('\n\n')).toBe(true)
+    expect(caretOffsetInEditor(editor)).toBe(text.length)
   })
 })
 

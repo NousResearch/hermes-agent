@@ -460,7 +460,7 @@ async def _start_gateway_shutdown_tail(
     runner, _control_server, cron_stop: threading.Event, cron_provider,
     cron_thread: Any, housekeeping_thread: threading.Thread,
     _planned_stop_watcher_stop: threading.Event, _planned_stop_watcher_thread: threading.Thread,
-    _signal_initiated_shutdown: list) -> bool:
+    _signal_initiated_shutdown: list, *, resolve_verdict: bool = True) -> bool:
     """Post-``wait_for_shutdown`` teardown; returns the process exit verdict (True = exit 0)."""
     from gateway.run import (_CRON_SHUTDOWN_DRAIN_TIMEOUT, _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT, _await_thread_exit, _best_effort, _resolve_gateway_exit_verdict, _shutdown_mcp_servers_nonblocking, _stop_cron_provider)
     # Control socket first: once shutdown begins we are no longer a truthful "serving here" answer and a
@@ -504,6 +504,8 @@ async def _start_gateway_shutdown_tail(
 
     # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
     # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
+    if not resolve_verdict:
+        return False
     return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
 
 
@@ -802,6 +804,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _control_server = None
     runner = None
     _planned_stop_watcher_stop = None
+    stop_error = None
     try:
         _start_gateway_configure_logging(verbosity)
 
@@ -892,8 +895,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         cron_stop, cron_provider, cron_thread, housekeeping_thread = (
             _start_gateway_start_cron_and_housekeeping(runner))
         # From here every exit (a READY publication that raises included) runs the shutdown tail,
-        # which stops the cron ticker and housekeeping before the adapters they deliver through close.
+        # after stop has persisted the shutdown markers.
         from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
+        runtime_failed = False
         try:
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
@@ -908,13 +912,23 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 from gateway.run_api import warm_gateway_dashboard
                 warm_gateway_dashboard(runner)
             await wait_gateway_runtime(runner)
+        except BaseException:
+            # Caller exception state can be active even during a successful gateway execution.
+            runtime_failed = True
+            raise
         finally:
+            stop_completed = False
             try:
                 await runner.stop()
+                stop_completed = True
+            except Exception as exc:
+                stop_error = exc
+                logger.error("Gateway stop failed", exc_info=True)
             finally:
                 verdict = await _start_gateway_shutdown_tail(
                     runner, _control_server, cron_stop, cron_provider, cron_thread, housekeeping_thread,
-                    _planned_stop_watcher_stop, _planned_stop_watcher_thread, _signal_initiated_shutdown)
+                    _planned_stop_watcher_stop, _planned_stop_watcher_thread, _signal_initiated_shutdown,
+                    resolve_verdict=not runtime_failed and stop_completed)
         return verdict
 
     finally:
@@ -927,7 +941,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 # yet this is cleanup, not a shutdown: keep startup_failed and the crash markers.
                 if getattr(runner, "_stop_task", None) is None and not getattr(runner, "_running", False):
                     runner._startup_cleanup_only = True
-                await runner.stop()
+                try:
+                    await runner.stop()
+                except Exception as exc:
+                    # stop() re-awaits its shared task. Its already logged failure must not
+                    # replace the failure verdict or an exception from this runtime.
+                    if exc is not stop_error:
+                        raise
         finally:
             if _planned_stop_watcher_stop is not None:
                 _planned_stop_watcher_stop.set()

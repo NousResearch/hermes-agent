@@ -55,8 +55,12 @@ _has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/nul
 . "$SCRIPT_DIR/_activation.sh"
 if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
   PYTHON="$HERMES_PYTHON"
+  # The Nix devShell's HERMES_PYTHON is the lock's interpreter, which finds the
+  # uv2nix venv only through PYTHONPATH; keep it across `env -i` below.
+  INHERITED_PYTHONPATH="${PYTHONPATH:-}"
   echo "▶ not activated — using HERMES_PYTHON: $PYTHON"
 else
+  INHERITED_PYTHONPATH=""
   if ! hermes_activation_current "$REPO_ROOT"; then
     if [ -n "${__HERMES_TESTS_REEXEC:-}" ]; then
       echo "error: run-in-hermes-env did not produce a current environment for $REPO_ROOT" >&2
@@ -75,10 +79,10 @@ fi
 
 
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────
-EXTRA_PYTHONPATH=""
+EXTRA_PYTHONPATH="$INHERITED_PYTHONPATH"
 EXTRA_PYTEST_PLUGINS=""
 if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
-  EXTRA_PYTHONPATH="$HOME/.hermes"
+  EXTRA_PYTHONPATH="${EXTRA_PYTHONPATH:+$EXTRA_PYTHONPATH:}$HOME/.hermes"
   EXTRA_PYTEST_PLUGINS="pytest_live_guard"
 fi
 

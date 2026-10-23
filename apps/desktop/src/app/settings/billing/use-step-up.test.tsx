@@ -52,7 +52,7 @@ vi.mock('./api', () => ({
   })
 }))
 
-import { useStepUpFlow } from './use-step-up'
+import { $stepUpInFlight, useStepUpFlow } from './use-step-up'
 
 function createWrapper(client: QueryClient) {
   return function wrapper({ children }: PropsWithChildren) {
@@ -128,5 +128,31 @@ describe('useStepUpFlow', () => {
 
     unmount()
     expect(gatewayMock.count('billing.step_up.verification')).toBe(0)
+  })
+
+  it("one flow dismissing never resumes billing refetches during another flow's approval", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    let resolveStepUp: (value: unknown) => void = () => {}
+
+    apiMocks.stepUp.mockReturnValue(new Promise(resolve => (resolveStepUp = resolve)))
+
+    const owner = renderHook(() => useStepUpFlow(), { wrapper: createWrapper(client) })
+    const other = renderHook(() => useStepUpFlow(), { wrapper: createWrapper(client) })
+
+    act(() => {
+      void owner.result.current.start()
+    })
+    expect($stepUpInFlight.get()).toBe(true)
+
+    act(() => other.result.current.dismiss())
+    expect($stepUpInFlight.get()).toBe(true)
+
+    other.unmount()
+    expect($stepUpInFlight.get()).toBe(true)
+
+    await act(async () => resolveStepUp({ data: { granted: false, ok: true }, ok: true }))
+    expect($stepUpInFlight.get()).toBe(false)
+    owner.unmount()
   })
 })

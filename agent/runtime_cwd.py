@@ -81,8 +81,30 @@ def _existing_dir(raw: str, label: str) -> Path | None:
     return None
 
 
+def _translate_container_cwd(raw: str) -> Path | None:
+    """Map a container-side cwd back to its host bind-mount source.
+
+    Returns None on a non-Docker backend or when no writable mount covers
+    *raw*, leaving the caller's original fallback behaviour intact.
+    """
+    try:
+        from tools.container_paths import to_host_dir
+    except Exception:
+        return None
+    try:
+        host = to_host_dir(raw)
+    except Exception:
+        logger.debug("container cwd translation failed for %s", raw, exc_info=True)
+        return None
+    if not host:
+        return None
+    logger.debug("translated container cwd %s to host %s", raw, host)
+    return Path(host)
+
+
 def _resolve_configured_cwd(
     *, override_is_final: bool, include_session_override: bool = True,
+    translate_container: bool = False,
 ) -> Path | None:
     """Session override, then TERMINAL_CWD; each validated as a real directory.
 
@@ -90,6 +112,9 @@ def _resolve_configured_cwd(
     instead of falling through to TERMINAL_CWD.
     ``include_session_override``: skip a session cwd known to be a launch artifact
     while still consulting the active profile's TERMINAL_CWD.
+    ``translate_container``: a TERMINAL_CWD that does not exist host-side is
+    retried through the bind mount (context discovery only; see
+    resolve_context_cwd).
     """
     if include_session_override:
         override = _SESSION_CWD.get()
@@ -99,7 +124,18 @@ def _resolve_configured_cwd(
             if p is not None or override_is_final:
                 return p
     raw = scope_terminal_cwd().strip()
-    return _existing_dir(raw, "TERMINAL_CWD") if raw else None
+    if not raw:
+        return None
+    if translate_container and not Path(raw).expanduser().is_dir():
+        # A sandboxed gateway configures terminal.cwd as the path the AGENT sees
+        # (/workspace), which does not exist on the host. Context-file discovery
+        # runs host-side, so without translating that back through the bind mount
+        # it finds nothing and every AGENTS.md on the Docker backend is silently
+        # dead. Translate before giving up.
+        translated = _translate_container_cwd(raw)
+        if translated is not None:
+            return translated
+    return _existing_dir(raw, "TERMINAL_CWD")
 
 
 def resolve_agent_cwd() -> Path:
@@ -117,4 +153,5 @@ def resolve_context_cwd(*, include_session_override: bool = True) -> Path | None
     """
     return _resolve_configured_cwd(
         override_is_final=True, include_session_override=include_session_override,
+        translate_container=True,
     )

@@ -119,6 +119,7 @@ import {
 } from './profile-request'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
+import { spellcheckHost } from './spellcheck'
 import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
@@ -1543,6 +1544,9 @@ export const host = {
 
   composer: composerHost,
 
+  /** Chromium's custom spell-check dictionary, one validated word per call. */
+  spellcheck: spellcheckHost,
+
   /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
    *  translations })` adds a whole UI language at runtime (see `sdk/i18n.ts`);
    *  `host.i18n.languageOptions()` lists what the switcher shows. */
@@ -1580,6 +1584,10 @@ export {
   type ComposerAtCompletionItem,
   type ComposerAtCompletionSource,
   type ComposerAttachmentProvider,
+  type ComposerContextMenuAction,
+  type ComposerContextMenuContext,
+  type ComposerContextMenuItem,
+  type ComposerContextMenuProvider,
   type ComposerMiddleware,
   type ComposerModelPillContext,
   type ComposerModelPillProvider

@@ -562,6 +562,7 @@ import { ensureLoginShellPath } from './shell-path'
 import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
+import { registerSpellcheckDictionaryIpc } from './spellcheck-dictionary-ipc'
 import { resolveSshBinary } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -16552,31 +16553,7 @@ ipcMain.handle('hermes:context-menu:copy-image', event => {
   }
 })
 
-ipcMain.handle('hermes:context-menu:spellcheck', (event, action) => {
-  const kind = action?.kind
-  const word = String(action?.word || '')
-
-  if (!word) {
-    return
-  }
-
-  if (kind === 'replace') {
-    event.sender.replaceMisspelling(word)
-  } else if (kind === 'add') {
-    event.sender.session.addWordToSpellCheckerDictionary(word)
-  }
-})
-
-// Guest dictionary add: the webview TAG exposes replaceMisspelling but no
-// session API, so the renderer names the guest by webContents id.
-ipcMain.handle('hermes:context-menu:guest-add-word', (_event, payload) => {
-  const word = String(payload?.word || '')
-  const guest = electronWebContents.fromId(Number(payload?.webContentsId))
-
-  if (word && guest && !guest.isDestroyed()) {
-    guest.session.addWordToSpellCheckerDictionary(word)
-  }
-})
+registerSpellcheckDictionaryIpc(ipcMain, electronWebContents)
 
 ipcMain.handle('hermes:capturePreview', async (_event, payload) => {
   const guest = electronWebContents.fromId(Number(payload?.webContentsId))

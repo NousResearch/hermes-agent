@@ -13,6 +13,7 @@
  *   data kinds (`data`):      composer.middleware    (ComposerMiddleware)
  *                             composer.attachments   (ComposerAttachmentProvider)
  *                             composer.microActions  (ComposerMicroActionProvider)
+ *                             composer.contextMenu   (ComposerContextMenuProvider)
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -38,8 +39,45 @@ export const COMPOSER_AREAS = {
   attachments: 'composer.attachments',
   microActions: 'composer.microActions',
   atCompletions: 'composer.atCompletions',
-  modelPill: 'composer.modelPill'
+  modelPill: 'composer.modelPill',
+  contextMenu: 'composer.contextMenu'
 } as const
+
+/** What a `composer.contextMenu` provider sees when the user right-clicks the
+ *  composer: the word under the caret and the selection INSIDE the composer,
+ *  nothing else — no element, no range, no other field's text. Every field
+ *  is a standing compatibility promise to the plugins reading it. */
+export interface ComposerContextMenuContext {
+  /** Selected composer text at the click ('' when the caret is collapsed). */
+  readonly selection: string
+  /** The word under the caret (or at the selection's start), or null. */
+  readonly word: null | string
+}
+
+/** Handed to an item's `onSelect` after the menu has closed and the composer
+ *  has the caret back. */
+export interface ComposerContextMenuAction extends ComposerContextMenuContext {
+  /** Replace the right-clicked `word` with `text` (one line). Works once, and
+   *  only while the composer still holds that word where it was — false
+   *  otherwise, never an edit somewhere else. */
+  replaceWord: (text: string) => boolean
+}
+
+/** One row the app renders for a plugin in the composer's context menu. */
+export interface ComposerContextMenuItem {
+  /** Plain text; control characters are stripped and it is clamped. */
+  label: string
+  disabled?: boolean
+  onSelect: (action: ComposerContextMenuAction) => void
+}
+
+/** Payload of a `composer.contextMenu` data contribution. `items` runs once
+ *  per right-click on the composer; return `[]` for "nothing from me". The
+ *  app renders each plugin's rows as its own section (plugins ordered by id,
+ *  at most six rows each) between its own spell-check rows and the edit verbs. */
+export interface ComposerContextMenuProvider {
+  items: (context: ComposerContextMenuContext) => ComposerContextMenuItem[]
+}
 
 export interface ComposerDraft {
   text: string

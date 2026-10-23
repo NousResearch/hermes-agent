@@ -349,6 +349,9 @@ declare global {
       /** Add a word to the spell-check dictionary of a webview guest's
        *  session (the tag exposes no session API). */
       contextMenuGuestAddWord?: (payload: { webContentsId: number; word: string }) => Promise<void>
+      /** Add/remove ONE validated word in this window's spell-check
+       *  dictionary (`host.spellcheck`); resolves main's verdict. */
+      spellcheckDictionary?: (op: 'add' | 'remove', word: string) => Promise<boolean>
       /** Spell-check facts for the gesture that opened the current menu;
        *  fires shortly after the DOM contextmenu event. */
       onContextMenuSpellcheck?: (

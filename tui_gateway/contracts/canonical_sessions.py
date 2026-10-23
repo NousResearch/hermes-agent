@@ -9,7 +9,7 @@ from pydantic import RootModel
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
-from .sessions import TodoState
+from .sessions import OpenRequestEntry, TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -150,6 +150,9 @@ class CanonicalSnapshot(Result):
     execution_generation: int
     pending: list[CanonicalPendingAdmission]
     prompts: list[CanonicalPendingPrompt]
+    # A viewer's batch clarify form still waiting (``request id``, questions, answers locked so far),
+    # re-delivered by the client's channel like the sidecar's reconnect replay.
+    open_requests: list[OpenRequestEntry] | None = None
     info: CanonicalSnapshotInfo
     # The open ``manage_connections`` card, so a resume restores it while the tool waits.
     pending_connection: ConnectionRequestPayload | None = None

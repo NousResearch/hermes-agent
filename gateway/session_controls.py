@@ -630,6 +630,11 @@ class AuthorityConnection:
         # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
         from tui_gateway.tool_progress import _todo_state_from_history
         history, display = list(snapshot.history), {}
+        from gateway.session_server_requests import open_batches
+        # Read after the attach: a batch settled since still sends its ``request.cancel`` after the
+        # snapshot's fence, and the client's channel re-delivers these before it applies the reply.
+        open_requests = open_batches(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+                                     snapshot.handle.ref.session_id)
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
@@ -642,7 +647,8 @@ class AuthorityConnection:
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
-                'prompts': list(snapshot.prompts), 'info': info,
+                'prompts': list(snapshot.prompts), **({'open_requests': open_requests} if open_requests else {}),
+                'info': info,
                 'pending_connection': pending_connection(self.authority, ref.session_id),
                 # The newest todo result in the transcript, the snapshot the session's agent hydrates
                 # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.

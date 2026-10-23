@@ -4973,6 +4973,7 @@ export interface CanonicalSnapshot {
   execution_generation: number
   pending: CanonicalPendingAdmission[]
   prompts: CanonicalPendingPrompt[]
+  open_requests?: OpenRequestEntry[] | null
   info: CanonicalSnapshotInfo
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null

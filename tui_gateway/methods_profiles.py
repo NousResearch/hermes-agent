@@ -82,6 +82,9 @@ def _resolve_profile(rid, params):
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
     if not profile_dir.is_dir():
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
+    from hermes_cli.dashboard_auth import profile_access
+    if not profile_access.is_allowed(name):
+        return name, None, _err(rid, 4064, f"profile '{name}' not found")
     return name, profile_dir, None
 
 

@@ -21,6 +21,7 @@ import { enNotices } from './en_notices'
 import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
 import { enPluginUpdate } from './en_plugin_update'
+import { enPluginsTab } from './en_plugins_tab'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
@@ -2084,6 +2085,7 @@ export const en: Translations = {
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
+      ...enPluginsTab,
       agentTitle: 'Agent plugins',
       agentBlurb:
         'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
@@ -2101,12 +2103,6 @@ export const en: Translations = {
         `The desktop half is loaded in this app, but the agent half is not installed in ${profile}. Install it there.`,
       installAgentHereNoOrigin:
         'The agent half is not installed in this profile, and this package was copied in by hand (no catalog entry or git remote), so it cannot be installed from here. Copy its folder into the profile or reinstall from Git.',
-      desktopHalfPending: 'copying…',
-      desktopHalfPendingTip:
-        'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
-      desktopHalfRemote: 'unavailable (remote backend)',
-      desktopHalfRemoteTip:
-        "This package's desktop half is on the remote backend's disk, which this app cannot read. To use it here, run Install from Git with the package's repo URL and the Desktop target checked — that clones the desktop half onto this machine.",
       emptyAll: 'No plugins yet.',
       empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
@@ -2118,17 +2114,6 @@ export const en: Translations = {
         `Could not toggle the ${name} agent tools; the Desktop panel was left unchanged`,
       legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
       portableBadge: 'portable',
-      serverStates: {
-        connected: 'connected',
-        app_not_running: 'app not running',
-        hermes_not_connected: 'MCP connection missing',
-        endpoint_unavailable: 'endpoint unavailable',
-        no_interactive_session: 'no interactive session',
-        version_too_old: 'version too old',
-        missing_app: 'app missing',
-        unsupported_gpu: 'GPU not supported',
-        unknown: 'status unknown'
-      },
       alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
       catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>

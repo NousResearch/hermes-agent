@@ -15,6 +15,7 @@ import { frNotices } from './fr_notices'
 import { frNotifications } from './fr_notifications'
 import { frOnboarding } from './fr_onboarding'
 import { frPluginUpdate } from './fr_plugin_update'
+import { frPluginsTab } from './fr_plugins_tab'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
@@ -2449,6 +2450,7 @@ export const frOverrides = {
     skillArchivedMessage: 'Restaurable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
+      ...frPluginsTab,
       agentTitle: "Plugins de l'agent",
       agentBlurb:
         "Étendez l'agent du profil sélectionné avec des outils, hooks et fournisseurs. Les changements prennent effet après le redémarrage du gateway.",
@@ -2467,12 +2469,6 @@ export const frOverrides = {
         `La partie Desktop est chargée dans cette application, mais la partie agent n'est pas installée dans ${profile}. Installez-la dans ce profil.`,
       installAgentHereNoOrigin:
         "La partie agent n'est pas installée dans ce profil et ce paquet a été copié manuellement, sans entrée de catalogue ni dépôt Git. Copiez son dossier dans le profil ou réinstallez-le depuis Git.",
-      desktopHalfPending: 'copie…',
-      desktopHalfPendingTip:
-        "Ce paquet contient une partie Desktop qui n'a pas encore été copiée dans l'application. Relancez l'analyse ou redémarrez l'application.",
-      desktopHalfRemote: 'indisponible (backend distant)',
-      desktopHalfRemoteTip:
-        'La moitié bureau de ce paquet se trouve sur le disque du backend distant, que cette application ne peut pas lire. Pour l’utiliser ici, lancez Installer depuis Git avec l’URL du dépôt du paquet et la cible Bureau cochée — cela clone la moitié bureau sur cette machine.',
       emptyAll: 'Aucun plugin pour le moment.',
       empty: "Aucun plugin d'agent installé pour ce profil.",
       emptyHint: 'Parcourez le catalogue ci-dessous pour installer un plugin vérifié en un clic.',
@@ -2484,17 +2480,6 @@ export const frOverrides = {
         `Impossible de modifier les outils agent de ${name} ; le panneau Desktop reste inchangé`,
       legacyBackend: 'Ce backend est trop ancien pour gérer les plugins depuis cet écran ; mettez Hermes à jour.',
       portableBadge: 'portable',
-      serverStates: {
-        connected: 'connecté',
-        app_not_running: 'application non lancée',
-        hermes_not_connected: 'connexion MCP manquante',
-        endpoint_unavailable: 'point de terminaison indisponible',
-        no_interactive_session: 'aucune session interactive',
-        version_too_old: 'version trop ancienne',
-        missing_app: 'application manquante',
-        unsupported_gpu: 'GPU non prise en charge',
-        unknown: 'état inconnu'
-      },
       alreadyInstalled: (name: string) => `${name} est déjà installé dans ce profil.`,
       catalogProvenance: (sha: string) =>
         `Installé depuis le catalogue Hermes${sha ? ` au commit épinglé ${sha}` : ''}.`,

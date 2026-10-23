@@ -380,6 +380,52 @@ def _format_images(images: list, should_upscale: bool, prompt: str) -> list:
     return formatted
 
 
+# The managed FAL gateway answers HTTP 413 above ~4.5 MB of request body (probed: 4.0 MB of base64
+# passes, 4.5 MB fails), so inlined sources share this budget and are downscaled to fit it.
+_FAL_INLINE_BUDGET = 3_500_000
+
+
+def _inline_fal_sources(sources: list) -> list:
+    """FAL only fetches URLs, so local paths become ``data:`` URLs through the guarded resolver
+    (credential-read guard, image sniff) on every terminal backend; then fit the gateway budget."""
+    from model_tools import _run_async
+    from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
+    try:
+        urls = [_run_async(resolve_local_source_to_data_url(s, None)) for s in sources]
+    except ImageResolutionError as exc:
+        raise ValueError(f"Could not read source image: {exc}") from exc
+    inline = [u for u in urls if u.startswith("data:")]
+    if sum(map(len, inline)) <= _FAL_INLINE_BUDGET:
+        return urls
+    share = _FAL_INLINE_BUDGET // len(inline)
+    return [_shrink_data_url(u, share) if u.startswith("data:") and len(u) > share else u for u in urls]
+
+
+def _shrink_data_url(url: str, budget: int) -> str:
+    """Re-encode a ``data:`` image (JPEG unless it has alpha), shrinking the long edge until it fits."""
+    import base64
+    import io
+    from PIL import Image
+    try:
+        img = Image.open(io.BytesIO(base64.b64decode(url.partition(",")[2])))
+        img.load()
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return url  # not a raster Pillow reads (e.g. SVG): send as-is and let FAL report it
+    fmt, mime = ("PNG", "image/png") if "A" in img.getbands() else ("JPEG", "image/jpeg")
+    img = img if fmt == "PNG" else img.convert("RGB")
+    side = max(img.size)
+    while True:
+        frame = img.copy()
+        frame.thumbnail((side, side))
+        buf = io.BytesIO()
+        frame.save(buf, fmt, quality=90)
+        out = f"data:{mime};base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+        if len(out) <= budget or side <= 256:
+            logger.info("Downscaled FAL source image to %s (%d bytes inline)", frame.size, len(out))
+            return out
+        side = int(side * 0.75)
+
+
 def _prepare_fal_request(model_id, meta, prompt, aspect_ratio, seed, overrides, source_images):
     """Validate inputs and return ``(endpoint, arguments)``; raises ValueError with the user-facing message."""
     if not isinstance(prompt, str) or not prompt.strip():
@@ -402,7 +448,7 @@ def _prepare_fal_request(model_id, meta, prompt, aspect_ratio, seed, overrides, 
     if source_images:
         # Clamp reference count to the model's declared cap.
         max_refs = int(meta.get("max_reference_images") or 1)
-        clamped_sources = source_images[:max_refs] if max_refs > 0 else source_images
+        clamped_sources = _inline_fal_sources(source_images[:max_refs] if max_refs > 0 else source_images)
         arguments = _build_fal_edit_payload(
             model_id, prompt, clamped_sources, aspect_lc, seed=seed, overrides=overrides)
         logger.info("Editing image with %s (%s) — %d source image(s), prompt: %s",

@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, openSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -30,7 +30,94 @@ const enabled = !process.env.VITEST
 // or add noticeable blocking on the synchronous append. Mirrors the spirit of
 // GatewayClient's in-memory log-line cap.
 const MAX_BREADCRUMB = 4096
+// Size cap so the shared crash log cannot grow without bound: recurring
+// lifecycle breadcrumbs and the child's panics used to append forever
+// (15 MB / 778 records on one host). One kept generation (.1) bounds the
+// total at 2x the cap. Rotation takes the same O_CREAT|O_EXCL lock file as
+// the Python gateway (never waiting; a stale lock is broken) and re-checks
+// the size under it: a rotator acting on a stale stat could otherwise rename
+// a small fresh log over the retained .1 generation and erase it (#136633
+// review). A line lost to a concurrent rename matches the best-effort
+// contract this logger already has.
+const MAX_CRASH_LOG_BYTES = 5 * 1024 * 1024
+// A rotation lock older than this belongs to a killed writer: break it
+// instead of skipping rotation forever.
+const ROTATE_LOCK_STALE_MS = 15_000
 let warned = false
+
+function acquireRotateLock(): number | null {
+  const lockPath = `${CRASH_LOG}.rotate.lock`
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return openSync(lockPath, 'wx')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        return null
+      }
+    }
+
+    try {
+      if (Date.now() - statSync(lockPath).mtimeMs <= ROTATE_LOCK_STALE_MS) {
+        return null
+      }
+    } catch {
+      continue // Vanished between open and stat: retry the exclusive create.
+    }
+
+    try {
+      unlinkSync(lockPath) // Stale lock: break it and retry.
+    } catch {
+      return null
+    }
+  }
+
+  return null
+}
+
+function releaseRotateLock(fd: number): void {
+  try {
+    closeSync(fd)
+  } catch {
+    // Already closed.
+  }
+
+  try {
+    unlinkSync(`${CRASH_LOG}.rotate.lock`)
+  } catch {
+    // Gone.
+  }
+}
+
+function rotateCrashLogIfOverCap(): void {
+  try {
+    if (statSync(CRASH_LOG).size <= MAX_CRASH_LOG_BYTES) {
+      return
+    }
+  } catch {
+    return // Missing file: the append below recreates the log.
+  }
+
+  const fd = acquireRotateLock()
+
+  if (fd === null) {
+    return // A concurrent writer owns this rotation.
+  }
+
+  try {
+    try {
+      if (statSync(CRASH_LOG).size <= MAX_CRASH_LOG_BYTES) {
+        return // Already rotated away.
+      }
+    } catch {
+      return
+    }
+
+    renameSync(CRASH_LOG, `${CRASH_LOG}.1`)
+  } finally {
+    releaseRotateLock(fd)
+  }
+}
 
 export function recordParentLifecycle(line: string): void {
   if (!enabled) {
@@ -49,6 +136,7 @@ export function recordParentLifecycle(line: string): void {
         : oneLine
 
     mkdirSync(logDir, { recursive: true })
+    rotateCrashLogIfOverCap()
     appendFileSync(CRASH_LOG, `[tui-parent] ${new Date().toISOString()} ${capped}\n`)
   } catch {
     if (!warned) {

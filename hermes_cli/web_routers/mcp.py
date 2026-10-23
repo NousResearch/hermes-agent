@@ -506,8 +506,8 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
             with _profile_scope(effective_profile):
                 for spec in entry.auth.env or []:
                     value = (body.env or {}).get(spec.name)
-                    if spec.secret and value:
-                        save_env_value(spec.name, value)
+                    if spec.secret and value and value.strip():
+                        save_env_value(spec.name, value.strip())
 
         await asyncio.to_thread(_write_env)
 

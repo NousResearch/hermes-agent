@@ -2,6 +2,9 @@
 
 Env: ``KEENABLE_API_KEY`` (optional; keyless free tier works without it).
 Config: ``web.provider_tier.keenable: free|paid`` pins the tier (unset = auto).
+
+``web_search(depth="quick")`` on the keyed path sends ``mode: realtime``; standard and deep send
+no mode (Keenable's default, ``pro``, is its deeper retrieval). The keyless tier ignores depth.
 """
 
 from __future__ import annotations
@@ -38,7 +41,10 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
     EXTRACT = True
     KEYLESS = True
 
-    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+    def supports_search_depth(self) -> bool:
+        return not use_keyless("keenable", provider_env("KEENABLE_API_KEY"))
+
+    def search(self, query: str, limit: int = 5, depth: str = "standard") -> dict[str, Any]:
         def _body() -> dict[str, Any]:
             api_key = provider_env("KEENABLE_API_KEY")
             if use_keyless("keenable", api_key):
@@ -48,9 +54,12 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
             logger.info("Keenable search: '%s' (limit=%d)", query, limit)
             # requests freezes its default CA bundle path at its own import; a replaced
             # install environment leaves it dangling, so hand over a live bundle.
+            payload: dict[str, Any] = {"query": query, "max_results": min(max(1, int(limit)), SEARCH_LIMIT_CAP)}
+            if depth == "quick":
+                payload["mode"] = "realtime"
             response = requests.post(
                 f"{_KEENABLE_API_URL}/v1/search",
-                json={"query": query, "max_results": min(max(1, int(limit)), SEARCH_LIMIT_CAP)},
+                json=payload,
                 headers=_keenable_headers(api_key), timeout=30, verify=requests_verify(),
             )
             if response.status_code >= 400:

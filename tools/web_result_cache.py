@@ -1,7 +1,8 @@
 """Result caching for web_search / web_extract; both caches TTL-bounded (default 20 min,
 ``web.cache_ttl_minutes``; disable with ``web.cache_enabled: false``), only successful responses cache.
 * **Search memo** — in-memory, per-process, single-flighted: concurrent identical queries share one
-  paid request. Limits bucket to 10/20/50/100 so near-identical requests share an entry.
+  paid request. Keyed on (provider, query, limit bucket, depth); limits bucket to 10/20/50/100 so
+  near-identical requests share an entry.
 * **Extract cache** — disk-backed under ``cache/web`` (cross-process) with a JSON sidecar index:
   URL digest → (file, fetched_at, title). Hits re-run the normal truncate pipeline.
 Lives here, not in tool dispatch, so hits sit *after* every safety check and skip only the vendor call.
@@ -88,13 +89,13 @@ class SearchMemo:
         self._key_locks: dict[tuple, threading.Lock] = {}
 
     @staticmethod
-    def _key(provider: str, query: str, limit: int) -> tuple:
-        return (provider, normalize_query(query), bucket_limit(limit))
+    def _key(provider: str, query: str, limit: int, depth: str) -> tuple:
+        return (provider, normalize_query(query), bucket_limit(limit), depth)
 
-    def lookup(self, provider: str, query: str, limit: int) -> Optional[dict]:
+    def lookup(self, provider: str, query: str, limit: int, depth: str = "standard") -> Optional[dict]:
         if not cache_enabled():
             return None
-        key = self._key(provider, query, limit)
+        key = self._key(provider, query, limit, depth)
         with self._store_lock:
             hit = self._store.get(key)
             if hit is None or time.monotonic() >= hit[0]:
@@ -103,20 +104,20 @@ class SearchMemo:
         logger.info("web_search cache hit: %r via %s", query, provider)
         return _deep_copy(hit[1])
 
-    def store(self, provider: str, query: str, limit: int, response: dict) -> None:
+    def store(self, provider: str, query: str, limit: int, response: dict, depth: str = "standard") -> None:
         """Cache a SUCCESSFUL response for the bucketed key."""
         if not cache_enabled() or not isinstance(response, dict) or not response.get("success"):
             return
-        key = self._key(provider, query, limit)
+        key = self._key(provider, query, limit, depth)
         with self._store_lock:
             now = time.monotonic()  # opportunistic expiry sweep bounds memory
             for k in [k for k, (exp, _) in self._store.items() if now >= exp]:
                 del self._store[k]
             self._store[key] = (now + ttl_seconds(), _deep_copy(response))
 
-    def flight_lock(self, provider: str, query: str, limit: int) -> threading.Lock:
+    def flight_lock(self, provider: str, query: str, limit: int, depth: str = "standard") -> threading.Lock:
         """Per-key lock held around lookup-miss → paid request → store."""
-        key = self._key(provider, query, limit)
+        key = self._key(provider, query, limit, depth)
         with self._store_lock:
             lock = self._key_locks.get(key)
             if lock is None:

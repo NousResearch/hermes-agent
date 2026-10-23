@@ -72,13 +72,42 @@ If you specifically need the live DOM rather than extracted markdown — for exa
 
 ---
 
+## Search depth
+
+`web_search` takes an optional `depth` argument that the model sets per call: `quick` for a simple fact check, `standard` (the default) for normal searches, and `deep` for hard research that needs many sources. Each backend maps it to its own option. A `standard` call, or a call with no `depth`, sends exactly the request the backend always sent.
+
+| Backend | `quick` | `standard` | `deep` |
+|---------|---------|------------|--------|
+| **Exa** | `type: lite` | `web.exa.type` (default `auto`) | `type: deep` |
+| **Tavily** | `search_depth: fast` | Tavily's default (`basic`) | `search_depth: advanced` (2 credits) |
+| **Parallel** | `mode: fast` | `PARALLEL_SEARCH_MODE` (default `agentic`) | `mode: agentic` |
+| **Perplexity** (own key) | `search_type: fast` | Perplexity's default (`web`) | same as standard |
+| **Keenable** | `mode: realtime` | Keenable's default (`pro`) | same as standard |
+| **Firecrawl**, **SearXNG**, **Brave Search**, **DDGS**, **xAI**, **OpenAI Native** | no depth setting: every call is the standard request | | |
+
+Depth is also ignored on routes that have no such option: the keyless free tier (Exa, Parallel, Keenable and Firecrawl without a key) and the managed Perplexity route (always `fast`). Tavily's keyless mode takes the same parameters as its keyed mode, so depth still applies there. When the selected backend ignores the depth the model asked for, the result carries one line in `data.depth_note`, for example `brave-free has no depth setting; ran its standard search`. A call served by the one-shot keyless rescue runs without depth; its `backend_error` already says the call was rescued.
+
+OpenAI Native search runs on OpenAI's servers, so Hermes never sees the call or its arguments.
+
+**Cost cap.** `web.max_depth` sets the highest depth the model may use. It defaults to `standard`, so `deep` costs nothing extra until you allow it. A higher request runs at the cap, and the result says so in `data.depth_note` (`depth lowered from deep to standard by web.max_depth`).
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  max_depth: deep   # quick | standard (default) | deep
+```
+
+Setting `max_depth: quick` also turns calls that leave `depth` out into quick searches.
+
+---
+
 ## Result caching
 
 Repeat web calls within a short window are served from cache instead of the paid backend — this saves credits and latency in the two patterns where duplicates are common: subagent fan-outs (several delegated agents researching the same topic) and the agent re-checking a page it read minutes ago.
 
 | Call | Cache | Scope |
 |------|-------|-------|
-| `web_search` — same query (case/whitespace-insensitive), same provider | In-memory memo | Per process |
+| `web_search` — same query (case/whitespace-insensitive), same provider, same depth | In-memory memo | Per process |
 | `web_extract` — same URL, same format, same provider | Full text stored under `~/.hermes/cache/web/` | Shared across CLI, gateway, cron, and subagent processes |
 
 Concurrent identical searches (a parallel subagent fan-out firing the same query at once) are **coalesced into a single backend request** — the first caller pays; the rest share the response. Requested search limits are bucketed up to 10/20/50/100 so near-identical requests (`limit=5` vs `limit=8`) share one entry, with each caller receiving its requested count.

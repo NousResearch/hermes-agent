@@ -170,7 +170,8 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         if expected != session_id:
             raise RuntimeStoreError('admission_conflict')
         storage_source, title = 'bot_room', f'Group: {dispatch.room_id}'
-    if session_id in authority.sessions:
+    from gateway.session_history_mount import is_history_mount
+    if session_id in authority.sessions and not is_history_mount(authority.sessions[session_id]):
         if (authority.sessions[session_id].source.platform != Platform.API_SERVER
                 or authority.db.get_session(session_id)['source'] != storage_source):
             raise RuntimeStoreError('permission_denied')
@@ -308,5 +309,9 @@ def restore_api_session(authority, session_id):
         if current is not None and current.session_id not in authority.db.get_compression_lineage(session_id):
             raise RuntimeStoreError('admission_conflict')
         store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
-    authority.sessions.setdefault(session_id, LiveSession(source, entry.session_key))
+    from gateway.session_history_mount import is_history_mount
+    live = authority.sessions.get(session_id)
+    if live is None or is_history_mount(live):
+        # A read-only view opened while the row had no binding gives way to the bound conversation.
+        authority.sessions[session_id] = LiveSession(source, entry.session_key)
     return SessionRef(authority.profile_id, session_id)

@@ -115,3 +115,37 @@ async def test_a_stored_history_with_child_sessions_is_not_deleted(tmp_path, mon
     with pytest.raises(RuntimeStoreError, match='session_has_children'):
         await _mutate(conn, ref, 'delete', 'delete', {})
     assert db.get_session('sub-child')['parent_session_id'] == ref.session_id
+
+
+@pytest.mark.asyncio
+async def test_a_childless_continuation_whose_chain_has_a_delegate_is_not_deleted(tmp_path, monkeypatch):
+    """The delete walks back to the compression parent and took that parent's delegate child too."""
+    conn, root = await _connect(tmp_path, monkeypatch, 'api-1')
+    db = conn.authority.db
+    db._write_sql("UPDATE sessions SET end_reason='compression', ended_at=1 WHERE id=?", (root.session_id,))
+    db.create_session('api-1b', source='api_server', model='m-old', parent_session_id=root.session_id)
+    db.create_session('sub-child', source='subagent', model='m-old')
+    db._write_sql('UPDATE sessions SET session_key=?, chat_id=? WHERE id=?',
+                  (ROWS['api-1'][1]['session_key'], 'api-1', 'api-1b'))
+    db._write_sql('UPDATE sessions SET parent_session_id=?, model_config=? WHERE id=?',
+                  (root.session_id, json.dumps({'_delegate_from': root.session_id}), 'sub-child'))
+    tip = SessionRef(root.profile_id, 'api-1b')
+    await conn.resume(tip, {})
+    with pytest.raises(RuntimeStoreError, match='session_has_children'):
+        await _mutate(conn, tip, 'delete', 'delete', {})
+    assert db.get_session('sub-child')['parent_session_id'] == root.session_id
+
+
+@pytest.mark.asyncio
+async def test_an_api_chat_opened_read_only_still_continues_through_the_api(tmp_path, monkeypatch):
+    """Binding the viewed row replaced nothing: the read-only mount had no source to check."""
+    from gateway.config import Platform
+    from gateway.session_api import bind_api_session
+    from gateway.session_history_mount import is_history_mount
+    conn, ref = await _connect(tmp_path, monkeypatch, 'api-1')
+    await conn.resume(ref, {})
+
+    assert bind_api_session(conn.authority, 'api-1', caller_key='agent:main:api_server:dm:api-1') == ref
+
+    live = conn.authority.sessions['api-1']
+    assert live.source.platform == Platform.API_SERVER and not is_history_mount(live) and not live.superseded

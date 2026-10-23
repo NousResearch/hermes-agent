@@ -131,9 +131,24 @@ class PluginLedgerMixin:
         callbacks = mapping.get(key)
         if callbacks is None:
             return
+        # ``_remove_identity`` removes the LAST exact match. Find the same index first so we
+        # can drop the parallel mutating-flag entry too — two registrations can share the same
+        # callable object, so identity alone cannot disambiguate the pair.
+        target_index: Optional[int] = None
+        if mapping is self._hooks:
+            for index in range(len(callbacks) - 1, -1, -1):
+                if callbacks[index] is callback:
+                    target_index = index
+                    break
         self._remove_identity(callbacks, callback)
         if not callbacks:
             mapping.pop(key, None)
+        if mapping is self._hooks and target_index is not None:
+            flags = self._hooks_mutating_flags.get(key)
+            if flags is not None and target_index < len(flags):
+                del flags[target_index]
+                if not flags:
+                    self._hooks_mutating_flags.pop(key, None)
 
     def _restore_mapping(self, mapping: dict[str, Any], key: str, current: Any, previous: Optional[Any]) -> bool:
         """Restore a manager-local mapping only when *current* is still present."""
@@ -189,14 +204,15 @@ class PluginLedgerMixin:
                 handle.dispose()
 
     def _register_fallback_hook(self, context: Any, hook_source: Optional[tuple], hook_name: str,
-                                callback: Callable) -> PluginRegistration:
+                                callback: Callable, *, mutates: Optional[bool] = None) -> PluginRegistration:
         """Register ``callback`` unless the same source is already live through general discovery, in
         which case return an inert handle so the provider keeps its disposable-handle contract."""
         if hook_source is None:
-            return context.register_hook(hook_name, callback)
+            return context.register_hook(hook_name, callback, mutates=mutates)
         owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
                     for loaded in self._plugins.values())
-        handle = context._track("hook", hook_name, lambda: None) if owned else context.register_hook(hook_name, callback)
+        handle = (context._track("hook", hook_name, lambda: None) if owned
+                  else context.register_hook(hook_name, callback, mutates=mutates))
         self._memory_hook_registrations.setdefault(hook_source, []).append(handle)
         return handle
 
@@ -286,7 +302,7 @@ class PluginLedgerMixin:
         carryover_ids = {id(r) for r in self._persistent_carryover}
         self._persistent_carryover.extend(r for r in self._active_persistent() if id(r) not in carryover_ids)
         for container in (
-            self._ownership_ledger, self._plugins, self._hooks, self._middleware,
+            self._ownership_ledger, self._plugins, self._hooks, self._hooks_mutating_flags, self._middleware,
             self._plugin_tool_names, self._plugin_platform_names, self._cli_commands,
             self._plugin_commands, self._plugin_skills, self._automation_blueprints, self._portable_mcp_servers,
             self._portable_mcp_server_plugins, self._aux_tasks, self._system_prompt_sections, self._approval_transports,

@@ -572,6 +572,24 @@ class PluginDispatchMixin:
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
 
+    def has_mutating_hook(self, hook_name: str) -> bool:
+        """Return True when any registered callback declared ``mutates=True``.
+
+        Surfaces that stream deltas to users consult this to decide whether
+        they must suppress token streaming up-front — observational hooks do
+        not trigger suppression, so a plugin that only reads the payload
+        keeps streaming on.
+
+        Mirrors :meth:`has_hook`: a safe worker never runs plugin hooks
+        (``invoke_hook`` returns empty), so a registered mutator there can
+        never replace the response and must not silence the stream.
+        """
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return False
+        return any(self._hooks_mutating_flags.get(hook_name, ()))
+
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""
         from agent.safe_worker_policy import safe_worker_enabled

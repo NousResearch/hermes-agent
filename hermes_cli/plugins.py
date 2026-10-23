@@ -57,6 +57,7 @@ from hermes_cli.plugins_dispatch import (
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
+from hermes_cli.plugins_hooks import PluginHookMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _NAME_NORMALIZERS, _SCOPED_PROVIDER_REGISTRARS
 from hermes_cli.plugins_state import (
@@ -226,7 +227,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext:
+class PluginContext(PluginHookMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -940,10 +941,6 @@ class PluginContext:
                 logger.warning("Plugin '%s' locale file %s skipped: %s", self.manifest.name, file, exc)
         return handles
 
-    def register_hook(self, hook_name: str, callback: Callable) -> PluginRegistration:
-        """Register a lifecycle hook callback (unknown names warn but are still stored)."""
-        return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
-
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
@@ -1073,11 +1070,17 @@ def _ignore_after_abandoned_load(method):
 
 
 # Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the
-# guard cannot drift from the surface as registrars are added.
-for _name, _method in list(vars(PluginContext).items()):
-    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
-        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
-del _name, _method
+# guard cannot drift from the surface as registrars are added. The bases are walked too: an entry
+# point a mixin contributes is inherited, and ``vars()`` on the subclass alone would not see it.
+# Each name once, and the guard OUTSIDE any decorator the method already carries.
+_guarded: set[str] = set()
+for _base in PluginContext.__mro__:
+    for _name, _method in list(vars(_base).items()):
+        if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
+            if _name not in _guarded:
+                setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
+                _guarded.add(_name)
+del _base, _name, _method, _guarded
 
 
 def _resolve_hook_callback_timeout() -> float:
@@ -1138,6 +1141,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._hooks: dict[str, list[Callable]] = {}
         # Fallback hooks registered by a memory provider before general discovery.
         self._memory_hook_registrations: dict[tuple[str, str], list[PluginRegistration]] = {}
+        # Parallel to ``_hooks``; index-aligned (see PluginHookMixin.register_hook).
+        self._hooks_mutating_flags: dict[str, list[bool]] = {}
         self._middleware: dict[str, list[Callable]] = {}
         self._plugin_tool_names: set[str] = set()
         self._plugin_platform_names: set[str] = set()
@@ -1832,24 +1837,14 @@ def _delivery_manager() -> PluginManager:
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
-    """Invoke a lifecycle hook (lazy-discovers first); return non-``None`` callback results.
-
-    Hot-path / observer hooks in ``_HOOK_TIMEOUT_BOUNDED_HOOKS`` and the policy hook ``pre_tool_call`` are
-    bounded by ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker is abandoned (not
-    joined) so we do not reintroduce the #6622 hang. Timed-out or still-running ``pre_tool_call`` callbacks
-    fail closed with a block directive; other bounded hooks fail open (skip).
-    Ensures plugins are discovered on first invocation so callers in processes that never explicitly call
-    ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
-    callbacks registered by user plugins (tracking #64178).
-    """
-    return _delivery_manager().invoke_hook(hook_name, **kwargs)
-
+    """Invoke a lifecycle hook (lazy-discovers first); return non-``None`` callback results."""
+    from hermes_cli.plugins_hooks import invoke_hook as _invoke
+    return _invoke(hook_name, **kwargs)
 
 async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
-    """:func:`invoke_hook` for callers on an event loop: ``async def`` callbacks are awaited
-    there instead of bridged through a helper thread (see ``PluginManager.ainvoke_hook``)."""
-    return await _delivery_manager().ainvoke_hook(hook_name, **kwargs)
-
+    """``invoke_hook`` for callers on an event loop: ``async def`` callbacks are awaited there."""
+    from hermes_cli.plugins_hooks import ainvoke_hook as _ainvoke
+    return await _ainvoke(hook_name, **kwargs)
 
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> list[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
@@ -1886,6 +1881,11 @@ def has_hook(hook_name: str) -> bool:
     """
     return _delivery_manager().has_hook(hook_name)
 
+
+def has_mutating_hook(hook_name: str) -> bool:
+    """True when a loaded plugin handles a hook and marked it ``mutates=True`` at registration."""
+    from hermes_cli.plugins_hooks import has_mutating_hook as _query
+    return _query(hook_name)
 
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
     """Return a stable snapshot of callbacks registered for a hook."""

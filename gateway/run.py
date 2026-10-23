@@ -587,12 +587,22 @@ def _redact_approval_command(cmd: str | None) -> str:
     return redact_sensitive_text(str(cmd or ""), force=True)
 
 
+def _approval_rationale_block(contextual_reason: str, *, limit: int = 800) -> str:
+    """Truncated rationale plus a blank line, or "" when the agent gave no commentary."""
+    rationale = str(contextual_reason or "").strip()
+    if not rationale:
+        return ""
+    if len(rationale) > limit:
+        rationale = rationale[: max(0, limit - 3)] + "..."
+    return rationale + "\n\n"
+
+
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
-    allow_session: bool = True, smart_denied: bool = False) -> str:
+    allow_session: bool = True, smart_denied: bool = False, contextual_reason: str = "") -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    steps a surface without buttons needs. ``contextual_reason`` is display-only."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
@@ -605,9 +615,16 @@ def _format_exec_approval_fallback(
         if allow_permanent:
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
+    body = t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
+             reason_label=ea_reason_label_text(), reason=description)
+    rationale_block = _approval_rationale_block(contextual_reason)
+    if rationale_block:
+        # Under the heading, before the fenced command, in every locale's text_body.
+        split_at = body.find("\n")
+        body = rationale_block + body if split_at < 0 else (
+            body[: split_at + 1] + rationale_block + body[split_at + 1:])
     return (
-        t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
-          reason_label=ea_reason_label_text(), reason=description)
+        body
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
         + format_approval_deadline_line(approval_timeout_seconds()))

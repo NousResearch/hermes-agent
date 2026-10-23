@@ -325,7 +325,11 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
-        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
+        # newline='' disables CRLF translation on write (byte-exact read-modify-write
+        # rollback, e.g. the security-scan path). Text mode only: binary streams
+        # reject the newline argument outright (os.fdopen raises ValueError).
+        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding,
+                       newline=None if binary else "") as f:
             if mode is not None and hasattr(os, "fchmod"):
                 os.fchmod(f.fileno(), mode)
             write(f)

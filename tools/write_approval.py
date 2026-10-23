@@ -326,17 +326,24 @@ def skill_pending_diff(
     current = _staged_base(name, target_label, staged)
 
     if action == "patch":
-        old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
-        if not current:
-            new = f"(patch {old_s!r} → {new_s!r})"
+        # evidence_merge was staged with its merged candidate already frozen and bound to the
+        # source digest. Diff THAT, never a re-derivation: the reviewer must approve the exact
+        # bytes the replay will write, and re-merging here could show something else.
+        evidence = payload.get("evidence_merge")
+        if isinstance(evidence, dict) and "_candidate_content" in evidence:
+            new = evidence["_candidate_content"]
         else:
-            # Fold through the same matcher approve will run, so the preview can't
-            # fabricate a result the approve path would reject (repeated anchor without
-            # replace_all, whitespace-only anchor, escape drift, old_string == new_string).
-            folded, patch_err = _fold_patch(current, old_s, new_s, payload.get("replace_all"))
-            if patch_err:
-                return f"(patch would fail: {patch_err})"
-            new = folded
+            old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
+            if not current:
+                new = f"(patch {old_s!r} → {new_s!r})"
+            else:
+                # Fold through the same matcher approve will run, so the preview can't
+                # fabricate a result the approve path would reject (repeated anchor without
+                # replace_all, whitespace-only anchor, escape drift, old_string == new_string).
+                folded, patch_err = _fold_patch(current, old_s, new_s, payload.get("replace_all"))
+                if patch_err:
+                    return f"(patch would fail: {patch_err})"
+                new = folded
     else:
         new = payload.get("content" if action == "edit" else "file_content") or ""
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),

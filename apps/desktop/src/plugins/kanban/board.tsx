@@ -1016,15 +1016,10 @@ function SelectionBar({
   })
 
   const busy = bulk.isPending || bulkDelete.isPending
-  const { ask: askSummary, dialog: summaryDialog } = useCompletionSummary()
+  const { dialog: summaryDialog, withSummary } = useCompletionSummary()
 
-  const moveTo = async (status: string) => {
-    const summary = needsSummary(status) ? await askSummary(selected.size) : undefined
-
-    if (summary !== null) {
-      bulk.mutate({ status, summary })
-    }
-  }
+  const moveTo = (status: string) =>
+    withSummary(needsSummary(status), summary => bulk.mutate({ status, summary }), selected.size)
 
   // One menu at a time — controlled, so a click on the second trigger can
   // never race Radix's dismiss layer into two open menus.
@@ -1127,7 +1122,7 @@ export function KanbanBoardPage() {
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
-  const { ask: askSummary, dialog: summaryDialog } = useCompletionSummary()
+  const { dialog: summaryDialog, withSummary } = useCompletionSummary()
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
   // The command navigates here and parks the lane; the page picks it up on
@@ -1273,13 +1268,8 @@ export function KanbanBoardPage() {
 
       return
     }
-    void (async () => {
-      const summary = needsCompletionSummary(task, status) ? await askSummary() : undefined
 
-      if (summary !== null) {
-        moveMut.mutate({ id, status, summary })
-      }
-    })()
+    void withSummary(needsCompletionSummary(task, status), summary => moveMut.mutate({ id, status, summary }))
   }
 
   const errorMessage = error ? errText(error) : null

@@ -63,9 +63,15 @@ function SummaryDialog({ count, onSettle }: { count: number; onSettle: (summary:
 
 /**
  * `ask(count)` opens the dialog and resolves with the typed summary, or `null`
- * when the user cancels. Render `dialog` once beside the surface that calls it.
+ * when the user cancels. `withSummary(needed, apply, count)` asks only when
+ * `needed`, then calls `apply(summary)` unless the user cancelled. Render
+ * `dialog` once beside the surface that calls it.
  */
-export function useCompletionSummary(): { ask: (count?: number) => Promise<null | string>; dialog: ReactNode } {
+export function useCompletionSummary(): {
+  ask: (count?: number) => Promise<null | string>
+  dialog: ReactNode
+  withSummary: (needed: boolean, apply: (summary?: string) => void, count?: number) => Promise<void>
+} {
   const [open, setOpen] = useState<null | { count: number; id: number }>(null)
   const pending = useRef<((summary: null | string) => void) | null>(null)
   const seq = useRef(0)
@@ -86,6 +92,17 @@ export function useCompletionSummary(): { ask: (count?: number) => Promise<null 
     []
   )
 
+  const withSummary = useCallback(
+    async (needed: boolean, apply: (summary?: string) => void, count = 1) => {
+      const summary = needed ? await ask(count) : undefined
+
+      if (summary !== null) {
+        apply(summary)
+      }
+    },
+    [ask]
+  )
+
   // `key` resets the typed text between asks.
-  return { ask, dialog: open && <SummaryDialog count={open.count} key={open.id} onSettle={settle} /> }
+  return { ask, dialog: open && <SummaryDialog count={open.count} key={open.id} onSettle={settle} />, withSummary }
 }

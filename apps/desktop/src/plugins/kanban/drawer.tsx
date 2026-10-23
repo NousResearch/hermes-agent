@@ -871,7 +871,7 @@ export function TaskDrawer({
     void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   }
 
-  const { ask: askSummary, dialog: summaryDialog } = useCompletionSummary()
+  const { dialog: summaryDialog, withSummary } = useCompletionSummary()
 
   // Optimistic status change against the task cache; rolls back + toasts on a
   // rejected transition (the backend enforces the workflow).
@@ -958,13 +958,8 @@ export function TaskDrawer({
 
       return
     }
-    void (async () => {
-      const summary = needsCompletionSummary(task, status) ? await askSummary() : undefined
 
-      if (summary !== null) {
-        moveMut.mutate({ status, summary })
-      }
-    })()
+    void withSummary(needsCompletionSummary(task, status), summary => moveMut.mutate({ status, summary }))
   }
 
   // The shared Dialog owns the chrome tokens, focus trap, Esc and outside-click

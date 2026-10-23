@@ -110,3 +110,58 @@ describe('useCompletionSummary', () => {
     expect((field() as HTMLTextAreaElement).value).toBe('')
   })
 })
+
+describe('useCompletionSummary withSummary', () => {
+  let disposeLocales: () => void
+
+  beforeEach(() => {
+    disposeLocales = registerPluginLocales('kanban', KANBAN_LOCALES)
+  })
+
+  afterEach(() => {
+    cleanup()
+    disposeLocales()
+  })
+
+  function Harness({ needed }: { needed: boolean }) {
+    const { dialog, withSummary } = useCompletionSummary()
+    const [applied, setApplied] = useState('not applied')
+
+    return (
+      <>
+        <button onClick={() => void withSummary(needed, summary => setApplied(String(summary)))} type="button">
+          move
+        </button>
+        <output>{applied}</output>
+        {dialog}
+      </>
+    )
+  }
+
+  const move = (needed: boolean) => {
+    render(<Harness needed={needed} />)
+    fireEvent.click(screen.getByRole('button', { name: 'move' }))
+  }
+
+  it('applies at once, without a dialog, when no summary is needed', async () => {
+    move(false)
+
+    expect((await screen.findByRole('status')).textContent).toBe('undefined')
+    expect(screen.queryByPlaceholderText(en.completePlaceholder)).toBeNull()
+  })
+
+  it('applies with the confirmed summary', async () => {
+    move(true)
+    fireEvent.change(screen.getByPlaceholderText(en.completePlaceholder), { target: { value: 'shipped' } })
+    fireEvent.click(screen.getByRole('button', { name: en.complete }))
+
+    expect((await screen.findByRole('status')).textContent).toBe('shipped')
+  })
+
+  it('drops the move when the user cancels', async () => {
+    move(true)
+    fireEvent.click(screen.getByRole('button', { name: en.cancel }))
+
+    expect((await screen.findByRole('status')).textContent).toBe('not applied')
+  })
+})

@@ -145,6 +145,7 @@ def short_alias(directory: Path, link: Path) -> Path:
     from pm.filesystem import is_junction
 
     directory.mkdir(parents=True, exist_ok=True)
+    link.parent.mkdir(parents=True, exist_ok=True)
     if is_junction(link):
         os.rmdir(link)  # Removes only the reparse point, never the cache behind it.
     _winapi.CreateJunction(str(directory), str(link))

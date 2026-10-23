@@ -236,7 +236,10 @@ def test_prepare_tools_uses_pm_native_pins_and_separate_cache(tmp_path, monkeypa
     assert prepared["HERMES_PYTHON"] == str(python)
     assert prepared["HERMES_NODE"] == str(node)
     assert prepared["PATH"] == "pm-tools"
-    assert Path(prepared["UV_CACHE_DIR"]) == cache / "python/runtime/native-identity"
+    uv_cache = Path(prepared["UV_CACHE_DIR"])
+    assert uv_cache.resolve() == (cache / "python/runtime/native-identity").resolve()
+    if os.name == "nt":  # builds run under the short job-local junction (MAX_PATH)
+        assert uv_cache == work.resolve() / "uv"
     assert dict(os.environ) == before
     if pm.current_target() == "win32-arm64":
         assert len(native_calls) == 1

@@ -608,7 +608,7 @@ IMAGE_GENERATE_SCHEMA = {
     # and upscale are advertised ONLY when supported; the handler accepts them regardless
     # (replay compat + teaching errors).
     "description": (
-        "Generate images from text prompts. The active model's edit/reference "
+        "Generate or edit images with the configured model. Edit/reference "
         "capabilities are rendered at serving time."
     ),
     "parameters": {
@@ -998,7 +998,7 @@ def _build_dynamic_image_schema() -> dict[str, Any]:
     """Render description AND params from the active model's capabilities; args it cannot
     honor are NOT advertised (the handler still accepts them for replay compat)."""
     base_desc = (
-        "Generate high-quality images from text prompts{edit_clause}. "
+        "{lead} {edit_clause}Use this rather than calling image APIs or scripts directly. "
         "Returns the result in the `image` field — a URL or an absolute "
         "file path; reference it in your response using the current "
         "platform's file-delivery convention."
@@ -1012,12 +1012,15 @@ def _build_dynamic_image_schema() -> dict[str, Any]:
     style_refs = info.get("source_image_role") == "style"
     if can_edit:
         if style_refs:
-            edit_clause = ", or copy the look of reference images passed in image_url"
+            lead = "Generate images, optionally copying reference images' look, via configured model."
+            edit_clause = "Pass style references in image_url. "
             properties["prompt"] = _STYLE_PROMPT_PARAM
             properties["image_url"] = _STYLE_IMAGE_URL_PARAM
             refs_desc = f"Up to {max_refs} more style references. URLs or absolute local paths."
         else:
-            edit_clause = ", or edit / transform an existing image by passing image_url"
+            lead = ("Generate or edit images (with reference images) using the configured model."
+                    if max_refs > 1 else "Generate or edit images using the configured image model.")
+            edit_clause = "Pass image_url to edit / transform an existing image. "
             properties["image_url"] = _IMAGE_URL_PARAM
             refs_desc = (
                 f"Up to {max_refs} additional reference images (style, "
@@ -1032,13 +1035,14 @@ def _build_dynamic_image_schema() -> dict[str, Any]:
                 "description": refs_desc,
             }
     else:
-        edit_clause = " (text-to-image only — the active model cannot edit existing images)"
+        lead = "Generate images from text with the configured model (it cannot edit images)."
+        edit_clause = ""
     if info.get("supports_upscale"):
         properties["upscale"] = _UPSCALE_PARAM
     for name in info.get("creative_controls") or []:
         if name in _CREATIVE_CONTROL_PARAMS:
             properties[name] = _CREATIVE_CONTROL_PARAMS[name]
-    return {"description": base_desc.format(edit_clause=edit_clause),
+    return {"description": base_desc.format(lead=lead, edit_clause=edit_clause),
             "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
 
 

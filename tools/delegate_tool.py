@@ -694,8 +694,8 @@ def _build_top_level_description(*, independent_completions=None) -> str:
     return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
 
 _DESCRIPTION_HEAD = (
-    "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
-    "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
+    "Spawn isolated subagents for parallel or context-heavy work. Each gets its own conversation, terminal "
+    "session, and toolset, and only its final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
     "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
     "and return results in this tool call. "

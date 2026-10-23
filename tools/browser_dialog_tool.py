@@ -16,8 +16,7 @@ from tools.registry import registry
 BROWSER_DIALOG_SCHEMA: dict[str, Any] = {
     "name": "browser_dialog",
     "description": (
-        "Respond to a native JavaScript dialog (alert / confirm / prompt / "
-        "beforeunload) that is currently blocking the page.\n\n"
+        "Accept or dismiss a native JS dialog (alert/confirm/prompt) blocking the page.\n\n"
         "**Workflow:** when a page is blocked by a native dialog the CDP "
         "supervisor captured, call this tool with ``action='accept'`` or "
         "``action='dismiss'``.\n\n"

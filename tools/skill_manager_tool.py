@@ -821,8 +821,8 @@ def skill_manage(
 
 def _skill_manage_description() -> str:
     return (
-        "Create, update, or delete skills — your procedural memory for "
-        "recurring task types. The call is an operations array (a single "
+        "Create, update or delete skills: your procedural memory for recurring "
+        "tasks. The call is an operations array (a single "
         "edit is a list of one); it applies atomically — any failure rolls "
         "every touched skill back. Ops: create (full SKILL.md; lands in "
         "the profile's skills directory or configured skills.create_dir; must precede that skill's other "

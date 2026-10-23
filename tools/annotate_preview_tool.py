@@ -52,9 +52,8 @@ def annotate_preview_tool(
 ANNOTATE_PREVIEW_SCHEMA = {
     "name": "annotate_preview",
     "description": (
-        "Highlight elements on the preview-pane page, lastingly (drive_preview's own "
-        "marks fade; annotations stay until removed) — point at findings, "
-        "flag what you're about to change, keep your place. Use the refs "
+        "Highlight preview-pane elements with lasting marks (drive_preview's fade). "
+        "Point at findings, flag what you're about to change, keep your place. Use the refs "
         "from drive_preview action='elements'. add: outline one element "
         "(optional short label — a word or two, drawn on the page). hold: "
         "freeze the whole visible field, every element outlined and named. "

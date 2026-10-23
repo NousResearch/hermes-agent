@@ -787,8 +787,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
 
 _HEADER_BASE = (
-    "Drive a real web browser via the Browser Use CLI: `code` runs as full Python (stdlib available) "
-    "with pre-imported browser helpers; stdout comes back in the result. Start `code` with a one-line "
+    "Drive a real browser for JS pages, logins, forms and clicks (Browser Use CLI). `code` runs as full "
+    "Python (stdlib available) with pre-imported browser helpers; stdout comes back in the result. Start `code` with a one-line "
     "comment describing the step for the user in plain language, max 60 chars "
     "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the step label.\n\n"
     "STATE: the browser session and workspace persist across calls; Python variables do NOT (fresh "

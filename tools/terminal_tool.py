@@ -172,7 +172,7 @@ from tools.environments.base import EnvironmentConnectionError
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on the OS, shell and backend named in your environment section. The working directory, files and exported variables persist between calls: activate a virtualenv or export once, not before every command.
+TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The working directory, files and exported variables persist between calls: activate a virtualenv or export once, not before every command.
 
 Use read_file, search_files, patch and write_file instead of cat/head/tail, grep/find/ls, sed/awk and echo/heredoc. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
 

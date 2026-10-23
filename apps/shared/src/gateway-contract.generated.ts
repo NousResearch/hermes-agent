@@ -3426,6 +3426,7 @@ export interface SessionCwdSetResult {
 export interface SessionCloseParams {
   session_id: string
   profile?: string | null
+  end_reason?: string | null
 }
 export interface SessionCloseResult {
   closed: boolean
@@ -6413,7 +6414,7 @@ export interface RpcMethods {
   'session.branch_stored': { params: SessionBranchStoredParams; result: SessionBranchStoredResult }
   /** session.branch of the whole history without echoing the copied transcript back. */
   'session.branch_whole': { params: SessionBranchWholeParams; result: SessionBranchWholeResult }
-  /** Tear down a live session (its stored row stays resumable). */
+  /** Tear down a live session (its stored row stays resumable). end_reason is an optional lowercase snake_case lifecycle reason. */
   'session.close': { params: SessionCloseParams; result: SessionCloseResult }
   /** Manual /compress of an idle session, optionally focused on a topic. */
   'session.compress': { params: SessionCompressParams; result: SessionCompressResult }

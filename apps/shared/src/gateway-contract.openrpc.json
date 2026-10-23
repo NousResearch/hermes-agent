@@ -3230,7 +3230,7 @@
     },
     {
       "name": "session.close",
-      "summary": "Tear down a live session (its stored row stays resumable).",
+      "summary": "Tear down a live session (its stored row stays resumable). end_reason is an optional lowercase snake_case lifecycle reason.",
       "params": [
         {
           "name": "params",
@@ -35724,6 +35724,18 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Reason"
           }
         },
         "required": [

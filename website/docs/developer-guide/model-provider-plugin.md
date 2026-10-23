@@ -25,6 +25,22 @@ Steps 2 and 3 are **per profile home**: one process that serves several profiles
 
 **User plugins override bundled plugins of the same name** because `register_provider()` is last-writer-wins. Drop a `$HERMES_HOME/plugins/model-providers/gmi/` directory to replace the built-in GMI profile without touching the repo.
 
+**Third-party plugins are gated on the same `plugins` config the general PluginManager
+uses** — importing a plugin executes its code, so discovery honours the switches
+`hermes plugins enable|disable` writes:
+
+| Source | `plugins.enabled` required | `plugins.disabled` honoured |
+| --- | --- | --- |
+| Bundled (1) | no — shipped with the release, has no plugin key | n/a |
+| User `model-providers/` (2) | no — dropping the directory there is the opt-in | yes, under the key `model-providers/<dir>` |
+| Installed (3) | **yes** — `hermes plugins enable <name>`, as the installer instructs | yes |
+| Entry point (pip) | **yes** | yes |
+| Legacy single-file (4) | no — part of the checkout, not the plugin system | n/a |
+
+Steps 2 and 3 read the switches from the bound profile's `config.yaml` when its plugin
+directories are scanned. A plugin already imported stays registered until the process
+restarts, so restart after `hermes plugins disable`.
+
 ## Directory structure
 
 ```

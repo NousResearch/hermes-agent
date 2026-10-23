@@ -502,6 +502,46 @@ class TestSendTelegramMediaDelivery:
         bot.send_message.assert_not_awaited()
 
 
+def _album_send(monkeypatch, tmp_path, count, runner=None):
+    bot = MagicMock(send_photo=AsyncMock(return_value=SimpleNamespace(message_id=2)),
+                    send_media_group=AsyncMock(return_value=[SimpleNamespace(message_id=3)]))
+    monkeypatch.setattr("tools.send_message_senders._telegram_bot", lambda _token: bot)
+    paths = [tmp_path / f"p{i}.png" for i in range(count)]
+    for path in paths:
+        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+        result = asyncio.run(_send_telegram("token", "12345", "", media_files=[(str(p), False) for p in paths],
+                                            thread_id="7"))
+    return bot, paths, result
+
+
+class TestSendTelegramStandaloneAlbums:
+    @pytest.mark.parametrize("adapter, albums, singles", [(True, [10, 2], 0), (False, [], 12)],
+                             ids=["adapter", "no-adapter"])
+    def test_standalone_photos_go_as_albums_or_one_by_one(self, tmp_path, monkeypatch, adapter, albums, singles):
+        if adapter:
+            import plugins.platforms.telegram.adapter  # the real adapter, over the mocked bot
+        else:  # no adapter: every photo still arrives, one sendPhoto each
+            monkeypatch.setitem(sys.modules, "plugins.platforms.telegram.adapter", None)
+        bot, _, result = _album_send(monkeypatch, tmp_path, 12)
+        assert result["success"] is True
+        assert [len(c.kwargs["media"]) for c in bot.send_media_group.await_args_list] == albums
+        sends = bot.send_media_group.await_args_list + bot.send_photo.await_args_list
+        assert {c.kwargs["message_thread_id"] for c in sends} == {7}
+        assert bot.send_photo.await_count == singles
+
+    def test_live_gateway_adapter_sends_the_album(self, tmp_path, monkeypatch):
+        live = SimpleNamespace(is_connected=True, send_multiple_images=AsyncMock(
+            return_value=SimpleNamespace(success=True, error=None)))
+        bot, paths, result = _album_send(monkeypatch, tmp_path, 2, SimpleNamespace(adapters={Platform.TELEGRAM: live}))
+        assert result["success"] is True
+        chat_id, images, metadata = live.send_multiple_images.await_args.args
+        assert [url for url, _ in images] == [p.as_uri() for p in paths]
+        assert (chat_id, metadata["thread_id"]) == ("12345", "7")
+        bot.send_photo.assert_not_awaited()
+        bot.send_media_group.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Regression: long messages are chunked before platform dispatch
 # ---------------------------------------------------------------------------

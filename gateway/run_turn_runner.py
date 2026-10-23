@@ -1097,11 +1097,41 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # A `/model --once` / `/moa` turn ran another route for this admission only: the row keeps
             # the session's model, or a /resume would come back on the one-turn model.
             runner._sync_session_model_from_agent(agent_session_id, agent)
+        self._renew_channel_claim_after_run(agent_session_id)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
         # of it; slicing past the pre-compaction length would drop everything.
         offset = 0 if (session_was_split or compacted_in_place) else len(agent_history)
         return compacted_in_place, agent_session_id, offset
+
+    def _renew_channel_claim_after_run(self, agent_session_id):
+        """Extend the channel claim lease once per committed turn (design/channel-claim-lock.md
+        §7.1). A compression split moves the claim with the lane's new session id, like the
+        reset transfer in _finish_channel_claim. Best-effort — the lease bounds a missed one."""
+        from hermes_state_runtime import renew_channel_claim, transfer_channel_claim
+        try:
+            ctx = self._ctx
+            store = self._runner.session_store
+            entry = store._entries.get(ctx.session_key) if ctx.session_key else None
+            origin = getattr(entry, "origin", None) if entry is not None else None
+            db = store._db_for_key(ctx.session_key) if origin is not None else None
+            if db is None:
+                return
+            from gateway.session import claim_channel_scope
+            scope = claim_channel_scope(origin, ctx.session_key)
+            if scope is None:
+                return
+            renewed = renew_channel_claim(db, platform=scope[0], scope_id=scope[1],
+                chat_id=scope[2], profile=scope[3], session_id=agent_session_id,
+                thread_root_id=getattr(origin, "thread_id", None) or "")
+            if not renewed and agent_session_id != ctx.session_id:
+                # Compression split: the claim still names the pre-split id — move it once.
+                transfer_channel_claim(db, platform=scope[0], scope_id=scope[1],
+                    chat_id=scope[2], profile=scope[3], old_session_id=ctx.session_id,
+                    new_session_id=agent_session_id)
+        except Exception:
+            logger.exception("Channel claim renewal failed for %s",
+                             getattr(self._ctx, "session_key", "?"))
 
     def _combined_ephemeral_prompt(self) -> str:
         """Platform context + YAML channel_prompts hint + channel_overrides system_prompt (or global

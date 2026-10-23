@@ -409,6 +409,9 @@ class SessionRecoveryMixin:
                     "self-healing peer refresh on the next turn",
                     create_kwargs.get("session_id"), session_key, during, e),
             )
+        self._finish_channel_claim(
+            session_key, end_session_id=end_session_id,
+            create_kwargs=create_kwargs, origin=origin)
 
     @staticmethod
     def _session_create_kwargs(

@@ -90,3 +90,23 @@ def profile_from_session_key(session_key):
     if len(parts) < 2 or parts[0] != "agent":
         return None
     return profile_from_session_key_namespace(parts[1] or "main")
+
+
+def claim_profile_from_profile(profile):
+    """Claim-key profile part for a profile id: the same normalization ``_session_key_namespace``
+    applies to session keys (design/channel-claim-lock.md §3.3)."""
+    if not profile or profile == "default":
+        return "main"
+    return "main~" if profile == "main" else profile
+
+
+def claim_profile_from_session_key(session_key):
+    """Claim-key profile part derived from a session key's own namespace slot, so claim
+    collisions mirror key collisions exactly (multiplex lanes claim separately). None when
+    the key is not an ``agent:<ns>:...`` route — such keys carry no claim scope."""
+    if not session_key:
+        return None
+    parts = str(session_key).split(":")
+    if len(parts) < 2 or parts[0] != "agent":
+        return None
+    return parts[1] or "main"

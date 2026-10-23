@@ -247,3 +247,43 @@ class TestTableRealignment:
         assert self._u16_slice(text, mono[0]) == "| Name  | Age |\n|-------|-----|\n| Alice | 30  |"
         assert self._u16_slice(text, mono[1]) == "| a | b |\n|---|---|\n| 1 | 22 |"
         assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]
+
+
+class TestHeadingCodeBlockInteraction:
+    """Heading markers inside fences stay literal, and code ranges survive headings."""
+
+    @staticmethod
+    def _u16_slice(text: str, style: str) -> str:
+        start, length = (int(part) for part in style.split(":")[:2])
+        encoded = text.encode("utf-16-le")
+        return encoded[start * 2 : (start + length) * 2].decode("utf-16-le")
+
+    def test_hash_comment_inside_fence_is_not_a_heading(self):
+        text, styles = _m2s("```python\n# comment\nx = 1\n```")
+        assert text == "# comment\nx = 1"
+        assert _find_style(styles, "BOLD") == []
+        (mono,) = _find_style(styles, "MONOSPACE")
+        assert self._u16_slice(text, mono) == text
+
+    def test_code_block_after_heading_keeps_monospace_range(self):
+        text, styles = _m2s("# Title\n\n```\ncode\n```")
+        assert text == "Title\n\ncode"
+        assert self._u16_slice(text, _find_style(styles, "BOLD")[0]) == "Title"
+        assert self._u16_slice(text, _find_style(styles, "MONOSPACE")[0]) == "code"
+
+    def test_inline_markers_inside_fence_stay_verbatim(self):
+        text, styles = _m2s("```\na ** b ** c\nfoo_bar_baz\n```")
+        assert text == "a ** b ** c\nfoo_bar_baz"
+        assert _find_style(styles, "BOLD") == []
+        assert _find_style(styles, "ITALIC") == []
+        assert self._u16_slice(text, _find_style(styles, "MONOSPACE")[0]) == text
+
+    def test_heading_then_fenced_comment_then_bold_tail(self):
+        text, styles = _m2s(
+            "# Title\n\n```sh\n# not a heading\necho **hi**\n```\n\ntail **bold**"
+        )
+        assert text == "Title\n\n# not a heading\necho **hi**\n\ntail bold"
+        assert self._u16_slice(text, _find_style(styles, "BOLD")[0]) == "Title"
+        assert self._u16_slice(text, _find_style(styles, "BOLD")[-1]) == "bold"
+        (mono,) = _find_style(styles, "MONOSPACE")
+        assert self._u16_slice(text, mono) == "# not a heading\necho **hi**"

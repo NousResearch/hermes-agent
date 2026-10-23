@@ -194,6 +194,33 @@ def test_non_ghostty_terminals_still_push_kitty_protocol():
     assert b"\x1b[>4;2m" in out.written
 
 
+def test_otty_is_allowlisted_for_extended_enter_keys():
+    """Otty exports TERM_PROGRAM=otty, so the allowlist must match it.
+
+    Without the entry the function returns False, ``_enable_extended_enter_keys`` writes
+    nothing, and Shift+Enter arrives as a bare CR (a plain submit) instead of a newline.
+    """
+    import cli as cli_mod
+
+    assert cli_mod._terminal_supports_extended_enter_keys(
+        {"TERM_PROGRAM": "otty", "TERM": "xterm-256color"}
+    ) is True
+
+
+def test_otty_gets_the_dual_protocol_push():
+    """Otty implements the Kitty keyboard protocol, so it gets the same dual push as iTerm2."""
+    import cli as cli_mod
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(
+        output=out,
+        env={"TERM_PROGRAM": "otty", "TERM": "xterm-256color"},
+    )
+    assert result is True
+    assert b"\x1b[>1u" in out.written
+    assert b"\x1b[>4;2m" in out.written
+
+
 @pytest.mark.platforms("linux")
 def test_proc_version_microsoft_marker_preserves_newline():
     """WSL detection via /proc when env vars are scrubbed (sudo etc.).

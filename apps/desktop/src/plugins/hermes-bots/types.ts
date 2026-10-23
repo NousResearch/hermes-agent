@@ -45,6 +45,8 @@ export interface CanonicalSession {
   resolved_id?: string
   last_active?: number
   preview?: string
+  /** Author of the latest preview when supplied by a current gateway. */
+  preview_role?: 'assistant' | 'user' | null
   root_title?: string
   title?: string
 }

@@ -15,6 +15,11 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Streamdown: ({ children }: { children: ReactNode }) => <div data-testid="markdown">{children}</div>,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })
+// The @ picker reads Bot Mode stores this hosted-room fixture does not mock.
+vi.mock('./group-chat-parts', () => ({
+  GroupMentionInput: ({ onChange, ...props }: Omit<ComponentProps<'textarea'>, 'onChange'> & { onChange: (value: string) => void }) =>
+    <textarea aria-label={props['aria-label']} disabled={props.disabled} onChange={event => onChange(event.target.value)} value={props.value} />
+}))
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 

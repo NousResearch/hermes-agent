@@ -1321,6 +1321,7 @@ class CheckpointManager:
                     ["checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
+                    extra_env={"GIT_LITERAL_PATHSPECS": "1"},
                 )
         elif selected_paths is not None:
             # Check out exactly the entries inspected above. Re-evaluating

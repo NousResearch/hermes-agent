@@ -114,6 +114,7 @@ class HostedRoomRuntime:
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         task_progress: Callable[[str, str, int, Mapping[str, Any]], None] | None = None,
+        remote_member: Callable[[str, str], bool] | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
         active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float = 1830.0,
@@ -139,6 +140,7 @@ class HostedRoomRuntime:
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
         self.pending_action, self.task_progress, self.clock = pending_action, task_progress, clock
+        self.remote_member = remote_member
         for name, value in positive.items():
             setattr(self, name, float(value))
         self.max_concurrent_rooms = max_concurrent_rooms
@@ -267,7 +269,7 @@ class HostedRoomRuntime:
             raise state.RoomUnavailableError("hosted room is unavailable")
         lease = self._ensure_lease(binding)
         if task["status"] == "deferred":
-            return self._requeue(state.requeue_deferred_task, task, lease, identity.room_id)
+            return self._retry_deferred(binding, task, lease)
         # Explicit Retry may resume the exact stored session; the automatic abandoned-attempt
         # scan stays non-resuming for local sessions.
         inspection = self._inspect_recovery_session(binding, task)
@@ -282,6 +284,34 @@ class HostedRoomRuntime:
             raise state.InvalidTaskTransitionError(
                 "cannot retry while the original task attempt is still active")
         return self._requeue(state.requeue_indeterminate_task, task, lease, identity.room_id)
+
+    def _retry_deferred(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+    ) -> dict[str, Any]:
+        """Retry a deferred turn without minting a new generation a peer may already have run."""
+        room_id = task["identity"].room_id
+        if not self._remote(task):
+            return self._requeue(state.requeue_deferred_task, task, lease, room_id)
+        # Resolving the peer transport (inside the inspection) replays this generation under its
+        # own idempotency key and raises, leaving the turn deferred, while the peer is unreachable.
+        # Once it succeeds the peer owns this generation (the replay may have just started it):
+        # settle it from the peer's receipt, or reopen it so the worker watches it to the end.
+        inspection = self._inspect_recovery_session(binding, task)
+        reopened = self._fenced(state.reopen_deferred_task, None, task, lease)
+        if inspection.terminal is not None:
+            return self._resolve_indeterminate(binding, reopened, lease, inspection.terminal)
+        if inspection.status == "cancelled":
+            return self._fenced(
+                state.resolve_indeterminate_cancellation, binding, reopened, lease,
+                cancel_id=f"remote-cancel:{reopened['execution_generation']}")
+        self.wakeup()
+        return reopened
+
+    def _remote(self, task: Mapping[str, Any]) -> bool:
+        """Whether *task*'s member admits on another gateway, which may hold an attempt this one
+        lost track of: its recovery replays that exact generation, never a new one."""
+        return self.remote_member is not None and bool(
+            self.remote_member(task["identity"].room_id, _member_id(task)))
 
     def _publish(self, binding: HostedRoomBinding, task: dict[str, Any]) -> dict[str, Any]:
         if self.publish_terminal is not None:
@@ -760,7 +790,7 @@ class HostedRoomRuntime:
         self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
     ) -> None:
         """Fence, stop, and terminalize one exact attempt at its deadline."""
-        if task["status"] == "running":
+        if task["status"] in {"running", "indeterminate"}:
             task = state.begin_task_cancel(
                 self.db_path, task["identity"], clock=self.clock,
                 cancel_id=f"deadline:{int(task['execution_generation'])}",
@@ -839,7 +869,18 @@ class HostedRoomRuntime:
         for task in unresolved:
             attempt_key = (
                 binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
-            is_local = self._transport_for(binding, task) is self.rpc
+            remote = self._remote(task)
+            try:
+                # Resolving a remote member's route replays its admission: do it once per cycle,
+                # in the probe below, not just to learn the route is not in process.
+                is_local = not remote and self._transport_for(binding, task) is self.rpc
+            except (RuntimeError, ValueError, OSError) as exc:
+                # A missing route or a failed admission replay (PeerRunsHTTPError) must not keep
+                # the turn from reaching its deadline. Retry of the deferred turn recovers this
+                # same generation first (_retry_deferred), so deferring never mints a new key.
+                self._record_error(
+                    f"task {task['identity'].task_id} recovery probe failed: {exc}")
+                is_local = False
             if is_local and attempt_key not in inspected:
                 inspection = self._inspect_local_recovery_session(task)
                 inspected.add(attempt_key)
@@ -854,9 +895,11 @@ class HostedRoomRuntime:
                 task.get("indeterminate_at") or task.get("updated_at") or task.get("created_at")
                 or self.clock())
             inspection = _NO_INSPECTION
-            if attempt_key not in inspected or self.clock() >= deadline:
+            # A remote run may finish between probes, so it is observed every cycle (its client
+            # owns the HTTP backoff); an in-process session is probed once, then at the deadline.
+            if remote or attempt_key not in inspected or self.clock() >= deadline:
                 try:
-                    if self._transport_for(binding, task) is not self.rpc:
+                    if remote or self._transport_for(binding, task) is not self.rpc:
                         inspection = self._inspect_recovery_session(binding, task)
                 except Exception as exc:
                     self._record_error(
@@ -874,7 +917,15 @@ class HostedRoomRuntime:
                     binding, task, lease, inspection.terminal, publish=False)
                 inspected.discard(attempt_key)
                 continue
-            if self.clock() < deadline:
+            if inspection.active and self._past_execution_deadline(task):
+                # Recovery never outlives the turn's own time limit, counted from its start: stop
+                # that exact attempt through the Stop protocol, as a live turn is stopped.
+                self._expire_attempt_deadline(binding, task, lease)
+                inspected.discard(attempt_key)
+                continue
+            if self.clock() < deadline or inspection.active:
+                # A peer run that is still going keeps the room waiting, as a local one does:
+                # deferring it would drop its reply.
                 self._set_blocked(binding.room_id, True)
                 return True
             deferred = self._fenced(
@@ -883,6 +934,12 @@ class HostedRoomRuntime:
             self._publish(binding, deferred)
         self._set_blocked(binding.room_id, False)
         return False
+
+    def _past_execution_deadline(self, task: Mapping[str, Any]) -> bool:
+        """Whether the attempt has run past ``turn_timeout_seconds`` since it started. A reopened
+        deferred attempt keeps its original start (``reopen_deferred_task`` leaves it)."""
+        started = task.get("started_at")
+        return started is not None and self.clock() >= float(started) + self.turn_timeout_seconds
 
     def _harvest_previous_attempt(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], receipt: _TerminalReceipt

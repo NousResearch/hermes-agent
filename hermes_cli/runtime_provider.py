@@ -535,7 +535,10 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     cfg_provider = _get_model_config().get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
-    return get_secret_str("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+    from agent.session_client_env import bound_client_env
+    client = bound_client_env()  # a local session's turn: its client's export, never the daemon's
+    requested = client.get("HERMES_INFERENCE_PROVIDER", "") if client is not None else get_secret_str("HERMES_INFERENCE_PROVIDER", "")
+    return requested.strip().lower() or "auto"
 
 
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────

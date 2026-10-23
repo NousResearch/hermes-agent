@@ -55,9 +55,11 @@ export interface BillingStateResult {
   payment_method?: BillingPaymentMethod | null
   monthly_cap?: BillingMonthlyCap | null
   auto_reload?: BillingAutoReload | null
+  keep_going_on_credits?: boolean | null
   portal_url?: string | null
   error?: string | null
   usage?: UsageModel | null
+  plan_usage?: PlanUsage | null
 }
 export interface BillingCardInfo {
   brand: string
@@ -100,6 +102,25 @@ export interface BillingAutoReloadCard {
   last4?: string | null
 }
 export type AutoReloadCardKind = 'canonical' | 'distinct' | 'none'
+/** ``hermes_cli/model_picker_usage.py::PickerUsage.to_payload`` — usage-window plan chrome. */
+export interface PlanUsage {
+  kind: string
+  plan?: string | null
+  gauges?: PlanUsageGauge[]
+  top_tier_model_ids?: string[]
+  featured_model_ids?: string[]
+  paused_reason?: string | null
+  credits_pay?: boolean | null
+}
+/** One server allowance on ``ModelOptionProvider.plan_usage``, in the server's order. ``label`` is the server's id (``day`` / ``week`` / ``month`` / ``top_tier`` have client words; any other id shows ``title``). ``scope``: which models a full one stops (``all`` / ``top_tier``). */
+export interface PlanUsageGauge {
+  label: string
+  left_fraction: number
+  style: string
+  resets_at_ms?: number | null
+  scope?: string
+  title?: string
+}
 /** ``_serialize_subscription_state``; the view's fallback emits only ``ok / logged_in / error``. */
 export interface SubscriptionStateResult {
   ok: boolean
@@ -115,6 +136,7 @@ export interface SubscriptionStateResult {
   portal_url?: string | null
   error?: string | null
   usage?: UsageModel | null
+  plan_usage?: PlanUsage | null
 }
 export type SubscriptionContext = 'personal' | 'team'
 export interface CurrentSubscription {
@@ -261,6 +283,10 @@ export interface BillingMutationResult {
   actor?: string | null
   code?: string | null
   recovery?: string | null
+}
+export interface BillingKeepGoingOnCreditsParams {
+  profile?: string | null
+  enabled?: boolean
 }
 export interface BillingStepUpParams {
   profile?: string | null
@@ -579,7 +605,15 @@ export interface Usage {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  plan_gauge?: PlanGauge | null
   [key: string]: unknown
+}
+/** ``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar. */
+export interface PlanGauge {
+  id: string
+  label: string
+  used_bp: number
+  resets_at_ms?: number | null
 }
 export interface McpServerStatus {
   name?: string
@@ -644,6 +678,7 @@ export interface FreeTierStatusResult {
   retry_after?: number | null
   challenge?: FreeTierChallengePayload | null
   nudge_due_in?: number | null
+  connector_nudge_due_in?: number | null
 }
 /** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
 export interface FreeTierChallengePayload {
@@ -674,6 +709,10 @@ export interface FreeTierProvisionResult {
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
+}
+export interface FreeTierClaimNudgeParams {
+  profile?: string | null
+  kind?: 'trial' | 'connector'
 }
 export interface FreeTierClaimNudgeResult {
   claimed: boolean
@@ -806,6 +845,8 @@ export interface ModelOptionProvider {
   free_tier_pending?: boolean | null
   free_tier_row?: boolean | null
   unavailable_models?: string[] | null
+  plan_usage?: PlanUsage | null
+  usage_levels?: Record<string, string> | null
   limit?: ProviderLimit | null
   usage?: ProviderUsage | null
   [key: string]: unknown
@@ -1080,7 +1121,7 @@ export interface ConnectionTargetEnvField {
   default: string
   prompt?: string | null
 }
-export type CatalogTier = 'official' | 'community'
+export type CatalogTier = 'official' | 'verified' | 'community'
 /** The catalog's security scan of the pinned commit; read-only on the card. */
 export interface CatalogScan {
   status: CatalogScanStatus
@@ -1466,6 +1507,7 @@ export interface GroupsCapabilitiesResult {
   features: string[]
   methods: string[]
   max_log_limit: number
+  seatable_profiles?: string[] | null
 }
 /** ``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``. */
 export interface RoomLinkStatus {
@@ -1584,14 +1626,20 @@ export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
 }
-/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). */
+/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
 export interface RoomDriverStatus {
   running: boolean
   working: boolean
   blocked: boolean
   counts: Record<string, number>
   pending_actions: Record<string, unknown>[]
+  member_activity?: RoomMemberActivity[]
   peer_routes: PeerRouteStatus[]
+}
+/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. */
+export interface RoomMemberActivity {
+  member_id: string
+  status: string
 }
 export interface PeerRouteStatus {
   room_id: string
@@ -1913,6 +1961,7 @@ export interface GatewayCapabilitiesResult {
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
+  desktop_local?: boolean
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
@@ -2744,6 +2793,8 @@ export interface PromptSubmitResult {
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
+  admission_id?: string | null
+  forwarded?: boolean | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
 export interface ClipboardPasteParams {
@@ -3278,6 +3329,7 @@ export interface SessionActiveItem {
   model: string
   preview: string
   session_key: string
+  source?: string | null
   started_at: number
   status: LiveSessionStatus
   title: string
@@ -3471,7 +3523,9 @@ export interface SessionUsageResult {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  plan_gauge?: PlanGauge | null
   credits_lines?: string[] | null
+  credits_usage_window?: boolean | null
   [key: string]: unknown
 }
 export interface SessionContextBreakdownParams {
@@ -3617,6 +3671,7 @@ export interface SessionEventsSinceParams {
   session_id: string
   profile?: string | null
   last_seen?: number | null
+  replay_epoch?: string | null
 }
 export interface SessionEventsSinceResult {
   events: Record<string, unknown>[]
@@ -3765,6 +3820,8 @@ export interface CommandsCatalogResult {
   skills?: Record<string, SkillCatalogEntry>
   skill_count?: number
   warning?: string
+  plugin_discovery_error?: string
+  plugin_commands?: Record<string, string>
 }
 export interface CommandCatalogMeta {
   argument_mode?: ArgumentMode | null
@@ -3863,6 +3920,7 @@ export interface RollbackRestoreParams {
   hash: string
   file_path?: string | null
   profile?: string | null
+  all?: boolean | null
 }
 /** ``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
 export interface RollbackRestoreResult {
@@ -4039,6 +4097,7 @@ export interface ReloadMcpParams {
   always?: boolean
   rev?: string | null
 }
+/** ``session``: what the calling local session's MCP servers did (a new policy generation, nothing to change, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect beside what did apply; ``session_servers``: the MCP servers that session's committed policy runs. */
 export interface ReloadMcpResult {
   status: ReloadMcpStatus
   message?: string | null
@@ -4046,8 +4105,12 @@ export interface ReloadMcpResult {
   coalesced?: boolean | null
   turn_isolation?: boolean | null
   host_ack?: unknown | null
+  session?: ReloadMcpSession | null
+  unavailable?: string[] | null
+  session_servers?: string[] | null
 }
 export type ReloadMcpStatus = 'confirm_required' | 'reloaded'
+export type ReloadMcpSession = 'applied' | 'unchanged' | 'busy'
 /** ``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size`` apply to ``browse``. */
 export interface SkillsManageParams {
   profile?: string | null
@@ -4331,13 +4394,25 @@ export interface McpOauthCallbackResult {
 export type PluginsListParams = Record<string, never>
 export interface PluginsListResult {
   plugins: LegacyPluginRow[]
+  toolsets?: PluginToolsetRow[] | null
+  portable_mcp_servers?: string[] | null
 }
 export interface LegacyPluginRow {
   name: string
   version: string
   enabled: boolean
+  key?: string | null
+  tools?: number | null
+  hooks?: number | null
+  commands?: number | null
+  error?: string | null
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
+export interface PluginToolsetRow {
+  key: string
+  label: string
+  description: string
+}
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -4354,7 +4429,7 @@ export interface PluginsManageParams {
   names?: string[] | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` / ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -4378,6 +4453,9 @@ export interface PluginsManageResult {
   consent_required?: boolean | null
   delta?: Record<string, string[]> | null
   delta_lines?: string[] | null
+  scan_blocked?: boolean | null
+  scan_verdict?: string | null
+  scan_findings?: PluginScanFinding[] | null
   error?: string | null
   written?: string[] | null
   onboarding?: OnboardingCatalogPlugin[] | null
@@ -4401,6 +4479,7 @@ export interface AgentPluginRow {
   catalog_sha?: string | null
   catalog_version?: string | null
   update_available?: boolean | null
+  update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
 }
@@ -4448,6 +4527,15 @@ export interface PluginLiveSkill {
   name: string
   description?: string
 }
+/** One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked. */
+export interface PluginScanFinding {
+  pattern_id: string
+  severity: string
+  category: string
+  file: string
+  line: number
+  description: string
+}
 /** A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs. ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what is missing (empty when present or unknown). */
 export interface OnboardingCatalogPlugin {
   name: string
@@ -4482,6 +4570,7 @@ export interface PluginCatalogLookupEntry {
   repo: string
   sha: string
   subdir: string
+  tier?: string
 }
 export interface CanonicalShellExecParams {
   session_id: string
@@ -4528,7 +4617,7 @@ export interface PromptResolveUnknownParams {
   admission_id: string
   execution_generation: number
 }
-/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace. ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. */
+/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace. ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy`` (``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes). */
 export interface SessionMutateParams {
   session_id: string
   request_id: string
@@ -4554,6 +4643,15 @@ export interface SessionPruneResult {
   routing_deleted?: number | null
   skipped?: number | null
 }
+export interface CommandObserveParams {
+  session_id: string
+  name: string
+  arg?: string | null
+  profile?: string | null
+}
+export interface CommandObserveResult {
+  queued: boolean
+}
 export interface CanonicalSessionInfoParams {
   session_id: string
 }
@@ -4575,6 +4673,7 @@ export interface CanonicalSessionInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   browser_backend_notice?: string | null
+  unknown_toolsets?: string[] | null
   source: string
   model?: string | null
   lazy: boolean
@@ -4582,6 +4681,7 @@ export interface CanonicalSessionInfo {
   desktop_protocol: string
   profile_name: string
   cwd?: string | null
+  edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
@@ -4594,6 +4694,7 @@ export interface CanonicalSessionInfo {
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null
+  config_warning?: string | null
   [key: string]: unknown
 }
 export interface SessionStatsParams {
@@ -4624,6 +4725,7 @@ export interface SessionStats {
   model: string
   provider: string
   fallback_model?: string | null
+  plan_gauge?: PlanGauge | null
 }
 export interface RollbackSessionDiffParams {
   session_id: string
@@ -4638,6 +4740,19 @@ export interface RollbackSessionDiffResult {
   diff_lines?: number
   empty?: boolean
   error?: string | null
+}
+/** ``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``). */
+export interface SessionExportParams {
+  session_id: string
+  profile?: string | null
+  format?: string
+  redact?: boolean
+}
+/** ``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default file name. The client writes it (the gateway may be remote); nothing is written on the host. */
+export interface SessionExportResult {
+  format: string
+  filename: string
+  content: string
 }
 export interface SessionAutomationParams {
   session_id: string
@@ -4881,6 +4996,7 @@ export interface CanonicalCreateParams {
   cwd_explicit?: boolean | null
   run_budget?: number | null
   verbose?: boolean
+  client_env?: Record<string, string> | null
 }
 export interface CanonicalSnapshot {
   session_id: string
@@ -4898,6 +5014,8 @@ export interface CanonicalSnapshot {
   pending: CanonicalPendingAdmission[]
   prompts: CanonicalPendingPrompt[]
   info: CanonicalSnapshotInfo
+  pending_connection?: ConnectionRequestPayload | null
+  todo_state?: TodoState | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -4909,6 +5027,8 @@ export interface CanonicalPendingAdmission {
   execution_generation: number | null
   input_id: string
   text: string
+  controls?: ('steer' | 'replace')[] | null
+  steering?: boolean | null
 }
 export interface CanonicalPendingPrompt {
   kind: 'approval' | 'clarify'
@@ -4939,6 +5059,7 @@ export interface CanonicalSnapshotInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   browser_backend_notice?: string | null
+  unknown_toolsets?: string[] | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
   model?: string | null
@@ -4946,6 +5067,7 @@ export interface CanonicalSnapshotInfo {
   profile_id?: string | null
   profile_name?: string | null
   cwd?: string | null
+  edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
@@ -4958,6 +5080,7 @@ export interface CanonicalSnapshotInfo {
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null
+  config_warning?: string | null
 }
 export interface CanonicalResumeParams {
   profile?: string | null
@@ -5015,11 +5138,18 @@ export interface CanonicalCorrectionParams {
   execution_generation: number
   text: string
 }
-export interface CanonicalCorrectionResult {
+/** ``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}`` when the busy-time text was a bare stop phrase that ended the LOCAL voice chat. */
+export type CanonicalCorrectionResult = CanonicalCorrectionAck | CanonicalVoiceStopped
+export interface CanonicalCorrectionAck {
   status: 'queued' | 'redirected' | 'rejected'
   text: string
   execution_generation: number
   authority_epoch: number
+  delivered?: false | null
+}
+/** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
+export interface CanonicalVoiceStopped {
+  voice_stopped: true
 }
 export interface CanonicalEventsParams {
   profile?: string | null
@@ -5082,13 +5212,32 @@ export interface CanonicalTurnAuthor {
 export interface CanonicalModelOverride {
   model: string
   provider?: string | null
+  reasoning?: string | null
 }
+/** ``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``. */
+export type CanonicalSubmitResult = AdmissionStatus | CanonicalVoiceStopped
 export interface CanonicalApprovalParams {
   profile?: string | null
   session_id: string
   execution_generation: number
   prompt_id: string
   choice: string
+}
+export interface CanonicalSteerQueuedParams {
+  profile?: string | null
+  session_id: string
+  admission_id: string
+}
+/** The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail. */
+export interface CanonicalReplaceQueuedParams {
+  profile?: string | null
+  session_id: string
+  admission_id: string
+  submission_id: string
+  text: string
+  attachments?: CanonicalAttachment[] | null
+  display_kind?: 'hidden' | null
+  title_preview?: string | null
 }
 export interface CanonicalConfigGetResult {
   value?: string | null
@@ -5548,7 +5697,7 @@ export interface BillingBlock {
   message: string
   unverified?: boolean | null
 }
-/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts). */
+/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts, + ``usage_limit`` on a usage-window plan's limit). */
 export interface ErrorSurface {
   layer: string
   code: string
@@ -5556,7 +5705,30 @@ export interface ErrorSurface {
   provider?: string | null
   model?: string | null
   resets_at?: number | null
+  usage_limit?: UsageLimit | null
   [key: string]: unknown
+}
+/** ``agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and the one-click ways on (switch to a recommended model, use / add credits). */
+export interface UsageLimit {
+  gauge_id: string
+  scope: string
+  limit_name: string
+  resets_at_ms?: number | null
+  message: string
+  suggestions?: UsageLimitSuggestion[]
+  credits?: UsageLimitCredits | null
+  current_model?: string
+}
+/** ``agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit. */
+export interface UsageLimitSuggestion {
+  model: string
+  label: string
+  note: string
+  provider?: string
+}
+/** ``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance). */
+export interface UsageLimitCredits {
+  action: string
 }
 /** Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are unproven, never negative acknowledgements. ``complete`` permits retiring the whole local turn only when the original turn boundary, every row and final body are still accounted for; compaction, redirects and partial writes conservatively leave it false. Row ids are scoped to the owning profile's store, as in ``SessionMessage.row_id``. */
 export interface PersistedTurn {
@@ -5572,7 +5744,7 @@ export interface StatusUpdatePayload {
   kind: string
   text: string
 }
-/** ``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level: published after every API call and at turn end, what main's classic CLI read off its agent. */
+/** ``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker (``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call and at turn end (``gateway/session_usage.py::usage_frame``). Read this. Deprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats`` dict) that the gateway frame also carries. They are kept for existing readers; new readers use ``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them. */
 export interface SessionUsagePayload {
   usage?: Usage | null
   input_tokens?: number | null
@@ -5598,6 +5770,7 @@ export interface SessionUsagePayload {
   model?: string | null
   provider?: string | null
   fallback_model?: string | null
+  plan_gauge?: PlanGauge | null
 }
 /** ``prompt_turn._invoke_agent`` ``_on_session_title`` hook. */
 export interface SessionTitlePayload {
@@ -5652,12 +5825,21 @@ export interface ToolOutputRiskPayload {
   findings: string[]
   redacted: boolean
 }
+/** ``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's ``notifications/progress`` for a running call, throttled to one per 500 ms per call. */
+export interface ToolProgressPayload {
+  tool_id: string
+  name: string
+  progress: number
+  total?: number | null
+  percent?: number | null
+  message?: string | null
+}
 /** ``tool_progress._normalize_todo_state`` — full task snapshot. */
 export interface TodoUpdatedPayload {
   todos: unknown[]
   revision: number
 }
-/** ``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent. */
+/** ``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent. ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows it in the toast's expandable body, the Ink TUI prints it into the transcript. */
 export interface NotificationShowPayload {
   text: string
   level: string
@@ -5665,6 +5847,7 @@ export interface NotificationShowPayload {
   ttl_ms?: number | null
   key?: string | null
   id?: string | null
+  detail?: string | null
 }
 export interface NotificationClearPayload {
   key: string
@@ -5886,6 +6069,8 @@ export interface RpcMethods {
   'billing.charge': { params: BillingChargeParams; result: BillingChargeResult }
   /** Poll one charge by id. */
   'billing.charge_status': { params: BillingChargeStatusParams; result: BillingChargeStatusResult }
+  /** Window plans: turn 'Keep going on credits' on/off (billing:manage). */
+  'billing.keep_going_on_credits': { params: BillingKeepGoingOnCreditsParams; result: BillingMutationResult }
   /** Read-only billing view (no scope); the Nous free tier is answered locally without a portal call. */
   'billing.state': { params: ProfileParams; result: BillingStateResult }
   /** Run the billing:manage device flow; the URL/code arrive via billing.step_up.verification. */
@@ -5989,7 +6174,7 @@ export interface RpcMethods {
   /** Report a browser window outcome for the matching pending attempt; mint remains authoritative. */
   'free_tier.challenge_result': { params: FreeTierChallengeResultParams; result: FreeTierChallengeResult }
   /** Claim the due sign-in offer; true for exactly one caller each time an offer comes due. */
-  'free_tier.claim_nudge': { params: ProfileParams; result: FreeTierClaimNudgeResult }
+  'free_tier.claim_nudge': { params: FreeTierClaimNudgeParams; result: FreeTierClaimNudgeResult }
   /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
   'free_tier.provision': { params: ProfileParams; result: FreeTierProvisionResult }
   /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */
@@ -6396,6 +6581,7 @@ export const RPC_METHODS = [
   'billing.auto_reload',
   'billing.charge',
   'billing.charge_status',
+  'billing.keep_going_on_credits',
   'billing.state',
   'billing.step_up',
   'bot_relay.deliver',
@@ -6654,8 +6840,13 @@ export interface CanonicalRpcMethods {
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
+  'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
   'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
+  /** Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired). */
+  'command.observe': { params: CommandObserveParams; result: CommandObserveResult }
   'config.get': { params: ConfigGetParams; result: CanonicalConfigGetResult }
   'config.set': { params: CanonicalConfigSetParams; result: ConfigSetResult }
   /** Cancel a queued cron admission or latch cancellation on a started one. */
@@ -6683,9 +6874,13 @@ export interface CanonicalRpcMethods {
   'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
   /** Current receipt of one admission the caller submitted (or controls). */
   'prompt.receipt': { params: PromptReceiptParams; result: PromptReceiptResult }
+  /** Cancel a still-queued admission and admit the edited prompt as a new admission at the back of the FIFO, in one write bound to the replaced admission. Refusals: admission_started, admission_conflict (the submission_id replaced another admission), queue_full, unsupported_control, not_found. */
+  'prompt.replace_queued': { params: CanonicalReplaceQueuedParams; result: AdmissionStatus }
   /** Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input. */
   'prompt.resolve_unknown': { params: PromptResolveUnknownParams; result: AdmissionStatus }
-  'prompt.submit': { params: CanonicalSubmitParams; result: AdmissionStatus }
+  /** Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found. */
+  'prompt.steer_queued': { params: CanonicalSteerQueuedParams; result: AdmissionStatus }
+  'prompt.submit': { params: CanonicalSubmitParams; result: CanonicalSubmitResult }
   /** The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer. */
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
@@ -6696,11 +6891,13 @@ export interface CanonicalRpcMethods {
   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
   'session.events.since': { params: CanonicalEventsParams; result: CanonicalEventsResult }
+  /** The /save transcript rendered for the client to write (the gateway writes nothing). */
+  'session.export': { params: SessionExportParams; result: SessionExportResult }
   /** Frozen launch policy projection of one local session. */
   'session.info': { params: CanonicalSessionInfoParams; result: CanonicalSessionInfo }
   'session.interrupt': { params: CanonicalControlParams; result: CanonicalSessionHandle }
   'session.list': { params: CanonicalListParams; result: CanonicalListResult }
-  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, compress, import). */
+  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import). */
   'session.mutate': { params: SessionMutateParams; result: SessionMutateResult }
   /** Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners. */
   'session.prune': { params: SessionPruneParams; result: SessionPruneResult }
@@ -6723,7 +6920,10 @@ export const CANONICAL_RPC_METHODS = [
   'a2a.forward',
   'approval.respond',
   'bot_relay.deliver',
+  'bot_relay.settle',
+  'clarify.lock',
   'clarify.respond',
+  'command.observe',
   'config.get',
   'config.set',
   'cron.cancel',
@@ -6741,7 +6941,9 @@ export const CANONICAL_RPC_METHODS = [
   'profiles.list',
   'prompt.cancel',
   'prompt.receipt',
+  'prompt.replace_queued',
   'prompt.resolve_unknown',
+  'prompt.steer_queued',
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',
@@ -6749,6 +6951,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.create',
   'session.detach',
   'session.events.since',
+  'session.export',
   'session.info',
   'session.interrupt',
   'session.list',
@@ -6935,6 +7138,8 @@ export interface BackendGatewayEventMap {
   'sessions.changed': ChangeSignalPayload
   /** The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record. */
   'setup.ready': SetupReadyPayload
+  /** A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway. */
+  'skills.changed': ChangeSignalPayload
   /** The active skin moved (name switch or live colour edit); repaint from this palette. */
   'skin.changed': SkinPayload
   /** Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …). */
@@ -6965,6 +7170,8 @@ export interface BackendGatewayEventMap {
   'tool.generating': ToolGeneratingPayload
   /** Tool output was classified as risky (prompt-injection / secret findings). */
   'tool.output_risk': ToolOutputRiskPayload
+  /** Live progress of a running tool call (MCP notifications/progress). */
+  'tool.progress': ToolProgressPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
@@ -7037,6 +7244,7 @@ export const GATEWAY_EVENT_TYPES = [
   'session.usage',
   'sessions.changed',
   'setup.ready',
+  'skills.changed',
   'skin.changed',
   'status.update',
   'subagent.complete',
@@ -7052,6 +7260,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.complete',
   'tool.generating',
   'tool.output_risk',
+  'tool.progress',
   'tool.start',
   'voice.interrupted',
   'voice.partial',

@@ -22,9 +22,7 @@ execution stream, and the process sinks route by the process's ``session_key`` t
 session's event stream (a background process outlives the turn that started it). The callbacks
 are installed per turn on the cached agent and restored with the other turn sinks.
 
-Not bridged here: ``connection_callback`` (the manage_connections card). Its card answers through
-the ``connection.respond`` RPC, which the session authority does not serve yet, so installing the
-callback would show a card whose buttons go nowhere; the tool keeps its off-desktop result.
+Card for ``manage_connections``: ``connection_callback`` publishes ``connection.request`` on the turn, and each later change of an operation is published as ``connection.update`` on the session that owns it (looked up by its session key, the route); the card answers through ``connection.respond`` (``gateway/session_connections.py``).
 """
 from __future__ import annotations
 
@@ -37,7 +35,8 @@ logger = logging.getLogger(__name__)
 
 # Agent attributes ``wire`` installs for one local-viewer turn (restored by ``local_viewer_events``).
 CALLBACK_ATTRS = ("read_terminal_callback", "read_preview_callback", "drive_preview_callback",
-                  "read_window_below_callback", "theme_callback", "tour_callback", "setup_beat_callback")
+                  "read_window_below_callback", "theme_callback", "tour_callback", "setup_beat_callback",
+                  "connection_callback")
 
 # main: tui_gateway/agent_callbacks.py ``_read_block`` budgets and tui_gateway/server.py's preview.act ladder.
 _TERMINAL_READ_TIMEOUT_S = 30
@@ -130,9 +129,34 @@ def _install_process_sinks() -> None:
     _process_sinks_installed = True
 
 
+def _install_connection_hook() -> None:
+    """``connection.update`` for an operation opened by one of our turns, on the session that owns it (same session key and profile, as the sidecar matches its own); any other operation goes to the hook this one wraps (the sidecar's, for its own sessions). Re-wraps whenever another hook replaced it, so install order does not matter."""
+    from tools.connectors.operation import ConnectionOperation
+    previous = ConnectionOperation.on_change
+    if getattr(previous, "_local_desktop_ui", False):
+        return
+
+    def on_change(operation, change, snapshot):
+        from hermes_constants import hermes_home_key
+        with _lock:
+            route = _process_routes.get(operation.session_key)
+        live = route[0].sessions.get(route[1]) if route is not None else None
+        if live is None or hermes_home_key(route[0].profile_id) != operation.profile_key:
+            if previous is not None:
+                previous(operation, change, snapshot)
+            return
+        from tui_gateway.connector_payload import connector_ui_payload
+        payload = {**snapshot, "settled": snapshot.get("settled_at") is not None, **(change or {}),
+                   "owner": {"type": "session", "session_id": route[1]}}
+        live.event_stream.publish(route[1], connector_ui_payload(payload), event_type="connection.update")
+
+    on_change._local_desktop_ui = True
+    ConnectionOperation.on_change = staticmethod(on_change)
+
+
 def _ask_result(turn, agent, method, params, timeout):
     """One structured server request; the viewer's ``result`` dict, or None when none answered."""
-    from gateway.session_sudo_prompt import ask_viewer_result
+    from gateway.session_server_requests import ask_viewer_result
     authority, session_id, _generation = turn._approval_owner
     live = authority.sessions.get(session_id)
     if live is None:
@@ -185,7 +209,7 @@ def _setup_beat(turn, agent, payload):
 
 def _ask(turn, agent, method, params, timeout):
     """One ``ValueResult`` server request to the session's attached viewers; "" when none answered."""
-    from gateway.session_sudo_prompt import ask_viewer
+    from gateway.session_server_requests import ask_viewer
     authority, session_id, _generation = turn._approval_owner
     live = authority.sessions.get(session_id)
     if live is None:
@@ -231,6 +255,7 @@ def wire(turn, agent):
     try:
         _install_emitter()
         _install_process_sinks()
+        _install_connection_hook()
     except Exception:  # health: allow BLE001 -- the window bridges are optional; the turn must run
         logger.warning("Desktop UI sink install failed", exc_info=True)
     key = str(getattr(turn._ctx, "session_id", "") or owner[1])
@@ -247,6 +272,8 @@ def wire(turn, agent):
     agent.theme_callback = lambda payload: _theme(turn, agent, dict(payload or {}))
     agent.tour_callback = lambda payload: _tour(turn, agent, dict(payload or {}))
     agent.setup_beat_callback = lambda payload: _setup_beat(turn, agent, dict(payload or {}))
+    # Fire-and-forget: the tool thread waits on its own operation; the card answers by op_id.
+    agent.connection_callback = lambda payload: publish("connection.request", dict(payload)) and None
     return key, publish
 
 

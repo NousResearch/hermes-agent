@@ -309,20 +309,18 @@ class TestCreateProfile:
     def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
         """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
         else changes: the clone still gets its own config/skills copies, never a live link."""
-        from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME, load_sync_manifest
-
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         manifest = {"version": 1, "agents": {"claude-code": {
             "source": str(profile_env / ".claude"), "digest": "d", "overwrite": False,
             "last_import": 1, "imported_skills": ["s1"]}}}
-        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+        (default_home / "import-sync.json").write_text(json.dumps(manifest), encoding="utf-8")
 
         plain = create_profile("plain", clone_config=True, no_alias=True)
-        assert not (plain / SYNC_MANIFEST_NAME).exists()
+        assert not (plain / "import-sync.json").exists()
 
         synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
-        assert load_sync_manifest(synced)["agents"] == manifest["agents"]
+        assert json.loads((synced / "import-sync.json").read_text(encoding="utf-8")) == manifest
         # Editing the source afterwards does not reach the clone: still an independent island.
         (default_home / "config.yaml").write_text("model: changed", encoding="utf-8")
         assert yaml.safe_load((synced / "config.yaml").read_text(encoding="utf-8-sig"))["model"] == "test"

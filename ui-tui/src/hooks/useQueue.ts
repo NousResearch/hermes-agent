@@ -205,7 +205,11 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
     // A queued row reads as main's plain queue line; only an unknown execution keeps its status tag.
     ...serverRows.map(row =>
-      row.status === 'queued' ? String(row.user) : t('canonical.queue.serverRow', String(row.status), String(row.user))
+      row.status === 'queued'
+        ? String(row.user)
+        : row.status === 'unknown'
+          ? t('canonical.queue.lostRow', String(row.user))
+          : t('canonical.queue.serverRow', String(row.status), String(row.user))
     )
   ]
 

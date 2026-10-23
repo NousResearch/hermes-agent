@@ -1,6 +1,5 @@
 import os
 import sys
-import tempfile
 import threading
 import types
 from importlib.util import module_from_spec, spec_from_file_location
@@ -204,10 +203,6 @@ def _install_fake_tools_package():
         EnvironmentConnectionError=_DummyConnectionError,
     )
     sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)
-    sys.modules["tools.environments.singularity"] = types.SimpleNamespace(
-        _get_scratch_dir=lambda: Path(tempfile.gettempdir()),
-        SingularityEnvironment=_DummyEnvironment,
-    )
     sys.modules["tools.environments.ssh"] = types.SimpleNamespace(SSHEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.docker"] = types.SimpleNamespace(DockerEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.modal"] = types.SimpleNamespace(ModalEnvironment=_DummyEnvironment)

@@ -7,15 +7,11 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
-import glob
 import logging
 import inspect
-import shutil
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional
-from tools.environments.singularity import _get_scratch_dir
 from tools.terminal_tool_backends import (
     _container_config_from_config,
     _local_config_from_config,
@@ -25,43 +21,6 @@ from tools.terminal_tool_config import _quiet
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
-
-
-# Advisory disk-usage check; cached so the recursive scan doesn't run on
-# every command (a result up to 5 minutes stale is harmless).
-_disk_usage_cache: dict = {"timestamp": 0.0, "result": False}
-
-_DISK_USAGE_CACHE_TTL = 300.0  # seconds
-
-
-def _scratch_paths():
-    return glob.glob(str(_get_scratch_dir() / "hermes-*"))
-
-
-def _check_disk_usage_warning():
-    """True when hermes scratch dirs exceed the warning threshold (cached, advisory)."""
-    from tools.terminal_tool import DISK_USAGE_WARNING_THRESHOLD_GB
-    if time.monotonic() - _disk_usage_cache["timestamp"] < _DISK_USAGE_CACHE_TTL:
-        return _disk_usage_cache["result"]
-    try:
-        total_bytes = 0
-        for path in _scratch_paths():
-            for f in Path(path).rglob('*'):
-                if f.is_file():
-                    with _quiet("Could not stat file %s", f, exc=OSError):
-                        total_bytes += f.stat().st_size
-        total_gb = total_bytes / (1024 ** 3)
-        exceeded = total_gb > DISK_USAGE_WARNING_THRESHOLD_GB
-        if exceeded:
-            logger.warning("Disk usage (%.1fGB) exceeds threshold (%.0fGB). Consider running cleanup_all_environments().",
-                           total_gb, DISK_USAGE_WARNING_THRESHOLD_GB)
-        _disk_usage_cache["timestamp"] = time.monotonic()
-        _disk_usage_cache["result"] = exceeded
-        return exceeded
-    except Exception:
-        # Don't update cache on error so the next call retries.
-        logger.debug("Disk usage warning check failed", exc_info=True)
-        return False
 
 
 def _create_configured_env(
@@ -102,11 +61,14 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
         env.terminate()
 
 
-def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s") -> None:
-    """``_cleanup_env`` plus outcome logging. A 404/"not found" error means the
-    sandbox is already gone — logged at info."""
+def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s", stop_idle: bool = False) -> None:
+    """``_cleanup_env`` (or, with *stop_idle*, the backend's ``stop_idle``) plus outcome logging.
+    A 404/"not found" error means the sandbox is already gone — logged at info."""
     try:
-        _cleanup_env(env, force_remove=force_remove)
+        if stop_idle:
+            env.stop_idle()
+        else:
+            _cleanup_env(env, force_remove=force_remove)
         logger.info(done_msg, task_id)
     except Exception as e:
         error_str = str(e)
@@ -154,7 +116,11 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     try:
         from tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
-            if process_registry.has_active_processes(task_id):
+            # A workspace container is keyed by its digest, not the spawning task id: also keep it
+            # while any process it hosts is still running (stopping it would kill that process).
+            if process_registry.has_active_processes(task_id) or (
+                    _is_workspace_key(task_id)
+                    and process_registry._any_running(lambda s, key=task_id: s.task_id == key)):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass
@@ -172,7 +138,17 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)
-            _teardown_env(env, task_id)
+            if _is_workspace_key(task_id) and callable(getattr(env, "stop_idle", None)):
+                # Persistent per-workspace container: stop it (state kept, restarted on next use)
+                # instead of leaving it running forever like the one profile container.
+                _teardown_env(env, task_id, stop_idle=True)
+            else:
+                _teardown_env(env, task_id)
+
+
+def _is_workspace_key(key: str) -> bool:
+    """A persistent Docker key bound to one session workspace (``<base>:ws:<digest>``)."""
+    return ":ws:" in str(key or "")
 
 
 def get_active_env(task_id: str):
@@ -277,12 +253,6 @@ def cleanup_all_environments():
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
-
-    # Also clean any orphaned directories
-    for path in _scratch_paths():
-        with _quiet("Failed to remove orphaned path %s", path, exc=OSError):
-            shutil.rmtree(path, ignore_errors=True)
-            logger.info("Removed orphaned: %s", path)
 
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)

@@ -101,6 +101,16 @@ test('canonical create retries retain identity', () => {
   expect(protocol.prepare('session.create', params).request_id).not.toBe(first.request_id)
 })
 
+// TUI-26: a bare stop phrase typed into a LOCAL voice chat (turned on by another viewer) ends the
+// chat on the owner and admits nothing; the owner answers `{voice_stopped: true}`.
+test('a voice_stopped prompt.submit reply is a settled no-admission receipt, never a mismatch', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  const params = protocol.prepare('prompt.submit', { session_id: 's', text: 'stop' })
+  const receipt = protocol.result('prompt.submit', params, { voice_stopped: true, extra: 'dropped' })
+  expect(receipt).toEqual({ voice_stopped: true, session_id: 's', submission_id: params.submission_id })
+  expect(() => protocol.result('prompt.submit', params, { voice_stopped: false })).toThrow('destination')
+})
+
 test('canonical receipts preserve admission identity and replay restores fenced controls', () => {
   const protocol = new CanonicalDesktopProtocol()
   const receipt = protocol.result('prompt.submit', { session_id: 's', submission_id: 'input' }, { admission_id: 'admission', ref: { session_id: 's', profile_id: '/tmp/profile' }, status: 'queued' })

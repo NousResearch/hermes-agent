@@ -16,7 +16,7 @@ import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _load_auth_store, resolve_provider
-from tests.hermes_cli.anon_portal import PORTAL, WELCOME, claimed_trial, install_portal, make_jwt as _jwt
+from tests.hermes_cli.anon_portal import PORTAL, WELCOME, claimed_trial, install_portal, make_jwt as _jwt, off_local_desktop
 
 
 @pytest.fixture
@@ -88,13 +88,11 @@ class TestIdentityLifecycle:
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
 
-    def test_a_claimed_trial_carries_inference_only_on_the_local_desktop_backend(self, portal, monkeypatch):
+    def test_a_claimed_trial_carries_inference_on_every_surface(self, portal, monkeypatch):
         claimed_trial(monkeypatch)
+        off_local_desktop(monkeypatch)     # a CLI shell beside the desktop
+        assert anon_auth.free_inference_active() is True
         assert resolve_provider("auto") == "nous"
-        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN")     # a CLI shell beside the desktop
-        assert anon_auth.free_inference_active() is False
-        with pytest.raises(anon_auth.AuthError):
-            resolve_provider("auto")
 
 
 class TestExplicitProvision:

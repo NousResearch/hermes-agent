@@ -1,0 +1,22 @@
+# Catalog entry for NousResearch/hermes-agent: plugin-catalog/usage-guard.yaml
+# Pinned to tag v0.3.9 (release published 2026-10-19). Bump sha and version together.
+name: usage-guard
+repo: https://github.com/mister-ideas/usage-guard
+sha: e740dcd65849a09a470b2d19b786c996ca44bfe6
+description: "Keeps an agent inside its subscription allowance: refuses a provider dispatch once a subscription usage window is exhausted, so an account that allows paid extra usage stops at the wall instead of spending overage. Reads the usage Hermes already displays, holds no credentials, and never touches account or billing settings. Disclosure — refuses main-loop provider calls (including MoA turns) for the providers in `provider_keys` (Anthropic and OpenAI Codex by default) when a subscription usage window reaches `threshold_percent`, and by default (`fail_open: false`) also refuses when usage data is missing, stale, unreadable, or the guard's own config is malformed; usage is read through Hermes's own account-usage fetcher (no credentials held, at most one read per source every 180 seconds by default) and cached in $HERMES_HOME/plugin-data/usage-guard/usage.json; a `pre_llm_call` hook adds a short usage note to the next turn's context at 80% and 90% used by default, and an opt-in (off by default) `llm_request` middleware lowers an existing output-token budget near the usage limit; both read only the cache, never the network; auxiliary calls (compression, vision, titles, MoA advisors) are not gated."
+image: https://raw.githubusercontent.com/mister-ideas/usage-guard/e740dcd65849a09a470b2d19b786c996ca44bfe6/docs/banner.jpg
+maintainer: mister-ideas
+tier: community
+category: automation
+requires_hermes: ">=0.21.6"
+version: "0.3.9"
+known_issues:
+  - "Anthropic windows: Hermes's Anthropic fetcher scales any utilization <= 1 by 100, so a window at 0-1% can read as 100% and the guard will refuse. Fixed upstream by NousResearch/hermes-agent#139916; this entry's requires_hermes rises to the release carrying it."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware:
+    - llm_execution
+    - llm_request
+  requires_env: []

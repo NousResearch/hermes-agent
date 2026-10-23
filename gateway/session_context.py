@@ -105,6 +105,24 @@ def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
         _SESSION_ID.set(previous)
 
 
+@contextmanager
+def scoped_session_key(session_key: str) -> Iterator[None]:
+    """Bind only the route key of the session a call works for (a hook fired for it outside its
+    turn) and restore the prior value on exit; never touches ``os.environ``."""
+    token = _SESSION_KEY.set(session_key)
+    try:
+        yield
+    finally:
+        _SESSION_KEY.reset(token)
+
+
+def bound_session_key() -> str:
+    """The route key bound in THIS context, ``""`` when none is: no ``os.environ`` fallback, so a
+    thread that inherited no context never borrows another session's key."""
+    value = _SESSION_KEY.get()
+    return "" if value is _UNSET else value
+
+
 def source_route_metadata(source: Any, metadata: dict | None) -> dict | None:
     """Keep inbound route anchors for durable deliveries after the source is gone."""
     anchors = {key: str(value) for key in ("scope_id", "parent_chat_id")

@@ -1,11 +1,10 @@
 """Exact execution results commit with settlement, before delivery/publication."""
-import json
 from contextvars import ContextVar
 
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_session_input
 
 execution_result: ContextVar[dict | None] = ContextVar("execution_result", default=None)
-from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX
+from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
 
 
 def record_unexecuted_failure(reply):
@@ -64,12 +63,13 @@ def prepare_result(row, response, outcome, result=None):
     return outcome, _redacted(compact_result(result, user_message=row['payload'].get('text')))
 
 
-def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None):
+def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None):
     """Delivery failure cannot rewrite an already committed execution outcome.
 
     `result` is the exact structured result captured in-process; the managed
     worker path commits its own before this runs and is read back here.
     `prepared` is ``prepare_result``'s output computed before the caller took a lock.
+    `transfers` are the queued steers handed to this claim; they settle in the same write.
     """
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
@@ -81,11 +81,25 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
                                  (_RESULT_PREFIX + row['admission_id'],)).fetchone()
             if saved is None:
                 raise RuntimeStoreError('storage_unavailable')
-            result = json.loads(saved[0])
+            result = load_result(saved[0])
             return dict(current), result['result'].get('final_response') or ''
     outcome, stored = prepared or prepare_result(row, response, outcome, result)
+    # A turn the owner's restart/stop interrupted: its reason commits as a Hermes transcript notice
+    # in this same write, so a viewer that reconnects after the restart reads why (#134889 GW-21);
+    # the live ``message.complete.warning`` carries the same copy. A retry that finds the row
+    # terminal returns above, so the notice is written once.
+    # A gateway-owned refusal (a message typed into a cron session) commits its explanation and
+    # error card as the transcript's failed-turn boundary in this same write too: the admission
+    # result is not history, so a reopened chat would otherwise show nothing about the refusal.
+    from gateway.session_settlement_recovery import gateway_refusal_boundary, owner_stop_notice
+    notice, display_metadata = owner_stop_notice(result, outcome, row), None
+    if notice is None and (refusal := gateway_refusal_boundary(result, outcome)) is not None:
+        notice, display_metadata = refusal
+    write = None if notice is None else (lambda conn, _current: close_discarded_turn(
+        db, conn, row, notice, replace_after=row.get('transcript_mark'), display_metadata=display_metadata))
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-        generation=row['generation'], outcome=outcome, result=stored)
+        generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers,
+        _terminal_write=write)
     return settled, response
 
 
@@ -96,10 +110,10 @@ def admission_result(db, admission_id):
             return None
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_RESULT_PREFIX + admission_id,)).fetchone()
-        return json.loads(saved[0]) if saved else None
+        return load_result(saved[0]) if saved else None
 
 
-def close_discarded_turn(db, conn, row):
+def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None, display_metadata=None):
     """Close a discarded ``unknown`` turn the way a failed turn is closed, on the resolution's
     own transaction (``resolve_unknown_session_input(_terminal_write=...)``).
 
@@ -113,17 +127,36 @@ def close_discarded_turn(db, conn, row):
     A turn lost while parked on a tool (an approval or clarify prompt) ends on its assistant
     ``tool_calls`` row with no result. That tail is open too: repair prunes the unanswered call,
     drops the now-empty row and merges the discarded input into the follower's user turn, so it
-    gets the same boundary (merged onto the call row, whose calls are then pruned)."""
+    gets the same boundary (merged onto the call row, whose calls are then pruned).
+
+    ``notice`` (an unattended automation turn settled by the owner, GW-10) replaces the hedged copy
+    and is written even on a closed tail: nobody resolved it, so the transcript must say why.
+
+    ``replace_after`` (the claim's transcript mark, an owner-stop notice): when the tail is a
+    failed-turn boundary written after that mark, it is THIS turn's own (the agent's core closer
+    wrote "Send it again" for the interrupted turn), so the notice replaces its copy instead of
+    stacking a second boundary (#134889 GW-21). An earlier turn's boundary stays.
+
+    ``display_metadata`` (``{error, error_surface}``) rides the boundary so a reopened chat redraws
+    the turn's error card from history (``agent.conversation_loop._failed_turn_display_metadata``)."""
     import time
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
     from hermes_state_local_lineage import local_physical_target
     from hermes_state_runtime import _canonical_chain
     target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
-    tail = conn.execute("SELECT role, tool_calls FROM messages WHERE session_id=? AND active=1 "
+    tail = conn.execute("SELECT role, tool_calls, id, display_kind FROM messages WHERE session_id=? AND active=1 "
                         "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()
-    if tail is None or not (tail[0] == 'user' or (tail[0] == 'assistant' and tail[1] not in (None, '', '[]'))):
+    if (notice is not None and type(replace_after) is int and tail is not None and tail[0] == 'assistant'
+            and tail[3] == FAILED_TURN_DISPLAY_KIND and tail[2] > replace_after):
+        conn.execute("UPDATE messages SET content=?, display_metadata=? WHERE id=?",
+                     (notice, db._encode_display_metadata(display_metadata), tail[2]))
+        return True
+    if notice is None and (tail is None or not (
+            tail[0] == 'user' or (tail[0] == 'assistant' and tail[1] not in (None, '', '[]')))):
         return False
-    db._append_messages_in_transaction(conn, target, [{
-        'role': 'assistant', 'content': PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),
-        'display_kind': FAILED_TURN_DISPLAY_KIND}])
+    boundary = {'role': 'assistant', 'content': notice or PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),
+                'display_kind': FAILED_TURN_DISPLAY_KIND}
+    if display_metadata:
+        boundary['display_metadata'] = display_metadata
+    db._append_messages_in_transaction(conn, target, [boundary])
     return True

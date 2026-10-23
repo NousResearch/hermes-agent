@@ -585,6 +585,7 @@ def test_worker_client_reports_the_owner_exit_and_reply(owner_worker, monkeypatc
     """The dispatcher-spawned process is the client half: it exits with the code the owner
     booked for this exact attempt, ends its log with the attempt's reply, and writes the
     exit trailer the dead-worker sweep reads — so an exhausted wall still releases as 75."""
+    import asyncio
     from contextlib import asynccontextmanager
 
     from hermes_cli import gateway_client, kanban_worker_client
@@ -595,6 +596,8 @@ def test_worker_client_reports_the_owner_exit_and_reply(owner_worker, monkeypatc
     submitted = []
 
     class _Owner:
+        events: asyncio.Queue = asyncio.Queue()
+
         async def rpc(self, method, **params):
             submitted.append(method)
             assert method == "kanban.run" and params["task_id"] == context["task_id"]

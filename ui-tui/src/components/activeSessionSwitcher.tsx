@@ -2,15 +2,10 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { mutateCanonical } from '../app/slash/canonicalSessionControls.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  SessionActiveItem,
-  SessionActiveListResponse,
-  SessionCloseResponse,
-  SessionDeleteResponse
-} from '../gatewayTypes.js'
+import type { SessionActiveItem, SessionActiveListResponse, SessionCloseResponse } from '../gatewayTypes.js'
+import { useSessionDelete } from '../hooks/useSessionDelete.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -331,7 +326,6 @@ export function ActiveSessionSwitcher({
   // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
   // different session. Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
-  const [deleting, setDeleting] = useState(false)
   const T = useT()
   const S = T.pickers.session
   const C = T.pickers.common
@@ -519,7 +513,13 @@ export function ActiveSessionSwitcher({
       const closed = Boolean(result?.closed ?? result?.ok)
 
       if (!closed) {
-        setActionErr(messages().pickers.session.errors.alreadyClosed)
+        // A canonical view closes only what it holds: a null answer means no close was attempted, not
+        // that main refused one. Only a receipt can say the session was already closed.
+        setActionErr(
+          gw.isCanonical && result === null
+            ? messages().pickers.session.errors.notAttached
+            : messages().pickers.session.errors.alreadyClosed
+        )
 
         return
       }
@@ -539,53 +539,29 @@ export function ActiveSessionSwitcher({
     } finally {
       setClosingId('')
     }
-  }, [closingId, currentSessionId, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
+  }, [closingId, currentSessionId, gw.isCanonical, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
 
-  const performDelete = useCallback(
+  const removeDeleted = useCallback(
     (id: string) => {
-      const target = history.find(h => h.id === id)
-
-      if (!target || deleting) {
-        return
-      }
-
-      setDeleting(true)
-      setActionErr('')
-      // The shared gateway has no `session.delete`: its delete is the revision-fenced
-      // `session.mutate operation=delete` (the whole lineage), as the classic CLI sends it.
-      const deleted = gw.isCanonical
-        ? mutateCanonical(gw, target.id, 'delete', {}).then(mutation => Boolean(mutation?.result))
-        : gw
-            .request<SessionDeleteResponse>('session.delete', { session_id: target.id })
-            .then(raw => asRpcResult<SessionDeleteResponse>(raw)?.deleted === target.id)
-
-      deleted
-        .then(ok => {
-          if (!ok) {
-            setActionErr(
-              messages().pickers.common.invalidResponse(gw.isCanonical ? 'session.mutate' : 'session.delete')
-            )
-            setDeleting(false)
-
-            return
-          }
-
-          rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== target.id)
-          setHistory(prev => prev.filter(h => h.id !== target.id))
-          setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
-          setDeleting(false)
-        })
-        .catch((e: unknown) => {
-          setActionErr(rpcErrorMessage(e))
-          setDeleting(false)
-        })
+      rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== id)
+      setHistory(prev => prev.filter(h => h.id !== id))
+      setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
     },
-    [deleting, gw, history, items.length]
+    [history.length, items.length]
   )
+
+  const keepView = useCallback((resolved: string) => resolved === currentSessionId, [currentSessionId])
+  const { deletePending, deleting, performDelete } = useSessionDelete(gw, removeDeleted, setActionErr, keepView)
 
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {
       event.stopImmediatePropagation?.()
+
+      // Keys are held while a delete is pending; a click must not open the row mid-delete either.
+      if (deletePending()) {
+        return
+      }
+
       const kind = rowKind(index)
       const clamped = Math.max(0, Math.min(index, total - 1))
 
@@ -605,7 +581,7 @@ export function ActiveSessionSwitcher({
 
       setSel(0)
     },
-    [history, items, onResume, onSelect, rowKind, total]
+    [deletePending, history, items, onResume, onSelect, rowKind, total]
   )
 
   const selectedKind = rowKind(sel)
@@ -613,7 +589,7 @@ export function ActiveSessionSwitcher({
   const draftHasText = Boolean(draft.trim())
 
   useInput((ch, key) => {
-    if (pickingModel || deleting) {
+    if (pickingModel || deletePending()) {
       return
     }
 
@@ -621,9 +597,8 @@ export function ActiveSessionSwitcher({
     // other key cancels the prompt (mirrors the standalone resume picker).
     if (confirmDelete !== null) {
       if (ch?.toLowerCase() === 'd') {
-        const id = confirmDelete
         setConfirmDelete(null)
-        performDelete(id)
+        performDelete(history.find(h => h.id === confirmDelete))
       } else {
         setConfirmDelete(null)
       }

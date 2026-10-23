@@ -139,9 +139,9 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
 
     sessions_archive = sessions_subparsers.add_parser(
         "archive", help="Bulk-archive (soft-hide) sessions matching filters — no deletion")
-    _add_session_filter_args(
-        sessions_archive, "Only archive sessions older than AGE (duration like '5h'/'2d', "
-        "bare number of days, or ISO timestamp)")
+    _add_session_filter_args(sessions_archive, "Only archive sessions older than AGE (duration like '5h'/'2d', "
+                             "bare number of days, or ISO timestamp)")
+    _flag(sessions_archive, "--include-open", help="Also archive never-ended sessions, e.g. Desktop chats")
 
     sessions_optimize = sessions_subparsers.add_parser(
         "optimize", help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)")

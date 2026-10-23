@@ -165,6 +165,24 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # The pm artifacts are upstream glibc binaries. autoPatchelf rewrites
+        # their interpreter at build time, and this sandbox has no
+        # /lib64/ld-linux-x86-64.so.2 (that is host nix-ld), so exec'ing them
+        # here is the proof they run on a host that never enabled nix-ld.
+        pm-packages-exec = pkgs.runCommand "hermes-pm-packages-exec" { } ''
+          mkdir -p $out
+          if [ -e /lib64/ld-linux-x86-64.so.2 ]; then
+            echo "sandbox unexpectedly carries a host loader; this proves nothing" >&2
+            exit 1
+          fi
+          ${self'.packages.pm-uv}/bin/uv --version > $out/uv
+          ${self'.packages.pm-node}/bin/node --version > $out/node
+          ${self'.packages.pm-ffmpeg}/bin/ffmpeg -version > $out/ffmpeg
+          ${self'.packages.pm-ripgrep}/bin/rg --version > $out/rg
+          ${self'.packages.pm-python}/bin/python3 -c 'import ssl, sqlite3' > $out/python
+          cat $out/*
+        '';
+
         # Verify the default package builds successfully (cross-platform).
         # On Linux the runtime checks below already depend on the package,
         # but this ensures darwin builders also build it during flake check.

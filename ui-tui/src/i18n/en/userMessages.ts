@@ -37,6 +37,12 @@ export const userMessagesEn = {
     },
 
     rpc: {
+      /** `{0}` = the session's terminal backend (docker, ssh, ...). shell.exec runs on the gateway host. */
+      shellBackendRefused: (backend: string) =>
+        `!commands run on the gateway host, but this session's terminal backend is ${backend}, so the command was not run. Ask the agent to run it instead; the agent's terminal runs inside ${backend}.`,
+      /** shellBackendRefused when the gateway did not name the backend (older gateways). */
+      shellBackendRefusedUnnamed:
+        "!commands run on the gateway host, but this session's terminal backend isn't local, so the command was not run. Ask the agent to run it instead.",
       versionSkew:
         'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.',
       sessionNotFound:

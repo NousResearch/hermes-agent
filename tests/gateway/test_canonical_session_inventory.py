@@ -129,7 +129,7 @@ async def test_cli_surface_counts_kanban_skills_like_main_cli_without_leaking(tm
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from hermes_cli import banner
-    from tools.skills_tool import _find_all_skills
+    from tools.skills_tool import find_all_skills
 
     home = tmp_path / 'home'
     for name, extra in (('arxiv', ''), ('sdlc-review', 'environments:\n  - kanban\n')):
@@ -159,4 +159,4 @@ async def test_cli_surface_counts_kanban_skills_like_main_cli_without_leaking(tm
     assert sorted(cli['skills']['devops']) == ['arxiv', 'sdlc-review'], cli['skills']
     tui = (await call('session.create', request_id='tui', source='tui', cwd=str(repo)))['info']
     assert tui['skills']['devops'] == ['arxiv'], tui['skills']
-    assert [s['name'] for s in _find_all_skills()] == ['arxiv']
+    assert [s['name'] for s in find_all_skills()] == ['arxiv']

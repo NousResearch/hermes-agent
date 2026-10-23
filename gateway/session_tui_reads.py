@@ -1,11 +1,11 @@
-"""Main's TUI text for the session reads its sidecar answered itself: /status, /context, /cron.
+"""Main's TUI text for the session reads its sidecar answered itself: /status, /context.
 
 On main the TUI's ``slash.exec`` never reached the messaging gateway's handlers: ``/status`` was
 ``session.status`` (``Hermes TUI Status``), ``/context`` was ``_format_live_context_output`` (the
-conversation counts, then the desktop gauge's category table) and ``/cron`` ran the classic CLI's
-handler in the slash worker. A TUI session on the shared owner gets the same lines here, read
-from the owner's live agent, stored row and the profile's cron store; every other surface keeps
-the gateway's own handlers (``gateway/session_commands.py``).
+conversation counts, then the desktop gauge's category table). A TUI session on the shared owner
+gets the same lines here, read from the owner's live agent and stored row; every other surface keeps
+the gateway's own handlers (``gateway/session_commands.py``). ``/cron``, the classic CLI's handler
+that main's TUI ran in its slash worker, is gateway/session_cron_commands.py.
 """
 from __future__ import annotations
 
@@ -13,18 +13,8 @@ import asyncio
 import contextlib
 from collections import Counter
 
-# The TUI surfaces whose /status, /context and /cron read as main's TUI sidecar did.
+# The TUI surfaces whose /status and /context read as main's TUI sidecar did.
 _TUI_SOURCES = frozenset({'tui'})
-
-
-def _cron_read(arg: str):
-    """``/cron`` (overview) or ``/cron list [--all]``; None for a write (still refused)."""
-    tokens = arg.split()
-    if not tokens:
-        return 'overview'
-    if tokens[0].lower() == 'list' and set(tokens[1:]) <= {'--all', '-a'}:
-        return 'list-all' if tokens[1:] else 'list'
-    return None
 
 
 def tui_read(policy, name: str, arg: str):
@@ -35,8 +25,6 @@ def tui_read(policy, name: str, arg: str):
         return _status
     if name == 'context':
         return _context
-    if name == 'cron' and _cron_read(arg) is not None:
-        return _cron
     return None
 
 
@@ -110,14 +98,6 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
     return '\n'.join(lines)
 
 
-def _cron(authority, ref, live, policy, agent, arg) -> str:
-    """The classic CLI's ``/cron`` / ``/cron list`` text (main's TUI ran it in the slash worker)."""
-    from hermes_cli.cli_cron_lines import cron_list_lines, cron_overview_lines
-    mode = _cron_read(arg)
-    lines = cron_overview_lines() if mode == 'overview' else cron_list_lines(include_disabled=mode == 'list-all')
-    return '\n'.join(lines).strip('\n')
-
-
 async def run_tui_read(authority, ref, live, policy, render, arg) -> dict:
     """Render off the owner loop, inside the owning profile and the session's workspace."""
     from gateway.session_authorities import owner_scope
@@ -163,8 +143,25 @@ async def context_breakdown(connection, ref, params) -> dict:
         from agent.context_breakdown import compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
+            # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
+            # system prompt. Reuse the payload while neither the transcript nor the agent moved.
+            key = (id(agent), _agent_context_marks(agent),
+                   authority.db.conversation_revision(stored, include_ancestors=True))
+            cached = live.context_breakdown
+            if cached is not None and cached[0] == key:
+                return dict(cached[1])
             conversation = authority.db.get_messages_as_conversation(stored, include_ancestors=True)
             payload = compute_session_context_breakdown(agent, conversation)
             payload['context_files'] = context_file_sources_for_agent(agent)
-            return payload
+            live.context_breakdown = (key, payload)
+            return dict(payload)
     return await asyncio.to_thread(build)
+
+
+def _agent_context_marks(agent) -> tuple:
+    """What the breakdown reads off the agent besides the transcript: model, toolset size, window,
+    measured prompt tokens, compressions and the usage anchors."""
+    comp = getattr(agent, 'context_compressor', None)
+    return (getattr(agent, 'model', None), getattr(agent, 'provider', None), len(getattr(agent, 'tools', None) or ()),
+            *(getattr(comp, name, None) for name in ('context_length', 'last_prompt_tokens', 'compression_count')),
+            repr(getattr(agent, '_turn_base_usage_anchor', None)), repr(getattr(agent, '_usage_anchor', None)))

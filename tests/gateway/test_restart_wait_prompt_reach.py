@@ -185,6 +185,12 @@ async def test_restart_wait_ws_serves_the_parked_turn_and_refuses_every_other_ve
         answered = await call("approval.respond", execution_generation=1, prompt_id="gone", choice="once")
         # Reached the authority: a stale prompt is its own verdict, never the drain's refusal.
         assert answered.get("error", {}).get("message") != "runtime_draining"
+        # A batch clarify answers one question at a time with clarify.lock (no session_id); the
+        # allowlist is what lets Desktop/Ink answer a turn parked on a clarify batch.
+        locked = await viewer.dispatch({"id": "lock", "method": "clarify.lock", "params": {
+            "request_id": "srq-none", "question_id": "q0", "answer": "red"}})
+        assert locked.get("error", {}).get("message") != "runtime_draining", locked
+        assert locked["result"]["status"] == "expired"
         for method, params in [("config.set", {"key": "model", "value": "x"}), ("session.save", {}),
                                ("process.kill", {"pid": 1}), ("reload.mcp", {}), ("rollback.restore", {})]:
             refused = await call(method, **params)
@@ -234,3 +240,67 @@ def test_update_drain_hint_names_the_draining_profile(tmp_path, monkeypatch):
     work = [{"kind": "chat", "session": "s1"}]
     assert "`hermes -p work --tui`" in format_drain_report(work, remaining_s=60, home=root / "profiles" / "work")
     assert "`hermes --tui`" in format_drain_report(work, remaining_s=60, home=root)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opened_in_wait", [False, True])
+async def test_restart_wait_cuts_sockets_opened_before_it(tmp_path, monkeypatch, opened_in_wait):
+    """Only a socket admitted INTO the restart wait outlives it. One opened while the owner was ready
+    (a kanban worker polling its card's receipt) is cut when the wait opens, as before #139041, so its
+    client reconnects to the next owner instead of pinning the drain to its cap."""
+    import json
+
+    from gateway.run_api import GatewayRuntimeAPI
+    from gateway.runtime_bootstrap import TicketStore
+    from hermes_cli import web_server as web
+    from hermes_cli import web_server_chat
+
+    tickets = TicketStore("owner", [str(tmp_path)])
+    ticket = tickets.mint(profile_id=str(tmp_path), subject="human", purpose="interactive")
+    authority = SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / "state.db"), profile_id=str(tmp_path), runner=None)
+    runner = SimpleNamespace(_draining=False, _running=True, session_runtime_descriptor={"state": "ready"},
+                             session_authority=authority, session_ticket_store=tickets)
+
+    def open_restart_wait():
+        runner._draining = True
+        runner.session_runtime_descriptor.update(state="draining", drain_reason="restart_wait")
+
+    if opened_in_wait:
+        open_restart_wait()
+    received = []
+
+    async def handle(ws, **kwargs):
+        await ws.accept(subprotocol="hermes-gateway-v1")
+        open_restart_wait()  # the wait opens while this socket is live
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                received.append(("disconnect", message.get("code")))
+                return
+            received.append(("text", message.get("text")))
+
+    async def fallback(*args):
+        pytest.fail("a ticketed native socket must not enter the legacy fallback")
+
+    monkeypatch.setattr("tui_gateway.ws.handle_ws", handle)
+    monkeypatch.setattr(web, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    monkeypatch.setattr(web_server_chat, "_ws_request_is_allowed", lambda ws: True)
+    frame = json.dumps({"method": "prompt.receipt"})
+    incoming = iter([{"type": "websocket.connect"}, {"type": "websocket.receive", "text": frame},
+                     {"type": "websocket.disconnect", "code": 1000}])
+
+    async def receive():
+        return next(incoming)
+
+    async def send(value):
+        pass
+
+    scope = {"type": "websocket", "path": "/api/ws", "scheme": "ws", "query_string": b"",
+             "client": ("127.0.0.1", 1234), "server": ("127.0.0.1", 9999),
+             "headers": [(b"sec-websocket-protocol", ("hermes-gateway-v1, hermes-gateway-ticket." + ticket).encode())],
+             "subprotocols": ["hermes-gateway-v1", "hermes-gateway-ticket." + ticket]}
+    await GatewayRuntimeAPI(fallback, runner, web.app)(scope, receive, send)
+    if opened_in_wait:
+        assert received == [("text", frame), ("disconnect", 1000)], received
+    else:
+        assert received == [("disconnect", 1013)], received

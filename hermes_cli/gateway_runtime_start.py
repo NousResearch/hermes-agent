@@ -12,7 +12,9 @@ from hermes_cli.gateway_runtime_service import RuntimeStartError, remaining
 
 # One launch's policy and pins, never the shared daemon's: hook consent would become daemon-lifetime
 # auto-approval for messaging/cron, and a Kanban worker's or terminal's pins would retarget every later
-# session's board, cwd and source. HERMES_INFERENCE_* fallbacks stay (the daemon's own defaults).
+# session's board, cwd and source. The behaviour values main's CLI read per process (ephemeral prompt,
+# prefill file, provider request, project plugins) ride each session's ``client_env`` instead
+# (agent.session_client_env); an operator-started gateway keeps its own environment.
 DAEMON_STRIPPED_ENV = (
     "HERMES_PROFILE", "HERMES_YOLO_MODE", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE",
     "HERMES_IGNORE_USER_CONFIG", "HERMES_ACCEPT_HOOKS", "HERMES_SESSION_SOURCE", "TERMINAL_CWD",
@@ -22,16 +24,24 @@ DAEMON_STRIPPED_ENV = (
     "HERMES_KANBAN_BOARD", "HERMES_TENANT", "HERMES_SESSION_SOURCE_EXPLICIT", "HERMES_TURN_AUTHOR",
     # Human-presence/one-shot markers: inherited, every messaging/cron turn would read as attended or -q.
     "HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_SINGLE_QUERY_SESSION",
+    "HERMES_EPHEMERAL_SYSTEM_PROMPT", "HERMES_PREFILL_MESSAGES_FILE", "HERMES_INFERENCE_PROVIDER",
+    "HERMES_ENABLE_PROJECT_PLUGINS", "HERMES_TUI_CLIENT_ENV",
+    # A terminal's shell under a systemd service (gnome-terminal-server, a user unit) carries these; the
+    # unmanaged daemon would then identify as "systemd" and maintenance would refuse it as supervised.
+    "INVOCATION_ID", "JOURNAL_STREAM",
 )
 
 
-def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: bool = False) -> subprocess.Popen:
+def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: bool = False,
+                            force: bool = False) -> subprocess.Popen:
     """Request a daemon, not readiness. Refuse Windows no-breakaway fallback.
 
     No --replace, persistence, login changes, elevation, shell, or inherited stdio.
     The gateway runtime's own exclusive ownership fence arbitrates racing starts.
     ``idle_exit``: the daemon ends itself once idle (a chat/TUI/cron client's own start; never
     Desktop's ``gateway ensure``, which keeps its attached gateway for the app's lifetime).
+    ``force``: a ``gateway restart --force --detach`` replacement keeps the ``--force`` its old owner
+    needed (a named profile under a multiplexer), or it exits on the run-side guard.
     """
     home = profile_home.resolve()
     root = Path(__file__).resolve().parent.parent
@@ -40,7 +50,7 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # profile's daemon. A <root>/profiles/<name> home is already trusted as-is.
     selector = [] if home.parent.name == "profiles" else ["--profile", "default"]
     command = [sys.executable, "-m", "hermes_cli.main", *selector, "gateway", "run", "--quiet",
-               *(["--idle-exit"] if idle_exit else [])]
+               *(["--idle-exit"] if idle_exit else []), *(["--force"] if force else [])]
     # The target profile's own secrets, never the launching client's: a `hermes -p work` client's
     # dotenv would otherwise become the default daemon's frozen launch env (host_gateway_child_env).
     from tools.environments.local import served_profile_child_env
@@ -71,6 +81,20 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     except OSError as exc:
         reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"
         raise RuntimeStartError(reason) from exc
+
+
+def start_detached_replacement(profile_home: Path, *, force: bool = False) -> int:
+    """``gateway restart --detach`` with no service: start the stopped owner's replacement the way
+    ``gateway ensure`` starts an absent one. In the foreground, the restarting client (Desktop's
+    bounded, piped call) would itself become the long-lived gateway it only meant to restart."""
+    import time
+    try:
+        spawn_unmanaged_gateway(profile_home, deadline=time.monotonic() + 30, force=force)
+    except RuntimeStartError as exc:
+        print(f"✗ Could not start the gateway in the background: {exc}", file=sys.stderr)
+        return 1
+    print("✓ Started the gateway in the background")
+    return 0
 
 
 def stdio_log_path(profile_home: Path) -> Path:

@@ -278,8 +278,10 @@ _UPDATE_PIPELINE = (
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
+    "hermes_dir_acl.py",  # update restores the Windows user ACL on the home after elevation
     "gateway/status.py",  # code_sha stamp the fleet verify reads
     "gateway/status_inline_source.py",  # the Windows pause identifies inline-bootstrapped gateways
+    "gateway/status_lock_dir.py",  # gateway/status.py imports it at module level
     "gateway/control_socket.py",  # pause-for-update verb
     "gateway/code_skew.py",
     "gateway/host_rendezvous.py",
@@ -423,6 +425,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/old_updater",
         # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
         "hermes_state_holders.py",
+        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
+        "hermes_state_fts.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",
@@ -448,6 +452,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # fleet-condensed-default.spec.ts: the profile rail's doors per gateway.
         "apps/desktop/src/app/chat/sidebar/profile-switcher",
         "apps/desktop/src/app/chat/sidebar/fleet-",
+        # reconnect-turn-state.spec.ts: the lost-turn card and Discard live in the queue panel.
+        "apps/desktop/src/app/chat/composer/queue-",
     ),
     "e2e_desktop_update": (
         *_DESKTOP_E2E_SHARED,

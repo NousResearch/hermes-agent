@@ -25,6 +25,22 @@ const originalDesktop = window.hermesDesktop
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
 afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
 
+it('preserves the unsent draft when only the room display name changes', async () => {
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  const binding = { connectionId: 'local', profile: 'team', roomId: 'rename', roomName: 'Room' }
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep this draft' } })
+  view.rerender(<CanonicalGroupWorkspace binding={{ ...binding, roomName: 'Renamed room' }} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep this draft')
+
+  view.rerender(<CanonicalGroupWorkspace binding={{ ...binding, roomId: 'another-room' }} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('')
+})
+
 it('restores a frozen send after remount and retires only its acknowledged exact retry', async () => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'restore' }
   const entry = await prepareCanonicalGroupSend(binding, { text: 'Original', attachments: [{ path: '/owner/image.png', mime_type: 'image/png' }] })
@@ -131,7 +147,7 @@ it('reads back retry on the same authority and sends only through the group driv
     return {}
   })
   const group = registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, { room_id: 'r', name: 'Room', members: [] })
-  render(<GroupChatWorkspace group={group} members={[]} />)
+  render(<GroupChatWorkspace group={group} members={[]} origin="key" />)
   fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(request.mock.calls.filter(c => c[1] === 'groups.state').length).toBeGreaterThan(1))
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello' } })
@@ -157,4 +173,29 @@ it('a Send that converges on another window\'s pending intent keeps this window\
   expect(request.mock.calls.filter(c => c[1] === 'groups.send').map(c => c[2])).toEqual([{ ...other.params, profile: 'team' }])
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('typed here'))
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false)
+})
+
+it('shows which bots are working, and still says the group is working on a gateway without member activity', async () => {
+  const members = [{ member_id: 'ops', profile: 'ops', handle: 'ops', display_name: 'Ops' },
+    { member_id: 'qa', profile: 'qa', handle: 'qa', display_name: 'QA' }]
+
+  let driver: Record<string, unknown> = { working: true, member_activity: [
+    { member_id: 'qa', status: 'queued' }, { member_id: 'ops', status: 'running' }, { member_id: 'ops', status: 'queued' }] }
+
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room', members }, driver_status: driver } : method === 'groups.log' ? { events: [] } : {})
+  const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'busy' }} />)
+  await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Working: Ops'))
+  const phase = (name: string) => screen.getByText(name).closest('li')?.getAttribute('data-phase')
+  expect([phase('Ops'), phase('QA')]).toEqual(['working', 'queued'])
+
+  // The same mounted room clears both indicators on its next poll once the turn settles.
+  driver = { working: false, member_activity: [] }
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull(), { timeout: 5_000 })
+  expect([phase('Ops'), phase('QA')]).toEqual(['idle', 'idle'])
+
+  view.unmount()
+  driver = { working: true }
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'older' }} />)
+  await waitFor(() => expect(screen.getByRole('status').textContent).toBe('The group is working…'))
 })

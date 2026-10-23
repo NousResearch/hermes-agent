@@ -39,6 +39,12 @@ class GatewayGoalCommandsMixin:
             return t("gateway.goal.unavailable")
 
         def authorize_gate():
+            # A local session's owner is its admin: slash.exec admitted this command only after
+            # authorize_local_source and the session:control capability (T7). Messaging stays
+            # explicit-admin-only.
+            from gateway.session_local import authorize_local_source
+            if event.source is not None and authorize_local_source(self, event.source) is True:
+                return None
             if not self._resume_caller_is_admin(event.source):
                 return t("gateway.goal.gate_add_admin_only")
             return None
@@ -72,9 +78,10 @@ class GatewayGoalCommandsMixin:
     ) -> None:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
-        A kickoff keeps the triggering message id / channel prompt; a resume continuation carries
-        none. Best-effort: failures only logged. A local ``slash.exec`` returns the turn to the
-        client as its ``send`` directive instead (the client submits it with its own input id).
+        A kickoff keeps the triggering message id / channel prompt / bound skills; a resume
+        continuation carries none. Best-effort: failures only logged. A local ``slash.exec`` returns
+        the turn to the client as its ``send`` directive instead (the client submits it with its own
+        input id).
         """
         from gateway.session_command_sink import active_sink
         if (sink := active_sink()) is not None:
@@ -91,6 +98,8 @@ class GatewayGoalCommandsMixin:
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
                     channel_prompt=event.channel_prompt if kickoff else None,
+                    auto_skill=event.auto_skill if kickoff else None,
+                    inherit_channel_pin=not kickoff,
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
@@ -169,9 +178,16 @@ class GatewayGoalCommandsMixin:
         snapshot of the cached AIAgent's conversation (live session and prompt cache untouched)."""
         args = (event.get_command_args() or "").strip()
         _quick_key, agent, error = self._idle_cached_agent_or_error(event, "refine")
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+        if not snapshot and _quick_key and _quick_key not in self._running_agents:
+            # A local session's conversation is its stored transcript, not the cached agent: /moa
+            # (and its settle) drop that agent, so /refine reads the session itself (T7).
+            from gateway.session_refine import refine_local_session
+            local = await refine_local_session(self, event.source, args)
+            if local is not None:
+                return local
         if error:
             return error
-        snapshot = list(getattr(agent, "_session_messages", None) or [])
         if not snapshot:
             return t("gateway.refine.empty")
         try:

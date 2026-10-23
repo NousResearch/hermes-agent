@@ -7,6 +7,7 @@ import hashlib
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import importlib
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -19,13 +20,14 @@ import zipfile
 import pytest
 
 
-def _wheel(directory: Path, name: str, version: str = "1.0", requirements=()) -> Path:
+def _wheel(directory: Path, name: str, version: str = "1.0", requirements=(), extra=None) -> Path:
     metadata = f"{name}-{version}.dist-info"
     entries = {
         f"{name}/__init__.py": f"__version__ = {version!r}\n",
         f"{metadata}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
         + "".join(f"Requires-Dist: {requirement}\n" for requirement in requirements),
         f"{metadata}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        **(extra or {}),
     }
     entries[f"{metadata}/RECORD"] = "".join(f"{path},,\n" for path in entries)
     wheel = directory / f"{name}-{version}-py3-none-any.whl"
@@ -33,6 +35,21 @@ def _wheel(directory: Path, name: str, version: str = "1.0", requirements=()) ->
         for path, body in entries.items():
             archive.writestr(path, body)
     return wheel
+
+
+def installing_member(plugin: Path, name: str, wheels: Path, *, requires_python: str = ">=3.11") -> None:
+    """Give *plugin* a pyproject that installs one real package, resolvable offline.
+
+    Only a plugin that installs something is a dependency-workspace member: ``dependencies = []``
+    leaves the environment alone, so it cannot stand in for a member.
+    """
+    wheels.mkdir(parents=True, exist_ok=True)
+    wheel = _wheel(wheels, "member_dep")
+    plugin.mkdir(parents=True, exist_ok=True)
+    (plugin / "pyproject.toml").write_text(
+        f'[project]\nname="{name}"\nversion="1"\nrequires-python="{requires_python}"\n'
+        'dependencies=["member-dep==1.0"]\n[tool.uv]\npackage=false\n'
+        f'[tool.uv.sources]\nmember-dep = {{ path = {json.dumps(wheel.as_posix())} }}\n', encoding="utf-8")
 
 
 def stage_host_python(python: Path) -> Path:

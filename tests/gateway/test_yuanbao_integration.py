@@ -22,7 +22,7 @@ if _REPO_ROOT not in sys.path:
 import pytest
 from unittest.mock import MagicMock, patch
 from gateway.config import Platform, PlatformConfig, GatewayConfig
-from gateway.platforms.yuanbao import YuanbaoAdapter
+from plugins.platforms.yuanbao.adapter import YuanbaoAdapter
 
 
 def make_config(**kwargs):
@@ -123,8 +123,11 @@ class TestGatewayRunnerRegistration:
 
         try:
             runner, _ = self._make_minimal_runner(gw_config)
+            # Yuanbao is a bundled platform plugin: the registry learns it through discovery.
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
             # websockets 在测试环境可能未安装，mock 掉 WEBSOCKETS_AVAILABLE
-            with patch("gateway.platforms.yuanbao.WEBSOCKETS_AVAILABLE", True):
+            with patch("plugins.platforms.yuanbao.adapter.WEBSOCKETS_AVAILABLE", True):
                 adapter = runner._create_adapter(Platform.YUANBAO, config)
         except ImportError as e:
             pytest.skip(f"run.py import unavailable in test env: {e}")
@@ -198,7 +201,7 @@ class TestP0ChatLockEviction:
     def test_eviction_skips_locked(self):
         """When eviction is needed, locked entries are skipped."""
         adapter = YuanbaoAdapter(make_config())
-        from gateway.platforms.yuanbao import MessageSender
+        from plugins.platforms.yuanbao.adapter import MessageSender
 
         # Fill to capacity with unlocked locks
         for i in range(MessageSender.CHAT_DICT_MAX_SIZE):

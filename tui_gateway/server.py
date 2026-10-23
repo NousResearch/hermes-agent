@@ -1421,6 +1421,10 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+    # Window plans only: the desktop status bar's allowance (the canonical feed carries the same one).
+    from gateway.session_usage import plan_gauge
+    if (gauge := plan_gauge(agent)) is not None:
+        usage["plan_gauge"] = gauge
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count
@@ -1727,9 +1731,10 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
             if row and _resumable_stored_cwd(row.get("cwd"), profile_home):
-                # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
-                # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
-                remote = _cwd_is_remote(profile_home)
+                # An ssh or sandbox session's stored cwd is its workspace: explicit, so the remote terminal uses it
+                # instead of the backend default (an unpicked launch dir is never persisted for them). Host backends
+                # keep main's semantics (resolved outside the sessions lock: I/O).
+                remote = not _host_cwd_is_terminal_cwd(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]

@@ -192,7 +192,7 @@ def _user_image_display_text(content: Any) -> str | None:
     if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
         return None
     if len(content) > 1 + len(paths):
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
         memory = content[-1]
         if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
             return None

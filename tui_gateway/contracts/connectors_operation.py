@@ -78,6 +78,7 @@ class ConnectionTargetEnvField(Payload):
 
 class CatalogTier(WireEnum):
     official = "official"
+    verified = "verified"
     community = "community"
 
 

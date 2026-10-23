@@ -1012,7 +1012,7 @@ def _build_dynamic_image_schema() -> dict[str, Any]:
     style_refs = info.get("source_image_role") == "style"
     if can_edit:
         if style_refs:
-            lead = "Generate images, optionally copying reference images' look, via configured model."
+            lead = "Generate images, optionally styled on reference images, via configured model."
             edit_clause = "Pass style references in image_url. "
             properties["prompt"] = _STYLE_PROMPT_PARAM
             properties["image_url"] = _STYLE_IMAGE_URL_PARAM

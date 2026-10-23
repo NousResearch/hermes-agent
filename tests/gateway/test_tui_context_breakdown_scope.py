@@ -58,6 +58,38 @@ async def test_agentless_breakdown_refreshes_when_the_stored_prompt_or_tools_cha
     assert 'tool_definitions' in {c['id'] for c in tooled['categories']}, tooled
 
 
+async def _agentless_session(owner, request_id, pin):
+    from gateway.session_tui_reads import _stored_id
+
+    sid = (await owner.call('session.create', request_id=request_id, source='tui', cwd=str(owner.workdir)))['session_id']
+    stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
+    owner.authority.db.update_system_prompt(stored, 'You are Hermes. ' * 50)
+    owner.authority.db.update_session_tool_names(stored, pin)
+    owner.authority.db.append_message(stored, 'user', 'hello')
+    return sid, stored
+
+
+@pytest.mark.asyncio
+async def test_agentless_breakdown_measures_a_legacy_name_only_pin(owner):
+    """A legacy name-only pin measures each tool's registry schema, as the next agent restores it."""
+    import tools.terminal_tool  # registers ``terminal``
+
+    sid, _ = await _agentless_session(owner, 'legacy', ['terminal'])
+    actual = await owner.call('session.context_breakdown', session_id=sid)
+    assert 'tool_definitions' in {c['id'] for c in actual['categories']}, actual
+
+
+@pytest.mark.asyncio
+async def test_agentless_breakdown_survives_a_swept_tools_pin(owner):
+    """A pin hash whose ``system_prompts`` row was swept resolves to the bare hash: no tools, no error."""
+    sid, stored = await _agentless_session(owner, 'swept', {'version': 'v', 'tools': [
+        {'type': 'function', 'function': {'name': 'terminal', 'parameters': {'type': 'object'}}}]})
+    owner.authority.db._execute_write(lambda conn: conn.execute(
+        'DELETE FROM system_prompts WHERE hash = (SELECT tool_names FROM sessions WHERE id = ?)', (stored,)))
+    actual = await owner.call('session.context_breakdown', session_id=sid)
+    assert {c['id'] for c in actual['categories']} == {'system_prompt', 'conversation'}, actual
+
+
 @pytest.mark.asyncio
 async def test_context_breakdown_measures_only_the_compression_tips_model_history(owner, monkeypatch):
     """The runtime id still names the compressed parent; neither its superseded segment nor the tip's

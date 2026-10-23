@@ -42,6 +42,13 @@ def _context_id(authority, ref) -> str:
     return authority.db.get_compression_tip(stored) or stored
 
 
+def _model_history(db, tip) -> list:
+    """The tip's working context: its active rows as live replay loads them, minus the ``session_meta``
+    bookkeeping the gateway strips before the model sees history. Superseded segments are not read."""
+    return [m for m in db.get_messages_as_conversation(tip, repair_alternation=True, include_row_ids=True)
+            if m['role'] != 'session_meta']
+
+
 def _status(authority, ref, live, policy, agent, arg) -> str:
     """``tui_gateway/methods_session.py`` ``session.status`` on main, for the owner's session."""
     from hermes_cli.status_report import build_status_fields, status_lines
@@ -77,7 +84,7 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
         with contextlib.suppress(Exception):
             from agent.context_breakdown import (
                 compute_context_details, compute_session_context_breakdown, render_context_breakdown_lines)
-            payload = compute_session_context_breakdown(agent, authority.db.get_resume_conversations(stored)[0])
+            payload = compute_session_context_breakdown(agent, _model_history(authority.db, stored))
             details = None
             if arg.strip().lower() in {'all', 'full', 'details'}:
                 with contextlib.suppress(Exception):
@@ -145,17 +152,19 @@ async def context_breakdown(connection, ref, params) -> dict:
         from agent.context_file_sources import context_file_sources_for_agent
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
             tip = _context_id(authority, ref)
+            # Agentless, the categories come from the frozen prompt and tools pin, which a compute worker
+            # can rewrite (session.prompt / session.tools) without moving the transcript.
+            row = {} if agent is not None else authority.db.get_session(tip) or {}
             # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
             # system prompt. Reuse the payload while neither the transcript nor the agent moved.
-            key = (id(agent), _agent_context_marks(agent), authority.db.conversation_revision(tip))
+            key = (id(agent), _agent_context_marks(agent), authority.db.conversation_revision(tip),
+                   row.get('system_prompt'), row.get('tool_names'))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
                 return dict(cached[1])
-            # The display history keeps superseded compression segments; only the model projection
-            # (the tip's active rows, no session_meta) is the working context.
-            conversation = authority.db.get_resume_conversations(tip)[0]
+            conversation = _model_history(authority.db, tip)
             if agent is None:
-                payload = _stored_breakdown(authority.db.get_session(tip) or {}, conversation, usage)
+                payload = _stored_breakdown(row, conversation, usage)
             else:
                 payload = compute_session_context_breakdown(agent, conversation)
                 payload['context_files'] = context_file_sources_for_agent(agent)

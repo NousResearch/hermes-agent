@@ -64,9 +64,14 @@ import {
 } from "@/lib/pty-resume-loading";
 import {
   MOBILE_REPLACEMENT_WINDOW_MS,
+  mobileBeforeInputCommit,
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import {
+  bridgeMobileTextarea,
+  type MobilePtyTextareaBridge,
+} from "@/lib/pty-mobile-textarea";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
@@ -792,34 +797,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // xterm occasionally drops committed dead-key/IME text instead of emitting
     // onData. The compositionend event supplies the authoritative text.
     let sendComposedText: (data: string) => void = () => undefined;
+    // Mobile IME edits xterm drops, replayed from its hidden textarea (#122766).
+    let sendTextareaEdit: (data: string) => void = () => undefined;
+    let mobileTextareaBridge: MobilePtyTextareaBridge | null = null;
     const compositionForwarder = createPtyCompositionForwarder((data) => {
       sendComposedText(data);
     });
     term.open(host);
 
-    // IME composition guard (fixes #52111).
-    //
-    // React 18's root-level event delegation intercepts keydown events with
-    // keyCode 229 (the "composition in progress" signal sent by the browser
-    // during non-Latin IME input) and synthesises an onCompositionStart
-    // event.  That synthetic path sets internal composing state that
-    // interferes with xterm.js's own IME handling on its hidden textarea,
-    // causing the first keystroke of each composition chunk to be silently
-    // dropped — most visible with Cyrillic (Ukrainian/Russian) on
-    // Firefox-based browsers, but affects any locale that uses composition
-    // events (CJK, Arabic, Hebrew).
-    //
-    // xterm.js relies on native compositionstart/compositionend on its
-    // internal textarea, not on keydown, so blocking the keyCode-229
-    // keydown from reaching React's delegation layer is safe.  The listener
-    // sits in the *capture* phase on the terminal host so it fires before
-    // the event bubbles up to the React root.
+    // IME composition guard (#52111): keep keyCode-229 keydowns away from
+    // React's root-level composition handling, which runs in the bubble phase.
+    // The guard has to sit in the *bubble* phase: xterm.js handles these keys
+    // from its own keydown listener on the hidden textarea, and Android IMEs
+    // such as Gboard and SwiftKey report every key as keyCode 229. A
+    // capture-phase guard stopped the event before it reached the textarea, so
+    // plain typing and IME backspaces never produced onData (#136179).
     const _imeCompositionGuard = (e: KeyboardEvent) => {
       if (e.keyCode === 229 || e.key === "Process") {
         e.stopPropagation();
       }
     };
-    host.addEventListener("keydown", _imeCompositionGuard, true);
+    host.addEventListener("keydown", _imeCompositionGuard, false);
 
     const textarea = term.textarea;
     if (textarea) {
@@ -831,28 +829,49 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const isMobileLike =
         typeof navigator !== "undefined" &&
         /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-      const markReplacementInput = (ev: Event) => {
-        const input = ev as InputEvent;
-        if (
-          shouldTreatInputAsMobileReplacement(
-            input.inputType,
-            input.data,
-            isMobileLike,
-          )
-        ) {
-          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        }
-      };
+      let beforeInputHandler: (ev: Event) => void;
+      if (isMobileLike) {
+        // Single owner (#138081): the bridge replays every input event it sees
+        // as caret-aware bytes, so this path only fires for keyboards that
+        // never deliver an input event (taps reported as beforeinput only).
+        // #125379's replacement window and the echo tracking stay for
+        // non-input-event commits; they never double-count an input event the
+        // bridge owns.
+        beforeInputHandler = (ev) => {
+          const input = ev as InputEvent;
+          const commit = mobileBeforeInputCommit(input.inputType, input.data, true);
+          if (commit !== null && input.inputType !== "insertText") {
+            compositionForwarder.onCompositionEnd(commit);
+            input.preventDefault?.();
+          }
+        };
+      } else {
+        beforeInputHandler = (ev) => {
+          const input = ev as InputEvent;
+          if (shouldTreatInputAsMobileReplacement(input.inputType, input.data, false)) {
+            mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+          }
+          const commit = mobileBeforeInputCommit(input.inputType, input.data, false);
+          if (commit !== null) {
+            compositionForwarder.onCompositionEnd(commit);
+            input.preventDefault?.();
+          }
+        };
+      }
       const markCompositionEnd = (ev: CompositionEvent) => {
         mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
         compositionForwarder.onCompositionEnd(ev.data);
       };
 
-      textarea.addEventListener("beforeinput", markReplacementInput, true);
+      textarea.addEventListener("beforeinput", beforeInputHandler, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
+      if (isMobileLike) {
+        mobileTextareaBridge = bridgeMobileTextarea(textarea, (data) => sendTextareaEdit(data));
+      }
       mobileInputCleanup = () => {
-        textarea.removeEventListener("beforeinput", markReplacementInput, true);
+        textarea.removeEventListener("beforeinput", beforeInputHandler, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
+        mobileTextareaBridge?.dispose();
       };
     }
 
@@ -1515,9 +1534,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
+      // A replayed textarea edit is exact bytes, never a replacement candidate,
+      // and it closes a window an earlier compositionend opened.
+      sendTextareaEdit = (data) => {
+        forwardPtyData(data, false);
+        mobileReplacementInputUntilRef.current = 0;
+      };
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
+          // The bridge owns the mobile input event; when it has already sent the
+          // edit as bytes, this copy of the same text is the duplicate.
+          if (mobileTextareaBridge && !mobileTextareaBridge.onTerminalData(data)) return;
         }
         // A mobile IME can re-emit just-committed composition text through
         // onData; only the part that is not an echo of that commit is real.

@@ -126,14 +126,24 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # plain address). ``ip.ipv4_mapped`` does not read it; ``_embedded_ipv4`` handles it explicitly.
 _IPV4_TRANSLATED_NETWORK = ipaddress.ip_network("::ffff:0:0:0/96")
 
+# 64:ff9b::/96 (NAT64 well-known prefix, RFC 6052) is ``is_reserved``, but the low 32 bits are an
+# embedded IPv4 target. Classify that IPv4 — do not blanket-block the prefix (false positive on
+# public targets behind a NAT64 translator) and do not blanket-allow it (the embedded address is
+# attacker-controllable: ``64:ff9b::169.254.169.254`` / ``64:ff9b::10.0.0.1``). Not folded into
+# ``_embedded_ipv4``: a fake-ip declaration must not excuse the raw NAT64 address, because the
+# dial goes to the translator, not to a local proxy sentinel.
+_NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
+
 # Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
 # none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
 # so an entry overlapping one of these (including 0.0.0.0/0 and ::/0) would make real internal
-# hosts dialable. Such entries are dropped with a warning instead.
+# hosts dialable. Such entries are dropped with a warning instead. The NAT64 prefix is included
+# so a declaration cannot exempt embedded private IPv4 while the dial still leaves the host.
 _FAKE_IP_UNDECLARABLE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
     "0.0.0.0/32", "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",  # unspecified/loopback/RFC 1918
     "169.254.0.0/16", "100.64.0.0/10",  # link-local, CGNAT
     "::/128", "::1/128", "fc00::/7", "fe80::/10",  # unspecified, loopback, ULA, link-local
+    "64:ff9b::/96",  # NAT64 well-known prefix (embedded IPv4 is classified separately)
 ))
 
 # Global toggle cache (process lifetime; see _global_allow_private_urls).
@@ -251,7 +261,8 @@ def _embedded_ipv4(ip: _IPAddress) -> _IPAddress:
     """The IPv4 address an IPv6 wrapper stands for — IPv4-mapped (``::ffff:x.x.x.x``) or
     IPv4-translated (``::ffff:0:x.x.x.x``); *ip* unchanged otherwise. ``ipaddress`` reads both
     wrappers as distinct IPv6 addresses, so every classification must see through them, or a
-    resolver's sentinel / a cloud-metadata answer arrives as unrelated IPv6 space."""
+    resolver's sentinel / a cloud-metadata answer arrives as unrelated IPv6 space. NAT64 is
+    intentionally not unwrapped here — see ``_classify_ip``."""
     if isinstance(ip, ipaddress.IPv6Address):
         if ip.ipv4_mapped is not None:
             return ip.ipv4_mapped
@@ -260,8 +271,23 @@ def _embedded_ipv4(ip: _IPAddress) -> _IPAddress:
     return ip
 
 
+def _classify_ip(ip: _IPAddress) -> _IPAddress:
+    """Address the SSRF policy should see. NAT64 well-known-prefix embeds IPv4 in the low 32 bits
+    (RFC 6052); mapped and translated wrappers are handled by ``_embedded_ipv4``. Fake-ip matching
+    stays on ``_embedded_ipv4`` alone so a declared sentinel block cannot excuse a NAT64 target."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_NETWORK:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return _embedded_ipv4(ip)
+
+
 def _is_always_blocked_ip(ip: _IPAddress) -> bool:
-    ip = _embedded_ipv4(ip)
+    """Metadata / link-local floor, including NAT64-embedded IPv4 (``64:ff9b::169.254.169.254``).
+
+    Enforced even when ``allow_private_urls`` skips ordinary private-IP blocking. The literal
+    ``_ALWAYS_BLOCKED_IPS`` set does not contain the NAT64-wrapped form, so the embedded IPv4
+    is what must be tested.
+    """
+    ip = _classify_ip(ip)
     return ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS)
 
 
@@ -274,10 +300,13 @@ def _is_declared_fake_ip(ip: _IPAddress) -> bool:
 
 
 def _is_blocked_ip(ip: _IPAddress) -> bool:
-    """Return True if the IP should be blocked for SSRF protection."""
-    # IPv4-wrapped IPv6 (mapped ``::ffff:x.x.x.x`` or translated ``::ffff:0:x.x.x.x``) is
-    # classified by its embedded IPv4.
-    ip = _embedded_ipv4(ip)
+    """Return True if the IP should be blocked for SSRF protection.
+
+    NAT64 well-known-prefix addresses are ``is_reserved`` as IPv6, which would false-positive on
+    public IPv4 targets. The decision is the embedded IPv4, so private, loopback, link-local,
+    metadata, CGNAT, and other non-global embedded addresses stay blocked.
+    """
+    ip = _classify_ip(ip)
     return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
             or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK)
 

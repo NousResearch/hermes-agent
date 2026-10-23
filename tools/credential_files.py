@@ -234,6 +234,28 @@ def _safe_skills_path(skills_dir: Path) -> str:
     return str(safe_dir)
 
 
+def map_skill_path_to_container(host_path: str, container_base: str = "/root/.hermes") -> Optional[str]:
+    """POSIX container path for a host path under a skill dir, else None.
+
+    Matches ``_skill_dir_roots`` (the original host dirs), not the mount entries: a
+    symlinked skills dir mounts from a sanitized temp copy whose path would never
+    prefix-match the skill dir ``skill_view`` hands out. Like the cache mapping,
+    falls back to comparing resolved paths so a symlinked home still maps."""
+    p = Path(host_path)
+    roots = list(_skill_dir_roots(container_base))
+    for host_dir, container_root in roots:
+        if p.is_relative_to(host_dir):
+            return posixpath.join(container_root, p.relative_to(host_dir).as_posix())
+    try:
+        real = p.resolve()
+        for host_dir, container_root in roots:
+            if real.is_relative_to(host_dir.resolve()):
+                return posixpath.join(container_root, real.relative_to(host_dir.resolve()).as_posix())
+    except (OSError, RuntimeError):
+        pass
+    return None
+
+
 def iter_skills_files(container_base: str = "/root/.hermes") -> list[dict[str, str]]:
     """Per-file entries for all skills files (for backends that upload individually)."""
     return [_mount(item, f"{container_root}/{item.relative_to(host_dir).as_posix()}")
@@ -355,6 +377,22 @@ def _terminal_backend() -> str:
     return (terminal_env("TERMINAL_ENV") or "local").strip().lower()
 
 
+def _agent_visible_base_for(backend: str) -> Optional[str]:
+    """Container base *backend* mounts/synces HERMES_HOME content under; None when host
+    paths stay correct (local/singularity auto-bind the host home; plugin backends
+    declare ``cache_path_base``). Shared by the cache and skill path translations."""
+    if backend in _HOME_RELATIVE_BACKENDS:
+        return "~/.hermes"
+    if backend not in ("docker", "modal"):
+        try:
+            from agent.terminal_env_registry import provider_flag
+            plugin_base = provider_flag(backend, "cache_path_base", None)
+        except ImportError:
+            plugin_base = None
+        return str(plugin_base) if plugin_base else None
+    return "/root/.hermes"
+
+
 def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.hermes") -> str:
     """Translate a host cache path to where the active backend (TERMINAL_ENV) sees it.
 
@@ -370,19 +408,28 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     (#76577 gap).
     """
     backend = _terminal_backend()
-    if backend in _HOME_RELATIVE_BACKENDS:
-        container_base = "~/.hermes"
-    elif backend not in ("docker", "modal"):
-        try:
-            from agent.terminal_env_registry import provider_flag
-            plugin_base = provider_flag(backend, "cache_path_base", None)
-        except Exception:
-            plugin_base = None
-        if not plugin_base:
-            return host_path
-        container_base = str(plugin_base)
-
+    base = _agent_visible_base_for(backend)
+    if base is None:
+        return host_path
+    container_base = base
     mapped = map_cache_path_to_container(host_path, container_base=container_base)
+    return mapped if mapped is not None else host_path
+
+
+def to_agent_visible_skill_path(host_path: str) -> str:
+    """Translate a host skill dir path to where the active backend (TERMINAL_ENV) sees it.
+
+    ``skill_view``'s ``skill_dir`` and ``${HERMES_SKILL_DIR}`` render host paths, but
+    container/synced backends run the skill's scripts where the dir is mounted or synced
+    in: ``/root/.hermes/skills`` (docker bind-mount, modal file-sync) or ``~/.hermes/skills``
+    (ssh/daytona/vercel_sandbox; shell-expanded remotely). Backends that see host paths
+    unchanged (local/singularity/plugin without a declared base) and paths outside every
+    skill dir (e.g. plugin-bundled skills, which are not mounted) keep the input as-is
+    (#135899)."""
+    base = _agent_visible_base_for(_terminal_backend())
+    if base is None:
+        return host_path
+    mapped = map_skill_path_to_container(host_path, container_base=base)
     return mapped if mapped is not None else host_path
 
 

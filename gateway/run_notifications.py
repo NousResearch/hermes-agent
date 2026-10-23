@@ -1235,10 +1235,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _deliver_completion_notification_scoped(
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
+        from gateway.session_local_recovery import restore_completion_route
         from gateway.wake import WakeNotAccepted
         from tools.process_registry_notifications import should_surface_notification
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
+        restore_completion_route(self, str(evt.get("session_key") or ""))
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False
@@ -1474,7 +1476,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from gateway.run import _format_gateway_process_notification
+        from gateway.session_local_recovery import restore_completion_route
         from tools.process_registry import process_registry as _pr
+        restore_completion_route(self, str(group[0].get("session_key") or ""))
         # API delivery does not start a model turn, so there is nothing to coalesce.
         # Keep each unit's stable identity with its row across partial delivery/retry.
         if group and group[0].get("origin_session_id"):

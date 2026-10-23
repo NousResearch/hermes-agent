@@ -645,7 +645,8 @@ class HostedRoomRuntime:
             if getattr(exc, "refused_before_submit", False):
                 # File preparation refused work that never started; no retry can change it.
                 self._settle_failure_if_current(attempt, exc)
-            elif submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            elif (submit_attempted and not bool(getattr(exc, "ambiguous", False))
+                    and bool(getattr(exc, "not_admitted", False))):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:

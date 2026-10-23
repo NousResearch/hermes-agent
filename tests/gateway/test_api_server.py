@@ -71,6 +71,22 @@ class TestRedactApiErrorText:
     def test_limit_truncates_after_redaction(self):
         assert len(_redact_api_error_text("x" * 500, limit=50)) == 50
 
+    def test_folds_newlines_to_spaces(self):
+        # #133848: aiohttp refuses header values containing control characters
+        # ("Forbidden control character detected in headers"), and this text is
+        # written into the X-Hermes-Error response header verbatim.
+        out = _redact_api_error_text("reasons):\nModel blocked by guardrail")
+        assert out == "reasons): Model blocked by guardrail"
+
+    def test_no_control_characters_survive(self):
+        out = _redact_api_error_text("a\r\nb\rc\nd\te\x00f\x7fg\x1bh")
+        assert not [c for c in out if ord(c) < 0x20 or ord(c) == 0x7F]
+
+    def test_limit_applies_to_folded_text(self):
+        out = _redact_api_error_text("x" * 100 + "\n" + "y" * 100, limit=50)
+        assert len(out) == 50
+        assert "\n" not in out
+
 
 # ---------------------------------------------------------------------------
 # ResponseStore

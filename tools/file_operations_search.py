@@ -706,14 +706,14 @@ class SearchMixin:
 
         escaped_root = self._escape_shell_arg(root)
         probe = self._exec(
-            f"git -C {escaped_root} rev-parse --is-inside-work-tree >/dev/null 2>&1",
+            f"git -c core.fsmonitor=false -C {escaped_root} rev-parse --is-inside-work-tree >/dev/null 2>&1",
             timeout=10,
         )
         if probe.exit_code != 0:
             return paths
 
         result = self._exec(
-            f"git -C {escaped_root} check-ignore --stdin",
+            f"git -c core.fsmonitor=false -C {escaped_root} check-ignore --stdin",
             timeout=10,
             stdin_data="\n".join(paths),
         )

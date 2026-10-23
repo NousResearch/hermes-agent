@@ -39,6 +39,7 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
+_PEER_RUN_ENDED = frozenset({"completed", "failed", "interrupted", "cancelled"})
 logger = logging.getLogger(__name__)
 
 
@@ -589,16 +590,21 @@ class HostedRoomService:
 
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
+        """Stop the room's work; the count leaves out a deferred turn on another gateway that its
+        gateway has not confirmed stopped (``_stop_deferred_peer``): it stays deferred."""
         gateway_id, epoch = self._owned_authority(room_id)
         hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
-        pending = 0
+        pending = unconfirmed = 0
         with self._policy_lock:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
                 for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)}
             for task in tasks.values():
+                if task["status"] == "deferred" and not self._stop_deferred_peer(room_id, task):
+                    unconfirmed += 1
+                    continue
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
                 result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
@@ -607,7 +613,34 @@ class HostedRoomService:
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
-        return len(tasks)
+        return len(tasks) - unconfirmed
+
+    def _stop_deferred_peer(self, room_id: str, task: Mapping[str, Any]) -> bool:
+        """Whether a deferred task may be cancelled here: always for a member on this gateway. For a
+        member on another gateway, only once that gateway answers that the exact run this home holds
+        a receipt for has ended. Without a receipt nothing is sent: the admission is uncertain, and
+        replaying it to find the run could start it. Deferral freed the room, so it is not held."""
+        member = str(task["payload"].get("target_member_id") or task["payload"].get("target_profile") or "")
+        if not self._member_is_peer(room_id, member):
+            return True
+        route, client = self.peer_routes.get((room_id, member)), self.peer_clients.get((room_id, member))
+        stop, bind_scope = _hook(client, "stop_receipt"), _hook(client, "bind_room_scope")
+        if route is None or stop is None:
+            return False
+        room = self._room(room_id)
+        try:
+            if bind_scope is not None:
+                bind_scope(
+                    room_id=room_id, home_install_id=route.home_install_id,
+                    authority_gateway_id=str(room["authority_gateway_id"]),
+                    authority_epoch=int(room["authority_epoch"]), member_id=route.member_id,
+                    target_install_id=route.target_install_id, target_profile=route.target_profile)
+            result = stop(task_id=task["identity"].task_id,
+                          execution_generation=int(task["execution_generation"]), grant=route.grant)
+        except PeerRunsHTTPError as exc:
+            self.runtime._record_error(f"stop of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
+            return False
+        return result is not None and str(result.get("status") or "") in _PEER_RUN_ENDED
 
     def retry_room_task(
         self, room_id: str, *, task_id: str, member_id: str | None = None,

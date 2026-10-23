@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { fetchVoiceClientConfigFor } from '@/lib/voice-client-direct'
 import { type DictationStreamSession, openDictationStream } from '@/lib/voice-stream'
+import { stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -18,6 +19,10 @@ interface VoiceRecorderOptions {
   onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   focusInput: () => void
   onTranscript: (text: string) => void
+  /** The composer's active draft scope (session key or fresh-draft scope).
+   *  A take recovered from a navigation teardown (#136410) lands its
+   *  transcript in this scope's draft, so the recording session keeps it. */
+  draftScope?: null | string
 }
 
 /**
@@ -37,7 +42,8 @@ export function useVoiceRecorder({
   maxRecordingSeconds,
   onTranscribeAudio,
   focusInput,
-  onTranscript
+  onTranscript,
+  draftScope
 }: VoiceRecorderOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
@@ -59,6 +65,14 @@ export function useVoiceRecorder({
   // unmount clears it, so a warm-up or transcript settling afterwards cannot
   // transcribe, insert text or move focus.
   const dictationRef = useRef<Dictation | null>(null)
+  // #136410 recovery state. `transcribingRef` says the in-flight stop() has
+  // already submitted the clip, so the unmount recovery must not submit it a
+  // second time; `recoveredRef` says the recovery path owns the transcript
+  // landing, so the in-flight stop() discards without stashing.
+  const transcribingRef = useRef(false)
+  const recoveredRef = useRef(false)
+  const draftScopeRef = useRef(draftScope)
+  draftScopeRef.current = draftScope
 
   const clearTimers = () => {
     if (intervalRef.current) {
@@ -72,6 +86,66 @@ export function useVoiceRecorder({
     }
   }
 
+  // Landing spot for a recovered transcript: the recording session's draft,
+  // never a torn-down editor and never another session. Existing draft text
+  // and attachments are preserved. One owner per dictation.
+  const stashRecoveredTranscript = (text: string) => {
+    if (recoveredRef.current) {
+      return
+    }
+
+    recoveredRef.current = true
+
+    const scope = draftScopeRef.current
+    const existing = takeSessionDraft(scope)
+    const merged = existing.text ? `${existing.text}\n${text}` : text
+
+    stashSessionDraft(scope, merged, existing.attachments)
+  }
+
+  // Navigation (Settings, a pane switch) tears the composer down while the
+  // user is still talking. The take survives in the mic recorder; finishing
+  // the transcription off-screen and stashing the text keeps the speech from
+  // being silently lost (#136410). Best-effort by design: there is no UI left
+  // to notify, a failure loses the take exactly as the old hard cleanup did.
+  const recoverOnUnmount = async (dictation: Dictation) => {
+    if (transcribingRef.current) {
+      // The in-flight stop() owns this take and lands its own transcript.
+      return
+    }
+
+    let take: Awaited<ReturnType<typeof handle.stop>> = null
+
+    try {
+      take = await handle.stop()
+    } catch {
+      take = null
+    }
+
+    take ??= handle.recoverTake()
+
+    if (!take || !onTranscribeAudio) {
+      finish(dictation)
+
+      return
+    }
+
+    try {
+      await dictation.warmup
+
+      const transcript =
+        (await liveTranscript(dictation)) ?? (await onTranscribeAudio(take.audio, dictation.owner)).trim()
+
+      if (transcript) {
+        stashRecoveredTranscript(transcript)
+      }
+    } catch {
+      // No UI is mounted to notify; the take is lost as it always was.
+    } finally {
+      finish(dictation)
+    }
+  }
+
   useEffect(
     () => () => {
       clearTimers()
@@ -79,9 +153,10 @@ export function useVoiceRecorder({
       dictationRef.current = null
 
       if (dictation) {
-        void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
+        void recoverOnUnmount(dictation)
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/unmount only: a mid-session re-registration would fire the recovery outside a teardown
     []
   )
 
@@ -103,6 +178,7 @@ export function useVoiceRecorder({
     }
 
     setVoiceStatus('transcribing')
+    transcribingRef.current = true
 
     try {
       // Readiness first: let the mic-open warm-up settle before handing the
@@ -111,14 +187,28 @@ export function useVoiceRecorder({
       // and its budget is the lease request's own 180 s timeout.
       await dictation.warmup
 
-      if (!live()) {
+      if (!live() && dictationRef.current !== null) {
+        // Superseded by a newer dictation: leave the new one alone entirely.
+        finish(dictation)
+
         return
       }
+      // `live()` false with a cleared ref means the composer unmounted while
+      // the barrier held: keep going — the transcript lands in the recording
+      // session's draft below, never in a torn-down editor (#136410).
 
       const transcript =
         (await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim()
 
       if (!live()) {
+        // Superseded or torn down: only a teardown lands the text, and only
+        // under the recording session's draft scope.
+        if (dictationRef.current === null && transcript) {
+          stashRecoveredTranscript(transcript)
+        }
+
+        finish(dictation)
+
         return
       }
 
@@ -130,8 +220,13 @@ export function useVoiceRecorder({
     } catch (error) {
       if (live()) {
         notifyError(error, voiceCopy.transcriptionFailed)
+      } else if (dictationRef.current === null) {
+        // Torn down with no recovery owner: still release the lease we hold.
+        finish(dictation)
       }
     } finally {
+      transcribingRef.current = false
+
       if (live()) {
         finish(dictation)
         setVoiceStatus('idle')
@@ -187,6 +282,10 @@ export function useVoiceRecorder({
       // Fire-and-forget for the MIC UX — but keep the promise: stop() awaits
       // it as the readiness barrier before transcription (see above).
       dictationRef.current = { live: stream.session, owner, warmup: syncSttLease(VOICE_INPUT_LEASE, true, owner) }
+      // A fresh take starts with clean recovery state: nothing from the
+      // previous dictation may claim or land its transcript.
+      transcribingRef.current = false
+      recoveredRef.current = false
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')

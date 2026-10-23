@@ -38,6 +38,9 @@ interface UseComposerVoiceArgs {
   busy: boolean
   clearDraft: () => void
   disabled: boolean
+  /** The composer's active draft scope (session key or fresh-draft scope);
+   *  a dictation take recovered from a navigation teardown lands here. */
+  draftScope?: null | string
   focusInput: () => void
   insertText: (text: string) => void
   maxRecordingSeconds: number
@@ -62,6 +65,7 @@ export function useComposerVoice({
   busy,
   clearDraft,
   disabled,
+  draftScope,
   focusInput,
   insertText,
   maxRecordingSeconds,
@@ -111,6 +115,7 @@ export function useComposerVoice({
   }, [sessionId])
 
   const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
+    draftScope,
     focusInput,
     maxRecordingSeconds,
     onTranscript: insertText,

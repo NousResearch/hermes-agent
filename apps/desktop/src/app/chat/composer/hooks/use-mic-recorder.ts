@@ -43,6 +43,10 @@ interface MicRecorderHandle {
   start: (options?: MicRecorderOptions) => Promise<void>
   stop: () => Promise<MicRecording | null>
   cancel: () => void
+  /** The take parked by the unmount recovery (or a settled stop), consumed
+   *  once. `null` when there is nothing parked — the caller then lost the
+   *  take exactly as before the recovery existed. */
+  recoverTake: () => MicRecording | null
 }
 
 /** Recorder + live-start mic failures → the same friendly copy: a DOMException
@@ -99,6 +103,17 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
+  // #136410: a take that outlives its component (navigation tore the composer
+  // down mid-recording). Parked on every assembled take, consumed once by a
+  // late caller that still wants to transcribe it.
+  const recoveredTakeRef = useRef<MicRecording | null>(null)
+
+  const recoverTake = (): MicRecording | null => {
+    const take = recoveredTakeRef.current
+    recoveredTakeRef.current = null
+
+    return take
+  }
 
   const cleanup = () => {
     if (animationRef.current) {
@@ -121,7 +136,22 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     silenceTriggeredRef.current = false
   }
 
-  useEffect(() => () => cleanup(), [])
+  // Navigation tears the component down mid-take: route the stop through
+  // onstop instead of dropping the take. onstop assembles it, releases the
+  // tracks/contexts and parks it for a late recovery (#136410). A recorder
+  // that is already inactive has nothing recoverable; clean up as before.
+  useEffect(
+    () => () => {
+      const recorder = recorderRef.current
+
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop()
+      } else {
+        cleanup()
+      }
+    },
+    []
+  )
 
   const startMeter = (stream: MediaStream, options: MicRecorderOptions) => {
     const audioWindow = window as Window & { webkitAudioContext?: BrowserAudioContext }
@@ -307,6 +337,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     }
 
     chunksRef.current = []
+    // A new take invalidates whatever a previous unmount parked.
+    recoveredTakeRef.current = null
     streamRef.current = stream
     recorderRef.current = recorder
     heardSpeechRef.current = false
@@ -340,12 +372,18 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         return
       }
 
-      resolver?.({
+      const take: MicRecording = {
         audio: new Blob(chunks, { type: recordingType }),
         durationMs,
         heardSpeech,
         meterFailed
-      })
+      }
+
+      // Park before resolving: a take assembled after an unmount has no
+      // caller waiting, and even a resolved take can be discarded by a flow
+      // that notices the teardown too late. The parked copy is consume-once.
+      recoveredTakeRef.current = take
+      resolver?.(take)
     }
 
     recorder.onerror = event => {
@@ -393,7 +431,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     resolver?.(null)
   }
 
-  const handle: MicRecorderHandle = { start, stop, cancel }
+  const handle: MicRecorderHandle = { recoverTake, start, stop, cancel }
 
   return { handle, level, recording }
 }

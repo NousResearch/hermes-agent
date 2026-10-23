@@ -1,0 +1,42 @@
+name: modernisation-engine
+repo: https://github.com/Sahil-SS9/modernisation-engine
+sha: fa35d9667283ec9c5246257a9ee5b076312fef7d
+description: "Controlled migration engine: maps an existing codebase, turns the behaviour that must survive into reviewable contracts, prepares a separate candidate and records old/new evidence before any production change. Disclosure - assessment is source-read-only and never imports or runs repository code; untrusted workloads run in disposable, resource-limited, network-disabled rootless containers and execution stays unavailable without trusted operator configuration plus a fresh one-use owner grant; no host home, real credentials or Docker socket is mounted into a candidate; job records live in a private local data directory; no third-party network calls, no telemetry and no self-updater."
+maintainer: Sahil-SS9
+tier: community
+category: tools
+docs_url: https://github.com/Sahil-SS9/modernisation-engine
+version: "0.0.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - modernise_status
+    - modernise_assess
+    - modernise_inventory
+    - modernise_plan
+    - modernise_record
+    - modernise_protocol
+    - modernise_response_protocol
+    - modernise_schema
+    - modernise_contract
+    - modernise_prepare
+    - modernise_attempts
+    - modernise_review_request
+    - modernise_review
+    - modernise_rule_review_request
+    - modernise_rule_review
+    - modernise_rule_reviews
+    - modernise_proposal
+    - modernise_build
+    - modernise_run
+    - modernise_resume
+    - modernise_control_request
+    - modernise_cancel
+    - modernise_recover
+    - modernise_recover_build
+    - modernise_recipe
+    - modernise_compare
+    - modernise_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

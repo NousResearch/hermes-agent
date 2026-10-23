@@ -607,9 +607,21 @@ async def pty_ws(ws: WebSocket) -> None:
     registry_resume = raw_resume
     if raw_resume and env:
         registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
+    holder_pid = None
     if attach_token is not None and (registry_resume or profile):
-        # Key explicit resumes on their canonical target, never the active-session fallback.
-        attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
+        holder_pid = _lease_holder_pid(registry_resume, registry_home=(env or {}).get("HERMES_HOME"))
+        # Key explicit resumes on their canonical target, never the active-session
+        # fallback — except when this tab already owns the terminal running that
+        # lineage: a same-tab reattach re-resolves the target to the newest leaf,
+        # which an in-flight turn may have advanced since the PTY spawned. Keying
+        # the reattach on the advanced leaf instead of the owned PTY sends the
+        # close-paths below after it and hard-interrupts the running turn (#136713).
+        attach_token = (
+            PTY_REGISTRY.live_key_for_token(
+                raw_attach_token, profile=profile or "", holder_pid=holder_pid
+            )
+            or f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
+        )
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)
@@ -643,7 +655,6 @@ async def pty_ws(ws: WebSocket) -> None:
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
         await PTY_REGISTRY.close_other_sessions(raw_attach_token, keep_key=attach_token)
-        holder_pid = _lease_holder_pid(registry_resume, registry_home=(env or {}).get("HERMES_HOME"))
         await PTY_REGISTRY.close_orphaned_sessions(registry_resume, keep_key=attach_token, holder_pid=holder_pid)
         session, _created = await PTY_REGISTRY.attach_or_spawn(
             attach_token,

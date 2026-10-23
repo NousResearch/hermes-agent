@@ -89,9 +89,9 @@ def copy_regular_files(src: Path, dst: Path) -> int:
     """Copy the regular files under ``src`` into ``dst``, skipping symlinks; return the count.
 
     Used on the *export* side so a symlink planted in an attachments or logs tree can't pull an
-    arbitrary file into the archive. A missing ``src`` copies nothing.
+    arbitrary file into the archive. A missing or symlinked ``src`` copies nothing.
     """
-    if not src.is_dir():
+    if src.is_symlink() or not src.is_dir():
         return 0
     copied = 0
     for entry in sorted(src.rglob("*")):

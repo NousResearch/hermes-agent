@@ -334,7 +334,12 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
-        _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+        # A disabled MCP server name also disables ``mcp-<name>``: when a toolset owns the bare name it
+        # no longer reaches the server's tools (``tools_config.mcp_server_toolset_key``).
+        disabled = list(disabled_toolsets)
+        disabled += [f"mcp-{name}" for name in disabled_toolsets
+                     if not name.startswith("mcp-") and f"mcp-{name}" not in disabled and validate_toolset(f"mcp-{name}")]
+        _apply_toolset_selection(tools, disabled, quiet_mode, disable=True)
     return tools
 
 

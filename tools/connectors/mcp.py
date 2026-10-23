@@ -394,7 +394,9 @@ def adopt_late_connections(agent: Any) -> list[str]:
         _LATE_ATTEMPTS.pop(key, None)
     enabled = getattr(agent, "enabled_toolsets", None)
     if adopted and enabled is not None and "no_mcp" not in enabled:
-        agent.enabled_toolsets = [*enabled, *(n for n in adopted if n not in enabled)]
+        from hermes_cli.tools_config import mcp_server_toolset_key
+        keys = map(mcp_server_toolset_key, adopted)
+        agent.enabled_toolsets = [*enabled, *(k for k in keys if k not in enabled)]
     return adopted
 
 

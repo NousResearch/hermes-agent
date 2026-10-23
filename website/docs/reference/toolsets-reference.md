@@ -133,7 +133,7 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-github"]
 ```
 
-This creates a `mcp-github` toolset you can reference in `--toolsets` or platform configs. The bare server name (`github`) works as an alias. If a server is named like a built-in toolset (`browser`, `web`), that name resolves to the built-in tools **plus** the server's `mcp__<server>__*` tools; neither side shadows the other.
+This creates a `mcp-github` toolset you can reference in `--toolsets` or platform configs. The bare server name (`github`) works as an alias. When Hermes adds an enabled server to a platform's selection, it uses `mcp-<server>` whenever a built-in or plugin toolset owns the bare name, so adding the server never enables that toolset, and `no_mcp` or a list naming other servers keeps the server out. If you select a built-in toolset's name yourself (`browser`, `web`), it resolves to the built-in tools **plus** the same-named server's `mcp__<server>__*` tools; a plugin toolset's name (`homeassistant`, from the Home Assistant plugin) selects only the plugin's tools. A server's name in `agent.disabled_toolsets` disables the server as well as any toolset of that name.
 
 ### Plugin toolsets
 

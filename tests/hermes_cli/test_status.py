@@ -248,7 +248,7 @@ def test_show_status_lists_live_sessions_without_a_cap(monkeypatch, capsys, tmp_
     )
     assert lease is not None and message is None
 
-    show_status(SimpleNamespace(all=False, deep=False))
+    show_status(SimpleNamespace(full=True, deep=False))
 
     output = capsys.readouterr().out
     assert "Live:" in output
@@ -276,7 +276,7 @@ def test_show_status_still_reports_slots_when_a_cap_is_set(monkeypatch, capsys, 
     )
     assert lease is not None and message is None
 
-    show_status(SimpleNamespace(all=False, deep=False))
+    show_status(SimpleNamespace(full=True, deep=False))
 
     output = capsys.readouterr().out
     assert "1/2 in use" in output

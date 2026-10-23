@@ -409,6 +409,10 @@ def _build_hermes_tools_mcp_entry() -> dict:
         "command": sys.executable,
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
         "env": env,
+        "tools": {
+            "skills_list": {"approval_mode": "approve"},
+            "skill_view": {"approval_mode": "approve"},
+        },
         # Generous timeouts — browser_navigate or delegate_task can take a while.
         "startup_timeout_sec": 30.0,
         "tool_timeout_sec": 600.0}

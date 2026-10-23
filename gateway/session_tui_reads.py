@@ -175,13 +175,17 @@ async def context_breakdown(connection, ref, params) -> dict:
 
 def _stored_breakdown(row, conversation, usage) -> dict:
     """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin, beside its
-    stored usage. A legacy name-only pin has no schemas to measure."""
+    stored usage. Tools are measured as the next agent restores them (``pinned_tool_defs``)."""
     from agent.context_breakdown import stored_context_breakdown
+    from tools.mcp_tool_agent import pinned_tool_defs
     breakdown = {'categories': [], 'estimated_total': 0}
     # No prompt until an agent first built one: nothing to measure yet, the contract's pre-build shape.
     if prompt := row.get('system_prompt'):
-        pin = json.loads(row.get('tool_names') or 'null')
-        breakdown = stored_context_breakdown(prompt, pin['tools'] if isinstance(pin, dict) else [], conversation)
+        try:
+            pin = json.loads(row.get('tool_names') or 'null')
+        except (TypeError, ValueError):
+            pin = None  # a pin hash whose row was swept resolves to itself
+        breakdown = stored_context_breakdown(prompt, pinned_tool_defs(pin), conversation)
     return {**breakdown, 'context_max': int(usage.get('context_max') or 0),
             'context_percent': int(usage.get('context_percent') or 0), 'context_used': int(usage.get('context_used') or 0),
             'context_estimated': bool(usage.get('context_estimated', False)),

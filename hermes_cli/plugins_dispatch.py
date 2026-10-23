@@ -173,9 +173,11 @@ def _hook_call_identity(kwargs: dict[str, Any], hook_name: str = "") -> Optional
     gate key: they are different work, and treating the second as a duplicate drops the
     hook as if a callback had timed out (upstream #98382). The identity is already in the
     payload; nothing new is plumbed. Deliberately not ``api_request_id`` — one API request
-    carries many tool calls, which would re-collapse the keys.
+    carries many tool calls, which would re-collapse the keys. ``session_id`` is the last
+    fallback: session lifecycle hooks carry neither call id, and parallel subagents starting
+    at once are different sessions, not a duplicate of the first.
     """
-    for field in _HOOK_CALL_IDENTITY_FIELDS.get(hook_name, ("tool_call_id", "turn_id")):
+    for field in _HOOK_CALL_IDENTITY_FIELDS.get(hook_name, ("tool_call_id", "turn_id", "session_id")):
         value = kwargs.get(field)
         if isinstance(value, str) and value:
             return value

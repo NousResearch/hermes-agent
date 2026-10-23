@@ -1769,6 +1769,12 @@ class _AnthropicCompletionsAdapter:
                 **(anthropic_kwargs.get("extra_headers") or {}),
                 **kwargs["extra_headers"],
             }
+        # Forward the per-task auxiliary timeout like the Codex adapter does; messages.create()
+        # and messages.stream() both accept a per-call ``timeout``. Without it the request runs
+        # under the client's 900s default and ``auxiliary.<task>.timeout`` never fires.
+        timeout = kwargs.get("timeout")
+        if timeout is not None:
+            anthropic_kwargs["timeout"] = timeout
         # response_format: top-level gets the same translation as the extra_body form; when both
         # are present the extra_body form wins. Passthrough excludes ``reasoning``/``response_format``
         # (already TRANSLATED to native fields — raw would 400 on strict gateways) and ``_`` Hermes plumbing.

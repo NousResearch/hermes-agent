@@ -334,9 +334,11 @@ def test_resolver_acquires_a_pool_lease_for_a_pool_enabled_repo(kanban_home, tmp
     assert not (repo / ".worktrees" / tid).exists()
 
 
-def test_resolver_raises_for_a_repo_without_config(
-    kanban_home, tmp_path
+def test_resolver_keeps_the_legacy_path_for_a_repo_without_config(
+    kanban_home, tmp_path, caplog
 ):
+    """No treehouse.toml means the repo's single worktree system is the legacy
+    one; the dispatcher logs the reason instead of failing the card."""
     repo = _make_repo(tmp_path)
     with kbc.connect() as conn:
         tid = kb.create_task(
@@ -346,11 +348,12 @@ def test_resolver_raises_for_a_repo_without_config(
         task = kb.get_task(conn, tid)
         assert task is not None
 
-    with pytest.raises(kbth.TreehouseRequired) as exc_info:
-        kbw._resolve_worktree_workspace(task)
+    with caplog.at_level("INFO", logger="hermes_cli.kanban_db"):
+        workspace, branch = kbw._resolve_worktree_workspace(task)
 
-    assert f"has no {kbth.CONFIG_FILENAME}" in str(exc_info.value)
-    assert "exclusively through treehouse" in str(exc_info.value)
+    assert workspace == (repo / ".worktrees" / tid).resolve()
+    assert branch == f"wt/{tid}"
+    assert f"has no {kbth.CONFIG_FILENAME}" in caplog.text
 
 
 def test_resolver_moves_a_legacy_worktree_path_onto_the_pool(kanban_home, tmp_path):

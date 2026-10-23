@@ -180,8 +180,9 @@ def _insert_decomposed_child(
     inherits only when kinds match (a 'dir' child must not point at the
     root's worktree) and NEVER for worktrees — siblings dispatch concurrently
     and one shared checkout would put them all on the first sibling's branch
-    with no lock; leaving it unset makes dispatch materialize a fresh
-    ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
+    with no lock; leaving it unset makes dispatch acquire a workspace per
+    child from the board anchor (a treehouse pool slot when the repo has a
+    ``treehouse.toml``, else ``<repo>/.worktrees/<child-id>``).
     """
     from hermes_cli.kanban_db import (
         _new_task_id, _canonical_assignee, _append_event,

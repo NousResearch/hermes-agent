@@ -875,19 +875,24 @@ def _anchored_pool_workspace(
 ) -> tuple[Path, str]:
     """Acquire this card's workspace from the repo's treehouse pool.
 
-    A repo MUST opt in with ``<repo>/treehouse.toml``; without one this raises
-    rather than falling back to the legacy ``<repo>/.worktrees/<task-id>`` path.
-    The legacy path is completely blocked to prevent split-brain regrowth.
-    At ``max_trees`` the pool raises :class:`kanban_treehouse.PoolExhausted` -
-    the card waits for a slot instead of growing a worktree outside the pool.
+    A repo opts in with ``<repo>/treehouse.toml``; when it has one the pool is
+    the only worktree provider and a legacy ``.worktrees`` target is refused
+    (see :func:`_ensure_git_worktree`). Without one the repo keeps its single
+    legacy ``<repo>/.worktrees/<task-id>`` layout and the reason is logged, so
+    the uncapped path is never silent. At ``max_trees`` the pool raises
+    :class:`kanban_treehouse.PoolExhausted` - the card waits for a slot instead
+    of growing a worktree outside the pool.
     """
     config = _kbth.read_pool_config(repo_root)
     if config is None:
-        raise TreehouseRequired(
-            f"kanban: {repo_root} has no {_kbth.CONFIG_FILENAME}; "
-            f"worktrees are acquired exclusively through treehouse. "
-            f"Add a treehouse.toml to opt in (see treehouse documentation)."
+        _kb._log.info(
+            "kanban: %s has no %s; using git worktree add "
+            "<repo>/.worktrees/%s (uncapped, never recycled)",
+            repo_root, _kbth.CONFIG_FILENAME, task_id,
         )
+        target = repo_root / ".worktrees" / task_id
+        _ensure_git_worktree(repo_root, target, branch_name)
+        return target, branch_name
     lease = _kbth.acquire_lease(config, task_id, branch_name)
     return lease.path, branch_name
 

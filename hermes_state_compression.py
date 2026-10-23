@@ -176,6 +176,69 @@ _UNSTAMPED_EDGE_CHILD_SQL = f"""
 {_non_continuation_child_sql("child.", "parent.id")}"""
 
 
+def _projected_tip_source_sql(session_alias: str = "s") -> str:
+    """SQL expression for a listable session's projected live-tip source.
+
+    Keep the child eligibility and ordering in lockstep with
+    :meth:`SessionDB.get_compression_tip`. The recursive walk is bounded and
+    cycle-safe so malformed lineage cannot make a listing/count query loop.
+    """
+    return f"""
+        COALESCE(NULLIF((
+            WITH RECURSIVE
+            ranked_children(parent_id, child_id) AS (
+                SELECT parent_id, child_id
+                FROM (
+                    SELECT
+                        parent.id AS parent_id,
+                        child.id AS child_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY parent.id
+                            ORDER BY
+                                CASE
+                                    WHEN child.end_reason = 'compression' THEN 0
+                                    WHEN child.ended_at IS NULL THEN 1
+                                    ELSE 2
+                                END,
+                                {_sql_session_last_active("child")} DESC,
+                                child.started_at DESC,
+                                child.id DESC
+                        ) AS child_rank
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+                      AND COALESCE(child.source, '') != 'tool'
+                )
+                WHERE child_rank = 1
+            ),
+            tip(id, depth, visited) AS (
+                SELECT {session_alias}.id, 0, ',' || {session_alias}.id || ','
+                UNION ALL
+                SELECT
+                    child.child_id,
+                    tip.depth + 1,
+                    tip.visited || child.child_id || ','
+                FROM tip
+                JOIN ranked_children child ON child.parent_id = tip.id
+                WHERE tip.depth < {_CHAIN_CAP}
+                  AND INSTR(tip.visited, ',' || child.child_id || ',') = 0
+            )
+            SELECT leaf.source
+            FROM tip
+            JOIN sessions leaf ON leaf.id = tip.id
+            ORDER BY
+                tip.depth DESC,
+                {_sql_session_last_active("leaf")} DESC,
+                leaf.started_at DESC,
+                leaf.id DESC
+            LIMIT 1
+        ), ''), 'cli')
+    """
+
+
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 

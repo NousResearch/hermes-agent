@@ -224,7 +224,8 @@ def test_canary_publication_follows_its_claims_green_policy_and_never_touches_st
     # The stable publication pass (stable heads, stable/latest aliases, Store commit) is stable-only;
     # the canary aliases move only for a canary whose image was pushed.
     complete = jobs["complete"]["steps"]
-    canary_needs = {"admit": admit, "publish-docker": {"result": "success"}}
+    canary_needs = {"admit": admit, "publish-docker": {"result": "success"},
+                    "publish-canary": {"result": "success"}}
     for step in complete:
         name = step.get("name", "")
         if name.startswith(("Reconcile ordered", "Set up Docker Buildx for ordered", "Log in to Docker Hub for ordered")):
@@ -232,8 +233,14 @@ def test_canary_publication_follows_its_claims_green_policy_and_never_touches_st
             assert gate(step["if"], {}, {"admit": {"result": "success", "outputs": {"policy": "stable"}}},
                         job_if=False), name
         if "canary aliases" in name or "canary Docker aliases" in name:
-            # Like the bundles, they follow the canary whatever the gate step said.
+            # They follow the published canary: a red suite the canary's claim does not wait for
+            # (the gate step failing) still moves them, ...
             assert gate(step["if"], {}, canary_needs, job_if=False, failed=True), name
+            # ... but never ahead of the canary itself. publish-canary is skipped when a
+            # require-green claim's acceptance is red, a package failed, or the lanes are narrowed.
+            for held in ("skipped", "failure", "cancelled"):
+                assert not gate(step["if"], {}, {**canary_needs, "publish-canary": {"result": held}},
+                                job_if=False, failed=True), (name, held)
             assert not gate(step["if"], {}, {**canary_needs, "publish-docker": {"result": "failure"}},
                             job_if=False), name
 

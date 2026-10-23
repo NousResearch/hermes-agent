@@ -87,3 +87,34 @@ def test_dpkg_orders_canary_and_numeric_versions():
     versions = list(map(deb_version_for_tag, tags))
     for earlier, later in itertools.pairwise(versions):
         subprocess.run(["dpkg", "--compare-versions", earlier, "lt", later], check=True)
+
+
+def _release_commit_version_heredoc() -> str:
+    """The Python build_deb.sh runs to stamp the payload version on a pinned-commit build (the path
+    the release candidate job takes: --tag plus --release-commit)."""
+    script = (SCRIPT.parent / "build_deb.sh").read_text(encoding="utf-8")
+    opener = 'PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$TAG" <<\'PY\'\n'
+    assert script.count(opener) == 1
+    body = script.split(opener, 1)[1]
+    return body[:body.index("\nPY\n")] + "\n"
+
+
+@pytest.mark.parametrize("tag,version", [
+    ("v1.2.3", "1.2.3"),
+    ("canary.20261021T064100Z-v1.2.3", "1.2.3+canary.20261021T064100Z"),
+])
+def test_a_pinned_commit_build_stamps_the_tags_release_version(tag, version):
+    """The install stamp's base/display version is the tag's release version, never the tag with
+    its first character cut off (which turns a canary tag into 'anary.<stamp>-v1.2.3')."""
+    root = str(SCRIPT.parents[2])
+    result = subprocess.run([sys.executable, "-", root, root, "a" * 40, tag],
+                            input=_release_commit_version_heredoc(), capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == version
+
+
+def test_a_pinned_commit_build_refuses_a_malformed_tag():
+    root = str(SCRIPT.parents[2])
+    result = subprocess.run([sys.executable, "-", root, root, "a" * 40, "v1.2.3+canary.20261021T064100Z"],
+                            input=_release_commit_version_heredoc(), capture_output=True, text=True, check=False)
+    assert result.returncode != 0 and "malformed release tag" in result.stderr

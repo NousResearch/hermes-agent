@@ -3,7 +3,6 @@ import asyncio
 import hashlib
 from contextlib import nullcontext
 from pathlib import Path
-import threading
 
 from gateway.session_contract import SessionActor
 from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
@@ -27,8 +26,6 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
-        # Serializes a peer route's publication with Disband (session_group_peers.register).
-        self.peer_route_lock = threading.Lock()
         super().__init__(None, db_path=authority.db.db_path)
 
     def _make_rpc(self, server):

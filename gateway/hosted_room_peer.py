@@ -486,6 +486,16 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
     return payload
 
 
+def room_grant_hard_expiry(token: str, *, now: float | None = None) -> float:
+    """When a grant and every renewal of it are dead (its status horizon), read without the secret:
+    the home only schedules by it. An unreadable token counts as living the longest horizon."""
+    try:
+        claims = json.loads(_split_token(token)[0].decode("ascii"))
+        return float(claims.get("status_expires_at", claims["expires_at"]))
+    except (ValueError, KeyError, TypeError, AttributeError):  # grant/base64/JSON errors are ValueErrors
+        return clock(now) + MAX_STATUS_GRANT_TTL_SECONDS
+
+
 def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, leeway_seconds: float = 5 * 60) -> bool:
     """Read only grant timing to schedule refresh; trust is established by the target, not here."""
     try:

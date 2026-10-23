@@ -1304,106 +1304,51 @@ def test_registration_disk_failure_does_not_publish_live_route(
     assert "install-peer" not in service.peer_clients
 
 
-def test_room_route_revocation_is_remote_first_and_removes_local_state(
+def test_room_route_revocation_drops_local_state_and_pays_the_owed_revoke(
     tmp_path: Path,
 ):
     from gateway import hosted_room_links
 
     db = tmp_path / "state.db"
-    catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
-    )
-    route = PeerMemberRoute(
-        home_install_id=hosted_rooms.local_authority_gateway_id(),
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest=catalog.catalog_digest,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed.room.grant",
-    )
     peer = _FakePeerClient()
-    service = HostedRoomService(_server(), db_path=db)
-    service.register_peer_route(
-        room_id="room-1",
-        member_id="member-peer",
-        route=route,
-        client=peer,
-        target_url="https://peer.example.test",
-        catalog=catalog,
-    )
+    service = _peer_service(db, peer)
 
     assert service.revoke_room_routes("room-1") == 1
-    assert peer.revoked == ["signed.room.grant"]
     assert ("room-1", "member-peer") not in service.peer_routes
     assert hosted_room_links.load_room_links(db) == ()
+    assert service.retry_owed_revokes() == 1
+    assert peer.revoked == ["signed.room.grant"]
+    assert hosted_rooms.due_room_grant_revokes(db, limit=5, now=time.time() + 10**6) == []
 
 
-def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
+def test_failed_remote_revocation_stays_owed_and_is_retried(tmp_path: Path):
     from gateway import hosted_room_links
 
     db = tmp_path / "state.db"
-    catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
-    )
-    route = PeerMemberRoute(
-        home_install_id=hosted_rooms.local_authority_gateway_id(),
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest=catalog.catalog_digest,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed.room.grant",
-    )
-    service = HostedRoomService(_server(), db_path=db)
-    service.register_peer_route(
-        room_id="room-1",
-        member_id="member-peer",
-        route=route,
-        client=_UnavailableRevokePeerClient(),
-        target_url="https://peer.example.test",
-        catalog=catalog,
-    )
+    service = _peer_service(db, _UnavailableRevokePeerClient())
 
-    with pytest.raises(RuntimeError, match="offline during revocation"):
-        service.revoke_room_routes("room-1")
-    assert ("room-1", "member-peer") in service.peer_routes
-    assert len(hosted_room_links.load_room_links(db)) == 1
+    # The room's route goes at once; the revoke stays owed while its gateway is offline.
+    assert service.revoke_room_routes("room-1") == 1
+    assert ("room-1", "member-peer") not in service.peer_routes
+    assert hosted_room_links.load_room_links(db) == ()
+    assert service.retry_owed_revokes() == 0
+    owed, = hosted_rooms.due_room_grant_revokes(db, limit=5, now=time.time() + 10**6)
+    assert (owed["room_id"], owed["member_id"], owed["attempts"]) == ("room-1", "member-peer", 1)
+    assert "signed.room.grant" not in str(service.runtime.status()["last_error"])
 
 
 def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
     from gateway import hosted_room_links
 
     db = tmp_path / "state.db"
-    catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
-    )
-    route = PeerMemberRoute(
-        home_install_id=hosted_rooms.local_authority_gateway_id(),
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest=catalog.catalog_digest,
-        execution_policy_digest=catalog.execution_policy.policy_digest,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="expired.room.grant",
-    )
-    service = HostedRoomService(_server(), db_path=db)
-    service.register_peer_route(
-        room_id="room-1",
-        member_id="member-peer",
-        route=route,
-        client=_ExpiredRevokePeerClient(),
-        target_url="https://peer.example.test",
-        catalog=catalog,
-    )
+    service = _peer_service(db, _ExpiredRevokePeerClient(), grant="expired.room.grant")
 
     assert service.revoke_room_routes("room-1") == 1
     assert ("room-1", "member-peer") not in service.peer_routes
     assert hosted_room_links.load_room_links(db) == ()
+    # Its gateway no longer knows the grant: the owed revoke is settled.
+    assert service.retry_owed_revokes() == 1
+    assert hosted_rooms.due_room_grant_revokes(db, limit=5, now=time.time() + 10**6) == []
 
 
 def test_expired_grant_surfaces_needs_reauthorization_without_secret(

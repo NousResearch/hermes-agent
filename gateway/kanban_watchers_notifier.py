@@ -313,11 +313,7 @@ class _Collector:
             # Legacy rows predate the run_id stamp; ``get_run`` does ``int(run_id)``,
             # so a None would raise rather than miss. Skip them explicitly.
             run_id = getattr(event, "run_id", None)
-            if (
-                run_id is None
-                or event.kind != "completed"
-                or getattr(event, "task_id", None) != sub["task_id"]
-            ):
+            if run_id is None or event.kind != "completed":
                 continue
             try:
                 run = self.kb.get_run(conn, run_id)
@@ -549,15 +545,22 @@ def _fmt_completed(ev, n) -> tuple:
 
 
 def _fmt_review_requested(ev, n) -> tuple:
-    # Implementation done; task moved to the review lane. Carry the handoff
-    # into the wake turn like ``completed`` so the reviewer needn't re-read the board.
-    handoff = ""
-    wake_handoff = None
+    """Announce that review was requested — a lifecycle fact, not a review verdict.
+
+    The event's ``summary`` is worker-authored prose, and it reaches an external channel,
+    so it is never published: it may carry a credential, a private path, or a "merged"
+    claim this notifier cannot verify. Two separate channels are served here:
+
+    * the Human message names the native fact (review was requested) and a fixed pointer
+      to the task — it never asserts a review outcome, because none exists yet;
+    * ``wake_handoff`` still carries the run's own summary into the synthesized wake
+      turn, which is agent context for the reviewer/creator, not a publication.
+    """
     summary = _payload(ev, "summary")
-    if summary:
-        summary = str(summary)
-        handoff = f"\n{summary[:200]}"
-        wake_handoff = _first_line(summary, 200)
+    text = str(summary).strip() if summary is not None else ""
+    wake_handoff = _first_line(text, 200) if text else None
+    body = t("gateway.kanban.ping.completion.open_task", task_id=n.task_id)
+    handoff = f"\n{body}" if body else ""
     return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 

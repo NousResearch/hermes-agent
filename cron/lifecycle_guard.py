@@ -879,8 +879,15 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
-def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
-    """Yield the scripts the token at *index* executes, if any."""
+def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, explicit_exec_form)`` for the scripts the token at *index* executes.
+
+    *explicit_exec_form* marks references the shell reaches through an execution keyword or an
+    explicit relative execution path (``. X``, ``source X``, ``sh X``, ``./X``) — the forms the
+    content-derived gate (``_plausible_script_candidate``) must never silence. Plain path-shaped
+    executables (``/opt/tool/bin/x``) are the ambiguous ones: at depth 0 the agent typed them;
+    deeper in the walk they are only text derived from some file's content (#98801).
+    """
     if index >= len(segment):
         return
     executable = segment[index]
@@ -888,7 +895,7 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in {".", "source"}:
         if len(segment) > index + 1:
-            yield from _resolved_or_nothing(segment[index + 1], cwd)
+            yield from ((path, True) for path in _resolved_or_nothing(segment[index + 1], cwd))
         return
 
     if executable_name in _SHELL_EXECUTABLES:
@@ -909,19 +916,22 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
                 continue
             break
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
-            yield from _resolved_or_nothing(arguments[arg_index], cwd)
+            yield from ((path, True) for path in _resolved_or_nothing(arguments[arg_index], cwd))
         return
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
     if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+        # ``./X`` is an explicit execution path the shell resolves against the current directory —
+        # treated like ``sh X`` / ``source X``; everything else path-shaped is a bare candidate.
+        yield from ((path, executable.startswith("./")) for path in _resolved_or_nothing(executable, cwd))
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
-    original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
-    a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
+def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, explicit_exec_form)`` for scripts executed directly or through a POSIX shell.
+    Each segment is read at the original token AND at the peeled wrapper target — additive on
+    purpose: peeling must never REMOVE a reference (a local ``./timeout`` is a script, not the
+    coreutils wrapper)."""
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
@@ -950,6 +960,44 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
             if argument in _SHELL_COMMAND_FLAGS:
                 yield arguments[arg_index + 1]
                 break
+
+
+# --- content-derived candidate gate -----------------------------------------------------------
+
+# Known POSIX script suffixes: a path ending in one is a script by convention, no sniff needed.
+_SCRIPT_SUFFIXES = frozenset({".sh", ".bash", ".zsh"})
+
+
+def _sniff_shebang(path: Path) -> bool:
+    """True when *path* opens locally and its first two bytes are ``#!``. Two bytes, never the
+    bounded-read pipeline of ``_read_referenced_script`` — this runs on content-derived candidates
+    the full read (and any remote roundtrip) would otherwise be wasted on. Directories fail the
+    read (EISDIR), missing files fail the open, so both come back "not a script"."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except (OSError, ValueError):
+        return False
+    try:
+        return os.read(descriptor, 2) == b"#!"
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+
+
+def _plausible_script_candidate(path: Path, *, exec_form: bool) -> bool:
+    """Whether a referenced-path candidate plausibly is a script worth following (#98801).
+
+    Explicit exec forms (``source X``, ``sh X``, ``./X``) and known script suffixes always are.
+    A bare extensionless path must carry a shebang on a locally readable file; a path with no
+    local file at all cannot be shown to be a script, so it is not. That last class is exactly
+    the ``</s:Header>``-style fragments tokenized out of a script's XML/HTML literals: none
+    resolves locally, so each one charged the remote-read budget and the whole walk failed
+    closed. The gate never applies to the agent-typed depth-0 command — see the call site.
+    """
+    if exec_form or path.suffix in _SCRIPT_SUFFIXES:
+        return True
+    return _sniff_shebang(path)
 
 
 # --- referenced-script reading ----------------------------------------------------------------
@@ -1126,11 +1174,17 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    candidates = [
+        (path, executed, exec_form)
+        for path, exec_form in _iter_referenced_shell_scripts(walk_command, cwd=cwd)
+    ]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        candidates += [
+            (path, False, exec_form)
+            for path, exec_form in _iter_referenced_shell_scripts(command, cwd=cwd)
+        ]
 
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed, exec_form in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:
@@ -1142,6 +1196,17 @@ def _contains_unsafe_gateway_action(
             continue
         resolved = _resolve_lenient(script_path)
         if resolved in visited:
+            continue
+        # Content-derived bare paths must plausibly be scripts before the walk follows them
+        # (#98801): at depth >= 1 a candidate came out of some file's TEXT (or an inert mention),
+        # not from the agent's typed command, and a path-shaped fragment of that text
+        # (``</s:Header>`` tokenized out of an XML literal) resolves nowhere, so every one of the
+        # >60 fragments charged the 64-remote-read budget and the walk failed closed, blocking
+        # every absolute-path invocation of the script. Exec forms and the depth-0 typed command
+        # are untouched; the raw-text lifecycle scan at every level still covers everything the
+        # walk no longer reads literally. Charge nothing for a gated-out candidate: not the path
+        # budget, and (via the read below never happening) not a remote read.
+        if depth > 0 and not _plausible_script_candidate(script_path, exec_form=exec_form):
             continue
         if not budget.charge_path():
             if candidate_executed:

@@ -878,6 +878,8 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _smtp_send(self, msg: MIMEMultipart) -> None:
         """Login, send, and always release the SMTP connection (quit, else close)."""
+        from gateway.email_reply_policy import enforce_email_reply
+        enforce_email_reply(msg)
         smtp = self._connect_smtp()
         try:
             smtp.login(self._address, self._password)

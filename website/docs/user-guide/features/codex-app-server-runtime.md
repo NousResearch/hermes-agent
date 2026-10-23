@@ -425,16 +425,18 @@ What's NOT migrated:
 
 ## Hermes tool callback (the new MCP server)
 
-Codex's built-in toolset covers shell/file ops/patches but doesn't have web search, browser automation, vision, image generation, etc. To keep those usable in a codex turn, Hermes registers itself as an MCP server in `~/.codex/config.toml`:
+Codex's built-in toolset covers shell/file ops/patches but doesn't have web search, browser automation, vision, image generation, etc. To keep those usable in a codex turn, Hermes registers itself as an MCP server in `~/.codex/config.toml`. On a managed source install, the generated entry uses the install-owned launcher:
 
 ```toml
 [mcp_servers.hermes-tools]
-command = "/path/to/python"
-args = ["-m", "agent.transports.hermes_tools_mcp_server"]
-env = { HERMES_HOME = "/your/.hermes", PYTHONPATH = "...", HERMES_QUIET = "1" }
+command = "/path/to/hermes-agent/.hermes/bin/hermes"
+args = ["--run-module", "agent.transports.hermes_tools_mcp_server"]
+env = { HERMES_HOME = "/your/.hermes", HERMES_QUIET = "1", HERMES_REDACT_SECRETS = "true" }
 startup_timeout_sec = 30.0
 tool_timeout_sec = 600.0
 ```
+
+Developer/Nix installs use the equivalent bootstrap command directly. Neither form captures the ambient `PYTHONPATH`, so a dependency-generation cleanup cannot leave Codex pointing at a stale path.
 
 When the model calls `web_search` (or another exposed Hermes tool), codex spawns the `hermes_tools_mcp_server` subprocess via stdio, the request is dispatched through `model_tools.handle_function_call()`, and the result is projected back to codex like any other MCP response.
 

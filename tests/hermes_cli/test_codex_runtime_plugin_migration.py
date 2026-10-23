@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 
 
 from hermes_cli.codex_runtime_plugin_migration import (
@@ -365,6 +366,36 @@ class TestStripUnmanagedPluginTables:
         # File parses cleanly as TOML (the original duplicate-key error is gone).
         import tomllib
         tomllib.loads(new_text)
+
+
+class TestHermesToolsLauncher:
+    def test_uses_stable_launcher_without_capturing_pythonpath(self, monkeypatch):
+        """The persisted Codex entry must not retain a versioned Python or generation path."""
+        from hermes_cli import _launchers
+
+        seen = {}
+
+        def fake_installation_command(repo_root, *, module):
+            seen["repo_root"] = repo_root
+            seen["module"] = module
+            return ["/stable/hermes", "--run-module", module]
+
+        monkeypatch.setattr(_launchers, "installation_command", fake_installation_command)
+        monkeypatch.setenv("PYTHONPATH", "/stale/generation/site-packages")
+
+        entry = _build_hermes_tools_mcp_entry()
+
+        assert seen == {
+            "repo_root": Path(__file__).resolve().parents[2],
+            "module": "agent.transports.hermes_tools_mcp_server",
+        }
+        assert entry["command"] == "/stable/hermes"
+        assert entry["args"] == [
+            "--run-module",
+            "agent.transports.hermes_tools_mcp_server",
+        ]
+        assert "PYTHONPATH" not in entry["env"]
+
 
 
 # ---- Bug C: HERMES_HOME tempdir leak into ~/.codex/config.toml ----

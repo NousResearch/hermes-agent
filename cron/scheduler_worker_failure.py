@@ -31,14 +31,14 @@ def worker_execution_terminal(execution_id: str) -> bool:
 
 def preserve_adopted_worker_outcome(job, handoff_error, *, adapters=None, loop=None):
     """Observation failure is not worker death or authority to clear its claim."""
-    from cron import scheduler
+    from cron.scheduler import logger
 
     try:
         if record_unknown_worker_outcome(job, error=str(handoff_error), adapters=adapters, loop=loop):
             return
     except Exception:
-        scheduler.logger.exception("Job '%s': unable to observe adopted worker outcome", job['id'])
-    scheduler.logger.error(
+        logger.exception("Job '%s': unable to observe adopted worker outcome", job['id'])
+    logger.error(
         "Job '%s': Restart-safe cron worker failed after handoff: %s; worker ownership preserved",
         job['id'], handoff_error,
     )

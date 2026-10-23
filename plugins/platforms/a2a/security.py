@@ -14,8 +14,9 @@ import os
 import re
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+from gateway.a2a_auth import A2AAuthentication, A2AAuthMethod
 from agent.proxy_bypass import is_loopback_host
 from gateway.platforms._shared import profile_scoped as _profile_scoped
 
@@ -31,10 +32,10 @@ def _startup_env(name: str) -> str:
     return os.getenv(name, "").strip()
 
 
-def _parse_peer_tokens(raw: str) -> dict[str, str]:
-    """"alice:tok1,bob:tok2" -> {token: peer_name}."""
+def _parse_peer_token_entries(raw: str) -> tuple[tuple[str, str], ...]:
+    """Retain ambiguity for observation without changing authentication identity."""
     pairs = [tuple(s.strip() for s in pair.split(":", 1)) for pair in raw.split(",") if ":" in pair]
-    return {token: name for name, token in pairs if name and token}
+    return tuple((token, name) for name, token in pairs if name and token)
 
 
 def _configured_trusted_peers() -> frozenset[str]:
@@ -67,11 +68,13 @@ class A2ASecurityContext:
     allow_all_users: bool
     requested_host: str
     push_secret: str
+    peer_token_entries: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
     @classmethod
     def capture(cls) -> A2ASecurityContext:
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
-        return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
+        entries = _parse_peer_token_entries(_startup_env("A2A_PEER_TOKENS"))
+        return cls(bearer_token=bearer_token, peer_tokens=tuple(dict(entries).items()), peer_token_entries=entries,
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
                    requested_host=_unbracket(_startup_env("A2A_HOST")) or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
@@ -103,6 +106,25 @@ class A2ASecurityContext:
                 return name
         if self.bearer_token and hmac.compare_digest(presented, self.bearer_token):
             return f"ip:{client_ip or 'unknown'}"
+        return None
+
+    def authenticate_request(self, auth_header: Optional[str], client_ip: str = "") -> Optional[A2AAuthentication]:
+        """Mint request-local facts at credential verification, never from request JSON."""
+        if self.localhost_only():
+            return A2AAuthentication(f"ip:{client_ip or 'local'}", A2AAuthMethod.LOCAL_SOCKET)
+        parts = (auth_header or "").split(None, 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return None
+        presented = parts[1].strip()
+        # Observation is stricter than acceptance: never mint facts for collisions.
+        names = {name for token, name in (self.peer_token_entries or self.peer_tokens)
+                 if hmac.compare_digest(presented, token)}
+        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token):
+            if names:
+                return None
+            return A2AAuthentication(f"ip:{client_ip or 'unknown'}", A2AAuthMethod.SHARED_BEARER)
+        if len(names) == 1:
+            return A2AAuthentication(names.pop(), A2AAuthMethod.PEER_BEARER)
         return None
 
     def is_loopback_bind(self) -> bool:

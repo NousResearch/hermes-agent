@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from gateway.session import SessionSource
+from gateway.a2a_auth import A2AAuthentication
 
 # Desktop attachment reference tags prepended by buildContextText before the
 # user's visible text (e.g. "@image:/tmp/foo.png\n\n/moa ask something").
@@ -111,6 +112,8 @@ class MessageEvent:
     # ``message_id`` with new text, so native admission keys it apart from the original send.
     # Appended for positional compat (see the field-order rule above).
     edit_revision: Optional[str] = None
+    # Trusted ingress only; never populated from metadata or source identity.
+    a2a_auth: Optional[A2AAuthentication] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

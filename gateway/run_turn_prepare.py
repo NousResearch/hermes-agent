@@ -640,100 +640,108 @@ class GatewayTurnPrepareMixin:
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
         context = build_session_context(source, self.config, session_entry)
+        context.a2a_auth = event.a2a_auth
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
-        from gateway.response_filters import display_kind_for_event
-        persist_user_display_kind = display_kind_for_event(event)
-        _redact_pii = False  # privacy.redact_pii, re-read per message
-        with suppress(Exception):
-            _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
-
-        # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
-        # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        # A LOCAL session (CLI one-shot, ACP, cron run-now, TUI attach) is the operator's own machine:
-        # the messaging block ("Source: Local", connected platforms, cron delivery targets) was never
-        # part of the classic in-process prompt, and the TUI gateway still builds that prompt in-process.
-        # Rendering it here would make every surface hop of one durable session a system-prompt
-        # (and prompt-cache) break.
-        # Synthetic goal/heartbeat/resume turns carry no prompt inputs of their own, so they reuse the
-        # pins exactly like internal events do (and still pass authorization, unlike internal ones).
-        _reuse_pins = event.internal or getattr(event, "inherit_channel_pin", False)
-        if source.platform != Platform.LOCAL and _reuse_pins and session_key:
-            await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
-        context_prompt = "" if source.platform == Platform.LOCAL else \
-            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=_reuse_pins)
-
-        # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
-        # (appending to the ephemeral system prompt forced a full agent rebuild).
-        turn_sidecar_notes: list[str] = []
-        if _was_auto_reset:
-            await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
-
-        # Keep human text separate from skills, sender metadata, and other model context.
-        # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
-        title_user_message = event.text or None
-
-        # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
-        _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
-
-        await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
-
-        # A turn becomes durable recovery work only after it owns the per-session lease; marking
-        # earlier would falsely recover a message that never began processing.
-        await self._mark_durable_active_turn(event, session_entry.session_key)
-
-        # An unreadable store is not an empty conversation: stop before the agent invents continuity
-        # from []. Restore task-local context here (before the broad cleanup finally).
         try:
-            history = await self.async_session_store.load_transcript(session_entry.session_id)
-            history = await self._hmwa_run_session_hygiene(
-                event, source, session_entry, session_key, history, _quick_key, run_generation,
+            # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
+            from gateway.response_filters import display_kind_for_event
+            persist_user_display_kind = display_kind_for_event(event)
+            _redact_pii = False  # privacy.redact_pii, re-read per message
+            with suppress(Exception):
+                _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+
+            # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
+            # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
+            # A LOCAL session (CLI one-shot, ACP, cron run-now, TUI attach) is the operator's own machine:
+            # the messaging block ("Source: Local", connected platforms, cron delivery targets) was never
+            # part of the classic in-process prompt, and the TUI gateway still builds that prompt in-process.
+            # Rendering it here would make every surface hop of one durable session a system-prompt
+            # (and prompt-cache) break.
+            # Synthetic goal/heartbeat/resume turns carry no prompt inputs of their own, so they reuse the
+            # pins exactly like internal events do (and still pass authorization, unlike internal ones).
+            _reuse_pins = event.internal or getattr(event, "inherit_channel_pin", False)
+            if source.platform != Platform.LOCAL and _reuse_pins and session_key:
+                await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
+            context_prompt = "" if source.platform == Platform.LOCAL else \
+                self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=_reuse_pins)
+
+            # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
+            # (appending to the ephemeral system prompt forced a full agent rebuild).
+            turn_sidecar_notes: list[str] = []
+            if _was_auto_reset:
+                await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
+
+            # Keep human text separate from skills, sender metadata, and other model context.
+            # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
+            title_user_message = event.text or None
+
+            # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
+            _auto = getattr(event, "auto_skill", None)
+            if _is_new_session and _auto:
+                self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
+
+            await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
+
+            # A turn becomes durable recovery work only after it owns the per-session lease; marking
+            # earlier would falsely recover a message that never began processing.
+            await self._mark_durable_active_turn(event, session_entry.session_key)
+
+            # An unreadable store is not an empty conversation: stop before the agent invents continuity
+            # from []. Restore task-local context here (before the broad cleanup finally).
+            try:
+                history = await self.async_session_store.load_transcript(session_entry.session_id)
+                history = await self._hmwa_run_session_hygiene(
+                    event, source, session_entry, session_key, history, _quick_key, run_generation,
+                )
+            except TranscriptReadError:
+                self._clear_session_env(_session_env_tokens)
+                from gateway.session_results import record_unexecuted_failure
+                return record_unexecuted_failure(t("gateway.errors.history_unavailable")), _session_env_tokens
+
+            await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)
+
+            # Voice channel state rides the user message ONLY when changed (in the system prompt it
+            # forced a rebuild + prompt-cache re-key per message).
+            _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
+            if _vc_note:
+                turn_sidecar_notes.append(_vc_note)
+
+            # Auto-analyze user images so the model gets a description plus the local path.
+            message_text = await self._prepare_profile_scoped_inbound_message_text(
+                event=event, source=source, history=history, session_key=session_key,
             )
-        except TranscriptReadError:
+            if message_text is None:
+                # A refused local turn answers with its refusal (session_context_refs.turn_references).
+                return getattr(event, "_gateway_turn_refusal", None), _session_env_tokens
+
+            message_text, persist_user_message, persist_user_timestamp = (
+                self._hmwa_apply_message_timestamp(event, message_text)
+            )
+
+            # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
+            # cannot leak them into the next turn.
+            if turn_sidecar_notes and session_key:
+                self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
+
+            # Bind this run generation to the adapter so deferred post-delivery callbacks are released
+            # by the run that registered them.
+            self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
+            # Delivery IDs are only unique in their transport namespace. Keyless turns
+            # need their own identity, even when another process writes to this session.
+            import uuid
+            namespace = [source.platform.value, source.profile, source.scope_id,
+                         source.chat_id, source.thread_id, str(event.message_id)]
+            owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
+                     if event.message_id else str(uuid.uuid4()))
+            return self._PreparedTurn(
+                history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
+                persist_user_display_kind, session_entry.session_id, owner,
+                title_user_message=title_user_message,
+            ), _session_env_tokens
+
+        except BaseException:
+            # Preparation precedes the caller's cleanup finally; cancellation also
+            # must clear the non-nestable session binding before propagating.
             self._clear_session_env(_session_env_tokens)
-            from gateway.session_results import record_unexecuted_failure
-            return record_unexecuted_failure(t("gateway.errors.history_unavailable")), _session_env_tokens
-
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)
-
-        # Voice channel state rides the user message ONLY when changed (in the system prompt it
-        # forced a rebuild + prompt-cache re-key per message).
-        _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
-        if _vc_note:
-            turn_sidecar_notes.append(_vc_note)
-
-        # Auto-analyze user images so the model gets a description plus the local path.
-        message_text = await self._prepare_profile_scoped_inbound_message_text(
-            event=event, source=source, history=history, session_key=session_key,
-        )
-        if message_text is None:
-            # A refused local turn answers with its refusal (session_context_refs.turn_references).
-            return getattr(event, "_gateway_turn_refusal", None), _session_env_tokens
-
-        message_text, persist_user_message, persist_user_timestamp = (
-            self._hmwa_apply_message_timestamp(event, message_text)
-        )
-
-        # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
-        # cannot leak them into the next turn.
-        if turn_sidecar_notes and session_key:
-            self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
-
-        # Bind this run generation to the adapter so deferred post-delivery callbacks are released
-        # by the run that registered them.
-        self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
-        # Delivery IDs are only unique in their transport namespace. Keyless turns
-        # need their own identity, even when another process writes to this session.
-        import uuid
-        namespace = [source.platform.value, source.profile, source.scope_id,
-                     source.chat_id, source.thread_id, str(event.message_id)]
-        owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
-                 if event.message_id else str(uuid.uuid4()))
-        return self._PreparedTurn(
-            history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind, session_entry.session_id, owner,
-            title_user_message=title_user_message,
-        ), _session_env_tokens
+            raise

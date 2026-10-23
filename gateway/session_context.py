@@ -9,6 +9,14 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator
+from gateway.a2a_auth import A2AAuthentication
+
+_A2A_AUTH: ContextVar[A2AAuthentication | None] = ContextVar("a2a_auth", default=None)
+
+
+def get_a2a_authentication() -> A2AAuthentication | None:
+    """Server ingress facts for this turn; no env/body/argument fallback or approval grant."""
+    return _A2A_AUTH.get()
 
 # "Never set here" (falls back to os.environ for CLI/cron) vs "" = explicitly cleared (no fallback).
 _UNSET: Any = object()
@@ -138,6 +146,7 @@ def set_session_vars(
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
     session_history_delivery: str | None = None,
+    a2a_auth: A2AAuthentication | None = None,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -150,6 +159,7 @@ def set_session_vars(
     cannot grant wake authority."""
     global _session_context_engaged
     _session_context_engaged = True
+    _A2A_AUTH.set(a2a_auth if isinstance(a2a_auth, A2AAuthentication) else None)
     values = (
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
@@ -172,6 +182,7 @@ def clear_session_vars(tokens: list) -> None:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _A2A_AUTH.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -185,6 +196,7 @@ def reset_session_vars() -> None:
         var.set(_UNSET)
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _A2A_AUTH.set(None)
     _runtime_cwd("clear_session_cwd")
 
 

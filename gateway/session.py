@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
+from gateway.a2a_auth import A2AAuthentication
 from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
@@ -174,6 +175,8 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Ephemeral server facts; deliberately excluded from to_dict / prompt rendering.
+    a2a_auth: Optional[A2AAuthentication] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {

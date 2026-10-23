@@ -815,7 +815,13 @@ class GatewayAdapterLifecycleMixin:
             from gateway.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = self._create_adapter(platform, platform_config)
+# Adapter construction can do heavy synchronous work (plugin adapters reload the
+            # gateway config, which rescans bundled plugin directories). On the loop thread a
+            # cold/slow disk stalls the whole gateway for tens of seconds — every API and ws
+            # client times out and the liveness watchdog kills the process (exit 75). Same
+            # off-loop treatment as the plugin import above.
+            adapter = await self._run_in_executor_with_context(
+                self._create_adapter, platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
                     # Became builtin/registered-but-None: a config change is needed, so stop retrying.
@@ -1301,7 +1307,11 @@ class GatewayAdapterLifecycleMixin:
                 platform.value, exc_info=True,
             ):
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-                    adapter = self._create_adapter(platform, platform_config)
+                    # Off the loop thread for the same reason as _reconnect_failed_platform:
+                    # adapter construction reloads gateway config (bundled-plugin directory
+                    # scan) and must not stall the event loop on a slow disk.
+                    adapter = await self._run_in_executor_with_context(
+                        self._create_adapter, platform, platform_config)
                 if not adapter:
                     logger.warning(
                         "[MULTIPLEX] Profile '%s': skipping platform '%s' - adapter creation returned None",
@@ -1444,7 +1454,11 @@ class GatewayAdapterLifecycleMixin:
                     platform.value, profile_name,
                 )
                 return None, None
-            adapter = self._create_adapter(platform, profile_config)
+            # Off the loop thread for the same reason as _reconnect_failed_platform: adapter
+            # construction reloads gateway config (bundled-plugin directory scan) and must not
+            # stall the event loop on a slow disk.
+            adapter = await self._run_in_executor_with_context(
+                self._create_adapter, platform, profile_config)
             if adapter is None:
                 logger.warning(
                     "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",

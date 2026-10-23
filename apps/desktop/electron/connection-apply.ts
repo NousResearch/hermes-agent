@@ -91,10 +91,22 @@ async function teardownSshState(state, { cleanupRemote }) {
   // Then drop the local forward and close the transport. Each step is
   // best-effort so a failed remote cleanup cannot trap Cmd+Q (#91668).
   try {
+    if (state.recovering) {
+      await state.ssh.open()
+    }
+
     await cleanupRemote(state.ssh, state.ownershipId)
   } catch {
     // Remote teardown is best-effort; always release the local tunnel and SSH transport.
   }
+
+  await teardownSshTransport(state)
+}
+
+// Network recovery must preserve the remote ownership record and process.
+// A new transport can authenticate and reattach without cancelling its turns.
+async function teardownSshTransport(state) {
+  state.recovering = true
 
   try {
     if (state.localPort && state.remotePort) {
@@ -117,5 +129,6 @@ export {
   resolveTerminalConnection,
   resolveTerminalConnectionForSender,
   sshQuitShouldBlock,
-  teardownSshState
+  teardownSshState,
+  teardownSshTransport
 }

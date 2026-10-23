@@ -89,9 +89,12 @@ def config_options(models: SessionModelState | None, info: dict, mode_id: str) -
     if models is not None:
         options.append(select("model", "Model", "model", models.current_model_id,
                               [(m.model_id, m.name) for m in models.available_models]))
-    effort = info.get("reasoning_effort")
-    options.append(select(REASONING_CONFIG_ID, "Reasoning effort", "thought_level",
-                          effort if effort in reasoning_choices() else "default", [(v, v) for v in reasoning_choices()]))
+    # ``session.info`` reports the level in force, never ``default`` (a reset session reads the profile's), so
+    # ``default`` is offered only while no level is set: a pick never shows as another value than the one chosen.
+    levels = reasoning_choices()[1:]
+    effort = info.get("reasoning_effort") if info.get("reasoning_effort") in levels else "default"
+    options.append(select(REASONING_CONFIG_ID, "Reasoning effort", "thought_level", effort,
+                          [(v, v) for v in (levels if effort in levels else ("default", *levels))]))
     return options
 
 

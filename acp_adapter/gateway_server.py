@@ -117,6 +117,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._titles = {}
         # Session -> the mode (edit approval policy) the editor was last shown (``current_mode_update``).
         self._modes = {}
+        # Session -> the mode / model / effort the editor's ``configOptions`` last showed (``config_option_update``).
+        self._configs = {}
         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
         self._usage = {}
         self._background = set()
@@ -1074,13 +1076,33 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
         mode = EDIT_APPROVAL_POLICY_TO_MODE.get(payload.get("edit_approval_policy"))
         # A session's first (its attach's snapshot) seeds silently: the attach's reply shows it.
-        if mode is None or self._modes.setdefault(sid, mode) == mode:
+        if mode is not None and self._modes.setdefault(sid, mode) != mode:
+            self._modes[sid] = mode
+            if self._conn:
+                from acp.schema import CurrentModeUpdate  # ``acp`` does not re-export ``update_current_mode``
+                await self._conn.session_update(session_id=editor_id, update=CurrentModeUpdate(
+                    session_update="current_mode_update", current_mode_id=mode))
+        await self._project_config(sid, editor_id, payload)
+
+    async def _project_config(self, sid, editor_id, payload):
+        """Zed draws its pickers only from ``configOptions`` once an agent sends them (it then ignores
+        ``current_mode_update``), so a mode, model or effort change from another surface or a typed
+        ``/model`` / ``/reasoning`` resends the full list. A partial ``session.info`` keeps what it omits."""
+        from acp_adapter.gateway_session_meta import config_options, current_mode, model_state
+        fields = ("model", "provider", "reasoning_effort")
+        if not any(key in payload for key in (*fields, "edit_approval_policy")):
             return
-        self._modes[sid] = mode
-        if self._conn:
-            from acp.schema import CurrentModeUpdate  # ``acp`` does not re-export ``update_current_mode``
-            await self._conn.session_update(session_id=editor_id, update=CurrentModeUpdate(
-                session_update="current_mode_update", current_mode_id=mode))
+        seen = self._configs.get(sid)
+        shown = {**(seen or {}), **{key: payload[key] for key in fields if key in payload},
+                 "mode": self._modes.get(sid) or current_mode(payload)}
+        self._configs[sid] = shown
+        # Seeded silently like the mode: the attach's reply carries the options.
+        if seen is None or seen == shown or not self._conn:
+            return
+        from acp.schema import ConfigOptionUpdate
+        models = await asyncio.to_thread(model_state, shown)
+        await self._conn.session_update(session_id=editor_id, update=ConfigOptionUpdate(
+            session_update="config_option_update", config_options=config_options(models, shown, shown["mode"])))
 
     async def _project_usage(self, sid, editor_id, stats):
         """The owner's usage dict: kept for the turn's ``PromptResponse.usage``, shown as ``usage_update``."""

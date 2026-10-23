@@ -47805,7 +47805,7 @@
     },
     {
       "name": "prompt.cancel",
-      "summary": "Retire a still-queued admission; a started one is unaffected.",
+      "summary": "Retire a queued admission; a started one is interrupted in the same call.",
       "params": [
         {
           "name": "params",

@@ -947,7 +947,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return await self._hm_confirm_destructive(event, "undo", _undo_detail, self._handle_undo_command)
 
     # /queue and /steer on the idle path: no agent is running, so strip the prefix and send the
-    # payload as a regular user turn; an empty payload surfaces the usage hint.
+    # payload as a regular user turn; an empty payload with no attachment surfaces the usage hint.
     async def _hm_cmd_queue(self, event, source, _quick_key):
         return self._hm_send_payload_as_turn(event, t("gateway.queue.usage"))
 
@@ -957,7 +957,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     @staticmethod
     def _hm_send_payload_as_turn(event, usage: str) -> tuple[bool, Optional[str]]:
         payload = event.get_command_args().strip()
-        if not payload:
+        if not payload and not event.media_urls:  # a bare caption on media is valid, as when busy
             return True, usage
         with suppress(Exception):
             event.text = payload

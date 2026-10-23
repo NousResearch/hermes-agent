@@ -6,7 +6,10 @@ when the provider returned one, always cleared on logout/expiry), ``hermes_sessi
 (non-secret routing hint so an RT is not handed to the wrong provider), ``hermes_session_pkce``
 (PKCE state + CSRF nonce + provider hint, 10 min; ``SameSite=None; Secure`` over HTTPS because it
 is set on the /auth/login 302 and must survive the cross-site redirect chain — Chromium drops Lax
-cookies set on such a 302, crbug 40508226), ``hermes_sso_attempt`` (auto-SSO loop guard, 60 s).
+cookies set on such a 302, crbug 40508226), ``hermes_sso_attempt`` (auto-SSO loop guard, 60 s),
+``hermes_webapp_signin_<gateway>`` (the gateway Webapp's sign-in binding, ``hermes_cli.webapp_sign_in``;
+set only by a login on the Webapp, Max-Age as the refresh token's, named for the gateway's home so two
+gateways' Webapps on one hostname keep their own).
 ``Secure`` only when ``request.url.scheme`` is https. Cookie-prefix hardening per
 draft-west-cookie-prefixes: bare name over HTTP; ``__Host-`` on gated HTTPS with Path=/;
 ``__Secure-`` behind a proxy prefix (``__Host-`` forbids Path != /). Setters and readers BOTH
@@ -29,6 +32,9 @@ SESSION_RT_COOKIE = "hermes_session_rt"
 SESSION_PROVIDER_COOKIE = "hermes_session_provider"
 PKCE_COOKIE = "hermes_session_pkce"
 SSO_ATTEMPT_COOKIE = "hermes_sso_attempt"
+#: The Webapp's sign-in binding (``hermes_cli.webapp_sign_in``); set beside the session cookies, its
+#: name followed by the gateway's own suffix (:func:`webapp_signin_cookie_name`).
+WEBAPP_SIGNIN_COOKIE = "hermes_webapp_signin"
 
 # Name variants a reader may have to try; most strict first.
 _NAME_VARIANTS = ("__Host-", "__Secure-", "")
@@ -167,6 +173,24 @@ def read_session_cookies(request: Request) -> tuple[Optional[str], Optional[str]
 def read_session_provider(request: Request) -> Optional[str]:
     """Return the provider routing hint associated with the session cookies."""
     return _read_with_fallback(request, SESSION_PROVIDER_COOKIE)
+
+
+def set_webapp_signin_cookie(response: Response, *, value: str, use_https: bool, prefix: str = "",
+                             gateway: str = "") -> None:
+    """Set the Webapp's sign-in binding with the session cookies' Path, SameSite and Secure policy, for
+    as long as a refresh token cookie lasts. *gateway* names the gateway it binds to: cookies are not
+    scoped to a port, and two gateways' Webapps on one hostname must not replace each other's."""
+    _set(response, webapp_signin_cookie_name(gateway), value, max_age=_RT_MAX_AGE, use_https=use_https,
+         prefix=prefix)
+
+
+def read_webapp_signin_cookie(request: Request, gateway: str = "") -> Optional[str]:
+    return _read_with_fallback(request, webapp_signin_cookie_name(gateway))
+
+
+def webapp_signin_cookie_name(gateway: str) -> str:
+    """The bare name of the sign-in binding for the gateway named *gateway* (``""`` for none)."""
+    return f"{WEBAPP_SIGNIN_COOKIE}_{gateway}" if gateway else WEBAPP_SIGNIN_COOKIE
 
 
 def read_pkce_cookie(request: Request) -> Optional[str]:

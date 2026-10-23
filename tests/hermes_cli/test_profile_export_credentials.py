@@ -10,6 +10,7 @@ The live profile on disk must stay untouched.
 """
 
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -37,9 +38,10 @@ _EXTRA_STORES = {
     "browser-profiles/live/Default/Cookies", "browser_profiles/default/Default/Login Data",
     "mcp-tokens/srv.json", "vault/vault.key", "platforms/pairing/approved.json", "slack_tokens.json",
     "webhook_subscriptions.json", ".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc",
+    "webapp/session-token",  # the Webapp browser's credential (gateway.webapp_listener.TOKEN_PATH)
 }
 # Single-file stores whose name has no dot; every other dotless store is a token directory.
-_DOTLESS_FILES = {"npmrc"}
+_DOTLESS_FILES = {"npmrc", "webapp/session-token"}
 # Dot-named stores that are directories: the OS credential dirs shared with file_safety.
 _DOT_DIRS = set(HOME_CREDENTIAL_DIRS)
 
@@ -284,3 +286,30 @@ class TestExportSecretScrub:
         assert _LEAKED_KEY not in archived
         assert _LEAKED_KEY in outside.read_text()
         assert link.is_symlink()
+
+
+@pytest.fixture()
+def profile_env(tmp_path, monkeypatch):
+    """Point the home folder and HERMES_HOME into tmp_path, as test_profiles.py does."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    return tmp_path
+
+
+def test_clone_all_does_not_share_the_source_webapp_browser_credential(profile_env):
+    """The Webapp's browser credential belongs to one gateway: a clone mints its own on first
+    use, so signing one profile's browsers out never leaves them signed in to the other."""
+    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_cli.profiles import create_profile
+
+    default_home = profile_env / ".hermes"
+    (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
+    source_token = browser_session_token(default_home)
+
+    profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+    assert not (profile_dir / TOKEN_PATH).exists()
+    assert browser_session_token(profile_dir) != source_token
+    assert browser_session_token(default_home) == source_token

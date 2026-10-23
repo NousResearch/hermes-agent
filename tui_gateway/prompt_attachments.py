@@ -14,6 +14,10 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 
+# Bytes sent inline in a data URL: the native Desktop reader's own attach cap (Electron reads at most
+# 256 MiB), which also bounds the base64 text and its decoded copy held in memory. A host file named
+# by path is copied in chunks and has no cap; a browser upload's copy has the tighter browser cap.
+_ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024
 _ATTACH_BYTES_MAX_BYTES = 25 * 1024 * 1024
 _PDF_ATTACH_MAX_BYTES = 50 * 1024 * 1024
 _PDF_ATTACH_MAX_PAGES = 25
@@ -28,22 +32,31 @@ _ATTACHMENT_REF_NEEDS_QUOTING_RE = _re.compile(r"""[\s()\[\]{}<>"'`]""")
 del _re  # bodies are rebound onto server globals: import inside functions only
 
 
-def _b64_payload(raw: str, data_url_re: str, flags: int) -> bytes:
+def _b64_payload(raw: str, data_url_re: str, flags: int, *, max_bytes: int) -> bytes:
     """Strip an optional ``data:...;base64,`` wrapper and all whitespace, then strictly decode."""
     import base64 as _base64
     import re as _re
     cleaned = (raw or "").strip()
     if m := _re.match(data_url_re, cleaned, flags):
         cleaned = m.group(1)
-    return _base64.b64decode(_re.sub(r"\s+", "", cleaned), validate=True)
+    cleaned = _re.sub(r"\s+", "", cleaned)
+    if len(cleaned) > 4 * ((max_bytes + 2) // 3):
+        raise OverflowError(f"attachment too large; size limit is {max_bytes} bytes")
+    payload = _base64.b64decode(cleaned, validate=True)
+    if len(payload) > max_bytes:
+        raise OverflowError(f"attachment too large; size limit is {max_bytes} bytes")
+    return payload
 
 
-def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
+def _decode_attach_base64(raw: str, *, mime_prefix: str, max_bytes: int) -> bytes | None:
     """Decode a (``data:<mime_prefix>...;base64,``-wrapped) payload; None when invalid."""
     import re as _re
     try:
         return _b64_payload(
-            raw, rf"^data:{_re.escape(mime_prefix)}[a-zA-Z0-9.+-]*;base64,(.*)$", _re.DOTALL)
+            raw, rf"^data:{_re.escape(mime_prefix)}[a-zA-Z0-9.+-]*;base64,(.*)$", _re.DOTALL,
+            max_bytes=max_bytes)
+    except OverflowError:
+        raise
     except Exception:
         return None
 
@@ -51,14 +64,14 @@ def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
 def _decode_attach_payload(
     rid, raw_b64: str, *, mime_prefix: str, max_bytes: int, label: str, empty_msg: str):
     """``(bytes, None)`` or ``(None, error)``: 4017 on bad/empty base64, 4018 over *max_bytes*."""
-    data = _decode_attach_base64(raw_b64, mime_prefix=mime_prefix)
+    try:
+        data = _decode_attach_base64(raw_b64, mime_prefix=mime_prefix, max_bytes=max_bytes)
+    except OverflowError as exc:
+        return None, _err(rid, 4018, f"{label} too large: {exc}")
     if data is None:
         return None, _err(rid, 4017, "data is not valid base64")
     if not data:
         return None, _err(rid, 4017, empty_msg)
-    if len(data) > max_bytes:
-        mb = max_bytes // (1024 * 1024)
-        return None, _err(rid, 4018, f"{label} too large ({len(data)} bytes; cap is {mb} MB)")
     return data, None
 
 
@@ -196,12 +209,44 @@ def _sanitize_attachment_name(name: str) -> str:
     return candidate.strip().strip(".") or "attachment"
 
 
+def _read_attachment_bytes(path: Path, max_bytes: int) -> bytes:
+    # Bound the actual read, not just stat(): the source can grow after inspection.
+    with path.open("rb") as source:
+        payload = source.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise ValueError(f"attachment too large; size limit is {max_bytes} bytes")
+    return payload
+
+
+def _stage_browser_file_attachment(session: dict, staged_upload: object, name: str) -> tuple[Path, bool]:
+    """Copy a browser upload (the Webapp upload route's ``staged_upload`` receipt) into this session.
+
+    Source and destination may be different profiles on the same installation (an owner-routed
+    tile can receive a foreground browser pick); the caller decides which source homes this
+    connection may reach. The receipt is resolved back to exactly the staged layout under its
+    source home, which must still be a live profile (``hermes_cli/staged_uploads.py``). From there
+    the copy is the native Desktop's out-of-workspace file attach, capped at the browser limit.
+    """
+    from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+    from hermes_cli.staged_uploads import parse_staged_upload, resolve_staged_upload
+
+    raw_home, raw_path = parse_staged_upload(staged_upload)
+    source = resolve_staged_upload(Path(raw_home), raw_path)
+    # Keep the existing out-of-workspace copy into attachments/, which is visible to
+    # container/SSH terminal backends through cache mounts.
+    return _stage_session_file_attachment(
+        session, raw_path=str(source), data_url="", name=name, max_bytes=WEBAPP_ATTACHMENT_MAX_BYTES)
+
+
 def _stage_session_file_attachment(
-    session: dict, *, raw_path: str, data_url: str, name: str) -> tuple[Path, bool]:
+    session: dict, *, raw_path: str, data_url: str, name: str, max_bytes: int | None = None,
+) -> tuple[Path, bool]:
     """Make a desktop file attachment available to the gateway agent: ``(stored_path, uploaded)``.
     Inside the workspace -> as-is; gateway-visible but outside -> copied into ``attachments/``
     (bind-mounted into container backends so ``@file:`` resolves in the sandbox); not on the
-    gateway -> ``data_url`` bytes decoded into ``attachments/``."""
+    gateway -> ``data_url`` bytes decoded into ``attachments/``. ``max_bytes`` caps the copy of a
+    browser upload; a host file is copied whatever its size, inline bytes up to
+    ``_ATTACHMENT_MAX_BYTES``."""
     workspace = Path(_session_cwd(session)).resolve()
     resolved = None
     if raw_path:
@@ -222,7 +267,8 @@ def _stage_session_file_attachment(
             resolved.relative_to(workspace)
             return resolved, False
         except ValueError:
-            payload = resolved.read_bytes()
+            # Without a cap the copy below streams the file, so its size never reaches memory.
+            payload = None if max_bytes is None else _read_attachment_bytes(resolved, max_bytes)
             filename = resolved.name
     else:
         if not data_url:
@@ -230,9 +276,11 @@ def _stage_session_file_attachment(
         # Any media type (unlike the image-specific decoder); bare base64 also accepted.
         import binascii as _binascii
         import re as _re
+        inline_max = _ATTACHMENT_MAX_BYTES if max_bytes is None else min(max_bytes, _ATTACHMENT_MAX_BYTES)
         try:
             payload = _b64_payload(
-                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.IGNORECASE)
+                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.IGNORECASE,
+                max_bytes=inline_max)
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
@@ -258,7 +306,12 @@ def _stage_session_file_attachment(
             break
     try:
         with upload:
-            upload.write(payload)
+            if payload is None:
+                import shutil as _shutil
+                with resolved.open("rb") as source:
+                    _shutil.copyfileobj(source, upload, 1024 * 1024)
+            else:
+                upload.write(payload)
     except Exception:
         target.unlink(missing_ok=True)
         raise

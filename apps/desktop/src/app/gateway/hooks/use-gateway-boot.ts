@@ -105,6 +105,7 @@ import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warni
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { notifyPrimaryReauth } from './primary-reauth-notice'
 import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
 
@@ -565,23 +566,7 @@ export function useGatewayBoot({
           primaryReauthError = err instanceof Error ? err.message : String(err)
           syncPrimaryReauthError()
           reauthNotified = true
-          // Plain "signed out" copy; the raw ticket/HTTP text stays under
-          // Details. In the foreground the boot overlay carries the sign-in
-          // flow, so the button hands off to it (desktop-14). A parked
-          // background primary no longer retries by itself, so it must still
-          // offer a way to Settings instead of failing silently.
-          notify({
-            kind: 'error',
-            title: translateNow('boot.errors.gatewaySignInRequired'),
-            message: translateNow('boot.errors.gatewaySignInRequiredDetail'),
-            detail: primaryReauthError,
-            action: isActivePrimary()
-              ? {
-                  label: translateNow('boot.errors.signInAgain'),
-                  onClick: () => failDesktopBoot(primaryReauthError ?? '')
-                }
-              : RECOVERY_ACTIONS.openGateways()
-          })
+          notifyPrimaryReauth(primaryReauthError, () => primaryReauthError ?? '')
         }
       } finally {
         reconnecting = false

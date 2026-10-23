@@ -40,10 +40,10 @@ _CLONE_CONFIG_FILES = ["config.yaml", ".env", "SOUL.md"]
 # identity, as important as SOUL.md for continuity.
 _CLONE_SUBDIR_FILES = ["memories/MEMORY.md", "memories/USER.md"]
 
-# Runtime files stripped after --clone-all. A post-copy step rather than an ignore filter
-# because they are created dynamically and may be absent at copy time.
+# Runtime files stripped after --clone-all, the Webapp's browser credential among them (each gateway
+# mints its own). A post-copy step: they are created dynamically and may be absent at copy time.
 _CLONE_ALL_STRIP: list[str] = [
-    "gateway.pid", "gateway_state.json", "processes.json",
+    "gateway.pid", "gateway_state.json", "processes.json", "webapp/session-token",
     # Bot Desktop runtime identity: pid + create_time of the SOURCE's launcher, its DISPLAY/XAUTHORITY and
     # lease. Copied verbatim, `screen stop` on the clone would kill the source's X server. Browser user data
     # stays, but Chromium's process markers must not let the clone attach to the source's live browser.
@@ -166,7 +166,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "teams_pipeline_store.json",    # Graph subscription client_state (webhook shared secret)
     "mcp-tokens",                   # MCP OAuth tokens
     "vault",                        # vault.key + vault.json.enc
-    "browser-profile", "browser_auth", "bot-desktop",  # browser cookies / logins
+    "browser-profile", "browser_auth", "bot-desktop", "webapp",  # browser cookies / logins, Webapp sign-in
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
     "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
@@ -273,7 +273,7 @@ _RESERVED_NAMES = frozenset({"hermes", "default", "test", "tmp", "root", "sudo"}
 # Hermes subcommands that cannot be used as profile names/aliases
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
-    "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
+    "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools", "serve", "dashboard", "webapp",
     "mcp", "connectors", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
 })
 

@@ -7,7 +7,6 @@ import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
-import { writeClipboardText } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,10 +16,13 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { openPreview } from '@/store/preview'
 
 import { ShellMenuItems } from './shell-menu-items'
@@ -51,6 +53,22 @@ const EDIT_SHORTCUTS = {
   paste: formatCombo('mod+v'),
   selectAll: formatCombo('mod+a')
 } as const
+
+function isNativeMediaContextMenu(event: MouseEvent): boolean {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+
+  return [event.target, ...path].some(target => target instanceof HTMLMediaElement)
+}
+
+/** Take a gesture the app menu answers away from other renderer handlers,
+ * cancelling the browser's native menu only where it would open alongside. */
+function claimContextMenuGesture(event: MouseEvent) {
+  if (isBrowserHostedDesktop()) {
+    event.preventDefault()
+  }
+
+  event.stopPropagation()
+}
 
 function isLoopbackUrl(url: string): boolean {
   try {
@@ -545,18 +563,33 @@ export function AppContextMenu() {
   const open = useStore($contextMenu)
 
   useEffect(() => {
-    // stopPropagation beats other renderer handlers; preventDefault is never
-    // called because Chromium emits the main-process context-menu event (the
-    // spellcheck + image-coordinate source) only for unprevented gestures —
-    // and with no Menu.popup anywhere, "default" means no menu at all.
+    // Electron needs unprevented gestures for main-process spellcheck and
+    // image coordinates. Webapp must cancel the browser's native menu when
+    // we own the gesture, or it opens alongside the app menu.
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
+
+      // Stop pane/row fallback menus without cancelling the native menu.
+      // Explicit app actions live in More.
+      if (isBrowserOwnedTouch(event)) {
+        event.stopPropagation()
+
+        return
+      }
 
       const trigger = element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
 
       // Only the pane-body wrapper is a fallback menu. Explicit row, tab and
       // status-bar menus still own their whole gesture, even inside a pane.
       if (trigger && !trigger.hasAttribute('data-zone-body')) {
+        return
+      }
+
+      // Browser-owned media controls need their native context menu, including
+      // save and picture-in-picture actions. Chromium can retarget a control
+      // hit through the media element's UA shadow tree, so inspect the whole
+      // composed path instead of relying only on event.target.
+      if (isBrowserHostedDesktop() && isNativeMediaContextMenu(event)) {
         return
       }
 
@@ -574,7 +607,7 @@ export function AppContextMenu() {
       const terminal = terminalMenuHandleFor(element)
 
       if (terminal) {
-        event.stopPropagation()
+        claimContextMenuGesture(event)
         openTerminalContextMenu(event.clientX, event.clientY, terminal)
 
         return
@@ -605,7 +638,7 @@ export function AppContextMenu() {
         return
       }
 
-      event.stopPropagation()
+      claimContextMenuGesture(event)
       openDomContextMenu(event.clientX, event.clientY, target)
     }
 

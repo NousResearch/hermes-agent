@@ -706,7 +706,12 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'PUT /api/dashboard/theme',
   'GET /api/dashboard/font',
   'PUT /api/dashboard/font',
-  'GET /api/dashboard/plugins'
+  'GET /api/dashboard/plugins',
+  // Web Access: each handler takes `?profile=` and acts on the gateway serving it.
+  'GET /api/webapp-access/status',
+  'POST /api/webapp-access/start',
+  'POST /api/webapp-access/stop',
+  'POST /api/webapp-access/restart'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {

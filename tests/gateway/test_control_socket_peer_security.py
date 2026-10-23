@@ -132,9 +132,14 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
     spec = importlib.util.spec_from_file_location("tui_bootstrap", "ui-tui/scripts/gateway_bootstrap.py")
     tui_bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tui_bootstrap)
-    for client in (gateway_client._session_ticket, session_hosted_transport.owner_request, tui_bootstrap.bootstrap):
+    for client in (gateway_client.private_control_query, session_hosted_transport.owner_request, tui_bootstrap.bootstrap):
         source = inspect.getsource(client)
         assert "connect_private(" in source and "AF_UNIX" not in source, client.__qualname__
+    # The other control-socket clients dial through private_control_query.
+    from hermes_cli import webapp_launcher
+    for caller in (gateway_client._session_ticket, webapp_launcher._control):
+        source = inspect.getsource(caller)
+        assert "private_control_query(" in source and "AF_UNIX" not in source, caller.__qualname__
 
 
 def test_long_home_survives_a_squatted_shared_fallback_directory(tmp_path, monkeypatch):

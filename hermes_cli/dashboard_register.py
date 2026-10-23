@@ -209,6 +209,10 @@ def cmd_dashboard_register(args) -> None:
         print(f"✗ Failed to write HERMES_DASHBOARD_OAUTH_CLIENT_ID to .env: {exc}\n"
               f"  Set it manually:  HERMES_DASHBOARD_OAUTH_CLIENT_ID={client_id}")
         sys.exit(1)
+    # Web Access shares this client and never posts the same callback twice; this registration may
+    # have replaced it, so Web Access registers its callback again on its next start.
+    from hermes_cli.webapp_access import forget_registration
+    forget_registration()
     # Explicit portal → always persist (the user asked); inferred → only if unset AND non-default.
     existing_portal = _env_value("HERMES_DASHBOARD_PORTAL_URL")
     should_write_portal = (

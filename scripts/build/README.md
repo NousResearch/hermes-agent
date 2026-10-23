@@ -2,7 +2,7 @@
 
 These modules compile frontends and assemble a runnable agent from prepared
 inputs. They do not replace npm, uv, PM, or Nix.
-[Shared bundle builds](../../docs/shared-bundle-builds.md) describes the
+[Shared bundle builds](../../website/docs/developer-guide/shared-bundle-builds.md) describes the
 providers and distribution adapters.
 
 This reference describes the current interfaces, not completed artifact

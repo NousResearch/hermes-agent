@@ -2,6 +2,12 @@
 
 Env: ``EXA_API_KEY`` (https://exa.ai). Both methods are sync — Exa's SDK is
 sync-only; the dispatcher threads extract when the caller is async.
+
+Optional ``web.exa`` config (keyed path only; unset = Exa's defaults):
+``type`` (auto | lite | fast | deep-lite | deep), ``dynamic_highlights`` (bool, research-preview
+beta), ``max_age_hours`` (-1..720, content cache age; not sent on ``lite`` searches, which reject
+it), ``extract_max_characters`` (per-page text cap for extract, never below
+``web.extract_char_limit``).
 """
 
 from __future__ import annotations
@@ -17,6 +23,63 @@ from plugins.web._common import (
 logger = logging.getLogger(__name__)
 
 _MISSING_KEY = "EXA_API_KEY environment variable not set. Get your API key at https://exa.ai"
+
+_SEARCH_TYPES = ("auto", "lite", "fast", "deep-lite", "deep")
+# Exa-Beta token for Dynamic Highlights (https://exa.ai/docs/search/highlights).
+_DYNAMIC_HIGHLIGHTS_BETA = "dynamic-highlights-2026-08-28"
+
+
+def _exa_config() -> dict[str, Any]:
+    """``web.exa`` from config.yaml ({} on miss)."""
+    from tools.web_tools import _load_web_config  # lazy: tests patch tools.web_tools._load_web_config
+    cfg = _load_web_config().get("exa")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _int_setting(cfg: dict[str, Any], key: str, low: int, high: int) -> int | None:
+    """``cfg[key]`` as an int in [low, high]; None when unset, and a warning plus None when invalid."""
+    value = cfg.get(key)
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
+        return value
+    logger.warning("Ignoring web.exa.%s=%r: expected an integer from %d to %d", key, value, low, high)
+    return None
+
+
+def _max_age_hours(cfg: dict[str, Any]) -> int | None:
+    return _int_setting(cfg, "max_age_hours", -1, 720)
+
+
+def _search_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Keyword arguments for ``Exa.search`` beyond the query and result count."""
+    search_type = str(cfg.get("type") or "auto").strip().lower()
+    if search_type not in _SEARCH_TYPES:
+        logger.warning("Ignoring web.exa.type=%r: expected one of %s", cfg.get("type"), ", ".join(_SEARCH_TYPES))
+        search_type = "auto"
+    dynamic = cfg.get("dynamic_highlights") is True
+    contents: dict[str, Any] = {"highlights": {"dynamic": True} if dynamic else True}
+    max_age = _max_age_hours(cfg)
+    if max_age is not None and search_type != "lite":
+        contents["max_age_hours"] = max_age
+    kwargs: dict[str, Any] = {"contents": contents}
+    if search_type != "auto":
+        kwargs["type"] = search_type
+    if dynamic:
+        kwargs["betas"] = [_DYNAMIC_HIGHLIGHTS_BETA]
+    return kwargs
+
+
+def _contents_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Keyword arguments for ``Exa.get_contents`` beyond the URLs."""
+    from tools.web_tools_truncate import _get_extract_char_limit
+    cap = _int_setting(cfg, "extract_max_characters", 1, 2_000_000)
+    # The cap never undercuts the per-page budget web_extract hands the model.
+    kwargs: dict[str, Any] = {"text": True if cap is None else {"max_characters": max(cap, _get_extract_char_limit())}}
+    max_age = _max_age_hours(cfg)
+    if max_age is not None:
+        kwargs["max_age_hours"] = max_age
+    return kwargs
 
 
 def _get_exa_client() -> Any:
@@ -48,7 +111,7 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
             if use_keyless("exa", provider_env("EXA_API_KEY")):
                 return keyless_search("Exa", "exa", query, limit, logger)
             logger.info("Exa search: '%s' (limit=%d)", query, limit)
-            response = _get_exa_client().search(query, num_results=limit, contents={"highlights": True})
+            response = _get_exa_client().search(query, num_results=limit, **_search_kwargs(_exa_config()))
             return search_ok([
                 web_hit(r.url or "", r.title or "", " ".join(r.highlights or []), i + 1)
                 for i, r in enumerate(response.results or [])
@@ -61,7 +124,7 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
             if use_keyless("exa", provider_env("EXA_API_KEY")):
                 return keyless_extract("Exa", "exa", urls, logger)
             logger.info("Exa extract: %d URL(s)", len(urls))
-            response = _get_exa_client().get_contents(urls, text=True)
+            response = _get_exa_client().get_contents(urls, **_contents_kwargs(_exa_config()))
             results = [document(r.url or "", r.title or "", r.text or "") for r in response.results or []]
             # A URL Exa could not fetch is absent from ``results``; its reason is in ``statuses``.
             return results + [

@@ -283,8 +283,7 @@ GitLab 的 payload 字段与 GitHub 不同——例如，MR 标题使用 `{objec
 
 | 现象 | 检查项 |
 |---|---|
-| `401 Invalid signature` | config.yaml 中的 secret 与 GitHub webhook secret 不匹配 |
-| `404 Unknown route` | URL 中的路由名称与 `routes:` 中的键不匹配 |
+| `404 Unknown route` | URL 中的路由名称与 `routes:` 中的键不匹配，或 config.yaml 中的 secret 与 GitHub webhook secret 不匹配（签名错误返回同样的 404，防止探测路由名；gateway 日志会显示 `Invalid signature`） |
 | `429 Rate limit exceeded` | 每条路由每分钟 30 次请求已超出——在 GitHub UI 中重新投递测试事件时常见；等待一分钟或提高 `extra.rate_limit` |
 | 未发布评论 | `gh` 未安装、不在 PATH 中，或未完成认证（`gh auth login`） |
 | Agent 运行但无评论 | 检查 gateway 日志——如果 agent 输出为空或仅为"SKIP"，投递仍会被尝试 |

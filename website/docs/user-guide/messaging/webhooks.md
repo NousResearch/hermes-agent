@@ -428,9 +428,8 @@ hermes webhook subscribe antenna-matches \
 |--------|---------|
 | `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
 | `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
-| `401 Unauthorized` | HMAC signature invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |
-| `404 Not Found` | Unknown route name. |
+| `404 Not Found` | Unknown route name, or HMAC signature invalid or missing (same response, so route names can't be probed). |
 | `413 Payload Too Large` | Body exceeded `max_body_bytes`. |
 | `429 Too Many Requests` | Route rate limit exceeded. |
 | `502 Bad Gateway` | Target adapter rejected the message or raised. The error is logged server-side; the response body is a generic `Delivery failed` to avoid leaking adapter internals. |
@@ -668,7 +667,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
-- Check gateway logs for `Invalid signature` warnings
+- A bad signature returns the same `404 Unknown route` as a missing route; check gateway logs for `Invalid signature` warnings to tell them apart
 
 ### Event being ignored
 

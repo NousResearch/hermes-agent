@@ -320,6 +320,19 @@ EXA_API_KEY=your-exa-key-here
 
 Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/month.
 
+**Optional knobs** (keyed path only; leave unset for Exa's defaults):
+
+```yaml
+web:
+  exa:
+    type: lite                    # auto (default) | lite | fast | deep-lite | deep
+    dynamic_highlights: true      # research-preview beta: one shared highlight budget across results
+    max_age_hours: 24             # refetch cached pages older than this; 0 = always fresh, -1 = cache only (max 720)
+    extract_max_characters: 20000 # per-page text cap for web_extract; never below web.extract_char_limit
+```
+
+`lite` costs about 40% less than `auto` ($4 vs $7 per 1 000 searches) at slightly lower quality (79 vs 80.5 on Exa's own 3.0 benchmark). Exa rejects `max_age_hours` on `lite` searches, so it is sent only with `web_extract` in that case. `deep-lite` and `deep` run multi-step research and are slower and more expensive per call.
+
 ---
 
 ### Parallel

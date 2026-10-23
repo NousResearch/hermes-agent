@@ -56,39 +56,57 @@ def _save_all(data: dict[str, Any]) -> None:
     atomic_json_write(_cache_path(), data, mode=0o600)
 
 
-def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
+def get_cached_entry(server_name: str, fingerprint: str,
+                     *, max_age_seconds: Optional[float] = None) -> Optional[dict]:
     """Return cached entry when fingerprint matches (and TTL holds), else None. ``tools/list``
     results may carry ``ttlMs`` (SEP-2549); an entry older than a recorded TTL is a miss so the
-    next startup re-probes instead of serving a stale manifest forever. Entries without a TTL
-    never expire. ``cacheScope`` is irrelevant: this cache is per-user local disk."""
+    next startup re-probes instead of serving a stale manifest forever. An EXPLICIT ``ttlMs`` of
+    0 stays immediately stale. ``cacheScope`` is irrelevant: this cache is per-user local disk.
+
+    Entries with NO server TTL historically never expired. ``max_age_seconds`` optionally bounds
+    them by local policy: MCP response freshness and this snapshot's lifetime are separate
+    concerns, and a pinned ``npx pkg@latest`` can change its schemas while its fingerprint stays
+    identical. Absent/invalid ``max_age_seconds`` preserves the never-expire behaviour.
+    """
     with _cache_lock:
         entry = _load_all().get(server_name)
     if not isinstance(entry, dict) or entry.get("fingerprint") != fingerprint:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    expired = (isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float))
-               and (time.time() - written_at) * 1000.0 >= float(ttl_ms))
-    return None if expired else entry
+    if isinstance(ttl_ms, (int, float)):
+        expired = (isinstance(written_at, (int, float))
+                   and (time.time() - written_at) * 1000.0 >= float(ttl_ms))
+        return None if expired else entry
+    if (max_age_seconds and isinstance(written_at, (int, float))
+            and (time.time() - written_at) > float(max_age_seconds)):
+        return None
+    return entry
 
 
 def write_cache_entry(server_name: str, fingerprint: str, *, tools: list[dict],
                       utility_tools: Optional[list[dict]] = None, ttl_ms: Optional[float] = None,
                       cache_scope: Optional[str] = None) -> None:
     """Persist tool schemas after a successful live connect. ``ttl_ms`` / ``cache_scope`` are
-    the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors TTL expiry."""
-    entry = {"fingerprint": fingerprint, "tools": tools, "utility_tools": utility_tools or []}
+    the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors BOTH the server TTL and
+    the local ``lazy_schema_cache_max_age`` policy, so it is stamped even when the server sent
+    no TTL at all."""
+    entry = {"fingerprint": fingerprint, "tools": tools, "utility_tools": utility_tools or [],
+             "written_at": time.time()}
     if isinstance(ttl_ms, (int, float)):
         entry["ttl_ms"] = ttl_ms
-        entry["written_at"] = time.time()
     if cache_scope:
         entry["cache_scope"] = cache_scope
     with _cache_lock:
         data = _load_all()
         # Write-through fires on every registration (reconnects, list_changed); skip the
-        # rewrite when the entry is byte-identical on disk. TTL'd entries always rewrite:
-        # written_at must advance or the entry would expire at its ORIGINAL write time.
-        if "written_at" not in entry and data.get(server_name) == entry:
+        # rewrite when the content is unchanged, ignoring the local timestamp. TTL'd entries
+        # always rewrite: written_at must advance or the entry would expire at its ORIGINAL
+        # write time. An entry predating written_at is backfilled so local ageing can start.
+        prev = data.get(server_name)
+        if ("ttl_ms" not in entry and isinstance(prev, dict) and "written_at" in prev
+                and {k: v for k, v in prev.items() if k != "written_at"}
+                == {k: v for k, v in entry.items() if k != "written_at"}):
             return
         data[server_name] = entry
         _save_all(data)

@@ -43,6 +43,23 @@ def test_worker_publishes_selection_even_when_dependencies_are_current(client, t
     assert json.loads((home / "logs/update_receipts/latest.json").read_text())["outcome"] == "ok"
 
 
+@pytest.mark.require_symlinks
+def test_selection_publication_keeps_a_symlinked_config(client, tmp_path, monkeypatch):  # health: allow F811 -- pytest injects the imported client fixture by parameter name
+    """Enabling a plugin rewrites the link's target; the home keeps its link into the dotfiles tree."""
+    home = tmp_path / "home"
+    home.mkdir()
+    tracked = tmp_path / "dotfiles" / "config.yaml"
+    tracked.parent.mkdir()
+    tracked.write_text('plugins:\n  enabled: [old]\n')
+    (home / "config.yaml").symlink_to(tracked)
+    _current_environment(tmp_path, monkeypatch, [])
+    client.sync_venv(explicit=True, plugins=Selection({
+        "home": str(home), "enabled": ["plain"], "disabled": ["old"], "extra_dirs": [],
+    }))
+    from utils import fast_safe_load
+    assert (home / "config.yaml").is_symlink()
+    assert fast_safe_load(tracked.read_text())["plugins"] == {"enabled": ["plain"], "disabled": ["old"]}
+
 
 @pytest.mark.parametrize("active", [False, True])
 @pytest.mark.parametrize("missing", [False, True], ids=["existing", "missing"])

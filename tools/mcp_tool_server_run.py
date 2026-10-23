@@ -279,8 +279,12 @@ class MCPServerRunMixin:
                            "('url'). Remove 'command' to silence this warning.", self.name)
         if not self._is_http():
             return True
+        # Windmill-style MCP endpoints require ``?token=<token>``. Build the
+        # effective URL once so validation, preflight and the SDK all see
+        # the same request target.
         try:
-            _errors._validate_remote_mcp_url(self.name, config.get("url"))
+            url = _errors._validate_remote_mcp_url(self.name, config.get("url"))
+            _url_with_token = _errors._mcp_url_with_token(url, config.get("token"))
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a
             # web-app root returns HTML and would hang the SDK for connect_timeout. Skipped once
             # _ready was ever set and for OAuth servers (a token-less probe sees HTML/401).
@@ -289,7 +293,7 @@ class MCPServerRunMixin:
                     and liveness_for(self.name).kind != "server_json"
                     and not self._ready.is_set() and self._auth_type != "oauth"):
                 await self._preflight_content_type(
-                    config["url"], headers=dict(config.get("headers") or {}),
+                    _url_with_token, headers=dict(config.get("headers") or {}),
                     ssl_verify=config.get("ssl_verify", True),
                     client_cert=_errors._resolve_client_cert(self.name, config),
                     strict_redirect_headers=bool(config.get("strict_redirect_headers")))
@@ -304,7 +308,7 @@ class MCPServerRunMixin:
         self._error = exc
         self._ready.set()
 
-    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "transport")
+    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "token", "transport")
 
     def _refresh_remote_config(self, config: dict) -> dict:
         """Before rebuilding a remote transport, re-read this server's definition from config.yaml and

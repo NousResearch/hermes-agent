@@ -3,7 +3,7 @@
 manifest_version: 1
 
 name: altitude
-description: 'Altitude: Workspace balances, transactions and statements (read-only).'
+description: 'Altitude: balances and transactions; reviewed read tools enabled by default.'
 source: https://docs.altitude.xyz/mcp/setup
 
 # Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
@@ -28,13 +28,20 @@ transport:
 auth:
   type: oauth
 
-# Excluded by default: the only action tool and the bulk document download.
-# Statement PDFs/CSVs are whole banking records pulled into model context;
-# users who want them can re-enable both in `hermes mcp configure altitude`.
+# Preselect the reviewed read surface for fresh installs. Existing selections
+# survive reinstalls; the CLI can clear filters on empty discovery or when all
+# advertised tools are selected. This is a default, not a runtime capability cap.
+# Export generation and download remain available through explicit configuration.
 tools:
-  default_excluded:
-    - generate_exports
-    - download_export
+  default_enabled:
+    - whoami
+    - list_workspaces
+    - list_accounts
+    - search_transactions
+    - get_bill_settings
+    - get_receipt_settings
+    - list_export_options
+    - get_export_status
 
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
@@ -45,12 +52,29 @@ suggest:
     - altitude.xyz
 
 post_install: |
+  Compatibility: browser sign-in requires the upstream OAuth root-slash
+  issuer fix (tracked in #133681, #113762 and #132253). Without it,
+  installation succeeds but login fails with an issuer mismatch;
+  restarting or retrying does not fix this. This entry does not patch OAuth.
+
+  Before using the connection, disable server-requested model sampling and
+  use untrusted-server approval handling in the active Hermes profile:
+    hermes config set mcp_servers.altitude.sampling.enabled false
+    hermes config set mcp_servers.altitude.trust untrusted
+  The catalog cannot currently set these policies automatically, and the
+  installer may already have probed the server before showing this guidance.
+  Restart the session after changing them. Untrusted-server handling is
+  additional approval protection, not a guarantee that all tools are read-only.
+  Read results can still contain sensitive financial data and untrusted text.
+
   On first connection Hermes opens a browser to sign in to
   Altitude (or run `hermes mcp login altitude`). Approve access,
   then restart the session so tools load.
 
-  Statement generation and download are off by default; enable
-  them with `hermes mcp configure altitude`.
+  Statement generation and download are not preselected; enable
+  them with `hermes mcp configure altitude`. Existing selections survive
+  reinstalls. Empty discovery or selecting every advertised tool can clear
+  the CLI's filter; review the resulting selection before using financial tools.
 
   Results follow your existing Altitude Workspace permissions.
   Review or disconnect clients under Settings → My account →

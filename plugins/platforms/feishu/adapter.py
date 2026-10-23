@@ -146,6 +146,23 @@ _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
+
+# Inner disconnect budgets. Their worst-case sum must stay below the gateway's outer
+# per-adapter disconnect timeout (gateway/run.py: _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+# = 5.0s): the planned-restart path cancels disconnect() at that outer bound, and before
+# #96801 a cancellation landing on any await skipped every cleanup after it (CLOSE 5s +
+# thread-exit 10s meant cancel was the expected case, not the edge). Websocket and webhook
+# modes spend these budgets on disjoint awaits, so each mode's worst case is:
+# websocket = 2×0.5 (text+media batch) + 1.5 (CLOSE) + 2.0 (thread) = 4.5s; webhook =
+# 2×0.5 + 1.0 = 2.0s. The synchronous finalizer (_local_teardown) is the second layer when
+# cancellation still arrives — an env-overridden shorter outer budget or extreme
+# scheduling delay.
+_DISCONNECT_BATCH_CANCEL_TIMEOUT_SECS = 0.5
+_DISCONNECT_CLOSE_TIMEOUT_SECS = 1.5
+_DISCONNECT_THREAD_EXIT_TIMEOUT_SECS = 2.0
+_DISCONNECT_WEBHOOK_TIMEOUT_SECS = 1.0
+# A second concurrent disconnect() waits at most this long for the in-flight one.
+_DISCONNECT_JOIN_TIMEOUT_SECS = 3.0
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
@@ -1332,6 +1349,13 @@ class FeishuAdapter(BasePlatformAdapter):
         self._chat_info_cache: dict[str, dict[str, Any]] = {}
         self._message_text_cache: OrderedDict[str, Optional[str]] = OrderedDict()
         self._app_lock_identity: Optional[str] = None
+        # Bumped when a connect() successfully claims the app lock. disconnect() captures the
+        # generation it tears down; a newer connect() (same PID self-reacquires the scoped
+        # lock, so a reconnect racing teardown CAN claim it) makes the old disconnect's
+        # finalizer leave the new connection's state, executor and lock alone.
+        self._lifecycle_generation: int = 0
+        # The in-flight disconnect() task, so concurrent callers share one teardown.
+        self._disconnect_task: Optional[asyncio.Task] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
         self._pending_text_batch_tasks = self._text_batch_state.tasks
@@ -1527,6 +1551,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._set_fatal_error("feishu_app_lock", message, retryable=False)
                 return False
 
+            # This connect() now owns the app: any disconnect() that started against an
+            # earlier lifecycle must not release this lock or clear this connection's state.
+            self._lifecycle_generation += 1
+
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             if self._connection_mode == "websocket":
@@ -1538,40 +1566,93 @@ class FeishuAdapter(BasePlatformAdapter):
             self._wire_plugin_handlers(self._client)
             return True
         except Exception as exc:
-            await self._release_app_lock()
+            self._release_app_lock_sync()
             message = f"Feishu startup failed: {exc}"
             self._set_fatal_error("feishu_connect_error", message, retryable=True)
             logger.error("[Feishu] Failed to connect: %s", exc, exc_info=True)
             return False
 
     async def disconnect(self) -> None:
-        """Disconnect from Feishu/Lark."""
+        """Disconnect from Feishu/Lark.
+
+        Structure (the #96801 fix): every await lives in the ``try`` body and is bounded so
+        the worst case finishes inside the gateway's outer 5s adapter budget, while the
+        ``finally`` runs a strictly synchronous local finalizer. Before this, the local
+        cleanup sat after ``await _teardown_ws_thread()`` with no ``finally``: the gateway
+        cancels disconnect() at its deadline (CLOSE-ack + thread-exit could legitimately
+        spend 15s), and the cancellation skipped the SDK-executor shutdown, the seen-id
+        persistence and the app-lock release — the old process kept the Feishu app lock, the
+        replacement refused to claim the app, and the planned restart stalled for minutes.
+        """
         self._running = False
         if self._ws_supervisor is not None:
             self._ws_supervisor.cancel()
             self._ws_supervisor = None
-        await self._cancel_pending_tasks(self._pending_text_batch_tasks)
-        await self._cancel_pending_tasks(self._pending_media_batch_tasks)
-        self._reset_batch_buffers()
-        # ``_disable_websocket_auto_reconnect()`` nils ``_ws_client`` — capture first.
-        # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the thread loop. Without this, Feishu's
-        # server never learns the connection is dead and continues routing messages to the stale endpoint —
-        # the channel goes silent until the server-side CLOSE-WAIT expires (minutes to hours). See issue
-        # #10202.
-        ws_client = self._ws_client
-        ws_thread_loop = self._ws_thread_loop
-        self._disable_websocket_auto_reconnect()
-        await self._stop_webhook_server()
-        await self._teardown_ws_thread(ws_client, ws_thread_loop)
+        generation = self._lifecycle_generation
+        current = asyncio.current_task()
+        try:
+            prior = self._disconnect_task
+            if prior is not None and prior is not current and not prior.done():
+                # Concurrent disconnect(): share the in-flight teardown instead of racing a
+                # second CLOSE lifecycle through the same thread loop. Bounded, and the
+                # synchronous finalizer below is idempotent, so a wedged prior cannot hold
+                # this caller past its own budget.
+                done, _still = await asyncio.wait({prior}, timeout=_DISCONNECT_JOIN_TIMEOUT_SECS)
+                if done:
+                    self._local_teardown(generation)
+                    return
+                logger.warning("[Feishu] Prior disconnect still running; proceeding with this one")
+            if current is not None:
+                self._disconnect_task = current
+            await self._cancel_pending_tasks(self._pending_text_batch_tasks)
+            await self._cancel_pending_tasks(self._pending_media_batch_tasks)
+            self._reset_batch_buffers()
+            # ``_disable_websocket_auto_reconnect()`` nils ``_ws_client`` — capture first.
+            # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the thread loop. Without this, Feishu's
+            # server never learns the connection is dead and continues routing messages to the stale endpoint —
+            # the channel goes silent until the server-side CLOSE-WAIT expires (minutes to hours). See issue
+            # #10202.
+            ws_client = self._ws_client
+            ws_thread_loop = self._ws_thread_loop
+            self._disable_websocket_auto_reconnect()
+            await self._stop_webhook_server()
+            await self._teardown_ws_thread(ws_client, ws_thread_loop)
+            logger.info("[Feishu] Disconnected")
+        finally:
+            if current is not None and self._disconnect_task is current:
+                self._disconnect_task = None
+            self._local_teardown(generation)
+
+    def _local_teardown(self, generation: int) -> None:
+        """Strictly synchronous local finalizer; runs from disconnect()'s ``finally``.
+
+        Synchronous on purpose (#96809 review): a cancellation landing on any await in
+        disconnect() propagates CancelledError through this method without another
+        suspension point, so the release the replacement gateway needs — executor shutdown,
+        seen-id persistence, app-lock release — cannot be skipped mid-way. It also runs to
+        completion when the detached task is only rescheduled later during loop teardown.
+
+        Idempotent: repeat calls (concurrent disconnect joiners, a second disconnect after a
+        first failed) find cleared references and a released lock and do nothing.
+        """
+        # Persist dedup state unconditionally: it is pure local data, owned by no lifecycle.
+        self._persist_seen_message_ids()
+        if self._lifecycle_generation != generation:
+            # A newer connect() claimed the app (same-PID scoped locks self-reacquire, so
+            # this is reachable). Releasing here would drop the NEW connection's lock and
+            # clearing the references would tear down its WebSocket thread.
+            logger.info(
+                "[Feishu] disconnect finalizer deferred to newer connection (generation %d → %d)",
+                generation, self._lifecycle_generation,
+            )
+            return
         self._ws_future = None
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
         self._shutdown_sdk_executor()
-        self._persist_seen_message_ids()
-        await self._release_app_lock()
+        self._release_app_lock_sync()
         self._mark_disconnected()
-        logger.info("[Feishu] Disconnected")
 
     async def _teardown_ws_thread(self, ws_client: Any, ws_thread_loop: Any) -> None:
         """CLOSE frame → cancel the WS thread's tasks → wait for the thread future."""
@@ -1581,14 +1662,17 @@ class FeishuAdapter(BasePlatformAdapter):
         if ws_client is not None and loop_alive and hasattr(ws_client, "_disconnect"):
             try:
                 future = asyncio.run_coroutine_threadsafe(ws_client._disconnect(), ws_thread_loop)
-                # A CLOSE frame is one control frame; if 5s isn't enough the link is already wedged.
-                await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
+                # A CLOSE frame is one control frame. The budget is deliberately small: the
+                # graceful path must finish inside the gateway's outer adapter timeout, else
+                # the outer cancellation is what runs instead of the code below (#96801).
+                await asyncio.wait_for(asyncio.wrap_future(future), timeout=_DISCONNECT_CLOSE_TIMEOUT_SECS)
                 logger.debug("[Feishu] Sent WebSocket CLOSE frame to Feishu")
             except TimeoutError:
                 logger.warning(
-                    "[Feishu] CLOSE frame not acknowledged within 5s — "
+                    "[Feishu] CLOSE frame not acknowledged within %.1fs — "
                     "Feishu may briefly route messages to the stale "
-                    "connection until server-side timeout"
+                    "connection until server-side timeout",
+                    _DISCONNECT_CLOSE_TIMEOUT_SECS,
                 )
             except Exception as exc:
                 logger.debug("[Feishu] Could not send WebSocket CLOSE frame: %s", exc, exc_info=True)
@@ -1603,16 +1687,29 @@ class FeishuAdapter(BasePlatformAdapter):
                     task.cancel()
                 ws_thread_loop.call_later(0.1, ws_thread_loop.stop)
 
-            ws_thread_loop.call_soon_threadsafe(cancel_all_tasks)
+            try:
+                ws_thread_loop.call_soon_threadsafe(cancel_all_tasks)
+            except RuntimeError as exc:
+                # The WS thread's loop can close between the is_closed() check above and
+                # this handoff; that race must not skip the rest of the teardown (#96801
+                # follow-up: the raised RuntimeError used to propagate out of disconnect()
+                # before the local cleanup ran).
+                logger.debug("[Feishu] WebSocket loop closed before task cancellation: %s", exc)
 
         ws_future = self._ws_future
         if ws_future is not None:
             try:
-                logger.debug("[Feishu] Waiting for websocket thread to exit (timeout=10s)")
-                await asyncio.wait_for(asyncio.shield(ws_future), timeout=10.0)
+                logger.debug(
+                    "[Feishu] Waiting for websocket thread to exit (timeout=%.1fs)",
+                    _DISCONNECT_THREAD_EXIT_TIMEOUT_SECS,
+                )
+                await asyncio.wait_for(asyncio.shield(ws_future), timeout=_DISCONNECT_THREAD_EXIT_TIMEOUT_SECS)
                 logger.debug("[Feishu] Websocket thread exited cleanly")
             except TimeoutError:
-                logger.warning("[Feishu] Websocket thread did not exit within 10s - may be stuck")
+                logger.warning(
+                    "[Feishu] Websocket thread did not exit within %.1fs - may be stuck",
+                    _DISCONNECT_THREAD_EXIT_TIMEOUT_SECS,
+                )
             except asyncio.CancelledError:
                 logger.debug("[Feishu] Websocket thread cancelled during disconnect")
             except Exception as exc:
@@ -1623,7 +1720,16 @@ class FeishuAdapter(BasePlatformAdapter):
         for task in pending:
             task.cancel()
         if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+            # Bounded: an inbound batch task that suppresses CancelledError must not hold
+            # disconnect() (and so the synchronous finalizer) hostage past the gateway's
+            # outer adapter budget (#96809 review). Detached tasks are already cancelled;
+            # loop teardown reaps whatever still refuses to exit.
+            _done, still = await asyncio.wait(pending, timeout=_DISCONNECT_BATCH_CANCEL_TIMEOUT_SECS)
+            if still:
+                logger.warning(
+                    "[Feishu] %d batch task(s) still running %.1fs after cancel; detaching",
+                    len(still), _DISCONNECT_BATCH_CANCEL_TIMEOUT_SECS,
+                )
         tasks.clear()
 
     def _reset_batch_buffers(self) -> None:
@@ -1642,13 +1748,26 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client = None
 
     async def _stop_webhook_server(self) -> None:
-        if self._webhook_runner is None:
+        runner = self._webhook_runner
+        if runner is None:
             return
         try:
-            await self._webhook_runner.cleanup()
-        finally:
-            self._webhook_runner = None
-            self._webhook_site = None
+            # Bounded so the graceful disconnect path fits the gateway's outer adapter
+            # budget (#96801). On timeout or failure the runner reference is KEPT: a
+            # later disconnect()/retry can attempt the cleanup again instead of silently
+            # leaking a server that no one can reach anymore.
+            await asyncio.wait_for(runner.cleanup(), timeout=_DISCONNECT_WEBHOOK_TIMEOUT_SECS)
+        except TimeoutError:
+            logger.warning(
+                "[Feishu] Webhook server cleanup timed out after %.1fs; handles retained for retry",
+                _DISCONNECT_WEBHOOK_TIMEOUT_SECS,
+            )
+            return
+        except Exception as exc:
+            logger.debug("[Feishu] Webhook server cleanup failed: %s", exc, exc_info=True)
+            return
+        self._webhook_runner = None
+        self._webhook_site = None
 
     # --- Outbound — send / edit / send_image / send_voice / … ---
     async def send(
@@ -3968,15 +4087,25 @@ class FeishuAdapter(BasePlatformAdapter):
                 await asyncio.sleep(wait_seconds)
         raise last_error or RuntimeError("Feishu send failed")
 
-    async def _release_app_lock(self) -> None:
-        if not self._app_lock_identity:
+    def _release_app_lock_sync(self) -> None:
+        """Release the Feishu app-scoped lock; synchronous and retryable (#96801).
+
+        Synchronous because it runs from _local_teardown()'s cancellation-proof finalizer —
+        an await here would be a suspension point a gateway-level cancel could land on.
+        Retryable because the identity is only cleared after a successful release: a failed
+        one (scoped-lock dir briefly unusable, transient IO error) keeps the identity so the
+        next disconnect()/connect-failure path can try again instead of stranding the lock
+        until the stale-record reaper notices the dead owner.
+        """
+        identity = self._app_lock_identity
+        if not identity:
             return
         try:
-            release_scoped_lock(_FEISHU_APP_LOCK_SCOPE, self._app_lock_identity)
+            release_scoped_lock(_FEISHU_APP_LOCK_SCOPE, identity)
         except Exception as exc:
             logger.warning("[Feishu] Failed to release app lock: %s", exc, exc_info=True)
-        finally:
-            self._app_lock_identity = None
+            return
+        self._app_lock_identity = None
 
     # --- Lark API request builders (SimpleNamespace fallback when the SDK is unbound) ---
     @staticmethod

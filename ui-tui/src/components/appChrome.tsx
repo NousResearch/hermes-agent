@@ -505,6 +505,14 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean, effortWire?: string) =>
   [shortModelLabel(model), effortLabel(effort, effortWire), fast ? tr('status.fast') : ''].filter(Boolean).join(' ')
 
+const PROVIDER_MAX_WIDTH = 20
+
+const providerLabelText = (provider?: string) => {
+  const id = (provider ?? '').trim()
+
+  return id.length > PROVIDER_MAX_WIDTH ? `${id.slice(0, PROVIDER_MAX_WIDTH - 3)}...` : id
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -541,6 +549,7 @@ export function StatusRule({
   statusBarFields = null,
   statusColor,
   model,
+  modelProvider,
   modelFast,
   modelReasoningEffort,
   modelReasoningEffortWire,
@@ -583,6 +592,7 @@ export function StatusRule({
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
+  const providerText = ok('provider') ? providerLabelText(modelProvider) : ''
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
@@ -619,6 +629,7 @@ export function StatusRule({
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
+    (providerText ? stringWidth(` via ${providerText}`) : 0) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
   const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
@@ -768,6 +779,11 @@ export function StatusRule({
             {' │ '}
             {modelText}
           </Text>
+          {providerText ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {` via ${providerText}`}
+            </Text>
+          ) : null}
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
@@ -998,6 +1014,7 @@ interface StatusRuleProps {
   cols: number
   cwdLabel: string
   model: string
+  modelProvider?: string
   modelFast?: boolean
   modelReasoningEffort?: string
   modelReasoningEffortWire?: string

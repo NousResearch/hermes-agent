@@ -211,6 +211,39 @@ def test_a_plugin_importing_its_new_dependency_at_load_still_asks_for_a_restart(
     PluginActivation.model_validate(result["activation"])  # the plugins.manage wire accepts it
 
 
+@pytest.mark.parametrize("shape, restart", [
+    ("pyproject", True), ("pip_dependencies", True), ("external", False)])
+def test_restart_follows_what_pm_installs_for_the_plugin(home, shape, restart):
+    """The probe reads the declaration the way PM admission does: an authored pyproject.toml, the
+    legacy ``pip_dependencies`` alias, and nothing for a ``python_runtime: external`` sidecar (its
+    dependencies never enter Hermes's environment, so no restart or repair can load them)."""
+    from hermes_cli import plugins
+
+    _select_generation(home, with_dist=True)
+    plugin = home / "plugins" / "depprobe"
+    manifest = {"pyproject": "name: depprobe\nversion: '1.0'\n",
+                "pip_dependencies": f"name: depprobe\nversion: '1.0'\npip_dependencies:\n  - '{REQ}'\n",
+                "external": (f"name: depprobe\nversion: '1.0'\npython_runtime: external\n"
+                             f"python_dependencies:\n  - '{REQ}'\n")}[shape]
+    (plugin / "plugin.yaml").write_text(manifest, encoding="utf-8")
+    if shape == "pyproject":
+        (plugin / "pyproject.toml").write_text(
+            f'[project]\nname = "depprobe"\nversion = "1.0"\ndependencies = ["{REQ}"]\n', encoding="utf-8")
+    if shape != "external":  # an external sidecar's dependency is never importable in-process
+        (plugin / "__init__.py").write_text(
+            "import hermes_depprobe_fixture\n\ndef register(ctx):\n    pass\n", encoding="utf-8")
+    try:
+        plugins.discover_plugins(force=True)
+        manager = plugins.get_plugin_manager()
+        entry = plugins_activation.find_activation(
+            plugins_activation.activation_summaries(manager)
+            + plugins_activation.dependency_blocked_summaries(manager), "depprobe")
+    finally:
+        plugins._reset_plugin_managers_for_tests()
+
+    assert bool((entry or {}).get("missing_dependencies")) is restart, entry
+
+
 def test_an_installed_version_the_requirement_rejects_is_missing(home, monkeypatch, tmp_path):
     """``plugins update`` raising a floor: the running process holds 1.0, the selected generation
     1.7. A name-only probe called that satisfied and asked for no restart."""

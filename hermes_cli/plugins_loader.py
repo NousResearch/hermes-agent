@@ -223,12 +223,29 @@ def _dist_installed(req: str, path: Optional[list[str]] = None) -> Optional[bool
 
 
 def missing_python_dependencies(manifest: Any) -> list[str]:
-    """The plugin's declared ``python_dependencies`` this process cannot import.
+    """The plugin's effective Python requirements (:func:`_declared_requirements`) this process
+    cannot import.
 
     A requirement whose environment marker excludes this interpreter is never missing: PM does not
     install it here, so reporting it would ask for a restart or repair that can never help."""
-    return [req for req in getattr(manifest, "python_dependencies", None) or ()
+    return [req for req in _declared_requirements(manifest)
             if _applies_here(req) and _dist_installed(req) is False]
+
+
+def _declared_requirements(manifest: Any) -> tuple[str, ...]:
+    """What PM installs into Hermes's environment for this plugin: its declaration read the way
+    admission reads it (``pm.plugin_declarations.read_python_declaration`` — an authored
+    ``pyproject.toml`` first, then ``python_dependencies`` / ``pip_dependencies``; nothing for a
+    ``python_runtime: external`` sidecar). A plugin with no directory (an entry point) has only its
+    manifest list."""
+    path = getattr(manifest, "path", None)
+    if not path or not Path(path).is_dir():
+        return tuple(getattr(manifest, "python_dependencies", None) or ())
+    from pm.plugin_declarations import read_python_declaration
+    try:
+        return read_python_declaration(Path(path)).install_requirements
+    except (OSError, ValueError):  # a declaration PM cannot read is refused at admission, not ours to report
+        return ()
 
 
 def _applies_here(req: str) -> bool:
@@ -481,27 +498,24 @@ class PluginLoaderMixin:
 
         Plugin admission and PM repair own dependency changes.
         """
-        deps = manifest.python_dependencies
-        if not deps:
+        missing = missing_python_dependencies(manifest)
+        if not missing:
             return
         key = manifest_key(manifest)
-        missing = missing_python_dependencies(manifest)
-        if missing and installed_in_selected_environment(missing):
+        if installed_in_selected_environment(missing):
             logger.warning(
                 "Plugin %s's Python dependencies were installed after this process started: %s. "
                 "A running process never switches dependency environments; restart Hermes "
                 "(hermes gateway restart for the gateway) to load them.",
                 key, ", ".join(missing),
             )
-        elif missing:
+        else:
             logger.warning(
                 "Plugin %s declares Python dependencies that are not "
                 "installed: %s. For an enabled plugin, run hermes pm repair, "
                 "then restart Hermes. Discovery does not install dependencies.",
                 key, ", ".join(missing),
             )
-        else:
-            logger.debug("Plugin %s python_dependencies satisfied: %s", key, ", ".join(deps))
 
     def _validate_plugin_config_schema(self, manifest: PluginManifest) -> None:
         """Warn (never block) on plugins.entries.<id> settings that violate config_schema.

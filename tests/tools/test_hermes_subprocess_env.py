@@ -39,12 +39,18 @@ _SAFE_SAMPLE = {
     "MY_APP_VAR": "keep-me",
 }
 
+# Windows has no pwd fallback for a scrubbed home: without USERPROFILE (or
+# HOMEDRIVE+HOMEPATH) the builders' default-home resolution raises
+# "Could not determine home directory" instead of exercising the strip
+# contract (#137196). POSIX keeps resolving via the seed HOME above.
+_WIN_HOME_ENV = {k: os.environ[k] for k in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH") if k in os.environ}
+
 
 def _build(extra=None, *, inherit_credentials=False):
     env = dict(_SAFE_SAMPLE)
     if extra:
         env.update(extra)
-    with patch.dict(os.environ, env, clear=True):
+    with patch.dict(os.environ, {**env, **_WIN_HOME_ENV}, clear=True):
         return hermes_subprocess_env(inherit_credentials=inherit_credentials)
 
 
@@ -150,7 +156,7 @@ class TestBrowserPassthroughPattern:
             "ANTHROPIC_API_KEY": "ant-should-go",
             "TELEGRAM_BOT_TOKEN": "bot-should-go",
         }
-        with patch.dict(os.environ, {**_SAFE_SAMPLE, **leaked}, clear=True):
+        with patch.dict(os.environ, {**_SAFE_SAMPLE, **leaked, **_WIN_HOME_ENV}, clear=True):
             env = hermes_subprocess_env(inherit_credentials=False)
             for key in _BROWSER_PASSTHROUGH_KEYS:
                 if key in os.environ:
@@ -171,6 +177,7 @@ class TestDelegatedChildMarker:
             os.environ,
             {
                 **_SAFE_SAMPLE,
+                **_WIN_HOME_ENV,
                 "HERMES_KANBAN_TASK": "t_parent",
                 "HERMES_KANBAN_RUN_ID": "123",
                 "HERMES_KANBAN_DB": "/tmp/parent-kanban.db",

@@ -3,7 +3,8 @@ from copy import deepcopy
 
 import pytest
 
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, retry_failure_row_ids
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice
+from agent.retry_context import retry_failure_row_ids
 from tui_gateway.methods_prompt_retry import _retry_context_is_durable, _retry_history_signature
 
 
@@ -62,3 +63,32 @@ def test_repeated_failures_omit_all_proven_notices_in_this_turn_only():
     assert retry_failure_row_ids(rows) == (4, 7)
     rows[3]['display_metadata']['error_surface']['code'] = 'unknown'
     assert retry_failure_row_ids(rows) is None
+
+
+def test_proven_notices_survive_repair_before_a_new_tool_result():
+    from types import SimpleNamespace
+    from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+    rows = _history()
+    boundary = rows[-1]
+    rows.extend([{'role': 'assistant', 'tool_calls': [{'id': 'call-2', 'type': 'function',
+                  'function': {'name': 'terminal', 'arguments': '{}'}}], '_row_id': 5},
+                 {'role': 'tool', 'content': 'done again', 'tool_call_id': 'call-2', '_row_id': 6}])
+    before = deepcopy(rows)
+    agent = SimpleNamespace(_resume_user_row_id=1, _resume_failure_row_ids=(4,))
+    assert repair_message_sequence_with_cursor(agent, rows) == 0
+    assert rows == before
+    assert rows[3] is boundary
+
+
+def test_retry_still_repairs_new_malformed_input_without_mutating_the_boundary():
+    from types import SimpleNamespace
+    from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+    rows = _history()
+    boundary = rows[-1]
+    rows.extend([{'role': 'user', 'content': 'one'}, {'role': 'user', 'content': 'two'}])
+    agent = SimpleNamespace(_resume_user_row_id=1, _resume_failure_row_ids=(4,), _last_flushed_db_idx=4)
+    assert repair_message_sequence_with_cursor(agent, rows) > 0
+    assert rows[3] is boundary
+    assert len(rows) == 5
+    assert 'one' in rows[-1]['content'] and 'two' in rows[-1]['content']
+    assert agent._last_flushed_db_idx == 4

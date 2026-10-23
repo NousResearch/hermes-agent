@@ -812,7 +812,7 @@ def _invoke_agent(
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
-            from agent.turn_failure_copy import retry_failure_row_ids
+            from agent.retry_context import retry_failure_row_ids
             agent._resume_failure_row_ids = retry_failure_row_ids(st.history) if st.resume_user_row_id is not None else ()
             agent._resume_user_row_id = st.resume_user_row_id
             try:

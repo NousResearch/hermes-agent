@@ -78,28 +78,6 @@ def failed_turn_notice(turn_messages: Any) -> str:
     return FAILED_TURN_NOTICE
 
 
-def retry_failure_row_ids(history: list) -> tuple[int, ...] | None:
-    """Prove the Hermes failure boundaries in this user turn; None refuses continuation.
-
-    A continuation keeps these display rows in storage, but omits them on every model
-    request, including after another rate limit. Earlier user turns remain untouched.
-    Its caller authenticates the complete transcript before using these row addresses.
-    """
-    user = next((i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)
-    ids = []
-    for index, row in enumerate(history):
-        if user is None or index <= user or row.get("display_kind") != FAILED_TURN_DISPLAY_KIND:
-            continue
-        surface = (row.get("display_metadata") or {}).get("error_surface")
-        if (type(row.get("_row_id")) is not int or row.get("role") != "assistant" or row.get("tool_calls")
-                or row.get("content") != failed_turn_notice(history[user:index])
-                or not isinstance(surface, dict) or surface.get("layer") != "provider"
-                or surface.get("code") != "rate_limit"):
-            return None
-        ids.append(row["_row_id"])
-    return tuple(ids)
-
-
 def provider_label_for(provider: Any) -> str:
     """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
     from hermes_cli.models import provider_label

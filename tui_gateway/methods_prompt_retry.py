@@ -27,7 +27,7 @@ def _retry_history_signature(history):
 
 def _retry_context_is_durable(history):
     """Replayed screenshots depend on external bytes/config, beyond the durable row signature."""
-    from agent.turn_failure_copy import retry_failure_row_ids
+    from agent.retry_context import retry_failure_row_ids
     if retry_failure_row_ids(history) is None:
         return False
     return not any(row.get("role") == "user" and isinstance(row.get(key), str)

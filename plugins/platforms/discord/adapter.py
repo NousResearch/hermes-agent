@@ -3664,6 +3664,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8" if sys.platform == "win32" else None,
+                errors="replace",
                 timeout=5,
                 stdin=subprocess.DEVNULL,
             )

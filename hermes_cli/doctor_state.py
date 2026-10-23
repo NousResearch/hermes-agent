@@ -143,7 +143,7 @@ def check_legacy_desktop_checkout() -> None:
         try:
             return subprocess.run(
                 ["git", "-C", str(checkout), *args],
-                capture_output=True, text=True, encoding="utf-8", timeout=10,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):

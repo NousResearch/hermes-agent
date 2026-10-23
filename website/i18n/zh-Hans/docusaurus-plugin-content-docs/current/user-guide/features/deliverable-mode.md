@@ -16,7 +16,7 @@ description: Agent 如何将生成的图表、PDF、电子表格及其他文件�
 
 1. **Agent 拥有可生成文件的工具。** `execute_code` 用于通过 matplotlib 生成图表，`latex-pdf-report` skill 用于生成 PDF，`powerpoint` skill 用于生成演示文稿，`image_generate` 用于生成图片，`text_to_speech` 用于生成音频，等等。
 
-2. **Gateway 扫描 agent 回复中的文件路径。** 任何以支持扩展名结尾的绝对路径（`/tmp/...`）或相对主目录路径（`~/...`）都会被提取。代码块和内联代码中的路径会被忽略，以避免代码示例被破坏。
+2. **Gateway 扫描 agent 回复中的文件路径。** 任何以支持扩展名结尾的绝对路径（`~/.hermes/deliverables/...`）或相对主目录路径（`~/...`）都会被提取。代码块和内联代码中的路径会被忽略，以避免代码示例被破坏。
 
 3. **Gateway 按文件类型分发。** 在平台支持的情况下，图片以内联方式嵌入；视频以内联方式嵌入；音频路由至语音/音频附件；其他所有内容作为文件附件上传。
 
@@ -43,7 +43,9 @@ Agent 默认不会主动生成 artifacts——需要明确告知。有两种方�
 
 **项目级别：** 将偏好设置添加到项目中的 `AGENTS.md` / `CLAUDE.md` / `.cursorrules`（agent 从该项目工作），或添加到 `~/.hermes/config.yaml` 中 `agent.custom_instructions` 下的全局自定义指令。
 
-Agent 需要使用的机制很简单：将文件渲染到绝对路径（例如 `/tmp/q3-revenue.png`），并在回复中以纯文本形式提及该路径。Gateway 负责其余工作。围栏代码块或反引号中的路径会被忽略，以避免代码示例被破坏。
+Agent 需要使用的机制很简单：将文件渲染到绝对路径（例如 `~/.hermes/deliverables/q3-revenue.png`），并在回复中以纯文本形式提及该路径。Gateway 负责其余工作。围栏代码块或反引号中的路径会被忽略，以避免代码示例被破坏。
+
+`~/.hermes/deliverables/` 是这些文件的长期存放位置：Hermes 会在首次使用时创建它，且不会清理它，因此当你回来取文件时它仍然存在。而 scratch 目录恰好相反——一旦空闲就会被清理，写入后 24 小时就会消失。
 
 ## Kanban：Artifacts 随完成通知一并发送
 

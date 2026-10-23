@@ -360,33 +360,46 @@ def claim_unseen_events_for_sub(
 ) -> tuple[int, int, list[Event]]:
     """Atomically claim unseen events for one subscription.
 
-    Returns ``(old_cursor, new_cursor, events)``; when events are returned the
-    row's ``last_event_id`` has already been advanced inside ``BEGIN IMMEDIATE``,
-    so concurrent gateway watchers on the same board DB serialize on SQLite's
-    writer lock and only the first claims a given event range. Callers send the
-    events, then leave the cursor or call :func:`rewind_notify_cursor` on
-    delivery failure.
+    The owner stamp makes an unfinished claim recoverable after a gateway crash.
+    A live owner still excludes concurrent watchers; a dead owner's cursor is
+    rewound before selecting events. A delivered ping has its own checkpoint,
+    so replay after a crash need not resend one that was already recorded.
     """
+    from gateway.delivery_ledger import _owner_alive, _owner_stamp
+
+    key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
-        old_cursor = _notify_cursor(conn, task_id, platform, chat_id, thread_id)
-        if old_cursor is None:
+        row = conn.execute(
+            "SELECT last_event_id, claim_owner_pid, claim_owner_started_at, claim_old_cursor "
+            "FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            key,
+        ).fetchone()
+        if row is None:
             return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        if row["claim_owner_pid"] is not None:
+            if _owner_alive(row["claim_owner_pid"], row["claim_owner_started_at"]):
+                return old_cursor, old_cursor, []
+            old_cursor = int(row["claim_old_cursor"]) if row["claim_old_cursor"] is not None else old_cursor
+            conn.execute(
+                "UPDATE kanban_notify_subs SET last_event_id = ?, claim_owner_pid = NULL, "
+                "claim_owner_started_at = NULL, claim_old_cursor = NULL " + _SUB_KEY_WHERE,
+                (old_cursor, *key),
+            )
         new_cursor, events = unseen_events_for_sub(
             conn, task_id=task_id, platform=platform, chat_id=chat_id,
             thread_id=thread_id, kinds=kinds,
         )
         if not events:
             return old_cursor, old_cursor, []
-        _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), new_cursor, old_cursor)
+        pid, started_at = _owner_stamp()
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ?, claim_owner_pid = ?, "
+            "claim_owner_started_at = ?, claim_old_cursor = ? " + _SUB_KEY_WHERE +
+            " AND last_event_id = ? AND claim_owner_pid IS NULL",
+            (new_cursor, pid, started_at, old_cursor, *key, old_cursor),
+        )
         return old_cursor, new_cursor, events
-
-
-def _cas_cursor(conn: sqlite3.Connection, key: tuple, new_cursor: int, expected: int) -> sqlite3.Cursor:
-    """Move ``last_event_id`` only if it still equals ``expected``."""
-    return conn.execute(
-        "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE + " AND last_event_id = ?",
-        (int(new_cursor), *key, int(expected)),
-    )
 
 
 def advance_notify_cursor(
@@ -398,10 +411,15 @@ def advance_notify_cursor(
     thread_id: Optional[str] = None,
     new_cursor: int,
 ) -> None:
+    from gateway.delivery_ledger import _owner_stamp
+
+    pid, _ = _owner_stamp()
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE,
-            (int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
+            "UPDATE kanban_notify_subs SET last_event_id = MAX(last_event_id, ?), claim_owner_pid = NULL, "
+            "claim_owner_started_at = NULL, claim_old_cursor = NULL " + _SUB_KEY_WHERE +
+            " AND (claim_owner_pid IS NULL OR (claim_owner_pid = ? AND last_event_id = ?))",
+            (int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id), pid, int(new_cursor)),
         )
 
 
@@ -428,11 +446,17 @@ def rewind_notify_cursor(
     claimed_cursor: int,
     old_cursor: int,
 ) -> bool:
-    """Undo a claim when delivery fails. The CAS guard only rewinds if no later
-    notifier advanced the row, so retries never clobber newer progress.
-    """
+    """Undo this owner's claim on delivery failure without clobbering a newer one."""
+    from gateway.delivery_ledger import _owner_stamp
+
+    pid, _ = _owner_stamp()
     with _kb.write_txn(conn):
-        cur = _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), old_cursor, claimed_cursor)
+        cur = conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ?, claim_owner_pid = NULL, "
+            "claim_owner_started_at = NULL, claim_old_cursor = NULL " + _SUB_KEY_WHERE +
+            " AND last_event_id = ? AND claim_owner_pid = ?",
+            (old_cursor, *_sub_key(task_id, platform, chat_id, thread_id), claimed_cursor, pid),
+        )
     return cur.rowcount > 0
 
 

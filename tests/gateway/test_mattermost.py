@@ -98,6 +98,74 @@ def _make_adapter():
     return adapter
 
 
+class TestMattermostTyping:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reply_mode,metadata,expected_parent",
+        [
+            ("thread", {"thread_id": "root-a"}, "root-a"),
+            ("thread", {"root_id": "root-b"}, "root-b"),
+            ("thread", {"thread_id": "root-a", "root_id": "root-b"}, "root-a"),
+            ("thread", None, None),
+            ("thread", {}, None),
+            ("thread", {"thread_id": ""}, None),
+            ("off", {"thread_id": "root-a"}, None),
+        ],
+    )
+    async def test_typing_http_payload_matches_reply_scope(
+        self, reply_mode, metadata, expected_parent
+    ):
+        # Exercise the real HTTP serialization, not a mocked _api_post.
+        import aiohttp
+        from aiohttp import web
+
+        received = []
+
+        async def typing(request):
+            received.append(await request.json())
+            return web.json_response({"status": "OK"})
+
+        app = web.Application()
+        app.router.add_post("/api/v4/users/bot-id/typing", typing)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = runner.addresses[0][1]
+            adapter = _make_adapter()
+            adapter._base_url = f"http://127.0.0.1:{port}"
+            adapter._bot_user_id = "bot-id"
+            adapter._reply_mode = reply_mode
+            async with aiohttp.ClientSession() as session:
+                adapter._session = session
+                await adapter.send_typing("channel-1", metadata=metadata)
+            expected = {"channel_id": "channel-1"}
+            if expected_parent is not None:
+                expected["parent_id"] = expected_parent
+            assert received == [expected]
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_gateway_thread_metadata_keeps_concurrent_threads_separate(self):
+        from types import SimpleNamespace
+        from gateway.platforms.base import _thread_metadata_for_source
+
+        adapter = _make_adapter()
+        adapter._reply_mode = "thread"
+        adapter._bot_user_id = "bot-id"
+        adapter._api_post = AsyncMock(return_value={"status": "OK"})
+        for root_id in ("root-a", "root-b", None):
+            source = SimpleNamespace(platform=Platform.MATTERMOST, thread_id=root_id)
+            await adapter.send_typing("channel-1", _thread_metadata_for_source(source))
+        assert [call.args[1] for call in adapter._api_post.await_args_list] == [
+            {"channel_id": "channel-1", "parent_id": "root-a"},
+            {"channel_id": "channel-1", "parent_id": "root-b"},
+            {"channel_id": "channel-1"},
+        ]
+
+
 class TestMattermostFormatMessage:
     def setup_method(self):
         self.adapter = _make_adapter()

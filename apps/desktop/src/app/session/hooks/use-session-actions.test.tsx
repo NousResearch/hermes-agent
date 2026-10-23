@@ -7139,19 +7139,19 @@ describe('coding workspace first send', () => {
     act(() => handle!.startFreshSessionDraft())
     expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].controlsEnabled).not.toBe(true)
     setCodingWorkspaceIntent(owner, { path: '/repo', mode: 'worktree' })
-    const prepared = { cwd: '/repo/.worktrees/task', projectId: 'p', repoRoot: '/repo', branch: 'task' }
-    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method) => {
-      expect(connection).toBeNull()
-      expect(profile).toBe('coder')
+    const prepared = { requestId: 'prepared-workspace', cwd: '/repo/.worktrees/task', projectId: 'p', repoRoot: '/repo', branch: 'task' }
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params) => {
+      expect([connection, profile]).toEqual([null, 'coder'])
 
       if (method === 'projects.workspace.prepare') {
         return prepared as never
       }
 
       if (method === 'session.create') {
+        expect(params).toMatchObject({ request_id: prepared.requestId, cwd: prepared.cwd, cwd_explicit: true, coding_workspace: prepared })
+
         return {
-          session_id: RUNTIME_SESSION_ID,
-          stored_session_id: 'legacy-workspace',
+          session_id: RUNTIME_SESSION_ID, stored_session_id: 'legacy-workspace',
           info: { cwd: prepared.cwd }
         } as never
       }

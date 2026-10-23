@@ -8852,6 +8852,17 @@
             "default": null,
             "title": "Cwd"
           },
+          "coding_workspace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CodingWorkspaceBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "row_cwd": {
             "anyOf": [
               {
@@ -11220,6 +11231,17 @@
             "default": null,
             "title": "Cwd"
           },
+          "coding_workspace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CodingWorkspaceBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "edit_approval_policy": {
             "anyOf": [
               {
@@ -11689,6 +11711,104 @@
           "voice_stopped"
         ],
         "title": "CanonicalVoiceStopped",
+        "type": "object"
+      },
+      "CanonicalWorkspaceReferencesParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 256,
+            "title": "Paths",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 1000000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "reference_cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Cwd"
+          }
+        },
+        "required": [
+          "session_id",
+          "paths"
+        ],
+        "title": "CanonicalWorkspaceReferencesParams",
+        "type": "object"
+      },
+      "CanonicalWorkspaceVerifyParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "CanonicalWorkspaceVerifyParams",
         "type": "object"
       },
       "CapabilityEntry": {
@@ -12814,6 +12934,18 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "cwd_explicit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd Explicit"
           },
           "session_id": {
             "anyOf": [
@@ -49217,6 +49349,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalCorrectionResult"
+        }
+      }
+    },
+    {
+      "name": "session.workspace.references",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalWorkspaceReferencesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionWorkspaceReferencesResult"
+        }
+      }
+    },
+    {
+      "name": "session.workspace.verify",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalWorkspaceVerifyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionWorkspaceVerifyResult"
         }
       }
     },

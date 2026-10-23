@@ -2016,6 +2016,7 @@ export interface CompletePathParams {
   profile?: string | null
   word?: string | null
   cwd?: string | null
+  cwd_explicit?: boolean | null
   session_id?: string | null
 }
 /** An empty ``word`` answers no items but the directory completions would resolve against. */
@@ -5055,6 +5056,7 @@ export interface CanonicalCreateParams {
   request_id?: string | null
   source?: 'cli' | 'tui' | 'gui' | 'acp' | 'tool' | 'oneshot'
   cwd?: string | null
+  coding_workspace?: CodingWorkspaceBinding | null
   row_cwd?: string | null
   model?: string | null
   provider?: string | null
@@ -5150,6 +5152,7 @@ export interface CanonicalSnapshotInfo {
   profile_id?: string | null
   profile_name?: string | null
   cwd?: string | null
+  coding_workspace?: CodingWorkspaceBinding | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
   reasoning_effort?: string | null
@@ -5164,6 +5167,18 @@ export interface CanonicalSnapshotInfo {
   tool_count?: number | null
   credential_hint?: string | null
   config_warning?: string | null
+}
+export interface CanonicalWorkspaceVerifyParams {
+  profile?: string | null
+  session_id: string
+  cwd?: string | null
+}
+export interface CanonicalWorkspaceReferencesParams {
+  profile?: string | null
+  session_id: string
+  paths: string[]
+  text?: string | null
+  reference_cwd?: string | null
 }
 export interface CanonicalResumeParams {
   profile?: string | null
@@ -7007,6 +7022,8 @@ export interface CanonicalRpcMethods {
   /** The session.usage dict on demand: what main's classic CLI read off its agent. */
   'session.stats': { params: SessionStatsParams; result: SessionStats }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
+  'session.workspace.references': { params: CanonicalWorkspaceReferencesParams; result: SessionWorkspaceReferencesResult }
+  'session.workspace.verify': { params: CanonicalWorkspaceVerifyParams; result: SessionWorkspaceVerifyResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
   /** Adopt a registered execution after verifying the live producer claim. */
@@ -7062,6 +7079,8 @@ export const CANONICAL_RPC_METHODS = [
   'session.resume',
   'session.stats',
   'session.steer',
+  'session.workspace.references',
+  'session.workspace.verify',
   'shell.exec',
   'worker.adopt',
   'worker.persist',

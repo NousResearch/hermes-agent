@@ -62,7 +62,7 @@ def test_lost_response_restart_reuses_receipt_with_profile_isolation(tmp_path, g
     env = {**os.environ, "HOME": str(tmp_path), "HERMES_HOME": str(home)}
     def run(params):
         proc = subprocess.run([sys.executable, "-c", CREATE], input=json.dumps(params),
-                              capture_output=True, text=True, env=env, timeout=30)
+                              capture_output=True, text=True, env=env, timeout=30, check=False)
         assert proc.returncode == 0, proc.stderr
         return json.loads(proc.stdout.splitlines()[-1])
     alpha = run({"profile": "alpha", "cwd": str(folder), "source": "desktop"})
@@ -124,7 +124,7 @@ def test_prepared_but_unbound_worktree_is_reclaimed_after_process_restart(tmp_pa
 
     def prepare(params):
         proc = subprocess.run([sys.executable, "-c", PREPARE], input=json.dumps(params),
-                              capture_output=True, text=True, env=env, timeout=30)
+                              capture_output=True, text=True, env=env, timeout=30, check=False)
         assert proc.returncode == 0, proc.stderr
         return json.loads(proc.stdout.splitlines()[-1])
 

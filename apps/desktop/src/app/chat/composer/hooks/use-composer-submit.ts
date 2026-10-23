@@ -21,6 +21,7 @@ import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-
 import { notify } from '@/store/notifications'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
+import { $currentCwdExplicit } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -165,6 +166,7 @@ export function useComposerSubmit({
         composerScope: submittedScope,
         ...assignment,
         ...(cwd !== undefined ? { referenceCwd: cwd } : {}),
+        ...(!sessionId ? { referenceCwdExplicit: $currentCwdExplicit.get() } : {}),
         ...(displayKind ? { displayKind } : {})
       })
     )

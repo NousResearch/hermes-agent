@@ -23,6 +23,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { type GuardedModelSwitchResult, surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
 import { setSessionYolo } from '@/lib/yolo-session'
+import { captureCodingWorkspaceReferenceCwd, codingWorkspaceDraftKey, codingWorkspaceKey } from '@/store/coding-workspaces'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { markCompressDeferred } from '@/store/compaction'
 import { $composerAttachments, setComposerDraft } from '@/store/composer'
@@ -35,7 +36,8 @@ import {
   $newChatProfile,
   captureNewChatSource,
   ensureGatewayProfile,
-  normalizeProfileKey
+  normalizeProfileKey,
+  resolveNewChatBackendOwner
 } from '@/store/profile'
 import {
   $connection,
@@ -68,6 +70,7 @@ import type {
   SessionTitleResponse,
   SlashExecResponse
 } from '../../../types'
+import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
@@ -151,7 +154,7 @@ interface SlashCommandDeps {
   branchCurrentSession: () => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
-  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  createBackendSessionForSend: CreateBackendSessionForSend
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   handleSkinCommand: (arg: string) => string
@@ -280,7 +283,20 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       const ensureSessionId = async (sessionHint?: string, preview?: null | string) =>
         resolveTargetSessionId({
           activeRuntimeId: initialRuntimeId,
-          createSession: () => createBackendSessionForSend(preview),
+          createSession: async () => {
+            const owner = { ...resolveNewChatBackendOwner(), draftKey: codingWorkspaceDraftKey(options?.composerScope) }
+            const key = codingWorkspaceKey(owner)
+
+            const captured = await captureCodingWorkspaceReferenceCwd(
+              owner, options?.referenceCwd,
+              () => codingWorkspaceKey({ ...resolveNewChatBackendOwner(), draftKey: owner.draftKey }) === key,
+              options?.referenceCwdExplicit
+            )
+
+            if (!captured) { return null }
+
+            return createBackendSessionForSend(preview, { onComposerScopeAssigned: options?.onComposerScopeAssigned }, options?.composerScope)
+          },
           explicitRuntimeId: sessionHint,
           getRuntimeIdForStoredSession,
           requestGateway,

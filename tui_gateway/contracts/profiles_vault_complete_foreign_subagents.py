@@ -46,6 +46,7 @@ class CompletePathParams(ProfileParams):
 
     word: str | None = None
     cwd: str | None = None
+    cwd_explicit: bool | None = None
     session_id: str | None = None
 
 

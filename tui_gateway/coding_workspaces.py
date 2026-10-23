@@ -151,7 +151,7 @@ def remap_workspace_references(
             path = base / path
         # Resolve sibling/../repo and aliases before classifying membership.
         # Keep source-root spellings intact for the escape check below.
-        if path.is_absolute() and not path.is_relative_to(source):
+        if path.is_absolute() and not (path.is_relative_to(source) and Path(os.path.abspath(path)).is_relative_to(source)):
             path = path.resolve()
         if not path.is_absolute() or not path.is_relative_to(source):
             # Outside references keep pointing at the original location after
@@ -303,7 +303,7 @@ def _ensure_managed_worktrees_ignored(root: str) -> None:
     def ignored() -> bool:
         result = subprocess.run(
             ["git", "-C", root, "check-ignore", "-q", ".worktrees/"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
         )
         if result.returncode not in (0, 1):
             raise ValueError(result.stderr.strip() or "Cannot inspect Git exclusion rules")

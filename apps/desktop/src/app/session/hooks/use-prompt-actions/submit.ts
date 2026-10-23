@@ -14,7 +14,7 @@ import {
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
-import { $codingWorkspaceDrafts, codingWorkspaceDraftKey, codingWorkspaceKey } from '@/store/coding-workspaces'
+import { $codingWorkspaceDrafts, captureCodingWorkspaceReferenceCwd, codingWorkspaceDraftKey, codingWorkspaceKey } from '@/store/coding-workspaces'
 import {
   $composerAttachments,
   type ComposerAttachment,
@@ -950,40 +950,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         let createdId: null | string
         const owner = { ...resolveNewChatBackendOwner(), draftKey: codingWorkspaceDraftKey(options?.composerScope) }
         const key = codingWorkspaceKey(owner)
-        const draft = $codingWorkspaceDrafts.get()[key]
 
         try {
-          if (draft?.intent && !draft.referenceCwd) {
-            if (!referenceCwd) {
-              // Ask the completion endpoint itself: project inspection has a
-              // different profile scope and can change its default-CWD fallback.
-              const inspection = await requestGatewayForAgent<{ sourceCwd?: string }>(
-                owner.connectionId,
-                owner.profile,
-                'complete.path',
-                { profile: owner.profile, word: '' }
-              )
+          const captured = await captureCodingWorkspaceReferenceCwd(
+            owner, referenceCwd,
+            () => !sessionDriftReason() && codingWorkspaceKey({ ...resolveNewChatBackendOwner(), draftKey: owner.draftKey }) === key,
+            options?.referenceCwdExplicit
+          )
 
-              if (
-                sessionDriftReason() ||
-                codingWorkspaceKey({ ...resolveNewChatBackendOwner(), draftKey: owner.draftKey }) !== key ||
-                $codingWorkspaceDrafts.get()[key]?.requestId !== draft.requestId
-              ) {
-                return abortForSessionSwitch(null)
-              }
-
-              if (!inspection.sourceCwd) {
-                throw new Error('Original reference CWD is required')
-              }
-
-              referenceCwd = inspection.sourceCwd
-            }
-
-            $codingWorkspaceDrafts.set({
-              ...$codingWorkspaceDrafts.get(),
-              [key]: { ...$codingWorkspaceDrafts.get()[key], referenceCwd }
-            })
+          if (!captured) {
+            return abortForSessionSwitch(null)
           }
+
+          referenceCwd = $codingWorkspaceDrafts.get()[key]?.referenceCwd ?? referenceCwd
 
           createdId = await createBackendSessionForSend(
             bubbleText,

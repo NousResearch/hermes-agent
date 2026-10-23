@@ -1180,13 +1180,18 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         with ExitStack() as scope:
             try:
                 scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
+                scope.enter_context(api_policy_scope())
+                bind_turn_workspace(policy, self._ctx.session_id)
+                # Local unbind above may legitimately retire a historical owned mount. Check the
+                # terminal that will actually execute only after that normal boundary cleanup.
+                from gateway.session_coding_workspace import verify_policy
+                verify_policy(policy, task_id=self._ctx.session_id,
+                              session_key=getattr(self._ctx, 'session_key', None))
             except RuntimeStoreError as exc:
                 if exc.reason != 'workspace_unavailable':
                     raise
                 result = workspace_unavailable_result(policy)
             else:
-                scope.enter_context(api_policy_scope())
-                bind_turn_workspace(policy, self._ctx.session_id)
                 result = self._run_sync_scoped()
             from gateway.session_results import execution_result
             captured = execution_result.get()

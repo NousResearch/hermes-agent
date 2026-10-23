@@ -584,7 +584,9 @@ async def admit_managed(authority, ref, row, policy):
     like the in-process runner: a worker failing in its policy scope reads as a LOST execution
     (``unknown``) and parks every follower behind it."""
     from gateway.session_policy import workspace_ready, workspace_unavailable_result
-    if not workspace_ready(policy):
+    from gateway.session_coding_workspace import terminal_identity, workspace_binding
+    identity = terminal_identity(authority, ref.session_id) if workspace_binding(policy) else {}
+    if not await asyncio.to_thread(workspace_ready, policy, **identity):
         result = workspace_unavailable_result(policy)
         authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
         return result['final_response']

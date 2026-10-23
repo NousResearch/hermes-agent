@@ -16,8 +16,8 @@ import subprocess
 
 import pytest
 
-import tools.terminal_tool as terminal_tool
-import tui_gateway.server as server
+from tools import terminal_tool
+from tui_gateway import server
 from hermes_state import SessionDB
 
 
@@ -202,7 +202,7 @@ def test_settle_clears_when_the_session_is_rehomed_onto_it(session, repo_with_wo
 
 
 def test_settle_refreshes_the_branch(session, repo_with_worktree):
-    repo, worktree = repo_with_worktree
+    _repo, worktree = repo_with_worktree
     server._observe_terminal_activity(session, *_terminal_call(workdir=str(worktree)))
     _git(worktree, "checkout", "-b", "task/a-renamed")
 
@@ -247,7 +247,7 @@ def test_tool_complete_emits_session_info_on_adoption(session, repo_with_worktre
 
 
 def test_agent_worktree_is_persisted_and_restored_on_resume(tmp_path, monkeypatch, repo_with_worktree):
-    repo, worktree = repo_with_worktree
+    _repo, worktree = repo_with_worktree
     db = SessionDB(tmp_path / "state.db")
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)

@@ -6,11 +6,12 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import type { HermesGateway } from '@/hermes'
 import { cachedPathCompletion, hasCachedPathCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+import { $currentCwdExplicit } from '@/store/session'
 
 import type { ComposerAtCompletionSource } from '../contrib'
 import { COMPOSER_AREAS } from '../contrib'
 
-import { completionOwner, completionOwnerKey, requestCompletion } from './completion-route'
+import { completionOwnerKey, pathCompletionOwner, requestCompletion } from './completion-route'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
@@ -199,7 +200,7 @@ export function useAtCompletions(options: {
   // listing. The owner is part of it too: the listing comes from the session's
   // owning backend (#141583), and an ambient answer must not stand in for it.
   const cacheKey = useCallback(
-    (query: string) => `${completionOwnerKey(completionOwner(sessionId))}|${cwd ?? ''}|${sessionId ?? ''}|${query}`,
+    (query: string) => `${completionOwnerKey(pathCompletionOwner(sessionId))}|${cwd ?? ''}|${sessionId ?? ''}|${sessionId ? '' : $currentCwdExplicit.get()}|${query}`,
     [cwd, sessionId]
   )
 
@@ -213,7 +214,7 @@ export function useAtCompletions(options: {
       }
 
       const word = REF_STARTERS.has(query) ? `@${query}:` : `@${query}`
-      const params: Record<string, unknown> = { word }
+      const params: Record<string, unknown> = { word, ...(!sessionId ? { cwd_explicit: $currentCwdExplicit.get() } : {}) }
 
       if (sessionId) {
         params.session_id = sessionId
@@ -230,7 +231,7 @@ export function useAtCompletions(options: {
         // `git ls-files` + rank on the backend (~40ms of the ~50ms round trip
         // measured on this repo's 8k files).
         const result = await cachedPathCompletion(cacheKey(query), () =>
-          requestCompletion<{ items?: CompletionEntry[] }>(gateway, completionOwner(sessionId), 'complete.path', params)
+          requestCompletion<{ items?: CompletionEntry[] }>(gateway, pathCompletionOwner(sessionId), 'complete.path', params)
         )
 
         const items = result.items ?? []

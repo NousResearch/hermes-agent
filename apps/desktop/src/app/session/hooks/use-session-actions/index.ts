@@ -740,7 +740,7 @@ export function useSessionActions({
         const params = {
           ...(await desktopSessionCreateParams(cwd, createOwner, capturedProfile, legacyProfileIntent)),
           request_id: createIntent,
-          ...(prepared && { coding_workspace: prepared })
+          ...(prepared && { request_id: prepared.requestId, cwd_explicit: true, coding_workspace: prepared })
         }
 
         // Lease the owner socket for the whole create → owner-publication

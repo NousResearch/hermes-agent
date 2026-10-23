@@ -114,6 +114,41 @@ function request<T>(owner: CodingWorkspaceOwner, method: string, params: Record<
   return requestGatewayForAgent<T>(owner.connectionId, owner.profile, method, { ...params, profile: owner.profile })
 }
 
+/** Capture before either ordinary submit or a slash command can bind the prepared checkout. */
+export async function captureCodingWorkspaceReferenceCwd(
+  owner: CodingWorkspaceOwner,
+  referenceCwd?: string | null,
+  stillCurrent: () => boolean = () => true,
+  referenceCwdExplicit?: boolean
+): Promise<boolean> {
+  const key = codingWorkspaceKey(owner)
+  const draft = $codingWorkspaceDrafts.get()[key]
+
+  if (!draft?.intent || draft.referenceCwd) {
+    return true
+  }
+
+  if (!referenceCwd || referenceCwdExplicit === false) {
+    const inspection = await request<{ sourceCwd?: string }>(owner, 'complete.path', {
+      word: '', ...(referenceCwd ? { cwd: referenceCwd, cwd_explicit: false } : {})
+    })
+
+    referenceCwd = inspection.sourceCwd
+  }
+
+  if (!stillCurrent() || !current(key, draft)) {
+    return false
+  }
+
+  if (!referenceCwd) {
+    throw new Error('Original reference CWD is required')
+  }
+
+  publish(key, { ...$codingWorkspaceDrafts.get()[key], referenceCwd })
+
+  return true
+}
+
 export async function listCodingWorkspaceProjects(owner: CodingWorkspaceOwner): Promise<ProjectInfo[]> {
   const result = await request<{ projects: ProjectInfo[] }>(owner, 'projects.list', {})
 

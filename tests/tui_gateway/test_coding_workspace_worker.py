@@ -130,7 +130,7 @@ def test_compute_process_verifies_checkout_before_dispatch(tmp_path, monkeypatch
     frame = server._compute_host_turn_frame("turn", created["session_id"], session, "never call a provider")
     receipt = tmp_path / "dispatch.json"
     env = {**os.environ, "HERMES_HOME": str(get_hermes_home())}
-    child = subprocess.run([sys.executable, "-c", WORKER], input=json.dumps([frame, change, warm, str(receipt)]), text=True, capture_output=True, env=env, timeout=30)
+    child = subprocess.run([sys.executable, "-c", WORKER], input=json.dumps([frame, change, warm, str(receipt)]), text=True, capture_output=True, env=env, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
     frames = json.loads(child.stdout.splitlines()[-1])
     results = json.loads(receipt.read_text(encoding="utf-8")) if receipt.exists() else []

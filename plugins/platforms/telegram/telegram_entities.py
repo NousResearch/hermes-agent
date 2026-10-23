@@ -6,6 +6,7 @@ URL; the model only ever sees the anchor unless the URL is inlined (#31071).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -66,3 +67,42 @@ def expand_link_entities(message: Any) -> str:
             continue
         expanded = f"{expanded[:end]}{inline}{expanded[end:]}"
     return expanded
+
+
+def expand_quote_link_entities(quote: Any, replied: Any) -> str:
+    """A native partial quote's text with the replied-to message's hidden links inlined.
+
+    Telegram keeps only formatting entities in a quote, never ``text_link``, so the links are
+    taken from the replied-to message. ``position`` is approximate, so they are only mapped when
+    the replied-to text at that position is exactly the quote; otherwise the quote is unchanged.
+    """
+    text = getattr(quote, "text", None)
+    source = getattr(replied, "text", None)
+    if not text or not isinstance(text, str):
+        return text
+    if source:
+        entities = getattr(replied, "entities", None) or []
+    else:
+        source = getattr(replied, "caption", None) or ""
+        entities = getattr(replied, "caption_entities", None) or []
+    if not isinstance(source, str):
+        return text
+    try:
+        position = int(getattr(quote, "position", -1))
+    except (TypeError, ValueError):
+        return text
+    start = _code_point_index(source, position) if 0 <= position <= _utf16_length(source) else None
+    if not entities or start is None or source[start : start + len(text)] != text:
+        return text
+    quote_end = position + _utf16_length(text)
+    shifted = []
+    for entity in entities:
+        try:
+            offset, length = int(getattr(entity, "offset", -1)), int(getattr(entity, "length", 0))
+        except (TypeError, ValueError):
+            continue
+        if position <= offset and offset + length <= quote_end:
+            shifted.append(SimpleNamespace(
+                type=getattr(entity, "type", ""), offset=offset - position, length=length,
+                url=getattr(entity, "url", None)))
+    return expand_link_entities(SimpleNamespace(text=text, entities=shifted))

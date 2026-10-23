@@ -276,7 +276,8 @@ print(json.dumps({"success": True, "data": {
 ''')
     chromium = publish("chromium")
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(session, "_session_socket_dir",
+                        lambda name: os.path.join(str(tmp_path), f"agent-browser-{name}"))
     monkeypatch.setattr(cloud, "_is_local_mode", lambda: True)
     monkeypatch.setattr(cloud, "_get_browser_engine", lambda: "auto")
     monkeypatch.setattr(cloud, "_is_headed_mode", lambda: False)

@@ -11,8 +11,8 @@ from tools import browser_tool_lifecycle as bt_lifecycle
 
 @pytest.fixture
 def fake_tmpdir(tmp_path):
-    """Patch _socket_safe_tmpdir to return a temp dir we control."""
-    with patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)):
+    """Patch the socket roots to a temp dir we control."""
+    with patch("tools.browser_tool_session._session_socket_roots", return_value=(str(tmp_path),)):
         yield tmp_path
 
 
@@ -59,6 +59,22 @@ class TestReapOrphanedBrowserSessions:
             "tools.browser_tool_lifecycle._socket_dir_idle_seconds",
             return_value=10_000,
         ):
+            _reap_orphaned_browser_sessions()
+        assert not d.exists()
+
+    def test_stale_dir_on_the_tmp_fallback_root_is_removed(self, tmp_path):
+        """#131231: a session whose socket path overflowed the AF_UNIX budget on the
+        scratch root lives on the /tmp fallback — the reaper must scan that root too."""
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+        scratch_root = tmp_path / "scratch"
+        fallback_root = tmp_path / "short"
+        scratch_root.mkdir()
+        fallback_root.mkdir()
+        d = _make_socket_dir(fallback_root, "h_abc1234567")
+        with patch("tools.browser_tool_session._session_socket_roots",
+                   return_value=(str(scratch_root), str(fallback_root))), \
+             patch("tools.browser_tool_lifecycle._socket_dir_idle_seconds",
+                   return_value=10_000):
             _reap_orphaned_browser_sessions()
         assert not d.exists()
 

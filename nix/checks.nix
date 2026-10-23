@@ -193,6 +193,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           assert sys.base_prefix == "${hermes-agent.pmPython}", sys.base_prefix
           '
           env -i "$venv/bin/pytest" --version
+          # Native dev commands survive alongside the re-shebanged scripts.
+          env -i "$venv/bin/ruff" --version
+          env -i "$venv/bin/ty" --version
           mkdir -p $out
           echo ok > $out/result
         '';

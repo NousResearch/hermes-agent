@@ -14,6 +14,7 @@
   electron,
   git,
   openssh,
+  ffmpeg-headless,
 
   # for pm
   writeShellApplication,
@@ -160,6 +161,15 @@ let
     pmPackages.ffmpeg
     git
     openssh
+  ]
+  # pm's macOS ffmpeg is a single binary with no ffprobe, which transcription
+  # needs to measure duration before splitting long recordings. Only ffprobe
+  # is linked, so `ffmpeg` on PATH stays the pinned build.
+  ++ lib.optionals stdenv.hostPlatform.isDarwin [
+    (runCommand "ffprobe-${ffmpeg-headless.version}" { } ''
+      mkdir -p $out/bin
+      ln -s ${lib.getBin ffmpeg-headless}/bin/ffprobe $out/bin/ffprobe
+    '')
   ]
   ++ lib.optionals stdenv.hostPlatform.isLinux [
     wl-clipboard
@@ -337,12 +347,20 @@ stdenv.mkDerivation (finalAttrs: {
         for name in python python3 python${python.pythonVersion}; do
           ln -s ${pmPython}/bin/python3 $out/bin/$name
         done
+        # Every other command carries over: Python scripts re-shebanged onto
+        # this venv, native ones (ruff, ty) linked as-is. The activate scripts
+        # and devPython's own interpreter links would point back at devPython.
+        devInterpreter=$(readlink -f ${devPython}/bin/python3)
         for script in ${devPython}/bin/*; do
           name=$(basename "$script")
           [ -e "$out/bin/$name" ] && continue
+          case "$name" in activate*|Activate*) continue ;; esac
+          [ "$(readlink -f "$script")" = "$devInterpreter" ] && continue
           if head -n1 "$script" | grep -q '^#!.*python'; then
             { echo "#!$out/bin/python3"; tail -n +2 "$script"; } > "$out/bin/$name"
             chmod +x "$out/bin/$name"
+          else
+            ln -s "$script" "$out/bin/$name"
           fi
         done
       '';

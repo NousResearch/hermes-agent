@@ -1,0 +1,77 @@
+/* Safari zooms focused text fields below 16px, shifting the whole page after
+   the keyboard closes. Keep touch composers readable without limiting zoom. */
+@media (hover: none) and (pointer: coarse) {
+  html :is(input, textarea, select, [contenteditable='true']) {
+    font-size: max(16px, var(--conversation-text-font-size, 16px)) !important;
+  }
+
+  [data-closeable] {
+    padding-right: 44px;
+    max-width: min(12rem, 100%);
+    --pane-tab-close-width: 44px;
+  }
+
+  [data-slot='pane-tab-close-affordance'] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  [data-slot='statusbar'] {
+    height: auto;
+    min-height: 44px;
+    padding-bottom: env(safe-area-inset-bottom);
+    flex-wrap: wrap;
+  }
+
+  [data-slot='statusbar'] > div {
+    min-height: 44px;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  [data-slot='statusbar'] :is(button, a) {
+    min-height: 44px;
+    min-width: 44px;
+    font-size: 14px;
+  }
+}
+
+.browser-preview-surface {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.browser-preview-mobile-header { display: none; }
+
+@media (max-width: 640px) {
+  /* Pane hosts form stacking contexts; lift the phone preview above the
+     window's floating titlebar controls, while dialogs remain above it. */
+  [data-pane-host]:has(.browser-preview-surface) {
+    z-index: 80;
+  }
+
+  .browser-preview-surface {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    height: 100dvh;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--background);
+  }
+
+  .browser-preview-mobile-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .browser-preview-mobile-header button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

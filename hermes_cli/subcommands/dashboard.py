@@ -1,8 +1,8 @@
 """``hermes dashboard`` / ``hermes serve`` subcommand parsers.
 
 ``dashboard`` is the browser web UI; ``serve`` is the same gateway, headless —
-what the desktop app and remote backends run. ``serve`` also skips the web UI
-build (``headless_backend=True``): pure JSON-RPC/WS clients never load the SPA.
+what the desktop app and remote backends run. ``serve`` defaults to skipping the web UI build (``headless_backend=True``).
+``--ui desktop`` explicitly serves the shared Desktop renderer on that backend.
 Both share one handler (``cmd_dashboard`` → ``start_server``).
 """
 
@@ -48,7 +48,9 @@ def _add_server_runtime_args(parser) -> None:
 def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
     """Canonical ``serve`` arguments; shared by the full tree and Desktop's lean hot-path parser."""
     _add_server_runtime_args(parser)
-    # Redundant (serve is always headless) but accepted so legacy callers don't error.
+    parser.add_argument("--ui", choices=("desktop",), default=None,
+                        help="Serve the Desktop UI in a browser using this backend and its authentication")
+    # Serve remains headless unless a browser frontend is explicitly selected.
     parser.add_argument("--no-open", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--ssh-session-token-file", dest="ssh_session_token_file", metavar="PATH", default=None,
@@ -66,7 +68,7 @@ def build_serve_parser(
     parser = argparse.ArgumentParser(
         prog="hermes serve",
         description="Run the Hermes backend server - the JSON-RPC/WebSocket gateway the "
-            "desktop app and remote clients connect to. Headless: it never opens "
+            "desktop app and remote clients connect to. Headless by default: it never opens "
             "a browser UI.",
         add_help=add_help, exit_on_error=exit_on_error)
     _configure_serve_parser(parser, cmd_dashboard=cmd_dashboard)
@@ -81,6 +83,8 @@ def build_dashboard_parser(
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
     )
     _add_server_runtime_args(dashboard_parser)
+    dashboard_parser.add_argument("--ui", choices=("dashboard", "desktop"), default="dashboard",
+                                  help="Browser frontend (default: dashboard)")
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically")
     # Compat shim: desktop shells <= 0.15.x spawn `hermes dashboard --no-open --tui ...`;
@@ -96,7 +100,7 @@ def build_dashboard_parser(
         "serve",
         help="Start the Hermes backend server (headless; powers the desktop app and remote backends)",
         description="Run the Hermes backend server — the JSON-RPC/WebSocket gateway the "
-            "desktop app and remote clients connect to. Headless: it never opens "
+            "desktop app and remote clients connect to. Headless by default: it never opens "
             "a browser UI.")
     _configure_serve_parser(serve_parser, cmd_dashboard=cmd_dashboard)
 

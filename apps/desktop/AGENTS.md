@@ -169,3 +169,9 @@ If any answer is "not sure," that's the part to go verify.
 strip render the same `notice_pending` state, with no localStorage latch, and every entry point
 opens the one sign-in dialog. Branch on `free_tier_row` / `free_tier`, never on provider display
 names. Long form: `ENGINEERING.md`.
+
+## Browser frontend
+
+For browser hosting or `serve --ui desktop`, read `browser/README.md`: reuse the
+Desktop renderer and backend cookie/OAuth/ticket transport; keep native Desktop's
+default headless lifecycle and strict TypeScript checking intact.

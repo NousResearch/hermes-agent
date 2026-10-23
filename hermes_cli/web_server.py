@@ -824,6 +824,8 @@ app.include_router(_delegation_routes.router)
 _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router
 
+from hermes_cli.web_routers.browser_terminal import router as _browser_terminal_router
+app.include_router(_browser_terminal_router)
 app.include_router(_dashboard_auth_router)
 mount_spa(app)
 

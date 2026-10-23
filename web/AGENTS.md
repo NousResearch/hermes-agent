@@ -30,9 +30,10 @@ their failures non-destructively so the terminal pane keeps working.
 ## `dashboard` vs `serve`
 
 `dashboard` and `serve` share `cmd_dashboard` / `start_server` but are independent surfaces — neither
-launches the other. `serve` is the headless backend the desktop app spawns (`headless_backend=True`:
+launches the other. `serve` defaults to the headless backend the desktop app spawns (`headless_backend=True`:
 `cmd_dashboard` skips `_build_web_ui` and exports `HERMES_SERVE_HEADLESS=1` so `mount_spa()`
-disables the SPA even if a stray `web_dist/` exists — only JSON-RPC/WS/API is reachable). The
+disables the SPA even if a stray `web_dist/` exists — only JSON-RPC/WS/API is reachable). Opt-in `--ui desktop` serves the existing Desktop renderer with this same backend and
+authentication (`apps/desktop/browser/README.md`); it does not change the default. The
 desktop has no build/runtime dependency on this frontend. Details: `apps/desktop/src/AGENTS.md`.
 
 ## Rules

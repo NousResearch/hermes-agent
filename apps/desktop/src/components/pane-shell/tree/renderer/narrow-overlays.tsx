@@ -79,6 +79,29 @@ export function NarrowOverlays() {
   // overlay only when it's the top layer (never under a dialog / edit mode).
   const revealActive = reveal !== null
   useEffect(() => (revealActive ? pushEscapeLayer(ESCAPE_PRIORITY.narrowOverlay) : undefined), [revealActive])
+  useEffect(() => {
+    if (!narrow || !revealActive) {
+      return
+    }
+
+    const dismissOutside = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch' || !(event.target instanceof Element)) {
+        return
+      }
+
+      // Stable pane bodies are siblings of overlay chrome. Portalled menus
+      // and titlebar toggles also own their own interactions.
+      if (event.target.closest('[data-narrow-overlay], [data-pane-overlay], [data-titlebar-cluster], [role="menu"], [role="dialog"]')) {
+        return
+      }
+
+      setReveal(null)
+    }
+
+    window.addEventListener('pointerdown', dismissOutside)
+
+    return () => window.removeEventListener('pointerdown', dismissOutside)
+  }, [narrow, revealActive])
 
   const inTree = useMemo(() => new Set(tree ? allPaneIds(tree) : []), [tree])
 

@@ -1,7 +1,8 @@
 # apps/desktop/src/ — backend contract, slash palette, Bot Mode
 
 Applies on top of `apps/desktop/AGENTS.md` (the judgment guide) and the root `AGENTS.md`.
-Root TypeScript style rules apply.
+Root TypeScript style rules apply. Browser builds reuse this renderer through the
+host adapter documented in `../browser/README.md`; native gateway ownership stays as described below.
 
 ## Desktop local execution belongs to the canonical gateway
 

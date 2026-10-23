@@ -783,6 +783,10 @@ export interface SubmitTextOptions {
   /** Stable caller-owned identity; retain across uncertain admission retries. */
   submission_id?: string
   attachments?: ComposerAttachment[]
+  /** CWD used by this composer’s reference completions, before workspace binding. */
+  referenceCwd?: string | null
+  /** False when the new-chat composer only inherited its folder, like completion's cwd_explicit. */
+  referenceCwdExplicit?: boolean
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared
    *  against the resolved submit target in sessionContextDrift — a mismatch

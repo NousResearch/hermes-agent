@@ -54,6 +54,8 @@ def commit_local_session(db, *, epoch, receipt):
             from hermes_state_local_migration import bind_legacy_target
             bind_legacy_target(db, conn, receipt)
         policy, entry = receipt['policy'], receipt['entry']
+        from gateway.session_coding_workspace import check_receipt_owner
+        check_receipt_owner(conn, receipt)
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()
         # Auxiliary usage inserts created_source='unknown' when it creates the row

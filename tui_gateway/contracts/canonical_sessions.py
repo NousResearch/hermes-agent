@@ -4,12 +4,12 @@ Reuse upstream authority-only value shapes; these overrides do not widen METHODS
 """
 from typing import Literal
 
-from pydantic import RootModel
+from pydantic import Field, RootModel
 
 from .base import JsonValue, Params, Result
-from .common import ProfileParams, TranscriptMessage
+from .common import CodingWorkspaceBinding, ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
-from .sessions import TodoState
+from .sessions import TodoState, SessionWorkspaceVerifyResult, SessionWorkspaceReferencesResult
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -18,10 +18,21 @@ class CanonicalSessionParams(ProfileParams):
     session_id: str
 
 
+class CanonicalWorkspaceVerifyParams(CanonicalSessionParams):
+    cwd: str | None = None
+
+
+class CanonicalWorkspaceReferencesParams(CanonicalSessionParams):
+    paths: list[str] = Field(max_length=256)
+    text: str | None = Field(default=None, max_length=1_000_000)
+    reference_cwd: str | None = None
+
+
 class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
     source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'
     cwd: str | None = None
+    coding_workspace: CodingWorkspaceBinding | None = None
     # The sessions-row ``cwd`` when it differs from the execution ``cwd`` (the classic CLI records
     # main's stamp: the launch dir, ``""`` = none); ``cwd`` stays where the tools run.
     row_cwd: str | None = None
@@ -117,6 +128,7 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     profile_id: str | None = None
     profile_name: str | None = None
     cwd: str | None = None
+    coding_workspace: CodingWorkspaceBinding | None = None
     edit_approval_policy: Literal['ask', 'workspace_session', 'session'] | None = None
     launch_request: dict[str, JsonValue] | None = None
     reasoning_effort: str | None = None
@@ -318,6 +330,8 @@ class CanonicalEventsResult(Result):
 
 for _name, _params, _result in (
     ('session.create', CanonicalCreateParams, CanonicalSnapshot),
+    ('session.workspace.verify', CanonicalWorkspaceVerifyParams, SessionWorkspaceVerifyResult),
+    ('session.workspace.references', CanonicalWorkspaceReferencesParams, SessionWorkspaceReferencesResult),
     ('session.resume', CanonicalResumeParams, CanonicalSnapshot),
     ('session.list', CanonicalListParams, CanonicalListResult),
     ('session.interrupt', CanonicalControlParams, CanonicalSessionHandle),

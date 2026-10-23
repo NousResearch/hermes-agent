@@ -12,7 +12,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result
-from .common import OkResult, OpenModel, ProfileParams, StoredSessionRow
+from .common import CodingWorkspaceBinding, CodingWorkspaceMode, OkResult, OpenModel, ProfileParams, StoredSessionRow
 from .registry import method
 
 # ── projects: stored rows ─────────────────────────────────────────────────────────────────────
@@ -160,6 +160,63 @@ class ProjectsForCwdResult(Result):
 
 method("projects.for_cwd", params=ProjectsForCwdParams, result=ProjectsForCwdResult,
        doc="Which project (if any) owns a directory, plus the resolved cwd and its git branch.")
+
+
+# ── projects: coding workspaces (``tui_gateway/coding_workspaces.py``) ───────────────────────
+# The workspace wire travels camelCase (``repoRoot``, ``requestId``, …); field names are those keys.
+
+
+class WorkspacePathParams(ProfileParams):
+    path: str
+
+
+class WorkspaceTree(Result):
+    """One ``git worktree list`` checkout of the inspected repository."""
+
+    path: str
+    branch: str | None = None
+    isMain: bool = False
+    detached: bool = False
+    locked: bool = False
+    dirty: bool = False
+    activeSessionCount: int = 0
+
+
+class WorkspaceInspection(Result):
+    """``coding_workspaces.inspect_workspace`` — ``repoRoot`` null means a plain (non-Git) folder."""
+
+    path: str
+    repoRoot: str | None = None
+    branch: str | None = None
+    dirty: bool = False
+    worktrees: list[WorkspaceTree] = Field(default_factory=list)
+    branches: list[str] = Field(default_factory=list)
+
+
+method("projects.workspace.inspect", params=WorkspacePathParams, result=WorkspaceInspection,
+       doc="Read-only Git inspection of a folder for the checkout picker (worktrees, branches, dirty state).")
+method("projects.workspace.initialize", params=WorkspacePathParams, result=WorkspaceInspection,
+       doc="``git init`` + an empty root commit for a plain folder (user files stay untracked); answers the "
+           "fresh inspection.")
+method("projects.workspace.register", params=WorkspacePathParams, result=ProjectResult,
+       doc="The project owning a folder's repository root, created on first use.")
+
+
+class ProjectsWorkspacePrepareParams(ProfileParams):
+    """The desktop's checkout intent plus its draft ``requestId`` (the durable identity of the prepared
+    checkout; required for ``worktree``)."""
+
+    path: str
+    mode: CodingWorkspaceMode
+    projectId: str | None = None
+    existingPath: str | None = None
+    base: str | None = None
+    requestId: str | None = None
+
+
+method("projects.workspace.prepare", params=ProjectsWorkspacePrepareParams, result=CodingWorkspaceBinding,
+       doc="Resolve (and for ``worktree`` create) the checkout a new coding session binds to; the receipt is "
+           "sent back verbatim as ``session.create`` ``coding_workspace``.")
 
 
 # ── projects: repo discovery ──────────────────────────────────────────────────────────────────

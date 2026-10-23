@@ -138,6 +138,8 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"
     ),
+    "desktop.coding.default_checkout": _select(
+        "Default checkout for new coding drafts", "worktree", "current"),
     "display.resume_display": _select("How resumed sessions display history", "minimal", "full", "off"),
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),
     "approvals.mode": _select("Dangerous command approval mode", "manual", "smart", "off"),

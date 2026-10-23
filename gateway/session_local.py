@@ -210,6 +210,8 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     if isinstance(staged, dict):
         commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
         staged = restore_local_session(authority, staged['session_id'])
+    from gateway.session_coding_workspace import finish_binding
+    finish_binding(authority, staged.session_id)
     return staged
 
 
@@ -236,7 +238,7 @@ def staged_creation_follows(authority, actor, request_id):
 
 
 def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
-                        client_local=False, desktop_local=False):
+                        client_local=False, desktop_local=False, prepared_workspace=None):
     """Everything before the creation commit: the existing session's ref on an exact retry, else the
     receipt ``commit_local_session`` writes (the async RPC commits it off the owner loop).
     ``client_local``: the gateway's own proof that the client is on this host (its connection redeemed a
@@ -284,7 +286,9 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         if marks:
             import json
             policy = replace(policy, config_json=json.dumps({**json.loads(policy.config_json), **marks}))
-    request_id = params.get('request_id', uuid.uuid4().hex)
+    from gateway.session_coding_workspace import request_id as workspace_request_id
+    request_id = (workspace_request_id(params) if 'request_id' in params or params.get('coding_workspace')
+                  else uuid.uuid4().hex)
     if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
         raise RuntimeStoreError('invalid_params', field='request_id',
                                 detail='must be a non-empty string of at most 256 characters')
@@ -322,6 +326,9 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         raise RuntimeStoreError('invalid_params', field='skills',
                                 detail='the caller must render -s skills before minting the session')
     policy = replace(policy, skills_prompt=skills_prompt)
+    from gateway.session_coding_workspace import bind_policy, prepare_binding
+    if params.get('coding_workspace') is not None:
+        policy = bind_policy(policy, prepared_workspace or prepare_binding(authority, actor, params))
     if warning := project_plugins_warning(policy):
         logger.warning('session %s: %s', sid, warning)
     client_request = {k: params[k] for k in ('client_env',) if k in params}
@@ -444,6 +451,8 @@ def local_session_info(authority, ref):
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
+        from gateway.session_coding_workspace import workspace_binding
+        info['coding_workspace'] = workspace_binding(policy)
         from agent.session_client_env import NOT_LOCAL_WARNING
         # Session-start notices main's TUI already renders as ``config_warning``.
         notices = (project_plugins_warning(policy), NOT_LOCAL_WARNING if policy.client_env_remote else None)

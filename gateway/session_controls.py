@@ -91,7 +91,7 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
-                               'approval.respond', 'clarify.respond'})
+                               'approval.respond', 'clarify.respond', 'session.workspace.verify', 'session.workspace.references'})
 
 
 def display_projection(history, profile_home):
@@ -232,6 +232,8 @@ class AuthorityConnection:
         handlers['session.control'] = partial(control, self)
         from gateway.session_onboarding import handlers as onboarding_handlers
         handlers.update(onboarding_handlers(self))
+        from gateway.session_coding_workspace import handlers as workspace_handlers
+        handlers.update(workspace_handlers(self))
         return handlers
 
     async def dispatch(self, request):
@@ -463,9 +465,13 @@ class AuthorityConnection:
                 if self.authority.db.get_session(sid) is None:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
             # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
+            from gateway.session_coding_workspace import prepare_binding, finish_binding
+            prepared_workspace = (await asyncio.to_thread(prepare_binding, self.authority, self.actor, params)
+                                  if params.get('coding_workspace') is not None else None)
             ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
                                       client_local=self.native_owner,
-                                      desktop_local=getattr(self.transport, 'desktop_local', False))
+                                      desktop_local=getattr(self.transport, 'desktop_local', False),
+                                      prepared_workspace=prepared_workspace)
             if isinstance(ref, dict):
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).
@@ -473,6 +479,7 @@ class AuthorityConnection:
                 await tracked_write(self.authority, partial(
                     commit_local_session, self.authority.db, epoch=self.authority.epoch, receipt=receipt))
                 ref = restore_local_session(self.authority, receipt['session_id'])
+            await tracked_write(self.authority, partial(finish_binding, self.authority, ref.session_id))
             # `--accept-hooks`: record this launch's consent; ``resume`` below registers the hooks.
             if params.get('accept_hooks') is True:
                 from gateway.session_policy import accept_launch_hooks, restore_policy

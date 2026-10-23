@@ -53,9 +53,8 @@ async def test_complete_path_lists_the_session_folder(rpc):
 
 
 @pytest.mark.asyncio
-async def test_complete_path_lists_nothing_for_a_remote_backend_or_without_a_session(rpc):
+async def test_complete_path_lists_nothing_for_a_remote_session_backend(rpc):
     call, backend = rpc
-    assert (await call({'word': '@file:'}))['result'] == {'items': []}
     backend['TERMINAL_ENV'] = 'ssh'
     assert (await call({'word': '@file:', 'session_id': 's'}))['result'] == {'items': []}
 

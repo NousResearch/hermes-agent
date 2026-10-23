@@ -232,20 +232,12 @@ gateway:
     ping:
       completed: "✔ {head} 已完成——{title}{handoff}"
       completion:
+        open_task: "完整结果请查看看板任务 {task_id}。"
         line: "{label}：{value}"
-        project: "项目：{project_id}（{repository}）"
-        related_task: "关联任务：{task_id}"
-        outcome: "结论：{value}"
-        checks: "检查：{value}"
-        blockers: "阻塞：{value}"
-        human_action: "需要你处理：{value}"
-        next_step: "下一步：{value}"
-        unverified_note: "结果摘要未通过安全校验，仅展示已通过校验的结构化状态；完整内容请查看任务详情。"
         label:
           kanban_status: "自报状态"
           review: "自报审查"
           tests: "自报测试"
-          commit: "提交"
         state:
           done: "自报完成"
           partial: "自报部分完成"

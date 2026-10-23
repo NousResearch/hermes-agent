@@ -235,20 +235,12 @@ gateway:
     ping:
       completed: "✔ {head} done — {title}{handoff}"
       completion:
+        open_task: "Open task {task_id} on the Kanban board for the full result."
         line: "{label}: {value}"
-        project: "Project: {project_id} ({repository})"
-        related_task: "Related task: {task_id}"
-        outcome: "Outcome: {value}"
-        checks: "Checks: {value}"
-        blockers: "Blockers: {value}"
-        human_action: "Needs you: {value}"
-        next_step: "Next step: {value}"
-        unverified_note: "The run summary did not pass the safety check, so only the validated structured status is shown. Open the task for the full text."
         label:
           kanban_status: "Board status (worker-reported)"
           review: "Review (worker-reported)"
           tests: "Tests (worker-reported)"
-          commit: "Commit"
         state:
           done: "reported done"
           partial: "reported partial"

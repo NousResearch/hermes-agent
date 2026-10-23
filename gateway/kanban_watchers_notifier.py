@@ -426,62 +426,30 @@ def _first_line(text: str, limit: int) -> str:
     return lines[0][:limit] if lines else text[:limit]
 
 
-# --- Completion-result projection -------------------------------------------------
-# A completed run's summary is a KEY=value handoff contract authored by a worker. It
-# reaches a Human over an external channel, so every value is allowlist-checked before
-# it is rendered: reviewed outcome vocabulary only. Unknown free text fails closed.
+# --- Completion receipt -----------------------------------------------------------
+# A completed run's worker summary is unrestricted prose about work the notifier cannot
+# verify: it may claim a review, a merge, a push or a test result, and it may carry a
+# credential or a private path. This message goes to an external channel, so the receipt
+# publishes only:
 #
-# The allowlist is deliberately narrow, so a legitimate engineering summary can be
-# rejected wholesale. That must not degrade to "nothing happened": a rejected summary
-# still renders the STRUCTURED fields (choice- or token-validated, never free text)
-# plus a fixed, safe pointer to the board. The pointer never carries the rejected text,
-# so the fallback cannot be used to smuggle content past the checks.
-_COMPLETION_FIELDS = {
-    "PROJECT_ID",
-    "REPOSITORY",
-    "RELATED_TASK_ID",
-    "COMMIT",
-    "OUTCOME",
-    "RESULT",
-    "SUMMARY",
-    "CHECKS",
-    "REVIEW_RESULT",
-    "PYTEST_STATUS",
-    "KANBAN_STATUS",
-    "BLOCKERS",
-    "HUMAN_ACTION",
-    "NEXT_STEP",
-}
-_COMPLETION_TEXT_FIELDS = {"OUTCOME", "RESULT", "SUMMARY", "CHECKS", "BLOCKERS", "HUMAN_ACTION", "NEXT_STEP"}
-_COMPLETION_ENGLISH_WORDS = frozenset({
-    "a", "an", "and", "after", "approval", "are", "as", "available", "blocked", "by",
-    "change", "changes", "check", "checks", "complete", "completed", "commit", "committed",
-    "continue", "done", "failed", "failure", "for", "from", "is", "local",
-    "next", "no", "not", "or", "partial", "pass", "passed", "required",
-    "review", "run", "safe", "security", "separate", "static", "status", "step", "summary", "task",
-    "test", "tests", "the", "to", "unavailable", "unknown", "was", "were", "with", "without", "work",
-})
-_COMPLETION_CJK_TERMS = (
-    "上一轮", "已完成", "旧项目", "静态检查", "安全检查", "独立审查", "自动化测试", "精确派发",
-    "部分完成", "如需上线", "先取得", "单独授权", "已提交", "到本地", "未推送", "未合并",
-    "不发布", "下一步", "已记录", "未运行", "未执行", "不能", "继续", "处理", "查看", "等待",
-    "完成", "结论", "结果", "摘要", "项目", "任务", "改动", "本地", "推送", "合并", "检查",
-    "安全", "独立", "审查", "自动化", "测试", "通过", "派发", "授权", "上线", "发布", "阻塞",
-    "需要", "是否", "还有", "当前", "精确", "部分", "未", "已", "或", "为", "与", "不", "如",
-    "需", "先", "取得", "单独", "到", "的", "和", "但", "没有", "可", "展示", "必须", "另行", "就绪",
-    "无", "进一步", "动作", "暂无", "报告", "在", "本次", "范围", "内", "确认", "仍", "用户",
-)
-_COMPLETION_ALLOWED_PUNCTUATION = set(" \t，。；：！？、（）()'’—-")
-_COMPLETION_TYPED_CHOICES = {
+#   * NATIVE facts — the Kanban lifecycle the board itself recorded (the task is done,
+#     and which task), plus the task's own title and assignee;
+#   * TYPED self-reports — a closed set of enum values the worker may set, each rendered
+#     as an explicitly worker-claimed status, never as a verified outcome;
+#   * a FIXED next step telling the reader to open the task for the full text.
+#
+# Free text from the worker (OUTCOME/RESULT/SUMMARY/CHECKS/BLOCKERS/NEXT_STEP/
+# HUMAN_ACTION) is never rendered. The full summary stays on the Kanban run row, so the
+# engineering evidence is intact; only the channel projection narrows.
+_COMPLETION_TYPED_FIELDS = {
     "REVIEW_RESULT": {"PASS", "PASSED", "CLEAN", "BLOCKED", "UNKNOWN", "NOT_RUN"},
     "PYTEST_STATUS": {"PASS", "PASSED", "FAILED", "PARTIAL", "UNKNOWN", "NOT_RUN"},
     "KANBAN_STATUS": {"PASS", "PARTIAL", "BLOCKED", "UNKNOWN"},
 }
-# Rendering table for the structured view. Every value here is the WORKER'S OWN claim,
-# never an independent Host verdict — ``kanban_db`` records no review or test evidence
-# that could corroborate one — so each label says so. This table is also the single
-# source for these keys' labels in the full projection.
-_COMPLETION_STRUCTURED_RENDER = (
+# Rendering table for the typed self-reports. Each label states that the value is the
+# worker's own claim: kanban_db records no review or test evidence that could
+# corroborate one, so a worker writing PASS must never read as a verified pass.
+_COMPLETION_TYPED_RENDER = (
     ("KANBAN_STATUS", "gateway.kanban.ping.completion.label.kanban_status",
      {"PASS": "gateway.kanban.ping.completion.state.done",
       "PARTIAL": "gateway.kanban.ping.completion.state.partial",
@@ -501,64 +469,16 @@ _COMPLETION_STRUCTURED_RENDER = (
       "PARTIAL": "gateway.kanban.ping.completion.state.partial",
       "UNKNOWN": "gateway.kanban.ping.completion.state.unknown",
       "NOT_RUN": "gateway.kanban.ping.completion.state.not_run"}),
-    ("COMMIT", "gateway.kanban.ping.completion.label.commit", None),
 )
 
 
-def _completion_cjk_is_known(value: str) -> bool:
-    reachable = {0}
-    for start in range(len(value)):
-        if start not in reachable:
-            continue
-        for term in _COMPLETION_CJK_TERMS:
-            if value.startswith(term, start):
-                reachable.add(start + len(term))
-    return len(value) in reachable
+def _parse_completion_typed_fields(summary: Any) -> dict:
+    """Read ONLY the typed self-report fields out of a worker summary.
 
-
-def _safe_completion_value(value: Any, limit: int = 280) -> Optional[str]:
-    """Accept bounded prose composed only of reviewed English/CJK outcome vocabulary.
-
-    The vocabulary allowlist is the only gate; nothing is layered on top of it.
+    Free text is never captured, so there is nothing for a prose injection to reach.
+    An unrecognised value, a duplicate that disagrees, or a value outside the field's
+    closed set drops the field entirely.
     """
-    if not isinstance(value, str):
-        return None
-    raw = value.strip()
-    if not raw or len(raw) > limit:
-        return None
-    words = re.findall(r"[A-Za-z]+", raw)
-    if any(word.casefold() not in _COMPLETION_ENGLISH_WORDS for word in words):
-        return None
-    cjk_runs = re.findall(r"[\u3400-\u9fff]+", raw)
-    if any(not _completion_cjk_is_known(run) for run in cjk_runs):
-        return None
-    for char in raw:
-        codepoint = ord(char)
-        is_cjk = 0x3400 <= codepoint <= 0x9FFF
-        if not (
-            is_cjk
-            or (char.isascii() and char.isalpha())
-            or char in _COMPLETION_ALLOWED_PUNCTUATION
-        ):
-            return None
-    return " ".join(raw.split())
-
-
-def _safe_completion_typed_value(key: str, value: str) -> Optional[str]:
-    patterns = {
-        "PROJECT_ID": r"[a-z0-9][a-z0-9-]{0,63}",
-        "REPOSITORY": r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
-        "RELATED_TASK_ID": r"t_[0-9a-f]{8}",
-        "COMMIT": r"[0-9a-f]{7,12}",
-    }
-    if key in patterns:
-        return value if re.fullmatch(patterns[key], value, re.IGNORECASE) else None
-    choices = _COMPLETION_TYPED_CHOICES.get(key)
-    return value.upper() if choices and value.upper() in choices else None
-
-
-def _parse_completion_fields(summary: Any) -> dict:
-    """Split a handoff summary into ``{KEY: validated_value}``; invalid/duplicate keys drop."""
     if not isinstance(summary, str):
         return {}
     fields: dict[str, str] = {}
@@ -568,15 +488,11 @@ def _parse_completion_fields(summary: Any) -> dict:
         if not match:
             continue
         key = match.group(1).upper()
-        if key not in _COMPLETION_FIELDS:
+        choices = _COMPLETION_TYPED_FIELDS.get(key)
+        if not choices:
             continue
-        raw_value = match.group(2).strip()
-        value = (
-            _safe_completion_value(raw_value)
-            if key in _COMPLETION_TEXT_FIELDS
-            else _safe_completion_typed_value(key, raw_value)
-        )
-        if value is None:
+        value = match.group(2).strip().upper()
+        if value not in choices:
             invalid.add(key)
         elif key in fields and fields[key] != value:
             # Two disagreeing values for one field: neither can be trusted.
@@ -588,93 +504,47 @@ def _parse_completion_fields(summary: Any) -> dict:
     return fields
 
 
-def _completion_status_line(key: str, value: str) -> str:
-    """Render one validated structured field from the single render table."""
-    label, labels = next((label, labels) for render_key, label, labels in _COMPLETION_STRUCTURED_RENDER
-                         if render_key == key)
-    return t("gateway.kanban.ping.completion.line", label=t(label), value=t(labels[value]) if labels else value)
+def _completion_typed_status_line(key: str, value: str) -> str:
+    """Render one typed self-report from the single render table."""
+    _render_key, label, labels = next(
+        entry for entry in _COMPLETION_TYPED_RENDER if entry[0] == key
+    )
+    return t("gateway.kanban.ping.completion.line", label=t(label), value=t(labels[value]))
 
 
-def _completion_degraded_lines(fields: dict) -> list[str]:
-    """Safe fallback: validated structured state + a fixed note, never an unvalidated value.
+def _completed_receipt_lines(summary: Any, task_id: str) -> list[str]:
+    """Build the completion receipt: typed self-reports, then a fixed next step.
 
-    A completed task whose free text was rejected must still say what the board does
-    know (lifecycle/verdict choices that passed the enum or token check) and where to
-    look. It must never invent a review, test, gate or PR outcome: only fields that
-    actually validated appear, and every one is labelled as the worker's own report.
+    Always non-empty: even a run with no usable summary yields the next-step line, so a
+    finished task never reads as "nothing happened".
     """
+    fields = _parse_completion_typed_fields(summary)
     lines = [
-        _completion_status_line(key, fields[key])
-        for key, _label, _labels in _COMPLETION_STRUCTURED_RENDER
+        _completion_typed_status_line(key, fields[key])
+        for key, _label, _labels in _COMPLETION_TYPED_RENDER
         if fields.get(key)
     ]
-    lines.append(t("gateway.kanban.ping.completion.unverified_note"))
-    return lines
-
-
-def _completed_summary_lines(summary: Any) -> list[str]:
-    """Project exact task-run fields; unknown free text fails closed rather than being forwarded.
-
-    The full projection renders only when the summary carries a usable outcome AND a
-    next step. Otherwise the safe degraded view is returned instead of an empty list,
-    so a completed task never reads as "nothing happened" while nothing unvalidated
-    is published.
-    """
-    fields = _parse_completion_fields(summary)
-    outcome = fields.get("OUTCOME") or fields.get("RESULT") or fields.get("SUMMARY")
-    next_step = fields.get("NEXT_STEP") or fields.get("HUMAN_ACTION")
-    if not outcome or not next_step:
-        return _completion_degraded_lines(fields)
-
-    lines = []
-    project_id = fields.get("PROJECT_ID")
-    repository = fields.get("REPOSITORY")
-    if project_id and repository:
-        from gateway.semantic_control import resolve_project_alias
-
-        project = resolve_project_alias(f"{project_id} {repository}")
-        if project and project.project_id == project_id and project.repository == repository:
-            lines.append(t("gateway.kanban.ping.completion.project", project_id=project.project_id,
-                           repository=project.repository))
-    if fields.get("RELATED_TASK_ID"):
-        lines.append(t("gateway.kanban.ping.completion.related_task", task_id=fields["RELATED_TASK_ID"]))
-    if fields.get("COMMIT"):
-        lines.append(_completion_status_line("COMMIT", fields["COMMIT"]))
-    lines.append(t("gateway.kanban.ping.completion.outcome", value=outcome))
-    if fields.get("CHECKS"):
-        lines.append(t("gateway.kanban.ping.completion.checks", value=fields["CHECKS"]))
-    for key, _label, _labels in _COMPLETION_STRUCTURED_RENDER:
-        if key != "COMMIT" and fields.get(key):
-            lines.append(_completion_status_line(key, fields[key]))
-    if fields.get("BLOCKERS"):
-        lines.append(t("gateway.kanban.ping.completion.blockers", value=fields["BLOCKERS"]))
-    if fields.get("HUMAN_ACTION"):
-        lines.append(t("gateway.kanban.ping.completion.human_action", value=fields["HUMAN_ACTION"]))
-    if fields.get("NEXT_STEP"):
-        lines.append(t("gateway.kanban.ping.completion.next_step", value=fields["NEXT_STEP"]))
+    lines.append(t("gateway.kanban.ping.completion.open_task", task_id=task_id))
     return lines
 
 
 def _fmt_completed(ev, n) -> tuple:
-    """Render a completed run from the projection, never from raw free text.
+    """Render a completed run as a typed receipt, never from worker free text.
 
-    The run summary comes off the run row (``run_summaries``), which is the exact
-    completed attempt rather than a possibly-stale event payload. ``task.result`` is
-    deliberately NOT used as a body: it is unrestricted worker prose and this message
-    goes to an external channel — the degraded projection covers the rows that have no
-    parseable summary without republishing unvalidated text.
+    The summary is read from the exact completed attempt's run row (``run_summaries``)
+    and only its typed fields are projected. ``task.result`` is deliberately not used:
+    it is unrestricted worker prose and this message goes to an external channel.
     """
     summary = (
         n.d.get("run_summaries", {}).get(ev.id)
         if getattr(ev, "run_id", None) is not None
         else None
     )
-    lines = _completed_summary_lines(summary)
-    projected = "\n".join(lines)
+    body = "\n".join(_completed_receipt_lines(summary, n.task_id))
     # The wake turn keeps the run's own summary verbatim: it is agent context, not a
     # Human-facing publication, and it must not be replaced by the projection.
     wake_handoff = _first_line(str(summary), 200) if summary else None
-    handoff = f"\n{projected}" if projected else ""
+    handoff = f"\n{body}" if body else ""
     return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 

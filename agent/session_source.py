@@ -25,6 +25,12 @@ CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
 ATTENDED_SOURCES = UI_TRANSPORT_SOURCES | {"cli", "acp"}
 
 
+def create_surface(source: str) -> str:
+    """The ``session.create`` label for a session source: ``desktop`` is the Desktop's platform name for
+    the ``gui`` surface (gateway.session_policy.SURFACES), which the create contract does not list."""
+    return "gui" if source == "desktop" else source
+
+
 def session_source_for(platform: Optional[str]) -> str:
     source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
     single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"

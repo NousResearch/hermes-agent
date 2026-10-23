@@ -52,7 +52,8 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
     if fields['provider'] == 'custom':  # the adapter's billing class: show the entry the session runs on
         from hermes_cli.runtime_provider_custom import routed_custom_identity_in
         fields['provider'] = routed_custom_identity_in(
-            authority.profile_id, getattr(agent, 'base_url', None) or policy.base_url, fields['model']) or 'custom'
+            authority.profile_id, getattr(agent, 'base_url', None) or policy.base_url, fields['model'],
+            getattr(agent, 'requested_provider', None)) or 'custom'
     project = server._project_info_for_cwd(policy.cwd)
     return '\n'.join([
         'Hermes TUI Status', '', *status_lines(fields, 'session_id', 'path'),

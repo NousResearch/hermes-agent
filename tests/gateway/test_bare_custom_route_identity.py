@@ -2,7 +2,8 @@
 
 The gateway freezes, persists and syncs the configured ``custom:<name>`` entry it ran on: a launch
 pick echoing ``custom`` back, a ``/model`` switch persisting it, and a turn syncing the adapter's
-label. Entries sharing one relay base_url are told apart by the model they serve.
+label. A turn records the entry its runtime resolved; only an unknown entry is told apart from
+siblings on one relay base_url by the model they serve.
 
 Also: a profile-following session's model pick with an inline secret outside the followed
 sections, and ``--source desktop``. No endpoint is contacted.
@@ -73,6 +74,24 @@ def test_a_bare_custom_route_is_persisted_as_its_entry(home):
         db.close()
 
 
+@pytest.mark.parametrize('requested, model', [('custom:glm', 'deepseek-v4.1-flash'), ('custom:deepseek', 'glm-5.3')],
+                         ids=['glm-running-the-siblings-model', 'deepseek-running-the-siblings-model'])
+def test_a_turn_on_a_named_entry_persists_that_entry_not_the_sibling_listing_its_model(home, requested, model):
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_state import SessionDB
+    (home / 'config.yaml').write_text(json.dumps(SIBLINGS))
+    db = SessionDB(db_path=home / 'state.db')
+    try:
+        db.create_session('s', source='cli', model=model)
+        agent = SimpleNamespace(model=model, provider='custom', requested_provider=requested, base_url=RELAY,
+                                api_mode='chat_completions')
+        GatewayTurnPrepareMixin._sync_session_model_from_agent(
+            SimpleNamespace(_session_db=SimpleNamespace(_db=db)), 's', agent)
+        assert json.loads(db.get_session('s')['model_config'])['gateway_runtime']['provider'] == requested
+    finally:
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_a_following_session_switches_model_with_an_inline_secret_outside_its_followed_sections(home):
     from gateway.run_turn_prepare import GatewayTurnPrepareMixin
@@ -98,7 +117,18 @@ async def test_a_following_session_switches_model_with_an_inline_secret_outside_
         store.close_all_db_handles()
 
 
-def test_source_desktop_launches_the_desktop_surface(tmp_path):
-    from gateway.session_policy import build_policy
-    policy = build_policy(dict(cwd=str(tmp_path), source='desktop'), {})
-    assert (policy.source, policy.platform) == ('gui', 'desktop')
+def test_source_desktop_is_sent_as_the_gui_surface_the_create_contract_lists(monkeypatch):
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    monkeypatch.setenv('HERMES_SESSION_SOURCE', 'desktop')
+    monkeypatch.setenv('HERMES_SESSION_SOURCE_EXPLICIT', '1')
+    sent = {}
+
+    def call(method, **params):
+        if method == 'session.create':
+            sent.update(params)
+        return {'session_create': {'parameters': ['cwd', 'source', 'row_cwd']}, 'stored_session_id': 'sid'}
+    GatewaySessionStore(SimpleNamespace(call=call, state=lambda sid: SimpleNamespace(
+        adopt_snapshot=lambda snapshot: None))).create({})
+    assert sent['source'] == 'gui'
+    assert canonical_param_problems(CANONICAL_METHODS['session.create'], {'request_id': 'r', 'source': 'gui'}) == []

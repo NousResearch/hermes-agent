@@ -89,8 +89,6 @@ _KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
 STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
 # Routing labels and the accounting placeholder: never a creating surface.
 _NOT_A_SURFACE = frozenset({None, '', 'local', 'unknown'})
-# Labels only the gateway mints (session_cron, session_kanban, hosted rooms) -> agent surface.
-GATEWAY_SURFACES = {'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
 
 
 def created_surface(label):
@@ -424,13 +422,10 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if source == 'a2a':
         from gateway.session_a2a import build_forward_policy
         return build_forward_policy(params, config, private_secrets=private_secrets)
-    # ``desktop`` is the Desktop's surface name for the ``gui`` label (SURFACE_GROUPS): one launch.
-    source = 'gui' if source == 'desktop' else source
     unknown = sorted(set(params) - CREATE_FIELDS)
     if unknown or not isinstance(source, str) or source not in SURFACES:
-        reserved = isinstance(source, str) and source in GATEWAY_SURFACES
-        _refuse(f'params.{unknown[0]}' if unknown else 'source', 'unknown create field' if unknown
-                else f'reserved for the gateway: {source!r}' if reserved else f'not a surface: {source!r}')
+        _refuse(f'params.{unknown[0]}' if unknown else 'source',
+                'unknown create field' if unknown else f'not a surface: {source!r}')
     bad_bypass = next((name for name in BYPASS_FIELDS if name in params and type(params[name]) is not bool), None)
     if bad_bypass:
         _refuse(bad_bypass, 'must be a boolean')
@@ -973,7 +968,7 @@ def restore_policy(data):
     try:
         policy = LocalSessionPolicy(**data)
         from gateway.session_a2a import is_forward_policy
-        surfaces = {**SURFACES, **GATEWAY_SURFACES}
+        surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
                 or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()

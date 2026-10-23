@@ -703,7 +703,12 @@ class AIAgent(
             return False
         last = stripped[-1]
         # Closing punctuation/brackets, a fenced-code close, or an emoji (Misc Symbols, Dingbats, Emoticons, ...).
-        return stripped.endswith("```") or last in '.!?:)"\']}。！？：）】」』》^' or ord(last) >= 0x1F300
+        if stripped.endswith("```") or last in '.!?:)"\']}。！？：）】」』》〉^' or ord(last) >= 0x1F300:
+            return True
+        # Khmer terminals and digits also mean a finished reply; without this, completed Khmer
+        # answers were flagged as truncated and re-nudged for a continuation.
+        khmer_terminals = "\u17D4\u17D5\u17D6\u17D7\u17DB" + "".join(chr(c) for c in range(0x17E0, 0x17EA))
+        return last in khmer_terminals
 
     def _is_ollama_glm_backend(self) -> bool:
         """Ollama-hosted GLM models misreport finish_reason='stop'. Matches only explicit Ollama signatures

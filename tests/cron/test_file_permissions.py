@@ -154,7 +154,7 @@ class TestSecureHelpers(unittest.TestCase):
 
 @pytest.fixture()
 def cron_store(tmp_path, monkeypatch):
-    import cron.jobs as jobs
+    from cron import jobs
     cron_dir = tmp_path / "cron"
     monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
     monkeypatch.setattr(jobs, "JOBS_FILE", cron_dir / "jobs.json")

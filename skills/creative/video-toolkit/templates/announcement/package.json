@@ -1,0 +1,24 @@
+{
+  "name": "hermes-announcement-video",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render src/index.ts MainVideo --output=output.mp4",
+    "preview": "remotion still src/index.ts MainVideo --frame=90 --output=preview.png",
+    "draft": "remotion render src/index.ts MainVideo --output=draft.mp4 --scale=0.5 --quality=50"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.0",
+    "@remotion/google-fonts": "4.0.0",
+    "@remotion/transitions": "4.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "remotion": "4.0.0",
+    "@remotion/media-utils": "4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -711,8 +711,8 @@ async def gateway_ws(ws: WebSocket) -> None:
     await asyncio.to_thread(start_deferred_mcp_discovery_now)
 
     # The authenticated identity (ticket / internal credential) stamped by
-    # _ws_auth_reason becomes the identity authority for privileged RPCs
-    # (browser.controller.register). None on the legacy token path.
+    # _ws_auth_reason becomes the identity authority for session ownership and
+    # relay authorship. None on the legacy token path.
     identity = getattr(ws, "_hermes_auth_identity", None)
     authority = getattr(ws.app.state, "session_authority", None)
     if authority is not None and identity is None:

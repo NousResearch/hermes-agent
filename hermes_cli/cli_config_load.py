@@ -191,10 +191,7 @@ def _cli_config_defaults():
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",
         },
-        "browser": {
-            "inactivity_timeout": 120, "record_sessions": False, "engine": "auto",  # auto (Chrome) | lightpanda | chrome
-            "camofox": {"rewrite_loopback_urls": False, "loopback_host_alias": "host.docker.internal"},
-        },
+        "browser": {"inactivity_timeout": 120, "engine": "auto"},  # engine: auto (Chromium) | lightpanda
         # threshold: fraction of the model's context limit; min_tail: real user messages kept in the tail
         "compression": {"enabled": True, "threshold": 0.50, "min_tail_user_messages": 1},
         "agent": {

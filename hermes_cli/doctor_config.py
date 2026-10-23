@@ -234,6 +234,14 @@ _VENDOR_SLUG_PROVIDERS = {
 }
 
 
+def _profile_uses_slash_model_ids(provider: str) -> bool:
+    """A profile's declared catalog establishes its namespace without a network probe."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider)
+    return profile is not None and any("/" in model for model in profile.fallback_models)
+
+
 def _provider_has_credentials(runtime_provider: str) -> bool:
     """Only API-key providers in PROVIDER_REGISTRY are checked — OAuth/SDK/custom providers have their own
     checks elsewhere, and get_auth_status() returns a bare {logged_in: False} for anything it doesn't dispatch."""
@@ -283,7 +291,8 @@ def _validate_model_config(config_path, issues: list) -> None:
                         f"model.provider '{provider_raw}' is unknown. Valid providers: {known_list}. "
                         f"Fix: run 'hermes config set model.provider <valid_provider>'", issues)
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
-    accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+    accepts_vendor_slug = (policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom"
+                           or policy_id.startswith("custom:") or _profile_uses_slash_model_ids(policy_id))
     # openai-api pointed at a non-OpenAI endpoint (local router, proxy) is an aggregator in all but name:
     # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
     model_base_url = str(model_section.get("base_url") or "").strip()

@@ -61,7 +61,7 @@ class ParallelWebSearchProvider(BaseWebSearchProvider):
     KEYLESS = True
 
     def supports_search_depth(self) -> bool:
-        return not use_keyless("parallel", provider_env("PARALLEL_API_KEY"))
+        return not self.search_route_label()  # the keyless tier has no depth option
 
     def search(self, query: str, limit: int = 5, depth: str = "standard") -> dict[str, Any]:
         def _body() -> dict[str, Any]:

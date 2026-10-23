@@ -85,7 +85,7 @@ If you specifically need the live DOM rather than extracted markdown — for exa
 | **Keenable** | `mode: realtime` | Keenable's default (`pro`) | same as standard |
 | **Firecrawl**, **SearXNG**, **Brave Search**, **DDGS**, **xAI**, **OpenAI Native** | no depth setting: every call is the standard request | | |
 
-Depth is also ignored on routes that have no such option: the keyless free tier (Exa, Parallel, Keenable and Firecrawl without a key) and the managed Perplexity route (always `fast`). Tavily's keyless mode takes the same parameters as its keyed mode, so depth still applies there. When the selected backend ignores the depth the model asked for, the result carries one line in `data.depth_note`, for example `brave-free has no depth setting; ran its standard search`. A call served by the one-shot keyless rescue runs without depth; its `backend_error` already says the call was rescued.
+Depth is also ignored on routes that have no such option: the keyless free tier (Exa, Parallel, Keenable and Firecrawl without a key) and the managed Perplexity route (always `fast`). Tavily's keyless mode takes the same parameters as its keyed mode, so depth still applies there. When the depth the model asked for is not applied, the result carries one line in `data.depth_note` naming what ran instead, for example `brave-free search has no depth setting; ran its standard search`, `exa keyless search has no depth setting; ran its standard search`, or, for a call served by the one-shot keyless rescue, `keyless rescue has no depth setting; ran its standard search`.
 
 OpenAI Native search runs on OpenAI's servers, so Hermes never sees the call or its arguments.
 
@@ -97,7 +97,7 @@ web:
   max_depth: deep   # quick | standard (default) | deep
 ```
 
-Setting `max_depth: quick` also turns calls that leave `depth` out into quick searches.
+Setting `max_depth: quick` also turns calls that leave `depth` out into quick searches, and each says so (`depth lowered from standard to quick by web.max_depth`).
 
 ---
 

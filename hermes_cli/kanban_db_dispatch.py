@@ -477,8 +477,31 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    # Workers spawned with start_new_session=True own a process group. Signal only
+    # that group; injected signal_fn callbacks retain their PID-only contract.
+    use_group = False
+    getpgid = getattr(os, "getpgid", None) if signal_fn is None else None
+    if getpgid is not None and getattr(os, "killpg", None) is not None:
+        try:
+            use_group = getpgid(int(pid)) == int(pid)
+        except (ProcessLookupError, OSError):
+            pass
+
+    def signal_target(target_pid: int, sig: int) -> None:
+        if use_group:
+            killpg = getattr(os, "killpg", None)
+            if killpg is not None:
+                try:
+                    killpg(target_pid, sig)
+                    return
+                except ProcessLookupError:
+                    raise
+                except OSError:
+                    pass
+        kill(target_pid, sig)
+
     try:
-        kill(int(pid), signal.SIGTERM)
+        signal_target(int(pid), signal.SIGTERM)
     except ProcessLookupError:
         # Already gone = successful termination. Leaving terminated=False would
         # make the reclaim guard misread a dead worker as alive and defer forever.
@@ -491,7 +514,7 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     if _worker_alive(pid, started_at):
-        if not _sigkill(kill, pid):
+        if not _sigkill(signal_target, pid):
             return info
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)

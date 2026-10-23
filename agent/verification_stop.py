@@ -39,6 +39,29 @@ def _is_non_code_path(raw: str) -> bool:
     return suffix in _NON_CODE_VERIFY_EXTENSIONS or (not suffix and p.name.lower() in _NON_CODE_VERIFY_FILENAMES)
 
 
+def _verify_language_suffixes(verify_commands: list[str]) -> set[str] | None:
+    """Map a workspace's verify commands to the file suffixes they can check.
+
+    ``None`` for empty/unknown commands keeps the nudge's current behaviour —
+    language scoping must never disable verification for a stack we cannot map.
+    """
+    suffixes: set[str] = set()
+    for command in verify_commands:
+        tokens = command.split()
+        if not tokens:
+            continue
+        head = tokens[0].lower()
+        if head in ("python", "python3", "pytest") or "pytest" in tokens:
+            suffixes |= {".py"}
+        elif head == "dotnet":
+            suffixes |= {".cs", ".csproj", ".sln", ".props", ".targets", ".fs", ".fsproj"}
+        elif head in ("npm", "bun", "yarn", "pnpm"):
+            suffixes |= {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"}
+        else:
+            return None
+    return suffixes or None
+
+
 def _session_is_messaging_surface() -> bool:
     """Whether this turn is delivered over a human messaging channel. An
     unreachable gateway package means no messaging channel (verify-on-stop stays on)."""
@@ -173,6 +196,17 @@ def build_verify_on_stop_nudge(
     if str(status.get("status") or "unverified") == "passed":
         return None
     verify_commands = [str(cmd).strip() for cmd in (facts.get("verifyCommands") or []) if str(cmd).strip()]
+
+    # Language scoping (issue #52612): only edits the workspace's detected
+    # verify commands can actually check should trigger the nudge. A state or
+    # config file (e.g. .ai-badger/state.json) is not verifiable by pytest, so
+    # a turn that touched only those has nothing to verify and must not nudge.
+    suffixes = _verify_language_suffixes(verify_commands)
+    if suffixes is not None:
+        scoped = [p for p in paths if Path(p).suffix.lower() in suffixes]
+        if not scoped:
+            return None
+        paths = scoped
     has_recipe = _workspace_has_runnable_recipe(facts.get("root"))
 
     # Optional shipped coding guidance, only paid when this evidence gate fires.

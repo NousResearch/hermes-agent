@@ -10,6 +10,7 @@ from agent.verification_evidence import (
     record_terminal_result,
 )
 from agent.verification_stop import (
+    _verify_language_suffixes,
     build_verify_on_stop_nudge,
     verify_on_stop_enabled,
 )
@@ -30,6 +31,14 @@ def _ledger_on(monkeypatch):
     """The ledger is inert unless verify-on-stop is enabled; ``clear_verify_env`` (requested
     explicitly, so it runs after this) strips it again for the enabled()-logic tests."""
     monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+
+def _py_project(root: Path) -> None:
+    """A pytest workspace — project detection yields verifyCommands=[\"pytest\"]."""
+    (root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n",
+        encoding="utf-8",
+    )
+
 
 @pytest.fixture
 def clear_verify_env(monkeypatch):
@@ -166,3 +175,53 @@ def test_mixed_doc_and_code_edit_still_nudges(tmp_path, monkeypatch):
     # The doc path is filtered out of the reported set; the code path remains.
     assert code in nudge
     assert doc not in nudge
+
+
+
+# ---------------------------------------------------------------------------
+# Language scoping (issue #52612 follow-up): only edits the workspace's
+# detected verify commands can actually check should trip the nudge — a
+# pytest workspace must not nudge for a .json state file, but must for .py.
+# ---------------------------------------------------------------------------
+
+
+def test_verify_language_suffixes_mapping():
+    assert _verify_language_suffixes(["pytest"]) == {".py"}
+    assert _verify_language_suffixes(["python3 -m pytest tests"]) == {".py"}
+    assert _verify_language_suffixes(["dotnet test"]) == {
+        ".cs", ".csproj", ".sln", ".props", ".targets", ".fs", ".fsproj",
+    }
+    assert _verify_language_suffixes(["make test"]) is None  # unknown -> fail open
+    assert _verify_language_suffixes([]) is None
+
+
+def test_no_nudge_for_json_state_edit_in_pytest_workspace(tmp_path, monkeypatch):
+    """A state/config .json edit is not verifiable by pytest — no nudge."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _py_project(tmp_path)
+    state = str(tmp_path / ".ai-badger" / "state.json")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[state])
+
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[state]) is None
+
+
+def test_nudge_fires_for_python_edit_in_pytest_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _py_project(tmp_path)
+    code = str(tmp_path / "scripts" / "mod.py")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[code])
+
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[code])
+    assert nudge is not None
+    assert code in nudge
+
+
+def test_unknown_verify_command_keeps_current_behaviour(tmp_path, monkeypatch):
+    """Unmapped commands must not disable the nudge (fail open)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "Makefile").write_text("test:\n\t@echo ok\n", encoding="utf-8")
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+    assert nudge is not None

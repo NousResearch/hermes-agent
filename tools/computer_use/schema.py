@@ -70,7 +70,8 @@ _PROPERTIES: dict[str, Any] = {
     "window_id": {
         "type": "integer",
         "description": (
-            "Optional exact native window target for action='capture'. Pair with pid when an "
+            "Optional exact native window target for action='capture' (the HWND on Windows). "
+            "Alone, it must match exactly one window from list_windows; pair with pid when an "
             "external cua-driver list_windows lookup has already identified the window."
         ),
     },

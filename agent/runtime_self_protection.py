@@ -53,6 +53,12 @@ _DELETING_COMMANDS = frozenset({
     "rm", "rmdir", "rd", "del", "erase", "remove-item", "ri",
 })
 
+# `cd`/`pushd` move the shell before the segments after them run; `popd` returns
+# to a directory only the shell knows. Tracking `cd` is what makes a relative
+# delete target resolve against the directory `rm` will actually act in (#143691).
+_DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
+_DIRECTORY_POP_COMMANDS = frozenset({"popd"})
+
 # `find <roots...> -delete` (or `-exec rm ...`) deletes its search roots.
 _FIND_DELETE_RE = re.compile(r"(?:^|\s)-(?:delete|exec\s+rm\b)", re.IGNORECASE)
 
@@ -220,6 +226,46 @@ def _version_spec_matches(spec: str, version: str, uv_root_name: str) -> bool:
     return spec == version or (version.startswith(spec) and version[len(spec):len(spec) + 1] == ".")
 
 
+def _resolve_target(raw: str, cwd: str) -> str:
+    """A delete target as the shell would spell it from ``cwd``.
+
+    An absolute word (or one whose ``~`` expands to an absolute path) is already
+    unambiguous; anything else is joined onto ``cwd`` so a preceding ``cd`` is
+    honoured. When ``cwd`` is unknown (``""``) the word is returned verbatim and
+    ``_normalize_path`` resolves it against the process cwd, as it always did.
+    """
+    word = (raw or "").strip().strip("\"'")
+    if not word or os.path.isabs(word) or os.path.isabs(os.path.expanduser(word)):
+        return word
+    return os.path.join(cwd, word) if cwd else word
+
+
+def _directory_change_target(words: list[str], cwd: str) -> str:
+    """The directory a ``cd``/``pushd`` segment moves the shell to, ``""`` if unknowable.
+
+    ``cd -`` (OLDPWD), ``cd "$VAR"`` and command substitution depend on shell
+    state that is not in the command string. Those answer ``""`` so later
+    segments keep the process-cwd reading instead of a guessed directory that
+    would both block and miss real deletes.
+    """
+    target = ""
+    for word in words[1:]:
+        if word == "-":
+            return ""
+        if word.startswith("-"):
+            continue  # `cd -P` / `-L` / `--`
+        if os.name == "nt" and re.match(r"^/[A-Za-z]$", word):
+            continue  # cmd's `cd /d <drive>`
+        target = word.strip("\"'")
+        break
+    if not target:
+        target = "~"  # a bare `cd` goes home
+    if "$" in target or "`" in target or "%" in target:
+        return ""
+    expanded = os.path.expanduser(target)
+    return expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
+
+
 def _uv_uninstall_target(words: list[str]) -> Optional[str]:
     """Description when ``uv python uninstall`` would remove the running base."""
     protected = _protected()
@@ -250,8 +296,11 @@ def command_deletes_runtime(command: str) -> Optional[str]:
 
     Covers ``rm``/``rmdir``/``rd``/``del``/``erase``/``Remove-Item`` (any flags —
     the interpreter is a file, so no recursion is needed to kill it), the
-    ``find <roots> -delete`` form, and ``uv python uninstall``. Known limits:
-    paths assembled by ``xargs``/command substitution are invisible here, and
+    ``find <roots> -delete`` form, and ``uv python uninstall``. A relative
+    target is resolved against the directory an earlier ``cd``/``pushd`` moved
+    the shell to, falling back to the process cwd when that cannot be known
+    statically (``cd -``, ``cd "$DIR"``, ``popd``). Known limits: paths
+    assembled by ``xargs``/command substitution are invisible here, and
     ``shutil.rmtree`` inside executed *code* is a different sandbox.
     """
     if not command or not command.strip():
@@ -260,11 +309,24 @@ def command_deletes_runtime(command: str) -> Optional[str]:
     if not protected:
         return None
 
+    try:
+        cwd = _normalize_path(os.getcwd())
+    except OSError:  # the process cwd was removed under us
+        cwd = ""
     for segment in _SEGMENT_SPLIT_RE.split(command):
         words = _strip_prefixes(_split_words(segment))
         if not words:
             continue
         name = os.path.basename(words[0]).lower()
+
+        if name in _DIRECTORY_CHANGE_COMMANDS:
+            if cwd:
+                cwd = _directory_change_target(words, cwd)
+            continue
+
+        if name in _DIRECTORY_POP_COMMANDS:
+            cwd = ""
+            continue
 
         if name == "uv":
             target = _uv_uninstall_target(words)
@@ -275,7 +337,7 @@ def command_deletes_runtime(command: str) -> Optional[str]:
         if name == "find" and _FIND_DELETE_RE.search(segment):
             for word in words[1:]:
                 if not word.startswith("-"):
-                    hit = is_protected_path(word)
+                    hit = is_protected_path(_resolve_target(word, cwd))
                     if hit:
                         return hit
             continue
@@ -286,7 +348,7 @@ def command_deletes_runtime(command: str) -> Optional[str]:
         for word in words[1:]:
             if word.startswith("-"):
                 continue
-            hit = is_protected_path(word)
+            hit = is_protected_path(_resolve_target(word, cwd))
             if hit:
                 return hit
 

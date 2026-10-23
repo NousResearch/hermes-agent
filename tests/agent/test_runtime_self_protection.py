@@ -159,3 +159,50 @@ def test_normal_command_unaffected(fake_runtime, monkeypatch):
 
     monkeypatch.setattr(approval, "_yolo_active", lambda: True)
     assert approval.check_all_command_guards("ls /tmp", "local").get("approved") is True
+
+
+# --- a relative delete target follows a preceding `cd` (#143691) -------------
+#
+# A relative target used to be resolved against the process cwd only, so the
+# shell's own `cd` was ignored: `cd <project>; rm -rf .` was blocked whenever the
+# process cwd happened to be an ancestor of the install (the gateway's cwd is
+# usually the user's home), while `cd ~/.hermes/hermes-agent && rm -rf venv` —
+# the delete this floor exists for — passed.
+
+
+def test_relative_delete_after_cd_resolves_against_that_directory(fake_runtime, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # the process cwd is an ancestor of the install
+    project = tmp_path / "projects" / "x"
+    project.mkdir(parents=True)
+    assert rsp.command_deletes_runtime(f"cd {project}; find . -name __pycache__ -prune -exec rm -r {{}} +") is None
+    assert rsp.command_deletes_runtime(f"cd {project} && rm -rf .") is None
+    # Control: the same delete spelled absolutely was never a hit.
+    assert rsp.command_deletes_runtime(f"find {project} -name __pycache__ -prune -exec rm -r {{}} +") is None
+
+
+def test_cd_into_the_install_blocks_a_relative_venv_delete(fake_runtime, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    install = tmp_path / "hermes-agent"
+    assert rsp.command_deletes_runtime(f"cd {install} && rm -rf venv") is not None
+    assert rsp.command_deletes_runtime(f"cd {install}; rm -rf ./venv/bin") is not None
+    assert rsp.command_deletes_runtime(f"cd {install} && find . -name '*.pyc' -delete") is not None
+    # No `cd` at all: a relative target keeps its process-cwd reading.
+    assert rsp.command_deletes_runtime("rm -rf hermes-agent") is not None
+
+
+def test_cd_tracks_tilde_and_chained_segments(fake_runtime, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "projects" / "x").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert rsp.command_deletes_runtime("cd ~/projects/x && rm -rf .") is None
+    assert rsp.command_deletes_runtime(f"cd {tmp_path}; cd hermes-agent && rm -rf venv") is not None
+
+
+def test_unresolvable_cd_falls_back_to_the_process_cwd(fake_runtime, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # `cd "$TARGET"` and `cd -` are not statically knowable: keep the process-cwd
+    # reading rather than guessing a directory the shell may not enter.
+    assert rsp.command_deletes_runtime('cd "$TARGET" && rm -rf .') is not None
+    assert rsp.command_deletes_runtime("cd - && rm -rf .") is not None

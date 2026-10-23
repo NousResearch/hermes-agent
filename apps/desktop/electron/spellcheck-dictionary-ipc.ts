@@ -5,8 +5,8 @@
 import type { IpcMain, IpcMainInvokeEvent, Session, WebContents } from 'electron'
 
 const WORD_MAX = 64
-// One word: letters, combining marks, digits, inner apostrophes and hyphens.
-const WORD_RE = /^[\p{L}\p{M}\p{N}'\u2019-]+$/u
+// One word: letters, combining marks, digits; apostrophes and hyphens only inside.
+const WORD_RE = /^[\p{L}\p{M}\p{N}](?:[\p{L}\p{M}\p{N}'\u2019-]*[\p{L}\p{M}\p{N}])?$/u
 const LETTER_RE = /\p{L}/u
 
 type DictionaryOp = (session: Session, word: string) => boolean

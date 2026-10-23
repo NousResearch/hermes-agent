@@ -10,7 +10,7 @@ import {
   type ComposerContextMenuItem
 } from '@/app/chat/composer/contrib'
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
-import { RICH_INPUT_SLOT } from '@/app/chat/composer/rich-editor'
+import { insertComposerContentsAtCaret, RICH_INPUT_SLOT } from '@/app/chat/composer/rich-editor'
 import { createPluginContext } from '@/contrib/plugin'
 
 import { AppContextMenu } from './app-context-menu'
@@ -153,6 +153,52 @@ describe('composer context-menu contribution area', () => {
     await screen.findByText('Paste')
 
     expect(seen.at(-1)).toEqual({ selection: 'quick', word: 'quick' })
+  })
+
+  it('reads and replaces a whole word that a paste split across text nodes', async () => {
+    let action: ComposerContextMenuAction | null = null
+
+    plugin('alpha', () => [{ label: 'Fix', onSelect: received => void (action = received) }])
+
+    const editor = composer('Her')
+
+    // The composer's real paste path appends the pasted text as its own node.
+    select(editor, 3)
+    insertComposerContentsAtCaret(editor, 'mse rocks')
+    expect(editor.childNodes.length).toBeGreaterThan(1)
+
+    const pasted = [...editor.childNodes].find(node => node.textContent === 'mse rocks')!
+    const range = document.createRange()
+
+    range.setStart(pasted, 1)
+    range.collapse(true)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    fireEvent.contextMenu(editor)
+    fireEvent.click(await screen.findByText('Fix'))
+    await waitFor(() => expect(action).not.toBeNull())
+
+    expect(action!.word).toBe('Hermse')
+    expect(action!.replaceWord('Hermes')).toBe(true)
+    expect(editor.textContent).toBe('Hermes rocks')
+  })
+
+  it('keeps astral-plane letters inside the word', async () => {
+    const seen: ComposerContextMenuContext[] = []
+
+    plugin('alpha', context => {
+      seen.push(context)
+
+      return []
+    })
+
+    const editor = composer('hi 𠮷田 there')
+
+    select(editor, 6)
+    fireEvent.contextMenu(editor)
+    await screen.findByText('Paste')
+
+    expect(seen[0]?.word).toBe('𠮷田')
   })
 
   it('merges plugins in a deterministic order, caps each one, and isolates a throwing provider', async () => {

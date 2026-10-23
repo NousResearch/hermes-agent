@@ -52,56 +52,116 @@ export interface ComposerMenuRow {
   run: () => void
 }
 
-/** The word around a collapsed caret, or at a selection's start. A caret sits
- *  on a boundary between characters, so step to the nearest word character
- *  first; otherwise the word found depends on which side of a gap the caret
- *  happened to land. */
-function wordRangeAt(selected: Range): Range | null {
-  const node = selected.startContainer
+/** One whole character (code point) at / before a UTF-16 offset, so letters
+ *  outside the BMP (`𠮷`) count as one word character, not two halves. */
+function charAt(text: string, index: number): string {
+  const point = text.codePointAt(index)
 
-  if (node.nodeType !== Node.TEXT_NODE) {
-    return null
-  }
+  return point === undefined ? '' : String.fromCodePoint(point)
+}
 
-  const text = node.nodeValue ?? ''
-  const isWord = (index: number) => WORD_CHAR.test(text[index] ?? '')
-  let start = Math.min(selected.startOffset, text.length)
+function charBefore(text: string, index: number): string {
+  const low = text.charCodeAt(index - 1)
 
-  if (!isWord(start)) {
-    start = isWord(start - 1) ? start - 1 : start
-  }
+  return text.slice(low >= 0xdc00 && low <= 0xdfff && index >= 2 ? index - 2 : Math.max(0, index - 1), index)
+}
 
-  if (!isWord(start)) {
-    return null
+const isWordChar = (char: string) => char !== '' && WORD_CHAR.test(char)
+
+/** Word bounds around `caret` in `text`. A caret sits on a boundary between
+ *  characters, so step to the nearest word character first; otherwise the
+ *  word found depends on which side of a gap the caret happened to land.
+ *  Quotes and dashes join a word's inside ("don't", "re-run"), never its edges. */
+function wordBounds(text: string, caret: number): null | { end: number; start: number } {
+  let start = caret
+
+  if (!isWordChar(charAt(text, start))) {
+    const before = charBefore(text, start)
+
+    if (!isWordChar(before)) {
+      return null
+    }
+
+    start -= before.length
   }
 
   let end = start
 
-  while (start > 0 && isWord(start - 1)) {
-    start--
+  for (let char = charBefore(text, start); start > 0 && isWordChar(char); char = charBefore(text, start)) {
+    start -= char.length
   }
 
-  while (end < text.length && isWord(end)) {
-    end++
+  for (let char = charAt(text, end); end < text.length && isWordChar(char); char = charAt(text, end)) {
+    end += char.length
   }
 
-  // Quotes and dashes join a word's inside ("don't", "re-run"), never its edges.
-  while (start < end && WORD_EDGE.test(text[start])) {
+  while (start < end && WORD_EDGE.test(charAt(text, start))) {
     start++
   }
 
-  while (end > start && WORD_EDGE.test(text[end - 1])) {
+  while (end > start && WORD_EDGE.test(charBefore(text, end))) {
     end--
   }
 
-  if (end === start || end - start > WORD_MAX) {
+  return end > start && end - start <= WORD_MAX ? { end, start } : null
+}
+
+/** The text nodes directly beside `node` with no element between them: a paste
+ *  lands as its own node, so one word can span several. Chips and line breaks
+ *  are elements, so a word never crosses them. */
+function textRun(node: Text): Text[] {
+  const run = [node]
+
+  for (let prev = node.previousSibling; prev instanceof Text; prev = prev.previousSibling) {
+    run.unshift(prev)
+  }
+
+  for (let next = node.nextSibling; next instanceof Text; next = next.nextSibling) {
+    run.push(next)
+  }
+
+  return run
+}
+
+/** Map an offset in the joined run back to a (node, offset) boundary point.
+ *  `end` boundaries prefer the earlier node at a seam, `start` the later. */
+function pointIn(run: Text[], offset: number, edge: 'end' | 'start'): [Text, number] {
+  let rest = offset
+
+  for (const [index, node] of run.entries()) {
+    const fits = edge === 'end' ? rest <= node.length : rest < node.length
+
+    if (fits || index === run.length - 1) {
+      return [node, Math.min(rest, node.length)]
+    }
+
+    rest -= node.length
+  }
+
+  return [run[0], 0]
+}
+
+/** The word around a collapsed caret, or at a selection's start, as a live
+ *  Range over the composer's own text nodes. */
+function wordRangeAt(selected: Range): Range | null {
+  const node = selected.startContainer
+
+  if (!(node instanceof Text)) {
+    return null
+  }
+
+  const run = textRun(node)
+  const before = run.slice(0, run.indexOf(node)).reduce((sum, item) => sum + item.length, 0)
+  const bounds = wordBounds(run.map(item => item.data).join(''), before + Math.min(selected.startOffset, node.length))
+
+  if (!bounds) {
     return null
   }
 
   const range = document.createRange()
 
-  range.setStart(node, start)
-  range.setEnd(node, end)
+  range.setStart(...pointIn(run, bounds.start, 'start'))
+  range.setEnd(...pointIn(run, bounds.end, 'end'))
 
   return range
 }

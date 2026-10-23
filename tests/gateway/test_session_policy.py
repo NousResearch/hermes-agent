@@ -143,6 +143,15 @@ def test_launch_options_are_frozen_and_validated(tmp_path):
             build_policy(dict(cwd=str(tmp_path), **bad), cfg)
 
 
+def test_gateway_only_source_is_refused_by_name(tmp_path):
+    from gateway.session_policy import build_policy
+    from hermes_state_runtime import RuntimeStoreError
+    for label in ('kanban', 'cron', 'bot_room'):
+        with pytest.raises(RuntimeStoreError) as refused:
+            build_policy({'source': label, 'cwd': str(tmp_path)}, {})
+        assert (refused.value.field, refused.value.detail) == ('source', f'reserved for the gateway: {label!r}')
+
+
 def test_provider_override_drops_the_previous_providers_route(tmp_path):
     """A provider pick is a whole-route change: folding it must not keep the profile's
     endpoint/wire-protocol/credential pointers, else the new provider's key is sent to the old

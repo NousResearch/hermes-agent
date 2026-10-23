@@ -276,6 +276,11 @@ class GatewayTurnPrepareMixin:
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
             db = self._session_db._db
+            if runtime.get("provider") == "custom":
+                # The adapter's billing class is shared by every named endpoint: resume needs the entry.
+                from hermes_cli.runtime_provider_custom import routed_custom_identity_in
+                runtime["provider"] = routed_custom_identity_in(
+                    Path(db.db_path).parent, runtime.get("base_url"), model) or "custom"
             row = db.get_session(session_id)
             if not row:
                 return

@@ -87,6 +87,8 @@ listener keeps working.
   (`gateway.session_policy.SURFACES`). They select the agent platforms `cli`, `tui`,
   `desktop`, `acp`, `cli` and `cli`; `tool` (third-party integrations) and `oneshot`
   (finite `chat -q` / `-z` runs) keep their own stored label so human pickers hide them.
+  `cron`, `kanban` and `bot_room` are minted only by the gateway; a client asking for one
+  is refused as `reserved for the gateway`.
   The native local routing identity remains server-owned `Platform.LOCAL`; source never
   grants messaging/native trust. Default TUI selection folds in `project`; GUI folds in
   the client-surface toolsets (`project`, `desktop_ui`, `catalog`). GUI policy is

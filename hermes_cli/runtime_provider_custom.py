@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
@@ -298,12 +299,13 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[dict[str, Any]], bool]) -> Optional[str]:
+def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
+                          config: Optional[dict[str, Any]] = None) -> Optional[str]:
     """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+    holds, as its canonical ``custom:<name>`` slug. *config* defaults to the active profile's."""
     rp = _rp()
     try:
-        config = rp.load_config()
+        config = rp.load_config() if config is None else config
     except Exception:
         return None
     providers = config.get("providers")
@@ -341,26 +343,48 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
     round-trip (the session row always stores the model name)."""
     target = str(model or "").strip().lower()
-    if not target:
-        return None
-
-    def _entry_serves_model(entry: dict[str, Any]) -> bool:
-        if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
-            return True
-        models = entry.get("models")
-        if isinstance(models, dict):
-            return any(str(mid).strip().lower() == target for mid in models)
-        if isinstance(models, list):
-            return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
-                       for item in models)
-        return False
-
-    return _find_custom_identity(_entry_serves_model)
+    return _find_custom_identity(lambda entry: _entry_serves_model(entry, target)) if target else None
 
 
-def _endpoint_identity(base_url: str) -> Optional[str]:
+def _entry_serves_model(entry: dict[str, Any], target: str) -> bool:
+    if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
+        return True
+    models = entry.get("models")
+    if isinstance(models, dict):
+        return any(str(mid).strip().lower() == target for mid in models)
+    if isinstance(models, list):
+        return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
+                   for item in models)
+    return False
+
+
+def routed_custom_identity(base_url: Optional[str] = None, model: Optional[str] = None,
+                           config: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """The configured ``custom:<name>`` entry a bare ``custom`` route (the billing class every named
+    endpoint reports) ran on. Entries may share one relay base_url, so the entry also serving
+    *model* beats the first one on that URL; without a URL the model alone names it."""
+    url = _route_key(base_url)
+    target = str(model or "").strip().lower()
+    if not url:
+        return _find_custom_identity(lambda entry: _entry_serves_model(entry, target), config) if target else None
+
+    def on_url(entry: dict[str, Any]) -> bool:
+        return _route_key(_entry_url(entry)) == url
+    return ((target and _find_custom_identity(lambda e: on_url(e) and _entry_serves_model(e, target), config))
+            or _find_custom_identity(on_url, config))
+
+
+def routed_custom_identity_in(home: Any, base_url: Optional[str] = None,
+                              model: Optional[str] = None) -> Optional[str]:
+    """:func:`routed_custom_identity` against the profile at *home*: a session store names entries from
+    its own profile's config, never the ambient scope's (one gateway serves many profiles)."""
+    from hermes_cli.config_effective import load_user_config_effective
+    return routed_custom_identity(base_url, model, load_user_config_effective(Path(home) / "config.yaml"))
+
+
+def _endpoint_identity(base_url: str, model: Optional[str] = None) -> Optional[str]:
     """The menu identity that owns ``base_url``: a configured entry, else the managed server."""
-    identity = find_custom_provider_identity(base_url)
+    identity = routed_custom_identity(base_url, model)
     if identity:
         return identity
     # The managed server has no custom-provider config entry. Recover its menu key
@@ -378,7 +402,7 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
     endpoint first, then the ownership-checked managed server, then a configured model or
     provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    identity = _endpoint_identity(base_url) if base_url else None
+    identity = _endpoint_identity(base_url, model) if base_url else None
     if identity:
         return identity
     identity = find_custom_provider_identity_by_model(model) if model else None

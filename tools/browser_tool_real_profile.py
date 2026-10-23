@@ -147,6 +147,9 @@ _REAL_PROFILE_CHROME_FLAGS = (
     "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
     "--disable-hang-monitor", "--disable-popup-blocking", "--disable-prompt-on-repost",
     "--disable-sync", "--disable-features=Translate", "--no-startup-window",
+    # Keep hidden tabs of parallel named sessions responsive (#135435).
+    "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
 )
 
 

@@ -1,23 +1,26 @@
 name: profile-switcher
 repo: https://github.com/okyssta/hermes-profile-switcher
-sha: 6b4cc33e56c4cb25afc15a33c19d58bbbbe8624d
+sha: 1cf6274592631621bd721bb24501462b83e3b965
 title: Profile Switcher
-description: 'A macOS-style quick switcher for Hermes profiles in the desktop app. One chord (⌥⌘P by
-  default, rebindable in the app''s own keybind panel) opens a panel of every profile with its model and
-  most recent conversation; ↑ ↓ move the highlight and Enter lands you in the profile you pick. A status-bar
-  chip names the active profile and opens the same panel on click. The switch goes through the Desktop''s own
-  profile path, so the target profile''s backend is activated and its chrome is scoped onto it. Desktop-only
+description: 'The Alt+Tab gesture for Hermes profiles. Hold Ctrl+Alt and tap Tab to cycle through your
+  profiles, release to land on the highlighted one — the same hold-tap-release rhythm as the OS app
+  switcher. (Alt+Tab, Win+Tab and Cmd+Tab are owned by the window manager and cannot be bound by any
+  application, so the gesture lives on ctrl+alt+tab, unclaimed by the OS and by Hermes core.) Each row
+  shows the profile''s model and most recent conversation; a working profile shows a spinner. Also opens
+  with a single contributed keybind (Cmd+Alt+P / Ctrl+Alt+P, rebindable in the app''s own keybind panel),
+  a status-bar chip, and a palette command. The switch goes through the Desktop''s own profile path, so
+  the target profile''s backend is activated and its chrome is scoped onto it. Desktop-only
   (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware, env vars, network
   calls, or stored credentials.'
 maintainer: okyssta
 tier: community
 category: desktop
-version: "1.0.0"
+version: "1.1.0"
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/okyssta/hermes-profile-switcher#readme
-image: https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/6b4cc33e56c4cb25afc15a33c19d58bbbbe8624d/assets/profile-switcher.png
+image: https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/1cf6274592631621bd721bb24501462b83e3b965/assets/profile-switcher.png
 screenshots:
-  - https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/6b4cc33e56c4cb25afc15a33c19d58bbbbe8624d/assets/profile-switcher.png
+  - https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/1cf6274592631621bd721bb24501462b83e3b965/assets/profile-switcher.png
 readme: true
 platforms: []
 capabilities:

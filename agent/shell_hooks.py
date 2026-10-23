@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -47,6 +48,23 @@ _STDERR_MESSAGE_LIMIT = 400
 _TRUTHY = {"1", "true", "yes", "on"}
 # kwargs promoted to top-level payload keys; everything else lands under ``extra``.
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
+
+# Text of the assistant message whose tool calls are in flight. ``pre_tool_call`` hooks get only
+# tool_name/args, so a policy gate cannot see what the model just said; ``pre_llm_call`` carries
+# user_message/conversation_history but the tool event fires later. A ContextVar (not a kwarg)
+# keeps every dispatch path covered — concurrent/sequential/segmented — without threading the
+# agent object through, and propagate_context_to_thread() already copies it to worker threads.
+_ASSISTANT_TEXT: ContextVar[str] = ContextVar("hermes_assistant_text", default="")
+_ASSISTANT_TEXT_LIMIT = 4000
+
+
+def set_assistant_text(text: Optional[str]) -> None:
+    """Record the assistant message that emitted the tool calls about to run."""
+    _ASSISTANT_TEXT.set((text or "")[-_ASSISTANT_TEXT_LIMIT:])
+
+
+def current_assistant_text() -> str:
+    return _ASSISTANT_TEXT.get()
 
 # (home, event, matcher, command) wired in this process: matcher in the key (one script may register
 # per-tool under one event), home so multiplexed-gateway profiles can register identical triples.
@@ -98,7 +116,8 @@ def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
         "cwd": cwd,
         # Resolved at fire time: a multiplexed gateway's hook script must know which profile fired it.
         "profile": get_active_profile_name(),
-        "extra": {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS},
+        "extra": {**({"assistant_text": _ASSISTANT_TEXT.get()} if _ASSISTANT_TEXT.get() else {}),
+                  **{k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}},
     }
 
 

@@ -204,3 +204,54 @@ class TestEdgeCases:
         assert result is not None
         assert result["is_image"] is False
 
+
+# ---------------------------------------------------------------------------
+# Tests: Windows UNC paths into a WSL distro (Explorer drag-and-drop)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.platforms("posix")
+class TestWslUncPaths:
+    r"""``\\wsl.localhost\<distro>\...`` / ``\\wsl$\<distro>\...`` — the form
+    Windows Explorer hands over when a file is dragged out of a WSL directory
+    — resolve onto the distro-local path (``/`` + everything after the distro
+    name), so the drop lands as an attachment instead of falling through to
+    the data-url staging fallback."""
+
+    @pytest.fixture()
+    def dropped(self, tmp_path):
+        img = tmp_path / "dropped.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return img
+
+    @staticmethod
+    def _unc(prefix, path):
+        return prefix + str(path).replace("/", "\\")
+
+    def test_wsl_localhost_unc_resolves(self, dropped):
+        result = _detect_file_drop(self._unc(r"\\wsl.localhost\Ubuntu", dropped))
+        assert result is not None
+        assert result["path"] == dropped
+        assert result["is_image"] is True
+
+    def test_wsl_dollar_unc_resolves(self, dropped):
+        result = _detect_file_drop(self._unc(r"\\wsl$\Ubuntu", dropped))
+        assert result is not None
+        assert result["path"] == dropped
+
+    def test_unc_prefix_is_case_insensitive(self, dropped):
+        result = _detect_file_drop(self._unc(r"\\WSL.LOCALHOST\Ubuntu", dropped))
+        assert result is not None
+        assert result["path"] == dropped
+
+    def test_quoted_unc_resolves(self, dropped):
+        quoted = '"' + self._unc(r"\\wsl.localhost\Ubuntu", dropped) + '"'
+        result = _detect_file_drop(quoted)
+        assert result is not None
+        assert result["path"] == dropped
+
+    def test_unc_to_nonexistent_file_is_not_a_drop(self):
+        assert _detect_file_drop(r"\\wsl.localhost\Ubuntu\no\such\file.png") is None
+
+    def test_plain_unc_share_is_not_a_drop(self):
+        r"""Bare \\server\share forms resolve to nothing and must not be drops."""
+        assert _detect_file_drop(r"\\fileserver\share\missing.png") is None

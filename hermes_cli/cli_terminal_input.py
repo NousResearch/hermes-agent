@@ -117,6 +117,14 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
         normalized = expanded.replace("\\", "/")
         if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/" and normalized[0].isalpha():
             expanded = f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
+        elif normalized.lower().startswith("//wsl.localhost/") or normalized.lower().startswith("//wsl$/"):
+            # Windows UNC path into a WSL distro (drag & drop from Explorer):
+            # \\wsl.localhost\<distro>\... or \\wsl$\<distro>\... -> /<path>.
+            # Unknown distro names fall through to the normal non-existent
+            # path handling (returns None -> data_url staging fallback).
+            segments = normalized.split("/")
+            if len(segments) >= 5 and segments[4]:
+                expanded = "/" + "/".join(segments[4:])
     path = Path(expanded)
     if not path.is_absolute():
         base_dir = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
@@ -159,6 +167,9 @@ def _detect_file_drop(user_input: str) -> dict | None:
         unquoted.startswith(("/", "~", "./", "../"))
         or (not quoted and unquoted.startswith("file://"))
         or (len(unquoted) >= 3 and unquoted[1] == ":" and unquoted[2] in {"\\", "/"} and unquoted[0].isalpha())
+        # UNC path (\\wsl.localhost\<distro>\..., \\wsl$\..., \\server\share):
+        # dragging a file from a WSL directory in Explorer hands Hermes this form.
+        or unquoted.startswith("\\\\")
     )
     if not starts_like_path:
         return None

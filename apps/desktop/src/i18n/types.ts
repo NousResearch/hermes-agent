@@ -473,6 +473,7 @@ catalog: CatalogTranslations
       openMaintenance: string
     }
     voice: {
+      echoDropped: string
       configureSpeechToText: string
       couldNotStartSession: string
       microphoneAccessDenied: string

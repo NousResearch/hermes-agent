@@ -12,7 +12,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
-from agent.message_sanitization import coerce_tool_name, deterministic_call_id
+from agent.message_sanitization import coerce_tool_name, deterministic_call_id, tool_call_id_variants
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
 
@@ -1218,6 +1218,46 @@ class _OutputScan:
         ))
 
 
+def _dedupe_function_call_items(output: list[Any]) -> list[Any]:
+    """Keep the populated twin of a function call without merging distinct identities.
+
+    Work on raw Responses items: normalization erases the distinction between a real
+    call_id and a fallback item ID. Streamed and non-streamed responses both reach this
+    through _normalize_codex_response.
+    """
+    positions: dict[tuple[str, str, str], int] = {}
+    result: list[Any] = []
+    for item in output:
+        # Only scannable, executable calls may claim or replace an identity.
+        item_type = getattr(item, "type", None)
+        if not (item_type == "custom_tool_call" or (
+                item_type == "function_call"
+                and _lower_or_none(getattr(item, "status", None)) not in _INCOMPLETE_STATUSES)):
+            result.append(item)
+            continue
+        call_id, item_id = _field(item, "call_id"), _field(item, "id")
+        if isinstance(call_id, str) and call_id.strip():
+            identity = ("call_id", call_id.strip())
+        elif isinstance(item_id, str) and item_id.strip():
+            identity = ("item_id", item_id.strip())
+        else:
+            result.append(item)
+            continue
+        key = (identity[0], identity[1], str(_field(item, "name", "") or ""))
+        position = positions.get(key)
+        if position is None:
+            positions[key] = len(result)
+            result.append(item)
+            continue
+        argument_field = "arguments" if item_type == "function_call" else "input"
+        prior_field = "arguments" if getattr(result[position], "type", None) == "function_call" else "input"
+        arguments = str(_field(item, argument_field, "") or "").strip()
+        prior_arguments = str(_field(result[position], prior_field, "") or "").strip()
+        if arguments not in ("", "{}") and prior_arguments in ("", "{}"):
+            result[position] = item
+    return result
+
+
 def _normalize_codex_response(
     response: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
     recover_leaked_tool_call: bool = True,
@@ -1249,8 +1289,27 @@ def _normalize_codex_response(
     if response_status in {"failed", "cancelled"}:
         raise RuntimeError(_format_responses_error(getattr(response, "error", None), response_status))
     scan = _OutputScan(response_status)
-    scan.scan(output, issuer_kind, issuer_model)
+    scan.scan(_dedupe_function_call_items(output), issuer_kind, issuer_model)
     tool_calls, reasoning_parts = scan.tool_calls, scan.reasoning_parts
+    # A provider may reuse an item id for distinct stable calls. Do not persist that
+    # ambiguous alias: history sanitization treats shared aliases as duplicate calls.
+    alias_owners: dict[str, set[str]] = {}
+    for call in tool_calls:
+        alias_owners.setdefault(call.response_item_id, set()).add(call.id)
+    reserved_ids = {variant for call in tool_calls for variant in tool_call_id_variants(call)}
+    for call in tool_calls:
+        if len(alias_owners[call.response_item_id]) > 1:
+            # Delimiter-free aliases have singleton expansions, so suffixes make
+            # progress against the finite reserved set even for composite call ids.
+            alias = "fc_" + hashlib.sha256(call.id.encode("utf-8", errors="replace")).hexdigest()
+            candidate, suffix = alias, 0
+            # Match sanitizer expansion, but check only the new alias: the stable
+            # call id is already reserved and must not collide with itself.
+            while tool_call_id_variants({"response_item_id": candidate}) & reserved_ids:
+                suffix += 1
+                candidate = f"{alias}_d{suffix}"
+            call.response_item_id = candidate
+            reserved_ids.update(tool_call_id_variants({"response_item_id": candidate}))
     final_text = "\n".join(scan.content_parts).strip()
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")

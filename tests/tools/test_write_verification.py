@@ -63,8 +63,8 @@ class TestWriteVerification:
             r = json.loads(write_file_tool(str(f), "actual content\n", task_id="t-wv3"))
         assert "error" in r and "verification failed" in r["error"]
 
-    def test_verification_failure_never_breaks_write(self, workdir, monkeypatch):
-        # sha256sum unavailable/failing -> verified omitted, write still ok.
+    def test_hash_exception_fails_closed(self, workdir, monkeypatch):
+        # sha256sum raising must not report a successful unverified write.
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")  # the shell sha256sum transport
         f = workdir / "ok.txt"
         import tools.file_operations as fo
@@ -78,6 +78,26 @@ class TestWriteVerification:
 
         with mock_patch.object(fo.ShellFileOperations, "_exec", flaky_exec):
             r = json.loads(write_file_tool(str(f), "content lands anyway\n", task_id="t-wv2"))
-        assert "error" not in r
-        assert f.read_text() == "content lands anyway\n"
-        assert "verified" not in r or r.get("verified") is None
+        assert "error" in r
+        assert "verification failed" in r["error"].lower()
+        assert "could not be hashed" in r["error"].lower()
+        assert "verified" not in r
+
+    def test_unreadable_hash_fails_closed(self, workdir, monkeypatch):
+        # exit 0 write + sha256sum that cannot read the path is not success.
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        f = workdir / "missing-confirm.txt"
+        import tools.file_operations as fo
+
+        real_exec = fo.ShellFileOperations._exec
+
+        def blind_exec(self, cmd, **kw):
+            if "sha256sum" in cmd:
+                return fo.ExecuteResult(stdout="", exit_code=1)
+            return real_exec(self, cmd, **kw)
+
+        with mock_patch.object(fo.ShellFileOperations, "_exec", blind_exec):
+            r = json.loads(write_file_tool(str(f), "hello\n", task_id="t-wv4"))
+        assert "error" in r
+        assert "could not be read" in r["error"].lower()
+        assert "no file was confirmed" in r["error"].lower()

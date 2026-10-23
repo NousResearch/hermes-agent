@@ -1492,26 +1492,56 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             ending = _detect_line_ending(head.stdout) if head.exit_code == 0 and head.stdout else None
         return self._file_has_bom(path, pre_content), pre_content, ending
 
+    def _disk_content_sha256(self, path: str) -> tuple[Optional[str], Optional[BaseException]]:
+        """On-disk sha256 of ``path``, or ``(None, exc)`` when hashing raised.
+
+        Native hash first on the local POSIX backend. ``None`` from native means
+        it could not answer (missing file, non-regular, or an unexpected error)
+        and falls through to ``sha256sum`` — the shell path is not dropped.
+        ``(None, None)`` is an unreadable path or a missing hash tool.
+        """
+        if self._native_read_enabled():
+            try:
+                disk_sha = _native_io.sha256_of(self._native_path(path))
+            except Exception:
+                disk_sha = None
+            if disk_sha:
+                return disk_sha, None
+        try:
+            hash_result = self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
+        except Exception as exc:
+            return None, exc
+        stdout = (hash_result.stdout or "").strip()
+        if hash_result.exit_code == 0 and stdout:
+            return stdout.split()[0], None
+        return None, None
+
     def _verify_written_hash(self, path: str, content_bytes: bytes) -> tuple[Optional[bool], Optional[WriteResult]]:
         """Compare the on-disk sha256 to the intended bytes: ``(verified, error)``.
-        The explicit flag saves the model a confirming re-read; a mismatch is a hard
-        error. ``verified`` is None when the hash could not be taken."""
-        try:
-            disk_sha = _native_io.sha256_of(self._native_path(path)) if self._native_read_enabled() else None
-            hash_result = None if disk_sha else self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
-            if hash_result is not None and hash_result.exit_code == 0 and hash_result.stdout.strip():
-                disk_sha = hash_result.stdout.strip().split()[0]
-            if disk_sha:
-                if disk_sha != hashlib.sha256(content_bytes).hexdigest():
-                    return False, WriteResult(error=(
-                        f"Post-write verification failed for {path}: on-disk "
-                        "content hash differs from the intended write. The "
-                        "write did not persist correctly — re-read the file "
-                        "and retry."))
-                return True, None
-        except Exception:
-            pass
-        return None, None
+
+        Fail closed (#52267): a matching hash is ``verified=True``. A mismatch,
+        an unreadable path, a missing ``sha256sum``, or a hash exception is an
+        error — not ``verified=None`` with a success-shaped byte count. An
+        atomic-write exit 0 on a broken shell can otherwise report a phantom
+        write. Native hashing stays authoritative when it returns a digest.
+        """
+        disk_sha, hash_exc = self._disk_content_sha256(path)
+        if not disk_sha:
+            if hash_exc is not None:
+                return None, WriteResult(error=(
+                    f"Write verification failed: '{path}' could not be hashed "
+                    f"after writing ({hash_exc}). No file was confirmed on disk."))
+            return None, WriteResult(error=(
+                f"Write verification failed: '{path}' could not be read "
+                "back after writing (the write may have silently failed "
+                "on this backend). No file was confirmed on disk."))
+        if disk_sha != hashlib.sha256(content_bytes).hexdigest():
+            return False, WriteResult(error=(
+                f"Post-write verification failed for {path}: on-disk "
+                "content hash differs from the intended write. The "
+                "write did not persist correctly — re-read the file "
+                "and retry."))
+        return True, None
 
     def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
         """Write content atomically, creating parent directories as needed.

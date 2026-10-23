@@ -2,7 +2,7 @@
 # s6-overlay shim. The real logic lives in docker/stage2-hook.sh, invoked
 # by /etc/cont-init.d/01-hermes-setup (installed by the Dockerfile). This
 # file exists so external references to docker/entrypoint.sh still work,
-# but it's no longer the ENTRYPOINT — entrypoint-dispatch.sh is.
+# but it's no longer the ENTRYPOINT, entrypoint-dispatch.sh is.
 #
 # When called directly (e.g. by an old wrapper script that hard-coded
 # docker/entrypoint.sh as the container ENTRYPOINT, or an image-upgrade
@@ -37,7 +37,7 @@ echo "[hermes] WARNING: docker/entrypoint.sh is a deprecated shim under " \
     "entrypoint-dispatch.sh. This path runs stage2 bootstrap and the " \
     "requested command, but supervised services (dashboard, per-profile " \
     "gateways) are unavailable since /init never runs. If you hard-coded " \
-    "docker/entrypoint.sh as your ENTRYPOINT, drop the override — docker " \
+    "docker/entrypoint.sh as your ENTRYPOINT, drop the override, docker " \
     "will use the image's default ENTRYPOINT dispatcher instead." >&2
 
 # /init normally seeds PATH with s6's helpers; this path skips it.

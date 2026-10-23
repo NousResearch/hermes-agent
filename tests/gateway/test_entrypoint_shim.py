@@ -57,21 +57,19 @@ def _log(recorder: tuple[Path, Path]) -> str:
     return log.read_text() if log.exists() else ""
 
 
-def test_runs_stage2_then_execs_cmd(recorder: tuple[Path, Path]) -> None:
-    """A hard-coded entrypoint.sh must still run the CMD after bootstrap."""
-    r = _run_shim(recorder, ["gateway", "run"])
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (["gateway", "run"], ["stage2", "wrapper gateway run"]),
+        (["--help"], ["stage2", "wrapper --help"]),
+        ([], ["stage2", "wrapper "]),  # ENTRYPOINT with no CMD still runs
+    ],
+)
+def test_runs_stage2_then_execs_cmd(recorder: tuple[Path, Path], args: list[str], expected: list[str]) -> None:
+    """A hard-coded entrypoint.sh must bootstrap first, then still run the CMD."""
+    r = _run_shim(recorder, args)
     assert r.returncode == 0, r.stderr
-    log = _log(recorder)
-    lines = [ln for ln in log.splitlines() if ln]
-    assert lines == ["stage2", "wrapper gateway run"]
-
-
-def test_runs_stage2_before_wrapper(recorder: tuple[Path, Path]) -> None:
-    """Bootstrap must complete before the requested command starts."""
-    r = _run_shim(recorder, ["--help"])
-    assert r.returncode == 0, r.stderr
-    log = _log(recorder)
-    assert log.index("stage2") < log.index("wrapper --help")
+    assert _log(recorder).splitlines() == expected
 
 
 def test_warns_about_deprecation(recorder: tuple[Path, Path]) -> None:
@@ -80,15 +78,6 @@ def test_warns_about_deprecation(recorder: tuple[Path, Path]) -> None:
     assert r.returncode == 0, r.stderr
     assert "deprecated shim" in r.stderr
     assert "entrypoint-dispatch.sh" in r.stderr
-
-
-def test_no_args_still_execs_wrapper(recorder: tuple[Path, Path]) -> None:
-    """`ENTRYPOINT ["docker/entrypoint.sh"]` with no CMD must still run."""
-    r = _run_shim(recorder, [])
-    assert r.returncode == 0, r.stderr
-    log = _log(recorder)
-    lines = [ln for ln in log.splitlines() if ln]
-    assert lines == ["stage2", "wrapper "]
 
 
 def test_stage2_can_find_s6_helpers(recorder: tuple[Path, Path]) -> None:

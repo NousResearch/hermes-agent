@@ -12,11 +12,9 @@ import {
   STARMAP_ROUTE
 } from '@/app/routes'
 
-/** The views the controller mounts generically as page overlay cards. The other
- *  non-chat views keep their dedicated mounts (settings/capabilities/cron/…);
- *  with `isOverlayView` defaulting to overlay, a NEW first-party page needs one
- *  line here (plus its lazy import in wiring) to appear as a card. */
-const PAGE_OVERLAY_VIEWS: ReadonlySet<AppView> = new Set(['artifacts', 'extension', 'messaging'])
+/** The page surfaces rendered inside the generic overlay host. The other
+ *  non-chat views keep their dedicated controller mounts. */
+const PAGE_OVERLAY_VIEWS: ReadonlySet<AppView> = new Set(['artifacts', 'capabilities', 'extension', 'messaging'])
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
 
@@ -26,7 +24,6 @@ export function useOverlayRouting() {
 
   const currentView = appViewForPath(location.pathname)
   const settingsOpen = currentView === 'settings'
-  const capabilitiesOpen = currentView === 'capabilities'
   const commandCenterOpen = currentView === 'command-center'
   const agentsOpen = currentView === 'agents'
   const starmapOpen = currentView === 'starmap'
@@ -83,7 +80,6 @@ export function useOverlayRouting() {
     pageOverlayPath,
     pageOverlayView,
     agentsOpen,
-    capabilitiesOpen,
     chatOpen,
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,

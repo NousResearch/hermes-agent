@@ -312,6 +312,12 @@ _SPECS = [
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),
+    _cmd("bind-project", [
+        _TASK_ID,
+        _arg("--project", required=True, metavar="ID_OR_SLUG",
+             help="Explicit destination project ID or slug"),
+        _json_flag(help="Emit a machine-readable result"),
+    ], help="Bind an existing projectless task to a compatible project"),
     _cmd("block", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason (also appended as a comment)"),

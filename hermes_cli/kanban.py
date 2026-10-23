@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -185,6 +186,23 @@ def kanban_command(args: argparse.Namespace) -> int:
         # "no such table: tasks" on first use from a fresh HERMES_HOME.
         try:
             kb.init_db()
+        except kbc.KanbanDbCorruptError as exc:
+            if action == "bind-project" and getattr(args, "json", False):
+                return _bind_project_json_error(
+                    args,
+                    kb.get_current_board() or kb.DEFAULT_BOARD,
+                    "could not initialize database: corruption detected; "
+                    "the bind operation was not attempted",
+                )
+            return _err(f"kanban: could not initialize database: {exc}")
+        except sqlite3.Error as exc:
+            if action == "bind-project" and getattr(args, "json", False):
+                return _bind_project_json_error(
+                    args,
+                    kb.get_current_board() or kb.DEFAULT_BOARD,
+                    f"could not initialize database: {exc}",
+                )
+            return _err(f"kanban: could not initialize database: {exc}")
         except Exception as exc:
             return _err(f"kanban: could not initialize database: {exc}")
 
@@ -210,7 +228,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "request-review", "request-changes", "reopen-review",
+    "request-review", "request-changes", "reopen-review", "bind-project",
     "gc",
 })
 
@@ -970,6 +988,109 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     )
 
 
+def _bind_project_snapshot(conn, task_id: str):
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    events = conn.execute(
+        "SELECT id, kind, payload FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+    ).fetchall()
+    return (
+        dict(task) if task is not None else None,
+        tuple((event["id"], event["kind"], event["payload"]) for event in events),
+    )
+
+
+def _bind_project_json_error(args: argparse.Namespace, board: str, error: str) -> int:
+    _print_json({
+        "ok": False, "result": "error", "changed": False,
+        "task_id": args.task_id, "project_id": None,
+        "project_slug": None, "board": board, "error": error,
+    })
+    return 1
+
+
+def _bind_project_reconciliation_required(
+    args: argparse.Namespace, board: str, error: str, reconciliation_error: str | None = None,
+) -> int:
+    if getattr(args, "json", False):
+        payload = {
+            "ok": False,
+            "result": "reconciliation_required",
+            "changed": None,
+            "task_id": args.task_id,
+            "project_id": None,
+            "project_slug": None,
+            "board": board,
+            "binding_state": "indeterminate",
+            "reconciliation_required": True,
+            "error": error,
+        }
+        if reconciliation_error:
+            payload["reconciliation_error"] = reconciliation_error
+        _print_json(payload)
+        return 1
+    return _err(
+        f"kanban bind-project: commit outcome indeterminate; inspect task {args.task_id!r} "
+        f"before any retry: {error}"
+    )
+
+
+def _cmd_bind_project(args: argparse.Namespace) -> int:
+    from hermes_cli.kanban_db_project_binding import bind_task_project
+
+    board = kb.get_current_board() or kb.DEFAULT_BOARD
+    binding_error = None
+    before = None
+    after = None
+    reconciliation_error = None
+    result = None
+    try:
+        with kbc.connect_closing() as conn:
+            before = _bind_project_snapshot(conn, args.task_id)
+            try:
+                result = bind_task_project(
+                    conn, args.task_id, args.project, board=board, actor=_profile_author(),
+                )
+            except (sqlite3.Error, ValueError, RuntimeError, PermissionError, OSError) as exc:
+                binding_error = exc
+                if getattr(conn, "in_transaction", False):
+                    reconciliation_error = "connection remains in a transaction"
+                else:
+                    try:
+                        after = _bind_project_snapshot(conn, args.task_id)
+                    except (sqlite3.Error, ValueError, RuntimeError, PermissionError, OSError) as read_exc:
+                        reconciliation_error = str(read_exc)
+    except (sqlite3.Error, ValueError, RuntimeError, PermissionError, OSError) as exc:
+        if getattr(args, "json", False):
+            return _bind_project_json_error(args, board, str(exc))
+        return _err(f"kanban bind-project: {exc}")
+
+    if binding_error is not None:
+        if before is not None and after == before:
+            if getattr(args, "json", False):
+                return _bind_project_json_error(args, board, str(binding_error))
+            return _err(f"kanban bind-project: {binding_error}")
+
+        # Snapshots can show that state changed, but cannot attribute the
+        # binding to this invocation. A failed attempt with any changed or
+        # unavailable readback must remain indeterminate.
+        return _bind_project_reconciliation_required(
+            args, board, str(binding_error), reconciliation_error,
+        )
+
+    if result is None:
+        return _bind_project_reconciliation_required(
+            args, board, "binding operation returned no result",
+        )
+
+    if getattr(args, "json", False):
+        _print_json(result)
+    elif result["changed"]:
+        print(f"Bound {args.task_id} to project {result['project_slug']} ({result['project_id']})")
+    else:
+        print(f"{args.task_id} is already bound to project {result['project_slug']} ({result['project_id']})")
+    return 0
+
+
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
     """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
     def run(tid):
@@ -1326,7 +1447,7 @@ _HANDLERS = {
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
-    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "complete": _cmd_complete, "edit": _cmd_edit, "bind-project": _cmd_bind_project, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,

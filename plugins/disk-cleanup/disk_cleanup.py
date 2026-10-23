@@ -363,6 +363,78 @@ def format_status(s: dict[str, Any]) -> str:
 _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
+# Directory names that mark a test/source tree: a ``test_*`` file inside one of these is a
+# regression test or a vendored dependency's own suite, never session scratch.
+_SOURCE_TREE_DIRS = frozenset({
+    "tests", "test", "spec", "specs", "__tests__",
+    "node_modules", "site-packages", "__pycache__", ".venv", "venv",
+})
+
+# Files that mark their containing directory (and everything below it) as a project tree.
+_PROJECT_MARKERS = (
+    "pyproject.toml", "setup.py", "setup.cfg", "package.json", "Cargo.toml",
+    "go.mod", "requirements.txt", "tox.ini", "pytest.ini", "pyvenv.cfg",
+)
+
+
+def _has_sibling_module(path: Path) -> bool:
+    """True when *path*'s directory holds a non-test module of the same language.
+
+    ``scripts/`` style trees are often flat: ``test_school_zone_geometry.py`` sits beside the
+    ``school_zone_geometry.py`` it covers, with no manifest and no ``tests/`` parent to signal
+    it. A ``test_*`` file with a source sibling is a test, not scratch. Fail-safe direction:
+    the worst case retains a scratch file.
+    """
+    suffix = path.suffix
+    if not suffix:
+        return False
+    try:
+        entries = list(path.parent.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if entry == path or entry.suffix != suffix or not entry.is_file():
+            continue
+        name = entry.name
+        if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES):
+            continue
+        return True
+    return False
+
+
+def _inside_source_tree(path: Path) -> bool:
+    """True when *path* lives inside a test or project tree, so a ``test_*`` name there is
+    NOT disposable scratch.
+
+    ``_inside_git_worktree`` only covers Git-owned files. A profile's user trees
+    (``scripts/``, ``workflows/``, ``workspaces/``) are frequently NOT a checkout: they are
+    plain directories the user authored, or vendored trees whose ``.git`` was stripped.
+    There, ``scripts/tests/test_x.py`` was classified ``test`` and deleted at session end --
+    observed live, repeatedly, on the scraper-health and Atlanta-watcher regression tests
+    (written, then destroyed hours later by an unrelated session ending). Walk the ancestors
+    below HERMES_HOME and treat the file as project-owned if any of them is a test directory
+    or carries a project manifest. Fail-safe by construction: the worst outcome is retaining
+    a scratch file, never losing a test.
+    """
+    resolved = path.resolve()
+    home = get_hermes_home()
+    try:
+        resolved.relative_to(home)
+    except ValueError:
+        return False
+    for parent in resolved.parents:
+        if parent == home or parent == parent.parent:
+            break
+        if parent.name in _SOURCE_TREE_DIRS:
+            return True
+        # A ``__pycache__`` beside the file means its directory holds executed Python —
+        # a code tree, not scratch. Scratch files are written and abandoned, never imported.
+        if (parent / "__pycache__").is_dir():
+            return True
+        if any((parent / marker).is_file() for marker in _PROJECT_MARKERS):
+            return True
+    return False
+
 
 def _git_tracks(path: Path) -> bool:
     """True when the git repo enclosing *path* (at any depth) tracks it.
@@ -426,5 +498,14 @@ def guess_category(path: Path) -> Optional[str]:
         # Git-owned trees manage their own files: never classify a test_* there as disposable,
         # so neither tracking nor quick() (which re-validates stored "test" entries through
         # this function) touches it (#115295).
-        return None if _inside_git_worktree(path) else "test"
+        if _inside_git_worktree(path):
+            return None
+        # A test/project tree that is not a Git checkout (profile ``scripts/``, ``workflows/``,
+        # ``workspaces/``) is equally not disposable: its ``test_*`` files are the user's
+        # regression tests. Without this the file is deleted at the next session end.
+        if _inside_source_tree(path):
+            return None
+        if _has_sibling_module(path):
+            return None
+        return "test"
     return None

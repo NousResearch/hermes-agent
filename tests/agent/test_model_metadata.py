@@ -2050,3 +2050,17 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+
+
+def test_extract_pricing_unwraps_nested_currency_dicts():
+    """Venice-style pricing ({"input": {"usd": .., "diem": ..}}) must not raise TypeError."""
+    from agent.model_metadata import _extract_pricing
+    payload = {"model_spec": {"pricing": {"input": {"usd": 0.7, "diem": 0.7}, "output": {"usd": 2.8, "diem": 2.8}}}}
+    pricing = _extract_pricing(payload)
+    assert float(pricing["prompt"]) == pytest.approx(0.7 / 1_000_000)
+    assert float(pricing["completion"]) == pytest.approx(2.8 / 1_000_000)
+
+
+def test_extract_pricing_ignores_unusable_dict_values():
+    from agent.model_metadata import _extract_pricing
+    assert _extract_pricing({"pricing": {"input": {"diem": 1}, "output": {}}}) == {}

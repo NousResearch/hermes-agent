@@ -878,9 +878,14 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         pricing: dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
-                    break
+                value = normalized.get(alias)
+                if isinstance(value, dict):
+                    # Venice-style {"usd": x, "diem": y}: keep the USD quote.
+                    value = value.get("usd")
+                if value is None or value == "" or isinstance(value, (dict, list)):
+                    continue
+                pricing[target] = value
+                break
         if pricing:
             return _normalize_token_rates(pricing, normalized.get("unit"))
     return {}

@@ -355,8 +355,13 @@ async function assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath = '') 
         .split(/\r?\n/)
         .pop() || ''
   } catch (cause) {
+    // The exec failing says nothing about the marker: a concurrent bootstrap
+    // path tearing the shared ControlMaster down mid-probe kills the ride to
+    // the gate, not the gate's verdict. Still fail-closed, but as the
+    // transient transport error it is — an 'update-in-progress' kind here
+    // reports a dead mux as an update that is not happening (#134131).
     const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
-    error.kind = 'update-in-progress'
+    error.kind = 'transient-transport-error'
     error.cause = cause
     throw error
   }

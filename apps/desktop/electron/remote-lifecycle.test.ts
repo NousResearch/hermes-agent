@@ -190,6 +190,26 @@ test('POSIX relaunch gate permits absent/dead markers and normalizes named-profi
   assert.ok(commands[0].endsWith(" '/home/alice/.hermes/.hermes-update-in-progress'"), commands[0].slice(-80))
 })
 
+test('POSIX relaunch gate reports a dead transport as transient, not as an update', async () => {
+  // The exec can die under the probe without the marker ever being read —
+  // e.g. a concurrent bootstrap path tears the shared ControlMaster down
+  // mid-check (#134131). Fail closed, but as the transport error it is:
+  // an 'update-in-progress' kind claims an update that is not happening.
+  const cause = Object.assign(new Error('mux_client_request_session: read from master failed'), {
+    code: 255
+  })
+  const ssh = {
+    async exec() {
+      throw cause
+    }
+  }
+
+  await assert.rejects(
+    () => assertRemoteInstallUpdateClear(ssh, '/home/alice/.hermes'),
+    (error: any) => error.kind === 'transient-transport-error' && error.cause === cause
+  )
+})
+
 test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {
   const calls: string[] = []
   let markerChecks = 0

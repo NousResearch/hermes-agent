@@ -1222,7 +1222,14 @@ export function LocalFilePreview({
     state.dataUrl &&
     (target.previewKind === 'document' || target.previewKind === 'presentation' || target.previewKind === 'spreadsheet')
   ) {
-    return <OfficePreview dataUrl={state.dataUrl} kind={target.previewKind} label={target.label} />
+    return (
+      <OfficePreview
+        dataUrl={state.dataUrl}
+        kind={target.previewKind}
+        label={target.label}
+        path={filePathForTarget(target)}
+      />
+    )
   }
 
   if (isText && state.text !== undefined) {

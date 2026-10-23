@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { docxPreviewDocument } from '@/lib/office-document'
 import { odtPreviewDocument } from '@/lib/office-odf'
 import { parsePptx, type SlidePreview } from '@/lib/office-pptx'
+import { officeSourceName } from '@/lib/office-source'
 import { dataUrlBytes, parseSpreadsheet, type SheetPreview } from '@/lib/office-workbook'
 
 function columnLabel(index: number): string {
@@ -26,11 +27,13 @@ function isNumeric(value: string): boolean {
 export function OfficePreview({
   dataUrl,
   kind,
-  label
+  label,
+  path
 }: {
   dataUrl: string
   kind: OfficePreviewKind
   label: string
+  path?: string
 }) {
   const [html, setHtml] = useState<string>()
   const [sheets, setSheets] = useState<SheetPreview[]>()
@@ -49,9 +52,10 @@ export function OfficePreview({
     async function load() {
       try {
         const bytes = dataUrlBytes(dataUrl)
+        const sourceName = officeSourceName(path, label)
 
         if (kind === 'document') {
-          const document = /\.odt$/i.test(label) ? odtPreviewDocument(bytes) : await docxPreviewDocument(bytes)
+          const document = /\.odt$/i.test(sourceName) ? odtPreviewDocument(bytes) : await docxPreviewDocument(bytes)
 
           if (active) {
             setHtml(document)
@@ -70,7 +74,7 @@ export function OfficePreview({
           return
         }
 
-        const parsed = parseSpreadsheet(bytes, label)
+        const parsed = parseSpreadsheet(bytes, sourceName)
 
         if (active) {
           setSheets(parsed)
@@ -87,7 +91,7 @@ export function OfficePreview({
     return () => {
       active = false
     }
-  }, [dataUrl, kind, label])
+  }, [dataUrl, kind, label, path])
 
   if (error) {
     return (

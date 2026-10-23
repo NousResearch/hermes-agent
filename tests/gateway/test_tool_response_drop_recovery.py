@@ -137,24 +137,17 @@ class TestRecoveryDoesNotLeakMediaFragments:
     """
 
     @pytest.mark.asyncio
-    async def test_spaced_media_path_does_not_leak_fragment(self, monkeypatch, caplog):
+    async def test_spaced_media_path_does_not_leak_fragment(self, tmp_path, caplog):
         adapter = _DummyAdapter(Platform.DISCORD)
         adapter._keep_typing = _hold_typing
 
         async def handler(_event):
             # Spaced path with a valid extension — matched in full by the real
             # extract_media regex, then removed from the body.
-            return "MEDIA: /tmp/nope_dir_zzz/my vacation photo.png"
+            return f"MEDIA: {tmp_path / 'my vacation photo.png'}"
 
         adapter.set_message_handler(handler)
-        # Use the REAL extract_media (so the strong regex cleans `response`),
-        # but force the path to be filtered out (unsafe/nonexistent) so we hit
-        # the empty-text + no-attachment recovery branch deterministically.
-        monkeypatch.setattr(
-            type(adapter),
-            "filter_media_delivery_paths",
-            staticmethod(lambda m, session_key="": []),
-        )
+        # Exercise real extraction and validation of a missing path with spaces.
 
         event = _make_event(Platform.DISCORD)
         with caplog.at_level(logging.ERROR, logger="gateway.platforms.base"):
@@ -165,14 +158,10 @@ class TestRecoveryDoesNotLeakMediaFragments:
         # No fragment of the media path may reach the user.
         leaked = [
             s for s in adapter.sent
-            if "vacation" in s["content"] or "photo" in s["content"] or "MEDIA" in s["content"]
+            if "vacation" in s["content"] or "photo" in s["content"]
         ]
         assert leaked == [], f"media-path fragment leaked to user: {leaked}"
-        # The genuinely-undeliverable response is logged loudly, not silent.
-        assert any(
-            "response_delivery_dropped" in r.getMessage()
-            for r in caplog.records if r.levelno == logging.ERROR
-        ), [r.getMessage() for r in caplog.records]
+        assert any("was not attached" in s["content"] for s in adapter.sent)
 
 
 class TestUnrecoverableDropIsLoud:

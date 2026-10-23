@@ -35,7 +35,7 @@ from hermes_cli.config import get_hermes_home
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
-from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
+from tools.process_registry_output_log import ProcessOutputLogMixin, finish_reader, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
@@ -1391,33 +1391,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         finally:
             if _waiter is not None:
                 _waiter.close()
+            # Capture EOF is not process exit: the child may have redirected or
+            # closed its pipes while still alive (issue #86416). This reader owns
+            # the real exit — wait unbounded so a notify_on_complete session
+            # still notifies autonomously when the child actually terminates,
+            # the same contract the PTY reader already has.
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                session.process.wait, lambda: session.process.returncode)
+                session.process.wait, lambda: session.process.returncode,
+                proc=session.process)
 
-    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
-        """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
-
-        A process may close stdout long before it exits.  The reader owns a dedicated
-        daemon thread, so it must keep waiting rather than publish a false completion
-        and discard the only ``Popen`` handle that can reap the child.
-        """
-        with suppress(Exception):
-            tail = decoder.decode(b"", final=True)
-            if tail:
-                append(tail)
-        try:
-            wait()
-        except Exception as e:
-            # A PTY child reaped by isalive() already has its exitstatus; only an
-            # unknown status must stay tracked for later reconciliation.
-            if exit_code() is None:
-                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
-                return
-            logger.warning("%s wait failed; recording known exit status: %s", label, e)
-        self._finish_exited(session, exit_code())
-
+    _finish_reader = finish_reader
     _log_delta_command = staticmethod(log_delta_command)
 
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
@@ -1532,7 +1516,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 ingest(tail)
         self._finish_reader(
             session, decoder, ingest, "PTY",
-            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
+            pty.wait, lambda: -pty.signalstatus if getattr(pty, 'signalstatus', None) is not None
+            else getattr(pty, 'exitstatus', -1))
 
     def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
         """Buffer a freshly-read chunk, then scan watch patterns and stream it live.

@@ -255,3 +255,71 @@ describe('the menu store', () => {
     expect($contextMenu.get()).toBeNull()
   })
 })
+
+describe('a plugin row runs against the field, not the menu', () => {
+  it('closes the menu and refocuses the field before running the action', async () => {
+    installBridge()
+
+    const editable = attach('<textarea>some text</textarea>') as HTMLTextAreaElement
+    const seen: { active: string | null; menuOpen: boolean }[] = []
+
+    registry.register({
+      area: CONTEXT_MENU_AREA,
+      data: {
+        rows: () => [
+          {
+            label: 'Plugin action',
+            onSelect: () => {
+              seen.push({
+                active: document.activeElement?.tagName ?? null,
+                menuOpen: document.querySelector('[role="menu"]') !== null
+              })
+            }
+          }
+        ]
+      } satisfies ContextMenuContribution,
+      id: 'test-plugin'
+    })
+
+    mountMenu()
+    openMenuOver(editable)
+
+    const row = await screen.findByText('Plugin action')
+
+    // Focus the field the way a right-click would leave it, then pick the row.
+    editable.focus()
+    fireEvent.click(row)
+
+    await waitFor(() => {
+      expect(seen.length).toBe(1)
+    })
+
+    // The action must not run with the menu still mounted: Radix fires
+    // `onSelect` before it closes the content, and the content is a focus
+    // trap, so a handler that ran directly would see the menu rather than
+    // the field.
+    expect(seen[0].menuOpen).toBe(false)
+    expect(seen[0].active).toBe('TEXTAREA')
+  })
+
+  it('puts a top row above the app\'s own rows', async () => {
+    installBridge()
+
+    registry.register({
+      area: CONTEXT_MENU_AREA,
+      data: { rows: () => [{ label: 'Plugin suggestion', onSelect: vi.fn() }] } satisfies ContextMenuContribution,
+      id: 'test-plugin'
+    })
+
+    const host = attach('<textarea>text</textarea>')
+
+    mountMenu()
+    openMenuOver(host)
+
+    const plugin = await screen.findByText('Plugin suggestion')
+    const copy = await screen.findByText('Copy')
+
+    // DOM order is menu order: the plugin's row comes first.
+    expect(plugin.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})

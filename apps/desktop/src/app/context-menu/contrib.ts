@@ -37,9 +37,22 @@ export interface ContextMenuContext {
 /**
  * One row a plugin contributes to the context menu.
  *
- * `onSelect` runs when the user picks the row. The menu closes before it
- * runs, and the app restores focus to the field first -- the same order the
- * built-in edit verbs use, so a plugin row can act on the selection.
+ * `onSelect` runs when the user picks the row. The menu closes first, then
+ * the app restores focus to the field, and only then does the action run --
+ * the same order the built-in edit verbs use, so a plugin row can act on the
+ * field the user right-clicked.
+ *
+ * The order matters and is not incidental. Radix fires a menu item's
+ * `onSelect` before it closes the menu content, and the content is a focus
+ * trap that prevents focus restoration on close. A handler that ran directly
+ * would therefore run with the menu still mounted and focus still inside it,
+ * so a live selection read -- or an edit command aimed at the focused
+ * element -- would hit the menu rather than the field. Closing first and
+ * refocusing the field on the next frame puts the action back on the field.
+ *
+ * The context the row was resolved against (`editable`, `word`,
+ * `selectedText`) is captured when the menu OPENS, so it is still valid by
+ * the time the action runs.
  */
 export interface ContextMenuRow {
   /** The text shown in the row. */
@@ -62,9 +75,9 @@ export interface ContextMenuContribution {
    */
   rows: (context: ContextMenuContext) => ContextMenuRow[]
   /**
-   * Where the rows go. `'top'` puts them above the app's own rows (the
-   * natural place for spell-check suggestions); `'bottom'` puts them after
-   * the last section. Defaults to `'top'`.
+   * Where the rows go. `'top'` puts them at the top of the menu, above the
+   * app's own rows; `'bottom'` puts them after the last section. Defaults to
+   * `'top'`.
    */
   position?: 'top' | 'bottom'
   /**

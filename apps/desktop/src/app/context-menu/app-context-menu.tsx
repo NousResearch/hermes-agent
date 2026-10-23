@@ -236,6 +236,35 @@ function domSections(
     withEditableFocus(() => void window.hermesDesktop?.contextMenuSpellcheck?.(action))
   }
 
+  // A plugin's rows go at the TOP of the menu, above the app's own rows --
+  // the link and image actions below, and the edit verbs after that. This is
+  // the position a contributed suggestion occupies in a native menu.
+  //
+  // The rows run through `withEditableFocus`, like the built-in edit verbs.
+  // Radix fires a menu item's `onSelect` BEFORE it closes the content, and
+  // the content's `onCloseAutoFocus` prevents focus restoration, so a
+  // handler that runs directly would act while the menu is still mounted and
+  // focus is still inside it -- a live selection read, or an edit command
+  // sent to the focused element, would then hit the menu rather than the
+  // field the user right-clicked. `withEditableFocus` closes the menu first,
+  // then refocuses the field and runs the action on the next frame, after
+  // the focus trap is gone. The context a plugin is handed
+  // (`editable`, `word`, `selectedText`) is captured at OPEN time, so it is
+  // still valid once the action runs.
+  if (pluginRows.top.length) {
+    sections.push(
+      pluginRows.top.map((row, index) => (
+        <Item
+          disabled={row.disabled}
+          icon={row.icon}
+          key={`plugin-${index}-${row.label}`}
+          label={row.label}
+          onSelect={() => withEditableFocus(row.onSelect)}
+        />
+      ))
+    )
+  }
+
   if (linkUrl) {
     sections.push(
       [
@@ -320,22 +349,6 @@ function domSections(
           />
         ) : null
       ].filter(Boolean)
-    )
-  }
-
-  // A plugin's rows go FIRST, above the app's own, so a contributed row
-  // reads as the top item of the menu.
-  if (pluginRows.top.length) {
-    sections.push(
-      pluginRows.top.map((row, index) => (
-        <Item
-          disabled={row.disabled}
-          icon={row.icon}
-          key={`plugin-${index}-${row.label}`}
-          label={row.label}
-          onSelect={row.onSelect}
-        />
-      ))
     )
   }
 
@@ -436,7 +449,7 @@ function domSections(
           icon={row.icon}
           key={`plugin-bottom-${index}-${row.label}`}
           label={row.label}
-          onSelect={row.onSelect}
+          onSelect={() => withEditableFocus(row.onSelect)}
         />
       ))
     )

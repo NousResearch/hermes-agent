@@ -574,7 +574,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             images, media_files, text_content = [], [], ""
             if response:
                 from gateway.media_delivery_feedback import extract_media_with_feedback
-                media_files, response = await extract_media_with_feedback(self, adapter, response, source)
+                media_files, response = await extract_media_with_feedback(self, adapter, response, source, feedback_session_id=task_id)
                 images, text_content = adapter.extract_images(response)
             if text_content:
                 await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)

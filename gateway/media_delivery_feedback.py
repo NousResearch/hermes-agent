@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 MEDIA_REJECTION_NOTICE = "[A MEDIA attachment was rejected by the delivery policy or was unavailable; it was not attached.]"
 
 
-async def extract_media_with_feedback(runner, adapter, response, source, session_key="", *, notify=False, metadata=None):
+async def extract_media_with_feedback(runner, adapter, response, source, session_key="", *, notify=False, metadata=None, feedback_session_id=None):
     """Keep validation unchanged; append a path-free receipt without rewriting history."""
     from gateway.platforms.base import BasePlatformAdapter
 
@@ -21,8 +21,10 @@ async def extract_media_with_feedback(runner, adapter, response, source, session
     if runner is not None:
         try:
             store = runner.async_session_store
-            session = await store.get_or_create_session(source)
-            await store.append_to_transcript(session.session_id, {"role": "user", "content": MEDIA_REJECTION_NOTICE})
+            if feedback_session_id is None:
+                session = await store.get_or_create_session(source)
+                feedback_session_id = session.session_id
+            await store.append_to_transcript(feedback_session_id, {"role": "user", "content": MEDIA_REJECTION_NOTICE})
         except Exception:
             logger.warning("Could not persist MEDIA rejection feedback", exc_info=True)
     if notify:

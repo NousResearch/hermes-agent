@@ -39,15 +39,22 @@ async def test_rejected_media_is_not_silent_and_is_in_session_history(tmp_path, 
             assert any("was not attached" in sent["content"] for sent in adapter.sent)
         else:
             runner.adapters[Platform.DISCORD] = adapter
+            background_source = _make_event(Platform.DISCORD, chat_id="background-fixture").source
+            background = await async_store.get_or_create_session(background_source)
             agent = MagicMock(spec=AIAgent)
             agent.run_conversation.return_value = {"final_response": response, "messages": []}
             with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
                  patch("gateway.run._load_gateway_config", return_value={}), \
                  patch("run_agent.AIAgent", return_value=agent):
-                await runner._run_background_task("send report", event.source, "bg_test")
+                await runner._run_background_task("send report", event.source, background.session_id)
             assert any("was not attached" in sent["content"] for sent in adapter.sent)
-        history = await async_store.load_transcript(session.session_id)
-        assert history[0]["content"] == "Sent it."
+        original_history = await async_store.load_transcript(session.session_id)
+        assert original_history[0]["content"] == "Sent it."
+        if delivery == "background":
+            assert len(original_history) == 1
+            history = await async_store.load_transcript(background.session_id)
+        else:
+            history = original_history
         assert history[-1]["role"] == "user"
         assert "was not attached" in history[-1]["content"]
         assert "private report" not in history[-1]["content"]

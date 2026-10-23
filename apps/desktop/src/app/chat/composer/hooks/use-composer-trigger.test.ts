@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
-import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
+import { composerPlainText, placeCaretAtOffset, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
 import { useComposerTrigger } from './use-composer-trigger'
 
@@ -36,6 +36,29 @@ function mountEditor(text: string) {
   const selection = window.getSelection()!
   selection.removeAllRanges()
   selection.addRange(range)
+
+  return editor
+}
+
+/** Seed a hand-typed draft: raw text nodes + <br>, no hydration pass. Seeding
+ *  through `renderComposerContents` instead pills any command token that
+ *  already has whitespace behind it (`/hel ` reads as a committed command that
+ *  arrived whole), and the caret then sits against a chip rather than inside
+ *  the editable token the completion popover owns. Live typing produces this
+ *  flat shape, so the trailing-space scenarios below need it too. */
+function mountTypedDraft(text: string) {
+  const editor = document.createElement('div')
+  editor.dataset.slot = RICH_INPUT_SLOT
+  editor.contentEditable = 'true'
+  document.body.append(editor)
+
+  for (const [i, line] of text.split('\n').entries()) {
+    if (i > 0) {
+      editor.append(document.createElement('br'))
+    }
+
+    editor.append(document.createTextNode(line))
+  }
 
   return editor
 }
@@ -305,5 +328,73 @@ describe('useComposerTrigger — chip survival (the plaintext-demotion bug class
 
     expect(composerPlainText(editor)).toBe('please run /clean ')
     expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
+  })
+})
+
+describe('useComposerTrigger — trailing space around a newline', () => {
+  it('appends the convenience space when a line break follows the caret', () => {
+    // The reported bug: caret at the end of the token with the user's prose on
+    // the next line. The whitespace guard used to test `/\s/`, which matches
+    // `\n`, so the command committed with no space and ran into the break. A
+    // line break is not a double space, so the space still belongs there.
+    const editor = mountTypedDraft('/hel\nsecond line here')
+    placeCaretAtOffset(editor, 4)
+
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    // Guard the setup: the caret must sit right after the token, before the
+    // break, or the test is silently exercising a different scenario.
+    expect(composerPlainText(editor)).toBe('/hel\nsecond line here')
+    expect(hook.result.current.trigger).toMatchObject({ kind: '/', query: 'hel' })
+
+    act(() => hook.result.current.replaceTriggerWithChip(item('/clean')))
+
+    expect(composerPlainText(editor)).toBe('/clean \nsecond line here')
+  })
+
+  it('suppresses the space when a real space already follows the caret', () => {
+    // The guard 4fb4d78989 was written for: a pick mid-prose with a space in
+    // front of the caret must not leave a double space behind.
+    const editor = mountTypedDraft('please run /cle more text')
+    placeCaretAtOffset(editor, 15)
+
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/clean')))
+
+    expect(composerPlainText(editor)).toBe('please run /clean more text')
+  })
+
+  it('suppresses the space when a non-breaking space follows the caret', () => {
+    // Review finding: NBSP counts as "already spaced" under the old `/\s/`
+    // guard; `[ \t]` would have appended a second space and reintroduced the
+    // double space the guard exists to prevent. Any whitespace except a line
+    // break suppresses.
+    const editor = mountTypedDraft('please run /cle\u00A0more text')
+    placeCaretAtOffset(editor, 15)
+
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/clean')))
+
+    expect(composerPlainText(editor)).toBe('please run /clean\u00A0more text')
+  })
+
+  it('appends the space when plain text follows on the same line', () => {
+    // No whitespace at the caret at all: the space is what separates the
+    // command from the prose after it.
+    const editor = mountTypedDraft('/helfirst line of text')
+    placeCaretAtOffset(editor, 4)
+
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/clean')))
+
+    expect(composerPlainText(editor)).toBe('/clean first line of text')
   })
 })

@@ -67,6 +67,16 @@ class TestCharLimitConfig:
             assert web_tools_truncate._get_extract_char_limit() == web_tools_truncate.DEFAULT_EXTRACT_CHAR_LIMIT
 
 
+    @pytest.mark.parametrize("literal", [".inf", "-.inf", '"inf"'])
+    def test_non_finite_yaml_value_falls_back(self, literal, tmp_path, monkeypatch):
+        """A YAML value must reach the real loader and resolve to a usable budget."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            f"web:\n  extract_char_limit: {literal}\n", encoding="utf-8"
+        )
+        assert web_tools_truncate._get_extract_char_limit() == web_tools_truncate.DEFAULT_EXTRACT_CHAR_LIMIT
+
+
 class TestEndToEnd:
     def test_web_extract_truncates_large_page_no_llm(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

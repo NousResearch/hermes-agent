@@ -307,6 +307,40 @@ def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, di
     return list(curated_ids) + [mid for _, mid in sorted(on_sale)]
 
 
+def union_with_nous_free_catalog_models(
+    curated_ids: list[str], pricing: dict[str, dict[str, str]]
+) -> list[str]:
+    """Curated list plus every zero-priced chat model the gateway's own catalog advertises.
+
+    The Portal's ``freeRecommendedModels`` is a *curation*, not the free tier's inventory: it
+    recommends a subset of the zero-priced rows ``GET /v1/models`` publishes (verified 9 free rows
+    vs 7 recommended). A model the gateway serves at $0 but the Portal does not recommend — e.g.
+    ``inclusionai/ling-3.1-flash`` — is therefore absent from both the curated manifest and the
+    recommendation union, and no downstream tier partition can reintroduce an id that never entered
+    the candidate set. Read the gateway's pricing, not the Portal's, so the free tier sees what is
+    actually free.
+
+    Same exclusion rule as :func:`union_with_nous_on_sale_models`: rows the gateway marks tool-less
+    (``"tools": False``) are skipped because Hermes is tool-calling-first, and generation rows are
+    skipped because they are not chat models. Curated ids keep their position; catalog-only free
+    models follow, in catalog order. Returns the input unchanged when pricing is empty, so a cold
+    cache never invents models.
+    """
+    seen = set(curated_ids)
+    catalog_free: list[str] = []
+    for mid, entry in (pricing or {}).items():
+        if mid in seen or not isinstance(entry, dict):
+            continue
+        if entry.get("tools") is False or entry.get("generation"):
+            continue
+        # A row costs nothing only when BOTH directions are zero; a missing field reads as paid
+        # rather than free so a malformed row can never unlock a model the gateway would charge for.
+        if not _is_model_free(mid, pricing):
+            continue
+        catalog_free.append(mid)
+    return list(curated_ids) + catalog_free
+
+
 # Free-tier detection cache, per profile — short so an account upgrade shows within minutes.
 _FREE_TIER_CACHE_TTL: int = 180  # seconds
 _free_tier_cache: dict[str, tuple[bool, float]] = {}  # profile key -> (result, timestamp)

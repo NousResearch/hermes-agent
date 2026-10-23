@@ -6,8 +6,9 @@ from __future__ import annotations
 import logging
 import threading
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
-from agent.proxy_bypass import loopback_request_kwargs
+from agent.proxy_bypass import is_loopback_host, loopback_request_kwargs
 from agent.redact import redact_cdp_url
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,19 @@ _live_overrides_lock = threading.Lock()
 # Per-profile count of live-endpoint publishes. A session records the value it saw before resolving its
 # endpoint; ``get_session_info`` closes one whose profile published in between.
 _live_generations: dict[str, int] = {}
+
+
+def _rebase_loopback_cdp_url(discovery_url: str, ws_url: str) -> str:
+    """Reach container-local discovery results through the operator's remote proxy."""
+    endpoint = urlsplit(discovery_url)
+    advertised = urlsplit(ws_url)
+    if (endpoint.scheme in ("http", "https") and endpoint.hostname
+            and not is_loopback_host(endpoint.hostname)
+            and advertised.scheme in ("ws", "wss") and is_loopback_host(advertised.hostname)):
+        # The proxy's port (not Chrome's internal port) is reachable from this client.
+        scheme = "wss" if endpoint.scheme == "https" or advertised.scheme == "wss" else "ws"
+        return urlunsplit((scheme, endpoint.netloc, advertised.path, advertised.query, advertised.fragment))
+    return ws_url
 
 
 def resolve_cdp_override(cdp_url: str) -> str:
@@ -44,11 +58,13 @@ def resolve_cdp_override(cdp_url: str) -> str:
         response = requests.get(version_url, timeout=10, **loopback_request_kwargs(version_url))
         response.raise_for_status()
         payload = response.json()
+        ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
+        if ws_url:
+            ws_url = _rebase_loopback_cdp_url(discovery_url, ws_url)
     except Exception as exc:  # health: allow BLE001 -- any discovery failure falls back to the raw endpoint
         logger.warning("Failed to resolve CDP endpoint %s via %s: %s", redact_cdp_url(raw),
                        redact_cdp_url(version_url), redact_cdp_url(str(exc)))
         return raw
-    ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
     if ws_url:
         logger.info("Resolved CDP endpoint %s -> %s", redact_cdp_url(raw), redact_cdp_url(ws_url))
         return ws_url

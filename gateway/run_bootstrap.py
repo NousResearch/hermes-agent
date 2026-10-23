@@ -49,12 +49,28 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
 
     # Never signal a process not provably ours (a poisoned PID record → cross-profile restart loop).
     if _replace_target_belongs_to_other_profile(existing_pid):
-        from gateway.status import _get_process_hermes_home
+        from gateway.status import _get_process_hermes_home, write_runtime_status
         logger.error(
             "Refusing --replace: PID %d cannot be proven to belong "
             "to this profile's gateway (HERMES_HOME %s). Remove the "
             "stale PID record or stop the owning profile explicitly.",
             existing_pid, _get_process_hermes_home())
+        # The stamp must be ON DISK before this process exits: every CLI exit path funnels
+        # through _exit_after_graceful_shutdown(), whose os._exit() never flushes the queued
+        # runtime-status writer. A fire-and-forget stamp can die in the queue, the supervisor
+        # retries into the same stale record, and the loop this refusal exists to break keeps
+        # going (#135392). Bounded wait: a stalled disk delays the exit by at most 5 s, it
+        # never hangs the start.
+        try:
+            write_runtime_status(
+                gateway_state="startup_failed",
+                exit_reason="gateway_replace_ownership_unproven",
+                wait_timeout=5.0,
+            )
+        except Exception:
+            # Persistence must never abort the start; the traceback (DEBUG) keeps the
+            # failure visible for the next bug report.
+            logger.debug("Could not stamp runtime status after the ownership refusal", exc_info=True)
         return False
     existing_start_time = get_process_start_time(existing_pid)
     logger.info("Replacing existing gateway instance (PID %d) with --replace.", existing_pid)

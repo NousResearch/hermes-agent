@@ -183,6 +183,8 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         _cprint(f"    {t('gateway.model.prompt_caching_enabled')}")
     if result.warning_message:
         _cprint(f"    ⚠ {result.warning_message}")
+    if getattr(result, "usage_notice", ""):
+        _cprint(f"    ⚠ {result.usage_notice}")
 
 
 def _switch_model_from(

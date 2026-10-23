@@ -25,6 +25,7 @@ from hermes_cli.auth_constants import (
     DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     WELCOME_CLAIM_FLAG, _nous_err, httpx)
+from hermes_cli.guest_handoff import deferred, drain, note_replacement, result_lines
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
     from hermes_cli.auth import ProviderConfig
@@ -466,12 +467,15 @@ def _write_shared_nous_state(state: dict[str, Any]) -> None:
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
+            note_replacement(_read_shared_nous_state(), state)
             _save_private_json(path, shared, sort_keys=True)
         _oauth_trace(
             "nous_shared_store_written", path=str(path),
             refresh_token_fp=_token_fingerprint(refresh_token))
     except Exception as exc:
         logger.debug("Failed to write shared Nous auth store: %s", exc)
+    # The account is saved everywhere now: hand the replaced guest over (a no-op under a lock).
+    drain()
 
 
 def _read_shared_nous_state() -> Optional[dict[str, Any]]:
@@ -1490,6 +1494,15 @@ def step_up_nous_billing_scope(
         open_browser=open_browser, timeout_seconds=timeout_seconds, on_verification=on_verification)
     _save_active_provider_state("nous", auth_state)
     _mirror_nous_state_best_effort(auth_state)
+    # Every caller replays the refused billing action next: drop the billing client's 30s token cache
+    # here (not per caller) so that replay sends the new token, not the pre-approval one (403 again).
+    try:
+        from hermes_cli.nous_billing import invalidate_cached_token
+        invalidate_cached_token()
+    except Exception:
+        logger.debug("Billing token cache invalidation failed", exc_info=True)
+    from hermes_cli.anon_auth import settle_after_upgrade
+    settle_after_upgrade(auth_state)  # a step-up that replaced the free tier moves its config too
     granted = auth_state.get("scope")
     return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()
 
@@ -1553,13 +1566,19 @@ def _pick_nous_model_after_login(
         _policy_notice = nous_policy_notice(removed=_policy_narrowed)
         if _policy_notice:
             print(_policy_notice)
+        from hermes_cli.model_picker_usage import featured_first, nous_picker_usage
+        _usage = nous_picker_usage(warm=True)
+        # Window plans: every model is usable; the plan's featured picks lead the list.
+        if _usage is not None:
+            model_ids = featured_first(model_ids, _usage.featured_model_ids)
         print(
             f"Showing {len(model_ids)} curated models — "
             "use \"Enter custom model name\" for others.")
         return _prompt_model_selection(
             model_ids, pricing=pricing, unavailable_models=unavailable_models, portal_url=_portal,
             unavailable_message=unavailable_message, confirm_provider="nous",
-            confirm_base_url=inference_base_url, confirm_api_key=runtime_key)
+            confirm_base_url=inference_base_url, confirm_api_key=runtime_key,
+            usage=_usage)
     if unavailable_models:
         _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         print("No free models currently available.")
@@ -1636,13 +1655,18 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         # model-picker "Skip (keep current)" can restore the user's previous provider.
         with _auth_store_lock():
             prior_active_provider = _load_auth_store().get("active_provider")
-        saved_to = _save_active_provider_state("nous", auth_state)
-        # Mirror to the shared store so other profiles can one-tap import (best-effort inside).
-        _write_shared_nous_state(auth_state)
+        with deferred() as handoff:  # a replaced free tier hands its apps over once both saves land
+            saved_to = _save_active_provider_state("nous", auth_state)
+            # Mirror to the shared store so other profiles can one-tap import (best-effort inside).
+            _write_shared_nous_state(auth_state)
         _sync_nous_pool_from_auth_store()
+        from hermes_cli.anon_auth import settle_after_upgrade
+        settle_after_upgrade(auth_state)  # a config left on the free tier's route moves to the account
         print()
         print("Login successful!")
         print(f"  Auth state: {saved_to}")
+        for line in (line for view in handoff.results for line in result_lines(view)):
+            print(f"  {line}")
         # Pick the model BEFORE writing the provider to config.yaml so config is never half-updated.
         selected_model = None
         try:
@@ -1663,6 +1687,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             "nous", inference_base_url, default_model=selected_model)
         _save_model_choice(selected_model)
         print(f"Default model set to: {selected_model}")
+        from hermes_cli.model_picker_usage import large_model_notice
+        if _notice := large_model_notice(selected_model, "nous"):
+            print(f"  ⚠ {_notice}")  # window plans only (a Large mark exists only on their catalog)
         print(f"  Config updated: {config_path} (model.provider=nous)")
     except KeyboardInterrupt:
         print("\nLogin cancelled.")

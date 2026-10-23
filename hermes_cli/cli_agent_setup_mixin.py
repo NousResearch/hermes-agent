@@ -255,6 +255,37 @@ def _retire_agent(cli) -> None:
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
+    def _current_interim_assistant_callback(self):
+        """Keep progress narration independent of reasoning visibility, token streaming, and tool progress."""
+        from cli import CLI_CONFIG
+        display = CLI_CONFIG.get("display") or {}
+        if not display.get("interim_assistant_messages", True):
+            return None
+        return self._on_interim_assistant
+
+    def _on_interim_assistant(self, text: str, *, already_streamed: bool = False) -> None:
+        """Render a completed interim in its own assistant box, never inside reasoning.
+
+        Reuse the normal renderer even with token streaming disabled. Settle both
+        boundaries so commentary cannot make the eventual final look already streamed.
+        The agent owns redaction and per-turn delivery deduplication.
+        """
+        if already_streamed or not isinstance(text, str):
+            return
+        # `hermes chat -Q` sets suppress_status_output on the live agent after
+        # construction. Keep its stdout contract without coupling commentary to
+        # tool_progress=off, which is an independent display preference.
+        if getattr(getattr(self, "agent", None), "suppress_status_output", False):
+            return
+        from tools.ansi_strip import sanitize_display_text
+        visible = sanitize_display_text(text).strip()
+        if not visible:
+            return
+        self._flush_reasoning_preview(force=True)
+        self._stream_delta(None)
+        self._stream_delta(visible)
+        self._stream_delta(None)
+
     def _ensure_runtime_credentials(self) -> bool:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
@@ -725,6 +756,7 @@ class CLIAgentSetupMixin:
                 one_turn_reasoning=(pending_one_turn or {}).get("one_turn_reasoning") if one_turn else None,
                 one_turn_alias=(pending_one_turn or {}).get("one_turn_alias", "") if one_turn else "",
                 reasoning_callback=self._current_reasoning_callback(),
+                interim_assistant_callback=self._current_interim_assistant_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,

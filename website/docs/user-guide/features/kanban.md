@@ -779,7 +779,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 
 - A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `blocked`, `done` (plus `archived` when the toggle is on).
   - Queue columns list cards in dispatch order (priority, then oldest first — top card spawns next). The `done` column is history and lists newest-completed first; `hermes kanban list --status done --sort completed-desc` gives the same order on the CLI.
-  - `triage` is the parking column for rough ideas. By default (`kanban.auto_decompose: true`), the dispatcher auto-runs the **decomposer** on tasks that land here. The built-in decomposer uses the `auxiliary.kanban_decomposer` model path, reads your profile roster (with descriptions), and fans the task out into a small graph of child tasks routed to the best-fit specialists. The original task stays alive as the parent of every child so its assignee (`kanban.orchestrator_profile`, else the assignee the task already had, else the active default profile) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` - that's still available as a single-task spec rewrite when you don't want fan-out.
+  - `triage` is the parking column for rough ideas. By default (`kanban.auto_decompose: true`), the dispatcher auto-runs the **decomposer** on tasks that land here. The built-in decomposer uses the `auxiliary.kanban_decomposer` model path, reads your profile roster (with descriptions), and fans the task out into a small graph of child tasks routed to the best-fit specialists. The original task stays alive as the parent of every child so its assignee (`kanban.orchestrator_profile`, else the assignee the task already had, else the active default profile) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both orchestration knobs (`orchestrator_profile`, `default_assignee`) can also be overridden per board (`kanban.boards.<slug>.…`); see [Auto vs Manual orchestration](#auto-vs-manual-orchestration). Both modes coexist with `hermes kanban specify` - that's still available as a single-task spec rewrite when you don't want fan-out.
 - Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
@@ -823,6 +823,26 @@ The decomposer's routing decisions depend on profile descriptions, which is a pe
 
 `kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
 
+#### Per-board overrides
+
+A machine usually runs several boards, and one global orchestrator/assignee cannot express per-board routing. Both knobs can be overridden per board under `kanban.boards.<slug>`:
+
+```yaml
+kanban:
+  orchestrator_profile: ""        # global default
+  default_assignee: ""
+  boards:
+    tsa-mgmt:
+      orchestrator_profile: planner
+      default_assignee: tsa-worker
+    svs:
+      default_assignee: svs-worker
+```
+
+Resolution is per key and board-first: `kanban.boards.<slug>.<key>` (slug matched case-insensitively) -> the global `kanban.<key>` -> the built-in fallback described above. A board value that does not name an installed profile is ignored and the chain continues to the global value, so a typo'd board override never swallows a valid global. A board with no override behaves byte-for-byte as before, and an empty string clears that board's override so it inherits the global again. Non-string values are ignored with a warning; so is any hand-written board key (or looked-up slug) that is not a valid board slug, warned once per process and skipped.
+
+Set an override with `hermes config set kanban.boards.<slug>.default_assignee <profile>`, `hermes config unset kanban.boards.<slug>.default_assignee`, or the dashboard's **Orchestration settings** panel. The panel scopes to the board in view (your explicit selection, or the machine's current board when you have made none) and offers a **This board / Global defaults** switch: in board scope it tags each knob "overridden here" vs "inherited from global" and offers **Clear board override**, while the global scope edits the machine-wide keys directly. One caveat: when `HERMES_KANBAN_DB` pins every enumerated board to a single database, per-board overrides are skipped (the boards are indistinguishable) and the global value is used, and the panel suppresses the board scope in that topology to match the dispatcher.
+
 Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 
 | Key | Default | Purpose |
@@ -831,6 +851,8 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = the root task keeps its own assignee, else the active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to the root task's assignee, else the active default. |
+| `boards.<slug>.orchestrator_profile` | `""` | Per-board override of `orchestrator_profile`. Empty/inherited falls back to the global key. |
+| `boards.<slug>.default_assignee` | `""` | Per-board override of `default_assignee`. Empty/inherited falls back to the global key. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
@@ -885,8 +907,8 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `GET` | `/profiles` | List installed profiles with their descriptions (consumed by the dashboard's profile-description editor and the orchestrator picker). |
 | `PATCH` | `/profiles/:name` | Set or clear a profile's description (user-authored — `description_auto: false`). Returns `{ok, profile, description}`. |
 | `POST` | `/profiles/:name/describe-auto` | Generate a description for a profile via `auxiliary.profile_describer`. Persists with `description_auto: true` so the dashboard can surface a "review" badge. |
-| `GET` | `/orchestration` | Read the kanban orchestration settings (`orchestrator_profile`, `default_assignee`, `auto_decompose`) plus the *resolved* effective values after fallbacks. |
-| `PUT` | `/orchestration` | Update one or more of the three orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. |
+| `GET` | `/orchestration?board=<slug>` | Read the kanban orchestration settings (`orchestrator_profile`, `default_assignee`, `auto_decompose`) plus the *resolved* effective values after fallbacks. With `?board=` the two profile knobs resolve board-first and the response adds `board`, `board_orchestrator_profile`, `board_default_assignee`. |
+| `PUT` | `/orchestration?board=<slug>` | Update one or more of the three orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. With `?board=` the two profile keys are written under `kanban.boards.<slug>` and an explicit empty string clears that board's override (`auto_decompose` stays global). |
 | `POST` | `/links` | Add a dependency (`parent_id` → `child_id`) |
 | `DELETE` | `/links?parent_id=…&child_id=…` | Remove a dependency |
 | `POST` | `/dispatch?max=…&dry_run=…` | Nudge the dispatcher — skip the 60 s wait |

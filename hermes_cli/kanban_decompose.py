@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_board_settings import board_override, board_pin_suppressed
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
@@ -126,12 +127,18 @@ def _profile_author() -> str:
     return _specify_author("decomposer")
 
 
-def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = None) -> str:
-    """``kanban.<key>`` if it names an existing profile, else ``fallback``
-    (the root task's own assignee) if that does, else the active default
-    profile — so a task is never stranded for lack of an owner.
-    ``orchestrator_profile`` owns the root after fan-out; ``default_assignee``
-    catches children the decomposer can't route.
+def _resolve_profile_from_cfg(
+    cfg: dict, key: str, *, fallback: Optional[str] = None, board: Optional[str] = None,
+) -> str:
+    """``kanban.boards.<board>.<key>`` if it names an existing profile, else
+    ``kanban.<key>`` if it does, else ``fallback`` (the root task's own assignee)
+    if it does, else the active default profile — so a task is never stranded
+    for lack of an owner. ``orchestrator_profile`` owns the root after
+    fan-out; ``default_assignee`` catches children the decomposer can't route.
+
+    A board value naming an unknown profile is skipped and the chain continues
+    to the global key rather than falling straight to ``fallback``, so a typo'd
+    board override must not silently discard a valid global.
 
     The root's assignee sits before the active profile because the decomposer
     runs inside whatever profile hosts the dispatcher — an operator's
@@ -139,14 +146,29 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
     silently become the owner of work the card was assigned away from (#114294).
     """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    explicit = (kanban_cfg.get(key) or "").strip()
-    for candidate in (explicit, (fallback or "").strip()):
-        if candidate:
-            try:
-                if profiles_mod.profile_exists(candidate):
-                    return candidate
-            except Exception:
-                pass
+    global_value = kanban_cfg.get(key)
+    if global_value is not None and not isinstance(global_value, str):
+        logger.warning(
+            "kanban.%s: expected a string, got %s; ignoring", key, type(global_value).__name__,
+        )
+        global_value = ""
+    global_value = (global_value or "").strip()
+    candidates: list[str] = []
+    if board is not None and not board_pin_suppressed(board):
+        override = board_override(kanban_cfg, key, board)
+        if override:
+            candidates.append(override)
+    if global_value:
+        candidates.append(global_value)
+    root = (fallback or "").strip()
+    if root:
+        candidates.append(root)
+    for candidate in candidates:
+        try:
+            if profiles_mod.profile_exists(candidate):
+                return candidate
+        except Exception:
+            pass
     try:
         return profiles_mod.get_active_profile_name() or "default"
     except Exception:
@@ -201,7 +223,7 @@ class _Routing:
     valid_names: set[str]
 
 
-def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
+def _load_routing(*, root_assignee: Optional[str] = None, board: Optional[str] = None) -> _Routing:
     from hermes_cli.config import load_config_readonly
     try:
         cfg = load_config_readonly()
@@ -210,8 +232,8 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
     return _Routing(
-        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),
-        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee),
+        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee, board=board),
+        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee, board=board),
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
@@ -313,7 +335,7 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
-    routing = _load_routing(root_assignee=task.assignee)
+    routing = _load_routing(root_assignee=task.assignee, board=kb.get_current_board())
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(

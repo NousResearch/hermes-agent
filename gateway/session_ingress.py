@@ -45,6 +45,9 @@ async def admit_message(authority, event):
     except RuntimeStoreError as exc:
         if exc.reason == 'stale_generation' and exc.field == 'route':
             return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
+        if exc.reason == 'channel_claim_standdown':
+            logger.warning("gateway.session_ingress: channel claim held by %s; standing down", getattr(exc, 'field', '?'))
+            return None
         if exc.reason == 'invalid_params' and exc.field:
             # Refused before commit (_validate_native): a refusal notice instead of a generic turn error.
             # The reply reaches the whole chat, so only content clauses are named; trust and provenance

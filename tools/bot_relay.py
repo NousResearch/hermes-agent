@@ -678,3 +678,107 @@ def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | N
                 fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
+
+
+CHANNEL_CLAIMS_DIR = "channel_claims"
+
+
+def _normalize_profile_for_claim(profile: Optional[str]) -> str:
+    if not profile or profile == "default":
+        return "main"
+    return "main~" if profile == "main" else profile
+
+
+def _channel_claim_path(root: Any, platform: str, scope_id: str, chat_id: str, profile: str) -> Path:
+    base = relay_root(root) / CHANNEL_CLAIMS_DIR
+    parts: list[str] = [platform]
+    if scope_id:
+        parts.append(scope_id)
+    parts.append(chat_id)
+    return base / "/".join(parts) / f"{profile}.json"
+
+
+def _read_relay_claim(path: Path) -> Optional[dict[str, Any]]:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        logger.debug("read relay claim %s failed", path, exc_info=True)
+        return None
+
+
+def read_relay_claim(root: Any, platform: str, scope_id: str, chat_id: str, profile: str) -> Optional[dict[str, Any]]:
+    profile = _normalize_profile_for_claim(profile)
+    path = _channel_claim_path(root, platform, scope_id, chat_id, profile)
+    return _read_relay_claim(path)
+
+
+def acquire_relay_claim(
+    root: Any, platform: str, scope_id: str, chat_id: str, profile: str,
+    instance_id: str, session_id: str, lease_seconds: int = 300,
+) -> tuple[bool, Optional[dict[str, Any]]]:
+    profile = _normalize_profile_for_claim(profile)
+    path = _channel_claim_path(root, platform, scope_id, chat_id, profile)
+    now = time.time()
+    candidate: dict[str, Any] = {
+        "platform": platform,
+        "scope_id": scope_id,
+        "chat_id": chat_id,
+        "profile": profile,
+        "instance_id": instance_id,
+        "session_id": session_id,
+        "thread_root_id": "",
+        "lease_expire": now + lease_seconds,
+        "created_at": now,
+        "updated_at": now,
+    }
+    existing = _read_relay_claim(path)
+    if existing is not None:
+        other_instance = str(existing.get("instance_id", ""))
+        if float(existing.get("lease_expire", 0)) >= now and other_instance != instance_id:
+            return False, existing
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(path, candidate)
+        return True, candidate
+    except Exception:
+        logger.warning("acquire_relay_claim write failed for %s", path, exc_info=True)
+        return False, None
+
+
+def renew_relay_claim(
+    root: Any, platform: str, scope_id: str, chat_id: str, profile: str,
+    instance_id: str, session_id: str, lease_seconds: int = 300, thread_root_id: str = "",
+) -> bool:
+    profile = _normalize_profile_for_claim(profile)
+    path = _channel_claim_path(root, platform, scope_id, chat_id, profile)
+    existing = _read_relay_claim(path)
+    if existing is None:
+        return False
+    if str(existing.get("instance_id")) != instance_id or str(existing.get("session_id")) != session_id:
+        return False
+    now = time.time()
+    existing["lease_expire"] = now + lease_seconds
+    existing["updated_at"] = now
+    if thread_root_id:
+        existing["thread_root_id"] = thread_root_id
+    try:
+        _atomic_write_json(path, existing)
+        return True
+    except Exception:
+        logger.warning("renew_relay_claim write failed for %s", path, exc_info=True)
+        return False
+
+
+def release_relay_claim(
+    root: Any, platform: str, scope_id: str, chat_id: str, profile: str,
+    session_id: str,
+) -> None:
+    profile = _normalize_profile_for_claim(profile)
+    path = _channel_claim_path(root, platform, scope_id, chat_id, profile)
+    existing = _read_relay_claim(path)
+    if existing is not None and str(existing.get("session_id")) == session_id:
+        with contextlib.suppress(OSError):
+            path.unlink()

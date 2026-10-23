@@ -338,6 +338,31 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         render_notification(present, platform=self._ctx.source.platform,
                             user_config=self._ctx.user_config, diagnostic=diagnostic)
 
+    def _maybe_renew_relay_claim(self) -> None:
+        ctx = self._ctx
+        from gateway.relay import relay_instance_id
+        instance_id = relay_instance_id()
+        if not instance_id or not self._runner.session_store._routing_home:
+            return
+        source = getattr(ctx, 'source', None)
+        session_id = getattr(ctx, 'session_id', None)
+        if not source or not session_id:
+            return
+        try:
+            from tools.bot_relay import _normalize_profile_for_claim, renew_relay_claim
+            profile_norm = _normalize_profile_for_claim(source.profile)
+            renew_relay_claim(
+                self._runner.session_store._routing_home,
+                source.platform.value,
+                getattr(source, "scope_id", "") or "",
+                source.chat_id,
+                profile_norm,
+                instance_id,
+                str(session_id),
+            )
+        except Exception:
+            logger.debug("renew_relay_claim failed for %s", getattr(ctx, 'session_key', '?'), exc_info=True)
+
     def _make_bg_review_callbacks(self):
         """(send, release): background-review messages ("💾 Memory updated") are held until the
         adapter's post-delivery hook releases them after the main response lands."""
@@ -368,6 +393,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 )
 
         def release() -> None:
+            self._maybe_renew_relay_claim()
             release_evt.set()
             with pending_lock:
                 queued = list(pending)

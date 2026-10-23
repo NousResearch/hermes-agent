@@ -7,6 +7,7 @@ import logging
 import os
 import json
 import threading
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
@@ -22,8 +23,14 @@ from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_
 from gateway.session_transcript import SessionTranscriptMixin
 # Inverse of _session_key_namespace, defined storage-side (hermes_state must not import gateway).
 from hermes_state_keys import profile_from_session_key_namespace
+from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
+
+
+class ChannelClaimBlocked(RuntimeStoreError):
+    """Raised when the channel claim is held by another gateway instance."""
+    pass
 
 
 # -- PII redaction helpers --------------------------------------------------------------------
@@ -964,8 +971,12 @@ class SessionStore(
             self._route_recover(decision, session_key, source, now)
         create_kwargs = None
         if decision.entry is None:
+            candidate_sid = _new_session_id(now)
+            if not force_new:
+                self._check_relay_claim_gate(source, session_key, candidate_sid, now)
             create_kwargs = self._route_create(
-                decision, session_key, source, now, force_new, observed
+                decision, session_key, source, now, force_new, observed,
+                session_id=candidate_sid,
             )
         if decision.needs_save:
             if decision.metadata_only_save:
@@ -1041,11 +1052,12 @@ class SessionStore(
 
     def _route_create(
         self, decision: _RouteDecision, session_key: str, source: SessionSource, now: datetime,
-        force_new: bool, observed: Optional[SessionEntry],
+        force_new: bool, observed: Optional[SessionEntry], session_id: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Create a candidate outside the lock and publish it only if the key is still vacant;
         returns ``create_session`` kwargs when the candidate won."""
-        session_id = _new_session_id(now)
+        if session_id is None:
+            session_id = _new_session_id(now)
         candidate = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=source, display_name=source.chat_name, platform=source.platform,
@@ -1066,6 +1078,32 @@ class SessionStore(
             source_value=source.platform.value, display_name=source.chat_name,
             parent_session_id=decision.prev_session_id,
         )
+
+    def _check_relay_claim_gate(
+        self, source: SessionSource, session_key: str, candidate_sid: str, now: datetime,
+    ) -> None:
+        from gateway.relay import relay_instance_id
+        instance_id = relay_instance_id()
+        if not instance_id or not self._routing_home:
+            return
+        try:
+            from tools.bot_relay import _normalize_profile_for_claim, acquire_relay_claim
+            profile_norm = _normalize_profile_for_claim(source.profile)
+            acquired, claim = acquire_relay_claim(
+                self._routing_home, source.platform.value,
+                source.scope_id or "", source.chat_id, profile_norm,
+                instance_id, candidate_sid,
+            )
+            if not acquired and claim and float(claim.get("lease_expire", 0)) >= time.time() and str(claim.get("instance_id")) != instance_id:
+                raise ChannelClaimBlocked(
+                    "channel_claim_standdown",
+                    field=f"other_instance={claim.get('instance_id')}",
+                    detail=f"session_key={session_key}",
+                )
+        except ChannelClaimBlocked:
+            raise
+        except Exception:
+            logger.debug("_check_relay_claim_gate failed for %s", session_key, exc_info=True)
 
     def update_session(
         self, session_key: str, last_prompt_tokens: int | None = None, touch_activity: bool = True,

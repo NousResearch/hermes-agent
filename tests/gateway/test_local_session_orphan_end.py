@@ -200,6 +200,48 @@ async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_a_session_left_with_queued_input_ends_after_boot_once_it_drains(tmp_path, monkeypatch):
+    import gateway.session_finite as finite
+    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_state_runtime import admit_session_input, list_session_admissions
+
+    armed = _capture_timers(monkeypatch)
+    first, _ = await _owner(tmp_path, monkeypatch)
+    sid = _create(first).session_id
+    admit_session_input(first.db, epoch=first.epoch, principal_id=first.sessions[sid].source.user_id,
+                        session_id=sid, request_id='r1', payload={'text': 'queued'})
+    executed = []
+
+    async def execute(authority, ref, row):
+        executed.append(row['payload']['text'])
+        return 'done'
+    monkeypatch.setattr(finite, 'execute_finite_admission', execute)
+
+    authority, finalized = await _owner(tmp_path, monkeypatch)  # the gateway stopped before running it
+    recover_local_sessions(authority, schedule=True)
+    await async_wait_until(lambda: executed == ['queued']
+                           and not list_session_admissions(authority.db, session_id=sid))
+    assert [delay for delay, _ in armed] == [300.0]
+    armed[0][1]()
+    await async_wait_until(lambda: finalized == ['startup_orphan_reap'])
+    assert authority.db.get_session(sid)['end_reason'] == 'startup_orphan_reap'
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_viewer_expands_the_grace_against_its_own_profile(tmp_path, monkeypatch):
+    """The socket's close detaches outside the RPC's owner scope; the launch env must not answer."""
+    armed = _capture_timers(monkeypatch)
+    authority, _ = await _owner(tmp_path, monkeypatch)
+    home = Path(authority.db.db_path).parent
+    (home / 'config.yaml').write_text('sessions:\n  orphan_end_grace_s: ${ORPHAN_GRACE}\n')
+    (home / '.env').write_text('ORPHAN_GRACE=7\n')
+    monkeypatch.setenv('ORPHAN_GRACE', '900')
+    viewer, _ = await _attach(authority, _create(authority).session_id)
+    await viewer.close()
+    assert [delay for delay, _ in armed] == [7.0]
+
+
+@pytest.mark.asyncio
 async def test_a_zero_grace_never_ends_a_detached_session(tmp_path, monkeypatch):
     armed = _capture_timers(monkeypatch)
     authority, _ = await _owner(tmp_path, monkeypatch)

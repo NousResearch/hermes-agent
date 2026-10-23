@@ -1465,15 +1465,32 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             return best if best is not None else session_id
 
     def _fetch_conversation_rows(self, session_ids: list[str], active_clause: str, *, with_session_id: bool,
-                                 with_compacted: bool = False):
+                                 with_compacted: bool = False, limit: Optional[int] = None,
+                                 latest: bool = False, exclude_roles: tuple[str, ...] = ()):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
         and would break tool-call adjacency). ``with_compacted``: the display set (``active_clause`` is
-        ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``."""
-        rows = self._read_all(
+        ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``.
+
+        ``limit``/``latest``/``exclude_roles`` bound the read at the SQL layer: ``latest`` selects the
+        newest rows before restoring chronological order, and filtering roles in the query matters for
+        bounded consumers — fetching ``limit`` rows and removing tool rows afterwards can return an
+        empty/short page while still loading unbounded history in callers.
+        """
+        role_clause = "" if not exclude_roles else f" AND role NOT IN ({_placeholders(exclude_roles)})"
+        sql = (
             f"SELECT {'session_id, ' if with_session_id else ''}{'compacted, ' if with_compacted else ''}"
             f"{self._CONVERSATION_ROW_COLUMNS} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
-            f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause} ORDER BY id", tuple(session_ids))
+            f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause}{role_clause} "
+            f"ORDER BY id {'DESC' if latest else 'ASC'}"
+        )
+        params = [*session_ids, *exclude_roles]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(0, int(limit)))
+        rows = self._read_all(sql, tuple(params))
+        if latest:
+            rows.reverse()
         return self._with_removed_identities(rows, session_ids) if with_compacted else rows
 
     def _with_removed_identities(self, rows, session_ids: list[str]) -> list[Any]:
@@ -1491,7 +1508,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
                                      include_row_ids: bool = False,
-                                     include_compacted: bool = False) -> list[dict[str, Any]]:
+                                     include_compacted: bool = False,
+                                     limit: Optional[int] = None, latest: bool = False,
+                                     exclude_roles: tuple[str, ...] = ()) -> List[Dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
@@ -1500,7 +1519,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         display = include_compacted and not include_inactive  # removed rows too: see drop_removed
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
+            self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display,
+            limit=limit, latest=latest, exclude_roles=exclude_roles)
         if include_compacted:
             rows = self._dedupe_display_generations(rows, drop_removed=display)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,

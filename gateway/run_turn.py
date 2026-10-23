@@ -280,6 +280,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                skip_background_review=bool((event.metadata or {}).get("hermes_plugin_injection")),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -1974,6 +1975,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 persist_user_display_metadata={
                     **display_metadata_for_event(pending_event),
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                skip_background_review=bool(
+                    (getattr(pending_event, "metadata", None) or {}).get("hermes_plugin_injection")
+                ),
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -2301,6 +2305,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
+        skip_background_review: bool = False,
         title_user_message: Optional[str] = None,
     ) -> dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
@@ -2347,6 +2352,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             persist_user_display_kind=persist_user_display_kind,
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
+            skip_background_review=skip_background_review,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(

@@ -186,3 +186,58 @@ def test_bootstrap_snapshots_gpu_before_planning_and_spawn(tmp_path, monkeypatch
         assert captured[0]['backend'] == 'cuda'
     finally:
         bootstrap.shutdown_local_runtime()
+
+
+@pytest.fixture
+def recorded_router(cards, tmp_path, monkeypatch):
+    from hermes_cli.local_runtime import bootstrap, recovery
+    state = {'pid': 123, 'owner_pid': 456, 'backend': 'cuda',
+             'executable': str(tmp_path / 'llama-server'), 'engine_tag': 'test'}
+    monkeypatch.setattr(bootstrap, '_SERVING_GPU', None)
+    monkeypatch.setattr(bootstrap, '_SERVING_ENGINE', None)
+    monkeypatch.setattr(recovery, 'read_state', lambda: state)
+    monkeypatch.setattr(recovery, 'recorded_process', lambda observed: SimpleNamespace(pid=123))
+    monkeypatch.setattr(hw, '_configured_gpu_selection', lambda: UUID1)
+    monkeypatch.setattr(hw, '_device_pool_view', lambda: (8 << 30, False))
+    monkeypatch.setattr(hw, '_ram_bytes', lambda: (32 << 30, 16 << 30))
+    return state
+
+
+@pytest.mark.parametrize('requested', [UUID0, UUID1])
+def test_legacy_serving_gpu_is_unknown_not_the_requester_preference(recorded_router, monkeypatch, requested):
+    from hermes_cli.web_routers import local_models
+    monkeypatch.setattr(hw, '_configured_gpu_selection', lambda: requested)
+    observed = local_models._hardware_payload()
+    assert len(observed['gpus']) == 2
+    assert observed['gpu_selected'] is None
+    assert observed.get('gpu_name') is None
+    assert 'running local server' in observed['gpu_error'].lower()
+    assert observed['gpu'] == requested  # The saved preference remains distinct from observation.
+
+
+def test_unknown_serving_gpu_cannot_be_priced_or_pinned(recorded_router):
+    from hermes_cli.local_runtime.gpu_selection import GpuSelectionError
+    budget = hw.probe_budget(planning=True)
+    assert budget.total_device_bytes == 0
+    assert budget.usable_vram_bytes == 0
+    with pytest.raises(GpuSelectionError, match='running local server'):
+        hw.gpu_pin_env('cuda')
+
+
+def test_reported_foreign_pin_still_overrides_the_requester(recorded_router):
+    from hermes_cli.web_routers import local_models
+    recorded_router['gpu_selection'] = UUID0
+    observed = local_models._hardware_payload()
+    assert observed['gpu_selected'] == 3
+    assert observed['gpu_name'] == 'Display'
+    assert observed['gpu_error'] is None
+
+
+def test_absent_router_can_still_plan_the_configured_gpu(recorded_router, monkeypatch):
+    from hermes_cli.local_runtime import recovery
+    from hermes_cli.web_routers import local_models
+    monkeypatch.setattr(recovery, 'recorded_process', lambda state: None)
+    observed = local_models._hardware_payload()
+    assert observed['gpu_selected'] == 7
+    assert observed['gpu_name'] == 'Compute'
+    assert observed['gpu_error'] is None

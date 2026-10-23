@@ -535,7 +535,15 @@ def serving_gpu_selection():
     """Frozen device policy of this server, including one supervised by another process."""
     if _SERVING_GPU is not None:
         return _SERVING_GPU
-    return (_recorded_serving_state() or {}).get("gpu_selection")
+    state = _recorded_serving_state()
+    if state is not None and state.get("gpu_selection") is None:
+        from hermes_cli.local_runtime.gpu_selection import GpuSelectionError
+
+        raise GpuSelectionError(
+            "The running local server does not report its GPU selection; "
+            "restart the process that owns it before selecting or pricing a GPU"
+        )
+    return (state or {}).get("gpu_selection")
 
 
 def get_supervisor():

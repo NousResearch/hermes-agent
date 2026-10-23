@@ -216,6 +216,11 @@ profile preference. Changing it restarts an idle server and reprices the catalog
 A busy server or one owned by another Hermes process returns an explicit error
 instead of interrupting inference. A stopped server stays stopped.
 
+A server started by an older Hermes version may not record its GPU selection.
+Its GPU inventory remains visible, but Hermes reports the serving GPU and budget
+as unavailable rather than substituting the requesting profile's preference.
+After upgrading, restart the owning Hermes process once its active work has finished.
+
 If applying the choice fails, Hermes restores the previous setting and attempts
 server recovery; the error states whether recovery succeeded. An unavailable
 explicit GPU never falls back onto a reserved display/other-workload card. Select

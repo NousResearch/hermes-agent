@@ -385,3 +385,113 @@ async def test_the_broadcast_never_carries_the_negotiated_minimum(owner):
     assert control['heartbeat']['prompt'] == 'ping'
 
 
+@pytest.mark.asyncio
+async def test_loop_update_rewrites_prompt_and_interval_in_place(owner):
+    await owner.result('session.control', session_id=owner.sid, action='loop.create',
+                       args={'prompt': 'watch the queue', 'interval_seconds': PROFILE_MIN_INTERVAL * 2,
+                             'run_limit': 3, 'stop_condition': 'queue empty'})
+
+    result = await owner.result('session.control', session_id=owner.sid, action='loop.update',
+                                args={'prompt': 'watch the queue v2', 'interval_seconds': PROFILE_MIN_INTERVAL * 3,
+                                      'run_limit': 5, 'stop_condition': 'queue drained'})
+
+    loop = result['control']['loop']
+    assert (loop['prompt'], loop['interval_seconds'], loop['times'], loop['until']) == (
+        'watch the queue v2', float(PROFILE_MIN_INTERVAL * 3), 5, 'queue drained'), loop
+    from hermes_cli.loops import LoopState
+    persisted = LoopState.from_json(owner.rows()['loop'])
+    assert (persisted.prompt, persisted.times, persisted.until) == (
+        'watch the queue v2', 5, 'queue drained'), persisted
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_update_rewrites_the_interval_in_place(owner):
+    await owner.result('session.control', session_id=owner.sid, action='heartbeat.create',
+                       args={'prompt': 'ping', 'interval_seconds': 600})
+
+    result = await owner.result('session.control', session_id=owner.sid, action='heartbeat.update',
+                                args={'prompt': 'ping v2', 'interval_seconds': 900})
+
+    heartbeat = result['control']['heartbeat']
+    assert (heartbeat['prompt'], heartbeat['interval_seconds']) == ('ping v2', 900), heartbeat
+    from hermes_cli.heartbeat import HeartbeatState
+    persisted = HeartbeatState.from_json(owner.rows()['heartbeat'])
+    assert (persisted.prompt, persisted.interval_seconds) == ('ping v2', 900), persisted
+
+
+@pytest.mark.asyncio
+async def test_a_loop_edit_is_refused_while_its_tick_is_in_flight(owner):
+    """A tick awaiting its turn is a refusal the dialog shows, not an exception that kills the socket."""
+    from hermes_cli.loops import LoopState
+
+    seeded = LoopState('in flight', status='active', interval_seconds=PROFILE_MIN_INTERVAL,
+                       created_at=1.0, next_due_at=1.0, awaiting_response=True)
+    _seed(owner, 'loop', seeded)
+
+    error = await owner.refusal('session.control', session_id=owner.sid, action='loop.update',
+                                args={'prompt': 'edited mid-tick', 'interval_seconds': PROFILE_MIN_INTERVAL * 2})
+
+    assert error['message'] == 'invalid_params', error
+    assert error['data'].get('field') == 'loop', error
+    assert 'awaiting a response' in error['data'].get('detail', ''), error
+    assert owner.rows()['loop'] == seeded.to_json(), 'a refused edit must not write'
+
+
+@pytest.mark.asyncio
+async def test_a_goal_cap_below_the_turns_already_used_is_refused(owner):
+    """Lowering the cap under the turns already spent is the manager's refusal, answered as one."""
+    from hermes_cli.goals import GoalState
+
+    seeded = GoalState('long goal', turns_used=5, max_turns=10, created_at=100.0)
+    _seed(owner, 'goal', seeded)
+
+    error = await owner.refusal('session.control', session_id=owner.sid, action='goal.update',
+                                args={'prompt': 'long goal', 'max_turns': 2})
+
+    assert error['message'] == 'invalid_params', error
+    assert error['data'].get('field') == 'goal', error
+    assert 'below turns already used' in error['data'].get('detail', ''), error
+    assert owner.rows()['goal'] == seeded.to_json(), 'a refused edit must not write'
+
+
+@pytest.mark.asyncio
+async def test_a_composer_edit_landing_during_the_judge_keeps_the_edit(owner, monkeypatch):
+    """The composer edits a live goal while the judge runs: the edit survives, and the verdict judged
+    against the older text is never written onto the new goal."""
+    import json
+    import threading
+
+    from hermes_cli import goals as goals_mod
+
+    await owner.result('session.control', session_id=owner.sid, action='goal.create',
+                       args={'prompt': 'original goal', 'criteria': ['c1'], 'max_turns': 10})
+    started, release = threading.Event(), threading.Event()
+
+    def slow_judge(*args, **kwargs):
+        started.set()
+        release.wait(10)
+        return ('continue', 'more work needed', False, None, False)
+
+    monkeypatch.setattr(goals_mod, 'judge_goal', slow_judge)
+    live = goals_mod.GoalManager(session_id=owner.target)
+    decision = {}
+
+    def run_turn():
+        decision.update(live.evaluate_after_turn('did some work', user_initiated=True))
+    turn = threading.Thread(target=run_turn, name='judged-turn')
+    turn.start()
+    try:
+        assert started.wait(10), 'the judge never started'
+        await owner.result('session.control', session_id=owner.sid, action='goal.update',
+                           args={'prompt': 'edited goal', 'criteria': ['c2'], 'max_turns': 12})
+    finally:
+        release.set()
+        turn.join(10)
+
+    row = json.loads(owner.rows()['goal'])
+    assert (row['goal'], row['subgoals'], row['max_turns']) == ('edited goal', ['c2'], 12), row
+    assert row['last_verdict'] is None, 'the stale verdict must not be written onto the edited goal'
+    assert decision['should_continue'] is False, decision
+    assert 'changed during judge' in decision['message'], decision
+
+

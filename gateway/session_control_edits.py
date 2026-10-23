@@ -194,7 +194,16 @@ async def run(connection, ref, params, action, args):
             # The gateway's /goal path takes this same lock: a create's existing-row check and its
             # write, and an edit's read and write, are one admission for the session.
             with goal_admission_lock(target):
-                return apply(authority.runner, target, action, _clean(action, args), route)
+                try:
+                    return apply(authority.runner, target, action, _clean(action, args), route)
+                except RuntimeStoreError:
+                    raise
+                except (RuntimeError, ValueError, IndexError) as exc:
+                    # The manager's own refusals are answers, not escapes: a loop awaiting its tick,
+                    # a turn cap under the turns already used, a goal or loop no longer editable. The
+                    # dialog shows the field and the manager's reason (as ``/subgoal`` maps its own).
+                    raise RuntimeStoreError('invalid_params', field=action.split('.', 1)[0],
+                                            detail=str(exc)) from exc
     result = await asyncio.to_thread(write)
     if action == 'heartbeat.create':
         # The gateway-wide poller fires due ticks through the adapter FIFO; a heartbeat authored

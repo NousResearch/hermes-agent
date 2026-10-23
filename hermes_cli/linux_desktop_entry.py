@@ -589,7 +589,7 @@ def render_desktop_entry(exec_command: str, icon: str) -> str:
         f"Icon={icon}\n"
         "Terminal=false\n"
         "Categories=Utility;\n"
-        "StartupNotify=true\n"
+        "StartupNotify=false\n"
         f"StartupWMClass={APP_ID}\n"
     )
 

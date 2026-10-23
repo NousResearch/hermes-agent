@@ -1,7 +1,7 @@
-"""Carry finished background results into the running turn (``delegation.busy_result_mode: steer``).
+"""Carry finished background results into the running turn (``busy_result_mode: steer``).
 
-A surface that owns a finished subagent result while its agent is mid-turn offers it here instead of
-queueing a whole new turn. The result rides the newest tool result just before that result is
+A surface that owns a finished subagent or background-process result while its agent is mid-turn
+offers it here instead of queueing a whole new turn. The result rides the newest tool result just before that result is
 persisted, the same mutable slot the iteration-budget warning uses: it stays tool-channel evidence
 (never a user-authority steer row), past context is never rewritten, and the prompt cache holds.
 Offers no tool batch picked up are handed back by ``take_outcome`` so the surface can deliver them
@@ -11,7 +11,7 @@ the ordinary way, as the next turn.
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import Any, Callable, NamedTuple, Optional
 
 _STATE_ATTR = "_background_result_carrier"
 _STATE_LOCK = threading.Lock()
@@ -20,6 +20,22 @@ BACKGROUND_RESULT_MARKER = (
     "[BACKGROUND RESULT — a subagent you delegated finished while you were working. "
     "This is tool-channel evidence for the current task, not a new user request.]"
 )
+PROCESS_RESULT_MARKER = (
+    "[BACKGROUND RESULT — a background process you started finished while you were working. "
+    "This is tool-channel evidence for the current task, not a new user request.]"
+)
+
+
+class _Offer(NamedTuple):
+    key: Any
+    text: str
+    marker: str
+    # True once the agent already read the result another way (process wait/log): the offer then
+    # settles as delivered instead of showing the same output twice.
+    already_read: Optional[Callable[[], bool]]
+
+    def read(self) -> bool:
+        return self.already_read is not None and bool(self.already_read())
 
 
 class _CarrierState:
@@ -27,7 +43,7 @@ class _CarrierState:
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.pending: list[tuple[Any, str]] = []
+        self.pending: list[_Offer] = []
         self.delivered: list[Any] = []
 
 
@@ -40,11 +56,20 @@ def _state(agent: Any) -> _CarrierState:
         return state
 
 
-def offer(agent: Any, key: Any, text: str) -> None:
+def offer(agent: Any, key: Any, text: str, *, marker: str = BACKGROUND_RESULT_MARKER,
+          already_read: Optional[Callable[[], bool]] = None) -> None:
     """Queue ``text`` (identified by ``key``) for the next tool result this agent persists."""
     state = _state(agent)
     with state.lock:
-        state.pending.append((key, text))
+        state.pending.append(_Offer(key, text, marker, already_read))
+
+
+def withdraw(agent: Any, key: Any) -> None:
+    """Drop a pending offer whose delivery the surface abandoned (e.g. cancelled at shutdown)."""
+    state = vars(agent).get(_STATE_ATTR)
+    if state is not None:
+        with state.lock:
+            state.pending = [item for item in state.pending if item.key is not key]
 
 
 def attach_to_tool_tail(agent: Any, messages: list) -> int:
@@ -65,14 +90,17 @@ def attach_to_tool_tail(agent: Any, messages: list) -> int:
         return 0
     with state.lock:
         offers, state.pending = state.pending, []
+        read = [item.read() for item in offers]
+        state.delivered.extend(item.key for item, was_read in zip(offers, read) if was_read)
+        offers = [item for item, was_read in zip(offers, read) if not was_read]
         if not offers:
             return 0
-        block = "\n\n".join(f"{BACKGROUND_RESULT_MARKER}\n{text}" for _key, text in offers)
+        block = "\n\n".join(f"{item.marker}\n{item.text}" for item in offers)
         if isinstance(content, str):
             message["content"] = f"{content}\n\n{block}"
         else:
             message["content"] = [*(content or []), {"type": "text", "text": block}]
-        state.delivered.extend(key for key, _text in offers)
+        state.delivered.extend(item.key for item in offers)
     return len(offers)
 
 
@@ -96,5 +124,7 @@ def take_outcome(agent: Any) -> tuple[list[Any], list[tuple[Any, str]]]:
         return [], []
     with state.lock:
         delivered, state.delivered = state.delivered, []
-        undelivered, state.pending = state.pending, []
-    return delivered, undelivered
+        pending, state.pending = state.pending, []
+    read = [item.read() for item in pending]
+    delivered += [item.key for item, was_read in zip(pending, read) if was_read]
+    return delivered, [(item.key, item.text) for item, was_read in zip(pending, read) if not was_read]

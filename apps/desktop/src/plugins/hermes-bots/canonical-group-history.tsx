@@ -1,5 +1,5 @@
 import * as sdk from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -73,12 +73,25 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   binding: CanonicalGroupBinding; eventId: string; attachment: CanonicalGroupAttachment; disabled: boolean
 }) {
   const [src, setSrc] = useState('')
+  const [near, setNear] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
   const { attachment_id: attachmentId, size } = attachment
   const { connectionId, profile, roomId } = binding
-  const previewable = size !== undefined && size <= IMAGE_PREVIEW_MAX_BYTES
+  const previewable = !!attachmentId && size !== undefined && size <= IMAGE_PREVIEW_MAX_BYTES
+
+  // History loads the whole room: fetch only near the viewport, which also bounds concurrent downloads.
+  useEffect(() => {
+    const el = box.current
+
+    if (near || !el) {return}
+    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) {setNear(true)} }, { rootMargin: '200px' })
+    observer.observe(el)
+
+    return () => observer.disconnect()
+  }, [near])
 
   useEffect(() => {
-    if (disabled || !attachmentId || !previewable) {return}
+    if (disabled || !near || !attachmentId || !previewable) {return}
     let cancelled = false
     let url = ''
     // A failed preview leaves the Download button as the way to the file.
@@ -89,9 +102,9 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
     }, () => undefined)
 
     return () => { cancelled = true; URL.revokeObjectURL(url); setSrc('') }
-  }, [connectionId, profile, roomId, eventId, attachmentId, disabled, previewable])
+  }, [connectionId, profile, roomId, eventId, attachmentId, disabled, near, previewable])
 
-  return src ? <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} /> : null
+  return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
 }
 
 export function CanonicalGroupHistory({ binding, events, members = [], disabled = false }: CanonicalGroupHistoryProps) {

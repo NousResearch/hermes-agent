@@ -10,8 +10,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const gateway = createGroupGateway()
   const { en } = await import('@/i18n/en')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+  const { ConfirmDialog } = await import('@/components/ui/confirm-dialog')
 
-  return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
+  return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore, ConfirmDialog,
     useI18n: () => ({ t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
@@ -22,10 +23,11 @@ vi.mock('@hermes/plugin-sdk', async () => {
 import { registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import { $groupChatWorkspace } from './group-chat'
 import { GroupChatWorkspace } from './group-chat-view'
 const originalDesktop = window.hermesDesktop
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
-afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop; vi.unstubAllGlobals() })
 
 it('preserves the unsent draft when only the room display name changes', async () => {
   request.mockImplementation(async (_route, method) => method === 'groups.state'
@@ -225,9 +227,11 @@ it('describes only a send restored from the journal as restored, never an ordina
   await screen.findByText(/unconfirmed send was restored/)
 })
 
-it('renames the room and disbands it only after confirmation, through the gateway handlers', async () => {
+it('renames the room and disbands it only through ConfirmDialog, which stays open with a failed disband\'s error', async () => {
   const onBack = vi.fn()
-  request.mockImplementation(async (_route, method) => roomReads()(method) ?? {})
+  let disbands = 0
+  request.mockImplementation(async (_route, method) => roomReads()(method)
+    ?? (method === 'groups.disband' && ++disbands === 1 ? Promise.reject(new Error('disband failed')) : {}))
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'controls' }} onBack={onBack} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Rename' }))
   fireEvent.change(screen.getByRole('textbox', { name: 'New name' }), { target: { value: ' Renamed ' } })
@@ -237,9 +241,26 @@ it('renames the room and disbands it only after confirmation, through the gatewa
   await waitFor(() => expect(disband.disabled).toBe(false))
   fireEvent.click(disband)
   expect(request.mock.calls.some(c => c[1] === 'groups.disband')).toBe(false)
-  fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: /disband/i }))
+  const dialog = await screen.findByRole('dialog')
+  fireEvent.click(within(dialog).getByRole('button', { name: /disband/i }))
+  await within(dialog).findByText('disband failed')
+  expect(onBack).not.toHaveBeenCalled()
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /disband/i }))
   await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
-  expect(request.mock.calls.find(c => c[1] === 'groups.disband')?.[2]).toMatchObject({ room_id: 'controls', cancel_id: expect.any(String) })
+  expect(request.mock.calls.filter(c => c[1] === 'groups.disband').map(c => c[2])).toEqual([
+    expect.objectContaining({ room_id: 'controls', cancel_id: expect.any(String) }), expect.objectContaining({ room_id: 'controls' })])
+})
+
+it('leaves the in-panel room after a disband even though no tab supplies onBack', async () => {
+  request.mockImplementation(async (_route, method) => roomReads()(method) ?? {})
+  const group = registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, { room_id: 'panel', name: 'Room', members: [] })
+  $groupChatWorkspace.set(group)
+  render(<GroupChatWorkspace group={group} members={[]} origin="key" />)
+  const disband = await screen.findByRole('button', { name: /disband/i }) as HTMLButtonElement
+  await waitFor(() => expect(disband.disabled).toBe(false))
+  fireEvent.click(disband)
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /disband/i }))
+  await waitFor(() => expect($groupChatWorkspace.get()).toBeNull())
 })
 
 it('@-completes room members with the exact handle the gateway resolves', async () => {
@@ -263,7 +284,12 @@ it('uploads pasted and dropped files through the room upload and previews commit
   request.mockImplementation(async (_route, method, params) => roomReads([], events)(method)
     ?? (method === 'groups.attachment.upload' ? { attachment_id: `att-${params.name}`, kind: params.kind, name: params.name, mime: params.mime, size: 1 }
       : method === 'groups.attachment.download' ? { ...image, data_base64: 'QQ==' } : {}))
+  const observers: IntersectionObserverCallback[] = []
+  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'paste' }} />)
+  await waitFor(() => expect(observers).toHaveLength(1))
+  expect(request.mock.calls.some(c => c[1] === 'groups.attachment.download')).toBe(false)
+  act(() => observers[0]([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))
   await waitFor(() => expect(screen.getByRole('img', { name: 'shot.png' }).getAttribute('src')).toBe('blob:preview'))
   expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)).toEqual(['img'])
   const box = screen.getByRole('textbox')

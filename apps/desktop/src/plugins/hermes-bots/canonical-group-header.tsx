@@ -1,4 +1,4 @@
-import { Button, Input } from '@hermes/plugin-sdk'
+import { Button, ConfirmDialog, Input } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import { CanonicalGroupRoster, type CanonicalMemberPhase } from './canonical-group-activity'
@@ -9,7 +9,7 @@ interface CanonicalGroupHeaderProps {
   busy: boolean
   canStop: boolean
   onBack?: () => void
-  onDisband: () => void
+  onDisband: () => Promise<void>
   onRename: (name: string) => void
   onStop: () => void
   phases: Map<string, CanonicalMemberPhase>
@@ -25,11 +25,6 @@ export function CanonicalGroupHeader({ busy, canStop, onBack, onDisband, onRenam
     setRenaming(null)
 
     if (name) {onRename(name)}
-  }
-
-  const end = () => {
-    setEnding(false)
-    onDisband()
   }
 
   return <>
@@ -48,10 +43,8 @@ export function CanonicalGroupHeader({ busy, canStop, onBack, onDisband, onRenam
       <Button disabled={busy || !renaming.trim()} type="submit">{labels.save}</Button>
       <Button onClick={() => setRenaming(null)} type="button">{labels.cancel}</Button>
     </form>}
-    {ending && <div aria-label={labels.disbandTitle} role="alertdialog">
-      <p>{labels.disbandTitle}</p>
-      <Button disabled={busy} onClick={end}>{labels.disband}</Button>
-      <Button onClick={() => setEnding(false)}>{labels.cancel}</Button>
-    </div>}
+    {ending && <ConfirmDialog busyLabel={labels.disbanding} confirmLabel={labels.disband}
+      description={<span>{labels.disbandDescPrefix}<span className="font-medium text-foreground">{room?.name}</span>{labels.disbandDescSuffix(room?.members?.length ?? 0)}</span>}
+      destructive doneLabel={labels.disbandDone} onClose={() => setEnding(false)} onConfirm={onDisband} open title={labels.disbandTitle} />}
   </>
 }

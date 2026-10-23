@@ -165,9 +165,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const rename = (name: string) =>
     void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: crypto.randomUUID(), name }))
 
-  // A disbanded room no longer reads back, so leave it instead of refreshing.
-  const end = () =>
-    void mutate(() => canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }), () => onBack?.())
+  // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
+  const end = async () => {
+    await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: crypto.randomUUID() })
+
+    if (alive.current) {onBack?.()}
+  }
 
   const composerLocked = !restored || busy || !!pending
   const phases = canonicalMemberPhases(state?.driver_status)

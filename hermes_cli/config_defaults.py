@@ -1367,8 +1367,7 @@ DEFAULT_CONFIG = {
         # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
         # waiting on a multi-minute completion) restarts the window; a frozen one is caught.
         "child_timeout_seconds": 0,
-        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
-        # "none" (empty = inherit)
+        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none" (empty = inherit)
         "reasoning_effort": "",
         # Max parallel children per batch AND max concurrent background delegation units; async
         # dispatches beyond it run synchronously. Floor 1, no ceiling.

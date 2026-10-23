@@ -33,7 +33,8 @@ import {
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
   normalizeSshConfig,
-  normAuthMode
+  normAuthMode,
+  resolveRemoteSshDashboardProfile
 } from './connection-config'
 import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
 
@@ -103,6 +104,16 @@ export interface ConnectionRegistry {
   connections: RegistryConnection[]
   /** Entries preserved from a malformed load — absent when empty. */
   quarantined?: QuarantinedRegistryEntry[]
+}
+
+/** Keep registry RPC/REST ownership aligned with the profile SSH actually launches. */
+export function registryTargetProfile(
+  connection: Pick<RegistryConnection, 'kind' | 'remoteProfile'>,
+  profile: string
+): string {
+  return connection.kind === 'ssh'
+    ? resolveRemoteSshDashboardProfile(connection.remoteProfile, profile) || 'default'
+    : connection.remoteProfile || profile
 }
 
 // ── Labels and ids ──────────────────────────────────────────────────────────
@@ -809,7 +820,7 @@ export function buildAgentRoster(
       connectionKind: connection.kind,
       connectionLabel: connection.label,
       profile,
-      targetProfile: connection.remoteProfile || profile,
+      targetProfile: registryTargetProfile(connection, profile),
       handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1),
       ...(profileMetadata ? { profileMetadata } : {})
     })

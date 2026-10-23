@@ -89,6 +89,8 @@ _KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
 STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
 # Routing labels and the accounting placeholder: never a creating surface.
 _NOT_A_SURFACE = frozenset({None, '', 'local', 'unknown'})
+# Labels only the gateway mints (session_cron, session_kanban, hosted rooms) -> agent surface.
+GATEWAY_SURFACES = {'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
 
 
 def created_surface(label):
@@ -422,10 +424,13 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if source == 'a2a':
         from gateway.session_a2a import build_forward_policy
         return build_forward_policy(params, config, private_secrets=private_secrets)
+    # ``desktop`` is the Desktop's surface name for the ``gui`` label (SURFACE_GROUPS): one launch.
+    source = 'gui' if source == 'desktop' else source
     unknown = sorted(set(params) - CREATE_FIELDS)
     if unknown or not isinstance(source, str) or source not in SURFACES:
-        _refuse(f'params.{unknown[0]}' if unknown else 'source',
-                'unknown create field' if unknown else f'not a surface: {source!r}')
+        reserved = isinstance(source, str) and source in GATEWAY_SURFACES
+        _refuse(f'params.{unknown[0]}' if unknown else 'source', 'unknown create field' if unknown
+                else f'reserved for the gateway: {source!r}' if reserved else f'not a surface: {source!r}')
     bad_bypass = next((name for name in BYPASS_FIELDS if name in params and type(params[name]) is not bool), None)
     if bad_bypass:
         _refuse(bad_bypass, 'must be a boolean')
@@ -540,13 +545,20 @@ def _with_entry_pick(params, config):
     built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
     different provider than the entry the profile runs (#140107). Only the held entry's bare key
     is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
-    ``custom_providers:`` entry's is (``configured_entry_key``). Other picks stay as they came.
+    ``custom_providers:`` entry's is (``configured_entry_key``). A bare ``custom`` pick is the billing
+    class a client echoed from the runtime, not a route: it names the configured entry serving its
+    endpoint/model, else (no endpoint picked) the profile's own entry. Other picks stay as they came.
     """
     from gateway.session_route_identity import configured_entry_key, profile_route_identity
     picked = params.get('provider')
     if not isinstance(picked, str):
         return params
     identity = profile_route_identity(config)
+    if picked.strip().lower() == 'custom':
+        from hermes_cli.runtime_provider_custom import routed_custom_identity
+        healed = routed_custom_identity(params.get('base_url'), params.get('model'), config) or (
+            identity if identity.startswith('custom:') and 'base_url' not in params else None)
+        return {**params, 'provider': healed} if healed else params
     if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
         return params
     return {**params, 'provider': identity}
@@ -961,7 +973,7 @@ def restore_policy(data):
     try:
         policy = LocalSessionPolicy(**data)
         from gateway.session_a2a import is_forward_policy
-        surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
+        surfaces = {**SURFACES, **GATEWAY_SURFACES}
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
                 or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()

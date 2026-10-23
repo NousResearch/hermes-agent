@@ -725,9 +725,8 @@ class SessionSessionsMixin:
         keys for the TUI/Desktop, ``gateway_runtime`` for the CLI), so a later resume recombines the
         model with the provider that serves it (#79536). ``base_url``/``api_mode`` are always
         replaced then (``None`` deletes): the previous provider's endpoint must not survive a switch,
-        or resume sends the new provider's model to the old host. Callers without provider knowledge
-        leave the stored route untouched.
-        """
+        or resume sends the new provider's model to the old host; a bare ``custom`` is stored as the
+        entry it ran on. Callers without provider knowledge leave the stored route untouched."""
         # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
         # first_accounted_route overwrite and resurrect the old route.
         self.flush_token_counts()
@@ -735,6 +734,9 @@ class SessionSessionsMixin:
         if model:
             patch["model"] = model
         if provider:
+            if provider == "custom":  # the billing class every named endpoint reports, not a route
+                from hermes_cli.runtime_provider_custom import routed_custom_identity_in
+                provider = routed_custom_identity_in(Path(self.db_path).parent, base_url, model) or provider
             route = {"provider": provider, "base_url": base_url or None, "api_mode": api_mode or None}
             patch.update(route, gateway_runtime=route)
         self._write_model_config_patch(

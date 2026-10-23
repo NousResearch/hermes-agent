@@ -1,12 +1,12 @@
 name: bubblewrap
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: e5d447174f7d9d641aeb71086b23e35ebff36072
+sha: 24d49a4d9cb9141110087499d5e29b7552244cfc
 subdir: bubblewrap
 description: 'Bubblewrap terminal backend for Linux: every terminal and execute_code command runs in its own bwrap
   sandbox on this machine at the host''s own paths, with a read-only root, a writable working directory (per
-  profile: restricted, workspace or network), SSH keys, cloud credentials and the Hermes home hidden, private temp
-  and process directories, agent and docker sockets masked, and per-command memory, CPU and process limits
-  (`hermes config set terminal.backend bubblewrap`). Disclosure — no Python dependencies and no network calls of its
+  profile: restricted, workspace or network), the dot entries of the home directory (credential stores always) and
+  the Hermes home hidden, private temp and process directories, agent and docker sockets masked, and per-command
+  memory, CPU and process limits (`hermes config set terminal.backend bubblewrap`). Disclosure — no Python dependencies and no network calls of its
   own: it runs your commands through the `bwrap` and `prlimit` binaries you install (bubblewrap, util-linux), and
   under the default `network` profile those commands share the host network. It reads no credentials. File tools
   (read_file, write_file, patch, search_files) still run on the host and are not confined, and because the working
@@ -15,8 +15,8 @@ maintainer: NousResearch
 tier: official
 category: tools
 requires_hermes: ">=0.22.2"
-version: "1.0.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/e5d447174f7d9d641aeb71086b23e35ebff36072/assets/bubblewrap.jpg
+version: "1.1.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/24d49a4d9cb9141110087499d5e29b7552244cfc/assets/bubblewrap.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/bubblewrap
 platforms:
   - linux

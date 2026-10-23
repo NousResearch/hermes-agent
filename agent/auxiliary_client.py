@@ -35,6 +35,7 @@ from agent.error_classifier import (
 )
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
+from agent.auxiliary_billing import warn_service_fallback
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -2762,7 +2763,7 @@ def _runtime_main_value(field: str) -> Any:
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "",
+    cache_scope: str = "", billing_warning_callback: Optional[Callable[..., None]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2773,6 +2774,7 @@ def set_runtime_main(
     ``cache_scope`` is the rotation-stable logical cache scope (compression- lineage root —
     agent/prompt_cache_scope.py) resolved once per turn by turn_context; auxiliary Responses calls prefer it
     over ``session_id`` for prompt_cache_key derivation (#79017).
+    ``billing_warning_callback`` belongs to this live session, never to the legacy mirrors.
     """
     runtime = {
         "provider": (provider or "").strip().lower(),
@@ -2784,6 +2786,7 @@ def set_runtime_main(
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
+        "billing_warning_callback": billing_warning_callback,
     }
     # Publish authoritative context before updating the locked mirrors.
     token = _RUNTIME_MAIN_CONTEXT.set(runtime)
@@ -3104,7 +3107,7 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
 _MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
-    "requested_provider", "session_id", "cache_scope",
+    "requested_provider", "session_id", "cache_scope", "billing_warning_callback",
 )
 
 
@@ -3124,7 +3127,7 @@ def _normalize_main_runtime(main_runtime: Optional[dict[str, Any]]) -> dict[str,
     normalized: dict[str, Any] = {}
     for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
         value = main_runtime.get(field)
-        if field == "api_key" and callable(value) and not isinstance(value, str):
+        if field in ("api_key", "billing_warning_callback") and callable(value):
             normalized[field] = value
         elif isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
@@ -7598,6 +7601,7 @@ class _LadderRoute(NamedTuple):
     main_runtime: Optional[dict[str, Any]]
     route_info: Optional[dict[str, str]]
     timeout: Optional[float]
+    request_provider: str = ""
 
 
 def _without_temperature(kwargs: dict) -> Optional[dict]:
@@ -7908,13 +7912,15 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             break
         tried_lanes.add(lane)
         _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
+        warn_service_fallback(route.client, fb_client, runtime=route.main_runtime,
+                              source_provider=_fallback_provider_from_label(route.request_provider or resolved_provider),
+                              target_provider=_fallback_provider_from_label(fb_label))
         fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
         if fb_resp is not None:
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
             task_chain_only=explicit_auth_with_task_chain)
-    # All fallback layers exhausted: one user-visible warning (#26882), then the caller re-raises.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    "(fallback_chain + main agent model). Raising the primary error.",
                    task or "call", tag, reason, resolved_provider)
@@ -7928,17 +7934,14 @@ def _aux_recovery_ladder(
     async_mode: bool, base_info: str, resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
-    main_runtime: Optional[dict[str, Any]], route_info: Optional[dict[str, str]],
+    main_runtime: Optional[dict[str, Any]], route_info: Optional[dict[str, str]], request_provider: str = "",
 ):
-    """Ordered recovery rungs after the primary request failed (generator): parameter
-    strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
-    Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
-    Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
+    """Recover parameter, Nous, credential and provider failures in order; re-raise when exhausted."""
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
-        kwargs.get("timeout"))
+        kwargs.get("timeout"), request_provider)
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp
@@ -8145,7 +8148,7 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info, request_provider=req.request_provider)
 
 
 def _call_llm_impl(

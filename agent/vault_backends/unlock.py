@@ -15,6 +15,7 @@ approvals take where nobody can answer.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Callable, Dict, Optional
@@ -123,7 +124,12 @@ def store_session_token(backend: str, token: str, generation: Optional[int] = No
 
 def lock(backend: Optional[str] = None) -> None:
     """Forget the current profile's session for one backend (or all of them when None)."""
-    home = _key("")[0]
+    lock_profile(_key("")[0], backend)
+
+
+def lock_profile(home: str, backend: Optional[str] = None) -> None:
+    """Forget one profile's session. ``home`` is explicit because deferred callbacks (a relock
+    timer running on a bare thread) do not carry the caller's profile in the environment."""
     with _lock:
         # Bump the generation for every key the lock names (not only the ones holding a token):
         # an unlock that is still running for this backend must see the lock when it returns.
@@ -132,13 +138,18 @@ def lock(backend: Optional[str] = None) -> None:
             keys.add((home, backend))
         for key in keys:
             _forget(key)
+    # Listeners run OUTSIDE the registry lock: a backend that keeps decrypted state must be able
+    # to take its own lock without inverting lock order against its own lock() path.
+    _notify_locked(keys)
 
 
 def release_session(session_id: str) -> None:
     """A gateway session ended: drop only the tokens that session unlocked."""
     with _lock:
-        for key in [k for k, sid in _owner_session.items() if sid == session_id]:
+        keys = [k for k, sid in _owner_session.items() if sid == session_id]
+        for key in keys:
             _forget(key)
+    _notify_locked(keys)
 
 
 def _forget(key: tuple[str, str]) -> None:
@@ -147,11 +158,36 @@ def _forget(key: tuple[str, str]) -> None:
     _generation[key] = _generation.get(key, 0) + 1
 
 
+# Backends that cache decrypted material register here so a Lock drops it now instead of on the
+# next access (which may never come once the source is disabled).
+_lock_listeners: list[Callable[[str, str], None]] = []
+
+
+def register_lock_listener(cb: Callable[[str, str], None]) -> None:
+    """Register ``cb(profile_home, backend_name)``, called after every acknowledged lock."""
+    with _lock:
+        if cb not in _lock_listeners:
+            _lock_listeners.append(cb)
+
+
+def _notify_locked(keys) -> None:
+    for home, backend in keys:
+        # Slice copy: a listener may register another listener during notification, and this runs
+        # outside the registry lock.
+        for cb in _lock_listeners[:]:
+            try:
+                cb(home, backend)
+            except Exception:  # a listener must never turn a Lock into a failure
+                logging.getLogger(__name__).debug("vault lock listener failed", exc_info=True)
+
+
 def lock_all_profiles() -> None:
     """Process shutdown: drop every token."""
     with _lock:
-        for key in list(_sessions):
+        keys = list(_sessions)
+        for key in keys:
             _forget(key)
+    _notify_locked(keys)
 
 
 def is_unlocked(backend: str) -> bool:

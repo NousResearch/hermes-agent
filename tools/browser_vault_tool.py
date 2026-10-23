@@ -275,7 +275,9 @@ def browser_vault_unlock(backend_name: str) -> str:
                                      "session or the Desktop app first.")})
     prompt = get_unlock_prompt_callback()
     master = prompt(backend.name, backend.display_name) if prompt else ""
-    if not master:
+    # A keyfile-only database legitimately unlocks with no master password; only the backends
+    # that advertise that (KeePass) get past this guard. An empty answer for the others is a cancel.
+    if not master and not getattr(backend, "allows_empty_master", False):
         return json.dumps({"success": False, "error_type": "unlock_cancelled",
                            "error": f"The user declined to unlock {backend.display_name}."})
     try:
@@ -596,7 +598,7 @@ BROWSER_VAULT_SCHEMA = {
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
-        "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
+        "ask the user to unlock 1Password/Bitwarden/KeePass). Never type, ask for or repeat a password, card number, CVC "
         "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "
         "payment_declined."
     ),
@@ -605,7 +607,7 @@ BROWSER_VAULT_SCHEMA = {
         "properties": {
             "action": {"type": "string", "enum": ["list", "fill", "save_login", "enter_code", "unlock"]},
             "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
-            "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
+            "backend": {"type": "string", "enum": ["onepassword", "bitwarden", "keepass"], "description": "unlock only."},
             "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
         },
         "required": ["action"],

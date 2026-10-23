@@ -43,10 +43,10 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
   restart the gateway, subscribe to the gateway event stream.
-- **`host.preview`** — run JavaScript in the focused session's live preview
-  Browser tab (`executeJavaScript` / `isAvailable`). Same guest runner as
-  `drive_preview`. Missing when this window has no webview (empty rail, a
-  file peek, or a popped-out Browser).
+- **`ctx.preview`** — run JavaScript in the focused session's preview Browser
+  page. Closed by default: the plugin declares `capabilities:
+  ['preview.executeJavaScript']` and the user allows it per page origin
+  ([Preview page scripts](#preview-page-scripts)).
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`captureGatewayFileDownload()`** — capture a gateway file-save action
@@ -168,6 +168,9 @@ interface HermesPlugin {
    *  for opt-in plugins: they inventory in Capabilities ▸ Plugins, off until the
    *  user flips the switch. */
   defaultEnabled?: boolean
+  /** Sensitive doors this plugin uses, declared up front. Today:
+   *  'preview.executeJavaScript' (ctx.preview). An undeclared door refuses. */
+  capabilities?: readonly string[]
   /** Called once at load; wire contributions through `ctx`. */
   register: (ctx: PluginContext) => void
 }
@@ -204,6 +207,9 @@ interface PluginContext {
   os: PluginOs
   /** Lines in the core pet's speech bubble, attributed to this plugin (see "Pet bubble"). */
   pet: PluginPet
+  /** Script in the preview Browser page — declared capability + per-origin user consent
+   *  (see "Preview page scripts"). */
+  preview: PluginPreview
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
   storage: PluginStorage
 }
@@ -1286,10 +1292,6 @@ ctx.pet.visible                            // ReadableAtom<boolean> — is a pet
 ctx.runAction('view.showBrowser')          // run a built-in app action → { ok: true } | { ok: false, reason, error }
 ctx.listActions()                          // [{ id, label, category }] — the ids runAction accepts
 host.navigate('/route')                    // hash-route navigation
-host.preview.isAvailable()                 // focused session has a live Browser tab in THIS window
-host.preview.executeJavaScript(code)       // run JS in that guest page → Promise<unknown>
-                                           //   rejects 'No preview page is open.' when unavailable
-                                           //   (file peek, empty rail, or popped-out Browser)
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
@@ -1605,6 +1607,56 @@ signing out, approvals, model/provider changes, updates, quitting) are not app
 actions a plugin can run.
 
 Feature-detect on older hosts: `ctx.runAction?.('view.showBrowser')`.
+
+### Preview page scripts — `ctx.preview` {#preview-page-scripts}
+
+`ctx.preview.executeJavaScript(code)` runs `code` in the focused session's
+preview Browser tab (the same guest runner `drive_preview` and the preview tour
+use) and resolves the script's completion value. That page can be one the user
+is signed in to, so script there can read their session. The door is closed by
+default and the **app** arbitrates every call:
+
+1. **Declare it.** The plugin's default export lists the capability:
+
+   ```js
+   export default {
+     id: 'page-tools',
+     name: 'Page Tools',
+     capabilities: ['preview.executeJavaScript'],
+     register(ctx) {
+       ctx.register({ area: PALETTE_AREA, id: 'title', data: {
+         id: 'pageTools.title', label: 'Copy page title',
+         run: async () => ctx.os.writeClipboard(String(await ctx.preview.executeJavaScript('document.title')))
+       } })
+     }
+   }
+   ```
+
+   A plugin that did not declare it is refused on every call; nothing is asked
+   and nothing runs.
+2. **The user allows it per origin.** The first call on a page origin raises an
+   app-owned dialog naming the plugin and the origin (`https://mail.example.com`).
+   *Allow on this site* persists a grant for that plugin and origin; *Don't
+   allow* (or Esc) refuses for the rest of the app run, then asks again next
+   launch. Grants are listed on the plugin's row in **Capabilities → Plugins**,
+   each with its own revoke; a revoked origin asks again.
+3. **Web origins only.** `http(s)://host[:port]`; `about:blank`, `data:` and
+   `file:` pages are refused because a grant could not be scoped to one site.
+4. **The origin is re-checked in the page.** The script runs behind an
+   in-page `window.location.origin` guard, so a navigation between the consent
+   check and the run refuses instead of landing on another site.
+
+```js
+ctx.preview.isAvailable()             // declared AND a live Browser page in this window (not consent)
+await ctx.preview.executeJavaScript(code)
+// rejects: undeclared · 'No preview page is open.' · non-web origin ·
+//          '<Plugin> is not allowed to run scripts on <origin>.' · page changed origin
+```
+
+Reach the page only through this door. Querying or creating a `<webview>`
+(`document.querySelector('webview')`) bypasses the declaration and the
+consent, and fails the catalog's `desktop surface` lint (`preview guest
+reach`). A popped-out Browser window is not bridged.
 
 ### Desktop appearance settings — `host.settings`
 
@@ -2171,7 +2223,10 @@ installs the trust comes from admission — a human reviewed the exact pinned
 commit — backed by two tripwires: the `desktop surface` lint at admission and
 the loader's import allowlist (`@hermes/plugin-sdk` and `react*` only; a static
 or dynamic `import` of anything else, including `https:` URLs, fails the load).
-Neither is a sandbox. A future remote-source door will need a real boundary
+Neither is a sandbox. Doors that touch user data outside the app are gated
+on top of that: `ctx.preview.executeJavaScript` needs a declared capability
+and the user's per-origin consent ([Preview page scripts](#preview-page-scripts)).
+A future remote-source door will need a real boundary
 (iframe/worker + CSP + capability gating) before it can land; do not treat this
 pipeline as a trust boundary.
 

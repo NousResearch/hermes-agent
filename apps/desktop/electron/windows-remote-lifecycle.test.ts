@@ -19,6 +19,7 @@ import {
   helper,
   helperCommand,
   powerShellCommand,
+  powerShellStdinCommand,
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
@@ -133,14 +134,16 @@ function sshWith(exec) {
 
 type SshExecOptions = { stdinData?: string | Buffer }
 
+// A stdin-fed exec's -EncodedCommand is only the powerShellStdinCommand
+// bootstrap; the script under test is the stdin payload.
 function scriptFromInvocation(command: string, options: SshExecOptions = {}) {
-  const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
-
-  if (encoded) {
-    return Buffer.from(encoded, 'base64').toString('utf16le')
+  if (options.stdinData != null) {
+    return Buffer.from(String(options.stdinData).trim(), 'base64').toString('utf16le')
   }
 
-  return Buffer.from(String(options.stdinData || '').trim(), 'base64').toString('utf16le')
+  const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
+
+  return encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
 }
 
 test('PowerShell transport uses UTF-16LE encoded commands and literal escaping', () => {
@@ -482,8 +485,7 @@ test('Windows platform probe streams long PowerShell scripts over stdin', async 
   })
 
   assert.equal(result.os, 'Windows')
-  assert.match(command, /-Command \[ScriptBlock\]::Create/)
-  assert.doesNotMatch(command, /-EncodedCommand/)
+  assert.equal(command, powerShellStdinCommand())
   assert.ok(command.length < 1024)
   assert.match(stdinData, /^[A-Za-z0-9+/=\r\n]+$/)
   const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
@@ -610,6 +612,36 @@ test.skipIf(process.platform !== 'win32')('Windows platform probe executes in re
   }
 })
 
+// The orphan pc2 piled up (684 in a day): a stdin bootstrap whose EOF never
+// arrives must exit on its own instead of blocking in the read forever, under
+// both DefaultShell flavours (cmd.exe, and powershell.exe re-parsing via -c).
+test.skipIf(process.platform !== 'win32')('stdin bootstrap exits when stdin never reaches EOF', async () => {
+  const bootstrap = powerShellStdinCommand(1_000)
+
+  for (const [shell, args] of [
+    ['cmd.exe', ['/d', '/s', '/c', bootstrap]],
+    ['powershell.exe', ['-NoProfile', '-c', bootstrap]]
+  ] as const) {
+    const child = spawn(shell, [...args], { windowsHide: true })
+    child.stdin.write('still-open')
+
+    const code = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill()
+        reject(new Error(`${shell}: stdin bootstrap still running after 15s`))
+      }, 15_000)
+
+      child.once('close', exitCode => {
+        clearTimeout(timer)
+        resolve(exitCode)
+      })
+    })
+
+    // powershell.exe -c folds the inner 124 into its own failure code 1.
+    assert.equal(code, shell === 'cmd.exe' ? 124 : 1, shell)
+  }
+})
+
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {
   assert.deepEqual(await detectRemotePlatform(sshWith(async () => 'Linux\nx86_64\n')), { os: 'Linux', arch: 'x86_64' })
   const calls: string[] = []
@@ -633,7 +665,7 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /-Command \[ScriptBlock\]::Create/)
+  assert.equal(calls[1], powerShellStdinCommand())
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {

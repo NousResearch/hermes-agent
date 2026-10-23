@@ -52,9 +52,11 @@ def save_completed_result(session) -> None:
 
     with session._lock:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
+        execution = session.local_execution
+        record["local_execution"] = execution.to_json() if execution is not None else None
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
     # Live-output opt-out must not persist raw credentials in durable receipts.
-    record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
+    record["output"] = redact_terminal_output(record["output"], record["command"], force=True, execution=execution)
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
     directory = get_hermes_home() / "logs" / "process-results"
     try:
@@ -86,6 +88,7 @@ def _owns_result(owner: str, parent: str | None) -> bool:
 
 def load_completed_results(prefix: str = "") -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
+    from agent.redact_credential_stores import LocalExecution
     from tools.process_registry import ProcessSession
 
     from gateway.session_context import get_session_env
@@ -111,6 +114,7 @@ def load_completed_results(prefix: str = "") -> dict:
             session = ProcessSession(
                 **{key: record[key] for key in _RESULT_FIELDS},
                 exited=True, output_buffer=record["output"],
+                local_execution=LocalExecution.from_json(record.get("local_execution")),
             )
             session._completion_event.set()
             results[session.id] = session

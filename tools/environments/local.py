@@ -1030,6 +1030,10 @@ class LocalEnvironment(BaseEnvironment):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
         self.init_session()
 
+    def shell_home(self) -> str | None:
+        """HOME this executor's commands start with, which their shell expands ``~`` against."""
+        return _make_run_env(self.env).get("HOME")
+
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
         (Termux has no system temp dir), ``HERMES_HOME/cache/terminal`` (real storage: a

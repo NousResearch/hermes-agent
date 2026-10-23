@@ -1313,6 +1313,7 @@ def _run_foreground(
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
     is False for Hermes' own control-plane commands (``_host_local``)."""
+    from agent.redact import local_execution
     from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
@@ -1333,6 +1334,9 @@ def _run_foreground(
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                 env=env,
             )
+            # Before execution: redaction trusts a credential store's values only for the version
+            # the command read. Only the local executor can attest that (and its own HOME).
+            execution = local_execution(command, env.shell_home()) if getattr(env, "is_local", None) is True else None
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
@@ -1369,7 +1373,7 @@ def _run_foreground(
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
         task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
-        command_cwd=command_cwd, approval_note=approval_note,
+        command_cwd=command_cwd, approval_note=approval_note, local_execution=execution,
     )
 
 

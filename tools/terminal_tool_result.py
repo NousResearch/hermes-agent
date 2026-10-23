@@ -167,7 +167,27 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
-def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
+def transform_process_output(output: str, *, command: str, returncode: Optional[int], task_id: str = "") -> str:
+    """``transform_terminal_output`` seam for background-process output — the poll/wait/log/kill
+    results and the completion/heartbeat/watch notifications — so a plugin that rewrites terminal
+    output sees the same command output whether it ran in the foreground or not (#70760).
+    Same helper as the foreground path; callers redact AFTER it, never before, so a replacement
+    the plugin returns is still masked. ``returncode`` is None while the process is running and
+    ``env_type`` is not recorded per process, so it is passed empty."""
+    return _apply_output_transform_hook(command, output, returncode, task_id or "", "")
+
+
+def _redact_window_parts(output: str, command: str, execution) -> str:
+    """Redact each part of a head/tail-truncated output on its own: the text after a truncation
+    notice is a window that may begin mid-line, never the start of the command's output."""
+    from agent.redact import redact_terminal_output
+    from tools.tool_output_truncate import TRUNCATION_NOTICE_RE
+    parts = TRUNCATION_NOTICE_RE.split(output)
+    return "".join(part if n % 2 else redact_terminal_output(part, command, execution=execution, from_start=n == 0)
+                   for n, part in enumerate(parts))
+
+
+def _redact_spill_file(path, total_chars, command, execution) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
     re-running. The collector wrote it raw; redact it with the same pass so no
     secret persists unmasked on disk. On failure drop the handle (and file)."""
@@ -180,7 +200,8 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
-        write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),
+        write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command, execution=execution,
+                                                                from_start=True),
                              private=True, overwrite=True, errors="replace")
     except Exception:
         logger.debug("spill redaction failed; dropping spill handle", exc_info=True)
@@ -207,8 +228,10 @@ def finalize_foreground_result(
     *, command: str, result: dict, env: Any, env_type: str, effective_task_id: str,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
     workdir: Optional[str], command_cwd: Optional[str], approval_note: Optional[str],
+    local_execution: Any = None,
 ) -> str:
-    """Turn a raw ``env.execute`` result into the tool's JSON result string."""
+    """Turn a raw ``env.execute`` result into the tool's JSON result string. ``local_execution``
+    is the local executor's pre-execution attestation (``agent.redact.local_execution``)."""
     from tools.terminal_tool import record_session_cwd
 
     # Record the cwd this command finished in as THIS session's durable cwd —
@@ -231,7 +254,6 @@ def finalize_foreground_result(
     # Strip ANSI so the model never copies escapes into file writes, then
     # redact secrets; redact_terminal_output is command-aware (env-dump
     # commands get the KEY=value pass, source/config dumps skip it).
-    from agent.redact import redact_terminal_output
     from tools.ansi_strip import strip_ansi
     output = strip_ansi(output)
     # For source/config dumps (MAX_TOKENS=100, "apiKey": "x" fixtures, postgresql:// f-string templates) the
@@ -239,7 +261,7 @@ def finalize_foreground_result(
     # commands (env/printenv/set/export/declare) the output IS a KEY=value credential dump, so
     # redact_terminal_output runs the ENV pass (code_file=False) to mask opaque tokens with no vendor
     # prefix. Real prefixes, auth headers, JWTs, private keys are masked in both modes. See issue #43025.
-    output = redact_terminal_output(output.strip(), command) if output else ""
+    output = _redact_window_parts(output.strip(), command, local_execution) if output else ""
 
     exit_note = _interpret_exit_code(command, returncode)
     failure_hint = _failure_hint(command, returncode, output, exit_note)
@@ -261,7 +283,7 @@ def finalize_foreground_result(
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
-        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
+        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command, local_execution),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output)),

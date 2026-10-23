@@ -4,16 +4,21 @@ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
 last 4 characters for debuggability.
 """
 
+import itertools
 import logging
 import os
 import re
 import shlex
 import threading
+from collections.abc import Iterable
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from agent.file_safety import _HOME_CREDENTIAL_BASENAMES
+from agent.redact_credential_stores import (
+    Extent, LocalExecution, StoreSnapshot, StoreSource, mask_credential_stores)
 
 logger = logging.getLogger(__name__)
 
@@ -892,6 +897,8 @@ def _redact_phone(m):
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, secret_file: bool = False,
+                          source_paths: Iterable[str] = (), source_extent: Extent = "slice",
+                          source_execution: LocalExecution | None = None, source_cut: bool = False,
                           redact_url_credentials: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
@@ -929,6 +936,18 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     fail-open by setting both. Files that are not secret-bearing (any source file, a project's own
     ``config.yaml``) keep the code_file behaviour: ``MAX_TOKENS: 100`` and ``"apiKey": "test"``
     fixtures are untouched.
+
+    ``source_paths`` names the file(s) the text was read from. Each path is classified here, so
+    a caller cannot set ``secret_file`` and forget the file's grammar: a secret-bearing path
+    implies ``secret_file``, and a credential store (``.netrc``, ``.pypirc``, ...) has every
+    stored value masked by its own grammar before any other pass (agent/redact_credential_stores.py).
+    ``source_extent`` says how much of the text those files own: ``"start"`` (from the top of
+    the file), ``"slice"`` (a part that may begin mid-value; the default for a read_file page or
+    search match) or ``"mixed"`` (terminal output that also carries other files or commands; the
+    store can then supply its own values only through a complete snapshot of the version the
+    command read). ``source_execution`` is the local executor's pre-execution attestation
+    (``local_execution``); without it, or when a store changed since, masking is conservative.
+    ``source_cut`` marks text that may begin mid-line (a window of terminal output).
     """
     if text is None:
         return None
@@ -939,6 +958,16 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = redact_registered_vault_values(text)
     if not (force or _redact_enabled()):
         return text
+    source_paths = tuple(source_paths)
+    secret_file = secret_file or any(_is_secret_file_arg(path) for path in source_paths)
+    # Mixed output needs the store's own values to tell a bare value line from another file's.
+    execution = source_execution if source_extent == "mixed" else None
+    stores = [store for path in source_paths if (store := _credential_store_source(path, execution))]
+    if stores:
+        # First, so no generic pass can mask a prefix of a value and hide its remainder. Options
+        # are secret by the assignment passes' word-bounded key policy (``author`` is not ``auth``).
+        text = mask_credential_stores(text, stores, _mask_token_nonreusable, _key_has_secret_keyword,
+                                      source_extent, source_cut)
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file
@@ -1088,11 +1117,10 @@ def _is_under_hermes_home(path: str) -> bool:
     return False
 
 
-def _is_secret_file_arg(arg: str) -> bool:
-    """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
-    ``.hermes`` directory, ``$HERMES_HOME``, or the resolved Hermes home (never arbitrary
-    YAML). The resolved-home arm is what covers native Windows, where the home directory
-    is ``%LOCALAPPDATA%\\hermes`` and carries no ``.hermes`` segment."""
+def _path_parts(arg: str) -> tuple[list[str], bool, str] | None:
+    """Lowercased path segments past a home / Hermes-home prefix, whether the Hermes-home
+    prefix was present, and the stripped path; None for an unresolvable (``$VAR``) or empty
+    path."""
     path = arg.strip("\"'").replace("\\", "/")
     hermes_home = False
     for prefix in _HERMES_HOME_PREFIXES:
@@ -1105,11 +1133,144 @@ def _is_secret_file_arg(arg: str) -> bool:
             path = path[len(prefix):]
             break
     if "$" in path:
-        return False
+        return None
     parts = [part.lower() for part in path.split("/") if part]
-    if not parts:
+    return (parts, hermes_home, path) if parts else None
+
+
+# Grammar of each credential store, keyed by basename (see agent/redact_credential_stores.py).
+_CREDENTIAL_STORE_FORMATS = {
+    ".netrc": "netrc", "_netrc": "netrc", ".pgpass": "pgpass", ".pypirc": "ini", ".npmrc": "npmrc",
+    ".git-credentials": "git-credentials",
+}
+
+
+def _store_format(parts: list[str]) -> str | None:
+    # AWS accepts aws_secret_access_key / aws_session_token in ``config`` as well as ``credentials``.
+    if parts[-2:] in ([".aws", "credentials"], [".aws", "config"]):
+        return "ini"
+    return _CREDENTIAL_STORE_FORMATS.get(parts[-1])
+
+
+def _credential_store_format(arg: str) -> str | None:
+    """Grammar name of a credential-store path; ``credentials`` counts only under ``.aws``
+    (the bare name is too generic)."""
+    split = _path_parts(arg)
+    return _store_format(split[0]) if split else None
+
+
+_STORE_READ_LIMIT = 1 << 20
+_STORE_READ_CACHE_MAX = 8
+_STORE_READ_CACHE: dict[str, tuple] = {}
+_STORE_READ_LOCK = threading.Lock()
+
+
+def _store_cache_key(path: str) -> str:
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        resolved = os.path.abspath(path)
+    return os.path.normcase(resolved)
+
+
+def _executor_store_path(arg: str, home: str | None) -> str | None:
+    """``arg`` as the local executor's shell resolves it: ``~`` and ``$HOME`` against the
+    executor's own HOME, never this process's. A path that depends on other shell state (another
+    variable, a cwd the command may change) is unresolved."""
+    path = arg.strip("\"'")
+    for prefix in ("~/", "~\\", *_HOME_PREFIXES):
+        if path.startswith(prefix):
+            if not home:
+                return None
+            path = os.path.join(home, path[len(prefix):])
+            break
+    if not os.path.isabs(path) or any(char in path for char in "$`%"):
+        return None
+    return _store_cache_key(path)
+
+
+def local_execution(command: str | None, home: str | None) -> LocalExecution:
+    """Attest the credential stores ``command`` names, BEFORE a local executor runs it with
+    ``home`` as HOME. Mixed redaction later trusts a store's values only while its signature is
+    unchanged, so a command that rewrites the store it printed falls back to conservative
+    masking. A signature too fresh to rule out a same-tick write is not recorded."""
+    from utils import file_signature, mtime_is_racy
+
+    signatures = {}
+    for arg in _command_secret_file_args(command):
+        if _credential_store_format(arg) and (path := _executor_store_path(arg, home)):
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if not mtime_is_racy(st.st_mtime_ns):
+                signatures[path] = file_signature(st)
+    return LocalExecution(home, signatures)
+
+
+def _read_store_on_host(path: str, expected: tuple) -> StoreSnapshot | None:
+    """The attested store version at ``path``, or None when it changed or cannot be read.
+
+    Mixed redaction re-reads this on every terminal poll. The bytes are reused while the file's
+    signature is unchanged. The key is the resolved path, so two profiles do not share a cache
+    entry unless they name the same file.
+    """
+    from utils import file_signature
+
+    try:
+        if file_signature(os.stat(path)) != expected:
+            return None
+    except OSError:
+        return None
+    with _STORE_READ_LOCK:
+        hit = _STORE_READ_CACHE.get(path)
+        if hit is not None and hit[0] == expected:
+            _STORE_READ_CACHE.pop(path)
+            _STORE_READ_CACHE[path] = hit
+            return hit[1]
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
+            content = fh.read(_STORE_READ_LIMIT + 1)
+        # The path again, not fstat: Windows can report a fresher ctime through an open handle
+        # than through the path the attestation used. A file replaced mid-read differs here.
+        if file_signature(os.stat(path)) != expected:
+            return None
+    except OSError:
+        return None
+    snapshot = StoreSnapshot(content[:_STORE_READ_LIMIT], len(content) <= _STORE_READ_LIMIT)
+    with _STORE_READ_LOCK:
+        _STORE_READ_CACHE[path] = (expected, snapshot)
+        while len(_STORE_READ_CACHE) > _STORE_READ_CACHE_MAX:
+            _STORE_READ_CACHE.pop(next(iter(_STORE_READ_CACHE)))
+    return snapshot
+
+
+def _credential_store_source(arg: str, execution: LocalExecution | None) -> StoreSource | None:
+    split = _path_parts(arg)
+    fmt = _store_format(split[0]) if split else None
+    if fmt is None:
+        return None
+    name = tuple(split[0][-2:]) if split[0][-2:-1] == [".aws"] else (split[0][-1],)
+    snapshot = None
+    if execution is not None and (path := _executor_store_path(arg, execution.home)):
+        if (expected := execution.signatures.get(path)) is not None:
+            snapshot = _read_store_on_host(path, expected)
+    return StoreSource(fmt, name, snapshot)
+
+
+def _is_secret_file_arg(arg: str) -> bool:
+    """``.env``-style, shell rc or credential-store (``_credential_store_format``) path
+    anywhere; ``config.yaml`` only under a ``.hermes`` directory, ``$HERMES_HOME``, or the
+    resolved Hermes home (never arbitrary YAML). The resolved-home arm is what covers native
+    Windows, where the home directory is ``%LOCALAPPDATA%\\hermes`` and carries no ``.hermes``
+    segment."""
+    split = _path_parts(arg)
+    if split is None:
         return False
+    parts, hermes_home, path = split
     if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
+        return True
+    if _store_format(parts):
         return True
     # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
     # writes under ``backups/config/`` — same contents, same secrets.
@@ -1118,12 +1279,13 @@ def _is_secret_file_arg(arg: str) -> bool:
     return hermes_home or ".hermes" in parts[:-1] or _is_under_hermes_home(path)
 
 
-def _command_reads_secret_file(command: str | None) -> bool:
-    """True if ``command`` reads a secret-bearing file (see ``_is_secret_file_arg``) to
-    stdout. Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
-    .env)``, unresolved variable paths) are not detected, matching ``is_env_dump_command``."""
+def _command_secret_file_args(command: str | None) -> list[str]:
+    """Secret-bearing files (see ``_is_secret_file_arg``) that ``command`` reads to stdout.
+    Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat .env)``,
+    unresolved variable paths) are not detected, matching ``is_env_dump_command``."""
     if not command or not isinstance(command, str):
-        return False
+        return []
+    found = []
     for seg in _command_segments(command):
         tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
         if not tokens:
@@ -1134,9 +1296,55 @@ def _command_reads_secret_file(command: str | None) -> bool:
         positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
         if reader in _PATTERN_FIRST_COMMANDS:
             positional = positional[1:]
-        if any(_is_secret_file_arg(arg) for arg in positional):
+        found += [arg for arg in positional if _is_secret_file_arg(arg)]
+    return found
+
+
+# Commands that may sit downstream of a store read in a pipeline without adding output of their
+# own beyond what they filter from stdin.
+_STORE_FILTER_COMMANDS = _FILE_READ_COMMANDS | {"sort", "uniq", "cut", "tr", "wc", "column", "fold", "rev"}
+# Readers whose output begins at the top of the file.
+_FROM_START_READERS = frozenset({"cat", "type", "bat", "batcat", "less", "more", "nl", "view", "zcat", "head"})
+
+
+def _has_sequence_operator(command: str) -> bool:
+    """Unquoted ``;``, ``&`` (``&&``), ``||`` or a newline: more than one pipeline runs."""
+    quote: str | None = None
+    for i, ch in enumerate(command):
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch in ";&\n" or command.startswith("||", i):
             return True
     return False
+
+
+def _command_store_extent(command: str, secret_args: list[str]) -> Extent:
+    """How much of ``command``'s output the one store it reads owns (see redact_sensitive_text's
+    ``source_extent``). Only a single pipeline whose first stage reads exactly that file, and
+    whose later stages only filter stdin, is store-only output; anything else is ``mixed``."""
+    if len(secret_args) != 1 or _has_sequence_operator(command):
+        return "mixed"
+    segments = _command_segments(command)
+    for n, seg in enumerate(segments):
+        try:
+            tokens = shlex.split(seg, posix=False)  # non-POSIX: keeps ``C:\Users\...`` intact
+        except ValueError:
+            tokens = seg.split()
+        reader = tokens[0].rsplit("/", 1)[-1].lower() if tokens else ""
+        if reader not in _STORE_FILTER_COMMANDS:
+            return "mixed"
+        positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
+        if reader in _PATTERN_FIRST_COMMANDS:
+            positional = positional[1:]
+        else:  # a bare number right after a flag is its value (``head -n 5``), not a file
+            positional = [arg for prev, arg in itertools.pairwise(tokens)
+                          if not arg.startswith("-") and not (arg.isdigit() and prev.startswith("-"))]
+        if len(positional) != (1 if n == 0 else 0):
+            return "mixed"
+    first_reader = segments[0].split()[0].rsplit("/", 1)[-1].lower()
+    return "start" if len(segments) == 1 and first_reader in _FROM_START_READERS else "slice"
 
 
 def is_env_dump_command(command: str | None) -> bool:
@@ -1176,15 +1384,27 @@ def redact_for_egress(text: str) -> str:
     return text
 
 
-def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
+def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False,
+                           execution: LocalExecution | None = None, from_start: bool = False) -> str:
     """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
     pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
-    shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
-    source/config dumps."""
+    shell rc, a credential store like ``.netrc``, Hermes ``config.yaml``); otherwise
+    code_file=True avoids false positives on source/config dumps.
+
+    ``execution`` is the local executor's attestation (``local_execution``), recorded before
+    the command ran. ``from_start`` says ``output`` begins at the first byte the command wrote;
+    a tail, head/tail remainder or rolling buffer leaves it False, so a store's grammar never
+    assumes it sees the file's start."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
-    redacted = redact_sensitive_text(output, force=force, code_file=code_file)
+    secret_args = _command_secret_file_args(command)
+    code_file = not (secret_args or is_env_dump_command(command))
+    extent = _command_store_extent(command, secret_args) if secret_args else "slice"
+    if extent == "start" and not from_start:
+        extent = "slice"
+    redacted = redact_sensitive_text(output, force=force, code_file=code_file, source_paths=secret_args,
+                                     source_extent=extent, source_execution=execution,
+                                     source_cut=not from_start)
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is
     # where {'BRAVE_API_KEY': '…'} leaks, not in source dumps.

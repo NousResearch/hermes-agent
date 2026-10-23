@@ -950,8 +950,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             mint_task.exception()  # consume any worker error; the caller was cancelled
             raise
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+    async def _ensure_node_runtime(self) -> bool:
+        """Prepare a missing Node runtime only when the native policy allows it."""
         if find_node_executable("node") is None:
             import pm
 
@@ -961,6 +961,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 except pm.InstallError as exc:
                     self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
                     return False
+        return True
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        if not await self._ensure_node_runtime():
+            return False
         secondary = bool(getattr(self, "_runtime_status_platform_key", ""))
         prior_bridge_is_ours = False
         if secondary:

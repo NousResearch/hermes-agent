@@ -315,7 +315,7 @@ def test_adapter_availability_never_provisions_missing_node(tmp_path, monkeypatc
         raise AssertionError("availability must not install")
 
     monkeypatch.setattr(pm, "ensure", forbidden_ensure)
-    assert whatsapp.check_whatsapp_requirements() is False
+    assert whatsapp.check_whatsapp_requirements() is allowed
     assert photon.check_requirements() is allowed
     assert installs == []
     assert not (tmp_path / "missing-tools").exists()

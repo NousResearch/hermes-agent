@@ -64,6 +64,7 @@ it('keeps caller-provided and generated slash IDs when a busy target queues the 
       copy: en.desktop,
       createBackendSessionForSend: async () => null,
       getRoutedStoredSessionId: () => 'stored-a',
+      getRouteToken: () => 'route',
       getRuntimeIdForStoredSession: () => 'runtime-a',
       requestGateway: vi.fn(async () => ({ type: 'skill', name: 'work', message: 'expanded skill' })) as GatewayRequest,
       resumeStoredSession: vi.fn(),

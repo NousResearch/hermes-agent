@@ -126,12 +126,8 @@ class TestDetectDangerousRm:
         basename = "hermes-verify-example.py"
 
         with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
-            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
-            assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
-                False,
-                None,
-                None,
-            )
+            assert approval_detection._is_verification_artifact_cleanup(f'rm -f "{linked_temp / basename}"') is False
+            assert approval_detection._is_verification_artifact_cleanup(f'rm -f "{real_temp / basename}"') is True
 
     def test_verification_cleanup_exemption_rejects_broader_deletions(self):
         commands = (

@@ -596,6 +596,29 @@ Adapters implement a common interface:
 - `send()` — outbound message delivery
 - inbound events are normalized into a `MessageEvent` and forwarded via `handle_message()`
 
+### Adapter-selected profiles
+
+A primary direct adapter with an operator-enabled profile selector can implement
+`validate_native_profile_route(self, source) -> bool`. Native admission invokes
+this synchronous method only when no configured `profile_routes` match;
+only a literal `True` permits the adapter's `source.profile` stamp. It is not
+called for relay-delivered events or secondary adapters. HTTP prefix producers
+retain their existing precedence. Adapters without this method keep the existing
+route policy.
+
+The method must recheck current sender trust and the operator's allowed-profile
+policy, without creating pairing approvals or trusting additional wire fields.
+It runs both when capturing input and when restoring durable provenance, under
+the routed profile's scope: bind any owner-specific authorization explicitly.
+A queued input retains its original profile, not the device's latest selection;
+revoking owner trust or removing its allowed target must refuse replay.
+
+This is a routing validation, not an authorization or session-authority bypass.
+The gateway still requires its process-local callback/adapter identity, a
+reserved target home with a built authority, unchanged provenance on replay,
+and ordinary sender authorization. A directory or a profile stamp alone is never
+enough. Hermes Gadget's opt-in device profile selector is a concrete consumer.
+
 Internal push wakes use `gateway.wake.admit_internal_event`: the public
 `handle_message()` still returns `None`, but the event's process-local
 `_gateway_accepted` receipt is set only after scheduling or queue insertion.

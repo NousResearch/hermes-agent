@@ -102,7 +102,7 @@ def carry_callback(event, rewritten):
 _PREFIX_PRODUCERS = ('webhook', 'api_server', 'msgraph_webhook')
 
 
-def _runtime_profile(runner, source, profile, owner_name, homes, relay):
+def _runtime_profile(runner, source, adapter, profile, owner_name, homes, relay):
     """The multiplexed runtime profile *source* routes to; ``_binding`` checks it is served."""
     # Same matcher as ingress stamping, ``user_id`` included: a ``user_id`` route stamps the
     # source upstream, so it must resolve here too. A route applies only to its bot_profile's
@@ -126,6 +126,13 @@ def _runtime_profile(runner, source, profile, owner_name, homes, relay):
         # The instance's one authenticated connector (relay is process-level) routes scopes to
         # served profiles (Team Gateway); the relay seal covers ``source.profile``.
         return source.profile
+    if source.profile and not relay and profile is None:
+        # A primary direct adapter whose users pick their own profile on one connection (Hermes
+        # Gadget's device selector) vouches for that pick. Only a literal True accepts the stamp;
+        # an adapter without the method keeps the owner's profile, and a configured route above wins.
+        validate = getattr(type(adapter), 'validate_native_profile_route', None)
+        if callable(validate) and validate(adapter, source) is True:
+            return source.profile
     return owner_name
 
 
@@ -167,7 +174,7 @@ def _binding(runner, source, profile):
         owner_name = profile or primary
         if homes.get(owner_name) != home:
             raise RuntimeStoreError('profile_mismatch')
-        runtime_profile = _runtime_profile(runner, source, profile, owner_name, homes, relay)
+        runtime_profile = _runtime_profile(runner, source, adapter, profile, owner_name, homes, relay)
         if (source.profile or primary) != runtime_profile or runtime_profile not in homes:
             raise RuntimeStoreError('profile_mismatch')
         runtime_home = homes[runtime_profile]

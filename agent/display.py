@@ -324,28 +324,6 @@ def _read_file_line_label(args: dict) -> str:
     return f"L{offset}-{offset + limit - 1}" if isinstance(limit, int) and limit > 1 else f"L{offset}"
 
 
-def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
-    """Replace every occurrence of a secret-looking browser_type value with its redacted form.
-
-    Backends echo the attempted input in error strings/metadata, so it is swapped before
-    reaching logs, callbacks, the model, or chat history. Forced regardless of
-    ``security.redact_secrets``: a leaked typed credential is a security boundary.
-    """
-    needle = "" if typed_text is None else str(typed_text)
-    redacted = redact_sensitive_text(needle, force=True) if needle else needle
-    if redacted == needle:
-        return value
-    if isinstance(value, str):
-        return value.replace(needle, redacted)
-    if isinstance(value, dict):
-        return {key: redact_browser_typed_text_for_display(item, typed_text) for key, item in value.items()}
-    if isinstance(value, list):
-        return [redact_browser_typed_text_for_display(item, typed_text) for item in value]
-    if isinstance(value, tuple):
-        return tuple(redact_browser_typed_text_for_display(item, typed_text) for item in value)
-    return value
-
-
 def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
     """Return a copy of tool args safe for logs/progress UI (masks ``browser_type`` secrets)."""
     if not isinstance(args, dict):

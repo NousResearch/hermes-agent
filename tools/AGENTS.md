@@ -42,10 +42,10 @@ toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
    `_HERMES_CORE_TOOLS` is the default bundle every platform's base toolset inherits, not dead code.
 
 Rules for tool code:
-- **Schema descriptions must not name tools from other toolsets** (`browser_navigate` saying "prefer
+- **Schema descriptions must not name tools from other toolsets** (a browser tool saying "prefer
   web_search"). Those tools may be unavailable (missing key, disabled toolset) and the model
   hallucinates calls to them. Cross-references are added dynamically in `get_tool_definitions()` in
-  `model_tools.py` — see the `browser_navigate` / `execute_code` post-processing blocks.
+  `model_tools.py` — see the `browser_cdp` / `execute_code` post-processing blocks.
 - **Paths in schema descriptions use `display_hermes_home()`** (schema is built at import; under
   multiplex it shows the launch home, which is display-only). **State files use `get_hermes_home()`**
   at call time, never `Path.home()/.hermes` and never a module constant, so each served profile gets
@@ -73,14 +73,30 @@ Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, 
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
 kanban, memory, messaging, moa, rl, safe, search, session_search, skills, terminal, todo,
 tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
-`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
-replaces the other browser tools when `browser.backend` is `browser-use`.
+`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec` is the
+one core browser tool (beside `browser_cdp` / `browser_dialog` / `browser_vault`, all CDP).
+
+## Browser runtime
+
+`browser_exec` (`browser_use_cli.py`) drives a browser over CDP through browser-harness. Where that
+CDP endpoint comes from is `browser_session.get_session_info(cache_key)`: operator `BU_CDP_*` env (in
+browser_exec) > CDP override (live `/browser connect` > `BROWSER_CDP_URL` > `browser.cdp_url`) >
+hybrid `::local` sidecar > cloud provider (failure → local session marked `fallback_from_cloud`) >
+real profile (consented) > Lightpanda > the packaged Chromium from `browser_launcher.launch_chromium`
+(one browser per cache key, `--remote-debugging-port=0` + `DevToolsActivePort`). State lives in
+`browser_session.py`; siblings late-import it inside functions. Every launched Chromium is stopped
+parent-first and recorded in a private 0700 dir (a throwaway profile's in
+`<HERMES_HOME>/cache/browser/chromium-records`; a persistent profile's per OS user under the host lock dir,
+one for every home pinning it) so a later process reaps a crashed owner's browser after checking pid + start
+time + its `--user-data-dir` argv token; the reaper walks every served home and every shared profile.
+`browser_tool.py` and `browser_tool_install.py` are frozen old-updater stubs only (see their
+docstrings); never grow them.
 
 ## Backends and providers inside tools/
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
 docker, ssh, modal, daytona; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
-browser (`browser_tool_*.py`: cdp, cloud, install, lifecycle, session, real_profile, vision), MCP
+browser (`browser_launcher.py` + `browser_session*.py`: lifecycle, cloud, cdp, real_profile, sandbox), MCP
 client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
 (`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
 `OptionalSkillSource`). Adding a backend = a new sibling or provider entry in the existing table,
@@ -88,7 +104,7 @@ never an `elif` on a backend name (root shape rules). Remote-backend file visibi
 fixed at the mount, not by adding a tool.
 
 **Native vision embeds are history, not one-shot payloads.** `vision_tools.py::_vision_analyze_native`
-(and the browser screenshot twins in `browser_tool_vision.py` / `browser_use_cli.py`) bake the image
+(and the browser screenshot twin in `browser_use_cli.py`) bake the image
 into a tool result that is re-sent on every later API call. Size and repeat policy live in
 `vision_tools_history_budget.py` (config section `vision`: `embed_target_bytes`, `max_calls_per_image`);
 the repeat counter is keyed on (session id, resolved source) so region crops share their file's count,

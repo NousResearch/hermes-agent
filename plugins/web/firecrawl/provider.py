@@ -270,7 +270,7 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
     return {"url": url, "title": title, "content": "", **({"raw_content": ""} if raw else {}), "error": error, **policy}
 
 
-_SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead."
+_SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_exec instead."
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
 
 

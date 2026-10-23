@@ -188,6 +188,26 @@ def test_interrupt_without_tool_tail_adds_nothing():
     assert messages[-1]["role"] == "assistant"
 
 
+def test_api_interrupt_partial_is_not_duplicated_by_finalizer():
+    agent = _StubAgent()
+    agent._current_streamed_assistant_text = "Visible draft."
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "Visible draft.",
+            "finish_reason": "interrupted",
+            "display_metadata": {"interrupted": True},
+        },
+    ]
+
+    _finalize(agent, messages, interrupted=True, final_response="Visible draft.")
+
+    assert len(messages) == 2
+    assert messages[-1]["finish_reason"] == "interrupted"
+    assert messages[-1]["display_metadata"] == {"interrupted": True}
+
+
 def test_interrupted_turn_with_diagnostic_text_is_not_completed():
     """An interrupt mid-call leaves a diagnostic ``final_response`` ("Operation interrupted:
     waiting for model response"); the result must still say ``completed=False`` like the
@@ -201,6 +221,80 @@ def test_interrupted_turn_with_diagnostic_text_is_not_completed():
     assert result["interrupted"] is True
     assert result["completed"] is False
     assert result["failed"] is False
+
+
+def test_interrupted_stream_persists_visible_partial_with_status(tmp_path):
+    """A disconnect can set the interrupt outside ``handle_api_interrupt``.
+
+    The finalizer still owns the buffered text in that path.  Persist it as a
+    normal assistant row so session transcript readers do not lose text that
+    was already sent to the client.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-1", source="api_server")
+    agent = _StubAgent()
+    agent._current_streamed_assistant_text = "Visible draft."
+
+    def persist_to_sqlite(messages, _conversation_history):
+        db.replace_messages(agent.session_id, messages)
+        agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+
+    agent._persist_session = persist_to_sqlite
+    result = _finalize(
+        agent,
+        [{"role": "user", "content": "write a long answer"}],
+        interrupted=True,
+        final_response=None,
+    )
+
+    assert result["completed"] is False
+    assert result["interrupted"] is True
+    assert result["final_response"] == "Visible draft."
+    persisted = agent.persisted_messages[-1]
+    assert persisted["role"] == "assistant"
+    assert persisted["content"] == "Visible draft."
+    assert persisted["finish_reason"] == "interrupted"
+    assert persisted["display_metadata"] == {"interrupted": True}
+    db.close()
+
+
+def test_interrupted_stream_does_not_replace_existing_final_response():
+    agent = _StubAgent()
+    agent._current_streamed_assistant_text = "Older streamed text."
+
+    result = _finalize(
+        agent,
+        [{"role": "user", "content": "write a long answer"}],
+        interrupted=True,
+        final_response="Newer final response.",
+    )
+
+    assert result["final_response"] == "Newer final response."
+
+
+def test_interrupt_after_tool_round_does_not_duplicate_streamed_commentary():
+    agent = _StubAgent()
+    commentary = "I will inspect the file first."
+    agent._current_streamed_assistant_text = commentary
+    messages = [
+        {"role": "user", "content": "edit the file"},
+        {
+            "role": "assistant",
+            "content": commentary,
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "file contents"},
+    ]
+
+    result = _finalize(agent, messages, interrupted=True, final_response=None)
+
+    assert result["final_response"] == commentary
+    assert sum(message.get("content") == commentary for message in messages) == 1
+    assert messages[-1]["display_kind"] == "hidden"
 
 
 def _pending_tool_result_tail():

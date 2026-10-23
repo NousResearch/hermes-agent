@@ -43,7 +43,7 @@ from agent.turn_scripted_prelude import Prelude, play_prelude
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -724,11 +724,19 @@ def _refresh_bot_chat_tools(agent) -> None:
     gateway keeps agents alive across turns; every other surface builds a fresh agent whose
     tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
     and the prompt rebuild this rides on already breaks the cache."""
+    from gateway.session_policy import active_policy
+    policy = active_policy()
     platform = getattr(agent, "platform", None)
-    if platform not in ("desktop", "tui"):
+    if policy is None and platform not in ("desktop", "tui"):
         return
     try:
         from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        if policy is not None:
+            # Gateway-owned session (managed worker / owner turn): toolsets are frozen in its
+            # launch policy, so live config edits never widen or narrow a running session.
+            refresh_agent_mcp_tools(agent, enabled_override=list(policy.toolsets),
+                                    quiet_mode=True, content_aware=True)
+            return
         from tui_gateway.server import _load_disabled_toolsets, _load_enabled_toolsets
         refresh_agent_mcp_tools(
             agent, enabled_override=_load_enabled_toolsets(platform),
@@ -1811,8 +1819,9 @@ def _redact_display_metadata(metadata: dict) -> dict:
 
 
 def _close_durable_failed_turn(agent, result: Any) -> None:
-    """Append a Hermes-authored assistant boundary when a failed turn left ``user`` as the
-    durable conversation tail (in place, on ``result["messages"]`` and in SessionDB).
+    """Append a Hermes-authored assistant boundary when a failed turn left its durable tail open
+    (``OPEN_TURN_TAIL_ROLES``: the accepted ``user`` row, or a ``tool`` row when a call ran before
+    the failure), in place on ``result["messages"]`` and in SessionDB.
 
     The terminal-failure paths (content-policy refusal, ``_Trunc.end_turn``, retry exhaustion,
     interrupt before any assistant text) persist the accepted user row and return without
@@ -1839,7 +1848,7 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
         if not isinstance(messages, list) or not messages or db is None or not session_id:
             return
-        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) != "user":
+        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) not in OPEN_TURN_TAIL_ROLES:
             return
         # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
         # hedge over the whole list rather than under-report a possible side effect.

@@ -26,6 +26,8 @@ export interface AccountOperation {
   deadlineAt: number
   opId: string
   request: AccountOperationRequest
+  /** Where the browser's return shows the user; absent means the app's Connectors page. */
+  returnRoute?: string
   scope: ProfileScope
   seq: number
   settled: boolean
@@ -101,13 +103,15 @@ export function startAccountOperation(
   scope: ProfileScope,
   connectors: readonly string[],
   snapshot: ConnectorsConnectResult,
-  request: AccountOperationRequest = { reconnect: false }
+  request: AccountOperationRequest = { reconnect: false },
+  returnRoute?: string
 ): AccountOperation {
   const operation: AccountOperation = {
     connectors: [...connectors],
     deadlineAt: snapshot.deadline_at,
     opId: snapshot.op_id,
     request,
+    returnRoute,
     scope,
     seq: snapshot.seq,
     settled: snapshot.settled,

@@ -104,7 +104,7 @@ from hermes_cli.update_cmd_git import (
     _prune_orphan_rescue_refs, _push_synced_fork, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed, UpstreamTargetBroken)
 from hermes_cli.update_cmd_maint import (
-    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _clear_stale_sqlite_sidecars,
+    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     _checkout_version, _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
@@ -680,7 +680,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         git_cmd, root, branch, ["--depth", "1"] if is_shallow else [],
     )
     if fetch_result.returncode != 0:
-        _print_fetch_failure(fetch_result.stderr)
+        _print_fetch_failure(fetch_result.stderr, git_cmd=git_cmd, root=root)
         sys.exit(1)
     if is_shallow:
         _check.repair_shallow_grafts(root)
@@ -1264,6 +1264,11 @@ def _switch_branch_at_commit_point(git_cmd, branch, target_ref, *, pre, stash):
 def _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume) -> None:
     """Preconditions that used to fail AFTER the swap: refuse with the install untouched."""
     reason = _commit.preflight_refusal(git_cmd, _m().PROJECT_ROOT, target_ref, _UPDATE_CRITICAL_FILES)
+    if reason is None:
+        from hermes_cli.update_downgrade_guard import downgrade_refusal
+        reason = downgrade_refusal(git_cmd, _m().PROJECT_ROOT, target_ref)
+        if reason is not None:
+            _record_stop("downgrade_refused")
     if reason is None:
         return
     print(reason)
@@ -1911,7 +1916,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"
                       " should_include_obj' in https://hermes-agent.nousresearch.com/docs/getting-started/updating")
-            _print_fetch_failure(fetch_result.stderr)
+            _print_fetch_failure(fetch_result.stderr, git_cmd=git_cmd, root=_m().PROJECT_ROOT)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             _record_stop("git_timeout" if fetch_result.returncode == 124 else "disk_full"
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")

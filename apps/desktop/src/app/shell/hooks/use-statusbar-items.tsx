@@ -9,7 +9,9 @@ import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useChangeWorkspaceItem } from '@/app/shell/hooks/use-change-workspace'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { useFocusedSessionRow } from '@/app/shell/hooks/use-focused-session-row'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +36,7 @@ import {
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { rollbackSentence } from '@/lib/update-copy'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -57,8 +60,7 @@ import {
   $sessionStartedAt,
   $tileSessionFocusStartedAt,
   $turnStartedAt,
-  idsShareLineage,
-  sessionMatchesStoredId
+  idsShareLineage
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedRuntimeId, $focusedSessionState, $sessionTiles, isSessionRemote } from '@/store/session-states'
@@ -82,6 +84,7 @@ const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
+  changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
   chatOpen: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
@@ -96,8 +99,32 @@ interface StatusbarItemsOptions {
   toggleCommandCenter: () => void
 }
 
+/** The statusbar row for one update target: the client, or the connected backend. */
+function versionItem(
+  target: 'backend' | 'client',
+  status: ReturnType<typeof resolveVersionStatus>,
+  applying: boolean,
+  toggleLabel: string
+): StatusbarItem {
+  return {
+    className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
+    hidden: status.unknown,
+    icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
+    id: `version-${target}`,
+    label: status.label,
+    // Update state is not a preference: hiding it is how a user misses that
+    // they are behind. Listed in the menu, but locked on.
+    lockedVisible: true,
+    onSelect: () => openUpdateOverlayFor(target),
+    title: status.tooltip,
+    toggleLabel,
+    variant: 'action'
+  }
+}
+
 export function useStatusbarItems({
   agentsOpen,
+  changeSessionCwd,
   chatOpen,
   commandCenterOpen,
   extraLeftItems,
@@ -214,34 +241,8 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's stored row supplies the cold/fallback session-start and cwd when
-  // no focused runtime value is available. Only these scalars are read off
-  // `$sessions`, so select them — a whole-list `useStore` re-ran this hook on
-  // every session-list write (title updates, poll refreshes, archives).
-  const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
-    focusedStoredSessionId
-      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
-      : null
-  )
-
-  const focusedRowCwd = useStoreSelector($sessions, sessions => {
-    if (!focusedStoredSessionId) {
-      return ''
-    }
-
-    const row = sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))
-
-    return row?.cwd?.trim() || ''
-  })
-
-  // Which backend the focused row runs on: a Connections-tagged row names its
-  // gateway; an untagged one is the window's primary. Decides whether the OS
-  // file manager on this computer can show its workspace at all.
-  const focusedRowConnectionId = useStoreSelector($sessions, sessions =>
-    focusedStoredSessionId
-      ? sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.connection_id?.trim() || ''
-      : ''
-  )
+  // A tile's stored row: cold/fallback start and cwd, and which backend it runs on.
+  const { focusedRowConnectionId, focusedRowCwd, focusedRowStartedAt } = useFocusedSessionRow(focusedStoredSessionId)
 
   const offerLocalReveal = shouldOfferLocalReveal(focusedRowConnectionId, connection?.mode === 'remote')
 
@@ -283,6 +284,12 @@ export function useStatusbarItems({
   // the tree changes; null (no named project) falls back to the cwd leaf below.
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+
+  const changeWorkspaceItem = useChangeWorkspaceItem(changeSessionCwd, currentCwd, busy, {
+    focusedRowConnectionId,
+    focusedRuntimeId,
+    primaryFocused
+  })
 
   const sessionStartedAt = resolveSessionTimerSince({
     focusedStoredSessionId,
@@ -345,7 +352,7 @@ export function useStatusbarItems({
     [activeGatewayProfile]
   )
 
-  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway)
+  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway, gatewayState)
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(
@@ -394,6 +401,8 @@ export function useStatusbarItems({
       ? 'text-amber-600 hover:text-amber-600'
       : 'text-destructive hover:text-destructive'
 
+  const rollbackBody = t.settings.about.channel.rollbackBody
+
   const clientVersionItem = useMemo<StatusbarItem>(() => {
     const applying = updateApply.applying || updateApply.stage === 'restart'
 
@@ -402,29 +411,19 @@ export function useStatusbarItems({
       applyMessage: updateApply.message,
       behind: updateStatus?.behind ?? 0,
       branch: updateStatus?.branch,
+      channel: updateStatus?.channel === 'stable' ? 'stable' : 'main',
       copy,
+      latestTag: updateStatus?.latestTag,
       remote: connection?.mode === 'remote',
       restarting: updateApply.stage === 'restart',
+      rollback: rollbackSentence(updateStatus, rollbackBody),
       sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
       target: 'client',
       updateAvailable: updateStatus?.updateAvailable,
       version: desktopVersion?.appVersion
     })
 
-    return {
-      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
-      hidden: status.unknown,
-      icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
-      id: 'version-client',
-      label: status.label,
-      // Update state is not a preference: hiding it is how a user misses that
-      // their client is behind. Listed in the menu, but locked on.
-      lockedVisible: true,
-      onSelect: () => openUpdateOverlayFor('client'),
-      title: status.tooltip,
-      toggleLabel: copy.toggleVersion,
-      variant: 'action'
-    }
+    return versionItem('client', status, applying, copy.toggleVersion)
   }, [
     desktopVersion?.appVersion,
     connection?.mode,
@@ -432,10 +431,8 @@ export function useStatusbarItems({
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
-    updateStatus?.behind,
-    updateStatus?.branch,
-    updateStatus?.currentSha,
-    updateStatus?.updateAvailable
+    updateStatus,
+    rollbackBody
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
@@ -452,28 +449,18 @@ export function useStatusbarItems({
       copy,
       remote: true,
       restarting: backendUpdateApply.stage === 'restart',
+      rollback: rollbackSentence(backendUpdateStatus, rollbackBody),
       target: 'backend',
       updateAvailable: backendUpdateStatus?.updateAvailable,
       version: statusSnapshot?.version
     })
 
-    return {
-      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
-      hidden: status.unknown,
-      icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
-      id: 'version-backend',
-      label: status.label,
-      lockedVisible: true,
-      onSelect: () => openUpdateOverlayFor('backend'),
-      title: status.tooltip,
-      toggleLabel: copy.toggleBackendVersion,
-      variant: 'action'
-    }
+    return versionItem('backend', status, applying, copy.toggleBackendVersion)
   }, [
     connection?.mode,
     statusSnapshot?.version,
-    backendUpdateStatus?.behind,
-    backendUpdateStatus?.updateAvailable,
+    backendUpdateStatus,
+    rollbackBody,
     backendUpdateApply.applying,
     backendUpdateApply.message,
     backendUpdateApply.stage,
@@ -566,6 +553,7 @@ export function useStatusbarItems({
         label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
+              changeWorkspaceItem,
               {
                 id: 'copy-workspace-path',
                 label: fileMenu.copyPath,
@@ -644,6 +632,7 @@ export function useStatusbarItems({
     [
       agentsOpen,
       botsShowing,
+      changeWorkspaceItem,
       commandCenterOpen,
       copy,
       currentCwd,

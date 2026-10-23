@@ -79,7 +79,7 @@ replaces the other browser tools when `browser.backend` is `browser-use`.
 ## Backends and providers inside tools/
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
-docker, ssh, modal, daytona, singularity; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
+docker, ssh, modal, daytona; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
 browser (`browser_tool_*.py`: cdp, cloud, install, lifecycle, session, real_profile, vision), MCP
 client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
 (`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
@@ -133,7 +133,7 @@ completion by default; with `delegation.independent_completions` it is split int
 task reports alone as it finishes. Units of one call share ONE pool slot (`slot_key` in
 `async_delegation._dispatch`) — never count units against capacity; the executor is sized by live UNITS
 and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
-no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`, `start_chat`; keeps `execute_code`) and
+no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,

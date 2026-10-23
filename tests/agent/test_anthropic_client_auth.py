@@ -79,3 +79,23 @@ def test_console_key_families_carry_x_api_key_without_claude_code_identity(monke
     assert (headers.get("x-api-key") == key) is (not oauth)
     assert ("claude-code-20250219" in headers.get("anthropic-beta", "")) is oauth
     assert ("claude-code/" in headers.get("user-agent", "")) is oauth
+
+
+@pytest.mark.parametrize(("base_url", "family", "expect"), [
+    ("https://api.anthropic.com", "usr01", "x-api-key"), ("https://api.anthropic.com", "api03", "x-api-key"),
+    ("https://api.anthropic.com", "oat01", "bearer"), ("https://gateway.invalid/anthropic", "usr01", "bearer"),
+    (None, "svc01", "x-api-key"),  # an empty base_url is the native default
+])
+def test_key_cmd_token_lands_in_the_header_its_family_needs(monkeypatch, base_url, family, expect):
+    """A key_cmd (callable) credential takes the per-request hook path: on the native host a Console key it
+    prints must go out as x-api-key like the static path; OAuth tokens and non-native gateways keep Bearer."""
+    pytest.importorskip("anthropic")
+    import httpx
+
+    monkeypatch.setattr("agent.anthropic_adapter._claude_code_version_cache", "0.0.0")
+    key = "sk-" + "ant-" + family + "-" + "X" * 24
+    client = build_anthropic_client(lambda: key, base_url)
+    request = httpx.Request("POST", (base_url or "https://api.anthropic.com") + "/v1/messages", headers={"Authorization": "Bearer entra-id-bearer-via-http-hook"})
+    client._client.event_hooks["request"][0](request)
+    sent = {"x-api-key": request.headers.get("x-api-key"), "bearer": request.headers.get("authorization")}
+    assert sent == ({"x-api-key": key, "bearer": None} if expect == "x-api-key" else {"x-api-key": None, "bearer": "Bearer " + key})

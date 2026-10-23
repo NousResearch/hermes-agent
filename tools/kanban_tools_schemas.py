@@ -47,17 +47,31 @@ def _schema(name: str, description: str, properties: dict[str, Any], required: l
 KANBAN_SHOW_SCHEMA = _schema(
     "kanban_show",
     (
-        "Read a task's full state — title, body, assignee, parent task "
-        "handoffs, your prior attempts on this task if any, comments, "
-        "and recent events. Use this to (re)orient yourself before "
-        "starting work, especially on retries. The response includes a "
-        "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning. Outside a dispatcher-spawned worker "
-        "there is no default task: a bare call returns a pointer to "
-        "``kanban_list`` instead of task state."
+        "Read a task's compact current state — complete body, current run, "
+        "latest comments and recent events. Default output is bounded; use "
+        "structural before_* cursors to page older records, or detail='full' "
+        "for the complete on-disk audit history."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "detail": {"type": "string", "enum": ["compact", "full"], "description": "Defaults to compact."},
+        "comment_limit": _prop("integer", "Compact-mode newest comments (1-20; default 5)."),
+        "run_limit": _prop("integer", "Compact-mode newest runs (1-20; default 5)."),
+        "event_limit": _prop("integer", "Compact-mode newest events (1-50; default 10)."),
+        "before_comment_id": _prop("integer", "Return comments structurally older than this id."),
+        "before_run_id": _prop("integer", "Return runs structurally older than this id."),
+        "before_event_id": _prop("integer", "Return events structurally older than this id."),
+    },
+    [],
+)
+
+KANBAN_SET_LIMITS_SCHEMA = _schema(
+    "kanban_set_limits",
+    "Set task-scoped retry and native iteration limits. Positive values are required; pass null to clear an override. Applies on the next dispatch.",
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "max_retries": {"type": ["integer", "null"], "description": "Failure count at which retries stop; positive, or null to clear."},
+        "max_iterations": {"type": ["integer", "null"], "description": "Native tool-loop cap; positive, or null to clear."},
     },
     [],
 )
@@ -197,6 +211,21 @@ KANBAN_BLOCK_SCHEMA = _schema(
                 "if no parent is open it is recorded as needs_input instead. "
                 "The others surface to a human. Omit only if none apply."
             ),
+        },
+        "input_request": {
+            "type": "object",
+            "description": (
+                "For a human decision with kind='needs_input', supply the concrete "
+                "question, established facts, and your recommendation. Omit for "
+                "other blocks; a reason alone remains a board note."
+            ),
+            "properties": {
+                "question": {"type": "string", "minLength": 1},
+                "facts": {"type": "string", "minLength": 1},
+                "recommendation": {"type": "string", "minLength": 1},
+            },
+            "required": ["question", "facts", "recommendation"],
+            "additionalProperties": False,
         },
     },
     ["reason"],
@@ -467,6 +496,14 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "Per-task runtime cap. When exceeded, the "
                 "dispatcher SIGTERMs the worker and re-queues the "
                 "task with outcome='timed_out'."
+        )),
+        "max_retries": _prop("integer", (
+                "Failure count at which retries stop. Must be positive; omit "
+                "to use the dispatcher default."
+        )),
+        "max_iterations": _prop("integer", (
+                "Native tool-loop cap for each worker turn. Must be positive; "
+                "with goal_mode, total calls are bounded by this times goal_max_turns."
         )),
         "initial_status": {
             "type": "string",

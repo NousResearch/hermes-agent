@@ -712,6 +712,12 @@ def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
     from utils import base_url_host_matches
 
     provider_lower = (provider or "").strip().lower()
+    # Recursive's `rec` engine (Flint) accepts exactly ONE reasoning key per message and 400s
+    # ("Use one reasoning field per message") when the usual local pair arrives. Its endpoint is
+    # loopback port 11500, and the `custom` provider row below would otherwise hand it both
+    # carriers, so this check runs first: send the de-facto standard only.
+    if _is_rec_endpoint(base_url):
+        return _DEFAULT_CARRIERS
     carriers = next(
         (c for c, providers, hosts in _REASONING_CARRIER_ROUTES
          if provider_lower in providers or any(base_url_host_matches(base_url, h) for h in hosts)),
@@ -724,6 +730,22 @@ def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
     if RD not in carriers and carriers and _profile_declares_native_details(provider_lower):
         carriers = carriers | {RD}
     return carriers
+
+
+def _is_rec_endpoint(base_url: Any) -> bool:
+    """True for the loopback endpoint served by Recursive's ``rec`` (default port 11500)."""
+    from urllib.parse import urlparse
+
+    raw = str(base_url or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    return port == 11500 and host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
 def _profile_declares_native_details(provider_lower: str) -> bool:
@@ -920,6 +942,17 @@ _NAMED_FIELD_RES = {
     R: re.compile(r"messages[^\n]{0,80}?(?<![\w])reasoning(?![\w])"),
 }
 
+# Some engines accept exactly one reasoning key per message and reject the *pair* rather than
+# naming a field (Recursive's ``rec``/Flint: "Use one reasoning field per message"). There is no
+# field to match by name, so the drop is fixed: keep ``reasoning_content`` (the de-facto
+# standard, and the one rec reads) and drop the aliases.
+_DUPLICATE_REASONING_PHRASES = (
+    "one reasoning field per message",
+    "only one reasoning field",
+    "multiple reasoning fields",
+    "duplicate reasoning field",
+)
+
 
 def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     """Reasoning keys to drop after an unknown-field rejection that names one this request carried.
@@ -930,12 +963,14 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
     """
     body = str(error_body or "").lower()
-    if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
-        return frozenset()
     sent = {
         key for msg in (sent_messages if isinstance(sent_messages, list) else ())
         if isinstance(msg, dict) and msg.get("role") == "assistant" for key in REASONING_CARRIERS if key in msg
     }
+    if any(phrase in body for phrase in _DUPLICATE_REASONING_PHRASES):
+        return frozenset(sent & {R, RD})
+    if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
+        return frozenset()
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
         return frozenset()

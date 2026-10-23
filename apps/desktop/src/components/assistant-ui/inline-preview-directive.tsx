@@ -2,8 +2,10 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { useComposerScope, useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
 import { isReadFileErrorResult, readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
@@ -368,6 +370,9 @@ function InlineHtmlFrame({
   streaming: boolean
 }) {
   const cwd = useStore(useSessionView().$cwd)
+  const { target } = useComposerScope()
+  const surfaceId = useComposerSurfaceId()
+  const paneVisible = usePaneVisible()
   const themeEpoch = useThemeEpoch()
   // vars/font/colorScheme come from one collectThemeBridge() call so they can
   // never disagree with each other, even while this lags a repaint behind
@@ -444,7 +449,7 @@ function InlineHtmlFrame({
           // but the row is typed hidden — no bubble, no UI space. The widget
           // updating IS the visible response. `false` means no visible
           // composer surface took it; the widget is told instead of assuming.
-          ack = requestComposerSubmit(decision.prompt, { target: 'active', displayKind: 'hidden' })
+          ack = paneVisible && requestComposerSubmit(decision.prompt, { target, surfaceId, displayKind: 'hidden' })
             ? { ok: true }
             : { error: 'undelivered', ok: false }
         }
@@ -487,7 +492,7 @@ function InlineHtmlFrame({
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [initialHeight, token])
+  }, [initialHeight, paneVisible, surfaceId, target, token])
 
   const { vars, font, colorScheme } = bridge
 

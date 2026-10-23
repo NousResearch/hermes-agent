@@ -121,6 +121,70 @@ describe('useProjectTree', () => {
     expect(result.current.data.map(node => node.name)).toEqual(['IDEA.md'])
   })
 
+  it('falls back to the server default cwd when a remote root rejects as 404', async () => {
+    // Remote listings run on the server's fs API, and a bot session records the
+    // server container's HERMES_HOME/workspace — a path that 404s on an ssh
+    // terminal backend, which the bridge surfaces as a rejected request. The
+    // server's default cwd (terminal.cwd → TERMINAL_CWD) is the same fallback
+    // the web dashboard opens (#136999).
+    const api = vi.fn(async (request: { path: string }) => {
+      if (request.path.startsWith('/api/fs/default-cwd')) {
+        return { branch: 'main', cwd: '/Volumes' }
+      }
+
+      if (request.path.startsWith('/api/fs/git-root')) {
+        return { root: null }
+      }
+
+      if (request.path.startsWith(`/api/fs/list?path=${encodeURIComponent('/opt/data/workspace')}`)) {
+        throw new Error('404: /opt/data/workspace does not exist on the terminal backend')
+      }
+
+      if (request.path.startsWith(`/api/fs/list?path=${encodeURIComponent('/Volumes')}`)) {
+        return ok([{ name: 'AIProjects', path: '/Volumes/AIProjects', isDirectory: true }])
+      }
+
+      throw new Error(`unexpected api path ${request.path}`)
+    })
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { api }
+    $connection.set({ mode: 'remote' } as never)
+
+    const { result } = renderHook(() => useProjectTree('/opt/data/workspace'))
+
+    await waitFor(() => expect(result.current.rootLoading).toBe(false))
+
+    expect(result.current.rootError).toBeNull()
+    expect(result.current.effectiveCwd).toBe('/Volumes')
+    expect(result.current.data.map(node => node.name)).toEqual(['AIProjects'])
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/fs/default-cwd' }))
+  })
+
+  it('keeps the remote error when the server default cwd is the failing root', async () => {
+    const api = vi.fn(async (request: { path: string }) => {
+      if (request.path.startsWith('/api/fs/default-cwd')) {
+        return { branch: '', cwd: '/opt/data/workspace' }
+      }
+
+      if (request.path.startsWith('/api/fs/list')) {
+        throw new Error('404: /opt/data/workspace does not exist on the terminal backend')
+      }
+
+      throw new Error(`unexpected api path ${request.path}`)
+    })
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { api }
+    $connection.set({ mode: 'remote' } as never)
+
+    const { result } = renderHook(() => useProjectTree('/opt/data/workspace'))
+
+    await waitFor(() => expect(result.current.rootLoading).toBe(false))
+
+    expect(result.current.rootError).toBe('404: /opt/data/workspace does not exist on the terminal backend')
+    expect(result.current.data).toEqual([])
+    expect(api).toHaveBeenCalledTimes(2)
+  })
+
   it('lazy-loads children on loadChildren and replaces the placeholder', async () => {
     readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
     readDir.mockResolvedValueOnce(

@@ -128,6 +128,7 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "meta-ai": "meta", "meta": "meta", "groq": "groq", "mistral": "mistral",
     "togetherai": "togetherai", "perplexity": "perplexity", "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
+    "oci": "oci",
 }
 # Reverse mapping: models.dev id → Hermes ids (built lazily; many-to-one).
 _MODELS_DEV_TO_PROVIDER: Optional[dict[str, list[str]]] = None

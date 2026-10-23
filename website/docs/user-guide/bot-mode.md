@@ -334,8 +334,11 @@ Keep its `room_link.catalog`; the home pins it, endpoint included.
      "home_install_id":"HOME_GATEWAY_ID","authority_gateway_id":"HOME_GATEWAY_ID","authority_epoch":1}}
    ```
 
-   `ttl_seconds` (60 to 86,400, default 3,600) is optional; the grant id and its status
-   lifetime are the member gateway's to choose.
+   `ttl_seconds` (60 to 86,400, default 3,600) is optional, and so is
+   `status_ttl_seconds`, the renewal horizon (from `ttl_seconds` up to 30 days, default
+   `ttl_seconds`; offered when `groups.capabilities` lists the `peer_renewal_horizon`
+   feature). The home renews the grant when it sends that member a turn near the end of
+   its `ttl_seconds`, never past the horizon. The grant id is the member gateway's to choose.
 3. **Register on the home** with the grant, the catalog and the catalog's own
    endpoint URL as `target_url`. The home sends the grant to no other URL. It probes
    the member gateway first and refuses a grant for another room, member, profile,
@@ -348,8 +351,10 @@ Keep its `room_link.catalog`; the home pins it, endpoint included.
      "grant":"GRANT","catalog":{"...":"the catalog from the member gateway"}}}
    ```
 
-To renew access, invite again and register the new grant: the route keeps its
-identity, so work already accepted stays the same run on the member gateway. The
+A member the home sends no turn within `ttl_seconds`, or one past its horizon, needs
+access again: its next turn fails, and `groups.state` reports its route as
+`needs_reauthorization` under `driver_status.peer_routes`. To renew access, invite
+again and register the new grant: the route keeps its identity, so work already accepted stays the same run on the member gateway. The
 earlier grant stays valid until it expires. `groups.peer.revoke` with a grant, on
 the member gateway, revokes that room member's access. Disbanding the room
 (`groups.disband`) ends it on the home even while a member gateway is down: the

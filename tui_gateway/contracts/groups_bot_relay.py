@@ -508,6 +508,7 @@ class GroupsPeerInviteParams(ProfileParams):
     member_id: str | None = None
     grant_id: str | None = None
     ttl_seconds: float | None = None
+    status_ttl_seconds: float | None = None
 
 
 class GroupsPeerInviteResult(Result):

@@ -285,6 +285,10 @@ export const itAssistant = {
           title: 'Questa chat appartiene a un’attività pianificata',
           body: 'Esegue solo quell’attività, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo.'
         },
+        workspace_unavailable: {
+          title: 'La cartella di questa chat non c’è più',
+          body: 'La cartella in cui lavora questa chat è stata spostata o eliminata, quindi il tuo messaggio non è stato eseguito. Ricrea la cartella, oppure usa «Sposta nel progetto» per assegnarne un’altra alla chat, poi riprova.'
+        },
         auth: {
           title: (provider: string) => `${provider} ha rifiutato il tuo accesso`,
           body: (provider: string) =>
@@ -421,6 +425,10 @@ export const itAssistant = {
         free_tier_refused: {
           title: 'Hermes non è riuscito a inviarlo senza accesso',
           body: 'Accedere con un account Nous è gratis.'
+        },
+        usage_window: {
+          title: 'Utilizzo incluso esaurito',
+          body: 'L’utilizzo incluso del tuo piano è esaurito fino al ripristino. Aggiungi crediti in /topup per continuare.'
         }
       },
       errorAuthKinds: {
@@ -444,6 +452,12 @@ export const itAssistant = {
       errorStartNewSession: 'Avvia una nuova sessione',
       errorSwitchProvider: 'Cambia provider',
       errorChooseModel: 'Scegli un modello',
+      errorSwitchToModel: (model: string, note?: string) => (note ? `Passa a ${model} (${note})` : `Passa a ${model}`),
+      errorSwitchModelFailed: 'Impossibile cambiare modello',
+      errorUseCredits: 'Attiva Continua con i crediti',
+      errorUseCreditsFailed: 'Impossibile attivare Continua con i crediti',
+      errorAddCredits: 'Aggiungi crediti',
+      errorOpenBillingSettings: 'Apri le impostazioni di fatturazione',
       errorCompressConversation: 'Comprimi conversazione',
       errorCompressFailed: 'Impossibile comprimere la conversazione',
       errorOpenHermesFolder: 'Apri la cartella di Hermes',

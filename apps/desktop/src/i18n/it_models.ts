@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { itDelegationRouting } from './it_delegation_routing'
 
 export const itSettingsModels = {
   settings: {
@@ -137,7 +138,8 @@ export const itSettingsModels = {
         parentModel: 'Usa il modello del genitore',
         parentModelWarning:
           'Il provider scelto deve supportare il modello del genitore. Una route solo-provider può fallire se il modello è incompatibile. Se quel provider imposta un proprio modello predefinito, i subagenti usano quello.',
-        providerLabel: 'Provider subagente'
+        providerLabel: 'Provider subagente',
+        routing: itDelegationRouting
       },
       tasks: {
         vision: {
@@ -420,6 +422,15 @@ export const itSettingsModels = {
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta?: string) =>
           `Passaggio a ${targetName}: entra in vigore ${effectiveAt}. Non viene addebitato nulla ora; mantieni il tuo piano attuale fino ad allora.${creditsDelta ? ` Variazione dei crediti mensili: ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Continua con i crediti',
+        description: 'Usa i tuoi crediti quando finisce l’utilizzo incluso. Disattivato: Hermes attende il ripristino.',
+        approveInBrowser: 'Per cambiare questa opzione, approva la Spesa remota nel browser. Si applica appena approvi.',
+        openAgain: 'Apri di nuovo',
+        cancel: 'Annulla',
+        approvedRetry: 'La Spesa remota è approvata, ma la modifica non è stata salvata.',
+        tryAgain: 'Riprova'
+      },
       autoReload: {
         threshold: 'Soglia',
         thresholdAria: 'Soglia di ricarica automatica',
@@ -499,6 +510,20 @@ export const itSettingsModels = {
             captionDefault: 'Limite predefinito',
             captionSpending: 'Spesa remota mensile',
             valueUsed: (spent: string, limit: string) => `${spent} su ${limit} utilizzati`
+          },
+          window: {
+            today: 'Oggi',
+            week: 'Questa settimana',
+            month: 'Questo mese',
+            topTier: 'Modelli Large (mensili)',
+            barLabel: (title: string) => `${title}: utilizzo incluso usato`,
+            captionPaused: 'In pausa: pagamento dell’abbonamento non riuscito',
+            captionPausedOther: 'In pausa: vedi Fatturazione nel portale',
+            captionTopTierUsedUp: 'Franchigia mensile esaurita, i crediti coprono il resto',
+            captionTopTierUsedUpKeepGoingOff: 'Franchigia mensile esaurita, gli altri modelli inclusi continuano a funzionare',
+            captionResetsIn: (duration: string) => `Si azzera tra ${duration}`,
+            captionIncluded: 'Utilizzo incluso',
+            valueUsed: (percent: string) => `${percent} utilizzato`
           }
         },
         planCard: {
@@ -813,7 +838,27 @@ export const itModelSections = {
     wasPrice: 'prima',
     customModel: 'Modello personalizzato',
     addCustomModelAction: 'Aggiungi modello personalizzato…',
-    customModelPlaceholder: 'Scrivi un ID modello, ad es. openai/gpt-5'
+    customModelPlaceholder: 'Scrivi un ID modello, ad es. openai/gpt-5',
+    today: 'Oggi',
+    week: 'Settimana',
+    month: 'Mese',
+    topTier: 'Modelli Large (mensili)',
+    included: 'Tutti i modelli qui sotto sono inclusi',
+    pausedRenewal: 'in pausa: rinnovo non pagato',
+    pausedOther: 'in pausa',
+    includedUsedUp: 'Utilizzo incluso esaurito',
+    limitReached: (name: string) => `Limite ${name} raggiunto`,
+    limitNames: { day: 'giornaliero', month: 'mensile', top_tier: 'mensile dei modelli Large', week: 'settimanale' },
+    limitThenCredits: 'i modelli a pagamento ora usano i tuoi crediti (a consumo)',
+    limitThenCreditsLarge: 'I modelli Large ora usano i tuoi crediti (a consumo)',
+    limitThenWait: 'solo modelli Free fino ad allora',
+    limitThenWaitLarge: 'Modelli Large in pausa fino ad allora',
+    percentUsed: (percent: string) => `${percent} utilizzato`,
+    resetsIn: (duration: string) => `si azzera tra ${duration}`,
+    usageLevels: { free: 'Gratis', top_tier: 'Large' },
+    sectionRecommended: 'Consigliati',
+    sectionOther: 'Altri modelli',
+    largeFootnote: 'I modelli Large usano anche il tuo limite mensile dei modelli Large.'
   },
   modelVisibility: {
     title: 'Modelli',

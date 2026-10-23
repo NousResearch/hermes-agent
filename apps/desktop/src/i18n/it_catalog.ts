@@ -31,6 +31,7 @@ export const itCatalog: CatalogTranslations = {
   featured: 'In evidenza',
   filters: 'Filtri',
   hooks: 'Hook',
+  install: 'Installa',
   installComplete: name => `“${name}” installato`,
   installDescription: 'Questa skill sarà disponibile nelle nuove sessioni. Installa solo da fonti affidabili.',
   installHint: 'Controlla il sorgente prima di installare. Le modifiche si applicano alle nuove sessioni.',

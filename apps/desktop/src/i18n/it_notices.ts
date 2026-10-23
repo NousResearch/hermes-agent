@@ -35,5 +35,12 @@ export const itNotices = {
     message:
       'Hermes può mantenere il computer sveglio mentre un’attività è in esecuzione. Lo schermo si spegne comunque, e a batteria il computer potrebbe comunque andare in riposo.',
     action: 'Tieni sveglio il computer mentre lavora'
+  },
+  connectorOffer: {
+    heading: 'Mantieni le app connesse',
+    body: 'Accedi con un account Nous gratuito per mantenere su tuo account le app che hai collegato, come Gmail o Slack.'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'connectorOffer'
+>

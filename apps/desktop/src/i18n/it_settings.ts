@@ -297,6 +297,9 @@ export const itSettings = {
       testSent:
         'Test inviato. Se non compare nulla, controlla i permessi di notifica del sistema operativo e la modalità Concentrazione o Non disturbare.',
       testUnsupported: 'Questo sistema non supporta le notifiche native.',
+      muteSoundsTitle: 'Silenzia i suoni dell’interfaccia',
+      muteSoundsDesc:
+        'Silenzia i segnali automatici di completamento, parola di attivazione e ragionamento, il feedback aptico e i suoni delle notifiche di sistema. Le anteprime dei suoni e le risposte parlate continuano a essere riprodotte.',
       completionSoundTitle: 'Suono di completamento',
       completionSoundDesc:
         'Riproduce un suono quando termina il turno di un agente. Scegli un’impostazione predefinita e provala qui.',
@@ -891,6 +894,8 @@ export const itSettings = {
         rollbackTitle: v => `Torna alla release stabile ${v}`,
         rollbackBody: v =>
           `Questa build è più recente della release stabile ${v}. Installarla riporta Hermes a quella release.`,
+        heldBody: (v: string) =>
+          `Questa build è più recente della release stabile ${v}. Le tue sessioni usano già un runtime del gateway che ${v} non può aprire, quindi Hermes resta su questa build finché non esce una release stabile più recente.`,
         rollbackAction: v => `Torna a ${v}`,
         stableConfirmTitle: 'Passare alle release stabili?',
         stableConfirmBody:

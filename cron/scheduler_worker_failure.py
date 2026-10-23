@@ -1,4 +1,5 @@
 """Job-level visibility for a recovered, acknowledged worker death."""
+import logging
 
 
 def observe_worker_execution(execution_id: str):
@@ -37,7 +38,7 @@ def preserve_adopted_worker_outcome(job, handoff_error, *, adapters=None, loop=N
         if record_unknown_worker_outcome(job, error=str(handoff_error), adapters=adapters, loop=loop):
             return
     except Exception:
-        logger.exception("Job '%s': unable to observe adopted worker outcome", job['id'])
+        logging.exception("Job '%s': unable to observe adopted worker outcome", job['id'])
     logger.error(
         "Job '%s': Restart-safe cron worker failed after handoff: %s; worker ownership preserved",
         job['id'], handoff_error,

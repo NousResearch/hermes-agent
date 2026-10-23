@@ -143,6 +143,7 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
     # Keep gating driven by config.extra, not ambient env.
     monkeypatch.delenv("SLACK_IGNORE_OTHER_USER_MENTIONS", raising=False)
+    monkeypatch.delenv("SLACK_MENTION_PATTERNS_ALLOW_SILENCE", raising=False)
     monkeypatch.delenv("SLACK_FREE_RESPONSE_CHANNELS", raising=False)
     monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
 
@@ -171,6 +172,124 @@ async def _run(adapter, event):
         adapter, "_has_active_session_for_thread", return_value=False
     ):
         await adapter._handle_slack_message(event)
+
+
+@pytest.mark.asyncio
+async def test_wake_only_mention_pattern_skips_thread_and_media_enrichment(adapter):
+    adapter.config.extra["mention_patterns"] = [f"<@{OTHER_USER_ID}>"]
+    adapter.config.extra["mention_patterns_allow_silence"] = True
+    event: dict = _event(
+        f"<@{OTHER_USER_ID}> please review",
+        ts="1700000000.000010",
+        thread_ts="1700000000.000001",
+    )
+    event["files"] = [{"id": "F_PRIVATE", "mimetype": "image/png"}]
+
+    with patch.object(adapter, "_apply_bot_mention", wraps=adapter._apply_bot_mention) as apply_mention, patch.object(
+        adapter, "_hydrate_thread_context", new=AsyncMock()
+    ) as hydrate, patch.object(
+        adapter, "_collect_inbound_media", new=AsyncMock()
+    ) as collect_media, patch.object(
+        adapter, "_build_message_event", new=AsyncMock()
+    ) as build_event:
+        await _run(adapter, event)
+
+    apply_mention.assert_not_called()
+    hydrate.assert_not_awaited()
+    collect_media.assert_not_awaited()
+    build_event.assert_not_awaited()
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event._suppress_unaddressed_reply is True
+    assert message_event.media_urls == []
+    assert message_event.channel_context is None
+    assert "1700000000.000001" not in adapter._mentioned_threads
+
+
+@pytest.mark.asyncio
+async def test_wake_only_mention_pattern_allows_silent_hook_owned_turn(adapter):
+    adapter.config.extra["mention_patterns"] = [f"<@{OTHER_USER_ID}>"]
+    adapter.config.extra["mention_patterns_allow_silence"] = True
+
+    await _run(
+        adapter,
+        _event(f"<@{OTHER_USER_ID}> please review", ts="1700000000.000002"),
+    )
+
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event.reply_expected is False
+    assert message_event._suppress_unaddressed_reply is True
+    assert "1700000000.000002" not in adapter._reacting_message_ids
+
+
+@pytest.mark.asyncio
+async def test_text_wake_pattern_allows_silent_hook_owned_turn(adapter):
+    adapter.config.extra["mention_patterns"] = [r"^hey hermes\b"]
+    adapter.config.extra["mention_patterns_allow_silence"] = True
+
+    await _run(
+        adapter,
+        _event("hey hermes check the deterministic hook", ts="1700000000.000006"),
+    )
+
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event.reply_expected is False
+
+
+@pytest.mark.asyncio
+async def test_wake_pattern_requires_reply_by_default(adapter):
+    adapter.config.extra["mention_patterns"] = [r"^hey hermes\b"]
+
+    await _run(
+        adapter,
+        _event("hey hermes answer normally", ts="1700000000.000007"),
+    )
+
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event.reply_expected is True
+
+
+@pytest.mark.asyncio
+async def test_wake_only_setting_preserves_direct_bot_reply_requirement(adapter):
+    adapter.config.extra["mention_patterns"] = [f"<@{OTHER_USER_ID}>"]
+    adapter.config.extra["mention_patterns_allow_silence"] = True
+
+    await _run(
+        adapter,
+        _event(f"<@{BOT_USER_ID}> please review", ts="1700000000.000005"),
+    )
+
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event.reply_expected is True
+
+
+@pytest.mark.asyncio
+async def test_wake_only_setting_preserves_pipe_form_bot_reply_requirement(adapter):
+    adapter.config.extra["mention_patterns"] = [r"hermes"]
+    adapter.config.extra["mention_patterns_allow_silence"] = True
+
+    await _run(
+        adapter,
+        _event(f"<@{BOT_USER_ID}|hermes> please review", ts="1700000000.000008"),
+    )
+
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event.reply_expected is True
+    assert message_event._suppress_unaddressed_reply is False
+    assert "1700000000.000008" in adapter._reacting_message_ids
+
+
+@pytest.mark.asyncio
+async def test_pipe_form_direct_bot_mention_routes_without_custom_pattern(adapter):
+    await _run(
+        adapter,
+        _event(f"<@{BOT_USER_ID}|hermes> answer normally", ts="1700000000.000009"),
+    )
+
+    message_event = adapter.handle_message.await_args.args[0]
+    assert message_event.reply_expected is True
+    assert message_event._suppress_unaddressed_reply is False
+    assert message_event.text == "answer normally"
+    assert "1700000000.000009" in adapter._reacting_message_ids
 
 
 @pytest.mark.asyncio
@@ -261,3 +380,40 @@ def test_ignore_other_user_mentions_env_wins_over_yaml(monkeypatch, tmp_path):
 
     import os as _os
     assert _os.environ["SLACK_IGNORE_OTHER_USER_MENTIONS"] == "false"
+
+
+def test_config_bridges_mention_patterns_allow_silence(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n  mention_patterns_allow_silence: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SLACK_MENTION_PATTERNS_ALLOW_SILENCE", raising=False)
+
+    config = load_gateway_config()
+
+    import os as _os
+    assert config.platforms[Platform.SLACK].extra["mention_patterns_allow_silence"] is True
+    assert _os.environ["SLACK_MENTION_PATTERNS_ALLOW_SILENCE"] == "true"
+
+
+def test_mention_patterns_allow_silence_env_wins_over_yaml(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n  mention_patterns_allow_silence: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_MENTION_PATTERNS_ALLOW_SILENCE", "false")
+
+    load_gateway_config()
+
+    import os as _os
+    assert _os.environ["SLACK_MENTION_PATTERNS_ALLOW_SILENCE"] == "false"

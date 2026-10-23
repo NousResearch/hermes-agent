@@ -97,6 +97,25 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.mark.asyncio
+    async def test_hook_only_wake_queues_without_busy_ack_or_interrupt(self):
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event("@teammate candidate")
+        event._suppress_unaddressed_reply = True
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert adapter._pending_messages[sk] is event
+        adapter._send_with_retry.assert_not_awaited()
+        agent.interrupt.assert_not_called()
+        agent.steer.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):

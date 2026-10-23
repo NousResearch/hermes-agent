@@ -4019,6 +4019,16 @@ class BasePlatformAdapter(ABC):
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
             return
+        # Hook-only wakes are a separate execution lane. Dispatch them inline before burst/session
+        # guards, busy/debounce queues, processing hooks, or typing status can observe the event.
+        # The gateway handler performs authorization and emits the deterministic hook, then exits.
+        if getattr(event, "_suppress_unaddressed_reply", False):
+            event._gateway_accepted = True
+            try:
+                await self._message_handler(event)
+            except Exception:
+                logger.error("[%s] Hook-only wake failed", self.name, exc_info=True)
+            return
         from gateway.session_ingress_burst import burst_gate
         behind_burst = await burst_gate(self, event, session_key)  # a serial reader's command waits too
         # On-entry self-heal: clear a guard whose owner task already exited.

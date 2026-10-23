@@ -158,6 +158,24 @@ async def test_real_user_event_gets_no_marker(monkeypatch, tmp_path):
     assert kwargs["persist_user_display_kind"] is None
 
 
+@pytest.mark.asyncio
+async def test_hook_only_wake_runs_hook_without_turn_or_post_hooks(monkeypatch, tmp_path):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._handle_message_with_agent = AsyncMock()
+    runner._run_post_turn_hooks = AsyncMock()
+    event = _event(internal=False, text="@teammate candidate")
+    event._suppress_unaddressed_reply = True
+    event.media_urls = ["/private/image.png"]
+    event.media_types = ["image/png"]
+
+    result = await runner._handle_message(event)
+
+    runner.hooks.emit.assert_awaited_once()
+    runner._handle_message_with_agent.assert_not_awaited()
+    runner._run_post_turn_hooks.assert_not_awaited()
+    assert result is None
+
+
 # ── 3: gateway-side fallback rows carry the marker for internal events ─────
 
 

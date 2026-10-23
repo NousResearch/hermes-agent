@@ -998,8 +998,15 @@ def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
     handler = _CRON_SUBCOMMANDS.get("list" if subcmd is None else subcmd)
-    if handler is not None:
+    if handler is None:
+        print(f"Unknown cron command: {subcmd}\n"
+              "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+        sys.exit(1)
+    try:
         return handler(args)
-    print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
-    sys.exit(1)
+    except RuntimeError as exc:
+        # load_jobs() refuses an unreadable or unparseable store on purpose (#6797: a corrupt
+        # jobs.json is never treated as empty). The refusal is the whole message; without this seam
+        # every verb showed it as the last line of a traceback (#136723).
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1

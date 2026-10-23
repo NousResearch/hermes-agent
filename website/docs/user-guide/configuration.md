@@ -2836,6 +2836,10 @@ web:
   provider_tier:
     parallel: free
     exa: paid
+
+  # Highest web_search depth the model may request (default: standard).
+  # quick | standard | deep. See the web search page for what each backend sends.
+  max_depth: standard
 ```
 
 | Backend | Env Var | Search | Extract |

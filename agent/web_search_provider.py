@@ -20,6 +20,9 @@ from typing import Any, Dict, List
 
 from agent.provider_base import ProviderBase
 
+# ``web_search(depth=...)`` values, cheapest first. "standard" is every provider's unchanged request.
+SEARCH_DEPTHS = ("quick", "standard", "deep")
+
 
 def get_provider_env(name: str) -> str:
     """Config-aware env lookup (``os.environ`` first, then ``~/.hermes/.env``) so
@@ -73,6 +76,13 @@ class WebSearchProvider(ProviderBase):
     def supports_search(self) -> bool:
         """True if this provider implements :meth:`search`."""
         return True
+
+    def supports_search_depth(self) -> bool:
+        """True when this call's :meth:`search` maps ``depth`` to a native vendor option. Only then
+        does the dispatcher pass ``depth="quick"`` / ``"deep"`` (as a keyword); a "standard" call,
+        and every call to a provider returning False, is ``search(query, limit)`` exactly as before.
+        Cheap, no network (a keyless route without a depth option returns False)."""
+        return False
 
     def is_keyless_available(self) -> bool:
         """True when this provider can serve calls WITHOUT credentials (public anonymous

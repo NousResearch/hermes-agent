@@ -4,6 +4,9 @@ Env: ``TAVILY_API_KEY`` (https://app.tavily.com/home, optional), ``TAVILY_BASE_U
 Keyed requests use ``Authorization: Bearer``; without a key the request is
 keyless (``X-Tavily-Access-Mode: keyless``). Tavily is NOT in the zero-config
 keyless ring — keyless access is opt-in by selecting Tavily in ``hermes tools``.
+
+``web_search(depth=...)``: quick sends ``search_depth: fast``, deep ``advanced`` (2 credits);
+standard sends none (Tavily's ``basic``). Keyless ``/search`` accepts the same parameters.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 _CLIENT_NAME = "hermes-agent"
 
 _SEARCH_PAYLOAD = {"include_raw_content": False, "include_images": False}
+_DEPTH_SEARCH_DEPTH = {"quick": "fast", "deep": "advanced"}  # web_search depth -> Tavily search_depth
 
 
 def _tavily_headers(api_key: str) -> dict[str, str]:
@@ -95,13 +99,18 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
     EXTRACT = True
     KEYLESS = True
 
-    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+    def supports_search_depth(self) -> bool:
+        return True
+
+    def search(self, query: str, limit: int = 5, depth: str = "standard") -> dict[str, Any]:
         def _body() -> dict[str, Any]:
             key, missing, prefix = _auth("search")
             if missing:
                 return search_fail(missing)
             logger.info("Tavily %ssearch: '%s' (limit=%d)", prefix, query, limit)
             payload = {"query": query, "max_results": min(limit, SEARCH_LIMIT_CAP), **_SEARCH_PAYLOAD}
+            if depth in _DEPTH_SEARCH_DEPTH:
+                payload["search_depth"] = _DEPTH_SEARCH_DEPTH[depth]
             return _normalize_tavily_search_results(_tavily_request("search", payload, api_key=key))
 
         return run_search("Tavily", logger, _body)

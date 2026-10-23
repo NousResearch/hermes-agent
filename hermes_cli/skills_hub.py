@@ -960,6 +960,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _skill_catalog
+    from hermes_cli.skills_remote import remote_skill_rows
     from agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
@@ -968,18 +969,23 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     builtin_names = set(_read_manifest())
     # Rows are what skill_view loads: shadowed copies hidden, same-tier duplicates under their exact path.
     all_skills = [{**s, "name": s["load_name"]} for s in _skill_catalog(skip_disabled=True) if s["load_name"]]
+    all_skills.extend(remote_skill_rows())
     root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
                    title="Installed Skills" + (" (enabled only)" if enabled_only else ""))
 
-    counts = {"hub": 0, "builtin": 0, "local": 0}
+    counts = {"hub": 0, "builtin": 0, "local": 0, "mcp": 0}
     enabled_count = disabled_count = 0
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
         hub_entry = hub_installed.get(name)
-        if hub_entry:
+        if skill.get("remote"):
+            # Not a trust level: the server's `trust` gates its *tools*, and says nothing
+            # about loading one of its skills. The enable/disable list is what does.
+            source_type, source_display, trust = "mcp", f"mcp/{skill['server']}", "—"
+        elif hub_entry:
             source_type, source_display = "hub", hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
         else:
@@ -1001,8 +1007,9 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     c.print(table)
     tail = (f"{enabled_count} enabled shown" if enabled_only
             else f"{enabled_count} enabled, {disabled_count} disabled")
+    remote_part = f", {counts['mcp']} remote" if counts["mcp"] else ""
     c.print(f"[dim]{counts['hub']} hub-installed, {counts['builtin']} builtin, "
-            f"{counts['local']} local — {tail}[/]\n")
+            f"{counts['local']} local{remote_part} — {tail}[/]\n")
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:

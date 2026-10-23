@@ -765,6 +765,27 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
             forget(name)
 
 
+def _remote_mutation_guard(name: str | None, operations=None) -> str | None:
+    """Refuse mutations of remote (MCP) skills — they are read-only here.
+
+    A remote skill lives on the server that publishes it; writing it locally would
+    either shadow it with a profile copy that the remote catalog keeps winning
+    against, or report success having changed nothing. Cheap on the common path: a
+    name without the ``server::`` spelling returns before any lookup.
+    """
+    try:
+        from tools.skills_tool_mcp import mutation_target_is_remote, mutation_unsupported
+    except ImportError:  # the MCP skills path is optional; its absence is not a mutation error
+        return None
+    candidates = [name]
+    if isinstance(operations, list):
+        candidates.extend(op.get("name") for op in operations if isinstance(op, dict))
+    for candidate in candidates:
+        if candidate and "::" in str(candidate) and mutation_target_is_remote(str(candidate)):
+            return mutation_unsupported(str(candidate))
+    return None
+
+
 def skill_manage(
     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
@@ -772,6 +793,8 @@ def skill_manage(
     session_id: str | None = None, operations=None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
+    if (remote_err := _remote_mutation_guard(name, operations)) is not None:
+        return remote_err
     if operations is not None:
         return _skill_manage_batch(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)

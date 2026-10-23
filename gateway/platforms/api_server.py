@@ -147,6 +147,7 @@ from gateway.platforms.base import (
     validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.platforms.api_server_response_store import ResponseStore
+from gateway.platforms.api_server_session_events import _SessionEventQueue
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
@@ -1016,66 +1017,6 @@ class _ProviderAuthResolutionError(RuntimeError):
         label = t("platform.api_server.provider_rate_limited" if self.is_rate_limited()
                   else "platform.api_server.provider_auth_failed")
         return t("platform.api_server.provider_error_line", label=label, error=self)
-
-
-class _SessionEventQueue:
-    """Ordered SSE event queue for one /api/sessions/{id}/chat/stream run. ``payload`` stamps
-    session_id/run_id/seq/ts; ``enqueue`` is executor-thread safe (hops onto the owning loop)."""
-
-    def __init__(self, session_id: str, run_id: str):
-        self.loop = asyncio.get_running_loop()
-        self.queue: asyncio.Queue[Optional[tuple[str, dict[str, Any]]]] = asyncio.Queue()
-        self.session_id = session_id
-        self.run_id = run_id
-        self.seq = 0
-        # Cross-thread puts handed to the loop and not yet applied. The loop does not order them
-        # against the worker future's completion, so the turn's terminal frames wait on flush().
-        self._inflight = 0
-        self._inflight_lock = threading.Lock()
-
-    def payload(self, name: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        self.seq += 1
-        payload.setdefault("session_id", self.session_id)
-        payload.setdefault("run_id", self.run_id)
-        payload.setdefault("seq", self.seq)
-        payload.setdefault("ts", time.time())
-        return name, payload
-
-    def enqueue(self, name: str, payload: dict[str, Any]) -> None:
-        event = self.payload(name, payload)
-        try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
-        if running_loop is self.loop:
-            self.queue.put_nowait(event)
-            return
-        with self._inflight_lock:
-            self._inflight += 1
-
-        def _apply() -> None:
-            try:
-                self.queue.put_nowait(event)
-            finally:
-                self._settle_one()
-        try:
-            self.loop.call_soon_threadsafe(_apply)
-        except RuntimeError:  # loop closed: the stream is gone, nothing left to deliver to
-            self._settle_one()
-
-    def _settle_one(self) -> None:
-        with self._inflight_lock:
-            self._inflight -= 1
-
-    async def flush(self) -> None:
-        """Wait until every event a worker thread enqueued has reached the queue. Call it before
-        the terminal frames: a commentary/delta/approval handed over before the worker returned
-        otherwise lands after ``done``/``None`` and the reader never sees it."""
-        while True:
-            with self._inflight_lock:
-                if not self._inflight:
-                    return
-            await asyncio.sleep(0)
 
 
 def _room_grant_delegate(name: str):
@@ -3609,7 +3550,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if delta:
                 events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
+        def _reasoning(text: str) -> None:
+            # The same ``tool.progress``/``_thinking`` wire event this surface already emitted —
+            # only the source changes, from the answer echo to the model's real reasoning deltas.
+            if text:
+                events.enqueue("tool.progress", {"message_id": message_id, "tool_name": "_thinking", "delta": text})
+
         def _tool_progress(event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs) -> None:
+            # ``reasoning.available`` stays mapped for any other producer (a subagent's relay);
+            # the top-level agent's reasoning now arrives through ``_reasoning`` instead.
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
@@ -3639,7 +3588,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
+                    tool_progress_callback=_tool_progress, reasoning_callback=_reasoning,
+                    interim_assistant_callback=_commentary,
                     active_run_id=run_id, approval_notify_callback=approval_notify,
                     approval_session_key=run_id, **ctx["run_kwargs"])
                 await events.flush()

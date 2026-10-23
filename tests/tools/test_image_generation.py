@@ -170,6 +170,19 @@ class TestSupportsFilter:
             assert not unsupported, \
                 f"{mid} payload has unsupported keys: {unsupported}"
 
+    def test_nano_banana_21_payloads_stay_inside_the_vendor_schema(self, image_tool):
+        """Nano Banana 2.1 sends only keys fal's OpenAPI declares for google/nano-banana-2.1(/edit),
+        keeps the 1K tier (token billing makes 4K ~3x the cost) and routes edits to its own endpoint."""
+        declared = {"prompt", "aspect_ratio", "num_images", "output_format", "safety_tolerance", "seed", "sync_mode",
+                    "system_prompt", "resolution", "enable_web_search", "limit_generations", "thinking_level"}
+        mid = "google/nano-banana-2.1"
+        t2i = image_tool._build_fal_payload(mid, "p", "portrait", seed=7)
+        edit = image_tool._build_fal_edit_payload(mid, "p", ["https://x/a.png"], "portrait")
+        assert set(t2i) <= declared and set(edit) <= declared | {"image_urls"}, (t2i, edit)
+        assert t2i["aspect_ratio"] == "9:16" and t2i["resolution"] == "1K" and t2i["seed"] == 7
+        assert edit["image_urls"] == ["https://x/a.png"]
+        assert image_tool.FAL_MODELS[mid]["edit_endpoint"] == "google/nano-banana-2.1/edit"
+
 
 
 

@@ -47,6 +47,19 @@ export function mediaKind(path: string): MediaKind {
   return mediaInfo(path)?.kind ?? 'file'
 }
 
+/**
+ * Is this path playable as AUDIO?
+ *
+ * Deliberately derived from the same table `mediaKind()` reads: the preview
+ * rail refusing a `.wav` the chat transcript can play (or playing a video
+ * container in the audio branch) is the bug class this predicate exists to
+ * prevent. Video answers `false` — it shares the media pipeline but not the
+ * player affordances.
+ */
+export function isAudioFilePath(path: string): boolean {
+  return mediaKind(path) === 'audio'
+}
+
 // Markdown is renderable content, not an opaque download: the preview rail
 // already knows how to render a `.md` file (rendered/source toggle), so the
 // MEDIA delivery path routes these to a preview instead of a download link.

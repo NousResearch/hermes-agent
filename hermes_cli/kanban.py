@@ -945,6 +945,10 @@ def _cmd_complete(args: argparse.Namespace) -> int:
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
+    from hermes_cli.kanban_db_controls import CONTROL_FIELDS, cli_edit_controls
+
+    if any(hasattr(args, field) for field in CONTROL_FIELDS):
+        return cli_edit_controls(args)
     result = getattr(args, "result", None)
     raw_metadata = getattr(args, "metadata", None)
     summary = getattr(args, "summary", None)

@@ -825,9 +825,35 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _worktrees_dir_repo(path: Path) -> Optional[Path]:
+    """Repo root owning *path* when it sits under ``<repo>/.worktrees``.
+
+    The legacy layout. A path under the pool (``<repo>/.treehouse/...``) is
+    handled by :func:`kanban_treehouse.pool_repo_root` instead.
+    """
+    resolved = Path(path).expanduser().resolve(strict=False)
+    for parent in resolved.parents:
+        if parent.name == ".worktrees":
+            return parent.parent
+    return None
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    """Materialize ``target`` as a linked git worktree under ``repo_root``.
+
+    Refuses a legacy ``<repo>/.worktrees`` target when the repo has adopted a
+    treehouse pool: the pool is the only worktree provider for a pool-enabled
+    repo, and materializing the legacy path beside it is the split-brain
+    regrowth this guard exists to stop.
+    """
     target = target.expanduser()
+    legacy_repo = _worktrees_dir_repo(target)
+    if legacy_repo is not None and _kbth.read_pool_config(legacy_repo) is not None:
+        raise TreehouseRequired(
+            f"kanban: {legacy_repo} has a {_kbth.CONFIG_FILENAME} pool; refusing to "
+            f"create the legacy worktree {target}. Worktrees are acquired "
+            f"exclusively through treehouse."
+        )
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
         return
@@ -876,6 +902,12 @@ def _pool_repo_for_task(
         pool_repo = _kbth.pool_repo_root(requested)
         if pool_repo is not None:
             return pool_repo
+        # A card created before its repo adopted the pool still carries a
+        # legacy <repo>/.worktrees/<task-id> path; the pool owns that card's
+        # workspace now, so the pre-claim cap probe must see it.
+        legacy_repo = _worktrees_dir_repo(requested)
+        if legacy_repo is not None:
+            return legacy_repo
         if not requested.is_absolute():
             return None
         repo_root = _git_toplevel(requested)
@@ -914,11 +946,21 @@ def pool_exhaustion_reason(
 
 
 def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> tuple[Path, str]:
-    """Resolve + materialize a linked git worktree for ``task``. With no
-    ``task.workspace_path`` the anchor is the board's ``default_workdir`` so
-    every worktree lands under a board-owned repo (``<repo>/.worktrees/<id>``)
+    """Resolve + materialize a linked git worktree for ``task``.
+
+    With no ``task.workspace_path`` the anchor is the board's
+    ``default_workdir`` so every worktree lands under a board-owned repo
     instead of the dispatcher's incidental CWD (whatever dir the gateway was
-    launched from); with no anchor configured we fail loudly rather than guess."""
+    launched from); with no anchor configured we fail loudly rather than guess.
+
+    Acquisition is exclusive through the repo's treehouse pool when the repo
+    carries a ``treehouse.toml``. That includes a card whose recorded path is
+    the legacy ``<repo>/.worktrees/<task-id>`` layout: it is moved onto a pool
+    lease rather than recreated, so a pool-enabled repo can never run on two
+    worktree systems at once. A repo without a pool keeps the legacy
+    ``git worktree add`` path (single system, no split brain) and the reason
+    is logged.
+    """
     branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
     if not task.workspace_path:
         board_slug = board if board else _kb.get_current_board()
@@ -974,6 +1016,23 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         )
         return lease.path, branch_name
 
+    legacy_repo = _worktrees_dir_repo(requested_resolved)
+    if legacy_repo is not None:
+        # A card that predates its repo's treehouse pool carries the legacy
+        # <repo>/.worktrees/<task-id> path. Recreating it would put the repo
+        # back on two worktree systems at once (the split-brain regrowth);
+        # route the card to the pool instead.
+        legacy_pool = _kbth.read_pool_config(legacy_repo)
+        if legacy_pool is not None:
+            lease = _kbth.resolve_pool_workspace(
+                legacy_pool, task.id, branch_name, preferred_path=requested_resolved,
+            )
+            _kb._log.info(
+                "kanban: %s carries the legacy workspace %s; moved to treehouse slot %s",
+                task.id, requested_resolved, lease.path,
+            )
+            return lease.path, branch_name
+
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
@@ -1013,8 +1072,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     dispatcher and every profile worker. ``dir``: ``workspace_path``, created
     if missing; MUST be absolute (relative paths would resolve against the
     dispatcher's CWD — confused-deputy traversal). ``worktree``: a linked git
-    worktree; a repo-root ``workspace_path`` anchors ``<repo>/.worktrees/<id>``,
-    a concrete path is created/reused, none -> the board's ``default_workdir``
+    worktree via the repo's treehouse pool when it has one, else the legacy
+    ``<repo>/.worktrees/<id>`` layout; a concrete path is created/reused, none
+    -> the board's ``default_workdir``
     (raises if unset rather than guessing). Persist via ``set_workspace_path``.
     """
     kind = task.workspace_kind or "scratch"

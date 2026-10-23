@@ -353,6 +353,50 @@ def test_resolver_raises_for_a_repo_without_config(
     assert "exclusively through treehouse" in str(exc_info.value)
 
 
+def test_resolver_moves_a_legacy_worktree_path_onto_the_pool(kanban_home, tmp_path):
+    """A card carrying the legacy ``.worktrees/<id>`` path in a pool-enabled
+    repo is re-leased onto the pool; the legacy directory is never recreated."""
+    repo = _make_repo(tmp_path)
+    _write_config(repo)
+    legacy = repo / ".worktrees"
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="pre-pool card", workspace_kind="worktree",
+            workspace_path=str(legacy / "t_prepool"),
+            branch_name="wt/t_prepool",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+
+    workspace, branch = kbw._resolve_worktree_workspace(task)
+
+    assert repo / kbth.POOL_DIRNAME in workspace.parents
+    assert branch == "wt/t_prepool"
+    assert not (legacy / "t_prepool").exists()
+
+
+def test_legacy_worktree_creation_is_refused_for_a_pool_enabled_repo(tmp_path):
+    """The raw creation helper refuses the legacy layout once a pool exists."""
+    repo = _make_repo(tmp_path)
+    _write_config(repo)
+
+    with pytest.raises(kbth.TreehouseRequired) as exc_info:
+        kbw._ensure_git_worktree(repo, repo / ".worktrees" / "t_legacy", "wt/t_legacy")
+
+    assert "refusing to create the legacy worktree" in str(exc_info.value)
+    assert not (repo / ".worktrees" / "t_legacy").exists()
+
+
+def test_legacy_worktree_creation_still_works_without_a_pool(tmp_path):
+    """A repo with no treehouse.toml keeps its single (legacy) worktree system."""
+    repo = _make_repo(tmp_path)
+    target = repo / ".worktrees" / "t_legacy"
+
+    kbw._ensure_git_worktree(repo, target, "wt/t_legacy")
+
+    assert (target / "a.txt").exists()
+
+
 @pytest.mark.skipif(
     kbth.treehouse_binary() is None, reason="treehouse CLI is not installed"
 )

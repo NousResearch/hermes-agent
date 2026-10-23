@@ -15,7 +15,6 @@ export interface AuxTaskMeta {
 export const BUILTIN_AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: "vision", label: "Vision", hint: "Image analysis" },
   { key: "compression", label: "Compression", hint: "Context compaction" },
-  { key: "skills_hub", label: "Skills Hub", hint: "Skill search" },
   { key: "approval", label: "Approval", hint: "Smart auto-approve" },
   { key: "mcp", label: "MCP", hint: "MCP tool routing" },
   { key: "title_generation", label: "Title Gen", hint: "Session titles" },

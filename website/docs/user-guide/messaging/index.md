@@ -154,7 +154,7 @@ user: next message
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
-On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel; other platforms always get the notice.
+On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not expecting a reply. Slack reports this for messages that open by @mentioning someone else, for unmentioned top-level messages that start a new thread in a free-response channel, and for a reaction on the bot's own message under `reaction_triggers: true` (an allowlisted emoji or a reaction routed to `reaction_trigger_target` still gets the notice). Feishu reactions and Photon tapbacks are feedback on the bot's own messages and may stay silent too. Every other message from a person gets the notice.
 
 ## Quick Setup
 

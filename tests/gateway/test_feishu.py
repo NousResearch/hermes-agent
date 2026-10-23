@@ -537,6 +537,21 @@ class TestAdapterBehavior(unittest.TestCase):
         )
         adapter._handle_message_with_guards.assert_not_awaited()
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_reaction_on_own_message_routes_as_feedback_that_may_stay_silent(self):
+        adapter = self._build_reaction_adapter(msg_sender_id="cli_self_app")
+        event = SimpleNamespace(
+            message_id="om_own_msg",
+            user_id=SimpleNamespace(open_id="ou_human", user_id=None, union_id=None),
+            reaction_type=SimpleNamespace(emoji_type="THUMBSUP"),
+        )
+        asyncio.run(
+            adapter._handle_reaction_event("im.message.reaction.created_v1", SimpleNamespace(event=event))
+        )
+        routed = adapter._handle_message_with_guards.await_args.args[0]
+        assert routed.text == "reaction:added:THUMBSUP"
+        assert routed.reply_expected is False
+
     def test_per_group_allowlist_policy_gates_by_sender(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

@@ -34,6 +34,7 @@ import {
   host,
   Input,
   isSubmitEnter,
+  KanbanCardBadges,
   Loader,
   SearchField,
   Select,
@@ -304,6 +305,7 @@ function Card({
           {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
+          <KanbanCardBadges card={task} />
           <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
             {task.title || task.id}
           </span>

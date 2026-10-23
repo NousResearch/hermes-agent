@@ -239,6 +239,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
+| Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
@@ -758,6 +759,88 @@ by a `MutationObserver` that located the rows in the menu's DOM and wrote mask
 images onto them. The same marks come from `decorate({ provider })` returning
 `{ icon: <img alt="" src={providerSvgDataUrl(provider)} /> }` — no DOM reads,
 and the row keeps working when the menu's markup changes.
+
+#### Kanban card badges {#kanban-card-badges}
+
+`KANBAN_CARD_AREAS.badges` puts small text labels on Kanban card tiles: a
+tenant, a CI state, an estimate. A contribution supplies `decorate(card)`; the
+board paints what it returns as chips in a fixed row above the card's title.
+The card's markup, layout, drag and drop, click and context menu stay the
+board's, and the row takes no space on cards no plugin has a badge for.
+
+```ts
+import {
+  KANBAN_CARD_AREAS,
+  KANBAN_CARD_BADGE_HUES,
+  type KanbanCardBadgeContribution
+} from '@hermes/plugin-sdk'
+
+interface KanbanCard {            // frozen; identity and routing fields only
+  id: string                      // task id (t_…): key your own per-card data by it
+  status: string                  // the column: 'triage', 'ready', 'running', …
+  tenant: string | null
+  assignee: string | null
+}
+interface KanbanCardBadge {
+  label: string                   // plain text
+  tone?: KanbanCardBadgeTone      // 'neutral' (default) or one of KANBAN_CARD_BADGE_HUES
+  tooltip?: string                // plain text hover line
+}
+
+ctx.register({
+  area: KANBAN_CARD_AREAS.badges,
+  id: 'tenant',
+  data: {
+    decorate: ({ tenant }) =>
+      tenant ? { label: tenant, tone: KANBAN_CARD_BADGE_HUES[hash(tenant) % 12], tooltip: `Tenant: ${tenant}` } : null
+  } satisfies KanbanCardBadgeContribution
+})
+```
+
+`decorate` may return one badge, an array, or `null` for cards it has nothing
+to say about. The card view carries no prose (title, body, summaries,
+comments, run output); look up anything else you need by `id` in your own data
+(`ctx.rest` to your backend, `ctx.storage`).
+
+**What the board accepts** (`KANBAN_CARD_BADGE_LIMITS`):
+
+- **Text only.** `label` and `tooltip` must be strings and render as text, never
+  markup. Control characters, bidi overrides and zero-width characters are
+  removed, whitespace is collapsed, and text past 24 characters (`label`) or
+  160 characters (`tooltip`) is shortened with an ellipsis. An empty or
+  non-string label is ignored. Any other field (`render`, `html`, a style) is
+  ignored.
+- **A fixed palette.** `tone` is `'neutral'` or one of the twelve
+  `KANBAN_CARD_BADGE_HUES` (`'red'`, `'orange'`, … `'pink'`, the app's identity
+  hues in hue order, the same set as `PROFILE_SWATCHES`). Anything else paints
+  neutral. The board picks the actual colors for the theme.
+- **Two badges per plugin per card**, counted across all of the plugin's
+  contributions to this area. Extra badges are dropped.
+- **Attribution.** Every badge's tooltip ends with the plugin's name, so a user
+  can always tell which plugin painted it.
+
+**Arbitration.** Every plugin's badges show side by side; no plugin can hide,
+reorder or restyle another's. The row is ordered by plugin id, then
+contribution id, then the order `decorate` returned them. A contribution's
+`order` field is ignored here, so load order and bidding cannot move a badge.
+A decorator that **throws** contributes nothing (logged once) and the rest of
+the row still paints.
+
+**Updates and teardown.** `decorate()` re-runs when the registry changes or
+when the card's id, status, tenant or assignee changes, so keep it a pure
+lookup. When your own data changes (a user pins a new color in your settings
+page), call `ctx.register` again with the same `id`: the new registration
+replaces the old one and the board repaints. Keep the latest disposer; the
+first one would remove the replacement. On disable, reload or unload, the
+host removes the contribution and the cards repaint without its badges;
+nothing to undo in `ctx.onDispose`.
+
+**Migrating a DOM-decorating plugin** (kanban-tenant-labels): delete the route
+poll, the `MutationObserver`, the tile matching, the inserted `<span>` and the
+reads of the Kanban plugin's query cache. The whole decoration becomes the
+`ctx.register` call above, with the plugin's color pins mapped to
+`KANBAN_CARD_BADGE_HUES` (its twelve hues are the same `hsl(n×30 68% 58%)`
+set, in the same order).
 
 ### Appearance settings
 
@@ -2033,8 +2116,8 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

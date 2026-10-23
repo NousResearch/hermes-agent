@@ -89,6 +89,12 @@ Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
 visible metadata; passwords and card values never leave the vault except into
 the page.
 
+A login can also be bound to a browser extension's own page, such as a
+password-manager extension's unlock screen: save it with the exact
+`chrome-extension://<id>` origin (the 32-letter ID shown on
+`chrome://extensions`). It fills only on that extension's tabs; the agent's
+search for an open sign-in tab still looks at web pages only.
+
 ## Headless sessions
 
 Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a

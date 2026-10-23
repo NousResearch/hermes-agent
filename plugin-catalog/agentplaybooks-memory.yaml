@@ -2,12 +2,7 @@ name: agentplaybooks-memory
 repo: https://github.com/matebenyovszky/agentplaybooks
 sha: f31e9c3af6520cebda1c0712447b4b487ffc12a7
 subdir: packages/hermes-memory/agentplaybooks
-description: >-
-  Private AgentPlaybooks memory for Hermes: bounded keyword recall across personal and team sources,
-  exact native memory-write mirroring, archive and history. Disclosure — keywords derived from each
-  turn's query are sent to the configured AgentPlaybooks service for recall; explicit native memory
-  writes are mirrored there. Defaults to agentplaybooks.ai over HTTPS. Localhost HTTP is supported;
-  remote intranet HTTP requires explicit opt-in. Team/shared playbooks are configured explicitly.
+description: "Private AgentPlaybooks memory for Hermes: bounded keyword recall across personal and team sources, exact native memory-write mirroring, archive and history. Disclosure — keywords derived from each turn's query are sent to the configured AgentPlaybooks service for recall from your personal and configured team playbooks; explicit native memory writes are mirrored there. Defaults to agentplaybooks.ai over HTTPS; localhost HTTP is supported, and remote intranet HTTP requires an explicit opt-in that sends the API key unencrypted. Team and shared playbooks are configured explicitly: the agent can write, archive and permanently delete entries in configured team playbooks (shared playbooks are read-only), and teammates' entries are recalled into context."
 maintainer: matebenyovszky
 tier: community
 category: memory

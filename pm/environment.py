@@ -49,6 +49,21 @@ _RESOLVER_MARKERS = (
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
 
+# uv is a Rust binary, so a build compiled against a newer x86-64 baseline dies with
+# EXCEPTION_ILLEGAL_INSTRUCTION (0xC000001D) on CPUs that lack those instructions.
+# Windows reports it as the signed NTSTATUS or as its unsigned 32-bit spelling
+# depending on the caller, and the crash leaves no output to match on -- so this is
+# the one classification keyed on the exit code alone.
+_ILLEGAL_INSTRUCTION_CODES = (-1073741795, 3221225501)
+
+# Every install step (venv, resolve, `uv pip install`, `uv pip check`, export) shells
+# out to that same binary, so there is no in-place "retry with pip" — the remedy names
+# the real constraint instead of showing a bare NTSTATUS.
+UV_UNSUPPORTED_CPU_REMEDY = (
+    "the pinned uv build needs a CPU instruction set this machine does not provide; "
+    "install on a CPU that supports it and attach the CPU model to the issue"
+)
+
 # The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
 # cannot date the file. uv words it as "no solution", but the index is at fault,
 # not the requested set, so it must never read as a dependency conflict (#135589).
@@ -78,6 +93,10 @@ class BuildFailure(InstallError):
     """A package's build backend ran and failed."""
 
 
+class UvUnsupportedCpu(InstallError):
+    """The pinned uv binary cannot execute on this CPU at all."""
+
+
 def _is_bytecode_compile_failure(result: subprocess.CompletedProcess) -> bool:
     """True when uv failed in the optional bytecode-compile step, not the install.
 
@@ -100,6 +119,12 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     with the tail of the output.
     """
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
+    if returncode in _ILLEGAL_INSTRUCTION_CODES:
+        return UvUnsupportedCpu(
+            "venv",
+            f"uv {stage} crashed with EXCEPTION_ILLEGAL_INSTRUCTION (0xC000001D, exit {returncode})",
+            UV_UNSUPPORTED_CPU_REMEDY,
+        )
     lowered = output.lower()
     if _UNDATED_PIN in lowered or all(marker in lowered for marker in _UNDATED_FILE):
         return InstallError("venv", cause, UNDATED_INDEX_HINT)
@@ -376,6 +401,9 @@ class PythonEnvironment:
             cwd=self.destination.parent, timeout=120,
         )
         if result.returncode:
+            failure = classify_uv_failure("venv", result.returncode, result.stderr or result.stdout)
+            if isinstance(failure, UvUnsupportedCpu):
+                raise failure
             raise InstallError("venv", f"uv venv failed: {result.stderr[-600:]}")
 
     def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800) -> None:

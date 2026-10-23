@@ -504,12 +504,16 @@ class CLIChatTurnMixin:
         from hermes_cli.gateway_chat_view import lost_admission
         from hermes_cli.gateway_client import GatewayClientError
         from hermes_cli.gateway_side import connection_for
+        admission_id = cmd_original.partition(" ")[2].strip()
+        if not admission_id:
+            _cprint("  Usage: /discard <admission_id>")
+            return
         connection = connection_for(self)
         if connection is None:
             _cprint("  /discard: no gateway session is open")
             return
         try:
-            lost = lost_admission(connection.reattach(self.session_id), cmd_original.partition(" ")[2].strip())
+            lost = lost_admission(connection.reattach(self.session_id), admission_id)
             connection.call("prompt.resolve_unknown", session_id=self.session_id,
                             admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
             connection.reattach(self.session_id)  # the cached pending list the next prompt checks

@@ -723,14 +723,17 @@ class CLIInfoMixin:
         """
         from cli import datetime, format_duration_compact
 
-        def _credits_or(fallback: str) -> None:
+        def _credits_or(fallback: str | None = None) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
             # plus on-disk credentials, so they render without a live agent too (#42904).
             shown = self._print_account_limits()
             if self._print_nous_credits_block():
                 self._print_usage_cta()
-            elif not shown:
+            elif not shown and fallback is not None:
                 print(fallback)
+            # Plugin section last, on every path: a plugin's quota block is agent-independent,
+            # exactly like account limits.
+            self._print_usage_extra()
 
         if not self.agent:
             _credits_or(t("cli.shared.no_active_agent"))
@@ -782,10 +785,7 @@ class CLIInfoMixin:
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
         print(f"  {t('cli.usage.label_compressions'):<17} {compressor.compression_count}")
 
-        self._print_account_limits()
-
-        if self._print_nous_credits_block():
-            self._print_usage_cta()
+        _credits_or()
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -793,6 +793,27 @@ class CLIInfoMixin:
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
             logging.getLogger().setLevel(logging.INFO)
+
+    def _print_usage_extra(self) -> None:
+        """Plugin-contributed `/usage` section (``transform_render`` with ``section="usage"``):
+        printed after the account/credits blocks on every path, agent or not. Fail-open — a
+        broken plugin can never abort `/usage`."""
+        try:
+            from hermes_cli.lifecycle import collect_render_blocks
+
+            agent = self.agent
+            text = collect_render_blocks(
+                "usage",
+                provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+                session_id=getattr(agent, "session_id", None) or getattr(self, "session_id", None),
+            )
+        except Exception as _render_err:
+            logging.debug("transform_render(usage) failed: %s", _render_err)
+            return
+        if text:
+            print()
+            print(text)
 
     def _print_account_limits(self) -> bool:
         """Provider account limits block for `/usage`; True if anything printed.

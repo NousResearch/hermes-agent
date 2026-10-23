@@ -10,6 +10,7 @@ from gateway.runtime_footer import (
     _home_relative_cwd,
     _model_short,
     build_footer_line,
+    build_plugin_footer,
     format_runtime_footer,
     resolve_footer_config,
 )
@@ -279,3 +280,84 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# build_plugin_footer — transform_render, section="footer"
+# ---------------------------------------------------------------------------
+
+
+def _patch_footer_hook(monkeypatch, callbacks):
+    """Route hermes_cli.lifecycle hook dispatch to *callbacks* (None = unregistered)."""
+    from hermes_cli import lifecycle
+
+    def _has(hook_name):
+        return hook_name == "transform_render" and bool(callbacks)
+
+    def _invoke(hook_name, **kwargs):
+        assert hook_name == "transform_render"
+        out = []
+        for cb in callbacks:
+            result = cb(**kwargs)
+            if result is not None:
+                out.append(result)
+        return out
+
+    monkeypatch.setattr(lifecycle, "has_hook", _has)
+    monkeypatch.setattr(lifecycle, "invoke_hook", _invoke)
+
+
+def test_plugin_footer_empty_when_nothing_registered(monkeypatch):
+    _patch_footer_hook(monkeypatch, [])
+    assert build_plugin_footer(
+        model="gpt-5.4", context_tokens=10, context_length=100,
+    ) == ""
+
+
+def test_plugin_footer_joins_blocks_and_drops_empty(monkeypatch):
+    _patch_footer_hook(monkeypatch, [
+        lambda **kw: None,
+        lambda **kw: "   \n  ",  # whitespace-only contributes nothing
+        lambda **kw: "📊 quota:\n• anthropic: 54%",
+        lambda **kw: "second block",
+    ])
+    assert build_plugin_footer(
+        model="gpt-5.4", context_tokens=10, context_length=100,
+    ) == "📊 quota:\n• anthropic: 54%\n\nsecond block"
+
+
+def test_plugin_footer_forwards_call_site_kwargs(monkeypatch):
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return ""
+
+    _patch_footer_hook(monkeypatch, [_capture])
+    build_plugin_footer(
+        model="openai/gpt-5.4", context_tokens=1234, context_length=200000,
+        cwd="~/projects", turn_seconds=12.5, platform_key="telegram",
+    )
+    assert seen == {
+        "section": "footer",
+        "model": "openai/gpt-5.4",
+        "context_tokens": 1234,
+        "context_length": 200000,
+        "cwd": "~/projects",
+        "turn_seconds": 12.5,
+        "platform_key": "telegram",
+    }
+
+
+def test_plugin_footer_fails_open_when_dispatch_raises(monkeypatch):
+    from hermes_cli import lifecycle
+
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+
+    def _boom(hook_name, **kwargs):
+        raise RuntimeError("plugin blew up")
+
+    monkeypatch.setattr(lifecycle, "invoke_hook", _boom)
+    assert build_plugin_footer(
+        model="gpt-5.4", context_tokens=1, context_length=2,
+    ) == ""

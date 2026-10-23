@@ -200,6 +200,15 @@ VALID_HOOKS: set[str] = {
     # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
     "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
+    # Render-transform: append a block to a rendered surface. ``section`` names the surface —
+    # "footer" (final gateway reply) and "usage" (the /usage render) today — and the remaining
+    # kwargs are that section's payload. Callbacks return a string block; None/empty contributes
+    # nothing, and non-empty blocks are joined with one blank line in registration order. Adding
+    # a surface means adding a call site plus a section name, not another hook.
+    #   section="footer": model, context_tokens, context_length, cwd, turn_seconds, platform_key.
+    #   section="usage":  provider, base_url, session_id (credentials are never passed).
+    # Concrete consumer: rarf/hermes-quota-plugin (precomputed cache, no network I/O).
+    "transform_render",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

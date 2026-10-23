@@ -72,3 +72,23 @@ def test_finite_turn_reply_carries_no_messaging_footer(monkeypatch):
         finite = _Harness()._hmwa_runtime_footer_line({"model": "m"}, source, 1.0)
     assert finite == ""
     assert _Harness()._hmwa_runtime_footer_line({"model": "m"}, source, 1.0) == "FOOTER-139666"
+
+
+def test_plugin_footer_suppressed_on_finite_turns(monkeypatch):
+    """A plugin footer block is messaging-only, exactly like the runtime footer: it must
+    never leak into a finite (`-z`, `chat -q`) reply, whose text IS the printed answer."""
+    from gateway import runtime_footer
+    from gateway.config import Platform
+    monkeypatch.setattr(runtime_footer, "build_plugin_footer", lambda **kwargs: "QUOTA-BLOCK")
+    source = SimpleNamespace(platform=Platform.LOCAL)
+    with finite_turn_scope(True):
+        assert _Harness()._hmwa_plugin_footer_line({"model": "m"}, source, 1.0) == ""
+    assert _Harness()._hmwa_plugin_footer_line({"model": "m"}, source, 1.0) == "QUOTA-BLOCK"
+
+
+def test_compose_footer_drops_empty_parts_so_a_plugin_block_stands_alone():
+    compose = _Harness()._hmwa_compose_footer
+    assert compose("RUNTIME", "PLUGIN") == "RUNTIME\n\nPLUGIN"
+    assert compose("", "PLUGIN") == "PLUGIN"  # display.runtime_footer disabled
+    assert compose("RUNTIME", "") == "RUNTIME"
+    assert compose("", "") == ""

@@ -8,6 +8,7 @@ import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
+import { ruLanguage } from './ru_language'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
@@ -16,6 +17,7 @@ import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
+import { ruTemporaryChat } from './ru_temporary_chat'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
 
@@ -45,6 +47,7 @@ export const ruOverrides = {
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
   firstRun: ruFirstRun,
+  ...ruTemporaryChat,
   sessionImport: ruConnectors.sessionImport,
   common: {
     apply: 'Применить',
@@ -245,6 +248,7 @@ export const ruOverrides = {
       'nav.cron': 'Открыть запланированные задачи',
       'nav.agents': 'Открыть агенты',
       'session.new': 'Новый сеанс',
+      'session.newTemporary': 'Новый временный чат',
       'session.newTab': 'Новая вкладка сеанса',
       'session.newWindow': 'Новое окно',
       'session.next': 'Следующий сеанс',
@@ -337,15 +341,7 @@ export const ruOverrides = {
     previous: 'Предыдущее вхождение'
   },
 
-  language: {
-    label: 'Язык',
-    description: 'Выберите язык интерфейса приложения.',
-    saving: 'Сохранение языка…',
-    saveError: 'Не удалось обновить язык',
-    switchTo: 'Сменить язык',
-    searchPlaceholder: 'Поиск языка…',
-    noResults: 'Языки не найдены'
-  },
+  ...ruLanguage,
   settings: {
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {

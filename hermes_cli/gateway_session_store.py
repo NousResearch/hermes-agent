@@ -33,11 +33,12 @@ _READS = frozenset({
     "get_messages_as_conversation", "get_resume_conversations", "assert_resume_safe",
     "is_kanban_owned_session", "list_sessions_rich", "search_sessions", "get_next_title_in_lineage",
     "get_handoff_state", "get_meta", "get_compression_tip", "resolve_session_by_title", "get_messages",
-    "session_count", "sanitize_title", "session_yolo_enabled",
-    "get_session_model_config_value",
+    "session_count", "sanitize_title", "session_yolo_enabled", "is_session_temporary",
+    "get_session_temporary_owner", "get_session_model_config_value",
 })
 # Writes the gateway already performs itself (persistence, accounting, maintenance).
 _GATEWAY_OWNED = frozenset({
+    "mark_session_temporary",  # session.create {temporary} stamps the row (gateway.session_temporary)
     "create_session", "reopen_session", "append_messages_batch", "flush_token_counts",
     "update_session_model", "patch_session_model_config", "maybe_auto_archive",
     "maybe_auto_prune_and_vacuum", "set_meta", "update_token_counts", "close",
@@ -70,6 +71,7 @@ class GatewaySessionStore:
         self.current: dict | None = None
         self._reader = None
         self._create_parameters = None
+        self.temporary = False  # `hermes --temporary`: every session this CLI creates is temporary
 
     def __bool__(self):
         return not self.connection.final
@@ -142,8 +144,7 @@ class GatewaySessionStore:
     def open_session(self, cli, launch=None):
         """Create (or resume) the gateway session for this CLI and adopt its id. A resume target the
         gateway does not know is left as is: main's own "Session not found" path reports it."""
-        key = self.connection.launch_api_key = (launch or {}).get("api_key") or None
-        self.connection.launch_api_key_typed = key is not None and key == getattr(cli, "_typed_api_key", None)
+        self.temporary = bool(getattr(cli, "temporary", False))
         if getattr(cli, "_resumed", False):
             try:
                 snapshot = self.attach(cli.session_id, typed=self.connection.launch_api_key_typed)
@@ -173,6 +174,8 @@ class GatewaySessionStore:
         params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
         if title:
             params["title"] = title
+        if self.temporary:
+            params["temporary"] = True
         params.update(self.client_env())
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
         warning = (snapshot.get("info") or {}).get("config_warning")
@@ -308,6 +311,14 @@ class GatewaySessionStore:
             raise
         self._leave(session_id)
         return True
+
+    def delete_temporary_session(self, session_id, sessions_dir=None):
+        """The gateway deletes a temporary chat when its last viewer closes it; this is the
+        backstop (``/new`` without a detach, a failed close). Never deletes a saved chat."""
+        db = self._db()
+        if db is None or not db.is_session_temporary(session_id):
+            return False
+        return self.delete_session(session_id, sessions_dir)
 
     def end_session(self, session_id, reason=None):
         """Main's ``end_session(sid, reason)``: detach this viewer with ``end_reason``; the owner ends

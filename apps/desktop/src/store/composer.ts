@@ -5,6 +5,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { persistString, storedString } from '@/lib/storage'
 
 import { recordDislike, recordFriction } from './desktop-metrics'
+import { $temporaryDraft, isTemporarySession } from './temporary-chat-registry'
 
 /** Release blob: chip previews created for OS image drops (see #63682). */
 export function revokeAttachmentPreviewUrl(url?: string | null) {
@@ -473,8 +474,11 @@ export function onComposerDraftSyncRequest(handler: (detail: ComposerDraftSyncDe
 
 function persistDraftTexts() {
   try {
+    // A temporary chat's draft (and the fresh draft while it is toggled temporary) stays in memory.
     const entries = [...draftsBySession]
-      .filter(([, draft]) => draft.text)
+      .filter(
+        ([key, draft]) => draft.text && !isTemporarySession(key) && !(isFreshDraftScope(key) && $temporaryDraft.get())
+      )
       .slice(-MAX_PERSISTED_DRAFTS)
       .map(([key, draft]) => [key, draft.text] as const)
 

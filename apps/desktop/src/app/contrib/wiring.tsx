@@ -557,7 +557,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
-  useFreshSessionRequest(startFreshSessionDraft)
+  useFreshSessionRequest(startFreshSessionDraft, removeSession)
   useGatewayScopeRefresh(activeConnectionId, activeGatewayProfile, refreshCurrentModel, refreshHermesConfig)
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked

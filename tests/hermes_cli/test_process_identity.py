@@ -405,3 +405,40 @@ def test_reclaim_ignores_unknown_pid_and_never_raises():
         assert pi.reap_orphaned_backend_owner(999, 9.0, kill_fn=lambda pid: None) is None
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
         assert pi.reap_orphaned_backend_owner(555, 55.0, kill_fn=lambda pid: None) is None
+
+
+def test_ledger_argv_never_records_a_query_prompt():
+    # The prompt is replaced in every spelling argparse accepts (abbreviations, attached values),
+    # so a temporary chat's words never reach spawn-ledger.json whatever flags started it.
+    from hermes_cli.process_identity import ledger_argv
+    for argv in (["hermes", "chat", "--temporary", "-q", "my secret"],
+                 ["hermes", "chat", "--temp", "-q", "my secret"],
+                 ["hermes", "--temporary", "--query=my secret", "-p", "work"],
+                 ["hermes", "--qu", "my secret", "--tempo"],
+                 ["hermes", "--que=my secret"],
+                 ["hermes", "-qmy secret", "--temporary"],
+                 ["hermes", "chat", "--temporary", "-vq", "my secret"],
+                 ["hermes", "chat", "--temporary", "-Qqmy secret"],
+                 ["hermes", "chat", "--temporary", "-wQq", "my secret"]):
+        assert "secret" not in ledger_argv(argv), argv
+    assert ledger_argv(["hermes", "-q", "x", "--temporary", "-p", "work"]) == "hermes -q <prompt> --temporary -p work"
+    assert ledger_argv(["hermes", "serve", "--host", "h", "--port", "1"]) == "hermes serve --host h --port 1"
+    assert ledger_argv(["hermes", "chat", "--query-file", "q.txt"]) == "hermes chat --query-file q.txt"
+    assert ledger_argv(["hermes", "-vq", "x", "-p", "work"]) == "hermes -vq <prompt> -p work"
+
+
+def test_ledger_rewrite_scrubs_prompts_recorded_by_older_builds(tmp_path):
+    # A live process registered before redaction keeps its space-joined argv; the next ledger write
+    # cuts everything after its query flag (multi-word prompt boundaries are lost by then).
+    ledger = tmp_path / "spawn-ledger.json"
+    old = {**_entry(400, 2.0), "argv": "-c chat --temporary -q Reply with my secret plans -p work"}
+    ledger.write_text(json.dumps([old, {**_entry(401, 3.0), "argv": "hermes serve --port 1"}]), encoding="utf-8")
+    fake = _fake_psutil({400: 2.0, 401: 3.0, 999: 50.0})
+    with patch.dict(sys.modules, {"psutil": fake}), \
+         patch.object(pi, "_ledger_path", return_value=ledger), \
+         patch.object(pi.os, "getpid", return_value=999):
+        assert pi.register_self("serve", project_root=Path("/x/install")) is True
+    by_pid = {e["pid"]: e["argv"] for e in json.loads(ledger.read_text(encoding="utf-8"))}
+    assert by_pid[400] == "-c chat --temporary -q <prompt>"
+    assert by_pid[401] == "hermes serve --port 1"
+    assert "secret" not in ledger.read_text(encoding="utf-8")

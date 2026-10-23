@@ -443,6 +443,8 @@ class AuthorityConnection:
         hidden = params.pop('hidden', False)
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
+        from gateway.session_temporary import mark_temporary, pop_temporary_flag
+        temporary = pop_temporary_flag(params, titled=title is not None)  # gateway.session_temporary
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if (not ref and title == 'Bot Chat'
                 and not any(params.get(name) is True for name in BYPASS_FIELDS)
@@ -483,6 +485,8 @@ class AuthorityConnection:
                 await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
             if hidden:
                 await tracked_write(self.authority, partial(self.authority.db.set_session_hidden, ref.session_id, True))
+            if temporary:
+                await tracked_write(self.authority, partial(mark_temporary, self.authority.db, ref.session_id))
         return await self.resume(ref, {})
 
     async def ping(self, ref, params):
@@ -500,7 +504,7 @@ class AuthorityConnection:
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
                 'session_create': {'sources': sorted(SURFACES),
-                                   'parameters': sorted(CREATE_FIELDS | {'title'})},
+                                   'parameters': sorted(CREATE_FIELDS | {'title', 'temporary'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
                 'skin': await asyncio.to_thread(resolved_skin)}
 
@@ -552,7 +556,14 @@ class AuthorityConnection:
             if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (
                     not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                 continue
-            sessions.append({'session_id': entry.session_id, 'id': entry.session_id, 'title': row.get('title') or '',
+            if self.authority.db.is_session_temporary(sid):
+                continue  # temporary chats are never listed, hidden or not
+            from gateway.session_local_close import closed_and_unviewed
+            if closed_and_unviewed(self.authority, sid, handle):
+                # Closed by its last viewer and idle: main lists it as resumable (the stored
+                # feed), not as a live session.
+                continue
+            sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
                              'running': entry.handle.execution_state == 'running'})

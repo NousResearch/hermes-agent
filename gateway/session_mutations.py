@@ -158,6 +158,9 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
         cold_history = _authorize_control(authority, actor, ref, params, owner)
     if operation == 'branch' and 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
+    if operation == 'branch':
+        from gateway.session_temporary import refuse_temporary_branch
+        await asyncio.to_thread(refuse_temporary_branch, authority.db, ref.session_id)
     authority._require_admission_open()
     live = authority.sessions.get((owner or ref).session_id)
     if is_chat_pick(live, operation):

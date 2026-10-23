@@ -6,6 +6,7 @@ import { $freshSessionRequest, refreshActiveProfile } from '@/store/profile'
 
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { SETTINGS_ROUTE } from '../routes'
+import { useTemporaryChatLifecycle } from '../session/hooks/use-temporary-chat-lifecycle'
 
 import { $restartPreviewServer } from './panes'
 
@@ -53,9 +54,14 @@ export function usePublishRestartPreviewServer(restartPreviewServer: RestartPrev
 
 // A profile switch/create drops to a fresh new-session draft so the
 // previously open session doesn't bleed across contexts. Skip initial value.
-export function useFreshSessionRequest(startFreshSessionDraft: () => void) {
+export function useFreshSessionRequest(
+  startFreshSessionDraft: (options?: { temporary: boolean }) => void,
+  removeSession: (storedSessionId: string) => Promise<void>
+) {
   const freshSessionRequest = useStore($freshSessionRequest)
   const lastFreshRef = useRef(freshSessionRequest)
+  // New temporary chat requests, and deleting a temporary chat once the user leaves it.
+  useTemporaryChatLifecycle(removeSession, startFreshSessionDraft)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

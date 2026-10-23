@@ -613,6 +613,7 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
         if hasattr(agent := session.get("agent"), "close"):
             agent.close()
+    _discard_temporary_session(session, end_reason)
 
 
 def _attach_worker(sid: str, session: dict, worker) -> None:

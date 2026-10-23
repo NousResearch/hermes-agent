@@ -12,9 +12,10 @@ import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { $voicePartial } from '../app/voicePartialStore.js'
-import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
+import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, STARTUP_TEMPORARY, TERMUX_TUI_MODE } from '../config/env.js'
 import { placeholder } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
+import { t } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
@@ -559,7 +560,7 @@ const StatusRulePane = memo(function StatusRulePane({
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
-        sessionTitle={status.sessionTitle}
+        sessionTitle={STARTUP_TEMPORARY ? t('status.temporary') : status.sessionTitle}
         status={ui.status}
         statusBarFields={ui.statusBarFields}
         statusColor={status.statusColor}

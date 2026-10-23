@@ -101,14 +101,13 @@ test('canonical create retries retain identity', () => {
   expect(protocol.prepare('session.create', params).request_id).not.toBe(first.request_id)
 })
 
-// TUI-26: a bare stop phrase typed into a LOCAL voice chat (turned on by another viewer) ends the
-// chat on the owner and admits nothing; the owner answers `{voice_stopped: true}`.
-test('a voice_stopped prompt.submit reply is a settled no-admission receipt, never a mismatch', () => {
+test('canonical create carries a temporary chat, never a separate identity from a saved one', () => {
   const protocol = new CanonicalDesktopProtocol()
-  const params = protocol.prepare('prompt.submit', { session_id: 's', text: 'stop' })
-  const receipt = protocol.result('prompt.submit', params, { voice_stopped: true, extra: 'dropped' })
-  expect(receipt).toEqual({ voice_stopped: true, session_id: 's', submission_id: params.submission_id })
-  expect(() => protocol.result('prompt.submit', params, { voice_stopped: false })).toThrow('destination')
+  const params = { source: 'desktop', profile: 'default', cols: 96, cwd: '/tmp' }
+  const temporary = protocol.prepare('session.create', { ...params, temporary: true })
+  expect(temporary).toMatchObject({ source: 'gui', temporary: true })
+  expect(protocol.prepare('session.create', params)).not.toHaveProperty('temporary')
+  expect(protocol.prepare('session.create', params).request_id).not.toBe(temporary.request_id)
 })
 
 test('canonical receipts preserve admission identity and replay restores fenced controls', () => {

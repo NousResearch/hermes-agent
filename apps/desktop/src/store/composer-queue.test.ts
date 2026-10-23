@@ -22,6 +22,7 @@ import {
   updateQueuedPrompt,
   updateQueuedPromptText
 } from './composer-queue'
+import { forgetTemporaryChat, registerTemporaryChat } from './temporary-chat'
 
 const SESSION_KEY = 'session-abc'
 const QUEUE_STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
@@ -574,5 +575,23 @@ describe('composer queue terminal payload persistence', () => {
       })
     ).toBe(true)
     expect(getFrozenQueuedTransport(entry!.id)).toBeUndefined()
+  })
+})
+
+describe('temporary chats', () => {
+  it('queues in memory but never writes a temporary chat queue to localStorage', () => {
+    registerTemporaryChat('temp-q', null)
+
+    try {
+      enqueueQueuedPrompt('saved-q', { attachments: [], text: 'a saved queued prompt' })
+      enqueueQueuedPrompt('temp-q', { attachments: [], text: 'my secret queued prompt' })
+
+      expect(getQueuedPrompts('temp-q').map(entry => entry.text)).toEqual(['my secret queued prompt'])
+      const raw = window.localStorage.getItem('hermes.desktop.composerQueue.v1') ?? ''
+      expect(raw).toContain('a saved queued prompt')
+      expect(raw).not.toContain('secret')
+    } finally {
+      forgetTemporaryChat('temp-q')
+    }
   })
 })

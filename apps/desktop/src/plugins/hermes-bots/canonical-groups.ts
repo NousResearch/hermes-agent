@@ -63,12 +63,29 @@ export async function canonicalGroupRequest<T>(
   }
 
   // The descriptor overload never falls back to the foreground gateway.
-  return host.requestProfile<T>({
+  const target = {
     connectionId: route.connectionId,
     profile: route.profile,
     targetProfile: route.profile,
-    mode: route.connectionId === 'local' ? 'local' : 'remote'
-  }, method, { ...params, profile: route.profile })
+    mode: route.connectionId === 'local' ? 'local' as const : 'remote' as const
+  }
+
+  try {
+    return await host.requestProfile<T>(target, method, { ...params, profile: route.profile })
+  } catch (error) {
+    const payload = params.payload as Record<string, unknown> | undefined
+
+    // Retry only a definitive pre-admission schema rejection. Current gateways
+    // must see the original payload on retry, including after a lost ACK.
+    if (method !== 'groups.send' || !(error instanceof Error) ||
+      error.message !== 'user payload has unknown fields: attachments' ||
+      !Array.isArray(payload?.attachments) || payload.attachments.length !== 0) {throw error}
+
+    const textPayload = { ...payload }
+    delete textPayload.attachments
+
+    return host.requestProfile<T>(target, method, { ...params, payload: textPayload, profile: route.profile })
+  }
 }
 
 export async function discoverCanonicalGroups(

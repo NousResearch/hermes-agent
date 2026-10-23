@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import List
 
-import httpx
+from hermes_cli.auth_constants import httpx  # lazy proxy — keeps plugin-load imports httpx-free
 
 logger = logging.getLogger(__name__)
 

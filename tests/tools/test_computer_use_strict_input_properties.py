@@ -53,6 +53,39 @@ class TestStrictSchemaInputProperties:
         )
         assert args["element_index"] == 5
 
+    def test_double_click_with_explicit_non_default_button_is_refused_when_schema_lacks_button(self):
+        """An explicit non-default `button` must not be silently downgraded.
+
+        When the live schema has no `button` property, dropping an explicit
+        `button="right"` would perform a plain left double-click while
+        reporting ok — a different gesture than the one requested. Refuse it
+        instead; only the implicit default (`left`) is safe to omit.
+        """
+        backend = self._backend_with_active_target()
+        res = backend.click(element=5, click_count=2, button="right")
+        assert not res.ok
+        assert "button" in (res.message or "")
+        backend._session.call_tool.assert_not_called()
+
+    def test_click_with_explicit_non_default_button_is_refused_when_schema_lacks_button(self):
+        """Same refusal for single clicks addressed at an element."""
+        backend = self._backend_with_active_target()
+        res = backend.click(element=5, button="middle")
+        assert not res.ok
+        assert "button" in (res.message or "")
+        backend._session.call_tool.assert_not_called()
+
+    def test_click_keeps_explicit_button_when_the_schema_accepts_it(self):
+        """A driver that advertises `button` keeps receiving an explicit value."""
+        backend = self._backend_with_active_target()
+        backend._session.supports_input_property.side_effect = (
+            lambda tool, prop: prop == "button")
+        res = backend.click(element=5, click_count=2, button="right")
+        assert res.ok
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "double_click"
+        assert args["button"] == "right"
+
     def test_click_keeps_button_when_the_schema_accepts_it(self):
         """A driver that DOES advertise `button` keeps receiving it."""
         backend = self._backend_with_active_target()

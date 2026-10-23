@@ -111,6 +111,11 @@ class _InputMixin:
         # receiving it, and never guess from a version number.
         if self._session.supports_input_property(tool, "button"):
             args["button"] = button_norm
+        elif button_norm != "left":
+            # No `button` property at all means an explicit non-default request can never be
+            # honored — refuse it instead of silently downgrading to the driver's left-click
+            # default while reporting ok. Only the implicit default (`left`) is safe to omit.
+            return _refuse(tool, f"{tool} does not accept button={button_norm!r} on this driver.")
         refusal = self._pointer_args(tool, args, (
             ("element_index click", {"element_index": element} if element is not None else None),
             ("coordinate click", {"x": x, "y": y} if x is not None and y is not None else None),

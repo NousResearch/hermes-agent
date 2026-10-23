@@ -184,43 +184,84 @@ def test_unreachable_peer_turn_is_deferred_and_retried_on_its_own_generation(tmp
 
 
 
+def _deferred_peer_turn(tmp_path: Path, peer: _FakePeerClient):
+    """A peer turn that a crashed home admitted and recovery then deferred."""
+    turn = _crashed_turn(tmp_path, peer)
+    recovered = driver.get_task(turn.db, turn.identity)
+    turn.service.runtime._fenced(driver.defer_indeterminate_task, None, recovered, turn.lease, reason="member_unavailable")
+    return turn.service, turn.db, turn.identity
+
+
 def test_stop_of_a_deferred_peer_turn_whose_gateway_is_down_frees_the_room(tmp_path: Path):
     """Deferral already let the room move on. Stopping that turn while its member stays
-    unreachable cancels it at once: the room takes the next message, and ending the room is not
-    held behind an acknowledgement that cannot arrive."""
-    now = [100.0]
-
-    def clock():
-        return now[0]
-
-    db = tmp_path / "state.db"
+    unreachable reports nothing stopped (the run may still be going there), never replays its
+    admission, and holds neither the next message nor ending the room."""
     peer = _UnreachablePeerClient()
-    service = _peer_room(db, peer)
-    service.runtime.clock = clock
-    service.runtime.lease_ttl_seconds = 30
-    service.runtime.indeterminate_defer_seconds = 5
-    service.send(room_id="room-1", event_id="user-1",
-                 payload={"text": "@reviewer check this", "thread_id": "thread-1"})
-    first, = driver.list_tasks(db, room_id="room-1", status="queued")
-    binding = service.bindings()[0]
-    crashed = driver.acquire_lease(db, room_id="room-1", gateway_id=binding.gateway_id,
-        authority_epoch=binding.authority_epoch, process_generation="crashed-home", ttl_seconds=1, clock=clock)
-    driver.start_task(db, first["identity"], crashed, expected_cancel_generation=0, clock=clock)
-    now[0] = 102.0
-    service.runtime._run_room_once(binding)
-    now[0] = 108.0
-    service.runtime._run_room_once(binding)
-    assert driver.get_task(db, first["identity"])["status"] == "deferred"
-
-    # Even with the member back, cancelling a deferred turn never replays its admission first.
+    service, db, identity = _deferred_peer_turn(tmp_path, peer)
     peer.reachable, replays = True, len(peer.recoveries)
-    service.stop_room("room-1", cancel_id="stop-deferred", require_acknowledged=True)
-    assert driver.get_task(db, first["identity"])["status"] == "cancelled"
+
+    assert service.stop_room("room-1", cancel_id="stop-deferred", require_acknowledged=True) == 0
+    assert driver.get_task(db, identity)["status"] == "deferred"
     assert len(peer.recoveries) == replays and peer.dispatches == []
     service.send(room_id="room-1", event_id="user-2",
                  payload={"text": "@hermes next question", "thread_id": "thread-2"})
     queued = driver.list_tasks(db, room_id="room-1", status="queued")
     assert [t["payload"]["target_member_id"] for t in queued] == ["default"]
+
+
+def test_stop_of_a_deferred_peer_turn_is_reported_once_its_gateway_confirms(tmp_path: Path):
+    """With the run's receipt in hand, Stop asks the member's gateway to stop that exact run, and
+    the turn is cancelled only when that gateway answers the run has ended."""
+    stops, answer = [], {"status": "running"}
+
+    class Stoppable(_RecoveringPeerClient):
+        def stop_receipt(self, **kwargs):
+            stops.append((kwargs["task_id"], kwargs["execution_generation"]))
+            return dict(answer)
+
+    service, db, identity = _deferred_peer_turn(tmp_path, Stoppable())
+    assert service.stop_room("room-1", cancel_id="stop-1") == 0
+    assert driver.get_task(db, identity)["status"] == "deferred"
+    answer["status"] = "cancelled"
+    assert service.stop_room("room-1", cancel_id="stop-2") == 1
+    assert driver.get_task(db, identity)["status"] == "cancelled"
+    assert stops == [(identity.task_id, 1)] * 2
+
+
+def test_an_unconfirmed_peer_stop_holds_the_room_only_for_the_deferral_window(tmp_path: Path):
+    """Stop of an uncertain peer turn waits for its gateway's acknowledgement, but a gateway that
+    stays unreachable holds the room and Disband only for the deferral window. The turn is then
+    deferred, never reported cancelled."""
+    now = [100.0]
+    db = tmp_path / "state.db"
+    peer = _UnreachablePeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = lambda: now[0]
+    service.runtime.lease_ttl_seconds = 1000
+    service.runtime.indeterminate_defer_seconds = 5
+    service.send(room_id="room-1", event_id="user-1",
+                 payload={"text": "@reviewer check this", "thread_id": "thread-1"})
+    task, = driver.list_tasks(db, room_id="room-1", status="queued")
+    binding = service.bindings()[0]
+    crashed = driver.acquire_lease(db, room_id="room-1", gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch, process_generation="crashed-home", ttl_seconds=1,
+        clock=lambda: now[0])
+    driver.start_task(db, task["identity"], crashed, expected_cancel_generation=0, clock=lambda: now[0])
+    now[0] = 102.0
+    lease = service.runtime._ensure_lease(binding)
+    driver.recover_room(db, lease, clock=lambda: now[0])
+
+    with pytest.raises(RuntimeError, match="still stopping"):
+        service.stop_room("room-1", cancel_id="stop-uncertain", require_acknowledged=True)
+    assert driver.get_task(db, task["identity"])["status"] == "stopping"
+    assert service.runtime._retry_stopping_tasks(binding, lease) is True
+
+    now[0] = 110.0
+    assert service.runtime._retry_stopping_tasks(binding, lease) is False
+    released = driver.get_task(db, task["identity"])
+    assert (released["status"], released["execution_generation"]) == ("deferred", 1)
+    assert released["result"] == {"reason": "member_unavailable", "retryable": True}
+    assert service.stop_room("room-1", cancel_id="room-disbanded", require_acknowledged=True) == 0
 
 @pytest.mark.parametrize("elapsed", [5, 61], ids=["before-deadline", "after-deadline"])
 def test_peer_completion_is_observed_after_the_first_recovery_probe(tmp_path, monkeypatch, elapsed):

@@ -247,3 +247,48 @@ def test_pairing_refuses_empty_creds_json(isolated_home, monkeypatch):
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None
 
 
+def test_preexisting_empty_creds_bypasses_keep_branch_and_prompts_pairing(isolated_home, monkeypatch):
+    """If an existing creds.json is 0-byte/empty, cmd_whatsapp must not treat it as
+    an existing valid session (which would offer to keep it and falsely set
+    WHATSAPP_ENABLED=true). It must bypass the keep prompt and drop straight to
+    the pairing flow.
+    """
+    from hermes_cli.main_platform_setup import cmd_whatsapp
+
+    # Pre-create an empty 0-byte creds.json
+    session = isolated_home / "whatsapp" / "session"
+    session.mkdir(parents=True)
+    (session / "creds.json").write_text("")
+
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_cli.main_platform_setup._whatsapp_install_bridge", lambda _bd: True)
+    monkeypatch.setattr("hermes_constants.find_node_executable", lambda _n: "/usr/bin/node")
+
+    paired_called = []
+
+    def fake_subprocess_run(cmd, *_a, **_kw):
+        paired_called.append(cmd)
+        # Pairing succeeds by writing valid creds
+        (session / "creds.json").write_text('{"creds": "ok"}')
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_subprocess_run)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_whatsapp(MagicMock())
+
+    out = buf.getvalue()
+    # Must NOT have treated empty creds as an existing session
+    assert "Existing WhatsApp session found" not in out
+    assert "Re-pair?" not in out
+    # Must have proceeded to QR pairing
+    assert len(paired_called) == 1
+    assert "--pair-only" in paired_called[0]
+    assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+
+
+

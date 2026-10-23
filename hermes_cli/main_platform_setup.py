@@ -165,7 +165,14 @@ def cmd_whatsapp(args):
     session_dir = get_hermes_home() / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
     creds_file = session_dir / "creds.json"
-    if creds_file.exists():
+
+    def _has_valid_creds(path: Path) -> bool:
+        try:
+            return path.is_file() and path.stat().st_size > 0
+        except OSError:
+            return False
+
+    if _has_valid_creds(creds_file):
         print("✓ Existing WhatsApp session found")
         if _yes_no("\n  Re-pair? This will clear the existing session. [y/N] "):
             from plugins.platforms.whatsapp.adapter import _kill_stale_bridge_by_pidfile
@@ -221,7 +228,7 @@ def cmd_whatsapp(args):
             cwd=str(bridge_dir), env=with_hermes_node_path(), check=False)
 
     print()
-    if not (creds_file.is_file() and creds_file.stat().st_size > 0):
+    if not _has_valid_creds(creds_file):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
         return
     # Only enable WhatsApp now that pairing actually succeeded (see above).

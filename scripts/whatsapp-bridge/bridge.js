@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { bridgeAuthProof, createBridgeAuthMiddleware } from './bridge_auth.js';
 import {
   addMentions,
   buildPollPayload,
@@ -112,13 +113,23 @@ const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
 // keeps serving the old behavior forever).
 let SCRIPT_HASH = '';
 try {
-  SCRIPT_HASH = createHash('sha256')
-    .update(readFileSync(fileURLToPath(import.meta.url)))
-    .digest('hex')
-    .slice(0, 16);
+  // bridge_auth.js is in the hash: an adapter must never adopt a bridge whose auth code is stale.
+  const entryPath = fileURLToPath(import.meta.url);
+  const digest = createHash('sha256');
+  for (const sourcePath of [entryPath, path.join(path.dirname(entryPath), 'bridge_auth.js')]) {
+    digest.update(path.basename(sourcePath));
+    digest.update('\0');
+    digest.update(readFileSync(sourcePath));
+    digest.update('\0');
+  }
+  SCRIPT_HASH = digest.digest('hex').slice(0, 16);
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
+// Per-session secret the adapter spawned us with. Loopback binding does not identify the caller:
+// any local process can POST /send on this port, so every API route demands this bearer and
+// /auth-proof lets the adapter verify a listener knows the secret before handing it over.
+const BRIDGE_TOKEN = process.env.HERMES_WHATSAPP_BRIDGE_TOKEN || '';
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
@@ -798,7 +809,6 @@ async function startSocket() {
 
 // HTTP server
 const app = express();
-app.use(express.json());
 
 // Host-header validation — defends against DNS rebinding.
 // The bridge binds loopback-only (127.0.0.1) but a victim browser on
@@ -830,6 +840,24 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Challenge-response identity proof: the adapter sends a fresh nonce and no credential, and
+// adopts this listener only when the returned HMAC shows it already holds the session secret.
+// Registered BEFORE the bearer gate so the adapter never discloses the secret to an impostor
+// that bound the port first (it could otherwise replay a reflected bearer as its own proof).
+app.get('/auth-proof', (req, res) => {
+  const challenge = req.headers['x-hermes-bridge-challenge'];
+  if (typeof challenge !== 'string' || !challenge) {
+    return res.status(400).json({ error: 'Missing bridge challenge' });
+  }
+  res.json({ authProof: bridgeAuthProof(BRIDGE_TOKEN, challenge) });
+});
+
+// Every other route (including /health and /messages — inbound text is as sensitive as outbound)
+// requires `Authorization: Bearer <HERMES_WHATSAPP_BRIDGE_TOKEN>`. JSON bodies are parsed only
+// after the gate so an unauthenticated caller cannot drive the body parser.
+app.use(createBridgeAuthMiddleware(BRIDGE_TOKEN));
+app.use(express.json());
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
@@ -1156,6 +1184,11 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
+  if (!BRIDGE_TOKEN) {
+    // Refusing beats serving: without a secret every local process could read and send as the user.
+    console.error('HERMES_WHATSAPP_BRIDGE_TOKEN is required; start the bridge through `hermes gateway`.');
+    process.exit(1);
+  }
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);

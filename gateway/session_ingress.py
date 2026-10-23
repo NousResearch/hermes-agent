@@ -269,6 +269,13 @@ async def execute_admission(authority, ref, row):
         # its session must not move it onto the fresh conversation (main's /new cancelled its task).
         event._claimed_owner = (ref.session_id, row['generation'])
     author = event.metadata.get('turn_author')
+    if author is None:
+        # Who wrote the admitted input when no producer left a stamp: the event's own sender
+        # (admission-envelope field, adapter-set from the platform update). A sender-less shared
+        # source (observe-mode group) still needs this — memory attribution and turn_author would
+        # otherwise lose the triggering sender entirely (#140059).
+        from gateway.session import turn_actor_from_event
+        author = turn_actor_from_event(event)
     author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
     from gateway.session_operator import is_viewer_input
     viewer_token = viewer_turn.set(live if is_viewer_input(row) else None)

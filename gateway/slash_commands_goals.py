@@ -323,17 +323,8 @@ class GatewayGoalCommandsMixin:
         # New loops capture the event's routing so the idle loop-wakeup watcher can inject ticks
         # here after a restart; best-effort, empty fields dropped. ``profile`` pins the wakeup to this
         # session's own bot under multiplex (the watcher must never fire it through the default bot).
-        route: dict = {}
-        try:
-            src = event.source
-            if src is not None:
-                platform = getattr(src, "platform", "")
-                route = {"platform": platform.value if hasattr(platform, "value") else str(platform or "")}
-                for key in ("chat_id", "chat_type", "thread_id", "user_id", "user_name", "profile"):
-                    route[key] = str(getattr(src, key, "") or "")
-                route = {k: v for k, v in route.items() if v}
-        except Exception:
-            route = {}
+        from gateway.session_commands import session_route
+        route = session_route(event.source)
         result = dispatch_loop_command(mgr, (event.get_command_args() or "").strip(), route=route)
         output = result.get("output") or ""
         if result.get("created") and _quiet_bool(lambda: goal_blocks_loop_tick(mgr.session_id)):

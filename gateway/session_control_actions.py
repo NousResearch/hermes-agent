@@ -24,6 +24,9 @@ _ENVELOPE = ('type', 'output', 'notice', 'message', 'display')
 
 
 def _validate(action, args):
+    from gateway import session_control_edits as edits
+    if action in edits.ACTIONS:
+        return  # its closed field set is checked off-loop, before any manager is built
     if not isinstance(args, dict) or set(args) - {'text', 'index'}:
         raise RuntimeStoreError('invalid_params')
     if action == 'subgoal.remove' and (type(args.get('index')) is not int or args['index'] < 1):
@@ -139,7 +142,10 @@ def _publish_snapshot(authority, live, session_id, snapshot, ticket, *, only_if_
 
 
 async def control(connection, ref, params):
-    if set(params) - {'session_id', 'profile', 'action', 'args'} or not ref.session_id:
+    if set(params) - {'session_id', 'profile', 'action', 'args', 'include_loop_min_interval'} or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    include_loop_min_interval = params.get('include_loop_min_interval') is True
+    if params.get('include_loop_min_interval') is not None and type(params['include_loop_min_interval']) is not bool:
         raise RuntimeStoreError('invalid_params')
     action = params.get('action')
     if not isinstance(action, str):
@@ -151,14 +157,24 @@ async def control(connection, ref, params):
         raise RuntimeStoreError('not_found')
     scope = {key: params[key] for key in ('session_id', 'profile') if key in params}
     # Other viewers (another Desktop window, Ink) repaint their cards from session.control.update, not the
-    # reply: execute_command publishes it for the automation commands, the criterion buttons here.
+    # reply: execute_command publishes it for the automation commands, the owner the criteria and edits.
+    from gateway import session_control_edits as edits
     if action in _SUBGOAL_ACTIONS:
         result = await _subgoal(connection, ref, scope, action, args)
+        publish(connection.authority, ref.session_id)
+    elif action in edits.ACTIONS:
+        result = await edits.run(connection, ref, scope, action, args)
         publish(connection.authority, ref.session_id)
     else:
         from gateway.session_commands import execute_command
         name, arg = _ACTION_COMMANDS[action]
         result = await execute_command(connection, ref, {**scope, 'name': name, 'arg': arg}, dispatch=True)
     from gateway.session_ancillary import read
-    snapshot = await read(connection, ref, scope, kind='control')
+    snapshot = await read(connection, ref, {**scope, 'include_loop_min_interval': include_loop_min_interval},
+                          kind='control')
+    if action.endswith('.create') and snapshot['control'].get(action.split('.', 1)[0]) is None:
+        # The manager held the state in memory but the row is not there: a create that did not
+        # persist is a failure the dialog must show, never a card that never appears.
+        raise RuntimeStoreError('storage_unavailable', field=action.split('.', 1)[0],
+                                detail='the new automation was not persisted')
     return {**snapshot, 'dispatch': {key: result.get(key) for key in _ENVELOPE}}

@@ -1120,13 +1120,17 @@ class GoalManager:
         return _apply
 
     @_goal_mutation
-    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
+    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None,
+            criteria: Optional[list[str]] = None) -> GoalState:
+        """Start a new goal. ``criteria`` are its first subgoals, written with the goal itself so a
+        create never leaves a goal whose criteria landed in a second, separately-raced write."""
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
         self._state = GoalState(
             goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            subgoals=[str(item).strip() for item in (criteria or []) if str(item).strip()],
             contract=contract if contract is not None else GoalContract(),
         )
         return self._save()

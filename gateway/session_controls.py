@@ -815,7 +815,11 @@ class AuthorityConnection:
     async def cancel(self, ref, params):
         admission_id = params.get('admission_id')
         receipt = await self.authority.receipt(self.actor, ref, admission_id)
-        if receipt.status == 'started':
+        from hermes_state_runtime import get_session_admission
+        # A transferred steer also reads started (as its receiving claim): only its own claim is stopped here;
+        # the transfer is refused below and settles with that claim.
+        if receipt.status == 'started' and get_session_admission(
+                self.authority.db, admission_id=admission_id)['status'] == 'started':
             # Stopped in this RPC: an editor that exits right after its cancel never sends a follow-up
             # interrupt. A stale generation means the turn already settled.
             try:

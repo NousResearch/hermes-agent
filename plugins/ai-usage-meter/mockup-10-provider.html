@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hero Mockup — Active Window as Context</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+:root {
+  --bg: #16181d;
+  --card: linear-gradient(135deg, #25262c 0%, #1c1d22 55%, #18191d 100%);
+  --border: rgba(255,255,255,0.10);
+  --panel: rgba(255,255,255,0.055);
+  --text: #f4f4f5;
+  --muted: #a1a1aa;
+  --lime-cyan: linear-gradient(90deg, #bef264, #4ade80, #2dd4bf);
+  --rose: linear-gradient(90deg, #fb7185, #f43f5e, #fb923c);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); padding: 40px; min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; }
+
+.mockup-wrapper { width: 100%; max-width: 720px; }
+
+.hero-card {
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: var(--card);
+  padding: 18px 22px;
+  box-shadow: 0 18px 48px rgba(0,0,0,0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.hero-top-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.hero-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.hero-left .window-name {
+  font-size: 24px;
+  font-weight: 750;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  color: var(--text);
+}
+.hero-left .tag-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.hero-left .tag-row span {
+  font-size: 10px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: #d4d4d8;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.hero-left .status-dot-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid rgba(52,211,153,0.25);
+  background: rgba(52,211,153,0.08);
+  color: #1a5c38;
+  letter-spacing: 0.02em;
+}
+.hero-left .status-dot-box.critical {
+  border-color: rgba(244,63,94,0.25);
+  background: rgba(244,63,94,0.08);
+  color: #8a1a2f;
+}
+
+.hero-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  min-width: 130px;
+}
+.hero-right .big-number {
+  font-size: 48px;
+  font-weight: 760;
+  letter-spacing: -0.05em;
+  line-height: 0.9;
+  color: var(--text);
+}
+.hero-right .sub-text {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Thick capsule bar, label separated out */
+.hero-bar-wrap {
+  position: relative;
+  width: 100%;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.38);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.42);
+}
+.hero-bar-fill {
+  height: 100%;
+  width: 42%;
+  border-radius: 999px;
+  background: var(--lime-cyan);
+  box-shadow: 0 0 16px rgba(45,212,191,0.4);
+}
+.hero-bar-fill.rose-state {
+  background: var(--rose);
+  box-shadow: 0 0 16px rgba(244,63,94,0.45);
+}
+.hero-bar-inner-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #101114;
+  text-shadow: 0 1px 2px rgba(255,255,255,0.25);
+  letter-spacing: 0.01em;
+}
+.hero-bar-inner-text .right-label {
+  color: #1a5c38;
+  font-weight: 700;
+}
+.hero-bar-inner-text .right-label.rose-state-label {
+  color: #8a1a2f;
+}
+
+/* Below bar: token info shown separately, NOT inside bar */
+.hero-below {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.hero-below .left-info {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hero-below .calls {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Section label */
+.section-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: #888;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  margin-top: 20px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+/* 5-column provider grid (compact) */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.provider-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  box-shadow: 0 6px 14px rgba(0,0,0,0.14);
+}
+.provider-card .card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  flex-wrap: wrap;
+}
+.provider-card .card-header-row h4 {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.provider-card .live-badge {
+  font-size: 9px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(45,212,191,0.25);
+  background: rgba(45,212,191,0.08);
+  color: #1a5c38;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.provider-card .bar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+}
+.provider-card .bar-row .label-left {
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.provider-card .bar-row .label-right {
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 9px;
+}
+.provider-card .capsule {
+  position: relative;
+  width: 100%;
+  height: 9px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.3);
+}
+.provider-card .capsule-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--lime-cyan);
+  transition: width .3s ease;
+}
+.provider-card .capsule-fill.rose-state {
+  background: var(--rose);
+}
+.provider-card .models-area {
+  border-top: 1px solid rgba(255,255,255,0.05);
+  padding-top: 5px;
+}
+.provider-card .models-area .models-label {
+  font-size: 7px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+.provider-card .model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 1px 0;
+  font-size: 9px;
+  border-bottom: 1px dashed rgba(255,255,255,0.06);
+  min-height: 16px;
+}
+.provider-card .model-row:last-child { border-bottom: none; }
+.provider-card .model-row .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.provider-card .model-row .tokens { color: var(--muted); white-space: nowrap; font-size: 9px; font-variant-numeric: tabular-nums; }
+.provider-card .unavailable-box {
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border: 1px dashed rgba(255,255,255,0.14);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 9px;
+  text-align: center;
+}
+
+/* Connection status strip at very bottom */
+.connection-strip {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 20px rgba(0,0,0,0.18);
+}
+.connection-strip .strip-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #888;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.connection-strip .dots-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.connection-strip .dot-item {
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: var(--panel);
+  color: #d4d4d8;
+  white-space: nowrap;
+}
+.connection-strip .dot-item.active {
+  border-color: rgba(45, 212, 191, 0.25);
+  background: rgba(45, 212, 191, 0.08);
+  color: #1a5c38;
+}
+.connection-strip .dot-item.google-active {
+  border-color: rgba(168, 139, 250, 0.35);
+  background: rgba(168, 139, 250, 0.08);
+  color: #c084fc;
+}
+</style>
+</head>
+<body>
+<div class="mockup-wrapper">
+  <h2 style="font-size:20px;font-weight:800;letter-spacing:-0.03em;margin-bottom:16px;color:var(--text);">AI Usage Meter — 10 Provider Mockup</h2>
+
+  <!-- Hero: Active Context (window-aware name) -->
+  <div class="hero-card">
+    <div class="hero-top-row">
+      <div class="hero-left">
+        <h2 class="window-name">Token Usage Bar</h2>
+        <div class="tag-row">
+          <span>HERMES</span>
+          <span style="border-color:rgba(52,211,153,0.25);background:rgba(52,211,153,0.08);color:#34d399;">● Optimal</span>
+        </div>
+      </div>
+      <div class="hero-right">
+        <div class="big-number">20%</div>
+        <div class="sub-text">211K / 1M context · 833.5K context left</div>
+      </div>
+    </div>
+    <div style="position:relative;width:100%;height:18px;border-radius:999px;background:rgba(0,0,0,0.38);border:1px solid rgba(255,255,255,0.10);overflow:hidden;box-shadow:inset 0 2px 6px rgba(0,0,0,0.35);">
+      <div style="width:20%;height:100%;border-radius:999px;background:var(--lime-cyan);box-shadow:0 0 12px rgba(45,212,191,0.35);transition:width .3s ease;"></div>
+      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:11px;font-weight:650;color:#f4f4f5;text-shadow:0 1px 4px rgba(0,0,0,0.7);letter-spacing:0.01em;">
+        <span>211K / 1M context</span>
+        <span style="color:#34d399;">833.5K context left</span>
+      </div>
+    </div>
+    <div style="font-size:9px;color:#a1a1aa;text-align:right;padding-top:2px;white-space:nowrap;">Source: focused session · 14 calls</div>
+  </div>
+
+  <!-- 5 provider cards in one row -->
+  <div class="provider-grid">
+    <article class="provider-card">
+      <div class="card-header-row">
+        <h4>Anthropic OAuth</h4>
+        <span class="live-badge">LIVE</span>
+      </div>
+      <div style="font-size:9px;color:#a1a1aa;margin-top:-2px;">Plan: Team</div>
+      <div style="font-size:11px;display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:nowrap;">
+        <strong style="font-size:11px;">Current session</strong>
+        <span style="font-size:9px;color:#a1a1aa;">0.0% used</span>
+      </div>
+      <div class="capsule"><div class="capsule-fill" style="width:0%;"></div></div>
+      <div style="font-size:9px;color:#a1a1aa;">100.0% left · No reset</div>
+      <div style="font-size:7px;font-weight:700;color:#a1a1aa;letter-spacing:0.06em;text-transform:uppercase;margin-top:3px;">MODELS</div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:3px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">Fable 5.1</span><span style="color:#a1a1aa;">0 tok</span></div></div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:2px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">Opus 5.5</span><span style="color:#a1a1aa;">0 tok</span></div></div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:2px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">Sonnet 5.5</span><span style="color:#a1a1aa;">0 tok</span></div></div>
+    </article>
+
+    <article class="provider-card">
+      <div class="card-header-row">
+        <h4>Codex OAuth</h4>
+        <span class="live-badge">LIVE</span>
+      </div>
+      <div style="font-size:9px;color:#a1a1aa;">Plan: Plus</div>
+      <div style="font-size:11px;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+        <strong>Session</strong>
+        <span style="font-size:9px;color:#a1a1aa;">45.0% used</span>
+      </div>
+      <div class="capsule"><div class="capsule-fill" style="width:45%;"></div></div>
+      <div style="font-size:9px;color:#a1a1aa;">55.0% left · 10/23/2026</div>
+      <div style="font-size:7px;font-weight:700;color:#a1a1aa;letter-spacing:0.06em;text-transform:uppercase;margin-top:3px;">MODELS</div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:3px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">GPT 5.6 Sol</span><span style="color:#a1a1aa;">10M tok</span></div></div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:2px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">GPT 6 Astra</span><span style="color:#a1a1aa;">1.3M tok</span></div></div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:2px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">GPT 6.1 Sol</span><span style="color:#a1a1aa;">0 tok</span></div></div>
+    </article>
+
+    <article class="provider-card">
+      <div class="card-header-row">
+        <h4>OpenRouter</h4>
+        <span class="live-badge">LIVE</span>
+      </div>
+      <div style="font-size:11px;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+        <strong>API key quota</strong>
+        <span style="font-size:9px;color:#fb7185;font-weight:700;">98.1% used</span>
+      </div>
+      <div class="capsule"><div class="capsule-fill rose-state" style="width:98.1%;"></div></div>
+      <div style="font-size:9px;color:#a1a1aa;">1.9% left · No reset reported</div>
+      <div style="font-size:7px;font-weight:700;color:#a1a1aa;letter-spacing:0.06em;text-transform:uppercase;margin-top:3px;">MODELS</div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:3px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">Nemotron 3.5 Lightning Free</span><span style="color:#a1a1aa;">1M tok</span></div></div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:2px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">Opus 5.5</span><span style="color:#a1a1aa;">329.2K tok</span></div></div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:2px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">GPT 6.1 Sol</span><span style="color:#a1a1aa;">0 tok</span></div></div>
+    </article>
+
+    <article class="provider-card">
+      <div class="card-header-row">
+        <h4>Google Gemini</h4>
+        <span class="live-badge">LIVE</span>
+      </div>
+      <div style="font-size:9px;color:#888;margin-top:-1px;">Auto-activated (OAuth confirmed)</div>
+      <div style="font-size:11px;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+        <strong>API models verified</strong>
+        <span style="font-size:9px;color:#34d399;font-weight:700;">Ready</span>
+      </div>
+      <div class="capsule"><div class="capsule-fill" style="width:0%;background:#888;box-shadow:none;"></div></div>
+      <div style="font-size:9px;color:#a1a1aa;">2 models verified · No token quota endpoint</div>
+      <div style="font-size:7px;font-weight:700;color:#a1a1aa;letter-spacing:0.06em;text-transform:uppercase;margin-top:3px;">MODELS</div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:3px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">Argon 4.0</span><span style="color:#a1a1aa;font-size:9px;">1M in · 32K out</span></div></div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:2px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">Gemini Flash 3.8</span><span style="color:#a1a1aa;font-size:9px;">1M in · 65K out</span></div></div>
+    </article>
+
+    <article class="provider-card">
+      <div class="card-header-row">
+        <h4>Ollama Local</h4>
+        <span style="font-size:9px;padding:2px 7px;border-radius:999px;background:rgba(255,255,255,0.055);border:1px solid rgba(255,255,255,0.10);color:#a1a1aa;font-weight:600;">OFFLINE</span>
+      </div>
+      <div style="font-size:11px;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+        <strong>Local session</strong>
+        <span style="font-size:9px;color:#a1a1aa;">Not connected</span>
+      </div>
+      <div class="capsule"><div class="capsule-fill" style="width:0%;background:#6b7280;box-shadow:none;"></div></div>
+      <div style="font-size:9px;color:#a1a1aa;">No active local session</div>
+      <div style="font-size:7px;font-weight:700;color:#a1a1aa;letter-spacing:0.06em;text-transform:uppercase;margin-top:3px;">MODELS</div>
+      <div style="font-size:9px;border-top:1px solid rgba(255,255,255,0.05);padding-top:3px;"><div style="display:flex;justify-content:space-between;"><span style="font-weight:600;">Gemma 4</span><span style="color:#a1a1aa;">—</span></div></div>
+    </article>
+  </div>
+
+  <!-- Provider connection status strip -->
+  <div class="connection-strip">
+    <div class="strip-title">PROVIDER CONNECTION STATUS</div>
+    <div class="dots-row">
+      <span class="dot-item active">● Anthropic OAuth — Connected</span>
+      <span class="dot-item active">● Codex OAuth — Connected</span>
+      <span class="dot-item active">● OpenRouter — Connected</span>
+      <span class="dot-item google-active">● Google Gemini — Auto-activated</span>
+      <span class="dot-item">○ Ollama Local — Offline</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

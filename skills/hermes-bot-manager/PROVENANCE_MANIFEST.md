@@ -1,0 +1,22 @@
+# Provenance manifest
+
+- package_name: hermes-bot-manager
+- brand: PatchworkMD
+- canonical_source: `~/.hermes/profiles/everyday/skills/hermes/hermes-bot-manager/`
+- included_paths:
+  - `SKILL.md`
+  - `agents/openai.yaml`
+  - `LICENSE`
+  - `PROVENANCE_MANIFEST.md`
+  - `LICENSE_DECISION.md`
+  - `RELEASE_NOTES.md`
+  - `references/nous-bot-mode.md`
+- source_revision_or_hash: `SKILL.md` SHA-256 `3c26df36b2621ebe83cae170b4493e30e106db2be81c7aee9dd8b48d0df38460`
+- skill_validator_result: `NOT RUN; no dedicated public-package validator was available in the installed Hermes CLI`
+- test_result: `NOT RUN; documentation-only package`
+- toolchain: `Hermes CLI skills help; shasum -a 256`
+- license_decision: MIT; PatchworkMD copyright in included LICENSE
+- private_material_scan: PASS; zero matches against the PatchworkMD public-release denylist in the source skill
+- third_party_provenance: Original PatchworkMD skill text; no third-party source included
+- publication_status: `NOT CLEARED FOR PUBLICATION`
+- human_gates: Austin review of wording, destination, license, and publication remains required

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermes Bot Manager"
+  short_description: "Manage Bot Mode profiles, routines, groups, and Bot Chat"
+  default_prompt: "Use /bot-manager overview, create, inspect, routine, group, message, peer, verify, or disable. Follow the Nous Bot Mode docs and verify the resulting Hermes state."

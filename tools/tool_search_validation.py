@@ -35,6 +35,12 @@ def _schema_for_local_validation(node: Any) -> Any:
     if isinstance(schema_type, list):
         if "null" not in schema_type:
             normalized["type"] = [*schema_type, "null"]
+        # MCP nullable unions are collapsed to a nullable hint at discovery.
+        # JSON Schema intersects type and enum, so widening type alone still
+        # rejects the null branch that discovery explicitly preserved.
+        enum = normalized.get("enum")
+        if isinstance(enum, list) and None not in enum:
+            normalized["enum"] = [*enum, None]
         return normalized
     # No ``type`` to extend ($ref/combinator): wrap so local refs still resolve from the
     # root while null stays an explicit alternative.

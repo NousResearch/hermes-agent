@@ -839,6 +839,85 @@ class TestDeferredCallSchemaProbe:
         assert result["ok"] is True
         assert calls == [{"value": None}]
 
+    @pytest.mark.parametrize("branch", [None, "yes", "no"])
+    def test_nullable_enum_in_required_array_item_dispatches(self, branch):
+        import model_tools
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        calls = []
+        name = "mcp_probe_nullable_enum"
+        toolset = "mcp-probe-nullable-enum"
+        params = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"steps": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "parentBranch": {"anyOf": [
+                        {"type": "string", "enum": ["yes", "no"]},
+                        {"type": "null"},
+                    ]},
+                    "conditionType": {"type": "string", "enum": ["replied"], "nullable": True},
+                },
+                "required": ["parentBranch", "conditionType"],
+                "additionalProperties": False,
+            }}},
+            "required": ["steps"],
+        })
+        self._register_schema(name, toolset, params, calls)
+        args = {"steps": [{"parentBranch": branch, "conditionType": None}]}
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": args},
+            enabled_toolsets=[toolset],
+        ))
+        assert result["ok"] is True
+        assert calls == [args]
+
+    @pytest.mark.parametrize("nullable", [True, False, None])
+    @pytest.mark.parametrize("value", [None, "yes", "no", "maybe", 3, {}])
+    def test_nullable_enum_conversion_is_narrow(self, nullable, value):
+        import copy
+        from jsonschema import Draft7Validator
+        from tools.tool_search_validation import _schema_for_local_validation
+
+        prop = {"type": "string", "enum": ["yes", "no"]}
+        if nullable is not None:
+            prop["nullable"] = nullable
+        schema = {"type": "object", "properties": {"branch": prop}, "required": ["branch"]}
+        original = copy.deepcopy(schema)
+        normalized = _schema_for_local_validation(schema)
+        validator = Draft7Validator(normalized)
+        assert validator.is_valid({"branch": value}) == (
+            value in ("yes", "no") or (value is None and nullable is True)
+        )
+        assert not validator.is_valid({})
+        assert schema == original
+        assert _schema_for_local_validation(normalized) == normalized
+
+    @pytest.mark.parametrize("item", [{}, {"parentBranch": "maybe"}, {"parentBranch": None, "extra": True}])
+    def test_invalid_nullable_enum_item_never_dispatches(self, item):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_invalid_nullable_enum"
+        toolset = "mcp-probe-invalid-nullable-enum"
+        self._register_schema(name, toolset, {
+            "type": "object", "properties": {"steps": {
+                "type": "array", "items": {
+                    "type": "object", "properties": {"parentBranch": {
+                        "type": "string", "enum": ["yes", "no"], "nullable": True,
+                    }}, "required": ["parentBranch"], "additionalProperties": False,
+                },
+            }}, "required": ["steps"],
+        }, calls)
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"steps": [item]}},
+            enabled_toolsets=[toolset],
+        ))
+        assert "The tool was NOT invoked" in result["error"]
+        assert calls == []
+
     def test_schema_normalization_preserves_literal_enum_objects(self):
         from tools.tool_search import validate_deferred_call_args
 

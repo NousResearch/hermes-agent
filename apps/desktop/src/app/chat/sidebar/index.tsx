@@ -29,7 +29,6 @@ import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { recordAction } from '@/store/desktop-metrics'
@@ -78,7 +77,6 @@ import {
 import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
-  $profileColors,
   $profiles,
   $profileScope,
   ALL_PROFILES,
@@ -153,7 +151,7 @@ import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session
 import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
-import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
+import { scopeGatewaySessionGroups, useGatewaySessionGroups, useOwnerGroupBuilder } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
@@ -1371,8 +1369,7 @@ export function ChatSidebar({
   // ([connectionId, profile]), so a platform's groups line up with recents.
   const ownerGrouped = profileScope === ALL_PROFILES && grouping === 'profile'
   const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped)
-  const connectionsRegistry = useStore($connectionsRegistry)
-  const profileColors = useStore($profileColors)
+  const buildOwnerGroups = useOwnerGroupBuilder()
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.
@@ -1997,10 +1994,7 @@ export function ChatSidebar({
                 // Group only what the cap lets through, so the footer's count
                 // and load-more stay about the platform, not one of its groups.
                 const ownerGroups = ownerGrouped
-                  ? scopeGatewaySessionGroups(
-                      buildGatewaySessionGroups(shownSessions, connectionsRegistry, profileColors),
-                      `messaging:${group.sourceId}`
-                    )
+                  ? scopeGatewaySessionGroups(buildOwnerGroups(shownSessions), `messaging:${group.sourceId}`)
                   : undefined
 
                 return (

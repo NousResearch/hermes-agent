@@ -121,7 +121,9 @@ export function GatewayProfileGroups({
           {gatewayProfiles.has(group.id) && (
             <div className="ml-3 border-l border-border/50 pl-1">
               <GatewayProfileGroups
-                groups={gatewayProfiles.get(group.id)!.map(profile => ({ ...profile, label: profile.profile! }))}
+                groups={gatewayProfiles
+                  .get(group.id)!
+                  .map(profile => ({ ...profile, label: profile.profileLabel ?? profile.profile! }))}
                 nested
                 onNewSessionSplit={onNewSessionSplit}
                 renderRows={renderRows}

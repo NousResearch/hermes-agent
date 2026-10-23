@@ -28,7 +28,7 @@ class _RecordingExa:
 @pytest.fixture
 def exa(monkeypatch: pytest.MonkeyPatch):
     """Keyed Exa with a recording client; ``exa.config`` is the ``web`` config section."""
-    import tools.web_tools as web_tools
+    from tools import web_tools
 
     client = _RecordingExa()
     client.config = {}

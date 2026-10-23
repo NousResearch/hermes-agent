@@ -198,12 +198,12 @@ def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatc
             raise ctypes.WinError(ctypes.get_last_error())
         real_assign(job, proc)
 
-    def fail_resume(self):
+    def fail_resume(proc):
         raise KeyboardInterrupt('injected cancellation before resume')
 
     monkeypatch.setattr(processes._WindowsJob, '__init__', track_job)
     monkeypatch.setattr(processes._WindowsJob, 'assign', assign)
-    monkeypatch.setattr(psutil.Process, 'resume', fail_resume)
+    monkeypatch.setattr(processes._WindowsJob, 'resume', staticmethod(fail_resume))
     cmd = ([str(tmp_path / 'missing.exe')] if failure == 'popen' else
            [sys.executable, '-c', 'from pathlib import Path; import sys; '
             'Path(sys.argv[1]).write_text("ran")', str(marker)])

@@ -1,4 +1,8 @@
-"""Contain each managed Windows router tree without adopting the owner process."""
+"""Contain each managed Windows router tree without adopting the owner process.
+
+Stdlib only: bounded_probe_run spawns through here, and PM's isolated runtime (which installs
+none of the app's dependencies) runs those probes too.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +12,6 @@ from ctypes import wintypes
 import subprocess
 import sys
 import threading
-
-import psutil
 
 
 class _BasicLimits(ctypes.Structure):
@@ -78,6 +80,16 @@ class _WindowsJob:
         if not self._api.AssignProcessToJobObject(self._handle, int(proc._handle)):
             raise ctypes.WinError(ctypes.get_last_error())
 
+    @staticmethod
+    def resume(proc: subprocess.Popen) -> None:
+        # NtResumeProcess is the call psutil.Process.resume() makes, here on the retained handle.
+        resume = ctypes.WinDLL("ntdll").NtResumeProcess
+        resume.argtypes = [wintypes.HANDLE]
+        resume.restype = ctypes.c_long
+        status = resume(int(proc._handle))
+        if status < 0:
+            raise OSError(f"NtResumeProcess failed with NTSTATUS {status & 0xFFFFFFFF:#010x}")
+
     def close(self) -> None:
         """Terminate the contained tree; repeated closes are harmless."""
         with self._lock:
@@ -122,7 +134,7 @@ def spawn_server(cmd, **kwargs) -> tuple[subprocess.Popen, _WindowsJob | None]:
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x00000004  # CREATE_SUSPENDED
         proc = subprocess.Popen(cmd, **kwargs)
         job.assign(proc)
-        psutil.Process(proc.pid).resume()
+        job.resume(proc)
         return proc, job
     except BaseException:
         try:

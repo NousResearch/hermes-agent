@@ -27,6 +27,49 @@ def _member_ignored(directory, names):
     return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
 
 
+def _git_ignored(root: Path) -> frozenset[str]:
+    """Untracked paths a member's own git work tree ignores, ignored directories collapsed.
+
+    Build output, caches and runtime state are not build inputs; hashing them made every
+    launch rebuild the environment (#122349). When git cannot run, times out or fails, the
+    reason is logged at debug and nothing extra is skipped (the full walk).
+    """
+    if not (root / ".git").exists():
+        return frozenset()
+    # bounded_probe_run, not subprocess.run: on Windows run() waits without a bound for pipes
+    # that a git launcher's child still holds after the timeout, and this runs at every launch.
+    # Its spawner is stdlib-only, so it also runs in PM's isolated runtime (no psutil there).
+    # surrogateescape keeps non-UTF-8 path bytes the same as os.fsdecode does.
+    import logging
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        result = bounded_probe_run(
+            ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
+            cwd=root, env=env, timeout=60, errors="surrogateescape", raise_on_spawn_failure=True)
+    except (OSError, ValueError, ImportError) as exc:
+        logging.getLogger(__name__).debug("member ignore probe did not start in %s: %r", root, exc)
+        return frozenset()
+    if result is None or result.returncode != 0:
+        logging.getLogger(__name__).debug("member ignore probe in %s %s", root, "timed out" if result is None
+                                          else f"exited {result.returncode}: {result.stderr.strip()}")
+        return frozenset()
+    return frozenset(path.rstrip("/") for path in result.stdout.split("\0") if path)
+
+
+def _member_filter(root: Path):
+    """The ``ignore`` callable for one member tree: members_stamp hashes what is copied."""
+    ignored = _git_ignored(root)
+
+    def ignore(directory, names):
+        skipped = set(_member_ignored(directory, names))
+        base = Path(directory).relative_to(root)
+        return [name for name in names if name in skipped or (base / name).as_posix() in ignored]
+
+    return ignore
+
+
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
 # runner streams uv output from a pre-3.11 system python where this module's tomllib import
 # cannot load. Workspace callers keep reaching it from here.
@@ -51,9 +94,10 @@ def members_stamp(plugin_dirs) -> str:
             h.update(source.read_bytes())
             h.update(b"\0")
         if (entry / "pyproject.toml").is_file():
+            ignore = _member_filter(entry)
             for directory, dirs, files in os.walk(entry):
-                dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
-                for name in sorted(set(files) - set(_member_ignored(directory, files))):
+                dirs[:] = sorted(set(dirs) - set(ignore(directory, dirs)))
+                for name in sorted(set(files) - set(ignore(directory, files))):
                     path = Path(directory) / name
                     h.update(path.relative_to(entry).as_posix().encode())
                     h.update(b"\0")
@@ -244,8 +288,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     pyproject = declaration.pyproject
     if pyproject is not None:
         member = root / "plugin-sources" / key
-        shutil.copytree(plugin_dir, member, symlinks=True,
-                        ignore=_member_ignored)
+        shutil.copytree(plugin_dir, member, symlinks=True, ignore=_member_filter(plugin_dir))
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies a workspace member by [project].name, so the same virtual
         # plugin enabled in two profiles would declare one name twice and fail

@@ -285,10 +285,10 @@ def _install_flag_error(args, *, extras: list[str], cross_target, tools_only: bo
     if without and (extras or cross_target or args.names):
         return "--without shapes the default closure; it does not take names, --extra, or --target"
     if without:
-        from pm.defaults import default_package_names
+        from pm.defaults import canonical_default_name, default_package_names
 
         allowed = default_package_names()
-        unknown = [name for name in without if name not in allowed]
+        unknown = [name for name in without if canonical_default_name(name) not in allowed]
         if unknown:
             return (f"--without accepts only optional default packages ({', '.join(allowed)}); "
                     f"not {', '.join(unknown)}")
@@ -342,6 +342,10 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
 
 
 def cmd_install(args) -> int:
+    from pm.defaults import canonical_default_name
+
+    # Old install logs print `hermes pm install agent-browser` as the browser opt-back-in.
+    args.names = [canonical_default_name(name) for name in args.names or ()]
     cross_target = getattr(args, "target", None)
     # Source-install launchers require the store interpreter, even though
     # Python remains optional when provisioning individual tools.
@@ -397,7 +401,7 @@ def cmd_install(args) -> int:
         return 0
     failed = _install_python_environments(extras, sync=bool(extras or not args.names),
                                           test_environment=test_environment)
-    # Defaults are optional and large (agent-browser + Chromium, cua-driver): fetch them
+    # Defaults are optional and large (Chromium, cua-driver): fetch them
     # only once the venv, and on Windows ARM64 its build tools, succeeded.
     if not failed:
         _install_defaults(defaults, verify=not trust_recorded)
@@ -488,6 +492,9 @@ def _gc_store(store, facts) -> tuple[int, int]:
         return (0, 0)
     removed = 0
     with store.install_lock():
+        from pm.defaults import RETIRED_DEFAULTS
+
+        facts.forget(RETIRED_DEFAULTS)
         facts.reload()
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
@@ -847,7 +854,7 @@ def main(argv=None) -> int:
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--without", action="append", default=[], metavar="NAME",
-                   help="leave an optional default package (agent-browser, cua-driver) out of this and every later "
+                   help="leave an optional default package (chromium, cua-driver) out of this and every later "
                         "default install and update; `hermes pm install NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")

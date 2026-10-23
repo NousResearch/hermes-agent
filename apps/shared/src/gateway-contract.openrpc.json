@@ -259,80 +259,8 @@
       }
     },
     {
-      "name": "browser.controller.detach",
-      "summary": "Hard-detach only the controller owned by this authenticated transport.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BrowserControllerDetachResult"
-        }
-      }
-    },
-    {
-      "name": "browser.controller.heartbeat",
-      "summary": "Acknowledge a heartbeat only for this transport's own attached controller.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/OkResult"
-        }
-      }
-    },
-    {
-      "name": "browser.controller.register",
-      "summary": "Attach this connection as the browser controller for one session; fails closed (4403).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerRegisterParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BrowserControllerRegisterResult"
-        }
-      }
-    },
-    {
-      "name": "browser.controller.result",
-      "summary": "Deliver one command result to the broker; accepted is false for unknown or settled command ids.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerResultParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BrowserControllerResultResult"
-        }
-      }
-    },
-    {
       "name": "browser.manage",
-      "summary": "Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode (``use``, applies to new sessions); ``messages`` narrate a connect.",
+      "summary": "Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.",
       "params": [
         {
           "name": "params",
@@ -7501,264 +7429,10 @@
         "enum": [
           "status",
           "connect",
-          "disconnect",
-          "use"
+          "disconnect"
         ],
         "title": "BrowserAction",
         "type": "string"
-      },
-      "BrowserControllerCancelPayload": {
-        "additionalProperties": false,
-        "description": "``gateway/browser_control_broker.py::_cancel_frame``.",
-        "properties": {
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "tool_call_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tool Call Id"
-          }
-        },
-        "required": [
-          "command_id"
-        ],
-        "title": "BrowserControllerCancelPayload",
-        "type": "object"
-      },
-      "BrowserControllerCommandPayload": {
-        "additionalProperties": false,
-        "description": "``gateway/browser_control_broker.py`` FRAME_COMMAND params.",
-        "properties": {
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "action": {
-            "title": "Action",
-            "type": "string"
-          },
-          "arguments": {
-            "additionalProperties": true,
-            "title": "Arguments",
-            "type": "object"
-          },
-          "controller_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Controller Id"
-          },
-          "browser_profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Browser Profile Id"
-          },
-          "tool_call_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tool Call Id"
-          }
-        },
-        "required": [
-          "command_id",
-          "action",
-          "arguments"
-        ],
-        "title": "BrowserControllerCommandPayload",
-        "type": "object"
-      },
-      "BrowserControllerDetachResult": {
-        "additionalProperties": false,
-        "properties": {
-          "detached": {
-            "default": true,
-            "title": "Detached",
-            "type": "boolean"
-          }
-        },
-        "title": "BrowserControllerDetachResult",
-        "type": "object"
-      },
-      "BrowserControllerParams": {
-        "additionalProperties": false,
-        "description": "Every controller call names the session the controller is attached to.",
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id"
-        ],
-        "title": "BrowserControllerParams",
-        "type": "object"
-      },
-      "BrowserControllerRegisterParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "controller_id": {
-            "title": "Controller Id",
-            "type": "string"
-          },
-          "browser_profile_id": {
-            "title": "Browser Profile Id",
-            "type": "string"
-          },
-          "capabilities": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Capabilities"
-          },
-          "protocol_version": {
-            "anyOf": [
-              {},
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Protocol Version"
-          },
-          "principal_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Principal Id"
-          }
-        },
-        "required": [
-          "session_id",
-          "controller_id",
-          "browser_profile_id"
-        ],
-        "title": "BrowserControllerRegisterParams",
-        "type": "object"
-      },
-      "BrowserControllerRegisterResult": {
-        "additionalProperties": false,
-        "properties": {
-          "scope": {
-            "$ref": "#/components/schemas/ControllerScope"
-          }
-        },
-        "required": [
-          "scope"
-        ],
-        "title": "BrowserControllerRegisterResult",
-        "type": "object"
-      },
-      "BrowserControllerResultParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "ok": {
-            "anyOf": [
-              {},
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Ok"
-          },
-          "result": {
-            "anyOf": [
-              {},
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Result"
-          },
-          "error": {
-            "anyOf": [
-              {},
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          }
-        },
-        "required": [
-          "session_id",
-          "command_id"
-        ],
-        "title": "BrowserControllerResultParams",
-        "type": "object"
-      },
-      "BrowserControllerResultResult": {
-        "additionalProperties": false,
-        "properties": {
-          "accepted": {
-            "title": "Accepted",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "accepted"
-        ],
-        "title": "BrowserControllerResultResult",
-        "type": "object"
       },
       "BrowserManageParams": {
         "additionalProperties": false,
@@ -7778,18 +7452,6 @@
             ],
             "default": null,
             "title": "Url"
-          },
-          "enabled": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Enabled"
           },
           "session_id": {
             "anyOf": [
@@ -7852,18 +7514,6 @@
             ],
             "default": null,
             "title": "Messages"
-          },
-          "browser_use": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Browser Use"
           }
         },
         "required": [
@@ -10231,18 +9881,6 @@
             "default": null,
             "title": "Tool Availability Warnings"
           },
-          "browser_backend_notice": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Browser Backend Notice"
-          },
           "unknown_toolsets": {
             "anyOf": [
               {
@@ -10970,18 +10608,6 @@
             ],
             "default": null,
             "title": "Tool Availability Warnings"
-          },
-          "browser_backend_notice": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Browser Backend Notice"
           },
           "unknown_toolsets": {
             "anyOf": [
@@ -15610,53 +15236,6 @@
           "status"
         ],
         "title": "ContextFileSource",
-        "type": "object"
-      },
-      "ControllerScope": {
-        "additionalProperties": false,
-        "properties": {
-          "principal_id": {
-            "title": "Principal Id",
-            "type": "string"
-          },
-          "profile_id": {
-            "title": "Profile Id",
-            "type": "string"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "controller_id": {
-            "title": "Controller Id",
-            "type": "string"
-          },
-          "browser_profile_id": {
-            "title": "Browser Profile Id",
-            "type": "string"
-          },
-          "transport_family": {
-            "title": "Transport Family",
-            "type": "string"
-          },
-          "capabilities": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Capabilities",
-            "type": "array"
-          }
-        },
-        "required": [
-          "principal_id",
-          "profile_id",
-          "session_id",
-          "controller_id",
-          "browser_profile_id",
-          "transport_family",
-          "capabilities"
-        ],
-        "title": "ControllerScope",
         "type": "object"
       },
       "CorrectionStatus": {
@@ -48957,30 +48536,6 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ChangeSignalPayload"
-          }
-        }
-      ]
-    },
-    {
-      "name": "browser.controller.cancel",
-      "summary": "Withdraw a pending controller command.",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerCancelPayload"
-          }
-        }
-      ]
-    },
-    {
-      "name": "browser.controller.command",
-      "summary": "Dispatch one browser action to the attached controller.",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerCommandPayload"
           }
         }
       ]

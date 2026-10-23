@@ -391,8 +391,8 @@ class PluginContext:
 
     @cached_property
     def delegation_backends(self) -> Any:
-        """``agent.delegation_backends.DelegationBackends``: list delegation backends and switch them per session or
-        globally (a ``/delegation`` command); a host remote facade, so it acts on the owner process."""
+        """``agent.delegation_backends.DelegationBackends``: list delegation backends and save one, optionally
+        rebuilding the calling session's tools now (``/delegation``); a host remote facade on the owner process."""
         from agent.delegation_backends import DelegationBackends
         return DelegationBackends()
 

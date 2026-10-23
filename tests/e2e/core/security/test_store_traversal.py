@@ -187,7 +187,10 @@ def test_control_valid_reject_drops_only_that_record(store: Store) -> None:
 
 def test_control_valid_approve_applies_the_staged_write(store: Store) -> None:
     target = store.memory_ids[1]
-    out = _slash(store.b, store.sid, f"/memory approve {target}")
+    listing = _slash(store.b, store.sid, "/memory pending")
+    token = re.search(rf"^  {re.escape(target)}\b[^\n]*\n(?:(?!^  \S).)*?^ +review token: ([0-9a-f]{{64}})$", listing, re.MULTILINE | re.DOTALL)
+    assert token, f"/memory pending shows no review token for {target}: {listing[:400]}"
+    out = _slash(store.b, store.sid, f"/memory approve {target} {token[1]}")
     assert store.memory_texts[1] in store.memory_blob(), f"approved write missing from MEMORY.md; output: {out}"
     assert target not in store.pending_ids("memory"), "an applied record stayed pending"
 

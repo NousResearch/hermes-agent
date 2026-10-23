@@ -54,13 +54,10 @@ def test_waiter_busy_read_retries_without_releasing_worker(monkeypatch):
 def test_adopted_child_finishes_once_after_parent_observation(tmp_path,monkeypatch,observer_fails):
     """Exercise process-identity fencing, not same-process adoption mocks."""
     import json
-    import os
-    from pathlib import Path
     import subprocess
     import sys
     from cron import executions,jobs,scheduler
 
-    home=Path(os.environ['HERMES_HOME'])
     ledger=tmp_path/'executions.db'
     monkeypatch.setattr(executions,'EXECUTIONS_FILE',ledger)
     job=jobs.create_job(name='fixture',prompt='fixture',schedule='1h',deliver='none')
@@ -96,7 +93,7 @@ with jobs.fire_claim_fence(job['id'],expected_owner=job['fire_claim']['by']) as 
             assert scheduler.run_one_job(claimed)
         assert jobs.get_job(job['id'])['fire_claim']==claimed['fire_claim']
         assert jobs.claim_job_for_fire(job['id']) is False
-        out,err=child.communicate('finish\n',timeout=30)
+        _out,err=child.communicate('finish\n',timeout=30)
         assert child.returncode==0,err
         assert executions.get_execution(eid)['status']=='completed'
         assert effect.read_text()=='once\n'
@@ -104,5 +101,4 @@ with jobs.fire_claim_fence(job['id'],expected_owner=job['fire_claim']['by']) as 
     finally:
         if child.poll() is None:
             child.kill()
-        child.communicate()
-
+        child.communicate(timeout=10)

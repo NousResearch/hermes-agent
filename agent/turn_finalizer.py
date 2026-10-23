@@ -592,6 +592,15 @@ def finalize_turn(
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 
+    # A Kanban worker's terminal tool call is staged while ``pre_verify`` can still
+    # nudge the model. Publish ``done`` only after this turn has passed every stop gate.
+    from tools.kanban_tools import finalize_pending_completion
+    if finalize_pending_completion(accepted=completed and not failed and not interrupted) is False:
+        completed = False
+        failed = True
+        _turn_exit_reason = 'kanban_completion_refused'
+        final_response = (final_response or '') + '\nKanban completion was refused; the card remains in-flight. Check kanban_show for the current refusal and retry.'
+
     _rollback_interrupted_preflight_display(agent, interrupted)
 
     from hermes_cli.observability.shared_metrics_harness import finish_turn

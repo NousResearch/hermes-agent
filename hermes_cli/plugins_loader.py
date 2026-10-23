@@ -197,9 +197,13 @@ def _load_error_text(exc: BaseException) -> str:
     return str(exc)
 
 
+def _dist_name(req: str) -> str:
+    return re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+
+
 def _dist_installed(req: str) -> Optional[bool]:
     """Best-effort presence probe on a requirement's distribution name; ``None`` when unprobeable."""
-    dist = re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+    dist = _dist_name(req)
     if not dist:
         return None
     try:
@@ -209,6 +213,31 @@ def _dist_installed(req: str) -> Optional[bool]:
         return False
     except Exception:
         return None
+
+
+def missing_python_dependencies(manifest: Any) -> list[str]:
+    """The plugin's declared ``python_dependencies`` this process cannot import."""
+    return [req for req in getattr(manifest, "python_dependencies", None) or ()
+            if _dist_installed(req) is False]
+
+
+def installed_in_selected_environment(requirements: list[str]) -> bool:
+    """Whether every one of *requirements* is in the dependency environment PM currently selects.
+
+    Activation is a boot decision (``pm.environments.activate_dependencies``): a gateway or dashboard
+    that was running when ``hermes plugins enable`` committed a new generation keeps the old one. A
+    requirement it cannot import that the selected generation carries therefore needs a restart, not
+    a repair. False when unknown."""
+    try:
+        from pm.environments import selected_venv, site_packages
+        from pm.paths import repo_root
+
+        site = str(site_packages(selected_venv(repo_root())))
+        return bool(requirements) and all(
+            next(iter(importlib.metadata.distributions(name=_dist_name(req), path=[site])), None) is not None
+            for req in requirements)
+    except (OSError, RuntimeError, ValueError):  # unreadable or invalid selection record
+        return False
 
 
 class PluginLoaderMixin:
@@ -434,8 +463,15 @@ class PluginLoaderMixin:
         if not deps:
             return
         key = manifest_key(manifest)
-        missing = [req for req in deps if _dist_installed(req) is False]
-        if missing:
+        missing = missing_python_dependencies(manifest)
+        if missing and installed_in_selected_environment(missing):
+            logger.warning(
+                "Plugin %s's Python dependencies were installed after this process started: %s. "
+                "A running process never switches dependency environments; restart Hermes "
+                "(hermes gateway restart for the gateway) to load them.",
+                key, ", ".join(missing),
+            )
+        elif missing:
             logger.warning(
                 "Plugin %s declares Python dependencies that are not "
                 "installed: %s. For an enabled plugin, run hermes pm repair, "

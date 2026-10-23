@@ -71,7 +71,13 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
         s for s, owner in manager._portable_mcp_server_plugins.items() if owner == plugin_key})
     if servers:
         deferred["mcp_servers"] = servers
-    return {"name": name, "key": plugin_key, "activated_now": now, "deferred": deferred}
+    summary = {"name": name, "key": plugin_key, "activated_now": now, "deferred": deferred}
+    # Read in the process that loaded the plugin (for a gateway answer, the gateway): a dependency
+    # installed after it booted is not importable there until it restarts.
+    from hermes_cli.plugins_loader import missing_python_dependencies
+    if missing := missing_python_dependencies(manifest):
+        summary["missing_dependencies"] = missing
+    return summary
 
 
 def activation_summaries(manager: Any) -> list[dict[str, Any]]:
@@ -103,17 +109,25 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
 
     Returns ``{"gateway_reloaded": bool, "activation": summary | None, "restart_required": bool}``.
     ``activation.live_now`` lists what is usable in open chats now; ``activation.deferred`` what waits
-    for the next session. ``restart_required`` is True only when no gateway answered (old gateway, not
-    running)."""
+    for the next session. ``restart_required`` is True when no gateway answered (old gateway, not
+    running), or when this process or the gateway cannot import the plugin's Python dependencies
+    (``activation.missing_dependencies``): a running process never switches to the dependency
+    generation an enable just installed, so only a restart loads them."""
     from hermes_constants import get_hermes_home
     activation: Optional[dict[str, Any]] = load_and_go_live(name) if in_process else None
     if not in_process:
         activation = (notify_serve_backend(name, Path(get_hermes_home())) or {}).get("activation")
     answer = reload_running_gateway()
     reloaded = bool(answer and answer.get("reloaded"))
+    gateway_activation = find_activation((answer or {}).get("activations"), name) if reloaded else None
     if reloaded and activation is None:
-        activation = find_activation((answer or {}).get("activations"), name)
-    return {"gateway_reloaded": reloaded, "activation": activation, "restart_required": not reloaded}
+        activation = gateway_activation
+    missing = sorted({*((activation or {}).get("missing_dependencies") or ()),
+                      *((gateway_activation or {}).get("missing_dependencies") or ())})
+    if missing:
+        activation = {**(activation or {"name": name, "key": name}), "missing_dependencies": missing}
+    return {"gateway_reloaded": reloaded, "activation": activation,
+            "restart_required": not reloaded or bool(missing)}
 
 
 def reload_running_gateway() -> Optional[dict[str, Any]]:
@@ -241,6 +255,18 @@ def _gateway_present() -> bool:
             or _installed_service_kind() is not None)
 
 
+def dependency_restart_hint(missing: list[str]) -> str:
+    """What to do when the running gateway / backend cannot import a plugin's dependencies."""
+    from hermes_cli.plugins_loader import installed_in_selected_environment
+    deps = ", ".join(missing)
+    if installed_in_selected_environment(missing):
+        return (f"Its Python dependencies ({deps}) were installed after the running gateway or dashboard "
+                "started, and a running process never switches dependency environments. Restart them to "
+                "load the plugin:\n  hermes gateway restart")
+    return (f"Its Python dependencies ({deps}) are not installed. Run hermes pm repair, then restart:\n"
+            "  hermes gateway restart")
+
+
 def report_activation(console, name: str) -> None:
     """After a CLI install/enable: load *name* where it can go live now (:func:`activate_plugin_now`)
     and print :func:`activation_hint`, or nothing when there is nothing to say."""
@@ -260,6 +286,8 @@ def activation_hint(result: dict[str, Any]) -> str:
         lines.append(f"Live in open chats now: {tools} MCP tools, {len(live.get('skills') or ())} skills.")
     lines.extend(f"MCP server {s['name']} not connected: {s.get('error') or 'unknown error'}"
                  for s in live.get("mcp_servers") or () if not s.get("connected"))
+    if missing := act.get("missing_dependencies"):
+        return "\n".join([*lines, dependency_restart_hint(missing)])
     if not result.get("gateway_reloaded"):
         # Live in open chats, or no gateway runs or is installed for this profile (first-time setup):
         # a messaging gateway that starts later loads it at boot, so a restart applies to nothing.

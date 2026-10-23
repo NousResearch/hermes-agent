@@ -55,4 +55,17 @@ async def prepare_workspace(authority, live, payload, prepared):
     return _rebind(authority, prepared, old, policy, git={'branch': branch, 'root': root})
 
 
-PREPARE = {'reasoning': prepare_reasoning, 'workspace': prepare_workspace}
+async def prepare_edit_policy(authority, live, payload, prepared):
+    """Main's ACP modes (Default / Accept Edits / Don't Ask) as the session's frozen edit approval
+    policy. Only an ACP session's edits ask an editor; selecting the current policy writes nothing."""
+    from gateway.session_policy import restore_policy
+    old = restore_policy(prepared['snapshot']['receipt']['policy'])
+    if old.source != 'acp':
+        raise RuntimeStoreError('invalid_params', field='payload.policy',
+                                detail='only an ACP session has an editor edit approval policy')
+    if old.edit_approval_policy == payload['policy']:
+        return {'status': 'noop', 'edit_approval_policy': old.edit_approval_policy}
+    return _rebind(authority, prepared, old, replace(old, edit_approval_policy=payload['policy']))
+
+
+PREPARE = {'reasoning': prepare_reasoning, 'workspace': prepare_workspace, 'edit_policy': prepare_edit_policy}

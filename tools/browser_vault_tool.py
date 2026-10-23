@@ -41,11 +41,9 @@ def _check_vault_available() -> bool:
     """Schema-gate: the vault rides with the browser. An empty vault still needs save_login so the
     agent can offer to remember a login the first time it meets a form; hiding the tool until an item
     exists meant nobody ever discovered the feature. Deferral keeps that presence nearly free."""
-    from tools.browser_tool_install import check_browser_requirements
-    from tools.browser_use_cli import is_browser_use_cli_mode
-    # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
-    # built-in surface); the vault serves both stacks.
-    return bool(is_browser_use_cli_mode() or check_browser_requirements())
+    from tools.browser_session_cdp import get_cdp_override_raw
+    from tools.browser_use_cli import browser_exec_available
+    return bool(browser_exec_available() or get_cdp_override_raw())
 
 
 # ---------------------------------------------------------------------------
@@ -53,76 +51,50 @@ def _check_vault_available() -> bool:
 # ---------------------------------------------------------------------------
 
 def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
-    """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
-
-    Prefers the supervisor's persistent CDP WebSocket, falls back to the
-    agent-browser CLI ``eval`` command. Never use this for expressions that
-    embed secret values — the fallback places the expression in subprocess
-    argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
-    """
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
-        if supervisor is not None:
-            sup = supervisor.evaluate_runtime(expression)
-            if sup.get("ok"):
-                return {"success": True, "result": sup.get("result")}
-            err = str(sup.get("error") or "")
-            if "supervisor" not in err.lower():
-                return {"success": False, "error": err}
-    except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
-
-    from tools.browser_tool import _last_session_key
-    from tools.browser_tool_session import _run_browser_command
-
-    effective = _last_session_key(task_id)
-    result = _run_browser_command(effective, "eval", [expression])
-    if not result.get("success"):
-        return {"success": False, "error": result.get("error", "eval failed")}
-    return {"success": True, "result": result.get("data", {}).get("result")}
+    """Evaluate NON-SECRET JS on the current page (inspection, origin reads) over the task's CDP
+    supervisor. There is no other path: without a supervisor the call reports it."""
+    supervisor = _ensure_supervisor(task_id)
+    if supervisor is None:
+        return {"success": False, "error": "no supervised browser session for this task; open the page with "
+                                           "browser_exec first"}
+    sup = supervisor.evaluate_runtime(expression)
+    if sup.get("ok"):
+        return {"success": True, "result": sup.get("result")}
+    return {"success": False, "error": str(sup.get("error") or "evaluate failed")}
 
 
 def _ensure_supervisor(task_id: str):
-    """The supervisor for ``task_id``, attaching one on demand for a LOCAL built-in browser session.
-
-    Cloud/CDP-override sessions and browser_exec attach their supervisor when the session is created;
-    a local agent-browser ``--session`` has no ``cdp_url`` of its own, so nothing did. Ask the daemon
-    for the packaged Chromium's endpoint (``get cdp-url``: same daemon, same reaper) and attach.
-    Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
+    """The supervisor for ``task_id`` (browser_exec attaches one on every call), attaching one on demand to
+    the task's session CDP endpoint when none is running. None when no endpoint is known; a fill then
+    refuses rather than touching argv."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     supervisor = SUPERVISOR_REGISTRY.get(task_id)
     if supervisor is not None:
         return supervisor
-    from tools.browser_tool import _last_session_key
-    from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
-    from tools.browser_tool_session import _run_browser_command
+    from tools.browser_session import session_for_task
+    from tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
 
-    res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
-    cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
+    cdp_url = str(session_for_task(task_id).get("cdp_url") or "")
     if not cdp_url:
         return None
-    policy, timeout_s = _get_dialog_policy_config()
+    policy, timeout_s = get_dialog_policy_config()
     try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
+        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=resolve_cdp_override(cdp_url),
                                                 dialog_policy=policy, dialog_timeout_s=timeout_s)
-    except Exception as exc:
-        logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)
+    except Exception as exc:  # health: allow BLE001 -- a failed attach is reported as supervisor_required
+        logger.debug("vault fill: supervisor attach to the task's session failed (%s)", exc)
         return None
 
 
 def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
-    Fails closed: there is deliberately NO fallback to the agent-browser CLI
-    ``eval`` path, because that places the expression — and therefore the
-    credential bytes — in subprocess argv, visible to any process listing.
-    When no supervisor session is available the caller gets a typed refusal
-    (``error_type='supervisor_required'``) and nothing is written.
+    Fails closed: there is deliberately NO subprocess path, because that would
+    place the expression — and therefore the credential bytes — in argv,
+    visible to any process listing. When no supervisor session is available
+    the caller gets a typed refusal (``error_type='supervisor_required'``) and
+    nothing is written.
     """
     try:
         supervisor = _ensure_supervisor(task_id)
@@ -136,10 +108,8 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
             "error_type": "supervisor_required",
             "error": (
                 "Vault fill requires the supervised browser session (direct "
-                "CDP WebSocket). The fallback eval path would place the "
-                "credential in subprocess argv, so it is never used for "
-                "secrets. Start the browser through the Hermes-managed "
-                "session and retry."
+                "CDP WebSocket), and this task has none. Open the page with "
+                "browser_exec and retry."
             ),
         }
 
@@ -614,20 +584,17 @@ BROWSER_VAULT_SCHEMA = {
 
 
 def _bot_desktop_browser_session(task_id: Optional[str]) -> bool:
-    from tools.browser_tool import _active_sessions, _last_session_key
-    from tools.browser_tool_session import _shares_bot_desktop_browser
-    return _shares_bot_desktop_browser(_active_sessions.get(_last_session_key(task_id or "default")) or {})
+    from tools.browser_session import session_for_task, shares_bot_desktop_browser
+    return shares_bot_desktop_browser(session_for_task(task_id))
 
 
 def _fenced_page_op(task_id: Optional[str], fn) -> str:
     """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
-    ``_run_browser_command``; they must honour the Bot Desktop lease like every other page access,
-    or a human typing a credential on the taken-over screen could be read or written to."""
-    from tools.browser_tool import _active_sessions, _last_session_key
-    from tools.browser_tool_session import run_fenced
+    browser_exec; they must honour the Bot Desktop lease like every other page access, or a human
+    typing a credential on the taken-over screen could be read or written to."""
+    from tools.browser_session import run_fenced, session_for_task
 
-    session = _active_sessions.get(_last_session_key(task_id or "default")) or {}
-    res = run_fenced(session, lambda: {"raw": fn()})
+    res = run_fenced(session_for_task(task_id), lambda: {"raw": fn()})
     return res["raw"] if "raw" in res else json.dumps(res)
 
 

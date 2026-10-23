@@ -407,7 +407,7 @@ _cleanup_all_terminals = _lazy_shim("tools.terminal_tool", "cleanup_all_environm
 set_sudo_password_callback = _lazy_shim("tools.terminal_tool", "set_sudo_password_callback")
 set_approval_callback = _lazy_shim("tools.terminal_tool", "set_approval_callback")
 set_secret_capture_callback = _lazy_shim("tools.skills_tool", "set_secret_capture_callback")
-_cleanup_all_browsers = _lazy_shim("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", "_cleanup_all_browsers")
+_cleanup_all_browsers = _lazy_shim("tools.browser_session_lifecycle", "emergency_cleanup_all_sessions", "_cleanup_all_browsers")
 
 _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False
@@ -829,11 +829,14 @@ class _VoiceInputMessage:
 class _SeededQueryMessage:
     """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop)."""
 
-    __slots__ = ("images", "text")
+    __slots__ = ("admission_id", "images", "text")
 
-    def __init__(self, text: str, images=None):
+    def __init__(self, text: str, images=None, admission_id=None):
         self.text = text or ""
         self.images = list(images or [])
+        # A ``/queue`` admission the gateway is running (#134889 N5): ``run_conversation`` pumps that
+        # admission by this id, never by comparing the (sanitized) text.
+        self.admission_id = admission_id
 
     def __str__(self) -> str:
         return self.text
@@ -970,18 +973,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 print(banner, file=sys.stderr, flush=True)
         except Exception:
             pass  # never block startup
-
-    def _show_browser_backend_notice(self):
-        """Once-per-24h hint when the default Browser Use backend silently fell back to built-in tools."""
-        try:
-            from tools.browser_use_cli import default_downgrade_notice
-
-            notice = default_downgrade_notice()
-            if notice:
-                from gateway.warning_notifications import render_notification
-                render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
-        except Exception:
-            logger.debug("browser backend notice failed", exc_info=True)
 
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt (idempotent).
@@ -1287,10 +1278,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not plugin_handler:
             return
         session_id = getattr(self, "session_id", None) or ""
+        from hermes_cli.plugin_choices import bind_asker, clarify_asker
         try:
-            result = resolve_plugin_command_result(invoke_plugin_command(
-                plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
-                platform="cli"))
+            with bind_asker(clarify_asker(self._clarify_callback)):  # ctx.ask_choice: the clarify panel
+                result = resolve_plugin_command_result(invoke_plugin_command(
+                    plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
+                    platform="cli"))
             if result:
                 _cprint(str(result))
         except Exception as e:
@@ -1636,7 +1629,8 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
 
     def _create_worktree() -> None:
         try:
-            _wt_result["info"] = _setup_worktree(sync_base=_sync_base)
+            # The session freezes this cwd: recorded so a resume recreates the tree quit removed (N8).
+            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=get_hermes_home() / "state.db")
         except Exception:
             logger.debug("worktree setup failed", exc_info=True)
             _wt_result["info"] = None

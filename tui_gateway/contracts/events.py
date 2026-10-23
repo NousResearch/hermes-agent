@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MessageReaction, PlanGauge, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
@@ -191,9 +191,40 @@ class TurnStatus(WireEnum):
     interrupted = "interrupted"
 
 
+class UsageLimitSuggestion(Payload):
+    """``agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit."""
+
+    model: str
+    label: str
+    note: str                    # "free" | "included"
+    provider: str = "nous"
+
+
+class UsageLimitCredits(Payload):
+    """``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or
+    ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance)."""
+
+    action: str
+
+
+class UsageLimit(Payload):
+    """``agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and
+    the one-click ways on (switch to a recommended model, use / add credits)."""
+
+    gauge_id: str
+    scope: str
+    limit_name: str
+    resets_at_ms: int | None = None
+    message: str
+    suggestions: list[UsageLimitSuggestion] = Field(default_factory=list)
+    credits: UsageLimitCredits | None = None
+    current_model: str = ""
+
+
 class ErrorSurface(Payload):
     """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint,
-    + ``resets_at`` epoch seconds when the provider named when its limit lifts)."""
+    + ``resets_at`` epoch seconds when the provider named when its limit lifts, + ``usage_limit`` on a
+    usage-window plan's limit)."""
 
     layer: str
     code: str
@@ -201,6 +232,7 @@ class ErrorSurface(Payload):
     provider: str | None = None
     model: str | None = None
     resets_at: float | None = None
+    usage_limit: UsageLimit | None = None
     model_config = Payload.model_config | {"extra": "allow"}
 
 
@@ -304,6 +336,7 @@ class SessionUsagePayload(Payload):
     model: str | None = None
     provider: str | None = None
     fallback_model: str | None = None
+    plan_gauge: PlanGauge | None = None
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")
@@ -407,6 +440,21 @@ class ToolOutputRiskPayload(Payload):
 
 
 event("tool.output_risk", ToolOutputRiskPayload, doc="Tool output was classified as risky (prompt-injection / secret findings).")
+
+
+class ToolProgressPayload(Payload):
+    """``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's
+    ``notifications/progress`` for a running call, throttled to one per 500 ms per call."""
+
+    tool_id: str
+    name: str
+    progress: float
+    total: float | None = None
+    percent: int | None = None
+    message: str | None = None
+
+
+event("tool.progress", ToolProgressPayload, doc="Live progress of a running tool call (MCP notifications/progress).")
 
 
 class TodoUpdatedPayload(Payload):
@@ -712,31 +760,6 @@ class BrowserProgressPayload(Payload):
 event("browser.progress", BrowserProgressPayload, doc="Browser (CDP) connect / install progress line.")
 
 
-# ── browser controller (gateway/browser_control_broker frames re-enveloped as events) ─────────
-
-
-class BrowserControllerCommandPayload(Payload):
-    """``gateway/browser_control_broker.py`` FRAME_COMMAND params."""
-
-    command_id: str
-    action: str
-    arguments: dict[str, JsonValue]
-    controller_id: str | None = None
-    browser_profile_id: str | None = None
-    tool_call_id: str | None = None
-
-
-class BrowserControllerCancelPayload(Payload):
-    """``gateway/browser_control_broker.py::_cancel_frame``."""
-
-    command_id: str
-    tool_call_id: str | None = None
-
-
-event("browser.controller.command", BrowserControllerCommandPayload, doc="Dispatch one browser action to the attached controller.")
-event("browser.controller.cancel", BrowserControllerCancelPayload, doc="Withdraw a pending controller command.")
-
-
 # ── voice ─────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -833,8 +856,7 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 
 
 __all__ = [
-    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
-    "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
+    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
     "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
@@ -846,7 +868,8 @@ __all__ = [
     "SetupReadyPayload", "SideAgentCompletePayload", "SkinPayload", "StatusUpdatePayload",
     "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
-    "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolStartPayload",
+    "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolProgressPayload",
+    "ToolStartPayload",
     "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

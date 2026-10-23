@@ -21,6 +21,7 @@
  * `/topup`), while third-party providers deep-link to `billing_url`.
  */
 export type { BillingBlock } from './gateway-contract.generated.js'
+import type { PlanUsage } from './gateway-contract.generated.js'
 
 // ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
@@ -200,6 +201,9 @@ export interface BillingStateResponse {
   charge_presets_display: string[]
   cli_billing_enabled: boolean
   error?: string | null
+  // Window plans: "Keep going on credits".
+  // Absent/null = no control (not a billing admin, other plan, older gateway).
+  keep_going_on_credits?: boolean | null
   is_admin: boolean
   logged_in: boolean
   max_usd: string | null
@@ -212,6 +216,10 @@ export interface BillingStateResponse {
   // Shared dollar usage model (two-bar view), embedded by the gateway so /topup
   // renders the same bars as /usage and /subscription from this single fetch.
   usage?: UsageModelData
+  // Usage-window gauges (today / week / month / large models). For window plans
+  // `usage` is unavailable, so this is what the bars draw from.
+  // Absent/null on credit-grant, free and logged-out accounts and older gateways.
+  plan_usage?: PlanUsage | null
 }
 
 /**
@@ -307,6 +315,7 @@ export interface SubscriptionStateResponse {
   // Shared dollar usage model (two-bar view), embedded by the gateway so the
   // overlay renders the same bars as /usage from this single fetch.
   usage?: UsageModelData
+  plan_usage?: PlanUsage | null
 }
 
 // A chargeless quote (POST /subscription/preview) of what a change would do.

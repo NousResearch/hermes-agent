@@ -23,7 +23,9 @@ _EVENT_FIELDS = (
     'reply_to_message_id', 'reply_to_text', 'reply_to_author_id',
     'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control',
 )
-_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected')
+# ``reply_anchor_override`` = '' is Telegram topic transfer's "do not quote the root DM" (#139136).
+_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected', 'reply_anchor_override',
+                   'edit_revision')
 # Closed metadata contract: only the keys the Baileys adapter stamps on ordinary inbound
 # (``WhatsAppAdapter._build_message_event``) cross native admission; any other key refuses.
 _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'whatsapp_from_owner'})
@@ -99,7 +101,7 @@ def _event_clause(runner, event, provenance, fresh_roles):
     if not isinstance(event.message_type, MessageType):
         return 'message_type'
     # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
-    if event.message_type == MessageType.COMMAND or event.get_command():
+    if event.get_command():
         return 'command'
     if event.internal:
         return 'internal'
@@ -138,7 +140,7 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
             source.platform, "authorization_is_upstream", runner._adapter_profile_for_source(source))
     if not runner._is_user_authorized_for_source(source, allow_adapter_delegation=delegated):
         _refuse(event, 'permission_denied', 'user_not_authorized')
-    for name in ('channel_prompt', 'channel_context'):
+    for name in ('channel_prompt', 'channel_context', 'reply_anchor_override'):
         if getattr(event, name) is not None and not isinstance(getattr(event, name), str):
             _refuse(event, 'invalid_params', name)
     if event.reply_expected is not None and type(event.reply_expected) is not bool:
@@ -232,7 +234,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         envelope['event']['inherit_channel_pin'] = True
     if metadata := _native_metadata(event):
         envelope['event']['metadata'] = metadata
-    if event.message_type != MessageType.TEXT:
+    # COMMAND that passed admission is path text (``/Users/x is broken``): replay it as text.
+    if event.message_type not in (MessageType.TEXT, MessageType.COMMAND):
         envelope['message_type'] = event.message_type.value
     if event.media_urls:
         envelope['media'] = media if media is not None else capture_native_media(event.media_urls)

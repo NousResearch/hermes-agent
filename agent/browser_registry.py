@@ -1,5 +1,5 @@
 """Browser provider registry: cloud browser backends registered by plugins via
-:meth:`PluginContext.register_browser_provider`, consumed by ``tools.browser_tool_cloud._get_cloud_provider``.
+:meth:`PluginContext.register_browser_provider`, consumed by ``tools.browser_session_cloud.get_cloud_provider``.
 
 Active-provider precedence (see :func:`_resolve`): ``browser.cloud_provider`` in config.yaml wins
 regardless of ``is_available()`` (so the dispatcher surfaces a typed "X_API_KEY is not set" error

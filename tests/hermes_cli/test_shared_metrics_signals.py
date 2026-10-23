@@ -52,12 +52,12 @@ def test_only_a_disabled_shipped_builtin_is_reported(monkeypatch):
     monkeypatch.setattr("tools.skill_provenance.is_background_review", lambda: False)
     route = {"model": "m", "provider": "openrouter"}
     agent = SimpleNamespace(_delegate_depth=0)
-    fields = signals.tool_unavailable_fields(agent, "browser_navigate", "unknown_tool", route)
-    assert fields == {"model": "m", "provider": "openrouter", "tool_name": "browser_navigate"}
+    fields = signals.tool_unavailable_fields(agent, "browser_exec", "unknown_tool", route)
+    assert fields == {"model": "m", "provider": "openrouter", "tool_name": "browser_exec"}
     assert contract.counter_dimensions_are_valid(contract.TOOL_UNAVAILABLE_METRIC, fields)
     # Not shipped (plugin/MCP/hallucinated): stays v4 unknown_tool only.
     assert signals.tool_unavailable_fields(agent, "mcp_github_search", "unknown_tool", route) is None
-    assert signals.tool_unavailable_fields(agent, "browser_navigate", "invalid_json", route) is None
+    assert signals.tool_unavailable_fields(agent, "browser_exec", "invalid_json", route) is None
     assert signals.tool_unavailable_fields(SimpleNamespace(_delegate_depth=1), "memory", "unknown_tool", route) is None
     monkeypatch.setattr("tools.skill_provenance.is_background_review", lambda: True)
     assert signals.tool_unavailable_fields(agent, "memory", "unknown_tool", route) is None
@@ -84,10 +84,10 @@ def test_turn_validation_reports_disabled_builtin_once_and_unknown_names_never(m
     agent = SimpleNamespace(provider="openrouter", model="anthropic/claude-sonnet-4", valid_tool_names={"memory"},
                             tools=[], _delegate_depth=0)
     calls = [SimpleNamespace(function=SimpleNamespace(name=n, arguments="{}"))
-             for n in ("browser_navigate", "memory", "my_plugin_tool")]
+             for n in ("browser_exec", "memory", "my_plugin_tool")]
     record_tool_call_quality(agent, calls, set())
     unavailable = [d for m, d in marks.rows if m == contract.TOOL_UNAVAILABLE_MARK]
-    assert unavailable == [{"model": unavailable[0]["model"], "provider": "openrouter", "tool_name": "browser_navigate"}]
+    assert unavailable == [{"model": unavailable[0]["model"], "provider": "openrouter", "tool_name": "browser_exec"}]
     assert contract.counter_dimensions_are_valid(contract.TOOL_UNAVAILABLE_METRIC, unavailable[0])
 
 
@@ -374,8 +374,8 @@ def _poll(provider, status, body):
 
 
 def _guest_sign_in(token_status, token_body):
-    """The Desktop free-tier sign-in (guest promotion): the real ``run_sign_in`` generator recorded
-    onto a dashboard session; the promotion completes, the token poll gets ``token_*`` until expiry."""
+    """The Desktop sign-in over a free tier: the real ``run_sign_in`` generator recorded onto a
+    dashboard session; the token poll gets ``token_*`` until expiry."""
     def run(monkeypatch):
         import httpx
 
@@ -391,8 +391,6 @@ def _guest_sign_in(token_status, token_body):
         replies = {
             "/api/oauth/device/code": (200, {"device_code": "d", "user_code": "U", "verification_uri": "https://p/v",
                                              "verification_uri_complete": "https://p/v?c=U", "expires_in": 30, "interval": 1}),
-            "/api/anonymous/promotion-intent": (200, {"claim_code": "C", "claim_url": "/claim", "interval": 1}),
-            "/api/anonymous/promotion-status": (200, {"status": "completed"}),
             "/api/oauth/token": (token_status, token_body)}
 
         def reply(request):

@@ -39,14 +39,17 @@ import { PanelEmpty } from '../overlays/panel'
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
 import { DELEGATION_ROUTE_COMPANION_KEY, DelegationRouteRow } from './delegation-route-row'
+import { DelegationRoutingSlot } from './delegation/routing-section'
+import { SubagentModelGate } from './delegation/subagent-model-gate'
 import {
   clearsEnabledToolsets,
+  configFieldValue,
   diffConfig,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
   sectionFieldEntries,
-  setNested,
+  setConfigField,
   voiceFieldVisible
 } from './helpers'
 import { MemoryConnect } from './memory/connect'
@@ -501,6 +504,14 @@ function ConfigSettingsInner({
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
+      {/* Routing picks the strategy and owns its routes; the subagent model row below is the
+          Default strategy's route and goes inert while another strategy decides. */}
+      <DelegationRoutingSlot
+        readScope={scopeProfile}
+        sectionId={activeSectionId}
+        subpage={subpage}
+        writeScope={writeScope}
+      />
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
       ) : null}
@@ -511,7 +522,9 @@ function ConfigSettingsInner({
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               {key === 'delegation.model' ? (
-                <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
+                <SubagentModelGate scope={writeScope ?? scopeProfile}>
+                  <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
+                </SubagentModelGate>
               ) : (
                 <ConfigField
                   descriptionExtra={
@@ -524,11 +537,11 @@ function ConfigSettingsInner({
                       ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
                       : enumOptionsFor(key, getNested(config, key), config)
                   }
-                  onChange={value => updateConfig(setNested(config, key, value))}
+                  onChange={value => updateConfig(setConfigField(config, key, value))}
                   optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                   schema={field}
                   schemaKey={key}
-                  value={getNested(config, key)}
+                  value={configFieldValue(config, key)}
                 />
               )}
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (

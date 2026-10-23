@@ -384,18 +384,18 @@ def test_eviction_rebuild_restores_the_sessions_saved_tool_order(monkeypatch):
     """A fresh AIAgent for an EXISTING session must keep the saved tools[] pin.
 
     Gateway agent-cache eviction rebuilds the agent; ``agent_init`` re-probes
-    every ``check_fn`` and ``browser_navigate``'s flips false. The persisted
+    every ``check_fn`` and ``browser_exec``'s flips false. The persisted
     name list stands in for the missing predecessor: the tool is carried
     forward from the registry schema, byte-for-byte in its old slot.
     """
     from tools import registry as registry_mod
 
-    saved = ["read_file", "browser_navigate", "terminal"]
+    saved = ["read_file", "browser_exec", "terminal"]
     entries = {n: types.SimpleNamespace(name=n, schema=_tool(n)["function"]) for n in saved}
     monkeypatch.setattr(registry_mod.registry, "get_all_entries", lambda: list(entries.values()), raising=False)
     monkeypatch.setattr(registry_mod.registry, "get_entry", lambda name, **kw: entries.get(name), raising=False)
 
-    rebuilt = _agent(["read_file", "terminal"])  # probe flipped: browser_navigate gone
+    rebuilt = _agent(["read_file", "terminal"])  # probe flipped: browser_exec gone
     changed = _mcp_agent.restore_agent_tool_prefix(rebuilt, saved)
 
     assert changed is True

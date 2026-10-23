@@ -213,6 +213,77 @@ class TestFreshInstall:
         assert section_indexes == [0]
 
 
+class TestRegistryApiKeyRecognition:
+    """Every PROVIDER_REGISTRY API-key provider, plus legacy OpenRouter / base URL, is an existing install."""
+
+    def test_helper_consults_every_registry_api_key_and_legacy_vars(self, monkeypatch):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.setup import _has_configured_provider
+
+        seen = set()
+
+        def env_side(key):
+            seen.add(key)
+
+        monkeypatch.setattr("hermes_cli.setup.get_env_value", env_side)
+        monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+        assert _has_configured_provider() is False
+
+        expected = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"}
+        for pconfig in PROVIDER_REGISTRY.values():
+            if pconfig.auth_type == "api_key":
+                expected.update(pconfig.api_key_env_vars)
+        assert expected <= seen
+        # Upstream keeps adding providers; the walk must not be a frozen subset.
+        assert "ZAI_API_KEY" in seen
+        assert "XIAOMI_API_KEY" in seen
+        assert "TOKENPLAN_API_KEY" in seen
+
+    @pytest.mark.parametrize(
+        "env_key",
+        [
+            "ZAI_API_KEY",
+            "MINIMAX_API_KEY",
+            "KIMI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "XIAOMI_API_KEY",
+            "TOKENPLAN_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENROUTER_API_KEY",
+        ],
+    )
+    def test_provider_env_skips_first_time_menu(self, fresh_install, env_key):
+        args = _make_setup_args()
+
+        def env_side(key):
+            return "configured" if key == env_key else None
+
+        with ExitStack() as stack:
+            m = _enter_fresh_install_patches(
+                stack,
+                prompt=("hermes_cli.setup.prompt_choice", {}),
+                model="hermes_cli.setup.setup_model_provider",
+                terminal="hermes_cli.setup.setup_terminal_backend",
+                gateway="hermes_cli.setup.setup_gateway",
+                tools="hermes_cli.setup.setup_tools",
+                summary="hermes_cli.setup._print_setup_summary",
+            )
+            # Fresh-install patches stub every env read as empty; overlay the one key.
+            stack.enter_context(
+                patch("hermes_cli.setup.get_env_value", side_effect=env_side)
+            )
+            from hermes_cli.setup import run_setup_wizard
+
+            run_setup_wizard(args)
+
+        m["prompt"].assert_not_called()
+        m["model"].assert_called_once()
+        m["terminal"].assert_called_once()
+        m["gateway"].assert_called_once()
+        m["tools"].assert_called_once()
+
+
 class TestArgparse:
     """The flags are plumbed through argparse to cmd_setup."""
 

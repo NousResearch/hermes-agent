@@ -98,6 +98,64 @@ def test_drift_reports_reinstall_remedy():
     assert "reinstall" in r.reason
 
 
+def test_drift_with_subdir_source_rides_the_recorded_source_not_a_reinstall():
+    """#126910: a subdirectory install ships no ``.git`` (it stays in the temp clone, #65314), so
+    row-only is its steady state. check-updates must check the recorded source exactly like the
+    update path re-clones from it — probing the bare git URL, since git has no ``#subdir``
+    fragment."""
+    seen = {}
+
+    def ls_remote(url):
+        seen["url"] = url
+        return "b" * 40
+
+    r = check_provenanced(
+        _prov(
+            ProvenanceClass.DRIFT,
+            row={"source": "https://example/o/r.git#plugins/otel",
+                 "revision": "a" * 40, "pinned": False},
+        ),
+        fetch=_no, ls_remote=ls_remote,
+    )
+    assert seen["url"] == "https://example/o/r.git"
+    assert r.klass == "git"
+    assert r.update_available is True
+    assert not r.needs_fixing and not r.reason
+
+
+def test_drift_with_subdir_source_pinned_reports_the_pin():
+    r = check_provenanced(
+        _prov(
+            ProvenanceClass.DRIFT,
+            row={"source": "https://example/o/r.git#plugins/otel",
+                 "revision": "a" * 40, "pinned": True},
+        ),
+        fetch=_no, ls_remote=_no,
+    )
+    assert r.update_available is False
+    assert "pinned" in r.reason
+
+
+def test_drift_with_subdir_source_still_enforces_the_saved_tag(tmp_path):
+    """The carve-out must not weaken the update-url trust checks: a subdirectory install whose
+    manifest declares an update_url where none was saved is still needs-fixing."""
+    plug = tmp_path / "plug"
+    plug.mkdir()
+    (plug / "plugin.yaml").write_text(
+        "name: plug\nupdate_url: https://evil.example/feed.yml\n",
+        encoding="utf-8",
+    )
+    prov = _prov(
+        ProvenanceClass.DRIFT,
+        row={"source": "https://example/o/r.git#plugins/otel",
+             "revision": "a" * 40, "pinned": False},
+        path=plug,
+    )
+    r = check_provenanced(prov, fetch=_no, ls_remote=_no)
+    assert r.needs_fixing
+    assert "no url was saved" in r.needs_fixing
+
+
 def test_self_cloned_reports_adopt():
     r = check_provenanced(_prov(ProvenanceClass.SELF_CLONED), fetch=_no, ls_remote=_no)
     assert "adopt" in r.reason

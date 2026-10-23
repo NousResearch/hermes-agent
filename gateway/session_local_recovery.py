@@ -372,15 +372,16 @@ def local_receipt_ids(authority):
 
 
 def recover_local_sessions(authority, *, schedule=False):
-    idle = []
+    orphans = []
     for sid in local_receipt_ids(authority):
         try:
             ref = restore_local_session(authority, sid)
             pending = list_session_admissions(authority.db, session_id=sid)
-            if schedule and pending and not any(row['status'] == 'unknown' for row in pending):
+            if any(row['status'] == 'unknown' for row in pending):
+                continue  # the drain pauses on it until its user's Discard
+            if schedule and pending:
                 authority._schedule(ref)
-            if not pending:
-                idle.append(sid)
+            orphans.append(sid)
         except (_ReceiptRefused, _CatchUpPending):
             continue  # logged: the check that refused it, or the catch-up handed to a worker
         except RuntimeStoreError as exc:
@@ -395,4 +396,4 @@ def recover_local_sessions(authority, *, schedule=False):
                 # A hard-killed owner's turn: the drain pauses on it, so the close resolves it.
                 track_mutation(authority, settle_viewer_close(authority, sid))
         from gateway.session_viewer_close import arm_startup_orphan_closes
-        arm_startup_orphan_closes(authority, idle)
+        arm_startup_orphan_closes(authority, orphans)

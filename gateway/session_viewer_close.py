@@ -166,8 +166,12 @@ def orphan_close_grace(authority):
     """Blocking: ``sessions.orphan_end_grace_s`` of the profile that owns *authority*'s store (0 = never)."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_cli.config_effective import load_user_config_effective
+    from gateway.session_local import profile_env_scope
     default = DEFAULT_CONFIG['sessions']['orphan_end_grace_s']
-    config = load_user_config_effective(Path(authority.db.db_path).resolve().parent / 'config.yaml')
+    home = Path(authority.db.db_path).resolve().parent
+    # A dropped socket detaches outside the RPC's owner scope: expand ``${VAR}`` against this profile.
+    with profile_env_scope(home):
+        config = load_user_config_effective(home / 'config.yaml')
     with contextlib.suppress(ValueError, TypeError, AttributeError):
         return max(0.0, float((config.get('sessions') or {}).get('orphan_end_grace_s', default)))
     return default
@@ -212,8 +216,9 @@ async def arm_detached_orphan_close(authority, session_id):
 
 
 def arm_startup_orphan_closes(authority, session_ids):
-    """Boot, after the stored closes are re-armed: the previous owner stopped under these idle
-    sessions, so no viewer is left to close them (#143547 LC-37). One that reattaches keeps it open."""
+    """Boot, after the stored closes are re-armed: the previous owner stopped under these sessions
+    (idle, or with input it left queued), so no viewer is left to close them (#143547 LC-37). One
+    that reattaches keeps it open; a fired close still waits for the queued input to settle."""
     grace = orphan_close_grace(authority)
     for session_id in session_ids:
         if session_id not in authority.pending_closes and orphan_candidate(authority, session_id):

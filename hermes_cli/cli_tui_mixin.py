@@ -40,6 +40,7 @@ from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
 from hermes_cli.cli_footer_split import FooterSplit
+from hermes_cli.cli_info_mixin import CLIInfoMixin
 from hermes_cli.cli_panel import _Panel
 from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
 
@@ -89,7 +90,7 @@ def _term_rows() -> int:
 
 
 
-class CLITuiMixin:
+class CLITuiMixin(CLIInfoMixin):
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
@@ -1446,8 +1447,7 @@ class CLITuiMixin:
         buf.reset(append_to_history=True)
 
     def _tui_enter_inline_command(self, event, text: str, has_images: bool) -> bool:
-        """Run /model, /steer, /bg, /btw directly on the UI thread; True when handled.
-
+        """Run /model, /steer, /bg, /btw, /stop and goal controls inline; True when handled.
         /model needs the prompt_toolkit terminal-handoff helpers of the interactive pickers.
         /steer, /bg and /btw while the agent runs must not queue through _pending_input: the
         process loop is blocked inside self.chat(), so they would only run after the foreground
@@ -1455,9 +1455,8 @@ class CLITuiMixin:
         starting the /bg side task after the turn it should run alongside (#75221). The
         foreground turn is left alone: no interrupt, no steer. agent.steer() is thread-safe.
 
-        Every branch invalidates after reset: process_command() prints through patch_stdout
-        and never invalidates the app, so the just-cleared input area would keep showing the
-        submitted text (looking unsent, inviting a re-submit) until some unrelated redraw.
+        Every branch invalidates after reset: process_command() prints through patch_stdout but
+        never invalidates, leaving submitted text looking unsent until an unrelated redraw.
         """
         if self._should_handle_model_command_inline(text, has_images=has_images):
             if not self.process_command(text):
@@ -1466,7 +1465,8 @@ class CLITuiMixin:
                     event.app.exit()
         elif (self._should_handle_steer_command_inline(text, has_images=has_images)
               or self._should_handle_background_command_inline(text, has_images=has_images)
-              or self._should_handle_stop_command_inline(text, has_images=has_images)):
+              or self._should_handle_stop_command_inline(text, has_images=has_images)
+              or self._should_handle_goal_command_inline(text, has_images=has_images)):
             self.process_command(text)
         else:
             return False

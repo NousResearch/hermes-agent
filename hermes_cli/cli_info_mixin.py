@@ -517,6 +517,27 @@ class CLIInfoMixin:
         ``busy_policy="interrupt_then_dispatch"``, and queued it would only run after the turn it stops."""
         return self._busy_inline_command(text, has_images, ("stop",))
 
+    def _should_handle_goal_command_inline(
+        self, text: str, has_images: bool = False
+    ) -> bool:
+        """Return True when /goal control commands or /subgoal should be dispatched while the agent runs.
+
+        Commands like ``/goal gate add ...``, ``/goal wait ...``, ``/goal unwait``,
+        ``/goal pause``, ``/goal resume``, ``/goal show``, ``/goal status``, and ``/subgoal``
+        control the active GoalState while an iterative goal loop is executing.
+        Queuing them through ``_pending_input`` defers execution until the goal turn or
+        entire goal is over, leading to 'no active goal' errors (#87446).
+        """
+        from hermes_cli.commands import resolve_command
+        from hermes_cli.goal_command import is_goal_control
+
+        if not self._busy_inline_command(text, has_images, ("goal", "subgoal")):
+            return False
+        tokens = text.strip().split(None, 1)
+        command = resolve_command(tokens[0].lower().lstrip('/'))
+        # The shared parser owns control-word ambiguity and /goal -- <literal text>.
+        return bool(command and (command.name == "subgoal" or is_goal_control(tokens[1] if len(tokens) > 1 else "")))
+
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
 

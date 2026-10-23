@@ -60,6 +60,9 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
+# Transform hooks listed here form a pipeline: every string replacement becomes the next
+# callback's input, while observer hooks retain their independent-result contract.
+_HOOK_CHAIN_FIELDS: dict[str, str] = {"transform_tool_result": "result"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
@@ -272,25 +275,34 @@ class PluginDispatchMixin:
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: list[Any] = []
+        chain_field = _HOOK_CHAIN_FIELDS.get(hook_name)
+        chain_value = kwargs.get(chain_field) if chain_field else None
+        chain_has_string = False
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
+            payload = {**kwargs, chain_field: chain_value} if chain_field else kwargs
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, payload, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
-                    ret = self._invoke_hook_callback(cb, kwargs)
-                if ret is not None:
+                    ret = self._invoke_hook_callback(cb, payload)
+                if chain_field and isinstance(ret, str):
+                    chain_value = ret
+                    chain_has_string = True
+                elif ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:
-                self._report_hook_failure(hook_name, cb, kwargs, exc)
+                self._report_hook_failure(hook_name, cb, payload, exc)
                 if fail_closed:  # a guard that raised made no decision: same veto as a timeout
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
+        if chain_has_string:
+            results.append(chain_value)
         return results
 
     def _report_hook_failure(
@@ -549,16 +561,23 @@ class PluginDispatchMixin:
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: list[Any] = []
+        chain_field = _HOOK_CHAIN_FIELDS.get(hook_name)
+        chain_value = kwargs.get(chain_field) if chain_field else None
+        chain_has_string = False
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
+            payload = {**kwargs, chain_field: chain_value} if chain_field else kwargs
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                ret = cb(**self._hook_callback_kwargs(cb, payload))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
-                if ret is not None:
+                if chain_field and isinstance(ret, str):
+                    chain_value = ret
+                    chain_has_string = True
+                elif ret is not None:
                     results.append(ret)
             except TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
@@ -567,9 +586,11 @@ class PluginDispatchMixin:
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).
-                self._report_hook_failure(hook_name, cb, kwargs, exc)
+                self._report_hook_failure(hook_name, cb, payload, exc)
                 if fail_closed:
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
+        if chain_has_string:
+            results.append(chain_value)
         return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:

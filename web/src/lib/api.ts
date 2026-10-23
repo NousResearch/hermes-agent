@@ -697,6 +697,8 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
+  getCronTimezone: () =>
+    fetchJSON<CronTimezoneResponse>("/api/cron/timezone"),
   getCronDeliveryTargets: (profile = "default") =>
     fetchJSON<{ targets: CronDeliveryTarget[] }>(
       `/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`,
@@ -2384,7 +2386,13 @@ export interface CronJob {
   prompt?: string | null;
   script?: string | null;
   skills?: string[] | null;
-  schedule?: { kind?: string; expr?: string; run_at?: string; display?: string };
+  schedule?: {
+    kind?: string;
+    expr?: string;
+    minutes?: number;
+    run_at?: string;
+    display?: string;
+  };
   schedule_display?: string | null;
   repeat?: CronJobRepeat | null;
   enabled: boolean;
@@ -2412,6 +2420,12 @@ export interface CronDeliveryTarget {
   name: string;
   home_target_set: boolean;
   home_env_var: string | null;
+}
+
+export interface CronTimezoneResponse {
+  /** IANA timezone the scheduler evaluates cron recurrence in, or null when
+   * unset (the scheduler then uses server-local time). */
+  timezone: string | null;
 }
 
 export interface SkillInfo {

@@ -30,6 +30,20 @@ def _kanban_config() -> dict:
         return {}
 
 
+def _board_wide(action: str, args: argparse.Namespace) -> bool:
+    """Whether a write selects or creates work without a task ID.
+
+    ID-addressed verbs are excluded: random task IDs normally fail as not found
+    on the wrong board, rather than selecting unrelated work. Read verbs (including
+    list's readiness refresh) are outside this guard's policy.
+    """
+    if action in {"specify", "decompose"}:
+        return bool(getattr(args, "all_triage", False))
+    if action == "daemon":
+        return bool(getattr(args, "force", False))
+    return action in {"create", "dispatch", "swarm", "gc", "init", "repair"}
+
+
 def _implicit_board_guard(board: str | None = None) -> tuple[str | None, bool]:
     """Message and refusal flag for mutations routed only by the shared current file.
 

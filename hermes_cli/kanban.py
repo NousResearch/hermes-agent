@@ -31,7 +31,7 @@ from hermes_cli.kanban_output import (
 from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
-    _implicit_board_guard,
+    _board_wide, _implicit_board_guard,
 )
 from hermes_cli.kanban_parser import build_parser
 
@@ -178,7 +178,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         board_scope = kb.scoped_current_board(normed)
 
     with board_scope:
-        if action in {"create", "dispatch", "swarm"}:
+        if _board_wide(action, args):
             message, refused = _implicit_board_guard()
             if message:
                 print(message, file=sys.stderr)

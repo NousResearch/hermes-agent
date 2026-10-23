@@ -71,7 +71,11 @@ class AnthropicTransport(ProviderTransport):
         # Anthropic signs each thinking block against the blocks PRECEDING it; when thinking
         # interleaves with tool_use the parallel lists lose that order and replay -> HTTP 400.
         ordered_blocks = []
-        for block in response.content:
+        # Some Anthropic-compatible endpoints return non-spec content=None.
+        # Direct callers such as AnthropicAuxiliaryClient normalize before any
+        # validation, so keep normalization total; validate_response() still
+        # classifies the original response as invalid for guarded call paths.
+        for block in (response.content or []):
             block_dict = _to_plain_data(block)
             # Sanitize at capture so output-only SDK fields never persist and replay (400).
             clean_block = _sanitize_replay_block(block_dict) if isinstance(block_dict, dict) else None

@@ -1,6 +1,6 @@
 /**
  * Open a bot's Screen as a main-window workspace tab (host.openWorkspace),
- * one tab per bot; a second open refocuses the existing tab.
+ * one tab per bot; a second manual open refocuses the existing tab.
  */
 
 import { host } from '@hermes/plugin-sdk'
@@ -19,7 +19,7 @@ export function screenPaneId(bot: RosterRow): string {
   return `plugin-workspace:${ID}:screen:${botSelectionKey(bot)}`
 }
 
-export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
+export function openBotScreen(bot: RosterRow, meta?: BotMeta | null, activate = true): void {
   if (typeof host.openWorkspace !== 'function') {
     host.notify({ kind: 'info', message: botsText().screen.openNeedsUpdate })
 
@@ -29,12 +29,15 @@ export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
   const key = botSelectionKey(bot)
 
   if (openTabs.has(key)) {
-    host.revealPane(screenPaneId(bot))
+    if (activate) {
+      host.revealPane(screenPaneId(bot))
+    }
 
     return
   }
 
   const close = host.openWorkspace(`${ID}:screen:${key}`, {
+    activate,
     title: `${displayName(bot, meta ?? null)} · ${botsText().screen.title}`,
     minWidth: '28rem',
     render: () => <BotScreenPane bot={bot} />,

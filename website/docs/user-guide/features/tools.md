@@ -249,6 +249,24 @@ wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
 whose approval category would change without the `&` are still refused with
 guidance, because Hermes cannot safely tell which part should keep running.
 
+### Completions that arrive while the agent is busy
+
+By default a `notify_on_complete` result that finishes while the agent is mid-turn waits and
+arrives as its own turn once the current one ends. You can carry it into the running turn instead:
+
+```yaml
+display:
+  background_process_busy_result_mode: steer   # queue (default) | steer
+```
+
+With `steer`, the completion is appended to the agent's next tool result, marked as background
+evidence rather than a user request, so the agent can act on it before its next decision.
+Nothing is rewritten in past context. If the turn ends without another tool call, or is
+stopped, the completion arrives as the next turn exactly as in `queue` mode. A completion the
+agent already read with `process(action="wait")` or `process(action="log")` is not shown again.
+Watch-pattern matches, heartbeats and API-server sessions keep `queue` behaviour. Subagent
+results have their own setting, `delegation.busy_result_mode`.
+
 ### Repeated waits on a quiet process
 
 When the agent calls `process(action="wait")` or `process(action="poll")` twice in a row on a

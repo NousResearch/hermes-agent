@@ -496,16 +496,22 @@ async def _resolve_chained_history(self, body: dict, raw_input: Any, *, _openai_
         chain_root if stored_session_id and stored_session_id != chain_root else None)
 
 
-def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool) -> web.Response:
+def _accepted_response(
+    run_id: str, status: str, gateway_session_key, *, replayed: bool,
+    user_id: Optional[str] = None) -> web.Response:
     """202 admission response; replays are flagged via ``Idempotency-Replayed``."""
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
     if gateway_session_key:
         headers["X-Hermes-Session-Key"] = gateway_session_key
+    if user_id:
+        headers["X-Hermes-User-Id"] = user_id
     return web.json_response(
         {"run_id": run_id, "status": status, "replayed": replayed}, status=202, headers=headers)
 
 
-def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> web.Response:
+def _replay_or_conflict(
+    self, request, outcome, record, gateway_session_key, _openai_error, *,
+    user_id: Optional[str] = None) -> web.Response:
     """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
     if outcome == "conflict":
         return _json_error(
@@ -513,7 +519,9 @@ def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _op
             code="idempotency_key_conflict", status=409)
     original_id = str(record["run_id"])
     status = self._durable_run_status(request, original_id) or record["status"]
-    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
+    return _accepted_response(
+        original_id, status.get("status", "queued"), gateway_session_key,
+        replayed=True, user_id=user_id)
 
 
 @dataclass(slots=True)
@@ -657,13 +665,17 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             _api_server._api_request_profile.reset(token)
 
 
-def _run_idempotency_identity(self, request, body, gateway_session_key, idempotency_key) -> tuple:
+def _run_idempotency_identity(
+    self, request, body, gateway_session_key, idempotency_key, user_id=None) -> tuple:
     """``(principal scope, request fingerprint)`` for a keyed POST /v1/runs; ``("", "")`` unkeyed."""
     if not idempotency_key:
         return "", ""
+    payload = {"body": body, "gateway_session_key": gateway_session_key or ""}
+    # Only when set, so keys recorded before this field still match.
+    if user_id:
+        payload["user_id"] = user_id
     return self._run_idempotency_scope(request), hashlib.sha256(json.dumps(
-        {"body": body, "gateway_session_key": gateway_session_key or ""},
-        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()
 
 
@@ -721,9 +733,9 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
     # Long-term memory scope header (see chat_completions for details).
-    gateway_session_key, key_err = self._parse_session_key_header(request)
-    if key_err is not None:
-        return key_err
+    gateway_session_key, header_user_id, scope_err = self._parse_memory_scope_headers(request)
+    if scope_err is not None:
+        return scope_err
     try:
         body = await request.json()
     except Exception:
@@ -741,7 +753,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
             code="invalid_idempotency_key", status=400)
     idempotency_scope, idempotency_fingerprint = _run_idempotency_identity(
-        self, request, body, gateway_session_key, idempotency_key)
+        self, request, body, gateway_session_key, idempotency_key, header_user_id)
     raw_input = body.get("input")
     user_message, input_err = _run_user_message(raw_input, _openai_error)
     if input_err is not None:
@@ -771,7 +783,9 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             idempotency_scope, idempotency_key, idempotency_fingerprint,
             retention_until=_room_retention_until(request))
         if outcome == "conflict" or (outcome == "reused" and record is not None):
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+            return _replay_or_conflict(
+                self, request, outcome, record, gateway_session_key, _openai_error,
+                user_id=header_user_id)
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
     if limited is not None:
@@ -816,13 +830,18 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
                 self._run_statuses, self._run_owners)
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+            return _replay_or_conflict(
+                self, request, outcome, record, gateway_session_key, _openai_error,
+                user_id=header_user_id)
         self._run_idempotency_ids.add(run_id)
+    memory_user_id = self._memory_user_id(header_user_id, session_id)
+    echo_user_id = self._echo_user_id(header_user_id, memory_user_id)
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
         agent_kwargs=dict(
-            ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
+            ephemeral_system_prompt=instructions, session_id=session_id,
+            gateway_session_key=gateway_session_key, user_id=memory_user_id,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
@@ -852,7 +871,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
-    return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+    return _accepted_response(
+        run_id, "started", gateway_session_key, replayed=False, user_id=echo_user_id)
 
 
 def _retarget_to_delivered_chat(self, launch: _RunLaunch, admitted) -> None:

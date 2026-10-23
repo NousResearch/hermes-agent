@@ -9,9 +9,10 @@ from hermes_state_runtime import RuntimeStoreError
 
 def request_binding(adapter, request, durable_key):
     from gateway.platforms.api_server import _make_request_fingerprint
+    user_id = adapter._parse_user_id_header(request)[0]
     return _make_request_fingerprint({'request': durable_key[1],
         'declared_session_key': adapter._parse_session_key_header(request)[0]},
-        keys=('request', 'declared_session_key'))
+        keys=('request', 'declared_session_key'), user_id=user_id)
 
 
 def _request_admission_rows(db, request_id):
@@ -191,10 +192,14 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
     if error is not None:
         return None, error
     from gateway.platforms.api_server import _request_relay_metadata
+    header_user_id = adapter._parse_user_id_header(request)[0]
+    memory_user_id = adapter._memory_user_id(header_user_id, session_id)
     run_kwargs = dict(user_message=user_message, conversation_history=history,
         ephemeral_system_prompt=instructions, session_id=session_id,
         gateway_session_key=gateway_session_key, bind_declared_conversation=declared_selected,
         **overrides, route=route, relay_metadata=_request_relay_metadata(body))
+    if memory_user_id:
+        run_kwargs["user_id"] = memory_user_id
     if stored_session_id and stored_session_id != chain_root:
         run_kwargs['walked_from'] = chain_root  # the chain moved past its swept stored session
     if durable_key:

@@ -73,7 +73,8 @@ _STATIC_FEATURE_FLAGS = {
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
-    "session_key_header": "X-Hermes-Session-Key"}
+    "session_key_header": "X-Hermes-Session-Key",
+    "user_id_header": "X-Hermes-User-Id"}
 # /v1/capabilities "endpoints" table: name -> (method, path[, feature]). An entry naming a
 # feature is advertised only while that "features" flag is truthy on this listener.
 _CAPABILITY_ENDPOINTS = (
@@ -696,7 +697,9 @@ def check_api_server_requirements() -> bool:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id, "
+        "X-Hermes-Session-Key, X-Hermes-User-Id")}
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -926,8 +929,36 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: dict[str, Any], keys: list[str]) -> str:
+# Session authority stamps this on every API source. It names the listener, not an end-user.
+_API_LISTENER_USER_ID = "api"
+
+
+def resolve_memory_user_id(
+    header_user_id: Optional[str], bound_user_id: Optional[str]) -> Optional[str]:
+    """Client memory scope, unless a stronger authenticated id is already bound.
+
+    ``api`` is the listener placeholder, so the opt-in header may fill it. Any
+    other non-empty bound id wins and the header is ignored.
+    """
+    bound = str(bound_user_id or "").strip()
+    header = str(header_user_id or "").strip()
+    if bound and bound != _API_LISTENER_USER_ID:
+        return bound
+    return header or bound or None
+
+
+def _make_request_fingerprint(
+    body: dict[str, Any], keys: list[str], *,
+    user_id: Optional[str] = None, gateway_session_key: Optional[str] = None,
+    session_id: Optional[str] = None) -> str:
+    """Body-key fingerprint. Identity fields join only when set, so older keys still match."""
     subset = {k: body.get(k) for k in keys}
+    if user_id:
+        subset["__hermes_user_id"] = user_id
+    if gateway_session_key:
+        subset["__hermes_gateway_session_key"] = gateway_session_key
+    if session_id:
+        subset["__hermes_session_id"] = session_id
     return hashlib.sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -1774,6 +1805,83 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None, _invalid_request("Session key too long")
         return raw, None
 
+    def _parse_user_id_header(
+        self, request: web.Request) -> tuple[Optional[str], Optional[web.Response]]:
+        """Validate ``X-Hermes-User-Id`` -> ``(id_or_None, None)`` or ``(None, error)``.
+
+        Same opt-in as ``X-Hermes-Session-Key``: a caller-supplied memory scope
+        requires API-key auth, so an open local listener cannot inject one.
+        """
+        raw = request.headers.get("X-Hermes-User-Id", "").strip()
+        if not raw:
+            return None, None
+        if not self._api_key:
+            logger.warning(
+                "X-Hermes-User-Id rejected: no API key configured. "
+                "Set API_SERVER_KEY to enable per-user memory scoping.")
+            return None, _error_response(
+                "X-Hermes-User-Id requires API key authentication. "
+                "Configure API_SERVER_KEY to enable this feature.", 403)
+        if re.search(r'[\r\n\x00]', raw):
+            return None, _invalid_request("Invalid user id")
+        if len(raw) > self._MAX_SESSION_HEADER_LEN:
+            return None, _invalid_request("User id too long")
+        return raw, None
+
+    def _parse_memory_scope_headers(
+        self, request: web.Request,
+    ) -> tuple[Optional[str], Optional[str], Optional[web.Response]]:
+        """``(session_key, user_id, None)`` or ``(None, None, error)``.
+
+        One gate for both opt-in memory headers so each door stays one branch.
+        """
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return None, None, key_err
+        header_user_id, uid_err = self._parse_user_id_header(request)
+        if uid_err is not None:
+            return None, None, uid_err
+        return gateway_session_key, header_user_id, None
+
+    def _stored_session_user_id(self, session_id: Optional[str]) -> Optional[str]:
+        """User id already stored for this session, if any. Empty on lookup failure."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        db = self._ensure_session_db()
+        if db is None:
+            return None
+        try:
+            row = db.get_session(sid) or {}
+        except Exception:
+            logger.debug("[%s] user-id lookup failed for %s", self.name, sid, exc_info=True)
+            return None
+        uid = row.get("user_id")
+        return str(uid).strip() if isinstance(uid, str) and uid.strip() else None
+
+    def _memory_user_id(
+        self, header_user_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """Header scopes memory only when it does not replace a stronger stored id."""
+        if not header_user_id:
+            return None
+        return resolve_memory_user_id(
+            header_user_id, self._stored_session_user_id(session_id))
+
+    @staticmethod
+    def _echo_user_id(
+        header_user_id: Optional[str], memory_user_id: Optional[str]) -> Optional[str]:
+        """Echo the header only when that value was the id actually applied."""
+        if header_user_id and memory_user_id == header_user_id:
+            return header_user_id
+        return None
+
+    @staticmethod
+    def _stamp_user_id_header(headers: dict, echo_user_id: Optional[str]) -> dict:
+        """Echo the applied id. Absent when the header was not the id used."""
+        if echo_user_id:
+            headers["X-Hermes-User-Id"] = echo_user_id
+        return headers
+
     # -- Responses state ----------------------------------------------------------------
 
     def _current_response_store(self) -> ResponseStore:
@@ -2281,6 +2389,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
         status_callback=None, gateway_session_key: Optional[str] = None,
+        user_id: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[dict[str, Any]] = None, route: Optional[dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
@@ -2349,6 +2458,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # The session's provider from the previous request, so its queued recall reaches this turn
             # (#120116); checked back in by the turn's finally.
             "memory_manager": self._memory_sessions.checkout(session_id)}
+        # Opt-in X-Hermes-User-Id. An id already chosen above is stronger and wins.
+        if user_id and not agent_kwargs.get("user_id"):
+            agent_kwargs["user_id"] = user_id
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
@@ -3304,9 +3416,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         persisted lock) wins; else the session-persisted model routes via model_routes when an
         alias or threads through as ``session_model`` when raw, then body values.
         Returns ``(ctx, None)`` or ``(None, error)``; ``ctx["run_kwargs"]`` feeds ``_run_agent``."""
-        gateway_session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return None, key_err
+        gateway_session_key, header_user_id, scope_err = self._parse_memory_scope_headers(request)
+        if scope_err is not None:
+            return None, scope_err
         session_id = request.match_info["session_id"]
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -3360,21 +3472,28 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
             confirmed_runtime_lock=lock_active, turn_author=turn_author,
+            user_id=self._memory_user_id(header_user_id, session_id),
             # #98619: the client addresses this session by construction — the id is in the
             # request path (/api/sessions/{session_id}/chat) — so a wake self-post lands where
             # the client will read it. The audited native-session opt-in.
             session_history_delivery="1", **agent_overrides)
+        echo_user_id = self._echo_user_id(header_user_id, run_kwargs.get("user_id"))
         return {
             "gateway_session_key": gateway_session_key, "session_id": session_id, "body": body,
             "user_message": user_message, "runtime_request": runtime_request,
+            "echo_user_id": echo_user_id,
             "lock_active": lock_active, "run_kwargs": run_kwargs}, None
 
     @staticmethod
-    def _session_headers(session_id: str, gateway_session_key: Optional[str]) -> dict[str, str]:
-        """``X-Hermes-Session-Id`` (+ ``X-Hermes-Session-Key`` when declared) response headers."""
+    def _session_headers(
+        session_id: str, gateway_session_key: Optional[str],
+        user_id: Optional[str] = None) -> dict[str, str]:
+        """``X-Hermes-Session-Id`` (+ session key / honored user id) response headers."""
         headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            headers["X-Hermes-User-Id"] = user_id
         return headers
 
     def _effective_turn_runtime(self, runtime_request: dict[str, Any], result: Any, usage: Any) -> dict[str, Any]:
@@ -3461,7 +3580,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_id = admitted[1].get("session_id") or ctx["session_id"]  # a moved-aside API row: the local chat (MSG-21)
         record = await self._await_live_bot_chat_receipt(*admitted)
         delivery_id = record["delivery_id"]
-        headers = self._session_headers(session_id, ctx["gateway_session_key"])
+        headers = self._session_headers(
+            session_id, ctx["gateway_session_key"], ctx.get("echo_user_id"))
         if record["status"] == "settled":
             return web.json_response(
                 {"object": "hermes.session.chat.completion", "session_id": session_id,
@@ -3501,7 +3621,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None
         session_id = admitted[1].get("session_id") or ctx["session_id"]  # a moved-aside API row: the local chat (MSG-21)
         events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
-        response = await self._prepare_sse_response(request, session_id, ctx["gateway_session_key"])
+        response = await self._prepare_sse_response(
+            request, session_id, ctx["gateway_session_key"], user_id=ctx.get("echo_user_id"))
 
         async def _write(name: str, payload: dict[str, Any]) -> None:
             name, payload = events.payload(name, payload)
@@ -3568,7 +3689,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         effective_session_id = result.get("session_id") if is_dict else session_id
         final_response = _resolve_media_to_data_urls(
             result.get("final_response", "") if is_dict else "")
-        headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
+        headers = self._session_headers(
+            effective_session_id or session_id, gateway_session_key, ctx.get("echo_user_id"))
         return web.json_response(
             {"object": "hermes.session.chat.completion", "status": _response_status(result),
              "session_id": effective_session_id or session_id,
@@ -3682,7 +3804,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # NOT in _active_run_tasks: _run_agent already counts this turn for the shutdown drain.
         task = asyncio.create_task(_run_and_signal())
         self._track_background_task(task)
-        response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        response = await self._prepare_sse_response(
+            request, session_id, gateway_session_key, user_id=ctx.get("echo_user_id"))
         try:
             while True:
                 try:
@@ -4156,7 +4279,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
         status_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
-        gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
+        gateway_session_key: Optional[str] = None, user_id: Optional[str] = None,
+        requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[dict[str, Any]] = None,
         route: Optional[dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[dict[str, Any]] = None, route_source: str = "global",
@@ -4189,6 +4313,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 interim_assistant_callback=interim_assistant_callback, reasoning_callback=reasoning_callback,
                 status_callback=status_callback, walked_from=walked_from,
                 agent_ref=agent_ref, active_run_id=active_run_id, gateway_session_key=gateway_session_key,
+                user_id=user_id,
                 requested_model=requested_model, requested_provider=requested_provider, model_options=model_options,
                 route=route, session_model=session_model, requested_runtime=requested_runtime,
                 route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock,
@@ -4222,7 +4347,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                         interim_assistant_callback=interim_assistant_callback,
                         reasoning_callback=reasoning_callback, status_callback=status_callback,
-                        gateway_session_key=gateway_session_key, requested_model=requested_model,
+                        gateway_session_key=gateway_session_key, user_id=user_id,
+                        requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
                     if agent_ref is not None:

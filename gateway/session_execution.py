@@ -154,10 +154,12 @@ class GatewaySessionAgentMixin:
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
+        from gateway.session_api_turn import api_memory_user_id
         from gateway.session_authorities import active_authority
         from gateway.session_policy import policy_for_source
         from gateway.session_worker_construct import session_prefill
         policy = policy_for_source(runner, src)
+        memory_user_id = api_memory_user_id(getattr(src, "user_id", None))
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=not bool(policy and policy.verbose), verbose_logging=False,
@@ -171,7 +173,7 @@ class GatewaySessionAgentMixin:
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
             provider_data_collection=pr.get("data_collection"),
             session_id=ctx.session_id, platform=platform_key,
-            user_id=src.user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,
+            user_id=memory_user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
             gateway_session_key=ctx.session_key,
             session_db=getattr(runner._session_db, "_db", runner._session_db),
@@ -194,10 +196,11 @@ class GatewaySessionAgentMixin:
         ctx = self._ctx
         runner = self._runner
         skip_context_files = self._skip_context_files(platform_key)
+        from gateway.session_api_turn import api_memory_user_id
         sig = runner._agent_config_signature(
             turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
             cache_keys=runner._extract_cache_busting_config(ctx.user_config),
-            user_id=getattr(ctx.source, "user_id", None),
+            user_id=api_memory_user_id(getattr(ctx.source, "user_id", None)),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
         )

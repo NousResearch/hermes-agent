@@ -81,7 +81,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
             flag("--no-verify", "Store without probing Bitwarden first (not recommended)"),
         )),
         ("sync", "Fetch secrets now and report what changed", cmd_sync, (
-            flag("--apply", "Actually export the secrets into the current shell's env (default: dry-run)"),
+            flag("--apply", "Actually set the secrets into this process's environment (default: dry-run)"),
         )),
         ("disable", "Turn off the Bitwarden integration", cmd_disable, ()),
         ("install", "Install the PM-pinned bws binary", cmd_install, (
@@ -373,7 +373,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     if not args.apply:
         console.print("\n  This was a dry-run — secrets are picked up automatically on the "
                       "next [cyan]hermes[/cyan] invocation.  Re-run with [cyan]--apply[/cyan] "
-                      "to export into the current shell instead.")
+                      "to set them in this process's environment.")
     else:
         console.print(f"\n  [green]Exported {applied} secret(s) into current process.[/green]")
     return 0

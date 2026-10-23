@@ -7,6 +7,7 @@ import json
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
 from gateway.session_contract import SessionRef
+from gateway.session_local_recovery import unused_session
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 from hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
@@ -249,7 +250,10 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
             receipt['declared_key'] = legacy_key
         existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
                                 (route,)).fetchone()
-        if existing is not None and json.loads(existing[0])['session_id'] != session_id:
+        held = json.loads(existing[0])['session_id'] if existing is not None else session_id
+        # The route is derived from this id, so only the stale-route heal (#54878) names another session
+        # on it: one it minted that never ran a turn goes back to the caller; anything used still refuses.
+        if held != session_id and not unused_session(conn, held):
             raise RuntimeStoreError('admission_conflict')
         conn.execute('''INSERT INTO sessions(id,source,title,hidden,started_at) VALUES(?,?,?,?,?)
                         ON CONFLICT(id) DO NOTHING''', (session_id, storage_source, title,
@@ -306,7 +310,9 @@ def restore_api_session(authority, session_id):
         store._ensure_loaded_locked()
         current = store._entries.get(entry.session_key)
         if current is not None and current.session_id not in authority.db.get_compression_lineage(session_id):
-            raise RuntimeStoreError('admission_conflict')
+            with authority.db._read_ctx() as conn:
+                if not unused_session(conn, current.session_id):  # see the bind's routing check
+                    raise RuntimeStoreError('admission_conflict')
         store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
     authority.sessions.setdefault(session_id, LiveSession(source, entry.session_key))
     return SessionRef(authority.profile_id, session_id)

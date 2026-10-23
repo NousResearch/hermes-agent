@@ -22,6 +22,7 @@ PRICE = "skills/productivity/product-price-monitor"
 WEEKLY = "skills/productivity/weekly-review-planning"
 SOCIAL = "optional-skills/creative/social-media-content-calendar"
 MCP = "optional-skills/mcp/mcp-oauth-remote-gateway"
+SHOP = "optional-skills/productivity/shop"
 
 
 def _document(skill):
@@ -68,6 +69,10 @@ def test_required_references_are_present_and_routed(skill, references):
              "sent replies", "fall back to matching the incoming thread's register",
              "generic-professional"), ()),
     (SOCIAL, (), ("image-generation-workflow",)),
+    (SHOP, ("Offer once, without blocking", "which works signed-out",
+            "a signed-out catalog search never does",
+            "A user's explicit request for a compact comparison"),
+     ("before any product message", "MUST be the sign-in offer")),
 ])
 def test_document_obligations(skill, required, forbidden):
     _, body = _document(skill)

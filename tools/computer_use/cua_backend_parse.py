@@ -216,6 +216,19 @@ def _positive_int(value: Any) -> Optional[int]:
     parsed = _int_or_none(value)
     return parsed if parsed is not None and parsed > 0 else None
 
+def _launch_target_args(target: str, platform: str) -> dict[str, str]:
+    """The cua-driver launch_app field for a free-form app: a shell:AppsFolder path, a packaged-app AUMID
+    ('Pkg_id!App'), an executable path (Windows), a dotted bundle ID (macOS) or a plain name."""
+    if target.lower().startswith("shell:appsfolder"):
+        return {"launch_path": target}
+    if "!" in target:
+        return {"aumid": target}
+    if platform == "win32" and ("\\" in target or "/" in target):
+        return {"path": target}
+    if platform == "darwin" and "." in target and not target.endswith(".app"):
+        return {"bundle_id": target}
+    return {"name": target}
+
 def _is_placeholder_id(value: Any) -> bool:
     """True when *value* is a schema-filler id (``0`` / negative) rather than a target: some providers zero-fill
     every optional integer, and treating that as targeting would drop the caller's ``app=``. Non-numeric values

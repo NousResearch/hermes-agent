@@ -138,6 +138,12 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult: ...  # route input to `app` (name / bundle ID)
 
+    def launch_app(self, app: str) -> ActionResult:
+        """Launch *app* (name, bundle ID, AUMID or path). Not abstract, so existing plugin backends keep loading;
+        those that do not override it refuse."""
+        return ActionResult(ok=False, action="launch_app", message=f"launch is not supported by {type(self).__name__}.",
+                            code="unsupported")
+
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
 

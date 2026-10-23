@@ -12,6 +12,17 @@ from hermes_cli.pty_session import run_reaper
 logger = logging.getLogger("hermes_cli.web_server")
 
 
+def _register_configured_shell_hooks() -> None:
+    """Register the launch profile's declarative hooks before dashboard sessions start."""
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.warning("shell-hook registration failed at dashboard startup", exc_info=True)
+
+
 def _unlink_pty_markers(app: FastAPI) -> None:
     """Second pass after ``PTY_REGISTRY.close_all()``: drop channel markers left in app state,
     including stale paths from sessions reaped earlier (``PtySession.close()`` only removes
@@ -62,6 +73,8 @@ async def standalone_lifespan(app: "FastAPI"):
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
     # the Desktop's 10s ready-probe timed out (GH-73083).
     _warm_gateway_module()
+
+    _register_configured_shell_hooks()
 
     # Snapshot the checkout revision so lazy-import paths (model picker) can
     # refuse with "restart required" after `hermes update` replaced the code

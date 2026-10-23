@@ -74,6 +74,12 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         return
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
     key_provider = vars(fb_client).get("_api_key_provider")
+    if not callable(key_provider):
+        # CodexAuxiliaryClient mirrors the SDK's empty .api_key; the rotating bearer still lives
+        # on the client it wraps (#135474).
+        real = getattr(fb_client, "_real_client", None)
+        if real is not None:
+            key_provider = vars(real).get("_api_key_provider")
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client

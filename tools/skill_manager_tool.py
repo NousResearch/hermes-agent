@@ -47,6 +47,24 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
+def _require_reason_enabled() -> bool:
+    """skills.require_reason (default False): refuse skill mutations that state no ``reason``."""
+    try:
+        from hermes_cli.config import load_config
+        return is_truthy_value(cfg_get(load_config(), "skills", "require_reason"), default=False)
+    except Exception:
+        return False
+
+
+def _missing_reason_error(reason: str | None) -> Optional[str]:
+    """Refusal when skills.require_reason is on and no reason was given. An approved staged
+    write is already human-authorized, so replay is never refused after the fact."""
+    if (reason or "").strip() or _skill_gate_bypass.get() or not _require_reason_enabled():
+        return None
+    return ("skills.require_reason is enabled: retry the same call with a top-level \"reason\" "
+            "string (next to \"operations\") saying in one sentence why this skill change is needed.")
+
+
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     """Post-write scan (opt-in); error string if blocked, else None. An "ask" verdict
     (dangerous findings) is surfaced as an error so the agent can retry without them."""
@@ -673,13 +691,14 @@ def _run_write_gate(build_staging):
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
 
 
-def _apply_skill_write_gate(action, name, **payload_kwargs):
+def _apply_skill_write_gate(action, name, reason=None, **payload_kwargs):
     """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay."""
     if action not in _ACTION_HANDLERS or _skill_gate_bypass.get():
         return None
     def _staging(wa):
         payload = {"action": action, "name": name,
-                   **{k: v for k, v in payload_kwargs.items() if v is not None}}
+                   **{k: v for k, v in payload_kwargs.items() if v is not None},
+                   **({"reason": reason} if reason else {})}
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
@@ -691,7 +710,8 @@ _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string
 
 
 def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
-    """Call ``skill_manage`` with the flat-shape fields (and absorbed_into/operations) of ``payload``."""
+    """Call ``skill_manage`` with the flat-shape fields (and absorbed_into/operations/reason) of ``payload``."""
+    extra.setdefault("reason", payload.get("reason"))
     return skill_manage(
         action=payload.get("action", ""), name=payload.get("name", ""),
         replace_all=payload.get("replace_all", False),
@@ -729,7 +749,7 @@ _ACTION_HANDLERS = {
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
-                    session_id, ledger_before) -> None:
+                    session_id, ledger_before, reason=None) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry (which fires ``on_skill_lifecycle`` for plugins)."""
     with suppress(Exception):
@@ -738,7 +758,8 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         # delete: consolidation vs prune, and whether the recoverable archive handled it
         _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
                      if action == "delete" else {})
-        _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
+        _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path),
+                                            ("reason", (reason or "").strip())) if v})
         _ledger.record_mutation(
             action, name, before=ledger_before if ledger_before is not None else [],
             after_root=_post["path"] if _post else None, evidence=_evidence)
@@ -769,12 +790,16 @@ def skill_manage(
     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
     replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
-    session_id: str | None = None, operations=None) -> str:
+    session_id: str | None = None, operations=None, reason: str | None = None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
-    see _skill_manage_batch) overrides the flat fields."""
+    see _skill_manage_batch) overrides the flat fields. ``reason`` is recorded in the
+    audit ledger next to the mutation (required when skills.require_reason is on)."""
+    if (reason_err := _missing_reason_error(reason)) is not None:
+        return tool_error(reason_err, success=False)
     if operations is not None:
         return _skill_manage_batch(
-            operations, default_name=name or None, task_id=task_id, session_id=session_id)
+            operations, default_name=name or None, task_id=task_id, session_id=session_id,
+            reason=reason)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
@@ -782,7 +807,7 @@ def skill_manage(
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
                 absorbed_into=absorbed_into)
-    if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
+    if (gate_result := _apply_skill_write_gate(action, name, reason=reason, **args)) is not None:
         return gate_result
     if (shape_err := _op_shape_error(action, args)) is not None:
         return tool_error(shape_err, success=False)
@@ -813,7 +838,7 @@ def skill_manage(
         if result.get("success"):
             _record_success(
                 action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-                task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+                task_id=task_id, session_id=session_id, ledger_before=_ledger_before, reason=reason)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -912,7 +937,8 @@ SKILL_MANAGE_SCHEMA = {
                     }, ()),
                 ]},
             },
-            # Also accepted, never advertised: the legacy flat single-op fields.
+            # Also accepted, never advertised: the legacy flat single-op fields, and a top-level
+            # ``reason`` string (taught by the skills.require_reason refusal when that is on).
         },
         "required": ["operations"],
     },

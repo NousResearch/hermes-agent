@@ -157,7 +157,7 @@ Whole-run snapshots answer "undo everything the last curator pass did" — but s
 
 - **actor** — `curator` (background review fork / auto-transitions), `agent` (foreground agent tool calls), or `user` (CLI commands)
 - **action** — `create`, `edit`, `patch`, `delete`, `write_file`, `remove_file`, `archive`, `restore`, `purge`, `rollback`
-- **evidence** — delete intent (`absorbed_into` for consolidations, empty for prunes, and whether the recoverable-archive path handled it), triggering session id when available
+- **evidence** — delete intent (`absorbed_into` for consolidations, empty for prunes, and whether the recoverable-archive path handled it), triggering session id when available, and the agent's stated `reason` for a `skill_manage` change (shown as a `why:` line by `hermes curator ledger`)
 - **before/after** — per-file `{path, sha256}` manifests. File contents are stored content-addressed (deduped by hash) under `~/.hermes/.curator_backups/blobs/`, so a hundred entries touching the same unchanged file cost one blob.
 
 ```bash
@@ -165,6 +165,8 @@ hermes curator ledger                  # newest 20 entries
 hermes curator ledger --skill my-skill --limit 50
 hermes curator rollback <entry-id>     # restore that one mutation's before-state
 ```
+
+To record *why* the agent changed a skill, set `skills.require_reason: true` in `config.yaml`. `skill_manage` calls without a top-level `reason` are then refused with an instruction to retry with one, and the reason is stored in that mutation's ledger entry, so a later review sees the why next to the diff. (`reason` is accepted but not advertised in the tool schema, so the default schema stays unchanged.) Writes staged under `skills.write_approval` keep their reason, and an approved staged write is never refused afterwards.
 
 Single-entry rollback restores exactly the files that mutation touched (and removes files it created) from the blob store — nothing else in the skills tree moves. Like whole-tree rollback, it takes a safety ledger entry of the current state first and **fails closed**: if the safety capture can't be written, nothing is changed. Because foreground deletes are ledgered too, `hermes curator rollback <entry-id>` can resurrect a hard-deleted skill.
 

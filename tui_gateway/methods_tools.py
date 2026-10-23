@@ -497,7 +497,7 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str, session=None) -> str:
+def _run_plugin_command(handler, arg: str, session=None, sid: str = "") -> str:
     """Run a plugin slash-command handler under the session's ``HERMES_SESSION_*`` binding.
 
     Plugin handlers read ``get_session_env()`` for the chat/session they serve; these RPCs run on
@@ -510,8 +510,11 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
     tokens = _set_session_context(key, cwd=str(session.get("cwd") or "")) if session else []
     context = {"source": None, "session_key": key, "platform": _session_source(session),
                "session_id": getattr(session.get("agent"), "session_id", None) or key if session else ""}
+    # ctx.ask_choice: the ``clarify`` server request this backend's clarify tool sends.
+    choices = _tools_mod("hermes_cli.plugin_choices")
     try:
-        return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
+        with choices.bind_asker(choices.clarify_asker(lambda questions: _clarify_block(sid, questions))):
+            return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
     finally:
         _clear_session_context(tokens)
 
@@ -589,7 +592,8 @@ def _is_registry_command(base: str) -> bool:
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
+            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(
+                handler, arg, session, params.get("session_id", ""))})
     return None
 
 
@@ -1059,7 +1063,8 @@ def _(rid, params: dict) -> dict:
             return dispatched
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
+            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session, params.get("session_id", ""))
+                             or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")

@@ -85,6 +85,37 @@ def test_bootstrap_environment_isolates_owned_paths_without_mutating_caller(tmp_
     assert len([key for key in mixed if key.upper() == "HERMES_RUNTIME_DIR"]) == 1
 
 
+def test_rust_sdists_build_outside_the_nested_uv_cache(tmp_path):
+    # Windows link.exe has no long-path support: target/ inside uv's sdist entry
+    # under the cache exceeded MAX_PATH (LNK1104) when obstore compiled cold.
+    from scripts.bundles.desktop_toolchain import bootstrap_environment
+
+    source, work, cache = (tmp_path / name for name in ("source", "work", "cache"))
+    env = bootstrap_environment(source, work, cache, {"CARGO_TARGET_DIR": str(cache / "python/runtime/x")})
+    target = Path(env["CARGO_TARGET_DIR"])
+    assert target.parent == work.resolve()
+    assert not target.is_relative_to(cache.resolve())
+
+
+@pytest.mark.platforms("windows")
+def test_windows_uv_cache_is_a_short_junction_into_the_transported_cache(tmp_path):
+    # uv nests sdist builds ~200 characters below its root; under the deep transported
+    # cache, setuptools/maturin link outputs passed MAX_PATH (LNK1104) on win32-x64/arm64.
+    from scripts.bundles.desktop_toolchain import short_alias
+
+    first, second = tmp_path / "desktop-inputs/python/runtime/a", tmp_path / "desktop-inputs/python/runtime/b"
+    first.mkdir(parents=True)
+    (first / "wheel").write_text("kept", encoding="utf-8")
+    link = tmp_path / "work" / "uv"
+    link.parent.mkdir()
+    assert short_alias(first, link) == link
+    (link / "built").write_text("cached", encoding="utf-8")
+    assert (first / "built").read_text(encoding="utf-8") == "cached"
+    short_alias(second, link)  # Re-preparing re-points the alias; cached bytes stay put.
+    assert link.resolve() == second.resolve()
+    assert (first / "wheel").read_text(encoding="utf-8") == "kept"
+
+
 @pytest.mark.parametrize("exit_code", [0, 7])
 @pytest.mark.platforms("linux", "macos", "windows")
 def test_run_preparation_bootstraps_before_worker_in_isolated_child(tmp_path, monkeypatch, exit_code):
@@ -205,7 +236,10 @@ def test_prepare_tools_uses_pm_native_pins_and_separate_cache(tmp_path, monkeypa
     assert prepared["HERMES_PYTHON"] == str(python)
     assert prepared["HERMES_NODE"] == str(node)
     assert prepared["PATH"] == "pm-tools"
-    assert Path(prepared["UV_CACHE_DIR"]) == cache / "python/runtime/native-identity"
+    uv_cache = Path(prepared["UV_CACHE_DIR"])
+    assert uv_cache.resolve() == (cache / "python/runtime/native-identity").resolve()
+    if os.name == "nt":  # builds run under the short job-local junction (MAX_PATH)
+        assert uv_cache == work.resolve() / "uv"
     assert dict(os.environ) == before
     if pm.current_target() == "win32-arm64":
         assert len(native_calls) == 1

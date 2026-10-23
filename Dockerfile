@@ -307,7 +307,7 @@ COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 COPY apps/shared/ apps/shared/
-COPY scripts/build/node-deps.mjs scripts/build/node-deps.mjs
+COPY scripts/build/node-deps.mjs scripts/build/electron-runtime.mjs scripts/build/
 ENV npm_config_install_links=false
 RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web
 

@@ -171,6 +171,18 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         if error_text and _disk_full(error_text):
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
+            if window_message := str(result.get("usage_window_message") or ""):
+                # A window plan's limit, not an empty account: the card shows the stop-line sentence.
+                # Retry is the natural next click once Keep going / a top-up is on, and at the reset.
+                surface = _surface(LAYER_BILLING, "usage_window", True, provider, model)
+                surface["message"] = window_message
+                if isinstance(resets_at := result.get("failure_resets_at"), (int, float)) and not isinstance(resets_at, bool):
+                    surface["resets_at"] = float(resets_at)
+                if isinstance(limit := result.get("usage_limit"), dict):
+                    # What ran out, the plan's recommended models that still work, and the credits
+                    # option: the card's one-click buttons (agent/plan_limits.py).
+                    surface["usage_limit"] = limit
+                return surface
             return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
         # The Nous free tier refused or could not serve the turn (``agent/turn_recovery.py``
         # stamps ``free_tier``): its own code, so a client offers the free sign-in rather than an

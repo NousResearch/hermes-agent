@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
+import { mergeUsage, parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
@@ -922,7 +922,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const usage = { ...result?.usage, ...result?.info?.usage }
 
             if (Object.keys(usage).length && activeSessionIdRef.current === sessionId) {
-              setCurrentUsage(current => ({ ...current, ...usage }))
+              setCurrentUsage(current => mergeUsage(current, usage))
             }
 
             if (result?.info?.title !== undefined) {

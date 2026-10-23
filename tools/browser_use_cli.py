@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import daemon_env, daemon_identity, namespace_harness_dirs
+from tools.registry import expected_false_check_fn
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -260,6 +261,7 @@ def _browser_use_api_key_set() -> bool:
     return bool(get_secret("BROWSER_USE_API_KEY", ""))
 
 
+@expected_false_check_fn
 def is_browser_use_cli_mode() -> bool:
     """True when the Browser Use CLI replaces the built-in browser stack. Browser Use mode is the DEFAULT:
     unset ``browser.backend`` ("") enables it whenever browser-harness is importable (a core dependency);

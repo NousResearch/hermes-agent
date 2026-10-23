@@ -144,6 +144,25 @@ def test_multifile_v4a_patch_checks_every_real_path_not_the_joined_display_strin
     assert should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
 
 
+def test_v4a_no_space_header_cannot_hide_a_sensitive_or_move_target(tmp_path):
+    """``***Update File:`` (no space after the asterisks) is a patch_parser-accepted form,
+    so this extractor must be at least as lenient or the hidden file bypasses the
+    sensitive/auto-approve checks (same invariant as tools/file_tools.py)."""
+    nospace_env = (
+        f"***Update File: {tmp_path}/.env\n@@\n+SECRET=x\n"
+        f"*** Update File: {tmp_path}/ok.py\n@@\n+ok\n"
+    )
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": nospace_env})
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+    nospace_move = (
+        f"*** Update File: {tmp_path}/ok.py\n@@\n+ok\n"
+        f"***Move File: {tmp_path}/src.py -> {tmp_path}/.ssh/config\n"
+    )
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": nospace_move})
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+
 def test_multifile_v4a_env_write_reaches_permission_prompt_e2e(tmp_path):
     """Pre-fix, ``session`` policy auto-approved the ``.env`` hidden in the join."""
     env_target = tmp_path / ".env"

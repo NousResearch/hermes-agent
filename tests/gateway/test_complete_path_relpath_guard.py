@@ -82,3 +82,33 @@ def test_relative_completion_skips_an_entry_on_another_mount(tmp_path, monkeypat
 
     assert "./readme.md" in texts, texts
     assert not any(text.endswith("nul") for text in texts), texts
+
+
+def test_home_completion_skips_an_entry_on_another_mount(tmp_path, monkeypatch) -> None:
+    """The `~` branch computes its second `relpath` against the home dir, not the root.
+
+    A bare `~/` is a completion the composer offers on its own, and the reserved name only has to be
+    in the home directory for it to kill the request: no project-local entry is involved.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    _fixture(home)
+    monkeypatch.chdir(tmp_path)
+    _windows_relpath(monkeypatch)
+
+    real_expanduser = os.path.expanduser
+
+    def fake_expanduser(path: str = "~") -> str:
+        if path == "~":
+            return str(home)
+        if path.startswith("~/"):
+            return str(home) + path[1:]
+        return real_expanduser(path)
+
+    monkeypatch.setattr(os.path, "expanduser", fake_expanduser)
+
+    texts = _items("~/")
+
+    assert "~/readme.md" in texts, texts
+    assert "~/notes.md" in texts, texts
+    assert not any(text.endswith("nul") for text in texts), texts

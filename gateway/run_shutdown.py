@@ -30,6 +30,7 @@ from gateway.restart import (
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
+from gateway.run_shutdown_tools import GatewayShutdownToolsMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
@@ -170,7 +171,7 @@ def _effective_watchdog_leash(runner: object) -> float:
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
 
-class GatewayShutdownMixin(GatewaySessionEndMixin):
+class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayShutdownToolsMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
     @dataclasses.dataclass
@@ -1738,87 +1739,6 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             logger.debug("%s: %s", label, _e)
             return None
 
-    @staticmethod
-    def _stop_kill_tool_subprocesses(phase: str) -> list:
-        """Kill tool subprocesses + terminal envs + browsers; returns cron job IDs marked interrupted.
-
-        Called twice: after a drain timeout (reclaim children before systemd SIGKILLs) and as a final
-        catch-all. Best-effort; one failing subsystem cannot block the rest.
-        """
-
-        def _step(label: str, fn: Callable[[], Any]) -> Any:
-            return GatewayShutdownMixin._quiet_step(f"{label} ({phase}) error", fn)
-
-        def _count_step(fmt: str, fn: Callable[[], int]) -> None:
-            n = fn()
-            if n:
-                logger.info(fmt, phase, n)
-
-        def _kill_processes() -> None:
-            from tools.process_registry import process_registry
-            # Host shutdown: kill even persist_on_release jobs or they become
-            # PPID=1 orphans (#41225/#46778); an explicit source reaches them.
-            _count_step(
-                "Shutdown (%s): killed %d tool subprocess(es)",
-                lambda: process_registry.kill_all(source="gateway_shutdown"))
-
-        def _mark_cron_interrupted() -> list:
-            # kill_all() is global: a cron job mid-dispatch lost its tool subprocess and its agent thread may
-            # still emit a plausible response from truncated output — mark it interrupted, never success.
-            # Any cron job still dispatched at this instant just had its tool subprocess killed above
-            # (kill_all() has no per-job-ID targeting — it's a global sweep). No-op when no cron job is in
-            # flight. See #60432.
-            from cron.scheduler import mark_running_jobs_interrupted
-            _interrupted = mark_running_jobs_interrupted(
-                f"Gateway shutdown ({phase}) killed the job's tool subprocess before the run finished."
-            )
-            if _interrupted:
-                logger.warning(
-                    "Shutdown (%s): marked %d in-flight cron job(s) interrupted: %s",
-                    phase, len(_interrupted), ", ".join(_interrupted),
-                )
-            return _interrupted
-
-        def _interrupt_delegations() -> None:
-            from tools.async_delegation import interrupt_all as _interrupt_async
-            _count_step(
-                "Shutdown (%s): interrupted %d background delegation(s)",
-                lambda: _interrupt_async(reason=f"gateway shutdown ({phase})"),
-            )
-
-        _step("process_registry.kill_all", _kill_processes)
-        _marked_cron_jobs = _step("mark_running_jobs_interrupted", _mark_cron_interrupted) or []
-        _step("async interrupt_all", _interrupt_delegations)
-        def _cleanup_environments() -> None:
-            from tools.terminal_tool_lifecycle import cleanup_all_environments
-            cleanup_all_environments()
-
-        def _cleanup_browsers() -> None:
-            from tools.browser_tool_lifecycle import cleanup_all_browsers
-            cleanup_all_browsers()
-
-        _step("cleanup_all_environments", _cleanup_environments)
-        _step("cleanup_all_browsers", _cleanup_browsers)
-        return _marked_cron_jobs
-
-    @staticmethod
-    async def _stop_kill_tool_subprocesses_off_loop(phase: str) -> list:
-        """Run _stop_kill_tool_subprocesses in a worker thread; returns cron job IDs marked interrupted.
-
-        ``kill_all`` fans out into per-target ``kill_process`` calls that do blocking work
-        (registry checkpoint disk I/O, ``subprocess.run`` for systemd scopes, sandbox exec),
-        so running the sweep inline would monopolize the gateway event loop (#116327).
-        Offloaded with ``asyncio.to_thread`` — the loop's default executor, deliberately NOT
-        the gateway-owned ``self._executor``, which ``_stop_quiesce_and_close_session_dbs``
-        drains right after this phase. Phase order is preserved: callers await this before
-        cron notices / adapter teardown. If the surrounding stop task is cancelled while the
-        worker runs, the thread is left to finish on its own; the thread-based shutdown
-        watchdog remains the hard backstop.
-        """
-        return await asyncio.to_thread(
-            GatewayShutdownMixin._stop_kill_tool_subprocesses, phase
-        )
-
     async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Flag teardown, stop room worker/watchdog, notify sessions."""
         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
@@ -1932,8 +1852,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             logger.debug("Re-signaled interrupt for work still live at settle-window exit")
         # Kill tool subprocesses NOW: deferring past adapter/DB teardown risks the systemd cgroup SIGKILL.
         # Off-loop: the sweep does blocking kills that must not monopolize the event loop (#116327).
-        _interrupted_cron_jobs = await GatewayRunner._stop_kill_tool_subprocesses_off_loop("post-interrupt")
-        logger.info("Shutdown phase: post-interrupt tool kill done at +%.2fs", ctx.elapsed())
+        _interrupted_cron_jobs = await GatewayRunner._stop_kill_tool_subprocesses_off_loop(self, "post-interrupt")
+        logger.info("Shutdown phase: post-interrupt tool sweep phase finished at +%.2fs", ctx.elapsed())
         # Last window with the transport up (the cron worker's own notice arrives after teardown).
         with _log_suppressed(logging.DEBUG, "Cron interrupt notification failed: %s"):
             # The cron worker whose run we just killed will try to deliver its own "interrupted" notice, but
@@ -2013,8 +1933,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._shutdown_event.set()
         # Global catch-all subprocess kill (safe to repeat) for the graceful path and late respawns.
         # Off-loop: same blocking sweep as the post-interrupt kill (#116327).
-        await GatewayRunner._stop_kill_tool_subprocesses_off_loop("final-cleanup")
-        logger.info("Shutdown phase: final-cleanup tool kill done at +%.2fs", ctx.elapsed())
+        await GatewayRunner._stop_kill_tool_subprocesses_off_loop(self, "final-cleanup")
+        logger.info("Shutdown phase: final-cleanup tool sweep phase finished at +%.2fs", ctx.elapsed())
         # Reap the auxiliary-client cache: clients bound to dead worker-thread loops leak httpx transports.
         def _reap_aux_clients() -> None:
             # Reap the process-global auxiliary-client cache once at the very end of teardown. Per-turn
@@ -2115,11 +2035,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return _shutdown_gateway_health_export(self)
         # Clean-shutdown marker skips crash-turn recovery next boot; a timed-out drain left
         # half-finished sessions, so no marker — the next startup recovers their turn markers.
-        if not ctx.timed_out:
+        if not ctx.timed_out and not getattr(self, "_tool_subprocess_sweep_incomplete", False):
             with suppress(Exception):
                 (_hermes_home / ".clean_shutdown").touch()
         else:
-            logger.info("Skipping .clean_shutdown marker — drain timed out with interrupted agents; "
+            logger.info("Skipping .clean_shutdown marker — drain or tool cleanup was incomplete; "
                         "next startup will recover their interrupted turns.")
         # Stuck-loop counter: sessions active across 3 consecutive restarts are auto-suspended next boot.
         if ctx.active_agents:
@@ -2194,6 +2114,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         # stop()-driving unit tests don't get a delayed hard-exit in the worker. See #66892.
         _watchdog_done = threading.Event()
         self._shutdown_watchdog_done = _watchdog_done
+        # Reserve a second for recovery markers and bounded diagnostics before the hard exit.
+        self._shutdown_tool_sweep_deadline = time.monotonic() + _effective_watchdog_leash(self) - 1.0
+        self._tool_subprocess_sweep_incomplete = False
+        completed = False
         # Shutdown-path doubles may lack the deferred-worker counter.
         ctx = GatewayShutdownMixin._StopContext(
             deferred_count=getattr(self, "_active_deferred_agent_worker_count", lambda: 0)
@@ -2215,14 +2139,24 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+            else:
+                # A successful drain does not prove all tool descendants exited: a
+                # timeout wrapper can outlive its completed turn. Sweep before
+                # adapter teardown, while terminal/environment cleanup still has
+                # the live gateway runtime it needs (#140162).
+                await GatewayRunner._stop_kill_tool_subprocesses_off_loop(self, "post-drain")
+                logger.info("Shutdown phase: post-drain tool sweep phase finished at +%.2fs", ctx.elapsed())
             from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
             await settle_gateway_runtime(self, _effective_watchdog_leash(self) - ctx.elapsed(), GatewayRunner._shutdown_interrupt_reason(self))
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             await GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
             await GatewayRunner._stop_persist_exit_state(self, ctx)
+            completed = True
         finally:
-            _watchdog_done.set()
+            worker = getattr(self, "_tool_subprocess_sweep_worker", None)
+            if completed and (worker is None or worker[1].is_set()):
+                _watchdog_done.set()
 
     async def stop(
         self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False

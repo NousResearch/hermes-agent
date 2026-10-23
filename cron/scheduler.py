@@ -1115,9 +1115,9 @@ def mark_running_jobs_interrupted(
 ) -> list:
     """Best-effort: mark every in-flight cron job interrupted; returns the job IDs marked.
 
-    Called by gateway shutdown right after ``process_registry.kill_all()``: a job whose tool was
-    killed must never report success. ``only_owners`` (``(job_id, fire_owner)`` pairs) restricts
-    marking. Tokens go into ``_interrupted_job_ids`` BEFORE ``last_status`` is written so
+    Called by gateway shutdown before ``process_registry.kill_all()``: a job whose tool is
+    about to be killed must never report success, even if the cleanup worker stalls.
+    ``only_owners`` (``(job_id, fire_owner)`` pairs) restricts marking. Tokens go into ``_interrupted_job_ids`` BEFORE ``last_status`` is written so
     ``run_one_job`` sees them.
     """
     with _running_lock:

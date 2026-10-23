@@ -1,6 +1,7 @@
 import { normalize } from '@/lib/text'
 
 const SOURCE_LABELS: Record<string, string> = {
+  a2a: 'A2A',
   acp: 'ACP',
   api_server: 'API',
   bluebubbles: 'iMessage',
@@ -140,4 +141,58 @@ export function sessionSourceSearchTerms(source: null | string | undefined): str
   }
 
   return [id, label ?? '', ...(SOURCE_ALIASES[id] ?? [])].filter(Boolean)
+}
+
+/**
+ * Session sources the Desktop recents slice hides by default because they are
+ * machinery rather than conversations. `a2a` is the one with a user switch
+ * (`sessions.recents_show_a2a`); the rest never come back.
+ */
+export const HIDDEN_RECENTS_MACHINE_SOURCES = ['a2a']
+
+/**
+ * Whether the user opted A2A peer dispatches back into the passive recents list.
+ * Session search ignores this: searching is an explicit request, so A2A sessions
+ * stay findable either way.
+ */
+export function recentsShowA2A(record: unknown): boolean {
+  const sessions = (record as { sessions?: { recents_show_a2a?: unknown } } | null | undefined)?.sessions
+
+  return sessions?.recents_show_a2a === true
+}
+
+/**
+ * Read `sessions.exclude_sources` out of the raw config record: extra sources the
+ * user wants hidden from recents, additive to the built-ins. A missing key, a
+ * non-array value, and non-string entries all degrade to "nothing extra excluded"
+ * rather than throwing inside the sidebar render path. Entries normalize the same
+ * way session sources do, so `A2A` and `a2a` both match.
+ */
+export function configuredExcludeSources(record: unknown): string[] {
+  const sessions = (record as { sessions?: { exclude_sources?: unknown } } | null | undefined)?.sessions
+  const raw = sessions?.exclude_sources
+
+  if (!Array.isArray(raw)) {
+    return []
+  }
+
+  const ids = raw.map(value => normalizeSessionSource(typeof value === 'string' ? value : null))
+
+  return Array.from(new Set(ids.filter((id): id is string => id != null)))
+}
+
+/**
+ * Full exclusion list for the recents fetch: built-in machine sources (minus any
+ * the user switched back on) plus configured extras. Returns the built-in array
+ * identity when nothing is added, so an unchanged list never re-fetches.
+ */
+export function recentsExcludedSources(builtIn: string[], record: unknown): string[] {
+  const machine = recentsShowA2A(record) ? [] : HIDDEN_RECENTS_MACHINE_SOURCES
+  const extra = [...machine, ...configuredExcludeSources(record)]
+
+  if (!extra.length) {
+    return builtIn
+  }
+
+  return Array.from(new Set([...builtIn, ...extra]))
 }

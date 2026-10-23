@@ -69,6 +69,14 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         *_timezone_options(), searchable=True, clearable=True,
     ),
     "memory.provider": _select("Memory provider plugin", *_memory_provider_options()),
+    "sessions.recents_show_a2a": {
+        "type": "boolean",
+        "description": (
+            "Show machine-to-machine (A2A) sessions in the Desktop recent list. "
+            "Off keeps peer dispatches out of the sidebar; session search still finds them."
+        ),
+        "category": "sessions",
+    },
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",

@@ -142,6 +142,17 @@ Each session is tagged with its source platform:
 
 A session compressed mid-conversation continues under the same source: the compression child of a `--source tool` or `oneshot` run is tagged the same way, so it inherits the same picker visibility.
 
+The Desktop sidebar's recents slice hides the internal sources above (`cron`, `kanban`, `tool`, `oneshot`, subagent runs, and the messaging platforms). Inbound A2A tasks (`a2a`) are hidden too: work a peer dispatches to this agent is not one of your own conversations, and on a busy peer host those rows crowd out the ones that are.
+
+Hidden is not gone. Session search is never filtered, so a hidden A2A session stays findable by its title or by `a2a`. To put them back in the recents list, turn on **Show A2A sessions in the recent list** (`sessions.recents_show_a2a: true`) — the Desktop Settings page renders one control per config key, so this switch appears with the other session options and needs no YAML.
+
+`sessions.exclude_sources` hides extra sources on top of the built-in list:
+
+```yaml
+sessions:
+  exclude_sources: [signal]   # additive; the built-in exclusions always stay
+```
+
 ## CLI Session Resume
 
 Resume previous conversations from the CLI using `--continue` or `--resume`:

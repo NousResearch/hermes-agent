@@ -215,6 +215,9 @@ def test_concurrent_stamping_never_drops_or_duplicates_seq():
 
 
 def test_byte_budget_evicts_payloads_and_preserves_gap_semantics(monkeypatch):
+    # These assertions are about the RING's own budget, so silence the durable tail that would
+    # otherwise serve the evicted frames back (the spool has its own test).
+    monkeypatch.setattr(event_replay, "_spool_append", lambda *a, **k: None)
     monkeypatch.setattr(event_replay, "_REPLAY_BUFFER_BYTES_MAX", 700)
     monkeypatch.setattr(event_replay, "_REPLAY_PROCESS_BYTES_MAX", 5_000)
 
@@ -279,8 +282,14 @@ def test_oversized_event_marks_gap_even_with_empty_buffer(monkeypatch):
     assert event_replay.is_truncated("s", 1)
 
 
-def test_truncation_detection_semantics():
-    """The RPC handler's truncated flag: gap between last_seen and buffer start."""
+def test_truncation_detection_semantics(monkeypatch):
+    """The RPC handler's truncated flag: gap between last_seen and buffer start.
+
+    The durable spool covers a ring gap, so it is silenced here to keep this test about the
+    ring's own watermark; test_reconnect_that_outlasts_the_ring_is_served_from_the_spool covers
+    the spool-backed path.
+    """
+    monkeypatch.setattr(event_replay, "_spool_append", lambda *a, **k: None)
     # Overflow the ring so the oldest events are genuinely evicted.
     for _ in range(event_replay._REPLAY_BUFFER_MAX + 10):
         event_replay._stamp_event(_frame("s1"))
@@ -362,3 +371,31 @@ def test_a_raising_teardown_still_releases_the_replay_ring(monkeypatch):
         session_lifecycle._teardown_popped_session({"_sid": "failed-sid"}, end_reason="tui_shutdown")
 
     assert events_since("failed-sid", 0) == []
+
+
+def test_reconnect_that_outlasts_the_ring_is_served_from_the_spool(tmp_path, monkeypatch):
+    """A client that was away for a whole turn must get the turn, not a refetch it cannot satisfy.
+
+    The ring is bounded (~20s of streaming at the 33ms delta coalesce) and the transcript only
+    reaches SQLite at turn end, so ring-only replay leaves a mid-turn reconnect with nothing to
+    show. The spool is the durable tail: same offsets, same frames, no protocol change.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_replay_state()
+
+    total = event_replay._REPLAY_BUFFER_MAX + 50
+    for _ in range(total):
+        event_replay._stamp_event(_frame("s1"))
+
+    with event_replay._replay_lock:
+        oldest_retained = event_replay._replay_buffers["s1"][0][0]
+    assert oldest_retained > 1  # the ring genuinely evicted the start of the turn
+
+    frames = events_since("s1", 0)
+    assert [frame["seq"] for frame in frames] == list(range(1, total + 1))
+    assert not event_replay.is_truncated("s1", 0)
+
+    # A partial resume stays contiguous and ascending too.
+    tail = events_since("s1", total - 10)
+    assert [frame["seq"] for frame in tail] == list(range(total - 9, total + 1))
+    reset_replay_state()

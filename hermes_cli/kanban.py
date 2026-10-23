@@ -332,6 +332,139 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+def _routine_to_dict(r: kb.Routine) -> dict:
+    return {
+        "id": r.id,
+        "board_id": r.board_id,
+        "title": r.title,
+        "body": r.body,
+        "assignee": r.assignee,
+        "priority": r.priority,
+        "skills": r.skills or [],
+        "cron_expr": r.cron_expr,
+        "status": r.status,
+        "concurrency": r.concurrency,
+        "catch_up": r.catch_up,
+        "last_materialized_at": r.last_materialized_at,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+    }
+
+
+def _dispatch_routine(args: argparse.Namespace) -> int:
+    action = getattr(args, "routine_action", None)
+    if not action:
+        print("usage: hermes kanban routine <create|list|pause|resume|run-now|delete>")
+        return 0
+    if action == "ls":
+        action = "list"
+    if action == "rm":
+        action = "delete"
+    handlers = {
+        "create": _cmd_routine_create,
+        "list": _cmd_routine_list,
+        "pause": _cmd_routine_pause,
+        "resume": _cmd_routine_resume,
+        "run-now": _cmd_routine_run_now,
+        "delete": _cmd_routine_delete,
+    }
+    handler = handlers.get(action)
+    if handler is None:
+        print(f"kanban routine: unknown action {action!r}", file=sys.stderr)
+        return 2
+    return handler(args)
+
+
+def _cmd_routine_create(args: argparse.Namespace) -> int:
+    try:
+        with kbc.connect_closing() as conn:
+            rid = kb.create_routine(
+                conn,
+                title=args.title,
+                cron_expr=args.cron_expr,
+                body=args.body,
+                assignee=args.assignee,
+                priority=args.priority,
+                skills=getattr(args, "skills", None) or None,
+                concurrency=args.concurrency,
+                catch_up=args.catch_up,
+            )
+            routine = kb.get_routine(conn, rid)
+    except ValueError as exc:
+        print(f"kanban routine create: {exc}", file=sys.stderr)
+        return 2
+    if routine is None:
+        print("kanban routine create: failed to load created routine", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(_routine_to_dict(routine), indent=2, ensure_ascii=False))
+    else:
+        assignee = routine.assignee or "-"
+        print(f"Created routine {routine.id}  ({routine.status}, assignee={assignee})")
+    return 0
+
+
+def _cmd_routine_list(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        routines = kb.list_routines(conn, include_paused=not args.active_only)
+    if getattr(args, "json", False):
+        print(json.dumps([_routine_to_dict(r) for r in routines], indent=2, ensure_ascii=False))
+        return 0
+    if not routines:
+        print("(no routines)")
+        return 0
+    print(f"{'ID':>4s}  {'STATUS':8s}  {'ASSIGNEE':16s}  {'CRON':16s}  TITLE")
+    for r in routines:
+        print(
+            f"{r.id:>4d}  {r.status:8s}  {(r.assignee or '-'):16s}  "
+            f"{r.cron_expr:16s}  {r.title}"
+        )
+    return 0
+
+
+def _cmd_routine_pause(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        ok = kb.set_routine_status(conn, args.routine_id, "paused")
+    if not ok:
+        print(f"no such routine: {args.routine_id}", file=sys.stderr)
+        return 1
+    print(f"Paused routine {args.routine_id}")
+    return 0
+
+
+def _cmd_routine_resume(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        ok = kb.set_routine_status(conn, args.routine_id, "active")
+    if not ok:
+        print(f"no such routine: {args.routine_id}", file=sys.stderr)
+        return 1
+    print(f"Resumed routine {args.routine_id}")
+    return 0
+
+
+def _cmd_routine_run_now(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        task_id = kb.materialize_routine(conn, args.routine_id, manual=True)
+    if not task_id:
+        print(f"routine {args.routine_id} did not materialize", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps({"routine_id": args.routine_id, "task_id": task_id}, indent=2))
+    else:
+        print(f"Materialized routine {args.routine_id} as task {task_id}")
+    return 0
+
+
+def _cmd_routine_delete(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        ok = kb.delete_routine(conn, args.routine_id)
+    if not ok:
+        print(f"no such routine: {args.routine_id}", file=sys.stderr)
+        return 1
+    print(f"Deleted routine {args.routine_id}")
+    return 0
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
@@ -1333,7 +1466,7 @@ _HANDLERS = {
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
-    "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
+    "assignees": _cmd_assignees, "routine": _dispatch_routine, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
     "gc": _cmd_gc,

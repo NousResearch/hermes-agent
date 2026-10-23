@@ -68,9 +68,13 @@ class MCPServerRunMixin:
         configured = self._config.get("keepalive_interval")
         keepalive_interval = None
         if is_http or configured is not None:
-            keepalive_interval = max(
-                _core._MIN_KEEPALIVE_INTERVAL,
-                float(_core._DEFAULT_KEEPALIVE_INTERVAL if configured is None else configured))
+            # Null stays "unset" (HTTP uses the default; stdio stays off). A present but
+            # malformed value must not raise out of the lifecycle loop.
+            parsed = (
+                float(_core._DEFAULT_KEEPALIVE_INTERVAL) if configured is None
+                else _core._cfg_float(
+                    self._config, "keepalive_interval", _core._DEFAULT_KEEPALIVE_INTERVAL))
+            keepalive_interval = max(_core._MIN_KEEPALIVE_INTERVAL, parsed)
         # No keepalive, but an unproven stdio session must still get its chance to prove
         # itself: it counts as proven only once a FULL default interval has elapsed — not on
         # the first timeout wake, which a shorter recycle deadline may cause (see below).

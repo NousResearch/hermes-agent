@@ -236,6 +236,23 @@ _MCP_LOG_LEVEL_MAP = {
 # ---- Reconnect / keepalive tuning ----
 
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+
+
+def _cfg_float(config: dict, key: str, default: float) -> float:
+    """Coerce ``config[key]`` to float. Missing, null, or malformed values
+    (``connect_timeout: "60s"``, ``keepalive_interval: null``) fall back to
+    *default* instead of raising into the connect or keepalive loop."""
+    try:
+        value = default if not isinstance(config, dict) else config.get(key, default)
+        if value is None:
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("MCP config %s=%r is not a number; using %s", key,
+                       None if not isinstance(config, dict) else config.get(key, default), default)
+        return float(default)
+
+
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60

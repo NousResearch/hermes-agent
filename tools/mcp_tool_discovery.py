@@ -278,10 +278,10 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         _core._server_connect_errors.pop(key, None)
     logger.info("MCP server '%s': lazy start on first use", server_name)
     _loop._ensure_mcp_loop()
-    connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
+    connect_timeout = _core._cfg_float(config, "connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
     try:
         _loop._run_on_mcp_loop(lambda: _discover_and_register_server(server_name, config),
-                               timeout=float(connect_timeout) + 30.0)
+                               timeout=connect_timeout + 30.0)
     except BaseException as exc:
         logger.warning("Lazy MCP connect failed for '%s': %s%s",
                        server_name, _note_connect_failure(server_name, exc), _stderr_tail_note(server_name))
@@ -330,8 +330,9 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     claimed: list[_core.MCPServerTask] = []
     claim_token = _core._connect_server_claim.set(claimed.append)
     try:
-        server = await asyncio.wait_for(_connect_server(name, config),
-                                        timeout=config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
+        server = await asyncio.wait_for(
+            _connect_server(name, config),
+            timeout=_core._cfg_float(config, "connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
     except BaseException:
         server = claimed[0] if claimed else None
         task = server._task if server is not None else None
@@ -910,9 +911,11 @@ def probe_mcp_server_tools() -> dict[str, list[tuple]]:
     probed_servers: list[_core.MCPServerTask] = []
 
     async def _probe_all():
-        coros = [asyncio.wait_for(_connect_server(name, cfg),
-                                  timeout=cfg.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
-                 for name, cfg in enabled.items()]
+        coros = [
+            asyncio.wait_for(
+                _connect_server(name, cfg),
+                timeout=_core._cfg_float(cfg, "connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
+            for name, cfg in enabled.items()]
         outcomes = await asyncio.gather(*coros, return_exceptions=True)
         for name, outcome in zip(enabled, outcomes):
             if isinstance(outcome, Exception):

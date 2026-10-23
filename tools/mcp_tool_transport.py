@@ -421,7 +421,8 @@ class MCPServerTransportMixin:
                 async with _core.ClientSession(read_stream, write_stream, **self._session_kwargs()) as session:
                     # Bound the handshake here (``connect_timeout`` only bounds the caller's ``.result()``):
                     # a server that never answers ``initialize`` would leak child + pipes per retry until EMFILE.
-                    connect_timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
+                    connect_timeout = _core._cfg_float(
+                        config, "connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
                     return await self._serve_session(session, connect_timeout, mark_lifecycle=True)
         except Exception as exc:
             # The SDK only sees "Connection closed"; the child's stderr says why (#124264).
@@ -613,7 +614,7 @@ class MCPServerTransportMixin:
         # 2026-07-28 header routes the handshake-era ``initialize()`` onto the envelope ladder, which rejects it.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
-        connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
+        connect_timeout = _core._cfg_float(config, "connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
                   self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":

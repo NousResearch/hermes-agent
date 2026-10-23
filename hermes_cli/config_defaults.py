@@ -146,10 +146,16 @@ DEFAULT_CONFIG = {
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).
         "empty_response_guard": {
-            "enabled": True,  # False = legacy fixed 3 retries unconditionally
-            # When one empty attempt's estimated input cost >= this USD, the streak's retry budget
-            # drops from 3 to 1. Unknown pricing / missing usage leaves it untouched.
+            # False restores the configured base max_retries unconditionally
+            # (no deterministic-empty skip and no cost reduction).
+            "enabled": True,
+            # When one empty attempt's estimated input cost >= this USD, the streak's
+            # retry budget drops from max_retries to min(max_retries, 1). Unknown
+            # pricing or missing usage leaves the budget untouched.
             "cost_threshold_usd": 0.25,
+            # Base empty-response retry ceiling. Clamp >= 0; 0 disables empty retries.
+            # Also accepted as legacy top-level agent.empty_response_max_retries.
+            "max_retries": 3,
         },
         # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first fast_auto_seconds of every
         # turn), "cold" (first turn of a session only).

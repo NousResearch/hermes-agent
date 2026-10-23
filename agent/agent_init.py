@@ -1404,11 +1404,24 @@ def _apply_agent_section(agent, _agent_cfg):
             _agent_section.get("run_budget_seconds")
         )
 
-    # Empty-response guard: a malformed section falls back to schema defaults (on, $0.25).
+    # Empty-response guard: a malformed section falls back to schema defaults
+    # (on, $0.25, 3 retries). Nested max_retries wins; legacy
+    # agent.empty_response_max_retries is accepted for #58670.
     from agent.empty_response_guard import resolve_guard_settings
+    _guard_section = _agent_section.get("empty_response_guard")
+    if not isinstance(_guard_section, dict):
+        _guard_section = {}
+    if (
+        "max_retries" not in _guard_section
+        and "empty_response_max_retries" in _agent_section
+    ):
+        _guard_section = dict(_guard_section)
+        _guard_section["max_retries"] = _agent_section.get("empty_response_max_retries")
     (
-        agent._empty_guard_enabled, agent._empty_guard_cost_threshold_usd
-    ) = resolve_guard_settings(_agent_section.get("empty_response_guard"))
+        agent._empty_guard_enabled,
+        agent._empty_guard_cost_threshold_usd,
+        agent._empty_response_max_retries,
+    ) = resolve_guard_settings(_guard_section)
 
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")

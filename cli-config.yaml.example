@@ -1284,6 +1284,15 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Empty-response retry guard (NS-503 + #58670). Distinct from api_max_retries:
+  # this ceiling applies only when the model returns no content and no reasoning.
+  # max_retries defaults to 3 and clamps to >= 0 (0 disables). The cost guard may
+  # reduce it to min(max_retries, 1). Legacy alias: agent.empty_response_max_retries.
+  # empty_response_guard:
+  #   enabled: true
+  #   cost_threshold_usd: 0.25
+  #   max_retries: 3
+
   # Once api_max_retries AND the fallback chain are spent on a transient outage
   # (5xx, overloaded/529, connect/read timeouts) and nothing has been delivered
   # yet, Hermes waits and retries this many more cycles (jittered 15/30/60/60/60s;

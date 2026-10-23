@@ -917,7 +917,7 @@ app.post('/send-media', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, filePath, mediaType, caption, fileName, mentions } = req.body;
+  const { chatId, filePath, mediaType, caption, fileName, mentions, replyTo } = req.body;
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
@@ -1003,7 +1003,13 @@ app.post('/send-media', async (req, res) => {
 
     msgPayload = addMentions(msgPayload, mentions);
 
-    const sent = await sendWithTimeout(chatId, msgPayload);
+    const options = {};
+    const quoted = messageStore?.get(replyTo);
+    if (quoted?.key && quoted?.message) {
+      options.quoted = quoted;
+    }
+
+    const sent = await sendWithTimeout(chatId, msgPayload, options);
     trackSentMessageId(sent);
     messageStore.remember(sent);
     res.json({ success: true, messageId: sent?.key?.id });

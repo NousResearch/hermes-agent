@@ -448,6 +448,9 @@ def _resolve_conversation_history(
     ``conversation_history`` > ``previous_response_id`` chain > all-but-last ``input`` messages."""
     instructions = body.get("instructions")
     previous_response_id = body.get("previous_response_id")
+    from gateway.platforms.api_server import invalid_previous_response_id
+    if (rejected := invalid_previous_response_id(previous_response_id)) is not None:
+        return [], instructions, None, rejected
     conversation_history: list[dict[str, str]] = []
     raw_history = body.get("conversation_history")
     if raw_history:

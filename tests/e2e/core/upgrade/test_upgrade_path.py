@@ -81,7 +81,7 @@ CLI_TIMEOUT = 600
 
 def _git(*args: str, cwd: Path, check: bool = True) -> str:
     cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
-                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, check=False)
     if check and cp.returncode != 0:
         raise AssertionError(f"git {args} failed in {cwd}: {cp.stderr}")
     return cp.stdout.strip()
@@ -134,6 +134,11 @@ from pathlib import Path
 root, base = Path(sys.argv[1]), sys.argv[2]
 cfg = tomllib.load(open(root / "pyproject.toml", "rb"))
 tops = [p for p in cfg["tool"]["setuptools"]["packages"]["find"]["include"] if "*" not in p]
+# Import name -> the optional extra that ships it. Only these may be absent from a HEAD-added
+# module's imports; any other missing module (a core dependency, a typo) is a real failure.
+OPTIONAL_SDKS = {"acp": "acp"}
+extras = cfg["project"].get("optional-dependencies", {})
+assert set(OPTIONAL_SDKS.values()) <= set(extras), f"stale OPTIONAL_SDKS extras: {OPTIONAL_SDKS}"
 added = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "--diff-filter=A", base, "HEAD", "--",
                         *[f"{t}/*.py" for t in tops]], capture_output=True, text=True).stdout.split()
 added = [a[:-3].replace("/", ".") for a in added if "/tests/" not in a and not a.endswith("__init__.py")][:3]
@@ -142,6 +147,9 @@ for name in tops + ["hermes_cli.main", "run_agent", "hermes_state"] + added:
     try:
         mod = importlib.import_module(name)
     except BaseException as exc:
+        missing = (getattr(exc, "name", None) or "").split(".")[0]
+        if name in added and isinstance(exc, ModuleNotFoundError) and missing in OPTIONAL_SDKS:
+            continue  # an optional extra's SDK; a stale finder misses the module itself, not an SDK
         bad.append(f"{name}: {type(exc).__name__}: {exc}")
         continue
     where = Path(getattr(mod, "__file__", None) or str(list(getattr(mod, "__path__", [""]))[0])).resolve()
@@ -375,7 +383,7 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
     uv_env.update(UV_PROJECT_ENVIRONMENT=str(install / "venv"), XDG_CONFIG_HOME=str(no_cfg), XDG_CONFIG_DIRS=str(no_cfg))
     cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--managed-python",
                          "--python", base_python], cwd=str(install),
-                        env=uv_env, capture_output=True, text=True, timeout=1800)
+                        env=uv_env, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode == 0, f"N-1 venv install from its uv.lock failed:\n{cp.stderr[-4000:]}"
     env_probe = H.isolated_env(root)
     hermes_home = Path(env_probe["HERMES_HOME"])

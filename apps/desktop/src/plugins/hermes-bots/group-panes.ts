@@ -9,6 +9,7 @@
 
 import { atom } from '@hermes/plugin-sdk'
 
+import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { $groupChatWorkspace, groupChatRoomKey } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import type { Attachment } from './types'
@@ -125,6 +126,19 @@ export const groupChatMainTabs = new Map<string, () => void>()
  *  nothing). Every map mutation goes through the two helpers below so the
  *  rev bump re-evaluates the gate. */
 export const $groupMainTabsRev = atom(0)
+
+/** The origin each group string was last opened with (see CanonicalGroupOrigin),
+ *  so the in-panel fallback renders the selected group the way it was opened.
+ *  Unknown strings are names: a name never parses as a `canonical:` key. */
+const groupOpenOrigins = new Map<string, CanonicalGroupOrigin>()
+
+export function recordGroupOpenOrigin(group: string, origin: CanonicalGroupOrigin) {
+  groupOpenOrigins.set(group, origin)
+}
+
+export function groupOpenOrigin(group: string): CanonicalGroupOrigin {
+  return groupOpenOrigins.get(group) ?? 'name'
+}
 
 export function recordGroupMainTab(group: string, close: () => void) {
   groupChatMainTabs.set(group, close)

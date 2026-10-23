@@ -14,6 +14,7 @@ import {
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
+import { type GuardedModelSwitchResult, surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
@@ -44,14 +45,43 @@ import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../..
 import type { useSessionActions } from '../../session/hooks/use-session-actions'
 import {
   chatMessageArraysEquivalent,
+  overlayConcurrentMessageChanges,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
+  resolveResumedBusy,
   resolveSessionOwner
 } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
+import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
 type SessionStateCache = ReturnType<typeof useSessionStateCache>
+
+/** Runtime a stored session is bound to: the primary reverse lookup, else a retained tile. */
+function boundTileRuntimeId(
+  runtimeIdByStoredSessionIdRef: SessionStateCache['runtimeIdByStoredSessionIdRef'],
+  storedSessionId: string
+): string | undefined {
+  return (
+    runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+    $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+  )
+}
+
+/** REST read scope for a tile's resolved owner (connection-scoped owners read their target profile). */
+function tileRestScope(owner: SessionOwnerScope) {
+  return owner && typeof owner === 'object'
+    ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
+    : owner
+}
+
+/** A cached binding still carrying this session's transcript (or mid-turn). */
+function isWarmTileState(
+  cached: ClientSessionState | undefined,
+  storedSessionId: string
+): cached is ClientSessionState {
+  return cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)
+}
 
 function mergeTileTranscript(
   previous: ChatMessage[],
@@ -239,6 +269,39 @@ export function useSessionTileDelegate({
       executeSlash: async (rawCommand, sessionId, options) => {
         await executeSlashCommand(rawCommand, { sessionId, ...options })
       },
+      // The picker's wire (config.set model), always --session (never the profile default), with a
+      // guarded target asked through the ONE shared confirm flow and awaited: true only once the switch
+      // applied (or is queued for the next turn start), so a caller can safely re-run a turn on it;
+      // false when the user kept the current model. A refused switch throws.
+      switchSessionModel: async (runtimeId, model, provider) => {
+        const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
+        const request = (confirmExpensiveModel: boolean) => {
+          const params = {
+            key: 'model',
+            session_id: runtimeId,
+            value: `${model} --provider ${provider} --session`,
+            ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
+          }
+
+          return storedSessionId
+            ? requestForStoredSession<GuardedModelSwitchResult>(storedSessionId, 'config.set', params)
+            : requestGateway<GuardedModelSwitchResult>('config.set', params)
+        }
+
+        const result = await request(false)
+
+        if (!result?.confirm_required) {
+          return true
+        }
+
+        return surfaceModelSwitchConfirm({
+          confirmMessage: result.confirm_message,
+          failureMessage: translateNow('desktop.modelSwitchFailed'),
+          model,
+          requestConfirmed: () => request(true)
+        })
+      },
       // Gateway reconnect (sleep/wake, backend respawn): every stored→runtime
       // binding recorded pre-reconnect points at a runtime id the respawned
       // backend no longer knows. Drop the map so resumeTile's warm path can't
@@ -322,12 +385,12 @@ export function useSessionTileDelegate({
       resumeTile: async (storedSessionId, options) => {
         // A retained tile can still own its runtime after the primary view drops
         // its reverse lookup. Reconnect invalidates both bindings.
-        const existing =
-          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
-          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+        const existing = boundTileRuntimeId(runtimeIdByStoredSessionIdRef, storedSessionId)
 
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
+        const resumeRequestBaselineMessages = cached?.messages ?? []
         const refreshTranscript = options?.refreshTranscript === true
+        const authoritativeSnapshot = options?.authoritativeSnapshot === true
 
         // Warm path: reuse a live binding — but only when it still carries a
         // transcript (or is mid-turn, where messages legitimately stream in).
@@ -340,12 +403,7 @@ export function useSessionTileDelegate({
         // warm snapshot is whatever the tile last painted, and cron bot-chat
         // deliveries that landed while the panel's WS was down never arrive
         // as realtime events (#96183).
-        if (
-          existing &&
-          cached?.storedSessionId === storedSessionId &&
-          (cached.busy || cached.messages.length > 0) &&
-          !refreshTranscript
-        ) {
+        if (existing && isWarmTileState(cached, storedSessionId) && !refreshTranscript && !authoritativeSnapshot) {
           publishSessionState(existing, cached)
 
           return existing
@@ -358,14 +416,13 @@ export function useSessionTileDelegate({
         // the same cross-profile bleed the recovery resumes had (#67603).
         const owner = await ownerForStoredSession(storedSessionId)
 
-        const restScope =
-          owner && typeof owner === 'object'
-            ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
-            : owner
+        const restScope = tileRestScope(owner)
 
-        const prefetchPromise = getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
+        const prefetchPromise = authoritativeSnapshot
+          ? Promise.resolve(null)
+          : getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
 
-        if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
+        if (!authoritativeSnapshot && existing && isWarmTileState(cached, storedSessionId)) {
           const prefetch = await prefetchPromise
 
           // A long turn can push every rendered row off the newest page; read
@@ -405,17 +462,23 @@ export function useSessionTileDelegate({
           () => {
             assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
 
-            return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
-                session_id: storedSessionId,
-                cols: 96,
-                omit_messages: true,
-                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-              })
+            return singleFlightSessionResume(
+              storedSessionId,
+              () =>
+                requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
+                  session_id: storedSessionId,
+                  cols: 96,
+                  omit_messages: !authoritativeSnapshot,
+                  ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+                }),
+              { requiresMessages: authoritativeSnapshot, scope: owner }
             )
           },
           async () => {
-            const stored = (await prefetchPromise) ?? (await fetchStoredTranscriptAcrossBackends(storedSessionId))
+            const stored =
+              (await prefetchPromise) ??
+              (await getLatestSessionMessages(storedSessionId, restScope).catch(() => null)) ??
+              (await fetchStoredTranscriptAcrossBackends(storedSessionId))
 
             if (!stored) {
               throw new Error('stored transcript unavailable on every reachable backend')
@@ -458,28 +521,62 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
+        const currentBinding = boundTileRuntimeId(runtimeIdByStoredSessionIdRef, storedSessionId)
+
+        // Another resume/rebind won while this request was in flight. Do not
+        // publish the older response into the runtime the tile now owns.
+        if (currentBinding && currentBinding !== existing && currentBinding !== runtimeId) {
+          return currentBinding
+        }
+
         const info = resumed?.info
 
         updateSessionState(
           runtimeId,
-          state => ({
-            // The deferred build reports the session's own effort later (#79807).
-            ...markReasoningEffortPending(state),
-            busy: Boolean(info?.running),
-            // Persist the session's own model/provider from resume so the tile
-            // pill does not wait on a chrome-scoped catalog read (#93892).
-            ...(typeof info?.model === 'string' ? { model: info.model } : {}),
-            ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-            ...(typeof info?.reasoning_effort === 'string'
-              ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
-              : {}),
-            ...(typeof info?.reasoning_effort_wire === 'string'
-              ? { reasoningEffortWire: info.reasoning_effort_wire }
-              : {}),
-            ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
-          }),
+          state => {
+            const previousMessages = state.messages.length > 0 ? state.messages : resumeRequestBaselineMessages
+
+            const messages = authoritativeSnapshot
+              ? resumed.messages.length > 0
+                ? overlayConcurrentMessageChanges(
+                    mergeTileTranscript(
+                      resumeRequestBaselineMessages,
+                      toChatMessages(resumed.messages),
+                      cached?.streamId
+                    ),
+                    resumeRequestBaselineMessages,
+                    previousMessages
+                  )
+                : previousMessages
+              : previousMessages.length > 0
+                ? previousMessages
+                : toChatMessages(prefetch?.messages ?? resumed.messages ?? [])
+
+            const busyChangedWhileResuming = cached
+              ? Boolean(
+                  state.busy && (state.turnStartedAt !== cached.turnStartedAt || (state.turnLive && !cached.turnLive))
+                )
+              : state.busy
+
+            const running = resolveResumedBusy(resumed.running ?? info?.running, busyChangedWhileResuming)
+
+            return {
+              // The deferred build reports the session's own effort later (#79807).
+              ...markReasoningEffortPending(state),
+              ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
+              ...(typeof info?.model === 'string' ? { model: info.model } : {}),
+              ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
+              ...(typeof info?.reasoning_effort === 'string'
+                ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
+                : {}),
+              ...(typeof info?.reasoning_effort_wire === 'string'
+                ? { reasoningEffortWire: info.reasoning_effort_wire }
+                : {}),
+              awaitingResponse: running && !resumed.inflight?.assistant,
+              busy: running,
+              messages
+            }
+          },
           storedSessionId
         )
 

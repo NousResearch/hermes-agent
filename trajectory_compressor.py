@@ -134,7 +134,7 @@ class CompressionConfig:
     metrics_output_file: str = "compression_metrics.json"
 
     @classmethod
-    def from_yaml(cls, yaml_path: str) -> CompressionConfig:
+    def from_yaml(cls, yaml_path: str) -> "CompressionConfig":
         """Load configuration from YAML file (missing keys keep the defaults)."""
         with open(yaml_path, 'r', encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
@@ -668,7 +668,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         self._print_summary()
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
-            with open(metrics_path, 'w', encoding="utf-8") as f:
+            with open(metrics_path, 'w', encoding="utf-8") as f:  # noqa: ASYNC230 -- small local write; a local open() is non-blocking in practice
                 json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
             console.print(f"\n💾 Metrics saved to {metrics_path}")
 

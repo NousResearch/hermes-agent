@@ -81,7 +81,7 @@ def world(client, tmp_path, monkeypatch):
 
 
 def _head(path: Path) -> str:
-    return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True).stdout.strip()
+    return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=False).stdout.strip()
 
 
 def test_catalog_platform_mismatch_refuses_before_install(world):
@@ -206,6 +206,25 @@ def test_in_tree_sidecar_cannot_forge_catalog_provenance(world, tmp_path):
     # Control: a real catalog install is still recognised through the metadata record.
     real, _m, _n = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)
     assert cat.catalog_annotation(real) == f"catalog:community@{world['sha1'][:8]}"
+
+
+def test_url_install_of_an_archived_handoff_repo_is_repinned_to_its_catalog_entry(world, tmp_path, monkeypatch):
+    """A provider that left core was first handed off through a Nous repo that is now archived; a URL install of
+    it has no catalog record, so `update` would keep pulling the archive. It is adopted as the catalog entry that
+    superseded it, and `update` re-pins it to the maintained repo at the reviewed sha."""
+    archived = tmp_path / "archived"
+    target = _install_url(archived, "cat-plugin", {"ARCHIVED.md": "moved\n"})
+    assert cat.read_catalog_sidecar(target) is None  # control: an unknown repo stays a plain URL install
+    monkeypatch.setitem(cat._HANDOFF_REPOS, pc_cat._normalize_repo(archived.as_uri()), "cat-plugin")
+    assert cat.read_catalog_sidecar(target)["catalog_name"] == "cat-plugin"
+    seen = {}
+    real_scan = pc._scan_plugin_tree
+    monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: seen.update(k) or real_scan(*a, **k))
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] and result["unchanged"] is False and _head(target) == world["sha1"]
+    assert seen["reviewed_pin"] is True  # the re-pinned tree IS the reviewed sha: caution findings don't block it
+    record = pc._read_install_metadata()["cat-plugin"]
+    assert record["source"] == world["repo"].as_uri() and record["catalog"]["repo"] == world["repo"].as_uri()
 
 
 def test_ref_install_records_installed_sha_so_update_is_offered(world):
@@ -519,3 +538,24 @@ def test_catalog_rows_maps_resolves_the_live_catalog_once(monkeypatch):
 
     monkeypatch.setattr(cat, "load_catalog_live", boom)
     assert cat.catalog_rows_maps() == ({}, {}, {})
+
+
+@pytest.mark.parametrize("gateway_pid", [None, 4242], ids=["no-gateway", "gateway-running"])
+def test_brief_install_prints_the_pin_and_outcome_and_a_restart_hint_only_for_a_gateway(
+        world, monkeypatch, gateway_pid):
+    """First-time setup already said what it installs and why, so ``brief`` leaves out the catalog
+    description, the clone line and the "Installed" panel; with no gateway running or installed (a
+    first-time setup) there is nothing to restart, so no restart hint either."""
+    from rich.panel import Panel
+    printed: list = []
+    monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda self, *a, **k: printed.extend(a)})())
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: gateway_pid)  # no reload answered
+    monkeypatch.setattr("hermes_cli.gateway._installed_service_kind", lambda: None)
+
+    pc.cmd_install("cat-plugin", enable=True, brief=True)
+
+    text = "\n".join(str(p) for p in printed if not isinstance(p, Panel))
+    assert "pinned @" in text and "Plugin [bold]cat-plugin[/bold] enabled" in text
+    assert not any(isinstance(p, Panel) for p in printed)
+    assert "maintained by" not in text and "Cloning" not in text
+    assert ("Restart the gateway" in text) is bool(gateway_pid)

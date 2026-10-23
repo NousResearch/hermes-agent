@@ -227,6 +227,7 @@ def run_cli(argv: Sequence[str], *, env: dict[str, str], timeout: float, label: 
         return subprocess.run(
             list(argv), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, stdin=stdin,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(timeout_message) from exc

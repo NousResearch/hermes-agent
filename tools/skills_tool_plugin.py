@@ -97,9 +97,9 @@ def _serve_skill_file(
         return _fail(f"Failed to read '{file_path}': {exc}")
     if mark_read:
         _mark_background_review_read(target)
-    return _json({  # _source_path: internal, feeds the repeat-view dedup fingerprint
+    return _json({
         "success": True, "name": label, "file": file_path, "content": content,
-        "file_type": target.suffix, "_source_path": str(target)})
+        "file_type": target.suffix})
 
 
 def _mark_background_review_read(path: Path) -> None:
@@ -158,7 +158,7 @@ def _serve_plugin_skill(
         "description": _truncate_description(str(parsed_frontmatter.get("description", ""))),
         "linked_files": _plugin_skill_linked_files(skill_md.parent),
         "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)})
+        "skill_dir": str(skill_md.parent)})
 
 
 def _plugin_skill_linked_files(skill_root: Path) -> dict[str, list[str]] | None:

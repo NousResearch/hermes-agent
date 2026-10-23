@@ -167,7 +167,7 @@ def test_prepared_cli_rejects_missing_result_without_provisioning(tmp_path):
     source = Path(__file__).resolve().parents[2]
     absent = tmp_path / "absent" / "prepared.json"
     result = subprocess.run([sys.executable, str(source / "scripts/bundles/desktop.py"), "--prepared", str(absent)],
-                            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+                            cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode != 0
     assert "preparation" in result.stderr.lower()
     assert "unrecognized arguments" not in result.stderr
@@ -227,9 +227,9 @@ def test_checkout_lock_excludes_a_second_build_process(tmp_path):
     )
     command = [sys.executable, "-I", "-c", probe, str(project), str(source)]
     with build_lock(source):
-        blocked = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        blocked = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
         assert blocked.returncode != 0 and "another desktop" in blocked.stderr
-    released = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    released = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
     assert released.returncode == 0, released.stderr
     assert released.stdout.strip() == "acquired"
 

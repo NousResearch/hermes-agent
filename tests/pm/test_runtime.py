@@ -40,7 +40,7 @@ assert importlib.util.find_spec("yaml") is None
 print(json.dumps({{"prefix": sys.prefix, "yaml": importlib.util.find_spec("ruamel.yaml").origin}}))
 """
     result = subprocess.run([str(python), "-I", "-B", "-c", code], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout)
     assert Path(report["yaml"]).is_relative_to(Path(report["prefix"]))
@@ -50,7 +50,7 @@ print(json.dumps({{"prefix": sys.prefix, "yaml": importlib.util.find_spec("ruame
     repaired = prepare_runtime(Path(uv), Path(sys.executable), tmp_path / "runtime", offline=True)
     assert repaired != python
     checked = subprocess.run([str(repaired), "-I", "-B", "-c", code], env=env,
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, timeout=30, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
@@ -131,7 +131,7 @@ def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch
     script.write_text("import sys,json; print(json.dumps(sys.path))")
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
     command = runtime_command(script)
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     entries = json.loads(result.stdout)
     assert str(site) in entries

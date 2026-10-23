@@ -36,7 +36,7 @@ _TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
 
 
 def _git(*args: str) -> str:
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout
 
 
 def _changed_py(base: str, head: str) -> list[str]:
@@ -45,7 +45,7 @@ def _changed_py(base: str, head: str) -> list[str]:
 
 
 def _show(rev: str, path: str) -> str | None:
-    r = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     return r.stdout if r.returncode == 0 else None
 
 
@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", dest="json_out", help="also write the report as JSON")
     args = ap.parse_args(argv)
     for ref in (args.base, args.head):
-        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True).returncode != 0:
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True, check=False).returncode != 0:
             print(f"public-surface: cannot resolve ref {ref!r} (fetch it first); refusing to report a clean diff", file=sys.stderr)
             return 2
     base = _git("merge-base", args.base, args.head).strip()

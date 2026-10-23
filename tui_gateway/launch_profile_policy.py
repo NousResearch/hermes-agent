@@ -106,6 +106,11 @@ def activate_multi_profile_hosting_eagerly() -> bool:
         return False
     logger.info("Multi-profile hosting activated at startup (%d servable profile homes)", len(homes))
     activate_multi_profile_hosting()
+    # Route each home's records to its own logs/ now: the Desktop cron ticker used to be the only
+    # caller, and it stands down when a live gateway owns cron, leaving every secondary profile's
+    # model/cwd lines in the launch profile's agent.log.
+    from hermes_logging import enable_profile_log_routing
+    enable_profile_log_routing(sorted(homes))
     return True
 
 
@@ -146,6 +151,36 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
+
+
+
+def owner_secret_scope(home: str | Path) -> dict[str, str]:
+    """THE secret mapping for a body owned by *home*: ``launch_secret_scope`` when *home* is this
+    process's own (its env-only keys from docker ``-e`` / systemd ``Environment=`` / ``op run`` have
+    no file to rebuild from), else the profile's own files (``build_profile_secret_scope``). Every
+    per-home binding point (routed gateway turns, cron fires, kanban ticks) builds through here, so
+    the launch profile keeps its env-only credentials when a single-profile gateway starts
+    multiplexing in place."""
+    from agent.secret_scope import _is_process_home, build_profile_secret_scope
+    if _is_process_home(Path(home)):
+        return launch_secret_scope(home)
+    return build_profile_secret_scope(Path(home))
+
+
+@contextlib.contextmanager
+def launch_body() -> Iterator[None]:
+    """Mark a standalone launch-profile body (a primary-adapter message) at ENTRY. Nothing is bound
+    while single-profile, so its reads keep the process-env semantics they always had; if a second
+    profile switches the gateway to fail-closed mid-body, an unscoped read resolves from
+    ``launch_secret_scope`` (frozen env + ``.env``) instead of raising ``UnscopedSecretError``."""
+    from agent.secret_scope import reset_launch_body_scope, set_launch_body_scope
+    from hermes_constants import get_process_hermes_home
+    home = get_process_hermes_home()
+    token = set_launch_body_scope(lambda: launch_secret_scope(home))
+    try:
+        yield
+    finally:
+        reset_launch_body_scope(token)
 
 
 @contextlib.contextmanager

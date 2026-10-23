@@ -84,7 +84,7 @@ def main(argv=None):
             capture_output=True, text=True, encoding="utf-8",
             timeout=args.timeout,
             env={"HOME": tmp, "PATH": Path(soffice).parent.as_posix()
-                 + ":/usr/bin:/bin"})
+                 + ":/usr/bin:/bin"}, check=False)
         produced = Path(tmp) / (src.stem + ".xlsx")
         if proc.returncode != 0 or not produced.exists():
             print(json.dumps({"ok": False,

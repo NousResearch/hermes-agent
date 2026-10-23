@@ -309,7 +309,7 @@ def _(rid, params: dict, service) -> dict:
         GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION, validate_room_link_url)
     from gateway.hosted_rooms import local_authority_gateway_id, room_state
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
-    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     target_url, transport_security = validate_room_link_url(params.get("target_url"))
     catalog = GatewayRoomCatalog.from_mapping(params.get("catalog"))
     if ROOM_LINK_PROTOCOL_VERSION not in catalog.protocol_versions:
@@ -335,14 +335,16 @@ def _(rid, params: dict, service) -> dict:
             or int(probe.get("authority_epoch") or 0)
             != int(home_room.get("authority_epoch") or 0)):
         raise ValueError("room grant scope does not match this route")
+    # A caller may still choose the identity; otherwise the route keeps one across re-registration.
+    cancellation_scope_id, trace_id = route_identity(
+        db_path=service.db_path, home_install_id=home_install_id, room_id=room_id, member_id=member_id)
     route = PeerMemberRoute(
         home_install_id=home_install_id, member_id=member_id,
         target_install_id=catalog.installation_id, target_profile=target_profile,
         capability_digest=catalog.catalog_digest,
         execution_policy_digest=catalog.execution_policy.policy_digest,
-        cancellation_scope_id=str(
-            params.get("cancellation_scope_id") or f"cancel-{params.get('room_id') or ''}"),
-        trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"), grant=grant)
+        cancellation_scope_id=str(params.get("cancellation_scope_id") or cancellation_scope_id),
+        trace_id=str(params.get("trace_id") or trace_id), grant=grant)
     service.register_peer_route(
         room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
         catalog=catalog)

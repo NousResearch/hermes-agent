@@ -13,7 +13,7 @@ description: >-
   REKA_BASE_URL) through Hermes's own client with REKA_API_KEY, which Hermes reads; usage is
   billed to your Reka account; the plugin itself opens no connections.
 maintainer: reka-ai
-tier: community
+tier: verified
 category: models
 requires_hermes: ">=0.21.6"
 docs_url: https://developer.reka.ai/integrations/agents#hermes

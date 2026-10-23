@@ -10,7 +10,7 @@ import path from 'node:path'
 import { app, ipcMain } from 'electron'
 import nodePty from 'node-pty'
 
-import { resolveTerminalConnectionForSender } from './connection-apply'
+import { resolveTerminalConnection, resolveTerminalConnectionForSender } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
 import { createTerminalOutputGate } from './terminal-output-gate'
@@ -26,6 +26,11 @@ export interface TerminalIpcDeps {
   sshBinary: () => string
   ensureBackend: (webContentsId: number) => Promise<unknown>
   getSshConnectionState: (scope: string) => undefined | { remotePlatform?: string }
+  /** Sessions-active (gateway, profile) → live SSH tunnel, if that gateway is SSH.
+   *  Lets a new PTY follow the Sessions switcher instead of the window-backend
+   *  route (which a Sessions-switch leaves pointing at the previous backend). */
+  resolveSshScopeForConnection?: (connectionId: string, profile?: string) => unknown
+  ensureConnectionBackend?: (connectionId: string, profile?: string) => Promise<unknown>
 }
 
 export interface TerminalIpcApi {
@@ -56,7 +61,9 @@ export function registerTerminalIpc({
   activeSshTerminalTarget,
   sshBinary,
   ensureBackend,
-  getSshConnectionState
+  getSshConnectionState,
+  resolveSshScopeForConnection,
+  ensureConnectionBackend
 }: TerminalIpcDeps): TerminalIpcApi {
   const terminalSessions = new Map()
 
@@ -312,7 +319,25 @@ export function registerTerminalIpc({
     const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
     const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
 
-    const sshTarget = await resolveTerminalConnectionForSender(event.sender.id, activeSshTerminalTarget, ensureBackend)
+    const requestedConnectionId = typeof payload?.connectionId === 'string' ? payload.connectionId.trim() : ''
+    const requestedProfile = typeof payload?.profile === 'string' ? payload.profile : undefined
+
+    // Prefer the Sessions-active gateway the renderer was looking at. The
+    // window-backend route isn't re-pointed by a Sessions switch, so without
+    // this a live switch back to SSH keeps spawning a local shell.
+    let sessionTarget = null as null | { scope: string; ssh: unknown } | string
+    if (requestedConnectionId && resolveSshScopeForConnection) {
+      try {
+        sessionTarget = (await resolveTerminalConnection(
+          () => resolveSshScopeForConnection(requestedConnectionId, requestedProfile),
+          () => (ensureConnectionBackend ? ensureConnectionBackend(requestedConnectionId, requestedProfile) : Promise.resolve())
+        )) as null | { scope: string; ssh: unknown } | string
+      } catch {
+        sessionTarget = null
+      }
+    }
+
+    const sshTarget = sessionTarget || (await resolveTerminalConnectionForSender(event.sender.id, activeSshTerminalTarget, ensureBackend))
 
     const remote = Boolean(sshTarget)
     const remoteState = remote ? getSshConnectionState(sshTarget.scope) : null

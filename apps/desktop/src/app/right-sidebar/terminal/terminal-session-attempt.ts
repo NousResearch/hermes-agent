@@ -3,6 +3,8 @@ import type { RefObject } from 'react'
 
 import type { HermesTerminalSession } from '@/global'
 import { hostHas } from '@/lib/host-capabilities'
+import { $activeConnectionId } from '@/store/connections'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { $terminals, markTerminalPersistent, removeExitedTerminal } from './terminals'
 
@@ -130,7 +132,18 @@ export function createSessionAttemptController(
 
     void terminalApi
       // Prefer the last observed cwd so retry/relaunch stays in the same directory.
-      .start({ cols: term.cols, cwd: resolveCwd(), rows: term.rows, restoreKey: id, resumeOnly })
+      // Carry the Sessions active (gateway, profile) so a new PTY resolves
+      // the SSH tunnel for the gateway the user is LOOKING at — not the
+      // window-backend route, which a Sessions-switch doesn't re-point.
+      .start({
+        cols: term.cols,
+        connectionId: $activeConnectionId.get() ?? null,
+        cwd: resolveCwd(),
+        profile: $activeGatewayProfile.get(),
+        restoreKey: id,
+        resumeOnly,
+        rows: term.rows
+      })
       .then(async session => {
         persistent = Boolean(session.persistent)
         resumeOnly = persistent

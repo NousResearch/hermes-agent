@@ -630,7 +630,9 @@ declare global {
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
         start: (options?: {
           cols?: number
+          connectionId?: null | string
           cwd?: string
+          profile?: string
           rows?: number
           restoreKey?: string
           resumeOnly?: boolean

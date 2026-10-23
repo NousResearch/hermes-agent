@@ -1,0 +1,26 @@
+name: ld-workbench
+title: Debate Workbench
+repo: https://github.com/Dgardenhire/hermes-ld-workbench
+sha: e502204bcf5e975878d1a35bfdc2f939724cf2ca
+description: "Practice Lincoln-Douglas debate. A case workbench helps a student build their own case section by section (resolution analysis, value and criterion, contentions, evidence, blocks) with a coach that gives real help and asks hard questions but never writes the case. A topic briefing maps a new resolution for both sides. A full NSDA practice round (AC, cross-examination, NC, 1AR, NR, 2AR, with prep time) runs against an AI opponent at three levels, followed by a ballot from a lay, traditional or flow judge. A fallacies guide, drill and spotter work on the student's own case and on other people's arguments. Cases are kept in a library with Word, text and backup-file export. Every model call goes to the user's own Hermes model through the plugin LLM helper. Debate Workbench is an independent community plugin. It is not made or endorsed by Nous Research or the National Speech & Debate Association. Disclosure — one network call of its own: when the user adds a topic source link, it fetches that one public web page (http or https, public addresses only, checked on every redirect, 20-second timeout, first 30,000 characters of text kept); no credentials, telemetry, shell commands, background processes or self-updates; registers no tools, hooks or middleware, only a Desktop page and a dashboard API; stores cases, rounds, ballots and briefings in $HERMES_HOME/plugin-data/ld-workbench/; reads a .docx or .txt case file or a backup file only when the user picks one; writes an export only to a path the user picks in the save dialog, inside their home folder; the optional dictation button uses the speech recognition built into the desktop app's browser engine when that engine provides it, which may send the audio to that engine's speech service; no private Hermes imports."
+maintainer: Dgardenhire
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://linchpin.studio/hermes/ld-workbench/manual/
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/e502204bcf5e975878d1a35bfdc2f939724cf2ca/docs/card.png"
+screenshots:
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/e502204bcf5e975878d1a35bfdc2f939724cf2ca/docs/shots/after/bench-dark.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/e502204bcf5e975878d1a35bfdc2f939724cf2ca/docs/shots/after/bench-briefing-dark.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/e502204bcf5e975878d1a35bfdc2f939724cf2ca/docs/shots/after/room-speech-dark.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/e502204bcf5e975878d1a35bfdc2f939724cf2ca/docs/shots/after/room-opponent-spot-dark.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/e502204bcf5e975878d1a35bfdc2f939724cf2ca/docs/shots/after/room-ballot-light.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/e502204bcf5e975878d1a35bfdc2f939724cf2ca/docs/shots/after/fallacies-dark.png"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -513,9 +513,10 @@ references. `--offline` and `--cache` control dependency acquisition.
 For application environment builds, PM must already be able to start in the
 invoking Python. These builds are not an interpreter bootstrap. They do not modify a running application's
 imports or replace its selected environment. Nix's declarative uv2nix builds
-remain Nix-owned: `nix develop` still builds its dependencies with uv2nix, but
-runs them on the interpreter `pm/lock.json` pins (uv2nix cannot build a venv
-against a tarball interpreter, so only the interpreter comes from the lock).
+remain Nix-owned: `nix develop` still builds its dependencies with uv2nix, then
+re-homes that venv onto the interpreter `pm/lock.json` pins (uv2nix cannot build
+against a tarball interpreter). The shell's uv, node, npm, ripgrep and ffmpeg are
+the lock's builds too.
 Package-manager commands for unrelated projects or agent
 sandboxes do not manage Hermes itself.
 

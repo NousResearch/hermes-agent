@@ -239,6 +239,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
+| Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
@@ -474,7 +475,7 @@ whole migration.
 ### Composer extensions
 
 `COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
-`attachments`, `middleware`) let a plugin add controls around the message
+`attachments`, `middleware`, `contextMenu`) let a plugin add controls around the message
 composer, provide an attachment source, or transform a draft before it is sent
 (`ComposerMiddleware` with a `handler(draft) => draft | null`). `top` is a
 banner strip above the input and `bottom` a row below the input grid, both
@@ -482,6 +483,89 @@ inside the composer chrome; `underside` is the floating strip BELOW the whole
 composer with no chrome of its own — the seat for a suggestion pill or a status
 hint that should sit outside the input frame (the next-prompt plugin renders its
 "next prompt" pill there).
+
+### Composer context menu — rows on a right-click in the input {#composer-context-menu}
+
+`COMPOSER_AREAS.contextMenu` adds rows to the menu the app opens when the user
+right-clicks **the composer** (the main input or the message-edit composer).
+A contribution is data: an `items(context)` function the app calls once per
+right-click. The app renders the rows with its own menu items, so they focus,
+style and keyboard-navigate like the built-in ones; a plugin never touches the
+menu's DOM.
+
+```javascript
+import { COMPOSER_AREAS, host } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'spelling',
+  area: COMPOSER_AREAS.contextMenu,
+  data: {
+    // context = { word: string | null, selection: string } — nothing else.
+    items: ({ word }) => {
+      if (!word || isKnown(word)) return []
+
+      return [
+        ...suggest(word).slice(0, 5).map(suggestion => ({
+          label: suggestion,
+          // Runs after the menu closed, with the caret back in the composer.
+          onSelect: action => action.replaceWord(suggestion)
+        })),
+        { label: ctx.i18n.t('addToDictionary'), onSelect: () => void host.spellcheck.addWord(word) }
+      ]
+    }
+  }
+})
+```
+
+```ts
+interface ComposerContextMenuContext {
+  word: string | null // the word under the caret (or at the selection's start)
+  selection: string // the selected composer text, '' when the caret is collapsed
+}
+
+interface ComposerContextMenuItem {
+  label: string // plain text: controls/bidi overrides stripped, clamped to 80 chars
+  disabled?: boolean
+  onSelect: (action: ComposerContextMenuAction) => void
+}
+
+interface ComposerContextMenuAction extends ComposerContextMenuContext {
+  replaceWord(text: string): boolean // one line, <= 200 chars
+}
+```
+
+**What the app owns.** It decides the click landed on a composer; any other
+field (Settings inputs, API keys, dialogs, the transcript) never consults a
+provider. A provider sees two strings — the word and the composer selection
+(capped at 2,000 chars) — never the element, a `Range` or other text.
+`replaceWord` is the only edit it offers: it replaces exactly the word the user
+right-clicked through Chromium's own editing command, works once, and returns
+`false` (changing nothing) when the composer no longer holds that word in that
+place. For anything else, use [`host.composer`](#composer-draft-api--read-and-write-the-live-input).
+
+**Arbitration.** Each plugin gets its own section, placed after the app's own
+spell-check rows and before Cut / Copy / Paste. Plugins are ordered by plugin id
+(code-point order, then contribution id); load order and `order` play no part.
+A plugin shows at most **six rows** across all its contributions; extra rows are
+dropped. A provider that throws, returns a non-array, or a row without a string
+label or an `onSelect` function contributes nothing and leaves every other row
+standing; a throwing `onSelect` is logged, not raised. Rows registered through
+`ctx.register` disappear when the plugin unloads or is disabled — including
+from a menu that is open at the time.
+
+#### Spell-check dictionary — `host.spellcheck`
+
+```ts
+host.spellcheck.addWord(word: string): Promise<boolean>
+host.spellcheck.removeWord(word: string): Promise<boolean>
+```
+
+Adds or removes one word in the app's Chromium spell-check dictionary, so the
+red underline clears (or returns) everywhere in the app. The main process takes
+only one bounded word: letters, combining marks, digits and inner `'` / `-`,
+at least one letter, at most 64 characters. Anything else resolves `false`
+without touching the dictionary; so does an older desktop shell. There is no
+way to list or read the dictionary.
 
 ### Composer draft API — read and write the live input
 
@@ -758,6 +842,96 @@ by a `MutationObserver` that located the rows in the menu's DOM and wrote mask
 images onto them. The same marks come from `decorate({ provider })` returning
 `{ icon: <img alt="" src={providerSvgDataUrl(provider)} /> }` — no DOM reads,
 and the row keeps working when the menu's markup changes.
+
+#### Kanban card badges {#kanban-card-badges}
+
+`KANBAN_CARD_AREAS.badges` puts small text labels on Kanban card tiles: a
+tenant, a CI state, an estimate. A contribution supplies `decorate(card)`; the
+board paints what it returns as chips in a fixed row above the card's title.
+The card's markup, layout, drag and drop, click and context menu stay the
+board's, and the row takes no space on cards no plugin has a badge for.
+
+```ts
+import {
+  KANBAN_CARD_AREAS,
+  KANBAN_CARD_BADGE_HUES,
+  type KanbanCardBadgeContribution
+} from '@hermes/plugin-sdk'
+
+interface KanbanCard {            // frozen; identity and routing fields only
+  id: string                      // task id (t_…): key your own per-card data by it
+  status: string                  // the column: 'triage', 'ready', 'running', …
+  tenant: string | null
+  assignee: string | null
+}
+interface KanbanCardBoard {       // frozen; shared by every card on the board
+  tenants: readonly string[]      // every tenant on the board (its filter menu's list)
+}
+interface KanbanCardBadge {
+  label: string                   // plain text
+  tone?: KanbanCardBadgeTone      // 'neutral' (default) or one of KANBAN_CARD_BADGE_HUES
+  tooltip?: string                // plain text hover line
+}
+
+ctx.register({
+  area: KANBAN_CARD_AREAS.badges,
+  id: 'tenant',
+  data: {
+    // `tenants` lets you give each tenant on the board its own hue instead of
+    // hashing blind (two tenants can hash to the same one).
+    decorate: ({ tenant }, { tenants }) =>
+      tenant
+        ? { label: tenant, tone: KANBAN_CARD_BADGE_HUES[distinctIndex(tenant, tenants) % 12], tooltip: `Tenant: ${tenant}` }
+        : null
+  } satisfies KanbanCardBadgeContribution
+})
+```
+
+`decorate(card, board)` may return one badge, an array, or `null` for cards it
+has nothing to say about. The card view carries no prose (title, body, summaries,
+comments, run output); look up anything else you need by `id` in your own data
+(`ctx.rest` to your backend, `ctx.storage`). Both views are frozen.
+
+**What the board accepts** (`KANBAN_CARD_BADGE_LIMITS`):
+
+- **Text only.** `label` and `tooltip` must be strings and render as text, never
+  markup. Control characters, bidi overrides and zero-width characters are
+  removed, whitespace is collapsed, and text past 24 characters (`label`) or
+  160 characters (`tooltip`) is shortened with an ellipsis. An empty or
+  non-string label is ignored. Any other field (`render`, `html`, a style) is
+  ignored.
+- **A fixed palette.** `tone` is `'neutral'` or one of the twelve
+  `KANBAN_CARD_BADGE_HUES` (`'red'`, `'orange'`, … `'pink'`, the app's identity
+  hues in hue order, the same set as `PROFILE_SWATCHES`). Anything else paints
+  neutral. The board picks the actual colors for the theme.
+- **Two badges per plugin per card**, counted across all of the plugin's
+  contributions to this area. Extra badges are dropped.
+- **Attribution.** Every badge's tooltip ends with the plugin's name, so a user
+  can always tell which plugin painted it.
+
+**Arbitration.** Every plugin's badges show side by side; no plugin can hide,
+reorder or restyle another's. The row is ordered by plugin id, then
+contribution id, then the order `decorate` returned them. A contribution's
+`order` field is ignored here, so load order and bidding cannot move a badge.
+A decorator that **throws** contributes nothing (logged once) and the rest of
+the row still paints.
+
+**Updates and teardown.** `decorate()` re-runs when the registry changes,
+when the card's id, status, tenant or assignee changes, or when the board's
+tenant list changes, so keep it a pure lookup. When your own data changes (a user pins a new color in your settings
+page), call `ctx.register` again with the same `id`: the new registration
+replaces the old one and the board repaints. Keep the latest disposer; the
+first one would remove the replacement. On disable, reload or unload, the
+host removes the contribution and the cards repaint without its badges;
+nothing to undo in `ctx.onDispose`.
+
+**Migrating a DOM-decorating plugin** (kanban-tenant-labels): delete the route
+poll, the `MutationObserver`, the tile matching, the inserted `<span>` and the
+reads of the Kanban plugin's query cache. The whole decoration becomes the
+`ctx.register` call above. Its collision-free assignment runs on
+`board.tenants` instead of the query-cache snapshot, and its color pins map to
+`KANBAN_CARD_BADGE_HUES` (its twelve hues are the same `hsl(n×30 68% 58%)`
+set, in the same order).
 
 ### Appearance settings
 
@@ -2063,10 +2237,10 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

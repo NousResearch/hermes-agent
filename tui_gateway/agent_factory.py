@@ -179,6 +179,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     return overrides
 
 
+def _scoped_session_provider(agent, session: dict) -> str:
+    """The entry an agent on the ``custom`` adapter runs, resolved in the session's own profile: clients
+    reuse this identity for new chats without the endpoint or key, and callers need not be bound to it."""
+    with _profile_build_scope(session.get("profile_home") or _hermes_home):
+        return _runtime_model_config(agent).get("provider") or "custom"
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     """Merge the agent's CURRENT runtime identity onto the row's persisted ``model_config``. Falsy agent
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
@@ -187,15 +194,9 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     from agent.voice_turn_route import session_runtime_view
     agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
-    model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
-    if provider.lower() == "custom":
-        # ``agent.provider`` resolves every named custom entry to the literal "custom", losing the entry
-        # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL.
-        try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
-        except Exception:
-            logger.debug("custom provider identity lookup failed", exc_info=True)
+    model, base_url = attr("model"), attr("base_url")
+    from hermes_cli.runtime_provider_custom import session_provider_identity
+    provider = session_provider_identity(attr("provider"), attr("requested_provider"), base_url, model)
     reasoning_config = getattr(agent, "reasoning_config", None)
     live = {
         "model": model, "provider": provider, "base_url": base_url, "api_mode": attr("api_mode"),

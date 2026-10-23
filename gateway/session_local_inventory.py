@@ -127,6 +127,12 @@ def _cli_skills():
     return grouped
 
 
+def _session_provider(view, config=None):
+    from hermes_cli.runtime_provider_custom import session_provider_identity
+    return session_provider_identity(getattr(view, "provider", None), getattr(view, "requested_provider", None),
+                                     getattr(view, "base_url", None), getattr(view, "model", None), config=config)
+
+
 def session_inventory(authority, policy, agent, cwd):
     """Main's banner/status fields for one session. Each section degrades to main's empty value on
     its own, so one failing builder never blanks the others (main wrapped each in ``suppress``)."""
@@ -139,8 +145,7 @@ def session_inventory(authority, policy, agent, cwd):
         config = policy.config(authority, secrets=False) if policy is not None else {}
         if agent is not None:
             from agent.voice_turn_route import session_runtime_view
-            view = session_runtime_view(agent)
-            info["provider"] = getattr(view, "provider", "") or ""
+            info["provider"] = _session_provider(session_runtime_view(agent), config if policy is not None else None)
             info["tools"] = _grouped(getattr(agent, "tools", None))
             info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
             compressor = getattr(agent, "context_compressor", None)
@@ -207,7 +212,7 @@ def agent_inventory(agent) -> dict:
     info: dict = {}
     with contextlib.suppress(Exception):
         from agent.voice_turn_route import session_runtime_view
-        info["provider"] = getattr(session_runtime_view(agent), "provider", "") or ""
+        info["provider"] = _session_provider(session_runtime_view(agent))
     with contextlib.suppress(Exception):
         info["tools"] = _grouped(getattr(agent, "tools", None))
     info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""

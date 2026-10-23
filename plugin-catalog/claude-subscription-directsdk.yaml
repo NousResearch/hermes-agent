@@ -1,6 +1,6 @@
 name: claude-subscription-directsdk
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 9b074e160dbd84427ef59d092e62d9e3e5d44cf7
+sha: 54afaf5014db23346148436c4883eb64095e8060
 subdir: claude-subscription-directsdk
 description: Experimental model provider that runs Hermes turns on a Claude Pro/Max subscription through
   the official Claude Code CLI (the Agent SDK path), so no separate API key or per-token bill. Requires

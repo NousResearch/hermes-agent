@@ -10,11 +10,11 @@
   makeWrapper,
   writeText,
   callPackage,
+  runCommand,
   electron,
-  ripgrep,
   git,
   openssh,
-  ffmpeg,
+  ffmpeg-headless,
 
   # for pm
   writeShellApplication,
@@ -152,14 +152,26 @@ let
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
   };
 
+  # Tools come from pm/lock.json, the same builds `hermes pm install`
+  # provisions elsewhere. git and openssh are nixpkgs': the lock pins them for
+  # win32 only. hermesNpmLib.nodejs is the pinned node with the pinned npm.
   runtimeDeps = [
     hermesNpmLib.nodejs
-    ripgrep
+    pmPackages.ripgrep
+    pmPackages.ffmpeg
     git
     openssh
-    ffmpeg
   ]
-  ++ lib.optionals stdenv.isLinux [
+  # pm's macOS ffmpeg is a single binary with no ffprobe, which transcription
+  # needs to measure duration before splitting long recordings. Only ffprobe
+  # is linked, so `ffmpeg` on PATH stays the pinned build.
+  ++ lib.optionals stdenv.hostPlatform.isDarwin [
+    (runCommand "ffprobe-${ffmpeg-headless.version}" { } ''
+      mkdir -p $out/bin
+      ln -s ${lib.getBin ffmpeg-headless}/bin/ffprobe $out/bin/ffprobe
+    '')
+  ]
+  ++ lib.optionals stdenv.hostPlatform.isLinux [
     wl-clipboard
     xclip
   ];
@@ -314,19 +326,50 @@ stdenv.mkDerivation (finalAttrs: {
 
   passthru =
     let
+      # uv2nix builds the editable venv against the nixpkgs interpreter (it
+      # cannot build against a tarball one); devVenv re-homes it onto the
+      # interpreter pm/lock.json pins.
       devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
-      # The shell's interpreter: the exact build pm/lock.json installs, not
-      # nixpkgs'. uv2nix structurally needs a nixpkgs interpreter to BUILD the
-      # venv, so the site-packages stay Nix-owned and only the interpreter the
-      # shell runs (and `hermes` uses) comes from the lock.
-      devSitePackages = "${devPython}/${sitePackagesPath}";
-      pmPython = pythonLock.pinned;
+      pmPython = pmPackages.python;
+
+      # A real venv: pyvenv.cfg's `home` is the pinned interpreter and its
+      # site-packages are devPython's, so `.pth` files (the editable checkout)
+      # load and nothing depends on the caller's PYTHONPATH. Console scripts
+      # are re-shebanged onto it so `pytest` and `python -m pytest` agree.
+      devVenv = runCommand "hermes-agent-dev-venv" { } ''
+        mkdir -p $out/bin $out/lib/python${python.pythonVersion}
+        ln -s ${devPython}/${sitePackagesPath} $out/${sitePackagesPath}
+        cat > $out/pyvenv.cfg <<EOF
+        home = ${pmPython}/bin
+        include-system-site-packages = false
+        version = ${lib.head (lib.splitString "+" pmPython.version)}
+        EOF
+        for name in python python3 python${python.pythonVersion}; do
+          ln -s ${pmPython}/bin/python3 $out/bin/$name
+        done
+        # Every other command carries over: Python scripts re-shebanged onto
+        # this venv, native ones (ruff, ty) linked as-is. The activate scripts
+        # and devPython's own interpreter links would point back at devPython.
+        devInterpreter=$(readlink -f ${devPython}/bin/python3)
+        for script in ${devPython}/bin/*; do
+          name=$(basename "$script")
+          [ -e "$out/bin/$name" ] && continue
+          case "$name" in activate*|Activate*) continue ;; esac
+          [ "$(readlink -f "$script")" = "$devInterpreter" ] && continue
+          if head -n1 "$script" | grep -q '^#!.*python'; then
+            { echo "#!$out/bin/python3"; tail -n +2 "$script"; } > "$out/bin/$name"
+            chmod +x "$out/bin/$name"
+          else
+            ln -s "$script" "$out/bin/$name"
+          fi
+        done
+      '';
+
       pm = writeShellApplication {
         name = "pm";
         text = ''
-          root="$(git rev-parse --show-toplevel)"
-          cd "$root"
-          exec python -m pm.cli "$@"
+          cd "$(git rev-parse --show-toplevel)"
+          exec ${devVenv}/bin/python3 -m pm.cli "$@"
         '';
       };
     in
@@ -342,7 +385,7 @@ stdenv.mkDerivation (finalAttrs: {
         pmRuntime
         python
         devPython
-        devSitePackages
+        devVenv
         pmPython
         ;
 
@@ -365,40 +408,20 @@ stdenv.mkDerivation (finalAttrs: {
       };
 
       devShellHook = ''
-        export HERMES_PYTHON=${pmPython}/bin/python3
-        # Dependencies come from the Nix-built editable venv; only the
-        # interpreter is the lock's own build. PYTHONPATH rather than the
-        # venv's bin/python3, which is the nixpkgs interpreter.
-        export PYTHONPATH=${devSitePackages}:$HERMES_PYTHON_SRC_ROOT
+        export HERMES_PYTHON=${devVenv}/bin/python3
+        # `uv run --active --no-sync` reuses this venv instead of creating .venv.
+        export VIRTUAL_ENV=${devVenv}
       '';
 
       devDeps =
-        # The pinned tool set, straight from pm/lock.json: the shell runs the
-        # same uv, node, npm, ripgrep and ffmpeg `hermes pm install` provisions
-        # on a non-Nix host. nixpkgs still supplies what pm ships no Linux
-        # artifact for — git and openssh are win32-only pins — plus the
-        # platform tools Nix owns. hermesNpmLib.nodejs is the pinned node with
-        # the pinned npm already in its bin/, the same tree the builds use.
-        [
-          hermesNpmLib.nodejs
-          pmPackages.uv
-          pmPackages.ripgrep
-          pmPackages.ffmpeg
-          git
-          openssh
-        ]
-        ++ lib.optionals stdenv.isLinux [
-          wl-clipboard
-          xclip
-          cage # for running e2e tests without popping windows
-        ]
+        runtimeDeps
         ++ [
-          # The lock's interpreter first: `python` in the shell is the build a
-          # real install runs. devPython stays on PATH for its console scripts
-          # (pytest, debugpy), which are bound to the Nix-built venv.
-          pmPython
-          devPython
+          pmPackages.uv
+          devVenv
           pm
+        ]
+        ++ lib.optionals stdenv.hostPlatform.isLinux [
+          cage # for running e2e tests without popping windows
         ];
     };
 

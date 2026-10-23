@@ -53,7 +53,7 @@ def test_a_sign_in_that_replaced_no_free_tier_reports_no_handoff(portal, free_ac
 
 
 def test_a_move_no_attempt_reached_still_reports_the_waiting_record(portal, free_account, monkeypatch):
-    """Another process holds the claim, so this sign-in's own run attempts nothing: the poll still
+    """Another process holds the record, so this sign-in's own run attempts nothing: the poll still
     reports the replaced free tier's record (still moving) instead of no handoff at all."""
     anon_auth.ensure_portal_identity(explicit=True)
     monkeypatch.setattr(guest_handoff, "_run_one", lambda *a, **kw: None)
@@ -62,9 +62,8 @@ def test_a_move_no_attempt_reached_still_reports_the_waiting_record(portal, free
     body = _poll(start["session_id"], wait=25)
 
     assert body["status"] == "approved"
-    # A move bound to this account and not yet attempted reads as retrying (handoff_status's rule).
-    assert body["handoff_status"]["state"] == "retrying"
-    assert body["handoff_status"]["lines"] == guest_handoff.result_lines({"state": "retrying"})
+    assert body["handoff_status"]["state"] == "pending"
+    assert body["handoff_status"]["lines"] == guest_handoff.result_lines({"state": "pending"})
     assert not portal.claims
 
 
@@ -92,7 +91,7 @@ def test_the_handoff_route_reads_the_record_the_sign_in_left(portal, free_accoun
     status = _handoff()
     assert status["state"] == "claimed" and status["moved_toolkits"] == ["gmail"]
     assert status["updated_at"] == signed_in["updated_at"]
-    assert status["lines"] == [f"Your apps moved to {EMAIL}: gmail."]
+    assert status["lines"] == [f"Your apps moved to {EMAIL}: Gmail."]
 
 
 def test_the_handoff_long_poll_answers_when_the_record_changes(monkeypatch):
@@ -105,7 +104,7 @@ def test_the_handoff_long_poll_answers_when_the_record_changes(monkeypatch):
     status = _handoff(since="t1", wait=25)
 
     assert status["state"] == "claimed" and status["updated_at"] == "t2"
-    assert status["lines"] == [f"Your apps moved to {EMAIL}: gmail."]
+    assert status["lines"] == [f"Your apps moved to {EMAIL}: Gmail."]
 
 
 def test_the_handoff_long_poll_returns_the_unchanged_record_after_its_wait(monkeypatch):

@@ -7,6 +7,7 @@ failure propagates without changing plugin configuration or the live venv.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from collections.abc import Mapping
@@ -62,6 +63,29 @@ def members_stamp(plugin_dirs) -> str:
     return h.hexdigest()
 
 
+def _published_store_entries(directory: Path) -> frozenset[str]:
+    """Names of the PM tool-store entries published in *directory*, if it is a store root.
+
+    The container image keeps its store in the ``tools`` package directory, so the snapshot would
+    otherwise copy every pinned interpreter, browser and media binary (about 1.5 GB) into each
+    dependency generation. Nothing builds from them: the build runs the store's own tools in
+    place. A directory counts as a store only when its ``facts.json`` records published entries,
+    and only those entries (plus hash-keyed fetch caches) are left out.
+    """
+    try:
+        facts = json.loads((directory / "facts.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return frozenset()
+    packages = facts.get("packages") if isinstance(facts, dict) else None
+    if not isinstance(packages, dict):
+        return frozenset()
+    names = {fact["entry"] for fact in packages.values()
+             if isinstance(fact, dict) and isinstance(fact.get("entry"), str)}
+    names = {name for name in names if name and Path(name).name == name}
+    names.update(child.name for child in directory.glob("fetch-*") if child.is_dir())
+    return frozenset(name for name in names if (directory / name).is_dir())
+
+
 def _copy_core_inputs(source: Path, destination: Path) -> None:
     """Build from a writable snapshot, never from signed/read-only source."""
     import fnmatch
@@ -89,8 +113,9 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
     nested_excluded = excluded - {"dist"}
     def ignore(directory, names):
+        published = _published_store_entries(Path(directory))
         return [name for name in names if name in nested_excluded or name.startswith(".")
-                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+                or name in published or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded

@@ -183,6 +183,23 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           cat $out/*
         '';
 
+        # The dev shell's HERMES_PYTHON must carry its own dependencies: the
+        # TUI and the test runner launch it with PYTHONPATH replaced or cleared.
+        dev-venv-self-contained = pkgs.runCommand "hermes-dev-venv-self-contained" { } ''
+          venv=${hermes-agent.devVenv}
+          env -i "$venv/bin/python3" -c '
+          import sys, ruamel.yaml, openai, httpx, pytest
+          assert sys.prefix == "'"$venv"'", sys.prefix
+          assert sys.base_prefix == "${hermes-agent.pmPython}", sys.base_prefix
+          '
+          env -i "$venv/bin/pytest" --version
+          # Native dev commands survive alongside the re-shebanged scripts.
+          env -i "$venv/bin/ruff" --version
+          env -i "$venv/bin/ty" --version
+          mkdir -p $out
+          echo ok > $out/result
+        '';
+
         # Verify the default package builds successfully (cross-platform).
         # On Linux the runtime checks below already depend on the package,
         # but this ensures darwin builders also build it during flake check.

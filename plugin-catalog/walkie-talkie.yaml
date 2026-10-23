@@ -1,0 +1,19 @@
+name: walkie-talkie
+repo: https://github.com/barronlroth/hermes-walkie-talkie
+sha: b16c7995df66d599e04499272b49976bcb11db2d
+description: "Let one session message another existing session (Telegram topic, group thread or DM), waking it like a user turn so the reply lands in that chat Disclosure — starts agent turns in other existing gateway sessions (any routed chat, including groups, and from cron jobs) via ctx.inject_message, only after plugins.entries.walkie-talkie.allow_gateway_injection: true; after an accepted handoff it posts a visible copy into the target chat through Hermes's send_message helper using your existing gateway bot credentials; reads state.db, config.yaml and cron/jobs.json read-only; no network calls of its own, no shell, no telemetry."
+maintainer: barronlroth
+tier: community
+category: automation
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/barronlroth/hermes-walkie-talkie#readme
+version: "0.1.5"
+title: Walkie-Talkie
+capabilities:
+  provides_tools:
+  - list_topics
+  - message_topic
+  provides_hooks:
+  - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -429,11 +429,14 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             f"**Session type:** {session_label} — messages are prefixed with [sender name]. "
             "Multiple users may participate."
         )
-    elif src.user_name:
-        lines.append(f"**User:** {_format_untrusted_prompt_value(src.user_name)}")
-    elif src.user_id:
-        uid = _hash_sender_id(src.user_id) if redact_pii else src.user_id
-        lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+    else:
+        # Name and stable sender ID are independent. The old elif dropped the
+        # ID whenever a display name was present.
+        if src.user_name:
+            lines.append(f"**User:** {_format_untrusted_prompt_value(src.user_name)}")
+        if src.user_id:
+            uid = _hash_sender_id(src.user_id) if redact_pii else src.user_id
+            lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
 
     lines.extend(_PLATFORM_NOTES.get(src.platform, lambda ctx: [])(context))
     platforms_list = ["local (files on this machine)"] + [

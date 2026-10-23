@@ -608,7 +608,7 @@ from hermes_cli.personality import (
 # because callers and tests import these from hermes_cli.config)
 
 from hermes_cli.config_version_stamp import (
-    check_config_version, read_config_version_stamp)
+    check_config_version, note_first_stamp, read_config_version_stamp, stamp_missing_config)
 
 
 # ---- Config Migration System ----
@@ -1290,8 +1290,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
     """Migrate config to latest version, prompting for new required fields."""
     results = {"env_added": [], "config_added": [], "warnings": []}
 
-    # Validate config.yaml before any migration side effect: sanitize_env_file() rewrites .env,
-    # which must not happen when the migration will be refused for malformed YAML.
+    stamp_missing_config()  # a missing config.yaml reads as current below: stamp its legacy browser settings
+    # Validate before any side effect: sanitize_env_file() rewrites .env, never for refused (malformed) YAML.
     stamp, latest_ver = read_config_version_stamp(raise_on_parse_error=True)
     current_ver = 0 if stamp is None else stamp
 
@@ -2500,8 +2500,7 @@ def save_config(
         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
-        current_normalized = _canonicalize_config(config)
-        normalized = current_normalized
+        normalized = current_normalized = _canonicalize_config(config)
         if _raw_for_paths:
             normalized = _preserve_env_ref_templates(
                 normalized, _canonicalize_config(_raw_for_paths),
@@ -2512,6 +2511,7 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
+        note_first_stamp(config_path.parent, _raw_for_paths, normalized)
         atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)

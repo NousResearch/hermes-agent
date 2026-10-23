@@ -1,0 +1,92 @@
+import type { DelegationRoutingTranslations } from './types_delegation_routing'
+
+export const enDelegationRouting: DelegationRoutingTranslations = {
+  title: 'Routing',
+  settingsTitle: 'Subagent defaults',
+  intro: 'How each subagent gets its model.',
+  modes: {
+    default: { label: 'Default', description: 'Every subagent runs on the subagent model below.' },
+    model_map: { label: 'Model routes', description: 'Name a few models. The agent picks one for each subagent.' },
+    profile_routes: {
+      label: 'Profile routes',
+      description: 'Subagents run as one of your profiles, with its own model, skills and keys.'
+    }
+  },
+  inUse: 'In use',
+  plugin: 'Plugin',
+  pluginMissing: 'Model routes and Profile routes come from the Advanced Delegation plugin.',
+  pluginDisabled: 'Advanced Delegation is installed but turned off for this profile.',
+  pluginNotLoaded: 'Advanced Delegation is on, but Hermes has not loaded it yet. Restart Hermes to finish.',
+  installPlugin: 'Install plugin',
+  installUnavailable: 'Advanced Delegation is not in the plugin catalog yet. Install it from Capabilities › Plugins.',
+  enablePlugin: 'Turn on',
+  enableFailed: 'Could not turn on Advanced Delegation',
+  modeFailed: 'Could not change subagent routing',
+  loadFailed: 'Could not load subagent routing',
+  blockedPill: 'Not running',
+  blockedDetail: 'This mode is saved, so Hermes refuses every subagent instead of quietly using Default.',
+  blockedMissing: 'Subagents will not start until Advanced Delegation is installed.',
+  blockedDisabled: 'Subagents will not start until Advanced Delegation is turned on for this profile.',
+  blockedNotLoaded: 'Subagents will not start until Hermes loads Advanced Delegation. Restart Hermes to finish.',
+  blockedUnavailable: label => `Subagents will not start until ${label} can run here. Its plugin reports it cannot.`,
+  blockedUnregistered: name =>
+    `Subagents will not start until a plugin that provides “${name}” is installed and turned on.`,
+  thirdPartyDescription: 'From a plugin. Its settings live with that plugin.',
+
+  modelRoutesTitle: 'Model routes',
+  modelRoutesEmpty: "No routes yet. Until you add one, subagents use the main agent's model.",
+  addRoute: 'Add route',
+  editRoute: 'Edit',
+  makeDefault: 'Make default',
+  deleteRoute: 'Delete',
+  defaultBadge: 'Default',
+  routeActions: name => `Actions for ${name}`,
+  deleteConfirmTitle: name => `Delete route “${name}”?`,
+  deleteConfirmBody: 'Subagents can no longer pick it.',
+  deleteConfirmNextDefault: name => `It is the default route, so “${name}” becomes the default.`,
+  deleteConfirmAction: 'Delete route',
+  saveFailed: 'Could not save routes',
+  baseUrlRoute: url => `endpoint ${url}`,
+
+  dialogNew: 'New model route',
+  dialogEdit: 'Edit model route',
+  dialogDesc: 'The agent reads the name and description to decide which route a subagent takes.',
+  nameLabel: 'Name',
+  namePlaceholder: 'e.g. fast',
+  nameHint: 'Short, no spaces. The agent picks routes by this name.',
+  descriptionLabel: 'When to use it',
+  descriptionPlaceholder: 'e.g. Cheap and quick: lookups, summaries, simple edits.',
+  descriptionHint: 'One line the agent reads before choosing.',
+  providerLabel: 'Provider',
+  providerPlaceholder: 'Choose a provider',
+  modelLabel: 'Model',
+  effortLabel: 'Reasoning effort',
+  effortInherit: 'Subagent default',
+  tierLabel: 'Speed',
+  tierNormal: 'Normal',
+  tierFast: 'Fast',
+  tierUltrafast: 'Ultrafast',
+  tierHint: 'Only on models that offer it.',
+  optional: 'optional',
+  errors: { required: 'Required', spaces: 'No spaces', duplicate: 'Another route already uses this name' },
+  saveRoute: 'Save route',
+  createRoute: 'Add route',
+
+  profileRoutesTitle: 'Profiles subagents can run as',
+  profileRoutesHint: 'Each checked profile brings its own model, skills, persona and keys.',
+  profileDescriptionPlaceholder: 'When to use it (optional)',
+  profileDefault: 'Default',
+  profileEmpty: 'No other profiles yet. Create one from the profile rail.',
+  profileMissing: name => `${name} (profile no longer exists)`,
+
+  inactiveTitle: 'Not used in this mode',
+  inactiveModelMap: route => `Model routes pick each subagent's model. Subagents that pick no route use “${route}”.`,
+  inactiveProfiles: profile =>
+    `Profile routes pick each subagent's profile. Subagents that pick no profile run as “${profile}”.`,
+  inactiveModelMapNoDefault:
+    "Model routes pick each subagent's model. Subagents that pick no route use the main agent's model.",
+  inactiveProfilesNoDefault:
+    "Profile routes pick each subagent's profile. Subagents that pick no profile use the main agent's model.",
+  inactivePlugin: label => `${label} decides each subagent's model, so this setting does not apply.`,
+  useDefault: 'Switch to Default'
+}

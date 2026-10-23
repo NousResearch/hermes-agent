@@ -9,7 +9,9 @@ module, and every origin-module symbol is read through ``_cc()`` at call time so
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
 logger = logging.getLogger("agent.context_compressor")
@@ -20,6 +22,77 @@ def _cc():
     ``agent.context_compressor.X`` effective (attributes are read at call time)."""
     from agent import context_compressor
     return context_compressor
+
+
+def _instruction_read_key(arguments: Any, content: Any, index: int) -> tuple | None:
+    """Identify delivered native instruction reads without interpreting text as authority.
+
+    Paths belong to the tool backend, not this host. Relative paths cannot safely supersede
+    earlier reads: the terminal cwd may have changed. Keep distinct requested ranges too.
+    """
+    from agent.subdirectory_hints import _HINT_FILENAMES
+
+    args = _cc()._json_dict(arguments)
+    path = args.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    lexical = PureWindowsPath(path) if PureWindowsPath(path).drive else PurePosixPath(path)
+    if lexical.name not in _HINT_FILENAMES or not isinstance(content, str):
+        return None
+    try:
+        # Native hints may follow the JSON read result; never discover sources from that prose.
+        result, _ = json.JSONDecoder().raw_decode(content.lstrip())
+    except ValueError:
+        return None
+    if not isinstance(result, dict) or result.get("success") is False or any(
+        result.get(flag) for flag in ("error", "not_found", "is_binary", "is_image")
+    ):
+        return None
+    body = result.get("content")
+    if result.get("content_returned") is False or not isinstance(body, str) or not body.strip():
+        return None
+    offset, limit = args.get("offset", 1), args.get("limit")
+    if type(offset) is not int or offset < 1 or (limit is not None and (type(limit) is not int or limit < 1)):
+        return None
+    # A newly truncated result must not displace a previously complete read of the same request.
+    partial = bool(result.get("truncated") or result.get("truncated_lines"))
+    return (path, offset, limit, partial, index if not lexical.is_absolute() or partial else None)
+
+
+def _retain_instruction_reads(messages: list[dict], pruned: list[dict]) -> int:
+    """Restore only the last delivered read per source/range before the cost-prune commit.
+
+    Local call/result pairing prevents reused IDs or later calls from relabelling older output.
+    No state survives this pass; normal persistence and reclaim gates see the retained payloads.
+    """
+    pending: dict = {}
+    latest: dict = {}
+    field = _cc()._tc_get
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant":
+            pending = {}
+            duplicate_ids = set()
+            for call in message.get("tool_calls") or []:
+                call_id = field(call, "id")
+                if call_id in pending:
+                    duplicate_ids.add(call_id)
+                pending[call_id] = field(call, "function") or {}
+            for call_id in duplicate_ids:
+                pending.pop(call_id)
+        elif message.get("role") == "tool":
+            function = pending.pop(message.get("tool_call_id"), {})
+            if field(function, "name") == "read_file":
+                key = _instruction_read_key(field(function, "arguments"), message.get("content"), index)
+                if key is not None:
+                    latest[key] = index
+        else:
+            pending = {}
+    restored = 0
+    for index in latest.values():
+        if pruned[index] != messages[index]:
+            pruned[index] = messages[index].copy()
+            restored += 1
+    return restored
 
 
 class ProactivePruneMixin:
@@ -40,12 +113,10 @@ class ProactivePruneMixin:
         ``_prune_old_tool_results`` runs all deterministic passes: (1) dedup byte-identical tool results —
         keeps the newest full copy and back-references older exact duplicates ANYWHERE in the list
         (including the protected tail), so no unique content is ever lost; (2) summarize non-tail tool
-        results larger than ``min_prune_chars``; (3) truncate oversized tool_call arguments on non-tail
-        assistant messages; (3.5) retire image payloads on all but the newest ``_MAX_KEEP_TOOL_IMAGES``
-        image-bearing tool results, except a pending round that fits the hard share (#92699). Only pass (2)'s floor is
-        raised by ``proactive_prune_min_result_chars``; passes (1) and (3) keep their own fixed floors. The
-        recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
-        dedup is lossless.
+        results larger than ``min_prune_chars``; (3) retire stale image payloads, except a pending
+        round that fits the hard share (#92699). Tool-call arguments remain byte-exact. This
+        cost-only path retains the last delivered native instruction-file reads before checking
+        reclaim; full compression and its pressure passes remain free to demote them.
         """
         if self.proactive_prune_tokens <= 0 or (
             current_tokens is not None and current_tokens < self.proactive_prune_tokens
@@ -68,6 +139,7 @@ class ProactivePruneMixin:
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
         )
+        pruned_count -= _retain_instruction_reads(messages, pruned_msgs)
         if not pruned_count:
             # No-op contract: return the INPUT object so callers can gate on `result is not input`.
             self._warn_reclamation_no_op("prune:nothing_eligible", current_tokens)

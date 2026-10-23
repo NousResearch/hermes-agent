@@ -54,9 +54,9 @@ def partials_root() -> Path:
     on every install kind: ``%LOCALAPPDATA%\\hermes\\cache\\partials`` on
     Windows, ``~/.hermes/cache/partials`` on POSIX.
     """
-    from hermes_constants import get_default_hermes_root
+    from pm.environments import dependency_home_root
 
-    return get_default_hermes_root() / "cache" / "partials"
+    return dependency_home_root() / "cache" / "partials"
 
 
 def facts_path() -> Path:
@@ -66,9 +66,9 @@ def facts_path() -> Path:
 def writable_store_root() -> Path:
     if not (store_root().parent / "manifest.json").is_file():
         return store_root()
-    from hermes_constants import get_default_hermes_root
+    from pm.environments import dependency_home_root
 
-    return get_default_hermes_root() / "tools"
+    return dependency_home_root() / "tools"
 
 
 def runtime_facts_path() -> Path:

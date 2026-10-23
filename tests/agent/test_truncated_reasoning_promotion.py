@@ -38,11 +38,14 @@ class TestTruncationPredicate:
         assert looks_like_degenerate_final(DELIVERED_2026_10_06) is False
 
     @pytest.mark.parametrize("text", [
-        "see issue #",              # dangling separator
-        "committed to path/to/",    # dangling path separator
-        "the options are (a",       # unclosed opener
-        "fixed in commit abc123,",  # trailing comma
-        "and then the service was",  # trailing function word
+        "see issue #",                  # dangling separator
+        "committed to path/to/",        # dangling path separator
+        "the options are (a",           # unclosed opener
+        "fixed in commit abc123,",      # trailing comma
+        "and then the",                 # trailing article
+        "first read the log and",       # trailing coordinator
+        'The error was "connection refus',           # open double quote
+        "Here is the fix:\n```python\nprint(1)",     # unclosed ``` fence
     ])
     def test_truncated_shapes_are_flagged(self, text):
         assert looks_like_truncated_promoted_reasoning(text) is True
@@ -56,6 +59,19 @@ class TestTruncationPredicate:
         "Nothing requires action.",
         "The fix was already applied on 2026-10-05 by commit 1003648.",
         "Closed as duplicate of #94041.",
+        # Strandable prepositions/copulas legitimately END English sentences; declining any of
+        # these would re-ask for an answer that was already whole.
+        "Here's what the flag is for",
+        "The service is back on",
+        "That's the directory it's in",
+        "That's the file I was writing to",
+        "It is what it is",
+        # A quote closing a measurement is not an opening quote (odd raw count, still complete).
+        'A 27" monitor is fine',
+        # A whole URL that ends in a directory slash is not a path cut mid-token.
+        "See the release notes at https://example.com/docs/",
+        # A balanced pair of fences is a whole code block.
+        "Fixed:\n```python\nprint(1)\n```",
     ])
     def test_complete_answers_are_never_flagged(self, text):
         assert looks_like_truncated_promoted_reasoning(text) is False
@@ -70,8 +86,13 @@ class TestPromotionGate:
         """The regression: this was delivered to the user's email."""
         assert should_promote_reasoning_to_final(DELIVERED_2026_10_06) is False
 
-    def test_the_two_real_promotions_still_work(self):
-        """The 38254- and 9890-char cases the promotion was written for."""
+    def test_two_whole_reasoning_answers_still_promote(self):
+        """The positive arm of the predicate: whole synthetic answers are still delivered.
+
+        NOT the 38254- and 9890-char production samples — those are not fixtures in this tree
+        (they never were; see the PR body). These two short strings only pin that a complete,
+        terminal-punctuation-free sentence is not treated as a truncation.
+        """
         assert should_promote_reasoning_to_final("The user asked me to diagnose the cron "
                                                  "failure. I read the job record and found "
                                                  "the script defaults to the wrong path.") is True

@@ -100,15 +100,20 @@ _COMPLETE_TAIL_PUNCT = (".", "!", "?", "。", "！", "？", "…", '"', "'", ")"
 # A dangling separator at the very end: the cut landed inside a token.
 _DANGLING_SEPARATORS = ("-", "_", "/", "\\", "&", "=", "+", "@", "#", "$")
 
-# An unclosed opener, or a trailing comma — both are mid-construct.
-_MID_CONSTRUCT_TAILS = ("(", "[", "{", '"', "'", ",", "|", "<")
+# An unclosed opener, or a trailing comma — both are mid-construct. Quotes are NOT here: a lone
+# trailing ``"`` already ends a sentence as far as a reader is concerned, so it is in
+# _COMPLETE_TAIL_PUNCT and returns above; a quote left OPEN mid-string is caught by the
+# quote-parity check below.
+_MID_CONSTRUCT_TAILS = ("(", "[", "{", ",", "|", "<")
 
-# A trailing function word: the sentence was going somewhere and stopped.
-_DANGLING_WORDS = frozenset({
-    "and", "or", "but", "the", "a", "an", "of", "to", "for", "with", "in", "on",
-    "at", "by", "from", "as", "is", "was", "were", "be", "been", "that", "which",
-    "so", "if", "when", "while", "because", "since", "than", "then",
-})
+# A trailing word that CANNOT end an English sentence: articles and coordinators only.
+# Strandable prepositions and copulas are deliberately ABSENT, because they legitimately end
+# sentences: "Here's what the flag is for", "The service is back on", "That's the directory it's
+# in", "That's the file I was writing to", "It is what it is". Listing them declined complete
+# answers and re-asked for nothing. The recall this predicate keeps lives in the structural
+# checks (dangling separators, unclosed brackets, quote/fence parity, trailing comma), which a
+# cut produces and a finished sentence does not.
+_DANGLING_WORDS = frozenset({"a", "an", "the", "and", "or", "but", "nor"})
 
 
 def looks_like_truncated_promoted_reasoning(text: str) -> bool:
@@ -120,12 +125,22 @@ def looks_like_truncated_promoted_reasoning(text: str) -> bool:
     shapes a provider cut produces and a finished answer almost never does:
 
       * ends on a dangling separator ("on 2026-", "see issue #", "path/to/"),
-      * ends on an opening bracket/quote or a trailing comma,
-      * ends on a bare conjunction/preposition/article ("...and", "...the", "...with").
+      * ends on an opening bracket, a trailing comma or a bare article/coordinator
+        ("...the", "...and"),
+      * leaves an unbalanced bracket, an OPEN double quote, or an odd number of ``` fences.
 
     A complete short answer ("Done.", "42", "SQLite", "[SILENT]") never matches: the first two
     end in a terminal or contain no separator, and the sentinel is checked first so a cron
-    silence marker always passes through untouched.
+    silence marker always passes through untouched. Strandable prepositions and copulas do NOT
+    match either — "what the flag is for", "back on", "it's in", "writing to" are whole
+    sentences (see ``_DANGLING_WORDS``).
+
+    KNOWN RESIDUE — this cannot be complete. A cut that lands INSIDE a word, number, path
+    segment or URL ("...by commit 1003", "...hermes.lo", ".../guide/instal") leaves a
+    grammatical, balanced, punctuation-free tail that no shape heuristic can distinguish from a
+    finished answer; the incident that motivated this predicate was a clean ``finish_reason ==
+    "stop"``, so the provider gives no truncation signal to key on. Treat a False result as "no
+    evidence of truncation", never as "complete".
     """
     t = (text or "").strip()
     if not t:
@@ -133,16 +148,30 @@ def looks_like_truncated_promoted_reasoning(text: str) -> bool:
     # Cron silence markers and explicit status sentinels are whole by construction.
     if t.strip("[]()").upper() in {"SILENT", "NO_REPLY", "NO REPLY"}:
         return False
+    # An odd number of code fences: the cut landed inside an unclosed ``` block. Checked BEFORE
+    # the terminal-punctuation pass, because a block cut after a line ending in ")" or "." is
+    # still cut and its last line is not the end of the prose.
+    if t.count("```") % 2:
+        return True
     if t.endswith(_COMPLETE_TAIL_PUNCT):
         return False
     if t.endswith(_DANGLING_SEPARATORS) or t.endswith(_MID_CONSTRUCT_TAILS):
-        return True
-    # An UNBALANCED opener anywhere: the cut landed inside a parenthetical. Brackets only —
-    # quotes are excluded because an apostrophe in ordinary prose ("don't", "the user's") is
-    # not a delimiter.
+        # "https://example.com/docs/" is a whole URL, not a path cut mid-token; a bare
+        # "path/to/" is. Only the URL case is spared, so ordinary prose with a trailing link
+        # stays deliverable.
+        if not (t.endswith("/") and "://" in t.rsplit(None, 1)[-1]):
+            return True
+    # An UNBALANCED opener anywhere: the cut landed inside a parenthetical. Brackets only here —
+    # quotes are handled by their own parity check below, because an apostrophe in ordinary prose
+    # ("don't", "the user's") is not a delimiter while a double quote is.
     for opener, closer in (("(", ")"), ("[", "]"), ("{", "}")):
         if t.count(opener) > t.count(closer):
             return True
+    # An OPEN double quote: the cut landed inside a quoted string. Apostrophes are excluded, so
+    # prose is safe. A quote that closes a measurement ("27\" monitor") is not an opening quote,
+    # so it is not counted — otherwise ordinary prose about screen sizes would look truncated.
+    if sum(1 for i, ch in enumerate(t) if ch == '"' and (i == 0 or not t[i - 1].isdigit())) % 2:
+        return True
     return t.rsplit(None, 1)[-1].lower().strip(".,;:!?") in _DANGLING_WORDS
 
 

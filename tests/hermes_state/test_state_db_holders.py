@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import hermes_state_dbfile
 import hermes_state_holders
 
 
@@ -111,3 +112,22 @@ def test_windows_restart_manager_scan_sizes_then_excludes_self(monkeypatch, tmp_
     _Api.RmStartSession = _Fn(lambda *_args: 5)
     with pytest.raises(OSError):
         hermes_state_holders._windows_restart_manager_holders(db_path)
+
+
+def test_darwin_scan_thread_errors_fail_closed(monkeypatch, tmp_path):
+    """A worker-thread scan error must become the caller's refusal sentinel."""
+    db_path = tmp_path / "state.db"
+    db_path.touch()
+    identity = (db_path.stat().st_dev, db_path.stat().st_ino)
+
+    def _iter_targets():
+        yield 4242, 3, str(db_path), identity
+        raise OSError("libproc failed")
+
+    monkeypatch.setattr(hermes_state_holders.sys, "platform", "darwin")
+    monkeypatch.setattr(hermes_state_dbfile, "_iter_darwin_fd_targets", _iter_targets)
+    monkeypatch.setattr(hermes_state_dbfile, "_DARWIN_FD_SCAN_TIMEOUT_SECONDS", 1.0)
+
+    assert hermes_state_holders.foreign_state_db_holders(db_path) == [
+        (-1, "open-file scan failed: libproc failed")
+    ]

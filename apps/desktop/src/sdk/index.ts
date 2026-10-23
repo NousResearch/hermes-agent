@@ -19,7 +19,6 @@
  */
 
 import { atom, computed, type ReadableAtom } from 'nanostores'
-import type { ReactNode } from 'react'
 
 import { capabilityScoped, getApiRequestConnection } from '@/api/client'
 import { mutateSessionFenced } from '@/api/sessions'
@@ -111,6 +110,7 @@ import type { SessionMutationSnapshot } from '../../../shared/src/session-http-m
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
+import type { PluginWorkspaceOptions } from './plugin-contract'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import {
   type PluginProfileRequestOptions,
@@ -1205,23 +1205,13 @@ export const host = {
    *  the generic main-view door for plugins whose surface is not a stored
    *  session (`openSession` stays the door for those). Re-opening the same
    *  `id` refreshes `render`/`title` in place and fronts the existing tab
-   *  instead of stacking a duplicate. Returns a disposer that closes the tab;
-   *  the tab's own Close (⌘W / strip ✕) routes through the same teardown and
-   *  fires `onClose`. Feature-detect on older desktops
+   *  instead of stacking a duplicate; a label that changes while the tab is
+   *  open goes in `tabTitle`, which never fronts it. Returns a disposer that
+   *  closes the tab; the tab's own Close (⌘W / strip ✕) routes through the
+   *  same teardown and fires `onClose`. Feature-detect on older desktops
    *  (`typeof host.openWorkspace === 'function'`) and keep an in-panel
    *  fallback. */
-  openWorkspace: (
-    id: string,
-    options: {
-      dock?: { before?: null | string; pane: string; pos: 'bottom' | 'center' | 'left' | 'right' | 'top' }
-      headerVeto?: boolean
-      minWidth?: string
-      onClose?: () => void
-      render: () => ReactNode
-      title?: string
-      uncloseable?: boolean
-    }
-  ): (() => void) => {
+  openWorkspace: (id: string, options: PluginWorkspaceOptions): (() => void) => {
     const key = (id ?? '').trim()
 
     if (!key || typeof options?.render !== 'function') {
@@ -1239,6 +1229,8 @@ export const host = {
         headerVeto: options.headerVeto,
         minWidth: options.minWidth ?? '22rem',
         placement: 'main',
+        tabTitle: options.tabTitle,
+        tabTitleText: options.tabTitleText,
         uncloseable: options.uncloseable
       },
       id: paneId,

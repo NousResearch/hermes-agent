@@ -1112,7 +1112,7 @@ host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
-host.openWorkspace(id, { render, title?, minWidth?, onClose? })
+host.openWorkspace(id, { render, title?, tabTitle?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
@@ -1157,11 +1157,14 @@ a button press, a dialog opening), pass
 `host.requestProfile(route, method, params, undefined, { spawnPriority: 'foreground' })`
 so it dials at once. Keep the background default for polling and roster warming.
 
-`host.openWorkspace(id, { render, title?, minWidth?, onClose? })` docks a
+`host.openWorkspace(id, { render, title?, tabTitle?, minWidth?, onClose? })` docks a
 plugin-rendered view into the **main workspace zone** — the same center area
 session tiles and previews use — as a tab, and reveals it. Re-calling it with
 the same `id` refreshes the content in place and re-fronts the tab instead of
-opening a duplicate. Closing the tab (the tab's Close control or ⌘W) tears the
+opening a duplicate. A label that changes while the tab is open (a renamed
+room) goes in `tabTitle`, a function returning a component that subscribes for
+itself, with `tabTitleText` as its plain-text form: the label updates without
+re-fronting the tab, and `title` stays the fallback on older desktops. Closing the tab (the tab's Close control or ⌘W) tears the
 registration down and fires your `onClose`; the returned disposer closes it
 programmatically. Feature-detect it (`typeof host.openWorkspace ===
 'function'`) and fall back to a regular contributed pane on older desktop

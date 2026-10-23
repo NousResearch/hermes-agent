@@ -10,6 +10,8 @@
 import { atom } from '@hermes/plugin-sdk'
 
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
+import { $canonicalGroupBindings, canonicalGroupBindingFor, currentCanonicalGroupRoute, forgetCanonicalGroup, sameCanonicalGroup } from './canonical-group-registry'
+import type { CanonicalGroupBinding } from './canonical-groups'
 import { $groupChatWorkspace, groupChatRoomKey } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import type { Attachment } from './types'
@@ -177,4 +179,20 @@ export function closeGroupChatMainTab(group: string) {
       /* tab already gone */
     }
   }
+}
+
+/** A confirmed end closes every tab and in-panel view showing the room, whether a name or its key
+ *  opened it, and forgets the room in the same step: no view of it is left to offer its name a new
+ *  room. */
+export function endCanonicalGroup(binding: CanonicalGroupBinding) {
+  const bindings = $canonicalGroupBindings.get()
+  const route = currentCanonicalGroupRoute()
+
+  for (const group of new Set([...groupChatMainTabs.keys(), $groupChatWorkspace.get()])) {
+    if (group && sameCanonicalGroup(canonicalGroupBindingFor(bindings, route, group, groupOpenOrigin(group)), binding)) {
+      closeGroupChatMainTab(group)
+    }
+  }
+
+  forgetCanonicalGroup(binding)
 }

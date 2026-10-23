@@ -511,6 +511,51 @@ def test_rpc_retry_is_idempotent_and_conflict_is_visible(home):
     assert conflict["error"]["code"] == 4111
 
 
+def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(home, monkeypatch):
+    """Desktop hands a Send's words back for editing only on ``admitted: false``: the room was
+    ended, the payload refused, or no worker took it. A failure after the user event committed
+    stays unmarked, so the client keeps the event id and a Retry stays idempotent."""
+    from gateway.hosted_room_discussion import MAX_USER_TEXT_BYTES
+    from gateway.hosted_rooms import HostedRoomError, default_db_path, read_events
+
+    _create_room()
+
+    def send(rid, event_id, text):
+        return srv._methods["groups.send"](rid, {
+            "room_id": "room-1", "event_id": event_id, "payload": {"text": text, "thread_id": "t"}})
+
+    oversized = send(2, "too-long", "x" * (MAX_USER_TEXT_BYTES + 1))
+    assert oversized["error"]["code"] == 5112
+    assert oversized["error"]["data"] == {"admitted": False}
+
+    service = methods_groups.get_hosted_room_service()
+    prepare, failures = service.prepare_room, [HostedRoomError("Group Chat storage is full on this host.")]
+
+    def prepare_after_commit(binding):
+        if failures:
+            raise failures.pop()
+        return prepare(binding)
+
+    monkeypatch.setattr(service, "prepare_room", prepare_after_commit)
+    committed = send(3, "second", "Second")
+    assert committed["error"]["code"] == 4111
+    assert "data" not in committed["error"]
+    assert _result(send(4, "second", "Second"))["client_event_id"] == "second"
+    events = read_events(default_db_path(), room_id="room-1")["events"]
+    assert [e["payload"]["text"] for e in events if e["kind"] == "message.user"] == ["Second"]
+
+    _result(srv._methods["groups.disband"](5, {"room_id": "room-1"}))
+    ended = send(6, "after-end", "Ended elsewhere")
+    assert ended["error"]["code"] == 4111
+    assert ended["error"]["data"] == {"admitted": False}
+
+    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: None)
+    no_worker = send(7, "no-worker", "Later")
+    assert no_worker["error"]["code"] == 4123
+    assert no_worker["error"]["data"] == {"admitted": False}
+    assert "data" not in srv._methods["groups.stop"](8, {"room_id": "room-1"})["error"]
+
+
 def test_foreign_authority_cannot_send_or_disband(home):
     from gateway.hosted_rooms import (
         claim_authority,
@@ -541,7 +586,8 @@ def test_foreign_authority_cannot_send_or_disband(home):
     disbanded = srv._methods["groups.disband"](3, {"room_id": "room-1"})
 
     assert sent["error"]["code"] == 4111
-    assert sent["error"]["data"] == {"reason": "authority_conflict"}
+    # Refused before the user event committed: nothing of the Send is in the room.
+    assert sent["error"]["data"] == {"reason": "authority_conflict", "admitted": False}
     assert disbanded["error"]["code"] == 4113
     assert disbanded["error"]["data"] == {"reason": "authority_conflict"}
     assert read_events(default_db_path(), room_id="room-1") == before
@@ -873,7 +919,7 @@ def test_pruned_room_send_and_log_report_expired_history(home, monkeypatch):
     assert sent["error"]["code"] == 4111, sent
     assert logged["error"]["code"] == 4112, logged
     assert renamed["error"]["code"] == 4117, renamed
-    assert sent["error"]["data"] == {"reason": "room_history_expired"}
+    assert sent["error"]["data"] == {"reason": "room_history_expired", "admitted": False}
     assert logged["error"]["data"] == {"reason": "room_history_expired"}
     assert renamed["error"]["data"] == {"reason": "room_history_expired"}
 

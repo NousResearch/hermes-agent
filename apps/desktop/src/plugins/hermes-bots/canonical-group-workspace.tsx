@@ -1,21 +1,47 @@
 import { Button, Textarea } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverActivity, CanonicalGroupRoster, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupNotices, CanonicalGroupRoster, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
+import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
+import { CanonicalPendingActionRow } from './canonical-group-pending-actions'
+import { renameCanonicalGroup } from './canonical-group-registry'
+import { CanonicalGroupRoomActions } from './canonical-group-room-actions'
+import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, replaceCanonicalGroupSend, retireCanonicalGroupSend, withdrawCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
+import { endCanonicalGroup } from './group-panes'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: CanonicalRoom; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
+interface Words { text: string; attachments: Attachment[] }
+interface SendRun { stopped: boolean; posted: boolean; settled: Promise<boolean> }
+interface RoomState {
+  room: CanonicalRoom & { authority_epoch?: number; latest_seq?: number }
+  driver_status?: CanonicalDriverStatus<CanonicalPendingAction>
+}
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
+
+// Both groups.send dispatchers mark a refusal raised before the user event committed (and only
+// that) `admitted: false`: proof that this request posted nothing. A reason or code alone is not:
+// the same `invalid_params` or 4111 can follow a committed event.
+const admittedNothing = (error: unknown) =>
+  (error as { data?: { admitted?: unknown } } | null)?.data?.admitted === false
+
+/** A Send is delivered only by a receipt for this exact intent. */
+function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
+  const receipt = result as { accepted?: unknown; client_event_id?: unknown } | null
+
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
+    (Object.hasOwn(receipt, 'accepted') && receipt.accepted !== true) || receipt.client_event_id !== eventId) {
+    throw new Error(unconfirmed)
+  }
+}
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
@@ -29,6 +55,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
+  const methods = useGroupMethods(binding, visible)
   const [state, setState] = useState<RoomState | null>(null)
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
@@ -37,19 +64,43 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [restored, setRestored] = useState(false)
+  const [journalError, setJournalError] = useState('')
+  const [journalAttempt, setJournalAttempt] = useState(0)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const alive = useRef(true)
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
+  const [stopping, setStopping] = useState(false)
+  const stopPending = useRef(false)
+  // One cancellation intent survives uncertain replies; a confirmed Stop lets the next one start fresh.
+  const stopIntent = useRef<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const [sendHint, setSendHint] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
-  const heldDraft = useRef<{ text: string; attachments: Attachment[] } | null>(null)
+  const heldDraft = useRef<Words | null>(null)
+  // An intent handed back for editing (nothing of it admitted): the next Send replaces it.
+  const editing = useRef<string | null>(null)
+  // A delivered intent whose journal cleanup failed: retired before the next Send may prepare.
+  const delivered = useRef<string | null>(null)
+  // The Send in progress, which a Stop pressed now must cover; `settled` says whether it may have posted.
+  const sending = useRef<SendRun | null>(null)
+  // The log is append-only within one authority epoch: each poll reads only what is new.
+  const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
 
-  // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
+  // eslint-disable-next-line no-restricted-syntax -- mounted lifetime, not a reactive store mirror
   useEffect(() => {
     alive.current = true
+
+    return () => { alive.current = false; revision.current++ }
+  }, [])
+
+  // Send stays locked until the journal is read: a pending intent must never be sent twice. A
+  // failed read only reads again; it never writes, so a journal that recovers keeps its intent.
+  useEffect(() => {
     let cancelled = false
+    setJournalError('')
     void readCanonicalGroupSend(binding).then(entry => {
       if (cancelled) {return}
 
@@ -60,16 +111,20 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       }
 
       setRestored(true)
-    }).catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+    }).catch(e => { if (!cancelled) {setJournalError(e instanceof Error ? e.message : String(e))} })
 
-    return () => { cancelled = true; alive.current = false; revision.current++ }
-  }, [binding])
+    return () => { cancelled = true }
+  }, [binding, journalAttempt])
 
   const refresh = async () => {
     const version = ++revision.current
     const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
+    const { authority_epoch: epoch, latest_seq: latest } = snapshot.room ?? {}
+    // A new authority epoch (or a log behind what was read) starts the log again.
+    const fresh = epoch !== seen.current.epoch || (typeof latest === 'number' && latest < seen.current.seq)
+    const since = fresh ? 0 : seen.current.seq
     const log: RoomEvent[] = []
-    let cursor = 0
+    let cursor = since
 
     for (;;) {
       const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
@@ -83,8 +138,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     }
 
     if (alive.current && version === revision.current) {
+      seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
+
+      // A rename from any surface reaches this room's tabs, the group list and its bindings.
+      if (snapshot.room?.name) {renameCanonicalGroup(binding, snapshot.room.name)}
       setState(snapshot)
-      setEvents(log)
+      setEvents(current => fresh ? log : [...current, ...log.filter(event => event.seq > since)])
       setReadError('')
     }
   }
@@ -124,32 +183,160 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     }
   }
 
+  // The room's intent is finished with: this window's own words come back, else nothing.
+  const releaseComposer = () => {
+    const next = heldDraft.current
+    heldDraft.current = null
+    setPending(null)
+    setDraft(next?.text ?? '')
+    setAttachments(next?.attachments ?? [])
+  }
+
+  // Another window finished with this intent: resending it could post it twice, and so could
+  // offering its words as a new message.
+  const finishedElsewhere = () => {
+    releaseComposer()
+    setSendHint(labels.sendSettledElsewhere)
+  }
+
+  // A request of the intent provably posted nothing (`left`: requests that still may have, null when
+  // another window finished with it). With none left its words come back for editing while the
+  // journal keeps them, until a Send replaces them; this window's own held words wait until then.
+  const settleUnsent = (exact: PreparedCanonicalGroupSend, words: Words, left: null | number | undefined, hint: string) => {
+    if (left === null) {finishedElsewhere()}
+    else if (left === 0) {
+      editing.current = exact.params.event_id
+      setPending(null)
+      setDraft(words.text)
+      setAttachments(words.attachments)
+      setSendHint(hint)
+    } else {setSendHint(labels.sendMaybe)}
+  }
+
+  const sendIntent = async (run: SendRun) => {
+    if (!pending && delivered.current) {
+      await retireCanonicalGroupSend(binding, delivered.current)
+      delivered.current = null
+    }
+
+    const typed = { text: draft, attachments }
+    const replacing = pending ? null : editing.current
+    const exact = pending ?? (replacing ? await replaceCanonicalGroupSend(binding, replacing, typed) : await prepareCanonicalGroupSend(binding, typed))
+    editing.current = null
+
+    if (!alive.current) {return}
+
+    if (!exact) {
+      // Another window finished with the intent being edited: these words may already be posted.
+      setSendHint(labels.sendSettledElsewhere)
+
+      return
+    }
+
+    // Another window won the room's slot: send its intent first, keep this window's words.
+    if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments)) {
+      heldDraft.current = typed
+    }
+
+    const words = { text: String(exact.params.payload.text ?? ''), attachments: (exact.params.payload.attachments as Attachment[] | undefined) ?? [] }
+    setPending(exact)
+    setDraft(words.text)
+    setAttachments(words.attachments)
+
+    if (await attemptCanonicalGroupSend(exact.binding, exact.params.event_id) === null) {
+      if (alive.current) {finishedElsewhere()}
+
+      return
+    }
+
+    if (run.stopped) {
+      // Stop came first: this request never leaves.
+      const left = await withdrawCanonicalGroupSend(exact.binding, exact.params.event_id)
+
+      if (alive.current) {settleUnsent(exact, words, left, labels.sendStopped)}
+
+      return
+    }
+
+    run.posted = true
+
+    try {
+      confirmSend(await canonicalGroupRequest(exact.binding, 'groups.send', exact.params), exact.params.event_id, labels.unconfirmedSend)
+    } catch (error) {
+      // Without the gateway's proof the request may have posted: Retry resends this exact intent,
+      // which the gateway recognizes, so it is never posted twice.
+      run.posted = !admittedNothing(error)
+      const left = run.posted ? undefined : await withdrawCanonicalGroupSend(exact.binding, exact.params.event_id).catch(() => undefined)
+
+      if (alive.current) {settleUnsent(exact, words, left, labels.sendRefused)}
+
+      throw error
+    }
+
+    // A valid receipt is authoritative: a failed cleanup only defers it to this window's next Send.
+    await retireCanonicalGroupSend(exact.binding, exact.params.event_id).catch(error => {
+      delivered.current = exact.params.event_id
+      console.warn('[canonical-group-send]', error)
+    })
+
+    if (alive.current) {releaseComposer()}
+  }
+
   const send = () => {
     if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
-    void mutate(async () => {
-      const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
+    setSendHint('')
+    setNotice('')
+    let settle!: (mayHavePosted: boolean) => void
+    const run: SendRun = { stopped: false, posted: false, settled: new Promise<boolean>(resolve => { settle = resolve }) }
+    sending.current = run
+    void mutate(() => sendIntent(run).finally(() => {
+      if (sending.current === run) {sending.current = null}
+      settle(run.posted)
+    }))
+  }
 
-      if (!alive.current) {return}
+  const requestStop = async (fresh = false) => {
+    if (fresh) {stopIntent.current = null}
+    const cancelId = stopIntent.current ??= crypto.randomUUID()
+    const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: cancelId })
+    const cancelled = result?.cancelled
 
-      // Another window won the room's slot: send its intent first, keep this window's words.
-      if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments)) {
-        heldDraft.current = { text: draft, attachments }
-      }
+    if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
 
-      setPending(exact)
-      setDraft(String(exact.params.payload.text ?? ''))
-      setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
-      await canonicalGroupRequest(exact.binding, 'groups.send', exact.params)
-      await retireCanonicalGroupSend(exact.binding, exact.params.event_id)
+    if (stopIntent.current === cancelId) {stopIntent.current = null}
+
+    return cancelled
+  }
+
+  // Stop has its own busy state: it stays available while a Send is in flight, and covers it. A
+  // Send not yet sent is held back; one on the wire may post after this fence, so once it settles
+  // (unless it provably posted nothing) a fresh cancel_id fences again behind it.
+  const stop = async () => {
+    if (stopPending.current) {return}
+    stopPending.current = true
+    const covered = sending.current
+
+    if (covered) {covered.stopped = true}
+    setStopping(true)
+    setNotice('')
+    setError('')
+
+    try {
+      const first = requestStop()
+      first.catch(() => undefined)
+      const cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
 
       if (alive.current) {
-        const held = heldDraft.current
-        heldDraft.current = null
-        setPending(null)
-        setDraft(held?.text ?? '')
-        setAttachments(held?.attachments ?? [])
+        setNotice(cancelled ? labels.stopped : labels.nothingRunning)
+        await refresh()
       }
-    })
+    } catch (e) {
+      if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
+    } finally {
+      stopPending.current = false
+
+      if (alive.current) {setStopping(false)}
+    }
   }
 
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
@@ -164,30 +351,35 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <div className="min-w-0">
         <h2 className="text-sm font-medium">{state?.room.name || labels.loadingGroup}</h2>
         <CanonicalGroupRoster label={labels.members} labels={labels} members={state?.room.members} phases={phases} />
+        <CanonicalGroupAttention driver={state?.driver_status} labels={labels} />
       </div>
-      <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
+      <Button disabled={stopping || !state?.driver_status} onClick={() => void stop()}>{labels.stop}</Button>
+      <CanonicalGroupRoomActions binding={binding} disabled={!state} methods={methods} name={state?.room.name ?? ''}
+        onEnded={() => { onBack?.(); endCanonicalGroup(binding) }}
+        onRenamed={name => { renameCanonicalGroup(binding, name); void refresh().catch(e => setReadError(String(e))) }} />
     </header>
-    {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
-    {error && <div role="alert">{error}</div>}
-    {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
+    <CanonicalGroupNotices error={error} journalError={journalError} labels={labels} notice={notice}
+      onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
+      readError={readError} unavailable={Boolean(state && !state.driver_status)} />
     <div className="min-h-0 flex-1 overflow-auto" role="log">
-      <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={state?.room.members} />
+      <CanonicalGroupHistory binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events}
+        members={state?.room.members} />
       <CanonicalGroupWorkingLine driver={state?.driver_status} labels={labels} members={state?.room.members} phases={phases} />
     </div>
-    {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
-      <span>{action.member_id}</span>
-      {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
-      {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
-      {action.kind === 'approval' && <><Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button><Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button></>}
-    </div>)}
+    {(state?.driver_status?.pending_actions || []).map(action => <CanonicalPendingActionRow action={action} busy={busy}
+      key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} members={state?.room.members} methods={methods}
+      onAct={(exact, choice) => void act(exact, choice)} onDiscard={setDiscard}
+      onRefresh={() => void refresh().catch(e => setReadError(String(e)))} />)}
     {discard && <div aria-label={labels.discardUnknown} role="alertdialog">
       <p>{labels.discardWarning}</p>
       <Button disabled={busy} onClick={() => { const exact = discard; setDiscard(null); void act(exact) }}>{labels.confirmDiscard}</Button>
       <Button onClick={() => setDiscard(null)}>{labels.cancel}</Button>
     </div>}
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
+    {sendHint && <p aria-live="polite">{sendHint}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
-      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} />
+      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} downloads={offersGroupMethod(methods, 'groups.attachment.download')}
+        onChange={setAttachments} onUploadingChange={setUploading} uploads={offersGroupMethod(methods, 'groups.attachment.upload')} />
       <Textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} onChange={e => setDraft(e.target.value)} value={draft} />
       <Button disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>

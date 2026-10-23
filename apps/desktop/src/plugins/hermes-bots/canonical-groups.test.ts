@@ -6,9 +6,16 @@ const host = vi.hoisted(() => ({
   state: { connectionId: { get: vi.fn() }, profile: { get: vi.fn() } }
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({ host }))
+vi.mock('@hermes/plugin-sdk', async () => {
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
 
+  return { host: { ...host, requestProfile: captureGroupRequests(host.requestProfile).request } }
+})
+
+import { groupAdvertisedMethods, groupExecutionMode, offersGroupMethod } from './canonical-group-capabilities'
+import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
+import type { CanonicalPendingAction } from './canonical-groups'
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -80,7 +87,7 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     })
   }
 
-  await actCanonicalGroup(binding, { kind: 'approval', ...identity, request_id: 'request:original' }, 'deny')
+  await actCanonicalGroup(binding, { kind: 'approval', ...identity, request_id: 'request:original', approval: { choices: ['deny'] } }, 'deny')
   expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.approve', {
     profile: route.profile, room_id: binding.roomId, ...identity, request_id: 'request:original', choice: 'deny'
   })
@@ -91,6 +98,53 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
     { kind: 'unknown', ...identity }, { kind: 'toString', ...identity }, { kind: 'discard', ...identity, task_id: '' }
   ]) {await expect(actCanonicalGroup(binding, action)).rejects.toThrow()}
 
-  expect(host.requestProfile).toHaveBeenCalledTimes(count)
+  // Only a choice the gateway offered, and Allow once only for what canonicalApprovalPreview finds
+  // reviewable (canonical-group-approval.test.ts has each case).
+  const approval = { kind: 'approval', ...identity, request_id: 'request:original' }
+  // What tools/approval.py request_tool_approval() sends for a plugin `approve` directive.
+  const plugin = { command: '<terminal> (plugin approval rule)', description: 'Approve running pwd' }
+
+  const refused: Array<[CanonicalPendingAction, 'once' | 'deny']> = [
+    [{ ...approval, approval: { choices: ['once'] } }, 'deny'],
+    [{ ...approval, approval: { choices: ['deny'], ...plugin } }, 'once'],
+    [{ ...approval, approval: { choices: ['once', 'deny'], description: 'Run a tool' } }, 'once']
+  ]
+
+  for (const [action, choice] of refused) {await expect(actCanonicalGroup(binding, action, choice)).rejects.toThrow()}
+
+  await actCanonicalGroup(binding, { ...approval, approval: { choices: ['once', 'deny'], command: 'rm -rf build' } }, 'once')
+  expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.approve', expect.objectContaining({ choice: 'once' }))
+  await actCanonicalGroup(binding, { ...approval, approval: { choices: ['once', 'deny'], ...plugin } }, 'once')
+  expect(host.requestProfile).toHaveBeenLastCalledWith(expect.objectContaining(route), 'groups.approve', {
+    profile: route.profile, room_id: binding.roomId, ...identity, request_id: 'request:original', choice: 'once'
+  })
+  expect(host.requestProfile).toHaveBeenCalledTimes(count + 2)
+
   expect(host.request).not.toHaveBeenCalled()
+})
+
+// Both Python surfaces answer groups.capabilities; the standalone server (what SSH, URL and Cloud
+// reach) runs its own driver, so it hosts rooms too, but lists no groups.discard or attachments.
+it('classifies both gateway surfaces by their driver and offers only the methods each lists', () => {
+  const rows = [
+    [CANONICAL_GROUP_CAPABILITIES, 'canonical'],
+    [STANDALONE_GROUP_CAPABILITIES, 'canonical'],
+    [{ ...STANDALONE_GROUP_CAPABILITIES, driver: false }, 'unavailable'],
+    [{ ...CANONICAL_GROUP_CAPABILITIES, driver: false }, 'unavailable'],
+    [{ ...CANONICAL_GROUP_CAPABILITIES, methods: [...CANONICAL_GROUP_CAPABILITIES.methods, 7] }, 'unavailable'],
+    [{ ...CANONICAL_GROUP_CAPABILITIES, features: 'room_identity' }, 'unavailable'],
+    [{ driver: false, persistent_process: false }, 'legacy']
+  ] as const
+
+  expect(rows.map(([value]) => groupExecutionMode(value))).toEqual(rows.map(row => row[1]))
+
+  const standalone = groupAdvertisedMethods(STANDALONE_GROUP_CAPABILITIES)
+  const canonical = groupAdvertisedMethods(CANONICAL_GROUP_CAPABILITIES)
+  const optional = ['groups.discard', 'groups.attachment.upload', 'groups.attachment.download']
+  expect(optional.map(method => offersGroupMethod(standalone, method))).toEqual([false, false, false])
+  expect(optional.map(method => offersGroupMethod(canonical, method))).toEqual([true, true, true])
+  expect(['groups.retry', 'groups.approve', 'groups.rename', 'groups.disband'].every(method => offersGroupMethod(standalone, method))).toBe(true)
+  // No method list keeps every control; an unanswered read offers none yet.
+  expect(offersGroupMethod(groupAdvertisedMethods({ driver: true }), 'groups.discard')).toBe(true)
+  expect(offersGroupMethod(undefined, 'groups.discard')).toBe(false)
 })

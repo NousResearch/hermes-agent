@@ -19,13 +19,14 @@ const { request, notify, openWorkspace, catalog } = vi.hoisted(() => ({
 }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
   const { en } = await import('@/i18n/en')
 
   return {
     ...sdk,
     gatewayActivationEpoch: () => 1,
     host: {
-      ...sdk.host, requestProfile: request, notify, openWorkspace,
+      ...sdk.host, requestProfile: captureGroupRequests(request).request, notify, openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
       connections: vi.fn(async () => []),
       state: {
@@ -96,7 +97,7 @@ it('adopts the existing gateway room by name instead of minting a fork', async (
   gateway(() => ({ rooms: [{ room_id: 'other', name: 'Elsewhere', members }, original], next_offset: null }))
   await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
   expect(methods()).not.toContain('groups.create')
-  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Start new group' })).toBeNull()
   const stateCall = request.mock.calls.find(call => call[1] === 'groups.state')
   expect(stateCall?.[2]).toMatchObject({ room_id: 'room-original' })
 })
@@ -117,7 +118,7 @@ it('fails closed with a retry when the room lookup fails: retry, never mint', as
   })
   await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
   expect(screen.getByRole('alert').textContent).toContain('gateway warming up')
-  const start = screen.queryByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement | null
+  const start = screen.queryByRole('button', { name: 'Start new group' }) as HTMLButtonElement | null
   expect(start === null || start.disabled).toBe(true)
 
   if (start) {await act(async () => { fireEvent.click(start) })}
@@ -132,7 +133,7 @@ it('fails closed with a retry when the room lookup fails: retry, never mint', as
 it('still offers to start a gateway group for a legacy room with no gateway room of that name', async () => {
   gateway(() => ({ rooms: [{ room_id: 'other', name: 'Elsewhere', members }], next_offset: null }))
   await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
-  const start = screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement
+  const start = screen.getByRole('button', { name: 'Start new group' }) as HTMLButtonElement
   expect(start.disabled).toBe(false)
   await act(async () => { fireEvent.click(start) })
   expect(methods().filter(m => m === 'groups.create')).toHaveLength(1)
@@ -178,12 +179,15 @@ it('a late lookup from a superseded connection does not publish its room', async
   await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
 
   await act(async () => { state.connectionId.set('remote') })
-  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false)
+  // The remote lookup answered (no such room); these Bots live on `local`, so it cannot seat them.
+  const elsewhere = 'This group chat can’t continue here: it has Bots on other computers'
+  expect(screen.getByText(text => text.startsWith(elsewhere))).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Start new group' })).toBeNull()
 
   await act(async () => { releaseA({ rooms: [original], next_offset: null }) })
   expect(methods()).not.toContain('groups.state')
   expect(Object.values($canonicalGroupBindings.get()).some(binding => binding.connectionId === 'local')).toBe(false)
-  expect(screen.getByRole('button', { name: 'Start gateway group' })).toBeTruthy()
+  expect(screen.getByText(text => text.startsWith(elsewhere))).toBeTruthy()
 })
 
 // Review on #140972 (F4): a room NAME spelled like another connection's key

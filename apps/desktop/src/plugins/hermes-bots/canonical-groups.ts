@@ -1,5 +1,6 @@
 import { host } from '@hermes/plugin-sdk'
 
+import { canonicalApprovalPreview } from './canonical-group-approval'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -33,6 +34,8 @@ export interface CanonicalPendingAction {
   task_id: string
   execution_generation: number
   request_id?: string
+  /** The driver's view of an approval: the choices it offers and what the work would do. */
+  approval?: { request_id?: string; prompt_id?: string; command?: string; description?: string; choices?: string[] }
 }
 
 function requireRoute(route: CanonicalGroupRoute): void {
@@ -97,51 +100,112 @@ export async function discoverCanonicalGroups(
   return { driver: capabilities.driver === true, rooms }
 }
 
-export async function createCanonicalGroup(
-  route: CanonicalGroupRoute,
-  name: string,
-  members: GroupMember[]
-): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
-  requireRoute(route)
+/** Why a roster cannot form a gateway group; the UI owns the words for each. */
+export type CanonicalRosterProblem = 'groupSize' | 'otherConnection' | 'duplicateMember'
 
-  if (!name.trim() || members.length < 2 || members.length > 6) {
-    throw new Error('A canonical group needs a name and two to six members')
+/** Whether `member` lives on `route`'s connection: a gateway group seats only those. */
+export function onCanonicalConnection(route: CanonicalGroupRoute, member: GroupMember): boolean {
+  const connectionId = member.route?.connectionId ?? member.connectionId
+
+  return !((connectionId !== undefined && connectionId !== route.connectionId) ||
+    (member.connectionId !== undefined && member.connectionId !== route.connectionId) ||
+    (connectionId === undefined && member.remoteSource))
+}
+
+/** The members `groups.create` would receive, or why these Bots cannot form a gateway group. */
+export function canonicalGroupRoster(
+  route: CanonicalGroupRoute,
+  members: GroupMember[]
+): { roster: CanonicalRoomMember[] } | { problem: CanonicalRosterProblem } {
+  if (members.length < 2 || members.length > 6) {
+    return { problem: 'groupSize' }
   }
 
   const profiles = new Set<string>()
   const handles = new Set(['all', 'everyone'])
+  const roster: CanonicalRoomMember[] = []
 
-  const roster = members.map(member => {
-    const connectionId = member.route?.connectionId ?? member.connectionId
-
-    if ((connectionId !== undefined && connectionId !== route.connectionId) ||
-      (member.connectionId !== undefined && member.connectionId !== route.connectionId) ||
-      (connectionId === undefined && member.remoteSource)) {
-      throw new Error('Group members must belong to the same authority connection')
+  for (const member of members) {
+    if (!onCanonicalConnection(route, member)) {
+      return { problem: 'otherConnection' }
     }
 
     const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
     const handle = member.handle ?? profile
 
     if (!profile.trim() || !handle.trim() || profiles.has(profile.toLowerCase()) || handles.has(handle.toLowerCase())) {
-      throw new Error('Group members need unique profiles and non-reserved handles')
+      return { problem: 'duplicateMember' }
     }
 
     profiles.add(profile.toLowerCase())
     handles.add(handle.toLowerCase())
-
-    return {
+    roster.push({
       member_id: profile, profile, handle,
       target: { kind: 'local', profile },
       ...(member.display_name ? { display_name: member.display_name } : {})
-    }
-  })
+    })
+  }
+
+  return { roster }
+}
+
+export async function createCanonicalGroup(
+  route: CanonicalGroupRoute,
+  name: string,
+  members: GroupMember[]
+): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
+  requireRoute(route)
+  const checked = canonicalGroupRoster(route, members)
+
+  if (!name.trim()) {
+    throw new Error('A canonical group needs a name')
+  }
+
+  if ('problem' in checked) {
+    throw Object.assign(new Error('A canonical group needs two to six unique members on its authority connection'),
+      { canonicalGroupProblem: checked.problem })
+  }
 
   const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', {
-    room_id: crypto.randomUUID(), name, members: roster
+    room_id: crypto.randomUUID(), name, members: checked.roster
   })
 
   return { binding: { ...route, roomId: room.room_id }, room }
+}
+
+interface CreateErrorLabels {
+  createRefused: string
+  createGroupSize: string
+  createOtherConnection: string
+  createDuplicateMember: string
+}
+
+/** A failed create in the reader's words: a roster problem found here, or the gateway's refusal
+ *  followed by its reason. Any coded answer is the gateway refusing: the session gateway names the
+ *  member in `data.detail` (4001); `hermes serve`, which Desktop's own backend and SSH, URL and
+ *  Cloud connections reach, puts the reason in the message (4110, or 4123/5111 for a missing worker
+ *  or a failure). Rejections arrive as Errors or, across the IPC bridge, as plain objects. */
+export function canonicalGroupCreateError(error: unknown, labels: CreateErrorLabels): string {
+  const problem = (error as { canonicalGroupProblem?: unknown } | null)?.canonicalGroupProblem
+
+  const problems: Record<CanonicalRosterProblem, string> = {
+    groupSize: labels.createGroupSize, otherConnection: labels.createOtherConnection, duplicateMember: labels.createDuplicateMember
+  }
+
+  if (typeof problem === 'string' && Object.hasOwn(problems, problem)) {
+    return problems[problem as CanonicalRosterProblem]
+  }
+
+  const refusal = error as { code?: unknown; data?: { detail?: unknown }; message?: unknown } | null
+  const message = typeof refusal?.message === 'string' ? refusal.message : String(error)
+
+  if (typeof refusal?.code === 'number') {
+    const reason = typeof refusal.data?.detail === 'string' && refusal.data.detail ? refusal.data.detail : message
+
+    return reason ? `${labels.createRefused} ${reason}` : labels.createRefused
+  }
+
+  return message
 }
 
 export async function actCanonicalGroup(
@@ -165,8 +229,13 @@ export async function actCanonicalGroup(
   }
 
   if (action.kind === 'approval') {
-    if (!action.request_id || (choice !== 'once' && choice !== 'deny')) {
-      throw new Error('Approval requires its exact request ID and an explicit choice')
+    if (!action.request_id || (choice !== 'once' && choice !== 'deny') ||
+      !Array.isArray(action.approval?.choices) || !action.approval.choices.includes(choice)) {
+      throw new Error('Approval requires its exact request ID and a choice the gateway offered')
+    }
+
+    if (choice === 'once' && !canonicalApprovalPreview(action).reviewable) {
+      throw new Error('Allow once requires a reviewable command or edit')
     }
 
     params.request_id = action.request_id

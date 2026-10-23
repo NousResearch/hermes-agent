@@ -158,3 +158,62 @@ def test_execution_controls_reject_foreign_actor_profile_room_and_unready_servic
 
             assert service.calls == []
         asyncio.run(probe())
+
+
+def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(tmp_path, monkeypatch):
+    """The real ``HostedRoomService.send`` behind the authority: ``admitted: false`` marks only a
+    groups.send refused before its user event committed. The same ``invalid_params`` after the
+    commit stays unmarked, so the client keeps the event id and a Retry stays idempotent."""
+    import threading
+    from gateway import hosted_rooms
+    from tui_gateway.hosted_room_service import HostedRoomService
+
+    class OwnedRooms(HostedRoomService):
+        def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
+            pass
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+        connection = AuthorityConnection(authority, object(), {'user_id': 'alice'})
+        server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
+        service = authority.hosted_room_service = OwnedRooms(server, db_path=db.db_path)
+        monkeypatch.setattr(service.runtime, 'status', lambda: {'running': True, 'stopping': False})
+        monkeypatch.setattr(service, 'local_profiles', lambda: ('default', 'ops'))
+        for room_id in ('owned', 'ended'):
+            service.create_room(room_id=room_id, name='Room', members=[
+                {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
+                {'member_id': 'two', 'profile': 'ops', 'handle': 'two'}])
+        hosted_rooms.disband_room(db.db_path, room_id='ended', expected_gateway_id=hosted_rooms.local_authority_gateway_id(),
+                                  expected_epoch=1)
+        prepare, failures = service.prepare_room, [hosted_rooms.HostedRoomError('Group Chat storage is full on this host.')]
+
+        def prepare_after_commit(binding):
+            if failures:
+                raise failures.pop()
+            return prepare(binding)
+
+        async def send(event_id, text, room_id='owned'):
+            payload = {'text': text, 'thread_id': 'thread'}
+            return await connection.dispatch({'id': 1, 'method': 'groups.send',
+                                              'params': {'room_id': room_id, 'event_id': event_id, 'payload': payload}})
+
+        async def probe():
+            refused = await send('too-long', 'x' * 65_537)
+            assert refused['error']['data'] == {'reason': 'invalid_params', 'admitted': False}
+            ended = await send('after-end', 'Ended elsewhere', room_id='ended')
+            assert ended['error']['data'] == {'reason': 'invalid_params', 'admitted': False}
+
+            monkeypatch.setattr(service, 'prepare_room', prepare_after_commit)
+            committed = await send('second', 'Second')
+            assert committed['error']['data'] == {'reason': 'invalid_params'}
+            assert (await send('second', 'Second'))['result']['client_event_id'] == 'second'
+            events = hosted_rooms.read_events(db.db_path, room_id='owned')['events']
+            assert [e['payload']['text'] for e in events if e['kind'] == 'message.user'] == ['Second']
+
+            monkeypatch.setattr(service.runtime, 'status', lambda: {'running': True, 'stopping': True})
+            undriven = await send('no-driver', 'Later')
+            assert undriven['error']['data'] == {'reason': 'runtime_coordination_required', 'admitted': False}
+            stopped = await connection.dispatch({'id': 1, 'method': 'groups.stop', 'params': {'room_id': 'owned'}})
+            assert stopped['error']['data'] == {'reason': 'runtime_coordination_required'}
+        asyncio.run(probe())

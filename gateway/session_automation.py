@@ -259,12 +259,12 @@ def _route_owner(authority, entry):
 
 
 def _delegating_session(db, session_id):
-    """The conversation a (nested) delegate_task child runs under, else ``session_id``. Only the
-    owner mints ``subagent`` rows, with the parent's lineage (gateway/session_worker_child.py)."""
+    """The conversation a (nested) delegate_task child runs under, else ``session_id``. As in the
+    completion pre-flight (``_lookup_completion_owner``), only ``model_config._delegate_from`` leads
+    out of an execution transcript: ``parent_session_id`` also records compression and branches."""
     lineage = [session_id]
-    while ((row := db.get_session(lineage[-1])) and row.get('source') == 'subagent'
-           and row.get('parent_session_id') not in (None, *lineage)):
-        lineage.append(row['parent_session_id'])
+    while (parent := db.get_session_model_config_value(lineage[-1], '_delegate_from')) not in (None, *lineage):
+        lineage.append(parent)
     return lineage[-1]
 
 

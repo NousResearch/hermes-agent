@@ -49,23 +49,45 @@ async def test_wake_refuses_another_user_on_a_per_user_route(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_subagent_process_notice_enters_its_parent_route_but_not_after_reset(tmp_path, monkeypatch):
+@pytest.mark.parametrize('compressed', [False, True])
+async def test_subagent_process_notice_enters_its_parent_route_but_not_after_reset(tmp_path, monkeypatch, compressed):
     runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
     root = (await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='human'))).ref.session_id
     key = runner.session_store._generate_session_key(source)
     worker, nested = root + '-worker', root + '-nested'
-    authority.db.create_session(worker, source='subagent', parent_session_id=root)
-    authority.db.create_session(nested, source='subagent', parent_session_id=worker)
+    # Shaped like reserve_child_execution's rows (gateway/session_worker_child.py).
+    authority.db.create_session(worker, source='subagent', parent_session_id=root, model_config={'_delegate_from': root})
+    authority.db.create_session(nested, source='subagent', parent_session_id=worker,
+                                model_config={'_delegate_from': worker})
+    if compressed:
+        authority.db.append_message(root, 'user', 'human')
+        authority.db.publish_compression_child(parent_session_id=root, child_session_id=root + '-tip', source='discord',
+                                               messages=[{'role': 'user', 'content': 'summary'}],
+                                               require_compression_lease=False)
+        assert runner.session_store.advance_compression_session(key, root, root + '-tip') is not None
     event = {'type': 'completion', 'session_id': 'proc-worker', 'started_at': 1,
              'session_key': key, 'parent_session_id': nested}
     assert await runner._inject_watch_notification('worker-finished', event) is True
     rows = list_session_admissions(authority.db, session_id=root, pending_only=False)
     assert len(rows) == 2 and 'worker-finished' in rows[-1]['payload']['text']
     runner.session_store.reset_session(key)
-    # A notice pinned to a session /new closed is dropped, never admitted to the fresh one.
+    # A notice pinned to a session /new closed is never admitted to the fresh one: dropped, or requeued
+    # while the completion pre-flight reads a reset compression tip as uncertain.
     stale = dict(event, session_id='proc-old-worker')
-    assert await runner._inject_watch_notification('old-worker', stale) is None
+    assert await runner._inject_watch_notification('old-worker', stale) is (False if compressed else None)
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_subagent_row_without_delegate_provenance_owns_no_route(tmp_path, monkeypatch):
+    runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
+    root = (await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='human'))).ref.session_id
+    authority.db.create_session(root + '-orphan', source='subagent', parent_session_id=root)
+    event = {'type': 'completion', 'session_id': 'proc-orphan', 'started_at': 1,
+             'session_key': runner.session_store._generate_session_key(source), 'parent_session_id': root + '-orphan'}
+    # The completion pre-flight calls this pin gone, so admission must not take it either.
+    assert await runner._inject_watch_notification('orphan', event) is None
+    assert len(list_session_admissions(authority.db, session_id=root, pending_only=False)) == 1
 
 
 def _relay_adapter():

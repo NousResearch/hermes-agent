@@ -1325,6 +1325,19 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
                 if _consumed:
                     return _consumer_reply
+            # Optional plugin turn-override seam: arms through the canonical one-turn owner (same as
+            # /model --once), so the generation-guarded finally below restores it on every exit.
+            from gateway.turn_overrides import apply_turn_override
+            try:
+                apply_turn_override(
+                    event=event, source=source, session_key=_quick_key,
+                    conversation=_claim_state.conversation,
+                    snapshot_override=self._snapshot_session_model_override,
+                    evict_cached_agent=self._evict_cached_agent, full_config=self.config,
+                    is_internal=is_internal, is_command=bool(event.get_command()),
+                )
+            except Exception:
+                logger.debug("turn override seam failed open", exc_info=True)
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:

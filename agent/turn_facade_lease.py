@@ -25,6 +25,14 @@ _REASON_LEASE_LOST = "session turn lease lost"
 
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
+# Wording of the periodic refresh emitted while another process holds the session turn lease
+# (``admit_durable_turn_lease``'s ``_on_wait``). The refresh only makes sense on surfaces that can
+# update the initial wait notice in place; the gateway derives its no-in-place-update suppression
+# matcher from this constant (#89166) — never re-inline the wording at either site.
+SESSION_TURN_LEASE_WAIT_REFRESH_STATUS_TEMPLATE = (
+    "⏳ Still waiting for the other Hermes process on "
+    "this session ({elapsed_seconds}s)..."
+)
 # SessionDB's default write patience: a renewal waits this long for the write lock, never past the authority.
 _REFRESH_WRITE_PATIENCE_S = 20.0
 # Headroom before expiry for one BEGIN IMMEDIATE blocked in the writer's 1s busy handler, plus jitter.
@@ -338,7 +346,9 @@ def admit_durable_turn_lease(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."
             if elapsed < 1.0 else
-            f"⏳ Still waiting for the other Hermes process on this session ({int(elapsed)}s)..."
+            SESSION_TURN_LEASE_WAIT_REFRESH_STATUS_TEMPLATE.format(
+                elapsed_seconds=int(elapsed)
+            )
         )
 
     authority_floor = time.time()  # every acquisition attempt stamps its expiry after this instant

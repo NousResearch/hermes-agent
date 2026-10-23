@@ -980,6 +980,7 @@ class GatewayTurnProgressMixin:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run_lease_refresh import _should_suppress_lease_wait_refresh
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
@@ -990,6 +991,13 @@ class GatewayTurnProgressMixin:
                 "status_callback suppressed for %s/%s: %s",
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+            )
+            return
+        if _should_suppress_lease_wait_refresh(ctx.source.platform, ctx._status_adapter, prepared):
+            logger.debug(
+                "suppressed periodic lease-wait refresh for %s: human-chat adapter "
+                "has no in-place status updates",
+                ctx.source.platform.value if ctx.source.platform else "unknown",
             )
             return
         def present():

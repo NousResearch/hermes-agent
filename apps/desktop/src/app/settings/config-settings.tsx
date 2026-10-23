@@ -535,7 +535,7 @@ function ConfigSettingsInner({
                   enumOptions={
                     key === 'tts.elevenlabs.voice_id'
                       ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                      : enumOptionsFor(key, getNested(config, key), config)
+                      : enumOptionsFor(key, getNested(config, key), config, undefined, field.options)
                   }
                   onChange={value => updateConfig(setConfigField(config, key, value))}
                   optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}

@@ -298,8 +298,8 @@ def _custom_provider_options(kind: str, builtin_names: list[str], cfg: dict[str,
        top-level ``<kind>.<name>`` — the runtime's dual resolution order. Names colliding
        with a RUNTIME built-in are excluded (the runtime rejects them before config lookup);
        the runtime sets are used rather than the display shortlist, which drifts.
-    2. Plugin-registered names from the tts/transcription registries — opportunistic: this
-       process may never call ``discover_plugins()``, so the registry may be empty.
+    2. Plugin-registered names from the tts/transcription registries — the caller runs
+       discovery first, reflecting the active profile's enabled plugins.
     3. The current ``<kind>.provider`` value, so a custom active name stays selectable.
     Guard semantics mirror the desktop's ``commandProviderNames`` so both surfaces agree.
     """
@@ -379,6 +379,12 @@ def _schema_with_dynamic_provider_options() -> dict[str, dict[str, Any]]:
     except Exception:  # pragma: no cover - schema must survive config errors
         return CONFIG_SCHEMA
 
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()  # idempotent; plugin voice providers must be registered before the merge
+    except Exception:  # health: allow BLE001 -- arbitrary plugin load errors; the schema must still serve
+        _log.debug("plugin discovery failed; schema voice options omit plugin providers", exc_info=True)
+
     overlay: dict[str, dict[str, Any]] = {}
 
     def merge(key: str, options: list[str]) -> None:
@@ -389,6 +395,13 @@ def _schema_with_dynamic_provider_options() -> dict[str, dict[str, Any]]:
         existing = _schema_select_options(f"{kind}.provider")
         if existing is not None:
             merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
+        elif cfg_get(cfg, kind, "provider"):
+            # ``stt.provider`` has no seeded default (unset = autodetect), so it is not in
+            # CONFIG_SCHEMA. Once set, the frontends show it, so serve its merged options.
+            base = _SCHEMA_OVERRIDES[f"{kind}.provider"]
+            overlay[f"{kind}.provider"] = {
+                **base, "category": _CATEGORY_MERGE.get(kind, kind),
+                "options": _custom_provider_options(kind, list(base["options"]), cfg)}
 
     merge("memory.provider", _memory_provider_schema_options(cfg))
 

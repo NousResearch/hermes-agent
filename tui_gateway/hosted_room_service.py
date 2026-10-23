@@ -544,7 +544,8 @@ class HostedRoomService:
                      and execution_generation in (None, c["execution_generation"])), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
-        return self.runtime.retry_indeterminate(task["identity"])
+        return self.runtime.retry_indeterminate(
+            task["identity"], execution_generation=task["execution_generation"])
 
     def approve_room_task(
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,

@@ -238,6 +238,7 @@ export class GatewayClient extends EventEmitter {
    * failure (B2-21): drop the socket onto the backoff path, which redials and re-describes. */
   private describeThenReady(ws: WebSocket | null, payload: Record<string, unknown>) {
     this.describeFlight = undefined
+    this.runtimeCapabilities = []
     void this.describeRuntime().then(() => {
       // The owner's resolved profile skin (`runtime.describe.skin`, main's `gateway.ready.skin`)
       // unless the listener's own ready already carried one.

@@ -67,12 +67,29 @@ def transcript_append_kwargs(session_id: str, message: dict[str, Any], *, fallba
     abort the replay. *fallback_ts* applies only to a message with no timestamp at all, because a
     truthiness test would rewrite epoch 0. Values bound straight to a TEXT column are made bindable
     (:func:`_bindable_text`), so one malformed field cannot make the row unwritable."""
+    from agent.compaction_display import project_compaction_message_for_display
+
+    display_message = project_compaction_message_for_display(message)
+    if display_message is None:
+        display_content = ""
+        display_kind = "hidden"
+    else:
+        display_content = display_message.get("content")
+        display_kind = display_message.get("display_kind")
+
+    raw_content = message.get("content")
+    api_content = extract_api_content_sidecar(message)
+    if api_content is None and isinstance(raw_content, str) and raw_content != display_content:
+        # The transcript displays the projection, while resumed turns must receive the
+        # exact compaction carrier the compressor produced.
+        api_content = raw_content
+
     is_assistant = message.get("role") == "assistant"
     timestamp = message.get("timestamp")
     kwargs = {
         "session_id": session_id,
         "role": message.get("role", "unknown"),
-        "content": message.get("content"),
+        "content": display_content,
         "tool_name": message.get("tool_name"),
         "tool_calls": message.get("tool_calls"),
         "tool_call_id": message.get("tool_call_id"),
@@ -82,10 +99,10 @@ def transcript_append_kwargs(session_id: str, message: dict[str, Any], *, fallba
         "timestamp": fallback_ts if timestamp is None else timestamp,
         # Exact bytes sent to the API (prompt-cache-stable replay); must survive every
         # persistence path or the next replay diverges.
-        "api_content": extract_api_content_sidecar(message),
+        "api_content": api_content,
         # Presentation typing ("internal_notification" for self-injected async-delegation/background
         # notification turns, #82888). DB-only; stripped from provider-bound payloads.
-        "display_kind": message.get("display_kind"),
+        "display_kind": display_kind,
         "display_metadata": message.get("display_metadata"),
     }
     for key in _BOUND_TEXT_KEYS:

@@ -15,7 +15,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 import hermes_yaml as yaml
 
@@ -167,9 +167,10 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     desc = str(parsed["description"])
     if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
-    if new_skill and len(desc.strip().strip("'\"")) > SKILL_PROMPT_DESC_LIMIT:
+    budgeted_desc = desc.strip().strip("'\"")
+    if new_skill and len(budgeted_desc) > SKILL_PROMPT_DESC_LIMIT:
         return (
-            f"Description is {len(desc.strip())} chars — new skills must fit the "
+            f"Description is {len(budgeted_desc)} chars — new skills must fit the "
             f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget (one sentence, trigger first, "
             f"ends with a period). The skill index truncates longer descriptions to "
             f"{SKILL_PROMPT_DESC_LIMIT - 3} chars + '...', destroying the routing signal. "
@@ -185,6 +186,17 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
             f"{label} content is {len(content):,} characters (limit: {MAX_SKILL_CONTENT_CHARS:,}). "
             f"Consider splitting into a smaller SKILL.md with supporting files in references/ "
             f"or templates/.")
+    return None
+
+
+def _validate_file_bytes(file_content: str) -> Optional[str]:
+    """Check a supporting file's encoded size against the per-file byte limit."""
+    content_bytes = len(file_content.encode("utf-8"))
+    if content_bytes > MAX_SKILL_FILE_BYTES:
+        return (
+            f"File content is {content_bytes:,} bytes (limit: {MAX_SKILL_FILE_BYTES:,} "
+            f"bytes / 1 MiB). Consider splitting into smaller files."
+        )
     return None
 
 
@@ -607,9 +619,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
         return _err(err)
     if not file_content and file_content != "":
         return _err("file_content is required.")
-    if (content_bytes := len(file_content.encode("utf-8"))) > MAX_SKILL_FILE_BYTES:
-        return _err(f"File content is {content_bytes:,} bytes (limit: {MAX_SKILL_FILE_BYTES:,} "
-                    f"bytes / 1 MiB). Consider splitting into smaller files.")
+    if err := _validate_file_bytes(file_content):
+        return _err(err)
     if err := _validate_content_size(file_content, label=file_path):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
@@ -654,10 +665,11 @@ _skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
-def _run_write_gate(build_staging):
+def _run_write_gate(build_staging, preflight=None):
     """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
-    ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
-    write_approval cannot be imported."""
+    ``preflight() -> error | None`` runs BEFORE staging, so a payload the handler would
+    reject on replay never reaches the approval queue. ``build_staging(wa) -> (payload,
+    gist)`` runs only when staging. Fails open if write_approval cannot be imported."""
     try:
         from tools import write_approval as wa
     except Exception:
@@ -667,6 +679,8 @@ def _run_write_gate(build_staging):
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
+    if preflight is not None and (err := preflight()):
+        return tool_error(err, success=False)
     payload, gist = build_staging(wa)
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
@@ -683,7 +697,9 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
-    return _run_write_gate(_staging)
+    from tools.skill_manager_batch import _preflight_staged_skill_write
+    return _run_write_gate(
+        _staging, lambda: _preflight_staged_skill_write(action, name, payload_kwargs))
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",

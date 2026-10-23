@@ -420,7 +420,7 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
                 200,
                 json={
                     "resource": "https://mcp.example.com",
-                    "authorization_servers": ["https://auth.example.com"],
+                    "authorization_servers": ["https://auth.example.com/"],
                     "scopes_supported": ["read", "write"],
                     "bearer_methods_supported": ["header"],
                 },

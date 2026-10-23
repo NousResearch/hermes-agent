@@ -137,6 +137,22 @@ async def test_a_childless_continuation_whose_chain_has_a_delegate_is_not_delete
 
 
 @pytest.mark.asyncio
+async def test_the_reads_a_viewer_sends_for_an_open_chat_answer_on_a_mount(tmp_path, monkeypatch):
+    """Desktop polls the session-control store and loads its slash palette and model picker for the
+    open chat; the mount has no source, and each of these answered ``internal error``."""
+    conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
+    await conn.resume(ref, {})
+    sid = {'session_id': ref.session_id}
+    for method, params in (('session.control.read', sid), ('commands.catalog', sid),
+                           ('config.get', {**sid, 'key': 'mtime'}), ('model.options', sid)):
+        reply = await conn.dispatch({'id': 1, 'method': method, 'params': params})
+        assert 'result' in reply, (method, reply)
+    for command in ('fast status', 'model'):
+        reply = await conn.dispatch({'id': 1, 'method': 'slash.exec', 'params': {**sid, 'command': command}})
+        assert reply['error']['message'] == 'session_read_only', (command, reply)
+
+
+@pytest.mark.asyncio
 async def test_an_api_chat_opened_read_only_still_continues_through_the_api(tmp_path, monkeypatch):
     """Binding the viewed row replaced nothing: the read-only mount had no source to check."""
     from gateway.config import Platform

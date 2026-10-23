@@ -68,9 +68,13 @@ def require_history_leaf(authority, sid):
                                     detail='this stored conversation has child sessions a delete would take with it')
 
 
+def read_only():
+    return RuntimeStoreError('session_read_only', field='session_id',
+                             detail='this stored conversation can be read but not continued; start a new chat')
+
+
 def require_history_access(authority, actor, sid, capability):
     if not _reader(authority, actor, sid):
         raise RuntimeStoreError('not_found')
     if capability != 'session:read':
-        raise RuntimeStoreError('session_read_only', field='session_id',
-                                detail='this stored conversation can be read but not continued; start a new chat')
+        raise read_only()

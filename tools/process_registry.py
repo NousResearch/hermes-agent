@@ -25,6 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
+from tools.environments.capture import CaptureStatus
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -38,7 +39,7 @@ from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
-from tools.process_registry_env_log import log_delta_command
+from tools.process_registry_env_log import ProcessEnvLogMixin, log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
 
 logger = logging.getLogger(__name__)
@@ -539,7 +540,7 @@ def _completion_output(session: "ProcessSession") -> dict:
 
 
 @dataclass
-class ProcessSession:
+class ProcessSession(CaptureStatus):
     """A tracked background process with output buffering."""
     id: str                                     # "proc_xxxxxxxxxxxx"
     command: str
@@ -656,7 +657,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log")
+    "heartbeat_seconds", "persist_on_release", "output_log", "capture_error")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -671,7 +672,7 @@ _WSL_CHAIN_NOTE = (
 )
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin):
+class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessEnvLogMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -1257,7 +1258,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
         session_key: str = "", owner_task_id: str = "", output_so_far: str = "",
-        notify_on_complete: bool = True) -> ProcessSession:
+        notify_on_complete: bool = True, finalize_capture=None) -> ProcessSession:
         """Take over a still-running foreground Popen as a tracked background session
         (yield-to-background: the user sent a message while the command was running).
         The caller has stopped its own drain thread; the registry's reader continues from
@@ -1268,9 +1269,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session.notify_on_complete = notify_on_complete
+        collector = getattr(proc, "_hermes_capture_collector", None)
+        if collector is not None:
+            session.capture_error = collector.capture_error
         if output_so_far:
             session.append_output(output_so_far)
-        self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
+        self._start_adopted_reader(session, collector, finalize_capture)
         return session
 
     def spawn_via_env(
@@ -1292,6 +1296,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
         result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False)
+        result = self._recover_launch_capture(session, env, pid_path, result)
         output = result.get("output", "").strip()
         session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
         # No PID from the wrapper (no bash in the image, sandbox gone, broken redirect): the
@@ -1321,7 +1326,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         head_noise = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
         # incremental decoder holds the partial sequence until the rest arrives.
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")  # (openclaw/openclaw#112325)
+        decoder = None
 
         def _append_chunk(chunk: str):
             nonlocal head_noise
@@ -1331,7 +1336,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._ingest_output(session, chunk)
         _waiter = None
         try:
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             proc = session.process
+            state = getattr(proc, "_hermes_decoder_state", None)
+            if isinstance(state, tuple):
+                decoder.setstate(state)
             if proc is None or proc.stdout is None:
                 return
             stdout = proc.stdout
@@ -1386,99 +1395,25 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     if drained_after_request >= _FINAL_DRAIN_MAX_CHARS:
                         break
                 idle_after_exit = 0
-        except Exception as e:
-            logger.debug("Process stdout reader ended: %s", e)
+        except Exception:  # health: allow BLE001 -- capture boundary reports a safe diagnostic instead of exception contents
+            with session._lock:
+                if not session._completion_event.is_set() and session.completion_reason != "killed":
+                    session.capture_failed("background stream read")
+            self._write_checkpoint()
+            if session.process is not None and session.process.stdout is not None:
+                with suppress(OSError, ValueError):
+                    session.process.stdout.close()
         finally:
-            if _waiter is not None:
-                _waiter.close()
+            try:
+                if _waiter is not None:
+                    _waiter.close()
+            except (OSError, ValueError):
+                session.capture_failed("background reader finalization")
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
                 session.process.wait, lambda: session.process.returncode)
 
-    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
-        """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
-
-        A process may close stdout long before it exits.  The reader owns a dedicated
-        daemon thread, so it must keep waiting rather than publish a false completion
-        and discard the only ``Popen`` handle that can reap the child.
-        """
-        with suppress(Exception):
-            tail = decoder.decode(b"", final=True)
-            if tail:
-                append(tail)
-        try:
-            wait()
-        except Exception as e:
-            # A PTY child reaped by isalive() already has its exitstatus; only an
-            # unknown status must stay tracked for later reconciliation.
-            if exit_code() is None:
-                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
-                return
-            logger.warning("%s wait failed; recording known exit status: %s", label, e)
-        self._finish_exited(session, exit_code())
-
     _log_delta_command = staticmethod(log_delta_command)
-
-    def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
-        """Background thread: poll a sandbox log file for non-local backends."""
-        q = shlex.quote
-        # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
-        prev_output_bytes = 0
-        while not session.exited:
-            time.sleep(2)
-            try:
-                # Read only the bytes written since the last poll.
-                raw = env.execute(self._log_delta_command(q(log_path), prev_output_bytes),
-                                  timeout=10).get("output", "")
-                header, _, delta = raw.partition("\n")
-                try:
-                    size_str, offset_str = header.split()
-                    new_size = int(size_str)
-                    used_offset = int(offset_str)
-                except ValueError:
-                    # No usable header (command failed, shell missing a tool): skip this
-                    # poll rather than act on a half-read value.
-                    new_size = None
-                    used_offset = None
-                    delta = ""
-                if new_size is not None:
-                    if used_offset < prev_output_bytes:
-                        # Log rotated/truncated: what we hold no longer lines up. Restart.
-                        with session._lock:
-                            if session.exited:
-                                return
-                            session.output_buffer = ""
-                    prev_output_bytes = new_size
-                if delta:
-                    # A kill that landed after this fetch already published its output
-                    # snapshot: leave the output as the kill reported it (as the PTY reader does).
-                    with session._lock:
-                        if session.exited:
-                            return
-                        session.output_buffer += delta
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    self._check_watch_patterns(session, delta)
-                    self._emit_output(session, delta)
-
-                check = env.execute(
-                    f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
-                check_output = check.get("output", "").strip()
-                if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Exited -- read the exit code captured by the wrapper shell.
-                    exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()
-                    try:
-                        exit_code = int(exit_str.splitlines()[-1].strip())
-                    except (ValueError, IndexError):
-                        exit_code = -1
-                    self._finish_exited(session, exit_code)
-                    return
-            except Exception:
-                # Environment might be gone (sandbox reaped, etc.). A kill that already
-                # settled the session keeps its result.
-                self._finish_exited(session, -1, reason="lost", source="backend_lost")
-                return
 
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""
@@ -1486,7 +1421,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # Same split-multibyte handling as _reader_loop.
         # PTY reads can split a multibyte UTF-8 character across chunks just like pipe reads — hold partial
         # sequences until the rest arrives. (Ported from openclaw/openclaw#112325.)
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        decoder = None
         # Programs in a PTY can block waiting for replies to device-status / window-size /
         # cursor-position / DEC private-mode queries. Answer the bounded set and strip the
         # queries from captured output. POSIX only: Windows ConPTY is a real console host that
@@ -1503,36 +1438,39 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._ingest_output(session, text, unless_exited=True)
 
         try:
-            while pty.isalive():
-                try:
-                    chunk = pty.read(4096)
-                    if chunk:
-                        # ptyprocess returns bytes; pywinpty returns str
-                        if responder is not None and isinstance(chunk, bytes):
-                            chunk, replies = responder.process(chunk)
-                            if replies:
-                                try:
-                                    pty.write(replies)
-                                except Exception:
-                                    logger.debug(
-                                        "PTY query response write failed",
-                                        exc_info=True,
-                                    )
-                        text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
-                        if text:
-                            ingest(text)
-                except Exception:  # EOFError included
-                    break
-        except Exception as e:
-            logger.debug("PTY stdout reader ended: %s", e)
-        if responder is not None:
-            # A query prefix split across the final reads is plain output after all.
-            tail = decoder.decode(responder.flush())
-            if tail:
-                ingest(tail)
+            from tools.process_registry_output_log import iter_pty_output
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            for chunk in iter_pty_output(pty):
+                if responder is not None and isinstance(chunk, bytes):
+                    chunk, replies = responder.process(chunk)
+                    if replies:
+                        try:
+                            pty.write(replies)
+                        except Exception:
+                            logger.debug("PTY query response write failed", exc_info=True)
+                text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
+                if text:
+                    ingest(text)
+        except Exception:  # health: allow BLE001 -- report backend failure without sensitive exception contents
+            if not session.exited:
+                session.capture_failed("background PTY read")
+        if session.capture_error:
+            with suppress(Exception):  # health: allow BLE001 -- failed PTY teardown must still reach status reconciliation
+                if _IS_WINDOWS:
+                    pty.terminate(force=True)
+                else:
+                    pty.close()
+        if responder is not None and decoder is not None:
+            try:
+                tail = decoder.decode(responder.flush())
+                if tail:
+                    ingest(tail)
+            except Exception:  # health: allow BLE001 -- responder finalization must not skip child reaping
+                session.capture_failed("PTY decoder finalization")
         self._finish_reader(
             session, decoder, ingest, "PTY",
-            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
+            pty.wait, lambda: (pty.exitstatus if pty.exitstatus is not None else
+                               -pty.signalstatus if getattr(pty, "signalstatus", None) else None))
 
     def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
         """Buffer a freshly-read chunk, then scan watch patterns and stream it live.
@@ -1606,14 +1544,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             }
             _redact_process_result(notification)
             self.completion_queue.put(notification)
-
-    @staticmethod
-    def _exit_fields(session: ProcessSession) -> dict:
-        return {
-            "exit_code": session.exit_code,
-            "completion_reason": session.completion_reason,
-            "termination_source": session.termination_source,
-        }
 
     def _release_finished_handles(self, session: ProcessSession):
         """Close a finished session's OS handles (Popen pipes / PTY master).
@@ -1990,7 +1920,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     @staticmethod
     def _status_head(session: ProcessSession) -> dict:
-        return {"session_id": session.id, "command": session.command, "status": "exited" if session.exited else "running"}
+        return {"session_id": session.id, "command": session.command,
+                "status": "exited" if session.exited else "running", **session.capture_fields()}
 
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
@@ -2096,6 +2027,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     "note": ("User sent a new message -- wait released; the process is still "
                              "running and you will be notified on exit. Respond to the user now.")}
             if result is not None:
+                result.update(session.capture_fields())
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
@@ -2116,6 +2048,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             if session.notify_on_complete else
             " Poll again later or use terminal(background=true, "
             "notify_on_complete=true) next time for automatic notification.")
+        result.update(session.capture_fields())
         result["timeout_note"] = f"{timeout_note}. {base_note}" if timeout_note else base_note
         return result
 
@@ -2400,6 +2333,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                **s.capture_fields(),
             }
             # Flag processes surfaced only because they share the gateway session (not the current task) —
             # these are the long-lived background processes a user may have forgotten about (#29177).
@@ -2656,6 +2590,8 @@ def _redact_process_result(result: dict) -> dict:
         if isinstance(value := result.get(key), str) and value:
             value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
             result[key] = redact_terminal_output(value, command)
+    if isinstance(result.get("capture_error"), str):
+        result["capture_error"] = redact_sensitive_text(result["capture_error"], force=True)[:512]
     if isinstance(command, str) and command:
         result["command"] = redact_sensitive_text(command, code_file=True)
     return result

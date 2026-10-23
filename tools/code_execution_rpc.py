@@ -48,6 +48,8 @@ def _execute_checked(env, cmd: str, what: str, *, timeout: int, **kwargs) -> dic
     half-written, or still-permissive remote path. The error carries the
     command output only, never the payload."""
     result = env.execute(cmd, cwd="/", timeout=timeout, **kwargs)
+    from tools.environments.capture import require_complete_output
+    require_complete_output(result)
     if result.get("returncode", 1) != 0:
         raise RuntimeError(f"{what} failed: {result.get('output')!r}")
     return result
@@ -208,6 +210,9 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
     while not stop_event.is_set():
         try:
             ls_result = env.execute(f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true", cwd="/", timeout=10)
+            if ls_result.get("output_incomplete") or ls_result.get("capture_error"):
+                stop_event.wait(poll_interval)
+                continue
             output = ls_result.get("output", "").strip()
             if not output:
                 stop_event.wait(poll_interval)
@@ -220,6 +225,9 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                 call_start = time.monotonic()
                 quoted_req_file = shlex.quote(req_file)
                 read_result = env.execute(f"cat {quoted_req_file}", cwd="/", timeout=10)
+                if read_result.get("output_incomplete") or read_result.get("capture_error"):
+                    # Retain the durable request for a later read; never dispatch partial JSON.
+                    continue
                 try:
                     request = json.loads(read_result.get("output", ""))
                 except (json.JSONDecodeError, ValueError):

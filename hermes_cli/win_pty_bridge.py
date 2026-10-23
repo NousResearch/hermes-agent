@@ -86,8 +86,12 @@ class WinPtyBridge:
             return None
         try:
             data = self._proc.read(65536)  # pywinpty returns str
-        except Exception:
+        except EOFError:
             return None
+        except Exception:  # health: allow BLE001 -- normalize backend failures without leaking backend exception text
+            if self._closed:
+                return None
+            raise OSError("PTY output capture failed during read") from None
         if not data:
             # No fd to select on; sleep so the executor thread doesn't pin a core while idle.
             time.sleep(min(timeout, 0.02))

@@ -206,6 +206,9 @@ class PerplexityWebSearchProvider(WebSearchProvider):
 
         return bool(get_provider_env("PERPLEXITY_API_KEY"))
 
+    def search_route_label(self) -> str:
+        return "" if self.supports_search_depth() else "managed"
+
     def search(self, query: str, limit: int = 5, depth: str = "standard") -> dict[str, Any]:
         """Execute a Perplexity Search API query.
 

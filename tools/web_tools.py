@@ -302,7 +302,7 @@ def _finish_debug(call_name: str, debug_call_data: dict, error_msg: Optional[str
 def _resolve_depth(requested: Any) -> tuple[str, Optional[str]]:
     """``(depth, note)`` for a ``web_search`` call: *requested* (None = "standard") capped at
     ``web.max_depth`` (default "standard"). *note* is one line for the result when the call was
-    lowered, else None; an omitted depth lowered by a stricter cap is not worth a note."""
+    lowered or *requested* is unknown, else None."""
     from agent.web_search_provider import SEARCH_DEPTHS
     cap = str(_load_web_config().get("max_depth") or "standard").strip().lower()
     if cap not in SEARCH_DEPTHS:
@@ -313,16 +313,25 @@ def _resolve_depth(requested: Any) -> tuple[str, Optional[str]]:
     if depth not in SEARCH_DEPTHS:
         depth, note = "standard", f"unknown depth {requested!r}; ran a standard search"
     if SEARCH_DEPTHS.index(depth) > SEARCH_DEPTHS.index(cap):
-        if requested is not None:
-            note = f"depth lowered from {depth} to {cap} by web.max_depth"
-        depth = cap
+        depth, note = cap, f"depth lowered from {depth} to {cap} by web.max_depth"
     return depth, note
 
 
-def _provider_depth(provider, depth: str) -> str:
-    """The depth *provider* is actually asked for: *depth* when it maps it to a native option,
-    else "standard" (its unchanged request)."""
-    return depth if depth != "standard" and _probe(provider, "supports_search_depth") else "standard"
+def _provider_depth(provider, depth: str) -> tuple[str, Optional[str]]:
+    """``(applied, note)``: the depth *provider* is asked for (*depth* when it maps it to a native
+    option, else "standard", its unchanged request) and the one-line note when that drops *depth*."""
+    if depth == "standard" or _probe(provider, "supports_search_depth"):
+        return depth, None
+    route = " ".join(filter(None, (provider.name, provider.search_route_label())))
+    return "standard", f"{route} search has no depth setting; ran its standard search"
+
+
+def _depth_dropped_by_fallback(data: dict) -> Optional[str]:
+    """Note for a depth request that a one-shot rescue or managed fallback served without depth."""
+    for key, route in (("rescued_from", "keyless rescue"), ("fallback_from", "managed fallback")):
+        if key in data:
+            return f"{route} has no depth setting; ran its standard search"
+    return None
 
 
 def web_search_tool(query: str, limit: int = 5, depth: Optional[str] = None) -> str:
@@ -365,13 +374,16 @@ def web_search_tool(query: str, limit: int = 5, depth: Optional[str] = None) -> 
             fallback = "No web search provider configured. Run `hermes tools` to set one up."
             response_data = {"success": False, "error": _no_provider_error("search", fallback)}
         else:
-            applied = _provider_depth(provider, depth)
-            if applied != depth:
-                depth_note = f"{provider.name} has no depth setting; ran its standard search"
+            applied, dropped = _provider_depth(provider, depth)
             logger.info("Web search via %s: '%s' (limit: %d, depth: %s)", provider.name, query, limit, applied)
             response_data = _memoized_search(provider, query, limit, applied)
-            if depth_note and isinstance(response_data.get("data"), dict):
-                response_data["data"]["depth_note"] = depth_note
+            data = response_data.get("data")
+            if isinstance(data, dict):
+                if applied != "standard":
+                    dropped = _depth_dropped_by_fallback(data)
+                note = "; ".join(filter(None, (depth_note, dropped)))
+                if note:
+                    data["depth_note"] = note
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)

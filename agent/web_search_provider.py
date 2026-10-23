@@ -84,6 +84,11 @@ class WebSearchProvider(ProviderBase):
         Cheap, no network (a keyless route without a depth option returns False)."""
         return False
 
+    def search_route_label(self) -> str:
+        """Short name of the route this call takes ("keyless", "managed"), or "" for the provider's
+        normal route. Names the route in the tool result when a depth request is not applied. Cheap."""
+        return ""
+
     def is_keyless_available(self) -> bool:
         """True when this provider can serve calls WITHOUT credentials (public anonymous
         free tiers such as Exa / Parallel MCP); used only when NO provider is configured or

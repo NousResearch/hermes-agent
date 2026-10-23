@@ -278,11 +278,11 @@ def test_provider_without_depth_ignores_it_and_says_so(web, monkeypatch, name, d
     out, wire = _run(web, name, monkeypatch, depth=depth)
     _assert_today(out, wire, name)
     if name != "openai-native":
-        assert out["data"]["depth_note"] == f"{name} has no depth setting; ran its standard search"
+        assert out["data"]["depth_note"] == f"{name} search has no depth setting; ran its standard search"
     search_memo.clear()
 
 
-_KEY_ENV = {"exa": "EXA_API_KEY", "parallel": "PARALLEL_API_KEY", "keenable": "KEENABLE_API_KEY"}
+_KEY_ENV = {"exa": "EXA_API_KEY", "parallel": "PARALLEL_API_KEY", "keenable": "KEENABLE_API_KEY", "firecrawl": "FIRECRAWL_API_KEY"}
 
 
 @pytest.mark.parametrize("name", sorted(_KEY_ENV))
@@ -300,10 +300,45 @@ def test_keyless_route_ignores_depth(web, monkeypatch, name):
     wire = _setup_wire(name, monkeypatch)
     monkeypatch.delenv(_KEY_ENV[name])
     monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: True)
+    monkeypatch.setattr("plugins.web.firecrawl.provider._use_keyless_ring", lambda *a: True)
     monkeypatch.setattr("plugins.web.keyless_mcp.search_with_failover", _ring)
     out = json.loads(web_tools.web_search_tool("q", limit=3, depth="deep"))
     assert calls == [(name, "q", 10)] and not wire.calls
-    assert out["data"]["depth_note"] == f"{name} has no depth setting; ran its standard search"
+    assert out["data"]["depth_note"] == f"{name} keyless search has no depth setting; ran its standard search"
+
+
+def test_managed_perplexity_ignores_depth(web, monkeypatch):
+    """Without a direct key Perplexity serves through the managed route, which is always fast."""
+    import types as _t
+
+    web.config, web.backend = {"max_depth": "deep"}, "perplexity"
+    wire = _setup_wire("perplexity", monkeypatch)
+    monkeypatch.delenv("PERPLEXITY_API_KEY")
+    gateway = _t.SimpleNamespace(gateway_origin="https://gw.test", nous_user_token="nous-token")
+    monkeypatch.setattr("tools.web_tools._managed_web_search", lambda: True)
+    monkeypatch.setattr("tools.managed_tool_gateway.resolve_free_search_gateway", lambda **kw: gateway)
+    from tools import web_tools
+
+    out = json.loads(web_tools.web_search_tool("q", limit=3, depth="deep"))
+    assert wire.last()[1] == "https://gw.test/search" and wire.last()[2]["search_type"] == "fast"
+    assert out["data"]["depth_note"] == "perplexity managed search has no depth setting; ran its standard search"
+
+
+def test_rescued_call_says_depth_was_not_applied(web, monkeypatch):
+    """A keyed depth call that fails and is served by the keyless rescue ran without depth."""
+    from tools import web_tools
+
+    rescued = {"success": True, "data": {"web": [], "rescued_from": "tavily", "backend_error": "boom"}}
+    web.config, web.backend = {"max_depth": "deep"}, "tavily"
+    _setup_wire("tavily", monkeypatch)
+    failing = MagicMock(status_code=500, text="boom")
+    monkeypatch.setattr("plugins.web.tavily.provider.httpx.post", lambda *a, **kw: failing)
+    monkeypatch.setattr(web_tools, "_rescue_eligible", lambda provider: True)
+    monkeypatch.setattr(web_tools, "_rescue_search", lambda *a: json.loads(json.dumps(rescued)))
+    out = json.loads(web_tools.web_search_tool("q", limit=3, depth="deep"))
+    assert out["data"]["depth_note"] == "keyless rescue has no depth setting; ran its standard search"
+    out = json.loads(web_tools.web_search_tool("q", limit=3))
+    assert "depth_note" not in out["data"]
 
 
 def test_tavily_keyless_still_sends_depth(web, monkeypatch):
@@ -332,11 +367,11 @@ def test_cap_allows_quick_by_default(web, monkeypatch):
     assert "depth_note" not in out["data"]
 
 
-def test_quick_cap_lowers_an_omitted_depth_without_a_note(web, monkeypatch):
+def test_quick_cap_lowers_an_omitted_depth_and_says_so(web, monkeypatch):
     web.config = {"max_depth": "quick"}
     out, wire = _run(web, "tavily", monkeypatch)
     assert _canonical(_request(wire, "tavily")) == _with("tavily", search_depth="fast")
-    assert "depth_note" not in out["data"]
+    assert out["data"]["depth_note"] == "depth lowered from standard to quick by web.max_depth"
     out, _ = _run(web, "exa", monkeypatch, depth="deep")
     assert out["data"]["depth_note"] == "depth lowered from deep to quick by web.max_depth"
 
@@ -420,7 +455,7 @@ def test_provider_without_the_hook_is_called_as_before(web, monkeypatch):
     web.backend, web.config = "legacy-plugin", {"max_depth": "deep"}
     out = json.loads(web_tools.web_search_tool("q", limit=3, depth="deep"))
     assert calls == [("q", 10)] and out["success"] is True
-    assert out["data"]["depth_note"] == "legacy-plugin has no depth setting; ran its standard search"
+    assert out["data"]["depth_note"] == "legacy-plugin search has no depth setting; ran its standard search"
 
 
 # ── tool schema ───────────────────────────────────────────────────────────

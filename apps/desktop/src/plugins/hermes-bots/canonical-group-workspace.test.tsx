@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -15,6 +15,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
     useI18n: () => ({ t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
+    Input: (p: ComponentProps<'input'>) => <input {...p} />,
+    RowButton: (p: ComponentProps<'button'>) => <button type="button" {...p} />,
     host: { ...gateway.host, requestProfile: request } }
 })
 import { registerCanonicalGroup } from './canonical-group-registry'
@@ -198,4 +200,78 @@ it('shows which bots are working, and still says the group is working on a gatew
   driver = { working: true }
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'older' }} />)
   await waitFor(() => expect(screen.getByRole('status').textContent).toBe('The group is working…'))
+})
+
+
+const roomReads = (members: unknown[] = [], events: unknown[] = []) => (method: string) => method === 'groups.state'
+  ? { room: { name: 'Room', members }, driver_status: {} } : method === 'groups.log' ? { events } : undefined
+
+it('describes only a send restored from the journal as restored, never an ordinary in-flight send', async () => {
+  let ack!: () => void
+  request.mockImplementation(async (_route, method) => roomReads()(method)
+    ?? (method === 'groups.send' ? new Promise(resolve => { ack = () => resolve({}) }) : {}))
+  const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'ordinary' }} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(true))
+  expect(screen.queryByText(/unconfirmed send was restored/)).toBeNull()
+  await act(async () => ack())
+  view.unmount()
+
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'restored' }
+  await prepareCanonicalGroupSend(binding, { text: 'Left over', attachments: [] })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText(/unconfirmed send was restored/)
+})
+
+it('renames the room and disbands it only after confirmation, through the gateway handlers', async () => {
+  const onBack = vi.fn()
+  request.mockImplementation(async (_route, method) => roomReads()(method) ?? {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'controls' }} onBack={onBack} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Rename' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'New name' }), { target: { value: ' Renamed ' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(request.mock.calls.find(c => c[1] === 'groups.rename')?.[2]).toMatchObject({ room_id: 'controls', name: 'Renamed' }))
+  const disband = screen.getByRole('button', { name: /disband/i }) as HTMLButtonElement
+  await waitFor(() => expect(disband.disabled).toBe(false))
+  fireEvent.click(disband)
+  expect(request.mock.calls.some(c => c[1] === 'groups.disband')).toBe(false)
+  fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: /disband/i }))
+  await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
+  expect(request.mock.calls.find(c => c[1] === 'groups.disband')?.[2]).toMatchObject({ room_id: 'controls', cancel_id: expect.any(String) })
+})
+
+it('@-completes room members with the exact handle the gateway resolves', async () => {
+  request.mockImplementation(async (_route, method) => roomReads([{ member_id: 'm1', profile: 'ops', handle: 'ops-2', display_name: 'Ops Bot' }])(method) ?? {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'mentions' }} />)
+  await screen.findByText('Ops Bot')
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '@' } })
+  expect(screen.getByText('@everyone')).toBeTruthy()
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '@op' } })
+  fireEvent.mouseDown(screen.getByText('@ops-2'))
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('@ops-2 ')
+})
+
+it('uploads pasted and dropped files through the room upload and previews committed images inline', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  const image = { attachment_id: 'img', kind: 'image', name: 'shot.png', mime: 'image/png', size: 1 }
+  const large = { ...image, attachment_id: 'large', name: 'large.png', size: 6 * 1024 * 1024 }
+  const events = [{ seq: 1, room_id: 'paste', event_id: 'e1', kind: 'message.member', payload: { attachments: [image, large] } }]
+  request.mockImplementation(async (_route, method, params) => roomReads([], events)(method)
+    ?? (method === 'groups.attachment.upload' ? { attachment_id: `att-${params.name}`, kind: params.kind, name: params.name, mime: params.mime, size: 1 }
+      : method === 'groups.attachment.download' ? { ...image, data_base64: 'QQ==' } : {}))
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'paste' }} />)
+  await waitFor(() => expect(screen.getByRole('img', { name: 'shot.png' }).getAttribute('src')).toBe('blob:preview'))
+  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)).toEqual(['img'])
+  const box = screen.getByRole('textbox')
+  await waitFor(() => expect((box as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.paste(box, { clipboardData: { files: [], types: ['text/plain'] } })
+  fireEvent.paste(box, { clipboardData: { files: [new File(['a'], 'a.png', { type: 'image/png' })], types: ['Files'] } })
+  await screen.findByText('a.png')
+  fireEvent.drop(box, { dataTransfer: { files: [new File(['b'], 'b.txt', { type: 'text/plain' })], types: ['Files'] } })
+  await screen.findByText('b.txt')
+  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.upload').map(c => [c[2].name, c[2].kind])).toEqual([['a.png', 'image'], ['b.txt', 'file']])
 })

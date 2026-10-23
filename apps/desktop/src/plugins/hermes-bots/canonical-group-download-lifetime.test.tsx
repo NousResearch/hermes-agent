@@ -13,6 +13,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })
+vi.mock('./group-chat-parts', () => ({ GroupMentionInput: () => null }))
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 

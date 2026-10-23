@@ -909,7 +909,13 @@ DEFAULT_CONFIG = {
         # Vi/vim keybindings in the CLI input composer (config-only, no slash command).
         # Off by default, preserving prompt_toolkit's standard emacs bindings.
         "vim_mode": False,
-        "user_message_preview": {  # CLI: submitted user-message lines echoed to scrollback
+        # Ambient TUI widget soft-refresh period (milliseconds). User widgets
+        # and the widget SDK read this for countdown / value ticks so they do
+        # not each hardcode an interval. Default 30000 (30s). Set 0 to mean
+        # "no host-suggested UI tick" (widgets still refresh on their own
+        # network cadence). Values below 1000 clamp to 1000 at the TUI unless 0.
+        "tui_widget_refresh_ms": 30000,
+        "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,
         },

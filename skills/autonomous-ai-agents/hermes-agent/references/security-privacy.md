@@ -32,11 +32,21 @@ By default (`approvals.mode: smart`), Hermes asks an auxiliary LLM to assess she
 
 - `smart` — auto-approve a low-risk command once, deny high-risk commands, and prompt when uncertain (default)
 - `manual` — always prompt
-- `off` — skip all approval prompts (equivalent to `--yolo`)
+- `off` — skip the interactive approval prompt for recoverable dangerous commands (equivalent to `--yolo`)
+
+`off`/`--yolo` disables the interactive prompt, not every safety mechanism.
+Two checks remain active unconditionally, even under yolo (verified in
+`tools/approval.py`, which runs them "BEFORE the yolo bypass" by design):
+
+- the **hardline floor** — commands with no recovery path (`rm -rf /`,
+  `mkfs`, `dd` to a raw device, `shutdown`/`reboot`, fork bombs) are blocked
+  outright, not just prompted for;
+- **user-defined `approvals.deny` rules** in `config.yaml` — a deny rule is
+  the user saying "never, even under yolo".
 
 ```bash
 hermes config set approvals.mode smart       # recommended middle ground
-hermes config set approvals.mode off         # bypass everything (not recommended)
+hermes config set approvals.mode off         # bypass the interactive prompt (hardline/deny still apply)
 ```
 
 Per-invocation bypass without changing config:
@@ -45,11 +55,15 @@ Per-invocation bypass without changing config:
 
 Note: YOLO / `approvals.mode: off` does NOT turn off secret redaction. They are independent.
 
-### "Reset permissions" / "make Hermes ask again"
+### \"Reset permissions\" / \"make Hermes ask again\"
 
-The user usually means: wipe the accumulated "Always allow" state — NOT yolo
+The user usually means: wipe the accumulated \"Always allow\" state — NOT yolo
 mode, and NOT a per-edit diff prompt (which doesn't exist; file writes never
-go through the approval prompt, only shell commands do). Two stores hold it:
+go through the interactive approval prompt the way shell commands do — but
+`write_file`/`patch` still block writes to a fixed set of sensitive paths
+(system-sensitive locations and the active `config.yaml`) unconditionally,
+independent of `approvals.mode`; see `get_write_denied_error()` in
+`tools/file_operations.py`). Two stores hold the allowlist state:
 
 1. Shell-command allowlist: `hermes config set command_allowlist '[]'`
 2. Shell-hook consent (only if present): `rm -f ~/.hermes/shell-hooks-allowlist.json`

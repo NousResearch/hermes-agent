@@ -18,8 +18,11 @@ Spawn a subagent with an isolated context + terminal session.
   (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
 - **Not durable.** A backgrounded child is still process-local — if the
   parent process exits, the child is lost. For work that must outlive
-  the process, use `cronjob` or
-  `terminal(background=True, notify_on_complete=True)`.
+  the process, use `cronjob` (see below) — a durable, scheduler-managed
+  job. `terminal(background=True, notify_on_complete=True)` is also
+  process-local and does **not** survive a CLI/gateway restart; it is
+  the right tool for a long-running command within the current session,
+  not for durability.
 
 Config: `delegation.*` in `config.yaml`.
 
@@ -36,8 +39,10 @@ the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
   job), `context_from` (chain job A's output into job B), `workdir`
   (run in a specific dir with its `AGENTS.md` / `CLAUDE.md` loaded),
   multi-platform delivery.
-- **Invariants:** 3-minute hard interrupt per run, `.tick.lock` file
-  prevents duplicate ticks across processes, cron sessions pass
+- **Invariants:** configurable inactivity timeout for the agent run
+  (600s/10min default via `HERMES_CRON_TIMEOUT`, 0 = unlimited) and a
+  separate 3600s/1hr default timeout for pre-run scripts, `.tick.lock`
+  file prevents duplicate ticks across processes, cron sessions pass
   `skip_memory=True` by default, and cron deliveries are framed with a
   header/footer instead of being mirrored into the target gateway
   session (keeps role alternation intact).

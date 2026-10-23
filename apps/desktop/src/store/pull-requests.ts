@@ -29,10 +29,23 @@ export const $prBranchBySession = persistentAtom<Record<string, string>>(
   Codecs.stringRecord
 )
 
-/** Sessions already scanned for a PR url. A transcript doesn't grow a new PR,
- *  so a miss is permanent and a hit is already in {@link $prBranchBySession} —
- *  either way the session is never scanned again. */
-const $prScannedSessions = persistentAtom<string[]>('hermes.desktop.prScannedSessions', [], Codecs.stringArray)
+/** The transcript revision each session was last scanned at, keyed by session
+ *  id. A scan's verdict is only final for the transcript it saw: a live session
+ *  that later runs `gh pr create` — or opens a replacement PR — grows, and the
+ *  new revision buys exactly one more look. An unchanged revision is still
+ *  never re-asked. The pre-upgrade `hermes.desktop.prScannedSessions` id list is
+ *  deliberately not migrated: on first load no revision is known, so every
+ *  session re-scans once — that one-time cost is the whole migration. */
+const $prScanRevisions = persistentAtom<Record<string, string>>(
+  'hermes.desktop.prScanRevisions',
+  {},
+  Codecs.stringRecord
+)
+
+/** What a scan result is valid for: the transcript the session had when it was
+ *  asked about. `message_count` is the revision the sidebar rows already carry,
+ *  so no backend contract has to change. */
+const scannedRevision = (session: SessionInfo): string => String(session.message_count)
 
 const fetchedAt = new Map<string, number>()
 const inFlight = new Set<string>()
@@ -75,14 +88,25 @@ export function stampSessionPrBranch(sessionId: string, repoRoot: string, branch
  *  A session that ran in the main checkout and worked in a worktree recorded
  *  `main` (or nothing) as its branch, but it ran `gh pr create` — whose output
  *  is a bare PR url, the one shape that's a claim rather than a mention. Scans
- *  each session at most once, ever. */
+ *  each session once per transcript revision, so a miss on a still-running
+ *  session is not permanent and a later PR can replace an earlier one. */
 export async function recoverSessionPullRequests(sessions: SessionInfo[]): Promise<void> {
-  const scanned = new Set($prScannedSessions.get())
+  const revisions = $prScanRevisions.get()
+  const stamped = $prBranchBySession.get()
   const roots = new Map<string, string>()
 
   for (const session of sessions) {
-    if (session.git_repo_root && !scanned.has(session.id) && !sessionPrKey(session)) {
-      roots.set(session.id, session.git_repo_root)
+    const root = session.git_repo_root
+
+    // The branch join already answers for a session on a live feature branch;
+    // everything else is scanned once per transcript revision — a session
+    // already stamped from an earlier revision included, so it can be redone.
+    if (!root || (!stamped[session.id] && sessionPrKey(session))) {
+      continue
+    }
+
+    if (revisions[session.id] !== scannedRevision(session)) {
+      roots.set(session.id, root)
     }
   }
 
@@ -105,7 +129,19 @@ export async function recoverSessionPullRequests(sessions: SessionInfo[]): Promi
     }
 
     $prBranchBySession.set(stamps)
-    $prScannedSessions.set([...new Set([...scanned, ...asked])])
+
+    // Stamp each asked id with the revision we just asked about: only a later
+    // transcript change buys another look.
+    const askedSet = new Set(asked)
+    const nextRevisions = { ...revisions }
+
+    for (const session of sessions) {
+      if (askedSet.has(session.id)) {
+        nextRevisions[session.id] = scannedRevision(session)
+      }
+    }
+
+    $prScanRevisions.set(nextRevisions)
   } catch {
     // An older backend has no such route. Stop asking rather than retrying on
     // every list refresh; the branch join still covers the common case.

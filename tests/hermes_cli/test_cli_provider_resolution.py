@@ -876,3 +876,129 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
 
+
+# ---------------------------------------------------------------------------
+# _save_custom_provider — canonical-identity deduplication (#45481)
+# ---------------------------------------------------------------------------
+
+
+def _save_custom_provider_harness(monkeypatch, tmp_path, initial_providers=None):
+    """Config-backed harness; returns the captured save dict.
+
+    ``load_config`` and ``save_config`` share one in-memory config so successive
+    saves (the re-save paths under test) observe each other's writes.
+    """
+    cfg = {"custom_providers": initial_providers or []}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    saved = {}
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda c: saved.update(c))
+    return saved
+
+
+def test_save_custom_provider_same_url_different_names_stay_separate(monkeypatch, tmp_path):
+    """Two providers on one base URL with distinct canonical identities must both survive.
+
+    Aggregator endpoints (POE, Qianfan, Volcano) commonly run several profiles —
+    different keys or model subsets — on the same URL. Deduping by base_url
+    silently overwrote the first entry (#45481).
+    """
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    saved = _save_custom_provider_harness(monkeypatch, tmp_path)
+
+    _save_custom_provider("https://api.poe.com/v1", api_key="sk-a", model="model-x", name="POE-Account-1")
+    _save_custom_provider("https://api.poe.com/v1", api_key="sk-b", model="model-y", name="POE-Account-2")
+
+    entries = saved["custom_providers"]
+    assert len(entries) == 2, "same URL + different names must create two entries"
+    by_name = {e["name"]: e for e in entries}
+    assert by_name["POE-Account-1"]["api_key"] == "sk-a"
+    assert by_name["POE-Account-1"]["model"] == "model-x"
+    assert by_name["POE-Account-2"]["api_key"] == "sk-b"
+    assert by_name["POE-Account-2"]["model"] == "model-y"
+
+
+def test_save_custom_provider_canonical_collision_updates_existing(monkeypatch, tmp_path):
+    """Names with equal canonical slugs ("Foo Bar" vs "foo-bar") are ONE identity.
+
+    The picker keys rows by ``custom_provider_slug(name)``; storing both raw
+    names as separate entries leaves one unreachable at selection time — the
+    matched entry must be updated, not duplicated (#45481 review).
+    """
+    from hermes_cli.main_provider_setup import _save_custom_provider
+    from hermes_cli.providers import custom_provider_slug
+
+    existing = [{
+        "name": "Foo Bar",
+        "base_url": "https://one.example.com/v1",
+        "api_key": "sk-old",
+        "model": "old-model",
+    }]
+    saved = _save_custom_provider_harness(monkeypatch, tmp_path, initial_providers=existing)
+
+    _save_custom_provider(
+        "https://moved.example.com/v1", api_key="sk-new", model="new-model", name="foo bar"
+    )
+
+    entries = saved["custom_providers"]
+    assert len(entries) == 1, "canonical-equal names must update the existing entry, not append"
+    entry = entries[0]
+    assert entry["name"] == "Foo Bar", "first-seen display name is preserved"
+    assert custom_provider_slug(entry["name"]) == custom_provider_slug("foo bar")
+    assert entry["base_url"] == "https://moved.example.com/v1"
+    assert entry["api_key"] == "sk-new"
+    assert entry["model"] == "new-model"
+
+
+def test_save_custom_provider_named_re_save_matches_by_identity_not_url(monkeypatch, tmp_path):
+    """Re-saving via the named flow hits the entry's own identity, not URL twin.
+
+    ``_model_flow_named_custom`` re-saves without an explicit name only when the
+    caller omits it; passing the selected name must match that entry even when a
+    *different* entry shares the same base URL (#45481).
+    """
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    existing = [
+        {"name": "POE-Account-1", "base_url": "https://api.poe.com/v1", "api_key": "sk-a", "model": "x"},
+        {"name": "POE-Account-2", "base_url": "https://api.poe.com/v1", "api_key": "sk-b", "model": "y"},
+    ]
+    saved = _save_custom_provider_harness(monkeypatch, tmp_path, initial_providers=existing)
+
+    # The named flow's re-save: same URL, name of the second entry, new model pick.
+    _save_custom_provider(
+        "https://api.poe.com/v1", api_key="sk-b", model="y2", name="POE-Account-2"
+    )
+
+    entries = saved["custom_providers"]
+    assert len(entries) == 2, "re-save must not add a third entry"
+    by_name = {e["name"]: e for e in entries}
+    assert by_name["POE-Account-2"]["model"] == "y2"
+    assert by_name["POE-Account-1"]["model"] == "x", "URL twin untouched"
+    assert by_name["POE-Account-1"]["api_key"] == "sk-a"
+
+
+def test_save_custom_provider_credential_mode_switch_clears_stale_state(monkeypatch, tmp_path):
+    """Switching key_env → api_key must not leave both credential pointers on the entry.
+
+    The update path already migrated api_key → key_env; the reverse switch left a
+    stale ``key_env`` outranking the new inline key at resolution time (#45533
+    review: mutual exclusivity).
+    """
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    existing = [{
+        "name": "Ollama",
+        "base_url": "http://localhost:11434/v1",
+        "key_env": "HERMES_CUSTOM_LOCALHOST_11434_API_KEY",
+    }]
+    saved = _save_custom_provider_harness(monkeypatch, tmp_path, initial_providers=existing)
+
+    _save_custom_provider(
+        "http://localhost:11434/v1", api_key="sk-inline", name="Ollama"
+    )
+
+    entry = saved["custom_providers"][0]
+    assert entry["api_key"] == "sk-inline"
+    assert "key_env" not in entry, "stale key_env must be dropped when switching to inline key"
+

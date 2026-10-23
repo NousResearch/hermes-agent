@@ -778,6 +778,16 @@ gateway:
     target_subagents: "futó feladatba és az aktív alügynök(ök)be"
     target_run: "futó feladatba"
     queued: "⏩ Beirányítás sorba állítva a jelenlegi {target} — a következő eszközhívás után ér oda: '{preview}'"
+  fyi:
+    usage: "használat: /fyi <kontextus>"
+    usage_idle: "használat: /fyi <kontextus>  (nincs aktív ügynök — normál üzenetként kerül elküldésre)"
+    queued_starting: "Az ügynök még indul — /fyi a következő körre várólistázva."
+    queued_no_agent: "nincs aktív ügynök — /fyi a következő körre várólistázva."
+    failed: "⚠️ fyi hiba: {error}"
+    rejected_empty: "fyi elutasítva (üres tartalom)."
+    queued: "💡 fyi elküldve a(z) {target} folyamatba — csak kontextus, az ügynök dolgozik tovább: '{preview}'"
+
+
   suggestions:
     failed: "A javaslatok parancs sikertelen: {error}"
   blueprint:
@@ -1109,6 +1119,11 @@ platform:
       steer:
         description: "Üzenet beszúrása a következő eszközhívás után (megszakítás nélkül)"
         arg_prompt: "Az ügynök következő eszközeredményébe beszúrandó szöveg"
+      fyi:
+        description: "További kontextus megosztása a futó ügynökkel (megszakítás és átirányítás nélkül)"
+        arg_context: "Kontextus az ügynök folyamatban lévő munkájához"
+
+
       plan:
         description: "Markdown megvalósítási terv írása (végrehajtás nélkül)"
         arg_task: "Mit tervezzen. Üresen hagyva a beszélgetésből következteti ki."
@@ -2440,6 +2455,14 @@ cli:
     queued: "⏩ Irányítás sorba állítva — a következő eszközhívás után érkezik: {preview}"
     rejected_empty: "Irányítás elutasítva (üres tartalom)."
     no_agent_queued: "Nem fut ügynök; sorba állítva következő körként: {preview}"
+  fyi:
+    usage: "használat: /fyi <kontextus>"
+    failed: "fyi hiba: {error}"
+    queued: "💡 fyi várólistázva — csak kontextus, az ügynök dolgozik tovább: {preview}"
+    rejected_empty: "fyi elutasítva (üres tartalom)."
+    no_agent_queued: "nincs futó ügynök; várólistázva a következő körként: {preview}"
+
+
   title:
     session_id: "Munkamenet-azonosító: {session_id}"
     current: "Cím: {title}"

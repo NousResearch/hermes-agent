@@ -768,6 +768,16 @@ gateway:
     target_subagents: "実行とそのアクティブなサブエージェント"
     target_run: "実行"
     queued: "⏩ 現在の{target}へのステアをキューしました — 次のツール呼び出し後に届きます: '{preview}'"
+  fyi:
+    usage: "使い方: /fyi <コンテキスト>"
+    usage_idle: "使い方: /fyi <コンテキスト>（実行中のエージェントはいません — 通常メッセージとして送信します）"
+    queued_starting: "エージェントはまだ起動中です — /fyi を次のターン用にキューに追加しました。"
+    queued_no_agent: "実行中のエージェントがありません — /fyi を次のターン用にキューに追加しました。"
+    failed: "⚠️ fyi に失敗しました: {error}"
+    rejected_empty: "fyi は拒否されました（中身が空です）。"
+    queued: "💡 fyi を現在の{target}に送信しました — コンテキストのみ、エージェントは作業を継続します: '{preview}'"
+
+
   suggestions:
     failed: "suggestions コマンドが失敗しました: {error}"
   blueprint:
@@ -1092,6 +1102,11 @@ platform:
       steer:
         description: "次のツール呼び出しの後にメッセージを注入します (中断なし)"
         arg_prompt: "エージェントの次のツール結果に注入するテキスト"
+      fyi:
+        description: "実行中のエージェントに追加のコンテキストを共有します（中断も再指示もありません）"
+        arg_context: "エージェントの進行中の作業へのコンテキスト"
+
+
       plan:
         description: "Markdown 形式の実装計画を書きます (実行はしません)"
         arg_task: "計画する内容。空欄で会話から推測します。"
@@ -2423,6 +2438,14 @@ cli:
     queued: "⏩ ステアをキューに追加しました — 次のツール呼び出しの後に届きます: {preview}"
     rejected_empty: "ステアを拒否しました（内容が空です）。"
     no_agent_queued: "実行中のエージェントがないため、次のターンとしてキューに追加しました: {preview}"
+  fyi:
+    usage: "使い方: /fyi <コンテキスト>"
+    failed: "fyi に失敗しました: {error}"
+    queued: "💡 fyi をキューに追加しました — コンテキストのみ、エージェントは作業を継続します: {preview}"
+    rejected_empty: "fyi は拒否されました（中身が空です）。"
+    no_agent_queued: "エージェントが実行されていません — 次のターン用にキューに追加: {preview}"
+
+
   title:
     session_id: "セッション ID: {session_id}"
     current: "タイトル: {title}"

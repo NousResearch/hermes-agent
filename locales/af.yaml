@@ -768,6 +768,16 @@ gateway:
     target_subagents: "lopie en sy aktiewe subagent(e)"
     target_run: "lopie"
     queued: "⏩ Stuur in die tou vir die huidige {target} — kom na die volgende gereedskapsoproep aan: '{preview}'"
+  fyi:
+    usage: "gebruik: /fyi <context>"
+    usage_idle: "gebruik: /fyi <context>  (geen agent aktief nie — word as 'n gewone boodskap gestuur)"
+    queued_starting: "Agent begin nog — /fyi in tou vir die volgende beurt."
+    queued_no_agent: "geen aktiewe agent nie — /fyi in tou vir die volgende beurt."
+    failed: "⚠️ fyi het misluk: {error}"
+    rejected_empty: "fyi geweier (leë inhoud)."
+    queued: "💡 fyi na die huidige {target} gestuur — net konteks, die agent werk voort: '{preview}'"
+
+
   suggestions:
     failed: "Voorstelle-opdrag het misluk: {error}"
   blueprint:
@@ -1092,6 +1102,11 @@ platform:
       steer:
         description: "Voeg 'n boodskap in na die volgende gereedskapsoproep (geen onderbreking)"
         arg_prompt: "Teks om in die agent se volgende gereedskapsresultaat in te voeg"
+      fyi:
+        description: "Deel ekstra konteks met die lopende agent (geen onderbreek, geen herlei)"
+        arg_context: "Konteks vir die agent se werk in uitvoering"
+
+
       plan:
         description: "Skryf 'n markdown-implementeringsplan (geen uitvoering)"
         arg_task: "Wat om te plan. Laat leeg om uit die gesprek af te lei."
@@ -2423,6 +2438,14 @@ cli:
     queued: "⏩ Stuur in tou geplaas — kom na die volgende gereedskapsoproep aan: {preview}"
     rejected_empty: "Stuur verwerp (leë inhoud)."
     no_agent_queued: "Geen agent loop nie; as volgende beurt in tou geplaas: {preview}"
+  fyi:
+    usage: "gebruik: /fyi <context>"
+    failed: "fyi het misluk: {error}"
+    queued: "💡 fyi in tou — net konteks, die agent werk voort: {preview}"
+    rejected_empty: "fyi geweier (leë inhoud)."
+    no_agent_queued: "geen agent loop nie; in tou as die volgende beurt: {preview}"
+
+
   title:
     session_id: "Sessie-ID: {session_id}"
     current: "Titel: {title}"

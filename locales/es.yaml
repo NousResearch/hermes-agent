@@ -768,6 +768,16 @@ gateway:
     target_subagents: "la ejecución y sus subagentes activos"
     target_run: "la ejecución"
     queued: "⏩ Redirección en cola en {target} actual — llegará tras la próxima llamada a herramienta: '{preview}'"
+  fyi:
+    usage: "uso: /fyi <contexto>"
+    usage_idle: "uso: /fyi <contexto>  (no hay agente activo; se envía como mensaje normal)"
+    queued_starting: "El agente aún se está iniciando — /fyi en cola para el siguiente turno."
+    queued_no_agent: "no hay agente activo — /fyi en cola para el siguiente turno."
+    failed: "⚠️ error de fyi: {error}"
+    rejected_empty: "fyi rechazado (contenido vacío)."
+    queued: "💡 fyi enviado al {target} actual — solo contexto, el agente sigue trabajando: '{preview}'"
+
+
   suggestions:
     failed: "El comando de sugerencias falló: {error}"
   blueprint:
@@ -1092,6 +1102,11 @@ platform:
       steer:
         description: "Inyectar un mensaje tras la próxima llamada a herramienta (sin interrumpir)"
         arg_prompt: "Texto a inyectar en el próximo resultado de herramienta del agente"
+      fyi:
+        description: "Compartir contexto adicional con el agente en ejecución (sin interrumpir ni redirigir)"
+        arg_context: "Contexto para el trabajo en curso del agente"
+
+
       plan:
         description: "Escribir un plan de implementación en markdown (sin ejecutar)"
         arg_task: "Qué planificar. Déjalo vacío para inferirlo de la conversación."
@@ -2423,6 +2438,14 @@ cli:
     queued: "⏩ Redirección en cola — llegará después de la siguiente llamada a herramienta: {preview}"
     rejected_empty: "Redirección rechazada (contenido vacío)."
     no_agent_queued: "Sin agente en ejecución; en cola como siguiente turno: {preview}"
+  fyi:
+    usage: "uso: /fyi <contexto>"
+    failed: "error de fyi: {error}"
+    queued: "💡 fyi en cola — solo contexto, el agente sigue trabajando: {preview}"
+    rejected_empty: "fyi rechazado (contenido vacío)."
+    no_agent_queued: "no hay agente activo; en cola como siguiente turno: {preview}"
+
+
   title:
     session_id: "ID de sesión: {session_id}"
     current: "Título: {title}"

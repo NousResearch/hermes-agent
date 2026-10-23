@@ -894,6 +894,16 @@ gateway:
     target_subagents: "l'exécution et ses sous-agents actifs"
     target_run: "l'exécution"
     queued: "⏩ Orientation mise en file vers {target} en cours — parviendra après le prochain appel d'outil : '{preview}'"
+  fyi:
+    usage: "usage : /fyi <contexte>"
+    usage_idle: "usage : /fyi <contexte>  (aucun agent actif — envoi en message normal)"
+    queued_starting: "L'agent démarre encore — /fyi mis en file pour le prochain tour."
+    queued_no_agent: "aucun agent actif — /fyi mis en file pour le prochain tour."
+    failed: "⚠️ échec du fyi : {error}"
+    rejected_empty: "fyi rejeté (contenu vide)."
+    queued: "💡 fyi envoyé dans le {target} actuel — contexte seulement, l'agent continue de travailler : '{preview}'"
+
+
   suggestions:
     failed: "Échec de la commande de suggestions : {error}"
   blueprint:
@@ -1294,6 +1304,11 @@ platform:
       steer:
         description: "Injecter un message après le prochain appel d'outil (sans interrompre)"
         arg_prompt: "Texte à injecter dans le prochain résultat d'outil de l'agent"
+      fyi:
+        description: "Partager du contexte supplémentaire avec l'agent en cours (sans interruption ni redirection)"
+        arg_context: "Contexte pour le travail en cours de l'agent"
+
+
       plan:
         description: "Rédiger un plan d'implémentation en markdown (sans exécution)"
         arg_task: "Ce qu'il faut planifier. Laissez vide pour le déduire de la conversation."
@@ -2696,6 +2711,14 @@ cli:
     queued: "⏩ Consigne mise en file — transmise après le prochain appel d'outil : {preview}"
     rejected_empty: "Consigne refusée (contenu vide)."
     no_agent_queued: "Aucun agent en cours ; mis en file pour le prochain tour : {preview}"
+  fyi:
+    usage: "usage : /fyi <contexte>"
+    failed: "échec du fyi : {error}"
+    queued: "💡 fyi mis en file — contexte seulement, l'agent continue de travailler : {preview}"
+    rejected_empty: "fyi rejeté (contenu vide)."
+    no_agent_queued: "aucun agent actif ; mis en file comme prochain tour : {preview}"
+
+
   title:
     session_id: "ID de session : {session_id}"
     current: "Titre : {title}"

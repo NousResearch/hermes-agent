@@ -57,5 +57,21 @@ def test_rename_and_archive(tmp_path):
         assert len(pdb.list_projects(conn)) == 1
 
 
+@pytest.mark.windows_only
+def test_drive_root_project_stays_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path.anchor
+    assert _run(["create", "Drive", root]) == 0
+
+    with pdb.connect_closing() as conn:
+        project = pdb.get_project(conn, "drive")
+        assert project.primary_path == root
+        assert [folder.path for folder in project.folders] == [root]
+        assert pdb.find_by_primary_path(conn, root).id == project.id
+        assert pdb.find_by_primary_path(conn, str(tmp_path)) is None
+
+    # A drive root must not resolve to cwd and falsely claim a child folder.
+    assert _run(["create", "Child", str(tmp_path)]) == 0
+
 
 

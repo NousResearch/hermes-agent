@@ -750,6 +750,41 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("is_voice, from_bot", [(True, False), (True, True), (False, False)])
+def test_typed_reply_to_a_voice_note_keeps_its_type_and_reaches_stt(is_voice, from_bot):
+    """A typed reply to a person's voice note stays TEXT (no voice-mode auto-TTS) with the
+    attachment still STT input (retyped AUDIO it silently skipped STT), and the typed text stays
+    the answer to a pending clarify. The bot's own voice note and a replied-to audio file are
+    never transcribed."""
+    spoken = is_voice and not from_bot
+    async def _run():
+        from gateway.platforms.event import MessageEvent
+        from gateway.run import GatewayRunner, _event_media_is_stt_input
+
+        adapter = _make_adapter()
+        cached = SimpleNamespace(
+            path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+        adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+        media = SimpleNamespace(file_name="voice.ogg")
+        msg = SimpleNamespace(reply_to_message=SimpleNamespace(
+            voice=media if is_voice else None, audio=None if is_voice else media,
+            from_user=SimpleNamespace(is_bot=from_bot)))
+        event = MessageEvent(
+            text="continue", message_type=MessageType.TEXT, media_urls=[], media_types=[],
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="111"))
+
+        await adapter._cache_replied_media(msg, event)
+
+        assert event.message_type == (MessageType.TEXT if spoken else MessageType.AUDIO)
+        assert _event_media_is_stt_input(event, 0) is spoken
+        assert ("not this message" in event.text) is spoken
+        runner = object.__new__(GatewayRunner)
+        runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+        assert not spoken or (await runner._prepare_clarify_reply_text(event)).startswith("continue")
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Observed-media caching (unmentioned group attachments)
 # ---------------------------------------------------------------------------

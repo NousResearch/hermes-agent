@@ -42,8 +42,10 @@ export interface PluginPreview {
 const ORIGIN_PROBE = 'window.location.origin'
 
 // A leading `'use strict'` directive must stay first or the script silently
-// leaves strict mode, so the guard goes right after it.
-const STRICT_PROLOGUE = /^\s*(['"])use strict\1[ \t]*(?:;|\r?\n|$)/
+// leaves strict mode, so the guard goes right after it. A newline ends the
+// directive only when the next line cannot continue the expression
+// (`'use strict'\n.toUpperCase()` is one expression, not a directive).
+const STRICT_PROLOGUE = /^\s*(['"])use strict\1[ \t]*(?:;|\r?\n(?=\s*(?:\/[/*]|[^\s.([`+\-*/%<>=&|^?,]))|$)/
 
 /** Inserts a guard statement; the plugin's script keeps its completion value. */
 function originGuarded(origin: string, code: string): string {

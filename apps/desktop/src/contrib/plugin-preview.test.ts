@@ -221,6 +221,18 @@ describe('ctx.preview.executeJavaScript', () => {
     ).resolves.toBe(true)
   })
 
+  it("leaves a 'use strict' string that is not a directive in one piece", async () => {
+    openPage()
+    const { ctx, id } = pluginWith([CAPABILITY])
+
+    grantPreviewScript(id, 'https://mail.example.com')
+
+    await expect(ctx.preview.executeJavaScript("'use strict'\n.toUpperCase()")).resolves.toBe('USE STRICT')
+    await expect(
+      ctx.preview.executeJavaScript("'use strict'\n// strict body\n;(function () { return this === undefined })()")
+    ).resolves.toBe(true)
+  })
+
   it("a revoke that storage refuses to save still binds this window and isn't shown as done", async () => {
     openPage()
     const { ctx, id } = pluginWith([CAPABILITY])

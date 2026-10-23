@@ -4,7 +4,34 @@ import { test } from 'vitest'
 
 import { stopBackendChild } from './backend-child'
 import { createLocalBackendLifecycle } from './local-backend-lifecycle'
-import { hiddenWindowsChildOptions } from './windows-child-options'
+import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
+
+// #74064: cmd.exe truncates a shell:true command line at the first space in
+// the executable token, so a spaced install path (C:\Users\John Doe\...) must
+// be quoted before it reaches the shell. Direct execution (shell:false) and
+// non-Windows platforms are unchanged.
+test('windowsShellCommand quotes a spaced Windows shell command', () => {
+  const command = String.raw`C:\Users\First Last\AppData\Local\hermes\hermes.cmd`
+
+  assert.equal(windowsShellCommand(command, true, true), `"${command}"`)
+})
+
+test('windowsShellCommand leaves direct execution and non-Windows commands unchanged', () => {
+  const command = String.raw`C:\Users\First Last\AppData\Local\hermes\hermes.cmd`
+
+  assert.equal(windowsShellCommand(command, false, true), command)
+  assert.equal(windowsShellCommand(command, true, false), command)
+})
+
+test('windowsShellCommand never double-quotes an already-quoted command', () => {
+  const command = String.raw`"C:\Users\First Last\hermes.cmd"`
+
+  assert.equal(windowsShellCommand(command, true, true), command)
+})
+
+test('windowsShellCommand passes an empty command through untouched', () => {
+  assert.equal(windowsShellCommand('', true, true), '')
+})
 
 test('hiddenWindowsChildOptions adds windowsHide:true on Windows when unset', () => {
   assert.deepEqual(hiddenWindowsChildOptions({}, true), { windowsHide: true })

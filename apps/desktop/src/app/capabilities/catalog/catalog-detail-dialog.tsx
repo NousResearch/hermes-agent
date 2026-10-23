@@ -59,7 +59,7 @@ export function CatalogDetailDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
         aria-describedby={undefined}
-        bodyClassName="gap-5"
+        bodyClassName="gap-5 p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         chrome={
           pageable && (
             <>

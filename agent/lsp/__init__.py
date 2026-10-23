@@ -72,7 +72,7 @@ def release_workspace(path: str) -> int:
     for svc in services:
         try:
             released += svc.release_workspace(path)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP workspace release failed for %s: %s", path, e)
     return released
 
@@ -88,7 +88,7 @@ def shutdown_service() -> None:
         if svc is not None:
             try:
                 svc.shutdown()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.debug("LSP shutdown error: %s", e)
 
 
@@ -96,8 +96,8 @@ def _atexit_shutdown() -> None:
     """atexit wrapper; logs at debug since the user has already seen the final output."""
     try:
         shutdown_service()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("atexit LSP shutdown failed: %s", e)
 
 
-__all__ = ["get_service", "release_workspace", "shutdown_service", "LSPService"]
+__all__ = ["LSPService", "get_service", "release_workspace", "shutdown_service"]

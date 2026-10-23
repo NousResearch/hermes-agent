@@ -22,7 +22,7 @@ PRE_AUXILIARY_CALL = "pre_auxiliary_call"
 POST_AUXILIARY_CALL = "post_auxiliary_call"
 
 
-def _parent_turn_identity() -> Dict[str, str]:
+def _parent_turn_identity() -> dict[str, str]:
     """``session_id`` / ``task_id`` / ``turn_id`` / ``platform`` of the main turn this auxiliary
     call runs under, or empty strings for turn-less callers (cron, gateway idle work)."""
     ident = {"session_id": "", "task_id": "", "turn_id": "", "platform": ""}
@@ -42,7 +42,7 @@ def _parent_turn_identity() -> Dict[str, str]:
     return ident
 
 
-def _system_prompt(messages: Any, kwargs: Dict[str, Any]) -> str:
+def _system_prompt(messages: Any, kwargs: dict[str, Any]) -> str:
     if isinstance(kwargs.get("system"), str):  # Anthropic
         return kwargs["system"]
     if isinstance(kwargs.get("instructions"), str):  # Responses
@@ -54,7 +54,7 @@ def _system_prompt(messages: Any, kwargs: Dict[str, Any]) -> str:
     return ""
 
 
-def _usage_summary(response: Any, *, provider: str, api_mode: str) -> Optional[Dict[str, Any]]:
+def _usage_summary(response: Any) -> Optional[dict[str, Any]]:
     raw_usage = getattr(response, "usage", None)
     if response is None or not raw_usage:
         return None
@@ -62,7 +62,10 @@ def _usage_summary(response: Any, *, provider: str, api_mode: str) -> Optional[D
 
     from agent.usage_pricing import normalize_usage
 
-    cu = normalize_usage(raw_usage, provider=provider, api_mode=api_mode)
+    # Every auxiliary attempt returns from ``chat.completions.create``: native adapters
+    # (Codex Responses, Anthropic Messages) translate their usage to prompt/completion
+    # tokens first, so the native api_mode/provider shape would read zeros here.
+    cu = normalize_usage(raw_usage, api_mode="chat_completions")
     summary = asdict(cu)
     summary.pop("raw_usage", None)
     summary["prompt_tokens"] = cu.prompt_tokens
@@ -90,15 +93,13 @@ class _AuxCallHooks:
     """Fires the pre/post pair for one provider attempt; the base payload is built once."""
 
     def __init__(
-        self, *, aux_task: str, metadata: Dict[str, Any], client: Any, kwargs: Dict[str, Any],
+        self, *, aux_task: str, metadata: dict[str, Any], client: Any, kwargs: dict[str, Any],
         provider: str, model: str, api_mode: str, streaming: bool,
     ) -> None:
-        self.provider = provider
-        self.api_mode = api_mode
         self.streaming = streaming
         self.kwargs = kwargs
         self.started_at = time.time()
-        self.base: Dict[str, Any] = dict(_parent_turn_identity())
+        self.base: dict[str, Any] = dict(_parent_turn_identity())
         self.base.update(
             aux_task=aux_task,
             api_request_id=str(metadata.get("api_request_id") or ""),
@@ -143,7 +144,7 @@ class _AuxCallHooks:
         from agent.api_request_hooks import ApiRequestHooksMixin as _Sanitize
 
         ended_at = time.time()
-        payload: Dict[str, Any] = dict(
+        payload: dict[str, Any] = dict(
             self.base, ended_at=ended_at, api_duration=max(0.0, ended_at - self.started_at),
             error=None if error is None else f"{type(error).__name__}: {error}"[:2000],
             error_type=None if error is None else type(error).__name__,
@@ -160,7 +161,7 @@ class _AuxCallHooks:
             payload.update(
                 finish_reason=finish_reason,
                 response_model=_field(response, "model"),
-                usage=_usage_summary(response, provider=self.provider, api_mode=self.api_mode),
+                usage=_usage_summary(response),
                 response=_Sanitize._sanitize_hook_payload({
                     "model": _field(response, "model"),
                     "finish_reason": finish_reason,
@@ -220,8 +221,8 @@ def _post_safely(hooks: Optional[_AuxCallHooks], response: Any = None, error: An
 
 
 def run_with_aux_hooks(
-    call: Callable[[], Any], *, aux_task: str, metadata: Dict[str, Any], client: Any,
-    kwargs: Dict[str, Any], provider: str, model: str, api_mode: str, streaming: bool = False,
+    call: Callable[[], Any], *, aux_task: str, metadata: dict[str, Any], client: Any,
+    kwargs: dict[str, Any], provider: str, model: str, api_mode: str, streaming: bool = False,
 ) -> Any:
     """Run one synchronous provider attempt between ``pre_auxiliary_call`` and
     ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised."""
@@ -237,8 +238,8 @@ def run_with_aux_hooks(
 
 
 async def arun_with_aux_hooks(
-    call: Callable[[], Awaitable[Any]], *, aux_task: str, metadata: Dict[str, Any], client: Any,
-    kwargs: Dict[str, Any], provider: str, model: str, api_mode: str,
+    call: Callable[[], Awaitable[Any]], *, aux_task: str, metadata: dict[str, Any], client: Any,
+    kwargs: dict[str, Any], provider: str, model: str, api_mode: str,
 ) -> Any:
     """Async twin of :func:`run_with_aux_hooks`."""
     hooks = _hooks_or_none(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,

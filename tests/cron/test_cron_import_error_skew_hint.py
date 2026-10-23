@@ -9,7 +9,7 @@ fingerprint — when boot SHA != disk HEAD, the delivered error must say so and
 name the command.
 """
 
-import cron.scheduler as scheduler
+from cron import scheduler
 from cron.scheduler import _summarize_cron_failure_for_delivery
 
 IMPORT_ERROR = (

@@ -60,7 +60,7 @@ def _make_session(
     *,
     source: str,
     started_at: float,
-    message_at: float = None,
+    message_at: float | None = None,
 ) -> None:
     db.create_session(session_id, source=source)
     if message_at is not None:

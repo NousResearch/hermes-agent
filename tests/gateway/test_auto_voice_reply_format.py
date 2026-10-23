@@ -119,6 +119,36 @@ class TestAutoVoiceReplyFormat:
 
         assert runner._should_send_voice_reply(telegram, "hello", []) is True
 
+    def test_should_send_voice_reply_local_session_never_synthesizes(self):
+        """A local session cannot play owner audio. A saved mode ``all`` (``/voice tts``)
+        must not start a provider call."""
+        runner = _make_runner()
+        local_adapter = _make_adapter(Platform.LOCAL)
+        local_adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.LOCAL] = local_adapter
+        local = _make_event(Platform.LOCAL, chat_id="sess")
+        runner._voice_mode[runner._voice_key_for_source(local.source)] = "all"
+
+        assert runner._should_send_voice_reply(local, "the reply", []) is False
+
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        runner.adapters[Platform.TELEGRAM] = telegram_adapter
+        telegram = _make_event(Platform.TELEGRAM, chat_id="999")
+        runner._voice_mode[runner._voice_key_for_source(telegram.source)] = "all"
+        assert runner._should_send_voice_reply(telegram, "hello", []) is True
+
+    def test_should_send_voice_reply_local_session_ignores_global_auto_tts(self):
+        """With no ``/voice`` mode, global ``voice.auto_tts`` (Desktop "Read replies aloud",
+        which the desktop speaks itself) must not make the owner synthesize a local reply."""
+        runner = _make_runner()
+        local_adapter = _make_adapter(Platform.LOCAL)
+        local_adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.LOCAL] = local_adapter
+        local = _make_event(Platform.LOCAL, chat_id="sess")
+        assert runner._voice_key_for_source(local.source) not in runner._voice_mode
+
+        assert runner._should_send_voice_reply(local, "the reply", []) is False
+
     def test_sync_voice_mode_state_never_inherits_global_auto_tts_for_a2a(self):
         """The adapter-side default must match the runner-side skip (#90103).
 

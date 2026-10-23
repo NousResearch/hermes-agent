@@ -39,7 +39,7 @@ def test_real_renderers_emit_a_guard_visible_marker_never_the_imitable_idiom():
     the marker's own apostrophe out of the guard's reach.
     """
     quoted = "a'b\"c " * 400
-    clarify = json.dumps({"user_response": "A" * 5000})
+    clarify = json.dumps({"responses": [{"status": "answered", "user_response": "A" * 5000}]})
     outputs = {
         "clarify": _summarize_tool_result("clarify", "{}", clarify),
         "fallback_turn": _compact_fallback_turn("z " * 5000),

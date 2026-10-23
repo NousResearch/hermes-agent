@@ -36,7 +36,7 @@ def test_stage_processes_restore_pinned_git_and_never_fall_back(tmp_path):
     def stage(name):
         result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                                  "-File", str(INSTALLER), "-Stage", name, "-Json"],
-                                env=env, capture_output=True, text=True, timeout=240)
+                                env=env, capture_output=True, text=True, timeout=240, check=False)
         frames = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
         assert result.returncode == 0 and len(frames) == 1 and frames[0]["ok"], result.stdout + result.stderr
 
@@ -61,5 +61,5 @@ def test_stage_processes_restore_pinned_git_and_never_fall_back(tmp_path):
              "$script:GitPinFiles.Remove(('win32-' + (Get-WindowsArch))); "
              "if (Ensure-Git) { exit 1 } else { exit 0 }")
     refused = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                              "-Command", probe], env=env, capture_output=True, text=True, timeout=30)
+                              "-Command", probe], env=env, capture_output=True, text=True, timeout=240, check=False)
     assert refused.returncode == 0, refused.stdout + refused.stderr

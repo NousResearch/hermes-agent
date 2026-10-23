@@ -21,7 +21,7 @@ CHARS_PER_TOKEN = 3.5
 TOOL_SCHEMA_TOKENS = 12_000
 
 
-def _per_call_context(run: Run, sid: str) -> List[Dict[str, Any]]:
+def _per_call_context(run: Run, sid: str) -> list[dict[str, Any]]:
     """Reconstructed prompt size at each assistant turn (MODELED)."""
     ctx = run.system_prompt_len(sid) / CHARS_PER_TOKEN + TOOL_SCHEMA_TOKENS
     calls, appended = [], 0.0
@@ -35,7 +35,7 @@ def _per_call_context(run: Run, sid: str) -> List[Dict[str, Any]]:
     return calls
 
 
-def sawtooth(calls: List[Dict[str, Any]], cap: int, floor: int) -> float:
+def sawtooth(calls: list[dict[str, Any]], cap: int, floor: int) -> float:
     """Prompt tokens if the session compressed to ``floor`` whenever ctx exceeded ``cap`` (MODELED)."""
     total, ctx = 0.0, None
     for c in calls:
@@ -53,7 +53,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     run = Run.open(a.db, root=a.root, out=a.out)
     price = run.price_per_token
-    report: Dict[str, Any] = {"summary": run.summary()}
+    report: dict[str, Any] = {"summary": run.summary()}
 
     # OBSERVED: cost by depth, by duration bucket, top-N concentration
     by_depth = collections.defaultdict(float)

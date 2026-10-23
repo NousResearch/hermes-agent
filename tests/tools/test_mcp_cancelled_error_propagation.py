@@ -49,7 +49,7 @@ class TestCancelledErrorPropagation:
                     await asyncio.wait_for(task, timeout=15.0)
                 except asyncio.CancelledError:
                     return "cancelled_cleanly"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # If we hit this, the reconnect loop swallowed the cancel
                     # and stayed wedged — the exact #9930 bug.
                     task.cancel()
@@ -83,7 +83,7 @@ class TestCancelledErrorPropagation:
                 server._task.cancel()
                 try:
                     await asyncio.wait_for(server._task, timeout=15.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
+                except (TimeoutError, asyncio.CancelledError):
                     pass
                 return server._task.done()
 

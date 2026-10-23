@@ -28,9 +28,29 @@ def test_find_git_worktree_finds_dotgit(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     sub = repo / "src" / "deep"
     sub.mkdir(parents=True)
     assert find_git_worktree(str(sub)) == str(repo)
+
+
+def test_find_git_worktree_ignores_empty_dotgit_dir(tmp_path: Path):
+    # A stray empty ~/.git made every file under $HOME "a repo", rooting servers at $HOME;
+    # intelephense then crawled the whole home directory until V8 hit its heap limit.
+    home = tmp_path / "home"
+    (home / ".git").mkdir(parents=True)
+    work = home / "scratch"
+    work.mkdir()
+    assert find_git_worktree(str(work)) is None
+    assert resolve_workspace_for_file(str(work / "x.php"), cwd=str(home)) == (None, False)
+
+
+def test_find_git_worktree_accepts_gitfile(tmp_path: Path):
+    # Linked worktrees and submodules have a ``.git`` file pointing at the real gitdir.
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n", encoding="utf-8")
+    assert find_git_worktree(str(wt)) == str(wt)
 
 
 def test_nearest_root_finds_first_marker(tmp_path: Path):
@@ -58,6 +78,7 @@ def test_nearest_root_skips_package_dirs(tmp_path: Path):
 def test_resolve_workspace_for_file_uses_cwd_first(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     file_path = repo / "x.py"
     file_path.write_text("", encoding="utf-8")
     # cwd is inside the repo
@@ -73,6 +94,7 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
     that already landed on disk."""
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     file_path = repo / "x.py"
     file_path.write_text("")
     scratch = tmp_path / "scratch"

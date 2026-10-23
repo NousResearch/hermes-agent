@@ -18,6 +18,7 @@ MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 def test_nested_single_root_client_is_found_by_current_lookup(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     nested = repo / "package"
     nested.mkdir()
     (nested / "package.json").write_text("{}", encoding="utf-8")

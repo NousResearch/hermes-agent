@@ -308,3 +308,49 @@ class TestAdoption:
             db, "no_key_donor", keyed=False, started_at=time.time() - 100
         )
         assert db.adopt_orphaned_gateway_session(orphan, "no_key_donor") is False
+
+
+def _stamp_profile(db, session_id, profile_name):
+    with db._lock:
+        db._conn.execute(
+            "UPDATE sessions SET profile_name = ? WHERE id = ?",
+            (profile_name, session_id),
+        )
+        db._conn.commit()
+
+
+def test_donor_must_share_the_orphans_profile(tmp_path, monkeypatch):
+    """#119121: adoption stamps the donor's ``agent:<ns>:`` identity onto the orphan, so a
+    sibling profile's keyed row in a shared legacy store must never be named as donor
+    (by contiguity or lineage), and the write-time re-verify must refuse the pair even
+    from a stale report. A legacy NULL-stamped row still reads as this store's own."""
+    import hermes_state
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionDB(db_path=root / "state.db")  # owner: default
+    try:
+        stale, orphan = _incident(store)  # both rows auto-stamped 'default'
+        _stamp_profile(store, stale, "bot2")
+        record = store.find_orphaned_gateway_sessions()[0]
+        assert record["adoptable"] is False and record["donor_id"] is None
+        assert store.adopt_orphaned_gateway_session(orphan, stale) is False
+        assert store.get_session(orphan)["session_key"] is None
+
+        _stamp_profile(store, stale, None)  # legacy unowned row: still ours
+        record = store.find_orphaned_gateway_sessions()[0]
+        assert record["adoptable"] is True and record["donor_id"] == stale
+
+        with store._lock:  # same fence on the lineage path
+            store._conn.execute("UPDATE sessions SET parent_session_id = ? WHERE id = ?", (stale, orphan))
+            store._conn.commit()
+        _stamp_profile(store, stale, "bot2")
+        record = store.find_orphaned_gateway_sessions()[0]
+        assert record["adoptable"] is False and record["donor_id"] is None
+        _stamp_profile(store, stale, "default")
+        record = store.find_orphaned_gateway_sessions()[0]
+        assert record["evidence"] == "lineage" and record["donor_id"] == stale
+    finally:
+        store.close()

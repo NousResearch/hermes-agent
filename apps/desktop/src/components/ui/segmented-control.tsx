@@ -14,6 +14,9 @@ interface SegmentedControlProps<T extends string> {
   className?: string
   /** Dims the whole track and blocks selection (e.g. gated behind a prerequisite). */
   disabled?: boolean
+  /** `equal` (default) gives every option the widest option's width; `content`
+   *  sizes each option to its own label, for filters with uneven labels/counts. */
+  sizing?: 'equal' | 'content'
 }
 
 /**
@@ -26,12 +29,14 @@ export function SegmentedControl<T extends string>({
   disabled = false,
   onChange,
   options,
+  sizing = 'equal',
   value
 }: SegmentedControlProps<T>) {
   return (
     <div
       className={cn(
-        'inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-[5px] bg-(--ui-bg-tertiary) p-0.5',
+        'inline-grid w-fit grid-flow-col gap-0.5 rounded-[5px] bg-(--ui-bg-tertiary) p-0.5',
+        sizing === 'equal' ? 'auto-cols-fr' : 'auto-cols-max',
         disabled && 'opacity-50',
         className
       )}
@@ -43,7 +48,7 @@ export function SegmentedControl<T extends string>({
           <button
             aria-pressed={active}
             className={cn(
-              'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors disabled:cursor-default',
+              'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors hover:transition-none disabled:cursor-default',
               active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
             )}
             disabled={disabled}

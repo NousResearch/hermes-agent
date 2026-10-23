@@ -14,7 +14,8 @@ INSTALLER = Path(__file__).resolve().parents[3] / "scripts" / "install.ps1"
 
 @pytest.mark.parametrize("stage,exit_code,skip_browser", [
     ("venv", 0, False), ("python-deps", 0, False), ("python-deps", 17, False),
-    # -SkipBrowser is PM's persisted opt-out, handed over as `--without`.
+    # -SkipBrowser is PM's persisted opt-out, handed over as `--without` under
+    # the legacy name every PM accepts (the stable one rejects `chromium`).
     ("python-deps", 0, True),
 ])
 def test_python_stage_delegates_to_pin_without_touching_existing_env(tmp_path, stage, exit_code, skip_browser):
@@ -71,7 +72,7 @@ exit $LASTEXITCODE
     run = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(wrapper),
                           "-Installer", str(INSTALLER), "-InstallDir", str(install), "-HomeDir", str(tmp_path / "home"), "-Log", str(log)],
                          cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, text=True, timeout=120, check=False)
     assert (run.returncode == 0) == (exit_code == 0), run.stdout + run.stderr
     from hermes_platform.host.facts import native_arch
 

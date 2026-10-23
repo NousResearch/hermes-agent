@@ -53,7 +53,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         from tui_gateway import server_requests
         if server_requests.is_response_frame(req):
             # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
-            if not server_requests.resolve_response(req) and not _relay_compute_host_response(req):
+            if not server_requests.resolve_response(req, t) and not _relay_compute_host_response(req):
                 logger.debug("dropping response for unknown server request id=%r", req.get("id"))
             return None
         normalized = _normalize_request(req)

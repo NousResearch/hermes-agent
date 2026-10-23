@@ -15,10 +15,12 @@ from types import SimpleNamespace
 import pytest
 
 from agent.conversation_compression import (
-    CompressionCheckpointUnavailable,
-    _checkpoint_blocked,
     _direct_messages_for_pre_compress_memory,
     _pre_compress_memory_context,
+)
+from agent.conversation_compression_checkpoint import (
+    CompressionCheckpointUnavailable,
+    _checkpoint_blocked,
     _warn_checkpoint_required_without_capable_provider,
 )
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
@@ -500,7 +502,7 @@ def test_turn_finalizer_never_micro_compacts_while_checkpoint_gate_armed(
         def __init__(self):
             self.calls = 0
 
-        def _micro_compact(self, messages):
+        def _micro_compact(self, messages, **_kwargs):
             self.calls += 1
             return list(messages)
 
@@ -595,3 +597,18 @@ def test_capability_refusal_names_the_config_key_to_change():
     assert msg.startswith("BLOCKED_MISSING_PREREQUISITE")
     assert "compression.checkpoint_required" in msg
     assert "false" in msg.lower()
+
+
+def test_persistence_isolated_fork_skips_the_checkpoint_gate_but_durable_agents_do_not():
+    """Review and /btw forks discard their transcript, so there is nothing to checkpoint.
+
+    ``build_cache_parity_fork`` builds with ``skip_memory=True`` and no session DB,
+    then re-enables compression; failing closed there aborted every fork compaction.
+    """
+    messages = [{"role": "user", "content": "evidence"}]
+    fork = SimpleNamespace(_persist_disabled=True, _session_db=None, _memory_manager=None)
+    assert _pre_compress_memory_context(fork, messages, True) == ""
+
+    durable = SimpleNamespace(_persist_disabled=False, _session_db=None, _memory_manager=None)
+    with pytest.raises(CompressionCheckpointUnavailable):
+        _pre_compress_memory_context(durable, messages, True)

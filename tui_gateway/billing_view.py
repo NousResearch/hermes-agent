@@ -9,6 +9,7 @@ so tests may still monkeypatch e.g. ``server._usage_payload``.
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from .method_ctx import bind_module
@@ -71,8 +72,8 @@ def _serialize_auto_reload(ar, format_money) -> dict | None:
         "reload_to_display": format_money(ar.reload_to_usd), "card": card_out}
 
 
-def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
-    """Serialize a BillingState for the wire (Decimals → strings, money-safe). ``free_tier`` marks the
+def _serialize_billing_state(state, *, free_tier_account: bool = False) -> dict:
+    """Serialize a BillingState for the wire (Decimals → strings, money-safe). ``free_tier_account`` marks the
     Nous free tier: no account, no balance, nothing to pay; the renderer branches on it before
     ``logged_in``."""
     from agent.billing_view import format_money
@@ -92,7 +93,7 @@ def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
               "is_default_ceiling": m.is_default_ceiling}
     return {
         "ok": True, "logged_in": state.logged_in,
-        "free_tier": bool(free_tier), "free_tier_model": GUEST_MODEL if free_tier else None,
+        "free_tier_account": bool(free_tier_account), "free_tier_model": GUEST_MODEL if free_tier_account else None,
         "org_name": state.org_name,
         "org_slug": state.org_slug, "role": state.role, "is_admin": state.is_admin,
         "can_change_plan": state.can_change_plan, "can_charge": state.can_charge,
@@ -104,9 +105,34 @@ def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
         "min_usd": _wire_str(state.min_usd), "max_usd": _wire_str(state.max_usd),
         "card": card, "payment_method": _serialize_payment_method(state.payment_method),
         "monthly_cap": mc, "auto_reload": _serialize_auto_reload(state.auto_reload, format_money),
+        "keep_going_on_credits": getattr(state, "keep_going_on_credits", None),
         "portal_url": state.portal_url, "error": state.error,
         # Shared two-bar dollar usage model so /topup matches /usage and /subscription; fail-open.
-        "usage": _usage_payload(state)}
+        "usage": _usage_payload(state),
+        # Usage-window gauges (today / week / month / large models): what Desktop Settings → Billing
+        # draws for window plans. Fail-open None.
+        "plan_usage": _plan_usage_payload(state)}
+
+
+def _plan_usage_payload(state) -> Optional[dict]:
+    """``ModelOptionProvider.plan_usage``-shaped block (usage-window gauges; None for every other account)
+    for the billing/subscription states. Window plans only: the plan shape comes from the snapshot
+    ``_usage_payload`` just cached (no round trip), and any other account (or no snapshot) returns None
+    without a lookup, exactly like main. ``warm=True`` refreshes an expired snapshot for window plans. Never raises."""
+    if not getattr(state, "logged_in", False):
+        return None
+    try:
+        from agent.credits_tracker import _window_seed_fields
+        from hermes_cli.nous_account import cached_nous_portal_account_info
+        snapshot = cached_nous_portal_account_info(any_age=True)
+        if snapshot is None or _window_seed_fields(getattr(snapshot, "usage_window", None)) is None:
+            return None
+        from hermes_cli.model_picker_usage import nous_picker_usage
+        usage = nous_picker_usage(warm=True)
+        return usage.to_payload() if usage is not None else None
+    except Exception:
+        logging.getLogger(__name__).debug("Plan usage payload unavailable", exc_info=True)
+        return None
 
 
 def _usage_payload(state) -> dict:
@@ -183,7 +209,8 @@ def _serialize_subscription_state(state) -> dict:
         "portal_url": state.portal_url, "error": state.error,
         # Shared two-bar usage model (account-info is the only source with top-up dollars);
         # fail-open → {available:false}; lazy when logged out.
-        "usage": _usage_payload(state)}
+        "usage": _usage_payload(state),
+        "plan_usage": _plan_usage_payload(state)}
 
 
 def _serialize_subscription_preview(p) -> dict:

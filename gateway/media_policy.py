@@ -6,7 +6,8 @@
 entrypoint (gateway startup, ``hermes cron run``, ``hermes send``) calls
 :func:`apply_media_policy_env` first so standalone paths filter under the gateway's
 policy instead of silently dropping attachments in strict/allowlisted deployments.
-An explicitly-set env var WINS over config.yaml, so shell overrides survive.
+An explicitly-set env var WINS over config.yaml, so shell overrides survive. Under a HERMES_HOME
+override (a served profile's turn or cron fire) nothing is bridged: readers load that profile's config.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ _TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
-def _routed_gateway_cfg() -> Optional[Dict[str, Any]]:
+def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
     """``gateway`` section of the ROUTED profile's config when a HERMES_HOME override is active
     (multiplexed turn), else None. The env bridge is one process-wide copy of the launch profile's
     policy, so a secondary's deliveries must read their own config instead of ``os.environ``."""
@@ -70,7 +71,7 @@ def media_delivery_trust_recent_seconds() -> str:
 
 
 
-def _load_gateway_cfg(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _load_gateway_cfg(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     if config is None:
         try:
             from hermes_cli.config import load_config
@@ -94,10 +95,17 @@ def _allow_dirs_str(allow_dirs: Any) -> str:
     return allow_dirs if isinstance(allow_dirs, str) else ""
 
 
-def apply_media_policy_env(config: Optional[Dict[str, Any]] = None) -> None:
+def apply_media_policy_env(config: Optional[dict[str, Any]] = None) -> None:
     """Bridge gateway media-policy settings from config.yaml into the env.  Idempotent,
-    env-wins, never raises — a bridge failure must not break delivery (validator defaults apply)."""
+    env-wins, never raises — a bridge failure must not break delivery (validator defaults apply).
+
+    No-op under a HERMES_HOME override, the same gate the readers use: there they take the
+    profile's own config (``_routed_gateway_cfg``), and ``os.environ`` is shared — a routed cron
+    fire would hand its allowlist and strictness to the launch profile and its children."""
     try:
+        from hermes_constants import get_hermes_home_override
+        if get_hermes_home_override():
+            return
         gateway_cfg = _load_gateway_cfg(config)
         if not gateway_cfg:
             return
@@ -108,5 +116,5 @@ def apply_media_policy_env(config: Optional[Dict[str, Any]] = None) -> None:
         allow_dirs = gateway_cfg.get("media_delivery_allow_dirs")
         if allow_dirs:
             _set_env_default(_ALLOW_DIRS_ENV, _allow_dirs_str(allow_dirs))
-    except Exception:  # noqa: BLE001 - policy bridge must never break delivery
+    except Exception:
         logger.debug("apply_media_policy_env failed", exc_info=True)

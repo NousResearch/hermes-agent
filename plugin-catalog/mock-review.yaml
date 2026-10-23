@@ -1,8 +1,8 @@
 name: mock-review
 title: Mock Review
 repo: https://github.com/arspesk/hermes-mock-review
-sha: "9630c109e5ce33fdc7275fe0fb4698e0bc134226"
-version: "1.0.0"
+sha: "fb3d07bae45ab7a30f57fdc8cbc0e36df016e996"
+version: "1.0.1"
 description: >-
   Review boards for UI mockups. The agent builds a board from a decisions.json file and
   your prototype pages; you open it on desktop or phone, mark each decision approve,
@@ -16,7 +16,8 @@ description: >-
   calls: a signed POST to the local Hermes webhook (localhost:8644) on Send, and, only for
   reviews hosted on here.now, https://here.now/api/v1 with your HERENOW_API_KEY. Secrets
   are read through Hermes's secret scope only. Runs `bash publish.sh` from the official
-  here-now skill (key in the child environment), `tailscale status --json` for tailnet
+  here-now skill (key in the child environment), `tailscale status --json` and `tailscale serve status --json`
+  (read only; on macOS the Tailscale app's own binary if the symlink crashes) for tailnet
   hosting, and from `setup` the hermes subcommands `--version`, `gateway status`,
   `config get/set/unset`, `webhook subscribe`, `webhook remove` (only for a stale
   self-delivering route, after you confirm) and `plugins validate`. Reviews are stored under $HERMES_HOME/workspace/mock-reviews. No telemetry,
@@ -27,7 +28,7 @@ category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/arspesk/hermes-mock-review#readme
 screenshots:
-  - https://raw.githubusercontent.com/arspesk/hermes-mock-review/9630c109e5ce33fdc7275fe0fb4698e0bc134226/docs/img/review-board.png
+  - https://raw.githubusercontent.com/arspesk/hermes-mock-review/fb3d07bae45ab7a30f57fdc8cbc0e36df016e996/docs/img/review-board.png
 platforms: []
 known_issues:
   - "here.now hosting needs the official here-now skill in the active profile (`hermes skills install official/productivity/here-now`) and a HERENOW_API_KEY; local and tailnet hosting need neither."

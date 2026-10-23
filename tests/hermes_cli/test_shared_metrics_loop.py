@@ -70,6 +70,13 @@ def test_memory_tool_counts_each_operation_with_its_outcome_and_origin(home):
     }
 
 
+def test_stale_source_failure_class_is_preserved():
+    fields = loop.memory_op_fields(
+        op="batch", provider="builtin", outcome="failed", origin="foreground", failure_class="stale_source",
+    )
+    assert fields["failure_class"] == "stale_source"
+
+
 def test_memory_failure_class_names_each_store_refusal_and_never_its_text(home):
     """Each built-in refusal/failure return reports its own closed class; the row carries no memory text."""
     from tools.memory_tool import memory_tool

@@ -848,29 +848,21 @@ def _anchored_pool_workspace(
 ) -> tuple[Path, str]:
     """Acquire this card's workspace from the repo's treehouse pool.
 
-    A repo opts in with ``<repo>/treehouse.toml``; without one this returns the
-    legacy ``<repo>/.worktrees/<task-id>`` worktree and logs why, so the
-    uncapped path is never silent. At ``max_trees`` the pool raises
-    :class:`kanban_treehouse.PoolExhausted` - the card waits for a slot instead
-    of growing a worktree outside the pool.
+    A repo MUST opt in with ``<repo>/treehouse.toml``; without one this raises
+    rather than falling back to the legacy ``<repo>/.worktrees/<task-id>`` path.
+    The legacy path is completely blocked to prevent split-brain regrowth.
+    At ``max_trees`` the pool raises :class:`kanban_treehouse.PoolExhausted` -
+    the card waits for a slot instead of growing a worktree outside the pool.
     """
     config = _kbth.read_pool_config(repo_root)
     if config is None:
-        _kb._log.info(
-            "kanban: %s has no %s; falling back to git worktree add "
-            "<repo>/.worktrees/%s (uncapped, never recycled)",
-            repo_root, _kbth.CONFIG_FILENAME, task_id,
+        raise TreehouseRequired(
+            f"kanban: {repo_root} has no {_kbth.CONFIG_FILENAME}; "
+            f"worktrees are acquired exclusively through treehouse. "
+            f"Add a treehouse.toml to opt in (see treehouse documentation)."
         )
-        return _anchored_worktree(repo_root, task_id, branch_name)
     lease = _kbth.acquire_lease(config, task_id, branch_name)
     return lease.path, branch_name
-
-
-def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
-    """Materialize the canonical ``<repo>/.worktrees/<task-id>`` worktree."""
-    target = repo_root / ".worktrees" / task_id
-    _ensure_git_worktree(repo_root, target, branch_name)
-    return target, branch_name
 
 
 def _pool_repo_for_task(
@@ -965,8 +957,12 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         if pool_config is None:
             # The repo stopped opting in after this card last ran. Never
             # recreate a worktree at a stale .treehouse path (that slot is
-            # treehouse's, not git's); give the card the legacy anchor.
-            return _anchored_worktree(pool_repo, task.id, branch_name)
+            # treehouse's, not git's); the legacy path is completely blocked.
+            raise _kbth.TreehouseRequired(
+                f"kanban: {pool_repo} no longer has {_kbth.CONFIG_FILENAME}; "
+                f"worktrees are acquired exclusively through treehouse. "
+                f"Re-add a treehouse.toml to opt in."
+            )
         # One lease per card: reuses the card's own slot across a retry, returns
         # any duplicate, and acquires a free slot when the recorded one was
         # returned/pruned. At the cap this raises PoolExhausted; the dispatcher

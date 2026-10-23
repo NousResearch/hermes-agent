@@ -69,6 +69,10 @@ class TreehouseError(RuntimeError):
     """treehouse is configured for this repo but the call failed."""
 
 
+class TreehouseRequired(TreehouseError):
+    """A repo lacks treehouse.toml; worktrees are acquired exclusively through treehouse."""
+
+
 class PoolExhausted(TreehouseError):
     """Every slot is in use or dirty: the card must wait, not spawn outside."""
 

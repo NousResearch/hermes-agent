@@ -1433,15 +1433,40 @@ plugin write is exactly a user click on that control: it takes effect at once,
 persists through the preference's existing storage schema, and the last write
 wins (no plugin "owns" the value afterwards, nothing to tear down for `set`).
 
+One store-native exception, inherited rather than added here: the two tool-view
+keys are `modeBound`, so under Simple mode a write reveals the key in the
+current session instead of persisting the preference, and switching back to
+Advanced restores the stored value. Identical to the Settings page under
+Simple — it is the same setter — but a plugin that reads back immediately gets
+the revealed value while the raw storage key still holds the old one.
+
+`user-bubble-transparency.v1` takes the lever's own band (0–100, non-numeric
+refused). In-band values go through the store's rounding, so `set(…, 42.6)`
+reads back as `43`.
+
 ```ts
 type DesktopSettingValues = {
   'backdrop.v1': boolean
   chatTextScale: 90 | 100 | 110 | 125 | 150 | 175 // percent; Appearance → Chat Text Size
   'composerPopout.gesturesEnabled': boolean
+  'embed-mode': 'ask' | 'always' | 'off'
+  hideThreadTimeline: boolean
+  'interfaceMode.v1': 'simple' | 'advanced'
   'intro-splash.v1': boolean
+  'model-pricing.v1': boolean
+  'reactions.v1': boolean
   'reasoning.collapsedByDefault': boolean
   sessionListDensity: 'compact' | 'comfortable' | 'detailed'
   tabStripDefault: 'auto' | 'always' | 'never'
+  textDirection: 'auto' | 'ltr' | 'rtl'
+  'tips.rotation.v1': boolean
+  titlebarAppActions: 'left' | 'right'
+  'toolView.hideCodeDiffs': boolean
+  // Enum, despite the legacy storage key's name.
+  'toolView.technical': 'product' | 'technical'
+  'tours.v1': boolean
+  'user-bubble-transparency.v1': number // 0–100; off-band values are refused, not clamped
+  'vibeHearts.v1': boolean
 }
 host.settings.get<K extends DesktopSettingKey>(key: K): DesktopSettingValues[K]
 host.settings.set<K extends DesktopSettingKey>(key: K, value: DesktopSettingValues[K]): void
@@ -1476,6 +1501,26 @@ const dispose = host.settings.subscribe('chatTextScale', pct => setMyFontScale(p
 ctx.onDispose(dispose)
 ```
 
+**Scope: every key here is desktop-wide.** These are the renderer's own
+preferences, keyed `hermes.desktop.*` with no profile segment, and
+`store/text-direction.ts` states the rule outright — *"global to this desktop
+install (every window and profile) … not about a backend, profile or
+session"*. A write from any profile view changes the setting for every
+profile, exactly as the native control does. Two neighbouring surfaces scope
+differently and are deliberately **not** keys in this table: the window
+channels (UI zoom, translucency, minimize-to-tray) are window-level and need a
+typed `host.window` bridge; the config-backed fonts (`desktop.font_family`,
+`terminal.font_family`) are `@_profile_scoped`, where a write with no profile
+names the profile the backend was *launched* with rather than the one on
+screen (#125969).
+
+**Three toggles also reach the agent.** `reactions.v1`, `tours.v1` and
+`tips.rotation.v1` mirror to `display.message_reactions`, `display.in_app_tours`
+and `display.in_app_tips`, because those switches decide whether a tool is in
+the model's schema at all. The mirror is a store subscription, not part of
+this binding — a plugin write reaches it exactly as a Settings-page click
+does, and no extra authority is granted.
+
 Arbitration: the allowlist above is closed. An unknown key or a value outside
 the key's type throws **synchronously** (`Unsupported desktop setting: …` /
 `Invalid value for desktop setting: …`) and nothing is written — `host.settings`
@@ -1490,7 +1535,7 @@ Deliberately **not** keys, and why:
 | active theme / mode record | `THEMES_AREA` (register a theme; the user selects it) | theme selection is per window/profile and arbitrated by the app, not a flat preference |
 | `pluginDecisions` (desktop plugin on/off) | the app's Plugins tab (a read-only view is a separate SDK hook) | a plugin toggling another plugin's enable state is plugins interfering with each other |
 | chat / composer width, turn spacing, session-row geometry | nothing yet — these become keys only once they exist as core Appearance preferences (chat width: #55287) | layout is host-owned; a plugin-owned geometry contract would make every theme a layout contract |
-| `toolView.technical`, `embed-mode`, `titlebarAppActions`, `translucency.v2`, `user-bubble-transparency.v1`, `hermesDesktop.zoom.*` | follow-up keys after each store is audited | some drive the main process or window chrome; each needs its own guard and ownership review before it becomes plugin-writable |
+| `translucency.v2`, `hermesDesktop.zoom.*` | not yet available — proposed as `host.window` in #121896 (items B/C) | these drive the main process / window chrome, not a renderer atom, so they need a typed window bridge with its own guards rather than a settings key; the SDK has no door for them today |
 
 Migration — `hermes-appearance-hub`, which today does
 `localStorage.setItem('hermes.desktop.sessionListDensity', id)` followed by
@@ -1516,6 +1561,53 @@ page's intro-splash switch becomes `host.settings.subscribe('intro-splash.v1', f
 `localStorage.getItem('hermes.desktop.keybinds')` to back up its shortcut — that
 is the keybind-map row above: contribute the default through `KEYBINDS_AREA` and
 keep the user's override in `ctx.storage`, not in the app's map.
+
+### Window-level appearance — `host.window`
+
+Three Appearance controls are not renderer preferences and therefore not
+`host.settings` keys: they drive the main process or the window chrome. Before
+this door they were reachable only through `window.hermesDesktop.*` — raw
+preload IPC, which plugin rules do not allow and which breaks when the bridge
+changes shape.
+
+```ts
+host.window.zoom.available(): boolean
+host.window.zoom.get(): Promise<null | { level: number; percent: number }>
+host.window.zoom.setPercent(percent: number): void
+host.window.zoom.subscribe(fn: (state: { level: number; percent: number }) => void): () => void
+
+host.window.translucency.get(): TranslucencyState
+host.window.translucency.set(patch: Partial<TranslucencyState>): void
+host.window.translucency.subscribe(fn: (state: TranslucencyState) => void): () => void
+
+host.window.minimizeToTray.available(): boolean
+host.window.minimizeToTray.get(): Promise<null | { enabled: boolean; available: boolean }>
+host.window.minimizeToTray.set(on: boolean): Promise<null | { enabled: boolean; available: boolean }>
+host.window.minimizeToTray.subscribe(fn: (status: { enabled: boolean; available: boolean }) => void): () => void
+```
+
+Three scopes, and they differ from `host.settings`:
+
+- **`zoom` is per window.** The bridge reports the window this renderer is in,
+  and a change applies to that window only — the same thing ⌘+/⌘− does.
+- **`translucency` is a renderer-owned book**, desktop-wide, mirrored to the
+  main process. `set` patches it field by field through the native setters
+  (`intensity` / `fade` clamped to the lever's band, `mode` / `material` /
+  `scope` normalized to their enums); omitted fields are untouched. Read
+  `$translucency`'s resolved state, not the stored book — the book is split per
+  light/dark appearance and resolved for the one currently painted.
+- **`minimizeToTray` is a machine-level preference** owned by the main process.
+
+**Feature-detect, do not assume.** `zoom` and `minimizeToTray` return `null`
+from `get` / `set` and expose `available() === false` on a build that predates
+the channel; `subscribe` returns a no-op disposer there, so registration can be
+unconditional. `translucency` needs no probe — it is the renderer's own store.
+
+**The tray trap:** `status().available` reports whether the OS backs a tray at
+all, and on macOS the tray object only exists *after* minimize-to-tray is
+enabled. A control that gates itself on `available` alone deadlocks: it stays
+disabled, so the setting can never be turned on. Gate on
+`available || enabled`.
 
 ### Typed capabilities bridge — `host.skills`, `host.toolsets`, `host.profiles`, `host.pluginDecisions`
 

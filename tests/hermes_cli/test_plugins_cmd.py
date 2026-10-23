@@ -50,7 +50,7 @@ def test_portable_install_gate_accepts_present_app_and_refuses_missing(tmp_path:
 
     _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
     app.unlink()
-    with pytest.raises(PluginOperationError, match="example-plugin.*worker.*missing_app"):
+    with pytest.raises(PluginOperationError, match="example-plugin.*worker is not installed. Install worker"):
         _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
 
 

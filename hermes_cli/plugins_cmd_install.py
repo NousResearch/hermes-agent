@@ -297,29 +297,30 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
             ) from exc
 
 
-def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
+def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path, app_title: Optional[str] = None) -> None:
+    """Refuse a portable plugin whose app is missing here, in the same sentence the runtime surfaces use.
+
+    *app_title* is the catalog's human name for the app ("Blender"); without it the server name stands in."""
     if not (tree / "plugin.json").is_file():
         return
     from hermes_cli.agent_plugins import load_agent_plugin
-    from hermes_platform.declaration import gpu_label
     from hermes_platform.resolver.availability import availability
+    from tools.mcp_liveness import availability_problem, describe
 
     try:
         package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")
     except ValueError as exc:
         raise _pc().PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.",
                                          failure_class="manifest_invalid") from exc
-    for server_name, server_decl in package.server_declarations.items():
+    for server_decl in package.server_declarations.values():
         result = availability(server_decl.declaration)
         if result.offerable:
             continue
-        found = f", found version {result.version}" if result.version else ""
-        if result.state == "unsupported_gpu":
-            found = f", needs {gpu_label(server_decl.declaration.required_gpu)}"
-        raise _pc().PluginOperationError(
-            f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}.",
-            failure_class="incompatible",
-        )
+        problem = availability_problem(result)
+        reason = (describe(server_decl.declaration, result, problem, display_name=app_title)
+                  if problem else f"its app is unavailable ({result.state}).")
+        raise _pc().PluginOperationError(f"Can't install plugin '{plugin_name}': {reason}",
+                                         failure_class="incompatible")
 
 
 def _known_issue_warnings(entry) -> list[str]:
@@ -368,6 +369,7 @@ def _install_plugin_core(
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
+    app_title: Optional[str] = None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -454,7 +456,7 @@ def _install_plugin_core(
                 raise _pc().PluginOperationError(
                     "--no-deps cannot replace an active plugin. Retry without --no-deps; "
                     "PM must prepare its dependencies before publication.", failure_class="already_installed")
-        _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
+        _refuse_unavailable_portable_plugin(plugin_name, tmp_target, app_title)
 
         if target.exists() and not force:
             from pm.environments import cli_command_name

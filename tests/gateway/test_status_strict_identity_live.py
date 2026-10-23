@@ -20,6 +20,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -98,6 +99,19 @@ def _make_home(root: Path) -> Path:
     return home
 
 
+def _exited_pid() -> int:
+    """A PID whose process has already exited: a leftover PID file, not a rival gateway."""
+    child = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                           capture_output=True, text=True, timeout=60, check=False)
+    pid = int(child.stdout.strip())
+    for _ in range(100):
+        if not psutil.pid_exists(pid):
+            return pid
+        time.sleep(0.05)
+    pytest.fail(f"child {pid} is still alive after exit")
+    return pid
+
+
 @pytest.fixture(scope="class")
 def gateway_holder(tmp_path_factory):
     """One live gateway-shaped lock holder for the class; each spawn costs about a second."""
@@ -151,10 +165,44 @@ class TestStrictIdentityWithLiveLock:
 
     def test_pid_file_that_disagrees_with_the_lock_still_aborts(self, home, gateway_holder):
         record = json.loads((home / "gateway.pid").read_text(encoding="utf-8-sig"))
-        record["pid"] = gateway_holder[1] + 1
+        # A LIVE second identity: the disagreement is real, not a leftover file.
+        record["pid"] = os.getpid()
         (home / "gateway.pid").write_text(json.dumps(record), encoding="utf-8")
 
         with pytest.raises(RuntimeError, match="disagree"):
+            status.get_running_pid_identity_strict(home / "gateway.pid")
+
+    def test_stale_pid_file_beside_a_held_lock_resolves_from_the_lock_record(
+        self, home, gateway_holder,
+    ):
+        record = json.loads((home / "gateway.pid").read_text(encoding="utf-8-sig"))
+        record["pid"] = _exited_pid()
+        (home / "gateway.pid").write_text(json.dumps(record), encoding="utf-8")
+
+        identity = status.get_running_pid_identity_strict(home / "gateway.pid")
+
+        assert identity is not None
+        assert identity[0] == gateway_holder[1]
+
+    def test_updater_discovery_maps_the_profile_with_a_stale_pid_file(
+        self, home, gateway_holder, monkeypatch,
+    ):
+        from hermes_cli.gateway import find_profile_gateway_processes
+
+        monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+        monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles")
+        record = json.loads((home / "gateway.pid").read_text(encoding="utf-8-sig"))
+        record["pid"] = _exited_pid()
+        (home / "gateway.pid").write_text(json.dumps(record), encoding="utf-8")
+
+        procs = find_profile_gateway_processes(strict=True)
+
+        assert [(Path(p.path).resolve(), p.pid) for p in procs] == [(home.resolve(), gateway_holder[1])]
+
+    def test_malformed_pid_file_beside_a_held_lock_still_aborts(self, home):
+        (home / "gateway.pid").write_text("not a record", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="malformed"):
             status.get_running_pid_identity_strict(home / "gateway.pid")
 
     def test_garbled_lock_record_without_pid_file_still_aborts(self, home):

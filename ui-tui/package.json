@@ -30,11 +30,6 @@
     "undici": "6.29.1",
     "unicode-animations": "1.0.3"
   },
-  "overrides": {
-    "ink-text-input": {
-      "ink": "npm:@hermes/ink@0.0.1"
-    }
-  },
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/react": "19.3.0",

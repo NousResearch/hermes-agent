@@ -725,8 +725,8 @@ class SessionSessionsMixin:
         keys for the TUI/Desktop, ``gateway_runtime`` for the CLI), so a later resume recombines the
         model with the provider that serves it (#79536). ``base_url``/``api_mode`` are always
         replaced then (``None`` deletes): the previous provider's endpoint must not survive a switch,
-        or resume sends the new provider's model to the old host; a bare ``custom`` is stored as the
-        entry it ran on. Callers without provider knowledge leave the stored route untouched."""
+        or resume sends the new provider's model to the old host; a bare ``custom`` is stored as its
+        entry when unambiguous. Callers without provider knowledge leave the stored route untouched."""
         # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
         # first_accounted_route overwrite and resurrect the old route.
         self.flush_token_counts()

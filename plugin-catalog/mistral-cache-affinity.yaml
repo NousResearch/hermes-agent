@@ -1,0 +1,16 @@
+name: mistral-cache-affinity
+repo: https://github.com/kedf/hermes-mistral-cache-affinity
+sha: c13a163841a2b11fea165dca05fb2950dfbb6e0c
+description: "Stable x-affinity routing for the global and EU Mistral chat endpoints. Adds the x-affinity header with Hermes' existing prompt_cache_key for HTTPS Chat Completions to api.mistral.ai and api.eu.mistral.ai, to stabilize Mistral-side prompt cache routing. Observed effect: sessions went from ~25% to 93-95% prompt cache hit. Disclosure — this is a routing hint only, not a cache-hit guarantee; a prefix change, TTL expiry or provider behavior can still cause a cache miss. The plugin never mutates messages, tools, the system prompt or the cache key (request copy only), preserves an explicit x-affinity header (case-insensitive), and is a no-op on other hosts, non-HTTPS schemes, non-chat_completions API modes or missing cache keys. No network access, secrets, history or logging is performed by the plugin itself. Related upstream issues: NousResearch/hermes-agent#27339, #18547, #128817, #133575, #79602."
+maintainer: kedf
+tier: community
+category: models
+docs_url: https://github.com/kedf/hermes-mistral-cache-affinity#readme
+version: "0.1.2"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_request
+  requires_env: []

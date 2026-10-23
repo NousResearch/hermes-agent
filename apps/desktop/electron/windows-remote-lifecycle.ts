@@ -371,10 +371,6 @@ function atomicWindowsSpawnScript(runtime, reservation: any = {}, stdinData = ''
   return script
 }
 
-function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
-  return powerShellCommand(atomicWindowsSpawnScript(runtime, reservation))
-}
-
 async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
   const output = await ssh.exec(powerShellBufferedStdinCommand(), {
     stdinData: encodedPowerShellPayload(atomicWindowsSpawnScript(runtime, reservation, stdinData))
@@ -853,7 +849,6 @@ function buildWindowsInteractiveCommand(remoteCwd = '') {
 export {
   assertWindowsRemoteInstallUpdateClear,
   atomicWindowsSpawn,
-  atomicWindowsSpawnCommand,
   atomicWindowsSpawnScript,
   buildWindowsInteractiveCommand,
   connectWindowsRemote,

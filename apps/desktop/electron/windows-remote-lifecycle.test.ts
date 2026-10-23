@@ -12,7 +12,7 @@ import { test } from 'vitest'
 
 import {
   assertWindowsRemoteInstallUpdateClear,
-  atomicWindowsSpawnCommand,
+  atomicWindowsSpawnScript,
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
   detectRemotePlatform,
@@ -26,6 +26,12 @@ import {
   terminateOwnedWindowsDashboardForUpdate,
   validLock
 } from './windows-remote-lifecycle'
+
+// Inline encoding is only used to execute generated scripts in these fixtures.
+// Production sends the script and spawn JSON through atomicWindowsSpawn's buffered stdin.
+function atomicWindowsSpawnCommand(runtime: any, reservation: any = {}) {
+  return powerShellCommand(atomicWindowsSpawnScript(runtime, reservation))
+}
 
 const ownershipId = '0123456789abcdef0123456789abcdef'
 

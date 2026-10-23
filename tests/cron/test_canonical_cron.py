@@ -5,6 +5,38 @@ from contextlib import asynccontextmanager
 from cron import scheduler
 
 
+def test_pre_admission_terminal_result_does_not_poll_session_status(tmp_path, monkeypatch):
+    from gateway import session_cron
+    from hermes_cli import gateway_client
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(session_cron, 'owner_for_home', lambda home: None)
+    calls = []
+
+    @asynccontextmanager
+    async def connect():
+        class Client:
+            async def rpc(self, name, **params):
+                calls.append(name)
+                assert name == 'cron.submit'
+                return {
+                    'status': 'terminal',
+                    'result': [True, 'skipped', '__HERMES_CRON_SILENT__', None],
+                    'job_flags': {},
+                }
+
+        yield Client()
+
+    monkeypatch.setattr(gateway_client, 'connect_gateway', connect)
+
+    from cron.scheduler_authority import run_canonical_job
+
+    assert run_canonical_job({'id': 'job'}, execution_id='fire') == (
+        True, 'skipped', '__HERMES_CRON_SILENT__', None,
+    )
+    assert calls == ['cron.submit']
+
+
 def test_agent_cron_is_transport_only_and_refuses_without_owner(monkeypatch):
     from hermes_cli import gateway_client
     calls = []

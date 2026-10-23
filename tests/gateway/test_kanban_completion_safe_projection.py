@@ -257,17 +257,14 @@ def test_review_requested_keeps_the_internal_wake_handoff():
 # body. The scrub lives in the notification constructor, so these exercise the REAL
 # construction path rather than a hand-set attribute.
 
-class _Sub(dict):
-    pass
-
-
 def _note_with_task_title(title):
     from gateway.kanban_watchers_notifier import _KanbanNotification
 
     task = type("T", (), {"title": title, "assignee": None})()
     d = {
-        "sub": _Sub(task_id=TASK_ID, platform="telegram", chat_id="1", board="ai-colleague"),
+        "sub": {"task_id": TASK_ID, "platform": "telegram", "chat_id": "1"},
         "task": task,
+        "board": "ai-colleague",
     }
     return _KanbanNotification(None, d, platform_cls=None, sub_fail_counts={})
 

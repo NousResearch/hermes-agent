@@ -156,7 +156,7 @@ class GatewayKanbanWatchersMixin:
         board's own staging step, so a path in it is a declaration the task made.
 
         Worker prose is deliberately NOT a source: ``event_payload['summary']`` and
-        ``task.result`` are free text, and a mentioning a path there would otherwise let any
+        ``task.result`` are free text, and a path mentioned there would otherwise let any
         worker (or an injection inside its output) cause an existing host file to be uploaded
         to the chat. Prose can still *describe* a file; it cannot authorize sending one.
 

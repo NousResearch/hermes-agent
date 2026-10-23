@@ -56,7 +56,11 @@ def _system_unit_uid(unit_path: Path) -> Optional[int]:
     user = _read_systemd_user_from_unit(unit_path)
     if user is None:
         return 0
-    import pwd
+    try:
+        import pwd
+    except ImportError:
+        # win32 has no POSIX account database; systemd's root is still uid 0 (#137195).
+        return 0 if user == "root" else None
     with contextlib.suppress(KeyError):
         return pwd.getpwnam(user).pw_uid
     return None

@@ -222,6 +222,7 @@ class TestStdioPgroupReaping:
             _stdio_pgids.clear()
             _stdio_starttimes.clear()
 
+    @pytest.mark.platforms("posix")
     def test_kill_orphaned_skips_recycled_pid(self):
         """PID-reuse guard (#43044): a recycled PID (start-time changed) is NOT signalled.
 
@@ -252,6 +253,7 @@ class TestStdioPgroupReaping:
         mock_killpg.assert_not_called()
         mock_kill.assert_not_called()
 
+    @pytest.mark.platforms("posix")
     def test_kill_orphaned_signals_when_start_time_matches(self):
         """The orphan IS signalled when its leader start-time still matches."""
         from tools.mcp_tool_lifecycle import (
@@ -273,6 +275,7 @@ class TestStdioPgroupReaping:
 
         mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
 
+    @pytest.mark.platforms("posix")
     def test_kill_orphaned_without_baseline_keeps_legacy_behaviour(self):
         """No recorded start time (macOS / capture raced exit) -> best-effort killpg."""
         from tools.mcp_tool_lifecycle import (

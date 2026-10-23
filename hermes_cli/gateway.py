@@ -21,6 +21,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from hermes_cli import gateway_service_owner, setup_platforms
+# Bare name: the call sites below run through this seam, which tests patch
+# (monkeypatch gateway._read_systemd_user_from_unit).
+from hermes_cli.gateway_service_owner import _read_systemd_user_from_unit
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -2734,8 +2737,6 @@ def _require_root_for_system_service(action: str) -> None:
 
 def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str, int]:
     import getpass
-    import grp
-    import pwd
     username = (
         run_as_user or os.getenv("SUDO_USER") or os.getenv("USER") or os.getenv("LOGNAME") or getpass.getuser()
     ).strip()
@@ -2750,19 +2751,17 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
         print_info("  This is fine for LXC/container environments but not recommended on bare-metal hosts.")
 
     try:
+        import grp
+        import pwd
+    except ImportError as e:  # win32 has no POSIX account database (#137195)
+        raise ValueError(
+            f"Could not resolve user {username!r}: POSIX pwd/grp lookup is unavailable on this platform"
+        ) from e
+    try:
         user_info = pwd.getpwnam(username)
     except KeyError as e:
         raise ValueError(f"Unknown user: {username}") from e
     return username, grp.getgrgid(user_info.pw_gid).gr_name, user_info.pw_dir, user_info.pw_uid
-
-
-def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
-    if not unit_path.exists():
-        return None
-    for line in unit_path.read_text(encoding="utf-8-sig").splitlines():
-        if line.startswith("User="):
-            return line.split("=", 1)[1].strip() or None
-    return None
 
 
 def _default_system_service_user() -> str | None:

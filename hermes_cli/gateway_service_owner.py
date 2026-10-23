@@ -42,6 +42,15 @@ def _resolve(raw: str | Path) -> Path | None:
         return None
 
 
+def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
+    if not unit_path.exists():
+        return None
+    for line in unit_path.read_text(encoding="utf-8-sig").splitlines():
+        if line.startswith("User="):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
 def service_home_for_unit(unit_path: Path, system: bool) -> Path:
     """The ``HERMES_HOME`` this process acts for when it writes the systemd unit at *unit_path*.
 

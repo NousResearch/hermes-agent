@@ -1014,6 +1014,20 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
 
   retireDiskPlugin(file, record)
 
+  // A reinstall under the same id must ask for its folders again (ctx.files).
+  // A revoke that fails is reported: the plugin's row is gone, so the user
+  // could not revoke it there any more.
+  if (record.id) {
+    try {
+      await window.hermesDesktop?.pluginFiles?.revoke(record.id)
+    } catch (error) {
+      return {
+        ok: false,
+        error: `removed, but its folder access could not be revoked: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+  }
+
   return { ok: true }
 }
 

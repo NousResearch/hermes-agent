@@ -478,6 +478,18 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
+  pluginFiles: {
+    request: (pluginId, labels) => ipcRenderer.invoke('hermes:pluginFiles:request', pluginId, labels),
+    grants: pluginId => ipcRenderer.invoke('hermes:pluginFiles:grants', pluginId),
+    revoke: (pluginId, folderId) => ipcRenderer.invoke('hermes:pluginFiles:revoke', pluginId, folderId),
+    op: (pluginId, request) => ipcRenderer.invoke('hermes:pluginFiles:op', pluginId, request),
+    onChanged: callback => {
+      const listener = (_event, change) => callback(change)
+      ipcRenderer.on('hermes:pluginFiles:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:pluginFiles:changed', listener)
+    }
+  },
   git: {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),
     worktreeAdd: (repoPath, options) => ipcRenderer.invoke('hermes:git:worktreeAdd', repoPath, options),

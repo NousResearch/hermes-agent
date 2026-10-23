@@ -21,7 +21,7 @@ from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _json_or, _legacy_reset_child_sql, _named_row_id, _placeholders, _sql_json_extract)
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_identity import (
@@ -859,7 +859,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         in *covered*. They take the concurrent-append path: rewind the original, insert the
         compacted transcript, then clone them so they stay live and searchable once each.
         """
-        active_ids = [int(row["id"]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()]
+        active_ids = [row_id for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()
+                      if (row_id := _named_row_id(row["id"])) is not None]
         covered_set = set(covered)
         carried_ids = self._resolve_carried_row_ids(conn, session_id, carried_messages or [])
         covered_set.update(carried_ids)
@@ -986,11 +987,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             conn, session_id, carried_messages or [])
         if tail_count > 0:
             bound = watermark is not None
-            rewind_ids += [int(row["id"]) for row in conn.execute(
+            rewind_ids += [row_id for row in conn.execute(
                 f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, *((int(watermark),) if bound else ()),
-                 int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
+                 int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()
+                if (row_id := _named_row_id(row["id"])) is not None]
         rewind_ids += tail_ids
         rewind_ids = list(dict.fromkeys(rewind_ids))
         if rewind_ids:

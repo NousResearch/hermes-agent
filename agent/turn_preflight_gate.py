@@ -11,7 +11,10 @@ from contextlib import suppress
 from typing import Any
 
 from agent.message_metadata import append_message
-from agent.turn_context import _compression_warrants_another_preflight_pass
+from agent.turn_context import (
+    _compression_warrants_another_preflight_pass,
+    _preflight_block_outlived_its_request,
+)
 from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -23,7 +26,8 @@ def run_preflight_gate(
     active_system_prompt: Any, conversation_history: Any, api_call_count: Any,
     compression_attempts: Any, max_compression_attempts: Any, effective_task_id: Any,
     final_response: Any, failed: Any, _turn_exit_reason: Any, _compression_timeout_exhausted: Any,
-    _preflight_compression_blocked: Any, _provider_overflow_recovery_pending: Any,
+    _preflight_compression_blocked: Any, _preflight_blocked_at_tokens: Any,
+    _provider_overflow_recovery_pending: Any,
     _last_preflight_pressure: Any,
 ) -> PreflightGateVerdict:
     """Run the pre-API guard chain in the original order. ``_last_preflight_pressure`` is
@@ -39,6 +43,7 @@ def run_preflight_gate(
         _turn_exit_reason=_turn_exit_reason,
         _compression_timeout_exhausted=_compression_timeout_exhausted,
         _preflight_compression_blocked=_preflight_compression_blocked,
+        _preflight_blocked_at_tokens=_preflight_blocked_at_tokens,
         _provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
         _last_preflight_pressure=None,
     )
@@ -69,6 +74,20 @@ def run_preflight_gate(
         # The outer-loop rebuild includes system prompt, request-only injections and
         # tool schemas; only that full request with output runway may be sent.
         v._provider_overflow_recovery_pending = False
+    if v._preflight_compression_blocked and _preflight_block_outlived_its_request(
+        v._preflight_blocked_at_tokens, request_pressure_tokens
+    ):
+        # The verdict was about a smaller request. Everything appended
+        # since was never offered to the compressor, so re-arm the gate
+        # rather than ride the window edge until the provider complains.
+        logger.info(
+            "Pre-API compression re-armed: request grew ~%s -> ~%s "
+            "request tokens since the insufficient-progress verdict",
+            f"{v._preflight_blocked_at_tokens:,}",
+            f"{request_pressure_tokens:,}",
+        )
+        v._preflight_compression_blocked = False
+        v._preflight_blocked_at_tokens = 0
     # Compare fully assembled requests, not raw ``messages`` (which omit
     # api_content, plugin injections, prefills, MoA context, ephemeral system text).
     if (
@@ -81,6 +100,7 @@ def run_preflight_gate(
         # Stop proactive retries this turn without consuming the shared overflow-
         # recovery budget; the provider's error handler may still compact.
         v._preflight_compression_blocked = True
+        v._preflight_blocked_at_tokens = int(request_pressure_tokens or 0)
         logger.warning(
             "Pre-API compression made insufficient progress: ~%s -> "
             "~%s request tokens; skipping additional preflight passes",

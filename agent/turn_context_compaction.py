@@ -35,6 +35,10 @@ class CompactionOutcome:
     compressed: bool = False
     # Preflight proved an immediate retry ineffective (no progress / insufficient).
     blocked: bool = False
+    # Request size the insufficient-progress verdict judged, so the loop can
+    # lift the block once the request outgrows that shape.
+    blocked_at_tokens: int = 0
+
 
 
 # ── Helpers shared by every compression-attempt site ──
@@ -412,6 +416,7 @@ def _run_preflight_passes(
             _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
             _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             out.blocked = True
+            out.blocked_at_tokens = int(_preflight_tokens or 0)
             break  # Cannot compress further: neither rows nor tokens moved
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages, out.conversation_history
@@ -423,6 +428,7 @@ def _run_preflight_passes(
             _orig_tokens, _preflight_tokens, _compressor.threshold_tokens
         ):
             out.blocked = True
+            out.blocked_at_tokens = int(_preflight_tokens or 0)
             logger.warning(
                 "Preflight compression made insufficient progress: "
                 "~%s -> ~%s request tokens; skipping additional passes",

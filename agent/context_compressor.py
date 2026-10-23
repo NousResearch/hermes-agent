@@ -3420,8 +3420,21 @@ class ContextCompressor(
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
 
-    def _serialize_records_for_summary(self, turns: list[dict[str, Any]]) -> list[str]:
-        """Serialize turns into a list of labeled, redacted records for the summarizer."""
+    def _serialize_records_for_summary(
+        self,
+        turns: list[dict[str, Any]],
+        pristine: "dict[str, str] | None" = None,
+    ) -> list[str]:
+        """Serialize turns into a list of labeled, redacted records for the summarizer.
+
+        ``pristine`` is the pre-Phase-1 snapshot of tool bodies keyed by
+        ``tool_call_id``. Phase-1 pruning runs before summarization and may
+        already have demoted a tool result to a one-line stub; reading the
+        snapshot instead lets the summary carry the content forward rather
+        than recording only that a tool ran. Per-message truncation to
+        ``_CONTENT_MAX`` still applies, so a restored body cannot crowd the
+        prompt.
+        """
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
         from agent.agent_runtime_helpers import strip_think_blocks
         parts = []
@@ -3430,6 +3443,18 @@ class ContextCompressor(
             content = msg.get("content")
             if isinstance(content, list):
                 content = "\n".join(_summary_part_text(part) for part in content if isinstance(part, (dict, str)))
+            # Phase-1 pruning may already have demoted this tool result to a
+            # one-line stub; summarize from the pristine snapshot instead so
+            # the summary carries the content forward, not just the receipt.
+            # Restoration happens before redaction so a recovered body is
+            # scrubbed on exactly the same path as a live one.
+            # Only restore over a generic summary/demotion stub — structured
+            # tool summaries (e.g. clarify answers) already carry the payload
+            # the summarizer needs and must not be replaced by raw JSON.
+            if pristine and role == "tool" and _is_summary_stub(content or ""):
+                original = pristine.get(str(msg.get("tool_call_id") or ""))
+                if original and len(original) > len(content or ""):
+                    content = original
             content = _redact_compaction_text(content or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline <think>-style blocks: scratch work wastes summarizer context and risks being kept as fact.
@@ -3445,9 +3470,13 @@ class ContextCompressor(
             parts.append(f"[{role.upper()}]: {content}")
         return parts
 
-    def _serialize_for_summary(self, turns: list[dict[str, Any]]) -> str:
+    def _serialize_for_summary(
+        self,
+        turns: list[dict[str, Any]],
+        pristine: "dict[str, str] | None" = None,
+    ) -> str:
         """Serialize turns into labeled, redacted text for the summarizer."""
-        return "\n\n".join(self._serialize_records_for_summary(turns))
+        return "\n\n".join(self._serialize_records_for_summary(turns, pristine))
 
     def _fallback_anchors(self, turns_to_summarize: list[dict[str, Any]]) -> dict[str, list[str]]:
         """Locally extractable anchors: user asks, actions, files, blockers, last dropped turns."""
@@ -3903,18 +3932,21 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._previous_summary:
             self._previous_summary = _redact_compaction_text(self._previous_summary)
         summary_budget = self._compute_summary_budget(turns_to_summarize)
-        # Ghost-skill defense: LLMs paraphrase [SKILL_PRUNED] markers away; collect the names
+# Ghost-skill defense: LLMs paraphrase [SKILL_PRUNED] markers away; collect the names
         # deterministically BEFORE the call (from the turn LIST, not the bounded text), re-inject after.
         _pruned_skill_names = list(dict.fromkeys(
             _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
         ))[:_MAX_PRUNED_SKILL_MARKERS]
+        _pristine = getattr(self, "_pristine_tools", None)
         # Lean mode even-samples oversized input (one bounded request, never a second).
         if getattr(self, "tail_mode", "lean") == "lean":
-            records = self._serialize_records_for_summary(turns_to_summarize)
+            records = self._serialize_records_for_summary(turns_to_summarize, _pristine)
             content_to_summarize, coverage = self._sample_summary_records(records)
             self._record_summary_input_coverage(coverage)
         else:
-            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
+            content_to_summarize = self._bound_summary_input(
+                self._serialize_for_summary(turns_to_summarize, _pristine)
+            )
         has_user_turn = getattr(self, "_summary_has_user_turn", None)
         if has_user_turn is None:
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
@@ -5474,6 +5506,38 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
+            # A transcript this short can still be enormous when a handful of
+            # tool results are huge (e.g. a 7-message session sitting 46K+
+            # tokens over threshold). Try the cheap Phase-1 prune — including
+            # its protected-region pressure pass (#61932) — before conceding
+            # the no-op: it needs no LLM call and can shrink the transcript
+            # even when there aren't enough messages for a real compaction.
+            #
+            # Second-pass behaviour: if this prune shrinks the transcript but
+            # the result is STILL over threshold, the turn proceeds undersized.
+            # The next should_compress cycle re-runs, finds nothing left to
+            # prune, and lands in the original no-op branch below — which
+            # correctly starts counting ineffectiveness. The ladder terminates
+            # properly; do not "fix" the counter bump away.
+            pruned_messages, pruned_count = self._prune_old_tool_results(
+                messages, protect_tail_count=self.protect_last_n,
+                protect_tail_tokens=self.tail_token_budget,
+            )
+            if pruned_messages != messages:
+                self._last_compression_made_progress = True
+                telemetry["failure_class"] = None
+                telemetry["chunk_count"] = 0
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression (small transcript): pruned %d tool "
+                        "result(s) across %d messages without summarization",
+                        pruned_count, n_messages,
+                    )
+                return pruned_messages
+
+            # If pruning cannot help, this remains a structural no-op:
+            # insufficient messages for summarization and nothing left to
+            # prune. Prefer the structural path over an ineffective strike.
             self._structural_no_op_result(
                 telemetry, "insufficient_messages", f"only {n_messages} messages (need > {_min_for_compress})",
                 n_messages,
@@ -5484,6 +5548,20 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
         # assembled and measured from the pruned copy (#61932).
         canonical_messages = self._drop_blank_echoes(messages)
+        # Snapshot pristine tool contents BEFORE Phase-1 pruning so the
+        # summarizer sees what actually happened, not the pruned stubs
+        # (#compaction-v2). Bounded per entry to keep memory sane.
+        #
+        # This began as a lean-mode-only snapshot feeding the chunk digests,
+        # but the same ordering hurts legacy mode: Phase 1 stubs the very
+        # tool results ``_generate_summary`` is about to read, so the LLM pass
+        # could only ever record *that* a tool ran. Both modes read it now.
+        self._pristine_tools = {
+            str(m.get("tool_call_id") or ""): (m.get("content") or "")[:80_000]
+            for m in messages
+            if m.get("role") == "tool" and isinstance(m.get("content"), str)
+            and len(m.get("content") or "") > 400
+        }
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,

@@ -2,7 +2,7 @@
 // a card for the text before the first space and left the rest as prose.
 import { describe, expect, it } from 'vitest'
 
-import { appendAssistantTextPart, chatMessageText, mediaTagValues, renderMediaTags } from './parts'
+import { appendAssistantTextPart, assistantTextPart, chatMessageText, mediaTagValues, renderMediaTags } from './parts'
 
 const SPACED = '/home/hermes/Morten - Nobly Kickoff - Opening and cue cards EN.docx'
 const CARD = `[File: Morten - Nobly Kickoff - Opening and cue cards EN.docx](#media:${encodeURIComponent(SPACED)})`
@@ -57,5 +57,58 @@ describe('inline-code MEDIA paths', () => {
     expect(mediaTagValues("MEDIA:/tmp/john's.md x")).toEqual(["/tmp/john's.md"])
     expect(renderMediaTags("MEDIA:'/tmp/a b.md' x")).toBe(`${card('/tmp/a b.md')} x`)
     expect(renderMediaTags('MEDIA:/tmp/a.png')).toBe('[Image: a.png](#media:%2Ftmp%2Fa.png)')
+  })
+})
+
+describe('DSML tool-call leakage', () => {
+  it('hides every non-empty opening-tag prefix while streaming', () => {
+    const openingTag = '<｜DSML｜tool_calls>'
+
+    for (let split = 1; split < openingTag.length; split += 1) {
+      const parts = appendAssistantTextPart([], `Before ${openingTag.slice(0, split)}`)
+
+      expect(chatMessageText({ id: `assistant-${split}`, parts, role: 'assistant' })).toBe('Before ')
+    }
+  })
+
+  it('hides a tool-call block when its tags arrive in separate stream deltas', () => {
+    let parts = appendAssistantTextPart([], 'Before <｜DSML｜tool_')
+
+    expect(chatMessageText({ id: 'assistant', parts, role: 'assistant' })).toBe('Before ')
+
+    parts = appendAssistantTextPart(parts, 'calls><｜DSML｜invoke name="terminal">pwd</｜DSML｜invoke>')
+
+    expect(chatMessageText({ id: 'assistant', parts, role: 'assistant' })).toBe('Before ')
+
+    parts = appendAssistantTextPart(parts, '</｜DSML｜tool_calls> After')
+
+    expect(chatMessageText({ id: 'assistant', parts, role: 'assistant' })).toBe('Before  After')
+  })
+
+  it('restores an opening-tag prefix when later text proves it was ordinary prose', () => {
+    let parts = appendAssistantTextPart([], 'Before <｜DSML｜tool_')
+    parts = appendAssistantTextPart(parts, 'tips are useful.')
+
+    expect(chatMessageText({ id: 'assistant', parts, role: 'assistant' })).toBe(
+      'Before <｜DSML｜tool_tips are useful.'
+    )
+  })
+
+  it('settles an unfinished opening-tag prefix as ordinary text in a final response', () => {
+    const text = 'Before <｜DSML｜tool_'
+
+    expect(assistantTextPart(text)).toMatchObject({ type: 'text', text })
+  })
+
+  it('hides a complete DSML tool-call block from final assistant content', () => {
+    const part = assistantTextPart('Before <｜DSML｜tool_calls><｜DSML｜invoke name="terminal">pwd</｜DSML｜invoke></｜DSML｜tool_calls> After')
+
+    expect(part).toMatchObject({ type: 'text', text: 'Before  After' })
+  })
+
+  it('preserves ordinary text with similar ASCII characters', () => {
+    const text = 'Use <|DSML|tool_calls> as a literal example, not a tool call.'
+
+    expect(assistantTextPart(text)).toMatchObject({ type: 'text', text })
   })
 })

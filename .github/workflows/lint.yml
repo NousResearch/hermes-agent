@@ -56,7 +56,7 @@ jobs:
       - name: Install ruff + ty
         uses: ./.github/actions/retry
         with:
-          command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)" ty==0.0.82
+          command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)" ty==0.0.89
 
       - name: Determine base ref
         id: base

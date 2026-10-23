@@ -136,20 +136,100 @@ def test_loaded_launchd_identity_is_independent_of_disk(configured, command, rea
         verify_launchd_loaded(output, home, uid=123, username="owner")
 
 
+def _launchd_gateway_command(tmp_path, monkeypatch, *, store, profile=""):
+    """The gateway command generate_launchd_plist persists, from a store Python or an external one."""
+    from hermes_cli import _launchers, gateway as gw
+    from hermes_cli.gateway_launchd import _timestamped_stderr_gateway_command
+    monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "hermes-agent")
+    monkeypatch.setattr(gw, "get_python_path", lambda: sys.executable)
+    monkeypatch.setattr(gw, "_profile_arg", lambda *a, **k: profile)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda *a, **k: Path(sys.executable) if store else None)
+    return _timestamped_stderr_gateway_command(tmp_path / "logs" / "gateway.error.log", external_supervisor=True)
+
+
+@pytest.mark.platforms("linux", "macos")  # launchd ProgramArguments are POSIX shell-quoted
 @pytest.mark.parametrize("case,reason", [
-    ("bound", None), ("utf16", None), ("wrong_home", "profile_mismatch"),
-    ("wrong_user", "service_account_mismatch"), ("missing_user", "service_identity_unverified"),
-    ("extra_action", "service_identity_unverified"), ("disabled", "service_disabled"),
-    ("unknown_script", "service_identity_unverified"), ("malformed_xml", "service_identity_unverified"),
+    ("store", None), ("inline", None), ("store_profile", "profile_mismatch"),
+    ("chained_shell", "service_identity_unverified"), ("substituted_shell", "service_identity_unverified"),
+    ("extra_jxa", "service_identity_unverified"), ("foreign_osascript", "service_identity_unverified"),
+    ("tampered_bootstrap", "service_identity_unverified"), ("arbitrary_inline", "service_identity_unverified"),
+    ("other_run_module", "service_identity_unverified"),
+    ("foreign_root_store", "service_identity_unverified"), ("foreign_root_inline", "service_identity_unverified"),
+    ("other_home", "foreign_root"), ("osascript_non_gateway", "service_identity_unverified"),
+    ("own_wrapper_foreign_inner", "service_identity_unverified"),
+    ("osascript_foreign_bare", "service_identity_unverified"),
+    ("osascript_legacy_module", "service_identity_unverified"),
 ])
-def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
-    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
-    from hermes_cli.gateway_windows import _build_scheduled_task_xml
-    home = tmp_path / 'requested'
-    home.mkdir()
+def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(case, reason, tmp_path, monkeypatch):
+    """The Local Network wrapper (#71206) is unwrapped only as its exact template, and the command inside
+    is held to the same gateway identity as a bare ProgramArguments, on disk and as launchd loaded it."""
+    import plistlib
+    from hermes_cli.gateway_launchd import launchd_program_arguments
+    from hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded, verify_launchd_plist
+    home = tmp_path / ".hermes"
+    from hermes_cli import gateway as gw
+    command = _launchd_gateway_command(tmp_path, monkeypatch,
+                                       store=case not in {"inline", "tampered_bootstrap", "foreign_root_inline"},
+                                       profile="--profile stranger" if case == "store_profile" else "")
+    if case.startswith("foreign_root"):  # the installer's own output, written for another checkout
+        from hermes_cli.gateway_launchd import _timestamped_stderr_gateway_command
+        root = gw.PROJECT_ROOT
+        monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "other-checkout")
+        command = _timestamped_stderr_gateway_command(tmp_path / "logs" / "gateway.error.log", external_supervisor=True)
+        monkeypatch.setattr(gw, "PROJECT_ROOT", root)
+    if case in {"own_wrapper_foreign_inner", "osascript_foreign_bare"}:
+        # The installer's own gateway command for ANOTHER checkout: inside OUR stderr wrapper, or bare
+        # inside the Local Network wrapper. Neither is a launcher this install root writes.
+        from hermes_cli._launchers import installation_command
+        foreign = installation_command(tmp_path / "other-checkout", ["gateway", "run", "--external-supervisor"],
+                                       python=sys.executable)
+        assert Path(foreign[0]).name == "hermes"
+        command = foreign if case == "osascript_foreign_bare" else installation_command(
+            gw.PROJECT_ROOT, ["--error-log", str(tmp_path / "logs" / "gateway.error.log"), "--", *foreign],
+            module="hermes_cli.stderr_timestamp", python=sys.executable)
+    if case == "osascript_legacy_module":
+        # The legacy ``python -m`` form from any interpreter: accepted unwrapped, never written inside osascript.
+        command = [sys.executable, "-m", "hermes_cli.stderr_timestamp", "--error-log",
+                   str(tmp_path / "logs" / "gateway.error.log"), "--",
+                   sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--external-supervisor"]
+    if case == "osascript_non_gateway":
+        command = ["/bin/sh", "-c", "id"]
+    if case == "tampered_bootstrap":
+        tampered = command[3].replace("import hermes_bootstrap; ", "import hermes_bootstrap; print('injected'); ")
+        assert tampered != command[3]
+        command[3] = tampered
+    if case == "arbitrary_inline":
+        command = [sys.executable, "-I", "-c", "print('injected')", *command[3:]]
+    if case == "other_run_module":
+        command[2] = "other_module"
+    argv = launchd_program_arguments(command, tmp_path / "logs" / "gateway.log", tmp_path / "logs" / "gateway.error.log")
+    shell_edits = {"chained_shell": (" >> ", "; id >> "), "substituted_shell": (" gateway run", " $(id) gateway run")}
+    if case in shell_edits:
+        edited = argv[4].replace(*shell_edits[case], 1)
+        assert edited != argv[4]
+        argv[4] = edited
+    if case == "extra_jxa":
+        argv[4] += ' $.system("id");'
+    if case == "foreign_osascript":
+        argv[0] = str(tmp_path / "osascript")
+    env = dict(HERMES_HOME=str(home if case != "other_home" else tmp_path / "elsewhere" / ".hermes"),
+               HERMES_SUPERVISED_CHILD="1")
+    definition = plistlib.loads(plistlib.dumps(dict(Label="ai.hermes.gateway", ProgramArguments=argv, EnvironmentVariables=env)))
+    output = ("gui/123/ai.hermes.gateway = {\n\tstate = not running\n\tprogram = " + argv[0] + "\n\targuments = {\n"
+              + "\n".join("\t\t" + arg for arg in argv) + "\n\t}\n\tenvironment = {\n"
+              + "".join(f"\t\t{key} => {value}\n" for key, value in env.items()) + "\t}\n}")
+    for verify in (lambda: verify_launchd_plist(definition, "ai.hermes.gateway", home),
+                   lambda: verify_launchd_loaded(output, home, uid=123, username="owner")):
+        if reason:
+            with pytest.raises(ValueError, match=reason):
+                verify()
+        else:
+            verify()
+
+
+def _installed_vbs(home, configured):
+    """The current installed launcher grammar; no script is executed."""
     script = home / 'gateway.vbs'
-    configured = str(home if case != 'wrong_home' else tmp_path / 'other')
-    # The current installed launcher grammar; no script is executed.
     script.write_text("\n".join([
         "' Hermes Agent Gateway", "Option Explicit", "Dim sh, env, existing_pp",
         'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")',
@@ -162,8 +242,38 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
         f'sh.CurrentDirectory = "{home}"',
         f'sh.Run "{sys.executable} -m hermes_cli.main gateway run", 0, False',
     ]) + "\n", encoding='utf-8')
+    return script
+
+
+def _as_schtasks_exports(xml):
+    """``schtasks /Query /XML`` omits elements holding the Windows default (seen on a real host)."""
+    return xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '').replace('<Enabled>true</Enabled>\n    <Hidden>', '<Hidden>')
+
+
+@pytest.mark.parametrize("case,reason", [
+    ("bound", None), ("utf16", None), ("wrong_home", "profile_mismatch"),
+    ("wrong_user", "service_account_mismatch"), ("missing_user", "service_identity_unverified"),
+    ("extra_action", "service_identity_unverified"), ("disabled", "service_disabled"),
+    ("unknown_script", "service_identity_unverified"), ("malformed_xml", "service_identity_unverified"),
+    ("schtasks_export", None), ("elevated", "service_identity_unverified"),
+    ("empty_run_level", "service_identity_unverified"), ("empty_enabled", "service_disabled"),
+])
+def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+    home = tmp_path / 'requested'
+    home.mkdir()
+    script = _installed_vbs(home, str(home if case != 'wrong_home' else tmp_path / 'other'))
     user = 'DOMAIN\\owner'
     xml = _build_scheduled_task_xml('Hermes_Gateway', script, user)
+    if case == 'schtasks_export':
+        xml = _as_schtasks_exports(xml)
+    if case == 'elevated':  # an explicit non-default value is still refused
+        xml = xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '<RunLevel>HighestAvailable</RunLevel>')
+    if case == 'empty_run_level':  # present but empty is not "absent": still refused
+        xml = xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '<RunLevel></RunLevel>')
+    if case == 'empty_enabled':
+        xml = xml.replace('<Enabled>true</Enabled>\n    <Hidden>', '<Enabled></Enabled>\n    <Hidden>')
     if case == 'wrong_user':
         xml = xml.replace(user, 'DOMAIN\\other')
     if case == 'missing_user':
@@ -315,6 +425,72 @@ def test_android_python_reaches_the_unmanaged_start(tmp_path, monkeypatch):
     assert spawned == [home.resolve()]
 
 
+def test_s6_runtime_ensure_starts_the_registered_gateway_slot(tmp_path, monkeypatch):
+    """A Docker TUI client starts its s6 gateway instead of probing systemd."""
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli import service_manager
+
+    home = tmp_path / "data"
+    home.mkdir()
+    scandir = tmp_path / "run-service"
+    (scandir / "gateway-default").mkdir(parents=True)
+    started = []
+
+    class FakeS6ServiceManager:
+        def __init__(self):
+            self.scandir = scandir
+
+        def is_running(self, name):
+            assert name == "gateway-default"
+            return False
+
+        def start(self, name):
+            started.append(name)
+
+    monkeypatch.setattr(service_manager, "_s6_running", lambda: True)
+    monkeypatch.setattr(service_manager, "S6ServiceManager", FakeS6ServiceManager)
+    read_text = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda path, *args, **kwargs: (
+        str(home) if str(path).replace("\\", "/") == "/run/s6/container_environment/HERMES_HOME"
+        else read_text(path, *args, **kwargs)))
+    monkeypatch.setattr(service, "_systemd", lambda *_args: pytest.fail("s6 must not probe systemd"))
+
+    found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
+
+    assert found is not None and found.backend == "s6"
+    service.start_existing_gateway_service(found, deadline=time.monotonic() + 5)
+    assert started == ["gateway-default"]
+
+
+def test_s6_command_timeout_ends_at_the_runtime_deadline(tmp_path, monkeypatch):
+    """A hung s6-svstat or s6-svc reaches ensure as its deadline, not an uncaught TimeoutExpired."""
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli import service_manager
+
+    home = tmp_path / "data"
+    home.mkdir()
+    scandir = tmp_path / "run-service"
+    (scandir / "gateway-default").mkdir(parents=True)
+
+    def hang(cmd, *_args, timeout=5, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(service_manager, "_s6_running", lambda: True)
+    monkeypatch.setattr(service_manager, "_s6_run", hang)
+    monkeypatch.setattr(service_manager.S6ServiceManager, "__init__",
+                        lambda self: setattr(self, "scandir", scandir))
+    read_text = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda path, *args, **kwargs: (
+        str(home) if str(path).replace("\\", "/") == "/run/s6/container_environment/HERMES_HOME"
+        else read_text(path, *args, **kwargs)))
+
+    with pytest.raises(TimeoutError):
+        service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
+    stopped = service.ExistingService("s6", ("gateway-default",), False)
+    with pytest.raises(TimeoutError):
+        service.start_existing_gateway_service(stopped, deadline=time.monotonic() + 5)
+
+
 def test_windows_startup_folder_entry_still_restarts_a_stopped_owner(tmp_path, monkeypatch):
     """The Startup-folder fallback is login persistence only (no start verb, no identity): with it
     present and no Scheduled Task registered, ensure takes the same detached direct spawn manual
@@ -330,7 +506,7 @@ def test_windows_startup_folder_entry_still_restarts_a_stopped_owner(tmp_path, m
     (startup / f"Hermes_Gateway_{service.service_suffix(home)}.vbs").write_text("' fallback\r\n")
     monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
     queries, spawned = [], []
-    monkeypatch.setattr(service, "_run", lambda argv, *a, **k: queries.append(argv) or SimpleNamespace(returncode=0, stdout=""))
+    monkeypatch.setattr(service, "_run", lambda argv, *a, **k: queries.append(argv) or SimpleNamespace(returncode=0, stdout=b""))
     monkeypatch.setattr(service.sys, "platform", "win32")
     monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
     monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
@@ -338,3 +514,39 @@ def test_windows_startup_folder_entry_still_restarts_a_stopped_owner(tmp_path, m
     assert result.reason_code != "startup_service_requires_login"
     assert spawned == [home.resolve()]
     assert all(argv[:2] == ["schtasks.exe", "/Query"] for argv in queries)  # nothing installed or run
+
+
+@pytest.mark.platforms("windows")
+def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
+    """A localized host (zh-CN, console cp936) with Python in UTF-8 mode: schtasks and whoami write
+    cp936 bytes, and /XML declares UTF-16 over them with the defaults elided (#139083, #139013).
+    The installed task must still be verified, not refused as service_identity_unverified."""
+    from types import SimpleNamespace
+    from hermes_cli import gateway_runtime_service as service, gateway_windows
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    script = _installed_vbs(home, str(home))
+    name = "Hermes_Gateway_" + service.service_suffix(home)
+    account, sid = "DESKTOP-1\\\u65b9\u821f", "S-1-5-21-123"
+    # whoami first: it is queried with /FO CSV too.
+    out = {"whoami.exe": f'"{account}","{sid}"\r\n', "/XML": _as_schtasks_exports(
+        _build_scheduled_task_xml(name, script, account)), "/FO": f'"\\{name}","N/A","\u5c31\u7eea"\r\n'}
+    # The console code page this host would report; the bytes below are what such a console writes.
+    monkeypatch.setattr(gateway_windows, "_windows_console_encodings", lambda: ["cp936"])
+
+    def run(argv, *_args, encoding=None, **_kwargs):
+        # Windows subprocess decodes text in a reader thread: a decode error there leaves stdout None
+        # (main then read an empty task list and fell through to an unmanaged spawn), it does not raise.
+        data = next(text for key, text in out.items() if key in argv).encode("cp936")
+        if encoding:
+            try:
+                data = data.decode(encoding)
+            except UnicodeDecodeError:
+                data = None
+        return SimpleNamespace(returncode=0, stdout=data)
+
+    monkeypatch.setattr(service, "_run", run)
+    found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
+    assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)

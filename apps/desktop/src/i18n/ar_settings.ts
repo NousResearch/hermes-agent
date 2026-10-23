@@ -1,3 +1,4 @@
+import { arDelegationRouting } from './ar_delegation_routing'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
@@ -12,6 +13,36 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
+    billing: {
+      keepGoingOnCredits: {
+        title: 'الاستمرار بالرصيد',
+        description: 'استخدم رصيدك عند نفاد الاستخدام المضمّن. عند الإيقاف: ينتظر Hermes إعادة التعيين.',
+        approveInBrowser: 'وافق على الإنفاق عن بُعد في متصفحك لتغيير هذا. يُطبَّق فور الموافقة.',
+        openAgain: 'الفتح مرة أخرى',
+        cancel: 'إلغاء',
+        approvedRetry: 'تمت الموافقة على الإنفاق عن بُعد، لكن لم يُحفظ التغيير.',
+        tryAgain: 'إعادة المحاولة'
+      },
+      state: {
+        usage: {
+          window: {
+            today: 'اليوم',
+            week: 'هذا الأسبوع',
+            month: 'هذا الشهر',
+            topTier: 'النماذج الكبيرة (شهريًا)',
+            barLabel: title => `المستخدم من الاستخدام المضمّن: ${title}`,
+            captionPaused: 'متوقف مؤقتًا: فشل دفع الاشتراك',
+            captionPausedOther: 'متوقف مؤقتًا: راجع الفوترة في البوابة',
+            captionTopTierUsedUp: 'نفدت الحصة الشهرية، ويغطي الرصيد الباقي',
+            captionTopTierUsedUpKeepGoingOff: 'نفدت الحصة الشهرية، ولا تزال النماذج المضمّنة الأخرى تعمل',
+            captionResetsIn: duration => `يُعاد التعيين خلال ${duration}`,
+            captionIncluded: 'الاستخدام المضمّن',
+            valueUsed: percent => `${percent} مستخدم`
+          }
+        }
+      }
+    },
     subpages: {
       appearanceTheme: 'السمة',
       appearanceTypography: 'الخطوط والتحجيم',
@@ -229,6 +260,9 @@ export const arSettings = {
       testBody: 'الإشعارات تعمل.',
       testSent: 'تم إرسال التجربة. إذا لم يظهر شيء، تحقق من أذونات الإشعارات في نظام التشغيل ووضع التركيز/عدم الإزعاج.',
       testUnsupported: 'هذا النظام لا يدعم الإشعارات الأصلية.',
+      muteSoundsTitle: 'كتم أصوات الواجهة',
+      muteSoundsDesc:
+        'يكتم تنبيهات الاكتمال وكلمة التنبيه والتفكير التلقائية والاستجابة اللمسية وأصوات إشعارات النظام. تظل معاينات الصوت والردود المنطوقة مسموعة.',
       completionSoundTitle: 'صوت الاكتمال',
       completionSoundDesc: 'يُشغّل عند انتهاء دور الوكيل. اختر إعدادا مسبقا وعاينه هنا.',
       completionSoundPreview: 'معاينة'
@@ -805,6 +839,24 @@ export const arSettings = {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'
         }
+      },
+      subagents: {
+        inherit: 'الوراثة من الوكيل الرئيسي',
+        modelOnly: 'نموذج مخصص (بيانات اعتماد الوكيل الرئيسي)',
+        providerLabel: 'موفّر الوكلاء الفرعيين',
+        modelLabel: 'نموذج الوكلاء الفرعيين',
+        direct: 'نقطة نهاية مباشرة',
+        customProvider: 'موفّر مخصص...',
+        customProviderLabel: 'موفّر مخصص للوكلاء الفرعيين',
+        parentModel: 'استخدام نموذج الوكيل الرئيسي',
+        parentModelWarning:
+          'يجب أن يدعم الموفّر المختار نموذج الوكيل الرئيسي. قد يفشل المسار الذي يحدد الموفّر وحده إذا كان النموذج غير متوافق. إذا حدّد هذا الموفّر نموذجًا افتراضيًا خاصًا به، يستخدمه الوكلاء الفرعيون بدلًا من ذلك.',
+        directActive:
+          'نقطة نهاية مباشرة مفعّلة ولها الأولوية على الموفّر المحفوظ. يُحتفظ بعنوانها وبيانات اعتمادها ما دام هذا الوضع محددًا.',
+        directClear: 'تطبيق هذا المسار يمسح نقطة النهاية المباشرة ومفتاحها المحفوظ. تبقى إعدادات الطلب الأخرى كما هي.',
+        catalogFailed: 'كتالوج النماذج غير متاح. أدخل الموفّر والنموذج يدويًا أو أعد المحاولة.',
+        draftHint: 'تبقى التغييرات محلية حتى تطبيقها.',
+        routing: arDelegationRouting
       }
     },
     providers: {
@@ -917,7 +969,27 @@ export const arSettings = {
     priceTitle: 'السعر',
     customModel: 'نموذج مخصص',
     addCustomModelAction: 'إضافة نموذج مخصص…',
-    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5'
+    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5',
+    today: 'اليوم',
+    week: 'الأسبوع',
+    month: 'الشهر',
+    topTier: 'النماذج الكبيرة (شهري)',
+    included: 'كل النماذج أدناه مشمولة',
+    pausedRenewal: 'متوقف: التجديد غير مدفوع',
+    pausedOther: 'متوقف',
+    includedUsedUp: 'نفد الاستخدام المضمن',
+    limitReached: name => `تم بلوغ الحد ${name}`,
+    limitNames: { day: 'اليومي', month: 'الشهري', top_tier: 'الشهري للنماذج الكبيرة', week: 'الأسبوعي' },
+    limitThenCredits: 'النماذج المدفوعة تستخدم رصيدك الآن (الدفع حسب الاستخدام)',
+    limitThenCreditsLarge: 'النماذج الكبيرة تستخدم رصيدك الآن (الدفع حسب الاستخدام)',
+    limitThenWait: 'النماذج المجانية فقط حتى ذلك الحين',
+    limitThenWaitLarge: 'النماذج الكبيرة متوقفة مؤقتًا حتى ذلك الحين',
+    percentUsed: percent => `${percent} مستخدم`,
+    resetsIn: duration => `يُعاد التعيين خلال ${duration}`,
+    usageLevels: { free: 'مجاني', top_tier: 'كبير' },
+    sectionRecommended: 'موصى بها',
+    sectionOther: 'نماذج أخرى',
+    largeFootnote: 'تستهلك النماذج الكبيرة أيضًا حدّك الشهري للنماذج الكبيرة.'
   },
   modelVisibility: {
     title: 'النماذج',

@@ -42,7 +42,8 @@ def _entry(*, origin=True) -> SessionEntry:
 
 def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
-    runner.session_store = SimpleNamespace()
+    # The scheduler's synchronous profile check reads the store; dispatch reads the async facade.
+    runner.session_store = SimpleNamespace(lookup_by_session_key=lambda _key: None)
     runner._async_session_store = SimpleNamespace(
         _store=runner.session_store, lookup_by_session_key=AsyncMock(return_value=entry)
     )

@@ -71,6 +71,10 @@ _LEDGER_PASSTHROUGH_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "cache_read_tokens", "cache_write_tokens",
     "reasoning_tokens", "total_tokens", "provider", "turn_exit_reason", "service_tier",
 )
+# Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
+# so the authority's ``message.complete`` carries the same error card the TUI path builds;
+# ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
+_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
 
 
 def _finite_viewer_turn() -> bool:
@@ -129,6 +133,43 @@ def _settle_api_runtime_lock(agent, result, captured):
             route_source=settings.get('route_source') or '', confirmed_runtime_lock=True)
     except RuntimeError as exc:
         result.update(final_response='', failed=True, completed=False, error=str(exc))
+
+
+def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, str, bool]:
+    """``(chat text, failure_reason, retryable)`` for a model/credential resolution failure before the turn."""
+    from agent.error_classifier import FailoverReason
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_state_runtime import RuntimeStoreError
+    auth_permanent = FailoverReason.auth_permanent.value
+    if isinstance(exc, RuntimeStoreError):
+        # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
+        # daemon restart): keep it in the reply so clients can act on it, and do not suggest
+        # /login — the profile's own credentials were never in play.
+        return (f"⚠️ This session's launch credentials are no longer available ({exc.reason}), so this "
+                "message wasn't processed. Start a new session from the CLI to bind them again.", auth_permanent, False)
+    if is_rate_limited_auth_error(exc.__cause__):
+        # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+        from gateway.run import _gateway_provider_error_reply
+        return _gateway_provider_error_reply(str(exc)), auth_permanent, False
+    if platform == Platform.LOCAL:
+        # The local operator reads the terminal: the resolver's own sentence ("provider 'custom'
+        # resolved without credentials ...") is the diagnosis; /login is not.
+        return f"⚠️ {exc}", auth_permanent, False
+    seen: set[int] = set()
+    host = auth = False
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        host = host or isinstance(link, OSError)
+        auth = auth or isinstance(link, AuthError)
+        link = link.__cause__ or link.__context__
+    if host and not auth:
+        # A host-side failure (a CA bundle deleted under a long-lived process, an unreadable file)
+        # with no credential verdict: /login cannot fix it, the gateway log can (#140344).
+        # host_error sits on the gateway layer, so clients don't offer "Switch provider"; not retryable,
+        # since a deleted bundle or unreadable store fails the same way until the host is fixed.
+        return t("gateway.errors.generic_failed"), "host_error", False
+    return t("gateway.errors.no_credentials"), auth_permanent, False
 
 
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
@@ -289,10 +330,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.warning_notifications import is_diagnostic_notice, render_notification
         if self._ctx.mute_notification_reply or not self._status_live():
             return
+        # A usage-window limit line repeats the turn's own reply, which carries the sentence and the
+        # switch button (a chat message cannot be cleared, so it would only pile up). The 90% heads-up
+        # is a desktop / terminal nudge; in a chat it is noise (/usage has the numbers).
+        key = str(getattr(notice, "key", "") or "")
+        if key == "credits.window_limit" or key.startswith("credits.window."):
+            return
         diagnostic = is_diagnostic_notice(notice)
         def present():
             try:
                 line = render_notice_line(notice)
+                if key.startswith("credits."):
+                    # Window plans (e.g. a paused plan's line): a chat's /topup has no credits settings.
+                    from agent.plan_limits import portal_wording
+                    line = portal_wording(line)
             except Exception:
                 logger.debug("render_notice_line failed", exc_info=True)
                 return
@@ -512,7 +563,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return finite_clarify_reply()
         from gateway.session_cli_turn import clarify_batch_turn
         if clarify_batch_turn(self):
-            # Main's classic CLI shows every question at once in its batch panel: one request.
+            # Main's batch panel (classic CLI, Ink TUI) shows every question at once: one request.
             from gateway.session_clarify_batch import ask_clarify_batch
             return ask_clarify_batch(self, questions)
         answers: dict[str, Any] = {}
@@ -744,6 +795,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if api is not None and api['history'] is not None:
             from gateway.run import _collect_history_media_paths
             history = api['history']
+            tail = history[-1] if history else None
+            if api.get('resume_unanswered') and isinstance(tail, dict) and tail.get('role') == 'user':
+                # The door's re-run continues the row its failed attempt persisted (#115325). Only a
+                # bare user tail: a tool suffix is completed work the re-run must still see.
+                from agent.session_persistence import adopt_unanswered_turn
+                history = list(history)
+                adopt_unanswered_turn(history, api['content'], agent)
             return history, None, _collect_history_media_paths(history)
         # Transcript rows ({role, content, timestamp}) lose timestamps; interrupt-path agent messages
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
@@ -921,6 +979,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 kwargs["persist_user_display_metadata"] = ctx.persist_user_display_metadata
             if ctx.moa_config is not None:
                 kwargs["moa_config"] = ctx.moa_config
+            from gateway.session_onboarding import arm_onboarding_turn
+            prelude = arm_onboarding_turn(agent, self._approval_owner, agent_history)
+            if prelude is not None and _accepts_keyword(agent.run_conversation, "prelude"):
+                kwargs["prelude"] = prelude
             if persist_user_timestamp_override is not None:
                 kwargs["persist_user_timestamp"] = persist_user_timestamp_override
             # The RAW inbound id (not event_message_id, the reply anchor) rides the persisted user
@@ -1109,19 +1171,33 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
-        from gateway.session_policy import policy_for_source, policy_scope
+        from contextlib import ExitStack
+        from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope, workspace_unavailable_result
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
-        with policy_scope(policy_for_source(self._runner, self._ctx.source),
-                          authority=active_authority(self._runner)), api_policy_scope():
-            result = self._run_sync_scoped()
+        from hermes_state_runtime import RuntimeStoreError
+        policy = policy_for_source(self._runner, self._ctx.source)
+        with ExitStack() as scope:
+            try:
+                scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
+            except RuntimeStoreError as exc:
+                if exc.reason != 'workspace_unavailable':
+                    raise
+                result = workspace_unavailable_result(policy)
+            else:
+                scope.enter_context(api_policy_scope())
+                bind_turn_workspace(policy, self._ctx.session_id)
+                result = self._run_sync_scoped()
             from gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:
                 cli_fields = self.__dict__.pop("_cli_result_fields", None)
                 # A classic CLI viewer reads the run_conversation-shaped dict from the receipt; the
                 # delivered reply (message.complete text) keeps the gateway's own copy.
-                captured['result'] = {**result, **cli_fields} if cli_fields else result
+                captured['result'] = (
+                    {**result, **cli_fields, **({'response_previewed': True} if result.get('response_previewed') else {})}
+                    if cli_fields else result
+                )
             return result
 
     def _run_sync_scoped(self):
@@ -1188,34 +1264,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # a FAILED turn: a one-shot client exits non-zero, transcript persistence closes the
             # turn, and an API receipt reports failure, never a completed turn with an apology.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc, exc_info=True)
-            from hermes_state_runtime import RuntimeStoreError
             from agent.turn_failure_copy import stamp_failure
-            resolution_error = str(exc)
-
-            def _unresolved(text: str) -> dict:
-                return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
-                                      "failed": True, "completed": False, "error": resolution_error},
-                                     "auth_permanent", False)
-            if isinstance(exc, RuntimeStoreError):
-                # Session-policy refusals carry a stable reason code (e.g. a CLI launch key
-                # revoked by daemon restart): keep it in the reply so clients can act on it, and
-                # do not suggest /login — the profile's own credentials were never in play.
-                return _unresolved(f"⚠️ This session's launch credentials are no longer available "
-                                   f"({exc.reason}), so this message wasn't processed. Start a new "
-                                   "session from the CLI to bind them again.")
-            from hermes_cli.auth import is_rate_limited_auth_error
-            if is_rate_limited_auth_error(exc.__cause__):
-                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
-                from gateway.run import _gateway_provider_error_reply
-                return _unresolved(_gateway_provider_error_reply(str(exc)))
-            if ctx.source.platform == Platform.LOCAL:
-                # The local operator reads the terminal: the resolver's own sentence ("provider
-                # 'custom' resolved without credentials ...") is the diagnosis; /login is not.
-                return _unresolved(f"⚠️ {exc}")
-            return _unresolved(t("gateway.errors.no_credentials"))
-        pr = runner._provider_routing
+            text, reason, retryable = _resolution_failure_reply(exc, ctx.source.platform)
+            return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                  "failed": True, "completed": False, "error": str(exc)}, reason, retryable)
+        from gateway.session_authorities import active_authority
+        from gateway.session_worker_construct import session_routing
+        pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
         reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
+        from gateway.session_cli_turn import one_turn_reasoning
+        reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`
         runner._service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
             runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key))
         from gateway.session_api_turn import api_execution
@@ -1253,7 +1312,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway.session_cli_turn import run_classic_cli_turn
             from gateway.session_secret_prompt import secret_prompt_scope
             from gateway.session_sudo_prompt import sudo_prompt_scope
-            with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent):
+            from gateway.session_vault_prompt import vault_prompt_scope
+            with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent), vault_prompt_scope(self, agent):
                 result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
                     agent, agent_history, observed_group_context, persist_msg, persist_ts))
         finally:
@@ -1285,6 +1345,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
             "model": getattr(agent, "model", None) if agent else None,
+            # Most failed results name no provider; the error card's sign-in / update-key action needs it.
+            "provider": getattr(agent, "provider", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
             # The rest of the `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS): a finite
             # viewer reads the committed result over `prompt.receipt`, so the projection must keep
@@ -1299,9 +1361,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         common = {
             "messages": result.get("messages", []), "api_calls": result.get("api_calls", 0),
             "failed": result.get("failed", False), "failure_reason": result.get("failure_reason"),
+            # Usage-window limit (agent/plan_limits.py): the gateway offers the plan's model as a button.
+            "usage_limit": result.get("usage_limit"),
             "partial": result.get("partial", False), "completed": result.get("completed"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
             "error": result.get("error"),
+            **{key: result[key] for key in _FAILURE_DESCRIPTOR_KEYS if key in result},
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
             "tools": ctx.tools_holder[0] or [],
@@ -1315,20 +1380,37 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             **usage,
             **({"persisted_turn": persisted_turn} if persisted_turn else {}),
         }
+        previewed = result.get("response_previewed", False)
+        viewer_meta = {}
+        if local_sinks is not None:
+            was_delivered = getattr(agent, "_interim_text_was_delivered", None)
+            previewed = bool(previewed or (callable(was_delivered) and bool(final_response) and was_delivered(final_response) is True))
+            viewer_meta = {
+                "local_viewer": True,
+                **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
+                **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
+            }
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
             if not final_response:
                 final_response = t("gateway.shared.warn_passthrough", error=result["error"]) if result.get("error") else ""
-            # NOTE: deliberately omits agent_persisted/last_reasoning/response_* — the caller
-            # defaults agent_persisted differently when the key is absent.
+            # NOTE: deliberately omits agent_persisted/response_reused (and last_reasoning outside a local
+            # viewer's turn); the caller defaults agent_persisted differently when the key is absent.
+            if local_sinks is not None:
+                return {
+                    "final_response": final_response, **common, **viewer_meta,
+                    "last_reasoning": result.get("last_reasoning"),
+                    "response_previewed": previewed,
+                    "response_transformed": bool(result.get("response_transformed")),
+                }
             return {"final_response": final_response, **common}
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.
         return {
-            "final_response": final_response, "last_reasoning": result.get("last_reasoning"), **common,
-            "response_previewed": result.get("response_previewed", False),
+            "final_response": final_response, "last_reasoning": result.get("last_reasoning"), **common, **viewer_meta,
+            "response_previewed": previewed,
             "response_transformed": result.get("response_transformed", False),
             "response_reused": result.get("response_reused", False),
             # Lets the persistence block tell whether the codex app-server path self-persisted (it

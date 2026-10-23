@@ -626,6 +626,13 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int =
     if profile_db is not None:
         db, current_session_id = profile_db, None
         owned_dbs.append(profile_db)
+    # A managed worker's handle is a RuntimeSessionStore: it mirrors the owner's write and lineage
+    # surface, not the FTS read API, and every read is an owner RPC. Handing it here made recall in a
+    # worker fail with `'RuntimeSessionStore' object has no attribute 'search_messages'` (#141705), so
+    # recall opens its own read-only handle — the same one the no-db path below uses.
+    from agent.runtime_session_store import RuntimeSessionStore
+    if isinstance(db, RuntimeSessionStore):
+        db = None
     if db is None:
         db = _quiet(
             lambda: SessionDB(db_path=get_hermes_home() / "state.db", read_only=True),

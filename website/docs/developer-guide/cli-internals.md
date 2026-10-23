@@ -112,34 +112,87 @@ weeks, months and years. The combined timeout is capped below the native signed
 unit limits cannot overflow subprocess polling. Zero/unknown/infinite phase
 limits use the bounded fallback. This does not change active-turn drain settings.
 
-## Nous free tier sign-in
+## Nous sign-in
 
-Sign-in completion is one function, `settle_after_upgrade`, called by every caller that persists an
-account over a free-tier identity (CLI `upgrade_guest`, the desktop poller): it moves a config on the
-welcome route to the account's host and the tier's recommended default
-(`models.recommended_nous_default_model`, shared with `GET /api/model/recommended-default`).
+Every Nous sign-in is the plain device-code login. Sign-in completion is one function,
+`settle_after_upgrade`, called once per completion: it moves a config on the welcome route to the
+account's host and the tier's recommended default (`models.recommended_nous_default_model`, shared
+with `GET /api/model/recommended-default`).
 
 The shared flow, states, and copy live in `anon_sign_in.py`; CLI rendering lives in
-`anon_sign_in_cli.py`. `anon_auth.py` keeps identity, promotion polling, and settlement, and
-re-exports the existing sign-in API. The flow resolves identity and persistence collaborators
-through `anon_auth` at call time to preserve module-attribute monkeypatch seams.
+`anon_sign_in_cli.py`. `anon_auth.py` keeps identity and settlement, and re-exports the sign-in
+API. The flow resolves identity and persistence collaborators through `anon_auth` at call time to
+preserve module-attribute monkeypatch seams.
 
 The sign-in itself is one composition: `anon_auth.run_sign_in()` yields `SignInState`s (`Code`,
-`Waiting`, `Completed`, `Declined`, `Superseded`, `TimedOut`, `Retired`, `Failed`,
-`AlreadySignedIn`, `Unavailable`). It reads the current state itself, holds one absolute deadline
-across both waits, persists only after a completed promotion **and** a token grant, runs
-`settle_after_upgrade` exactly once per completion, and never lets a persist or settle failure
-escape as an exception — it becomes `Failed`. Every state carries its own `.copy` (the chat form,
-which never contains a raw exception, a URL or a `hermes` verb) and `.copy_terminal`, so no caller
-maps a reason to a string. `cancelled()` stops an attempt; `cancel_wins_after_promotion` decides
-what happens when the server had already completed the transfer — the desktop keeps `True` (a
-DELETE means "not on this machine"), the gateway passes `False` (a supersede must not discard a
-transfer the user actually approved). `scope` is entered only around the precondition and persist
-blocks, never across a `yield` or a network wait, because `run_in_executor` does not carry
-contextvars. `upgrade_guest` (`hermes auth upgrade`), the CLI `/login` handler and the desktop
-promotion poller are renderers over it; a surface that needs the cancel check and the save to be
-atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
-is a separate path (`_nous_plain_poller`) and must stay one.
+`Waiting`, `Completed`, `Cancelled`, `TimedOut`, `Failed`, `AlreadySignedIn`). It requests a device
+code, polls the token endpoint on one deadline (an expired code is `TimedOut`), saves the account,
+runs `settle_after_upgrade` exactly once, and never lets a persist or settle failure escape as an
+exception: it becomes `Failed`. It works with or without a free tier on disk. `Completed.email`
+comes from the access token's `email` claim; `Completed.handoff` carries the guest handoff's result
+lines (what moved, what to reconnect) and `Completed.handoff_status` the latest record as fields
+(`guest_handoff.wire_status`: the public view plus those `lines`), for a surface that renders the
+result itself. Every state carries its own `.copy` (the chat form, which
+never contains a raw exception, a URL or a `hermes` verb) and `.copy_terminal`, so no caller maps a
+reason to a string. `cancelled()` is checked at least once a second inside the token poll and once more
+before the save; a cancel always wins and nothing is saved. TLS verification comes from
+`_resolve_verify`, so `HERMES_CA_BUNDLE` and friends apply. `scope` is entered only around the
+precondition and persist blocks, never across a `yield` or a network wait, because
+`run_in_executor` does not carry contextvars. `replace_account=True` lets a signed-in install sign in
+again (the desktop's "connect another account"); otherwise a signed-in install gets
+`AlreadySignedIn` before any network. `upgrade_guest` (`hermes auth upgrade`), the CLI and TUI
+`/login`, the gateway `/login` and the desktop start route are renderers over it; a surface that
+needs the cancel check and the save to be atomic passes `persist_guard`. `hermes model` and
+`hermes auth add nous` keep `_login_nous` (it carries `--portal-url`, `--ca-bundle`, `--insecure`
+and the shared-store import); that is the same plain device login, and it prints the handoff result
+the same way. Every sign-in that saves an account (`run_sign_in`, `_login_nous`, `hermes auth add
+nous`, the billing step-up, the tool-setup login) calls `settle_after_upgrade` itself once its locks
+are released; the handoff runner never settles.
+
+### Guest handoff after a sign-in
+
+When any writer saves a Nous account over a free-tier identity, `hermes_cli/guest_handoff.py` hands
+that identity's connected apps to the account: `POST /api/anonymous/claim {"token": "<anon_...>"}`
+with the account's own Bearer token. Nothing asks the user first; the result is shown afterwards
+(`hermes auth status nous`; the desktop reads it from the sign-in poll's `handoff_status` and, while a
+move is still retrying, from the `GET /api/providers/oauth/nous/handoff?since=&wait=` long-poll, which
+answers once the record's `updated_at` changes). Sign-in code does not
+call it:
+
+- `note_replacement` runs at the two lowest write seams (`auth._store_provider_state` and
+  `auth_nous._write_shared_nous_state`) under the caller's auth-store locks and only writes a pending
+  record. Records live in `guest_handoff.json` beside the shared Nous store, keyed by a hash of the
+  `anon_` credential and bound to the destination account, so profiles sharing one free-tier
+  identity share one record and one claim.
+- Only a sign-in changes which identity the shared store holds. Every `_write_shared_nous_state`
+  caller declares `renewal`: a token refresh (`renewal=True`) never replaces another identity there
+  (identity = the guest's `anon_` credential, or the account's JWT `sub`), so a refresh of one
+  profile's account never replaces a guest another profile minted. That refresh is kept beside the
+  held identity under `renewal`, where sibling profiles on the same account read their next
+  single-use refresh token.
+- `drain` runs the claim outside every lock, bounded to about 10 s (each record, lock wait, token
+  read and request counts against the budget): after a shared-store write, when a
+  `guest_handoff.deferred()` block exits (a surface that saves under its own lock, such as the desktop
+  poller, wraps the save in it), and after a free-tier reconcile. It only moves apps; config
+  completion (`settle_after_upgrade`) stays with the sign-in that saved the account.
+- Retries left by any process are finished by a retry worker that every long-lived Nous process
+  starts (`start_nous_auth_keepalive` starts it, guest or not). Each tick runs every due record
+  under its owning profile's home and secrets, so a named profile's move retries from a process
+  launched as another profile.
+- Every attempt is reserved in one locked read-modify-write that checks the record is still due,
+  inside its retry window, and bound to the account whose Bearer is about to be sent (the token's
+  `sub` must equal the record's destination). Apps never go to any other account.
+
+Answers: `claimed` records what moved (and refreshes the account token only when
+`cohort_carried`; an answer without `connectors` reads as unknown, never "nothing moved");
+`unknown_token` is Gone, read as "probably moved" after an earlier attempt (a lost success);
+`already_retired` is Gone too; a 401 refreshes the account token once. Only codes no later attempt
+can change are final (`client_not_allowed`, `account_locked`, `invalid_request`). Every other refusal,
+unknown codes included, and every transport failure retries with backoff (Retry-After honoured), the
+slowest rung repeating, until 13 days after the record was made: the service reaps an idle free-tier
+identity, apps included, after 14. A record an older build failed on a transient code re-arms on the
+next run (a sign-in, `hermes auth status`, `hermes auth upgrade`, the retry worker). A Claimed record
+is never reopened, and user copy never shows a server code.
 
 ## Process identity: never infer it from argv substrings
 

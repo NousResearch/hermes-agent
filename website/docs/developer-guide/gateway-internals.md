@@ -22,13 +22,22 @@ hosted-room driver still uses legacy TUI session handlers; the canonical surface
 therefore reports `driver: false` and does not advertise send, retry, approval,
 or peer-grant operations. It never imports that driver to execute a group turn.
 
-`profiles.list` requires `session:read` and returns only the authenticated
-profile, including its display metadata and avatar presence. `include_sessions`
-defaults to true: previews are limited to that actor's canonical local bindings,
-and `canonical_session` resolves the exact hidden `Bot Chat` title, not the most
-recent conversation. Discovery does not create, restore, or unarchive sessions,
-open sibling profile databases, or run inference. Cross-profile discovery requires
-a separately authenticated connection to the relevant owner.
+`profiles.list` requires `session:read` and returns the authenticated profile
+first, with its display metadata and avatar presence, then the served siblings and
+hosted-room destinations as discovery metadata. `include_sessions` defaults to
+true: `canonical_session` resolves the exact `Bot Chat` title, not the most recent
+conversation, and `last_session` is the newest visible local conversation (a hidden
+row never wins). Both count only local chats the actor owns or reads as an operator:
+minted `local-*` chats, and pre-upgrade chats adopted under their durable binding
+(they keep their old id). A sibling's row carries the same fields only when this
+connection already routes session verbs to it (a host-scoped grant: the Desktop's
+shared socket, the dashboard), read from that sibling's own authority with this
+connection's subject and capabilities. A profile-bound ticket gets metadata alone,
+and so does a sibling that is retiring, listed under a name that routes elsewhere,
+or whose store doesn't answer; a sibling still starting is not listed yet. Rows are
+reused while a profile's store has not moved. Discovery does not create, restore,
+or unarchive sessions, open a database handle of its own or reopen one an unserve
+closed, or run inference.
 
 ## Canonical ancillary reads
 
@@ -545,14 +554,15 @@ Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gat
 
 ## Platform Adapters
 
-Most messaging platforms ship as plugin adapters under `plugins/platforms/<name>/adapter.py`; a few legacy adapters still live directly in `gateway/platforms/`. All extend `BasePlatformAdapter` from `gateway/platforms/base.py`:
+Every messaging platform ships as a plugin adapter under `plugins/platforms/<name>/`; `gateway/platforms/` keeps the base class and the HTTP ingress adapters (`api_server`, `webhook`, `msgraph_webhook`). All extend `BasePlatformAdapter` from `gateway/platforms/base.py`:
 
 ```text
 plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── telegram/adapter.py     # Telegram Bot API (long polling or webhook)
 ├── discord/adapter.py      # Discord bot via discord.py
 ├── slack/adapter.py        # Slack Socket Mode
-├── whatsapp/adapter.py     # WhatsApp Business Cloud API
+├── whatsapp/adapter.py     # WhatsApp via the local Baileys bridge
+├── whatsapp_cloud/adapter.py # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # Email via IMAP/SMTP
@@ -562,16 +572,16 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── wecom/adapter.py        # WeCom (WeChat Work) callback
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
+├── signal/adapter.py       # Signal via signal-cli HTTP daemon (SSE + JSON-RPC)
 ├── irc/adapter.py          # IRC (canonical scoped-lock example)
+├── bluebubbles/adapter.py  # Apple iMessage via BlueBubbles macOS server
+├── weixin/adapter.py       # Weixin (personal WeChat) via iLink Bot API
+├── qqbot/                  # QQ Bot (Tencent QQ) via Official API v2
+├── yuanbao/adapter.py      # Yuanbao (Tencent) DM/group WebSocket
 └── …                       # google_chat, ntfy, photon, raft, simplex, …
 
-gateway/platforms/                  # core base + legacy direct adapters
+gateway/platforms/                  # core base + HTTP ingress adapters
 ├── base.py              # BasePlatformAdapter — shared logic for all platforms
-├── signal.py            # Signal via signal-cli REST API
-├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
-├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
-├── qqbot/               # QQ Bot (Tencent QQ) via Official API v2 (sub-package)
-├── yuanbao.py           # Yuanbao (Tencent) DM/group adapter
 ├── msgraph_webhook.py   # Microsoft Graph change-notification webhook (Teams, Outlook, etc.)
 ├── webhook.py           # Inbound/outbound webhook adapter
 └── api_server.py        # REST API server adapter
@@ -712,7 +722,7 @@ briefs are labelled user turns appended at a turn boundary, preserving role alte
 `GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
 `chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
 conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
-an agent peer, so posting a consent link there would publish it.
+an agent peer, so posting a sign-in link and code there would publish them.
 
 **It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
 approves the code owns this gateway's inference and connectors for every chat it serves. Slash
@@ -720,15 +730,15 @@ gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, ev
 DM the bot can run it. Operators of shared gateways must set it.
 
 The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
-executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
+executor** (`_login_executor`), never the shared 10-thread gateway pool — the token poll can last
 the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
 close/checkpoint. One attempt per process, stamped with the identity that started it: the same
-identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
-chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
-worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
-`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
-task is dying and its adapters may already be gone — but if the server had already completed the
-transfer it still persists, because that transfer is irreversible.
+identity's second `/login` cancels the first (the loser ends with the cancelled copy pushed into its
+own chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside
+a worker thread, so shutdown and the replacement both work through `attempt.cancelled`, which the
+token poll checks on a ≤1 s tick and once more before the save. A cancelled attempt saves nothing.
+A shutdown-cancelled attempt pushes nothing — the task is dying and its adapters may already be
+gone. The completion copy carries what the free tier's handoff moved.
 
 On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
 session model override pinned to it. It does not switch agents in place and does not write a model

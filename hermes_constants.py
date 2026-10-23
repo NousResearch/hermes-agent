@@ -63,6 +63,33 @@ def _get_platform_default_hermes_home() -> Path:
     return _platform_default_hermes_home(os.environ, Path.home)
 
 
+def _account_home() -> Path:
+    """The OS account's home from the password database, never ``$HOME``: harnesses and profile isolation
+    repoint HOME (root under ``sudo`` has uid 0 too, which keeps the #108674 remap). Falls back to the
+    shared real-home resolver where pwd cannot answer."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX-only module inside try/except
+    except (ImportError, KeyError, OSError, AttributeError):
+        return Path(get_real_home())
+
+
+def account_default_hermes_home() -> Path:
+    """The platform default of the OS ACCOUNT, never of a foreign process ``HOME``.
+
+    Host service identities (``systemctl --user`` units, LaunchAgents) belong to the account, and their
+    definitions are found under the account home. A process started with ``HOME=<scratch>`` used to call
+    ``<scratch>/.hermes`` native, name the bare ``hermes-gateway`` unit, and stop the account's real
+    gateway through it. When the process HOME is the account home the two answers are the same home.
+    """
+    account = _account_home()
+    try:
+        same = Path.home().resolve() == account.resolve()
+    except (OSError, RuntimeError):
+        same = False
+    return _get_platform_default_hermes_home() if same else _platform_default_hermes_home(os.environ, lambda: account)
+
+
 def _hermes_root_of(native_home: Path, env_path: Path | None) -> Path:
     """The root that holds *env_path*: the native home, a custom root, or *env_path* itself."""
     if env_path is None:
@@ -429,7 +456,11 @@ def mkdir_under_hermes_home(path: str | Path) -> Path:
     """Create *path*, but never materialize a deleted/missing named profile."""
     target = Path(path)
     assert_named_profile_home_live(target)
-    target.mkdir(parents=True, exist_ok=True)
+    # Lazy so this module still imports alone; hermes_dir_acl (stdlib only) ships beside it in every
+    # closure that creates home dirs, and a missing copy fails loudly instead of silently skipping the
+    # elevated grant (tests/pm/test_bootstrap_import_closure.py).
+    from hermes_dir_acl import make_user_dir
+    make_user_dir(target, parents=True, exist_ok=True)
     return target
 
 
@@ -581,22 +612,6 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     from pm import env_for
 
     return env_for("npm", base_env=env)
-
-
-def agent_browser_runnable(path: str | None) -> bool:
-    """True when *path* is an agent-browser CLI that runs (``--version`` exits 0).
-
-    Dead/wrong-arch/hung binaries are rejected so callers try the next candidate.
-
-    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough: agent-browser's npm
-    ``postinstall`` re-points a *global* install symlink (e.g. ``/opt/homebrew/bin/agent-browser``) at our
-    local ``node_modules/agent-browser/bin/...`` binary, which then disappears on the next ``hermes update``
-    — leaving a **dangling symlink** that ``which`` still reports but exec fails on with exit 127 (issue
-    #48521). Callers that trust such a path silently break every browser tool.
-    """
-    if not path:
-        return False
-    return _is_executable_file(path) and _version_probe_ok(path)
 
 
 def _legacy_path_has_content(path: Path) -> bool:
@@ -967,8 +982,9 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
 def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRATCH_MAX_IDLE_HOURS) -> int:
     """Delete top-level scratch entries with no write anywhere in their subtree for
     *max_idle_hours*, reaping processes and git worktree registrations rooted in them
-    first (``hermes_constants_scratch``); return the count removed. Each removal and kill is
-    recorded in ``<home>/logs/scratch-prune.log`` (*scratch* is ``<home>/cache/scratch``)."""
+    first (``hermes_constants_scratch``); return the count removed. Each removal, each
+    kill and each entry rescued mid-prune is recorded in ``<home>/logs/scratch-prune.log``
+    (*scratch* is ``<home>/cache/scratch``)."""
     from hermes_constants_scratch import prune_idle_entries
 
     root = scratch if scratch is not None else get_scratch_dir(prune=False)

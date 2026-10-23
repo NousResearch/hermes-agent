@@ -85,6 +85,7 @@ jobs:
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
       remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
+      catalog: ${{ steps.gate-lanes.outputs.catalog }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
@@ -203,6 +204,17 @@ jobs:
     with:
       commit: ${{ inputs.commit }}
 
+  catalog-tests:
+    name: Catalog tests
+    needs: detect
+    # A PR that changes only catalog entry data runs these instead of the
+    # Python suite (the classifier turns `python` off for it); required whenever
+    # detect selects it.
+    if: needs.detect.outputs.catalog == 'true'
+    uses: ./.github/workflows/catalog-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
+
   remote-backends:
     name: Remote terminal backends
     needs: detect
@@ -290,7 +302,7 @@ jobs:
   contributor-check:
     name: Check contributors
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.catalog == 'true'
     uses: ./.github/workflows/contributor-check.yml
     with:
       commit: ${{ inputs.commit }}
@@ -422,6 +434,7 @@ jobs:
       - js-tests
       - rust-tests
       - remote-backends
+      - catalog-tests
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
@@ -482,6 +495,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   ci-timings:
     name: CI timing report
+    permissions:
+      contents: read
+      actions: read # download completed jobs' cache transfer logs
     needs: [all-checks-pass]
     if: always()
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -519,8 +535,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: ci-timings-html
         with:
-          name: ci-timings-report
           path: ci-timings-report.html
+          archive: false
           retention-days: 14
 
       - name: Build linked review status

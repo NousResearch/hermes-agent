@@ -198,6 +198,60 @@ def test_loop_stops_on_worker_failed_flag_default_reason(monkeypatch):
 
 
 
+def test_loop_blocks_when_status_check_raises(monkeypatch):
+    """Non-terminal exit (status check failure) must still call block_fn — prevents
+    a protocol violation where the worker exits without a terminal kanban call."""
+    _patch_judge(monkeypatch, ["continue"])
+    block_calls = []
+    def fail_status():
+        raise RuntimeError("db connection lost")
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: pytest.fail("should not run turn"),
+        task_status_fn=fail_status,
+        block_fn=lambda r: block_calls.append(r),
+    )
+    assert res["outcome"] == "stopped"
+    assert len(block_calls) == 1
+    assert "status check failed" in block_calls[0]
+
+
+def test_loop_blocks_on_unexpected_status(monkeypatch):
+    """Non-terminal exit (unexpected status) must still call block_fn."""
+    _patch_judge(monkeypatch, ["continue"])
+    block_calls = []
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: pytest.fail("should not run turn"),
+        task_status_fn=lambda: "archived",
+        block_fn=lambda r: block_calls.append(r),
+    )
+    assert res["outcome"] == "stopped"
+    assert len(block_calls) == 1
+    assert "unexpected status" in block_calls[0]
+
+
+def test_loop_blocks_when_turn_raises(monkeypatch):
+    """Non-terminal exit (run_turn failure) must still call block_fn."""
+    _patch_judge(monkeypatch, ["continue"])
+    block_calls = []
+    def fail_turn(prompt):
+        raise RuntimeError("turn failed")
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=fail_turn,
+        task_status_fn=lambda: "running",
+        block_fn=lambda r: block_calls.append(r),
+        max_turns=5,
+    )
+    assert res["outcome"] == "stopped"
+    assert len(block_calls) == 1
+    assert "turn execution failed" in block_calls[0]
+
+
 # ---------------------------------------------------------------------------
 # CLI judge gate tests (hermes kanban complete bypass fix)
 # ---------------------------------------------------------------------------

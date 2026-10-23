@@ -87,6 +87,31 @@ def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> 
         say(message)
 
 
+_warned_failed_providers: set[tuple[str, str]] = set()
+
+
+def _warn_memory_provider_failed(name: str, detail: str = "", say=None) -> None:
+    """Warn once per home and provider that a configured memory provider failed to load (#49200).
+
+    Covers the paths nothing else reports: the provider resolves on disk but does not load (a
+    dangling plugin symlink, an import error, missing add-on packages) or loading/setting it up
+    raises. Without this the agent quietly runs on built-in memory and new memories go to the
+    wrong store.
+    """
+    key = _unavailable_warning_key(name)
+    if key in _warned_failed_providers:
+        return
+    _warned_failed_providers.add(key)
+    message = (
+        f"⚠ Memory provider {name!r} is configured but failed to load"
+        f"{f' ({detail})' if detail else ''} — external memory is off for this session "
+        "(built-in memory still works). Check the plugin install/symlink with `hermes plugins`."
+    )
+    logger.warning(message)
+    if say is not None:
+        say(message)
+
+
 def _provider_default_routes(provider: str) -> set[str]:
     """Return known exact default routes for a canonical provider id."""
     routes: set[str] = set()
@@ -1358,8 +1383,22 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.
                     from hermes_cli.memory_provider_migration import recover_at_startup
-                    if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):
+                    _recovery_reports: list[str] = []
+
+                    def _say_recovery(message: str) -> None:
+                        _recovery_reports.append(message)
+                        agent._emit_startup_warning(message)
+
+                    _installed = recover_at_startup(_mem_provider_name, say=_say_recovery)
+                    if _installed:
                         _mp = _load_mem(_mem_provider_name)
+                    if _mp is None and (_installed or not _recovery_reports):
+                        # Recovery stayed silent (the provider resolves but does not load) or
+                        # installed a provider that still does not load.
+                        _warn_memory_provider_failed(_mem_provider_name, say=agent._emit_startup_warning)
+                    elif _recovery_reports:
+                        # Recovery told the user; later agents (recovery runs once) stay quiet.
+                        _warned_failed_providers.add(_unavailable_warning_key(_mem_provider_name))
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
                 elif _mp is not None and _unavailable_warning_key(_mem_provider_name) not in _warned_unavailable_providers:
@@ -1377,6 +1416,10 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                     agent._memory_manager = None
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
+            _failed_name = locals().get("_mem_provider_name")
+            if _failed_name:
+                with suppress(Exception):
+                    _warn_memory_provider_failed(_failed_name, str(_mpe), say=agent._emit_startup_warning)
             agent._memory_manager = None
 
     from agent.memory_manager_tools import inject_memory_provider_tools

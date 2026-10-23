@@ -1,7 +1,10 @@
 """Regression tests for memory provider selection during AIAgent init."""
 
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 
 class RecordingMemoryProvider:
@@ -195,3 +198,177 @@ def test_aiagent_reuses_handed_in_memory_manager_without_reinitializing():
     assert second._memory_manager is manager
     assert load_memory_provider.call_count == 1
     assert provider.init_session_id is None
+
+
+class UnavailableMemoryProvider:
+    """Provider that loads but reports itself unavailable (broken add-on)."""
+
+    name = "mnemosyne"
+
+    def is_available(self):
+        return False
+
+    def unavailable_reason(self):
+        return ""
+
+    def initialize(self, session_id, **kwargs):  # pragma: no cover - never called
+        raise AssertionError("initialize should not run for an unavailable provider")
+
+    def get_tool_schemas(self):
+        return []
+
+    def shutdown(self):
+        pass
+
+
+@pytest.fixture()
+def _fresh_memory_warn_once():
+    """The warn-once sets are module level; isolate them per test."""
+    from agent import agent_init
+    from hermes_cli import memory_provider_migration as migration
+
+    sets = (
+        agent_init._warned_unavailable_providers,
+        agent_init._warned_failed_providers,
+        migration._attempted,
+    )
+    for s in sets:
+        s.clear()
+    yield
+    for s in sets:
+        s.clear()
+
+
+def _build_agent_with_memory_provider(load_patch, *extra_patches, platform="telegram"):
+    cfg = {"memory": {"provider": "mnemosyne"}, "agent": {}}
+    with ExitStack() as stack:
+        for p in (
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+            load_patch,
+            patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+            *extra_patches,
+        ):
+            stack.enter_context(p)
+        from run_agent import AIAgent
+
+        return AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-49200",
+            platform=platform,
+        )
+
+
+def _pending_notice_texts(agent):
+    return [n.text for n in getattr(agent, "_pending_startup_notices", [])]
+
+
+def _present_but_unloadable():
+    """The provider resolves on disk (e.g. a dangling plugin symlink) but does not load."""
+    return (
+        patch("plugins.memory.load_memory_provider", return_value=None),
+        patch("pm.install.lazy_installs_allowed", return_value=True),
+        patch("hermes_cli.memory_provider_migration.configured_provider", return_value="mnemosyne"),
+        patch("hermes_cli.memory_provider_migration.provider_present", return_value=True),
+    )
+
+
+@pytest.mark.usefixtures("_fresh_memory_warn_once")
+def test_configured_memory_provider_that_resolves_but_fails_to_load_warns_user():
+    """#49200: a provider that resolves but fails to load must reach the user, not just DEBUG.
+
+    Startup recovery stays silent here (the provider is present), so without this warning
+    the agent quietly runs on built-in memory. The gateway binds its callbacks after init,
+    so the warning is held as a startup notice and replayed on the first turn.
+    """
+    load_patch, *extra = _present_but_unloadable()
+    agent = _build_agent_with_memory_provider(load_patch, *extra)
+
+    assert agent._memory_manager is None
+    notices = _pending_notice_texts(agent)
+    assert len(notices) == 1
+    assert "mnemosyne" in notices[0] and "failed to load" in notices[0]
+
+
+@pytest.mark.usefixtures("_fresh_memory_warn_once")
+def test_configured_memory_provider_failure_reaches_late_bound_notice_callback():
+    """The gateway sets its callbacks after __init__; the held notice reaches them on replay."""
+    load_patch, *extra = _present_but_unloadable()
+    agent = _build_agent_with_memory_provider(load_patch, *extra)
+
+    delivered = []
+    agent.notice_callback = delivered.append
+    agent._replay_startup_warnings()
+
+    assert len(delivered) == 1
+    assert "mnemosyne" in delivered[0].text and "failed to load" in delivered[0].text
+    assert _pending_notice_texts(agent) == []
+
+
+@pytest.mark.usefixtures("_fresh_memory_warn_once")
+def test_configured_memory_provider_failure_warns_once_per_home():
+    """The gateway builds an agent per message; the warning must not repeat every turn."""
+    load_patch, *extra = _present_but_unloadable()
+    first = _build_agent_with_memory_provider(load_patch, *extra)
+    load_patch, *extra = _present_but_unloadable()
+    second = _build_agent_with_memory_provider(load_patch, *extra)
+
+    assert len(_pending_notice_texts(first)) == 1
+    assert _pending_notice_texts(second) == []
+
+
+@pytest.mark.usefixtures("_fresh_memory_warn_once")
+def test_configured_memory_provider_failure_reaches_cli_warning():
+    """On the CLI the startup warning prints through ``_emit_warning``."""
+    load_patch, *extra = _present_but_unloadable()
+    with patch("agent.status_output.StatusOutputMixin._emit_warning", autospec=True) as emit_warning:
+        _build_agent_with_memory_provider(load_patch, *extra, platform="cli")
+
+    messages = [call.args[1] for call in emit_warning.call_args_list]
+    assert any("mnemosyne" in m and "failed to load" in m for m in messages)
+
+
+@pytest.mark.usefixtures("_fresh_memory_warn_once")
+def test_memory_provider_init_exception_warns_user():
+    """A provider init that raises is reported to the user, not only to the log."""
+    agent = _build_agent_with_memory_provider(
+        patch("plugins.memory.load_memory_provider", side_effect=ImportError("boom")),
+    )
+
+    assert agent._memory_manager is None
+    notices = _pending_notice_texts(agent)
+    assert len(notices) == 1
+    assert "mnemosyne" in notices[0] and "boom" in notices[0]
+
+
+@pytest.mark.usefixtures("_fresh_memory_warn_once")
+def test_unavailable_memory_provider_warns_user_once():
+    """A provider that loads but is unavailable keeps its own warning, with no second one."""
+    agent = _build_agent_with_memory_provider(
+        patch("plugins.memory.load_memory_provider", return_value=UnavailableMemoryProvider()),
+    )
+
+    assert agent._memory_manager is None
+    notices = _pending_notice_texts(agent)
+    assert len(notices) == 1
+    assert "reports unavailable" in notices[0]
+
+
+@pytest.mark.usefixtures("_fresh_memory_warn_once")
+def test_recovery_report_is_not_followed_by_a_second_warning():
+    """When startup recovery already told the user why, no extra 'failed to load' notice."""
+    agent = _build_agent_with_memory_provider(
+        patch("plugins.memory.load_memory_provider", return_value=None),
+        patch("pm.install.lazy_installs_allowed", return_value=False),
+    )
+
+    notices = _pending_notice_texts(agent)
+    assert len(notices) == 1
+    assert "not installed" in notices[0]

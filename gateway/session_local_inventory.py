@@ -14,6 +14,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,58 @@ def _start_update_prefetch():
     _update_prefetch_started = True
     from hermes_cli.banner import prefetch_update_check
     prefetch_update_check()
+
+
+# ── Tool availability: display-only, and far too expensive to await on resume ──
+#
+# ``compute_toolset_availability`` runs LIVE ``check_fn`` probes for the web / image_gen /
+# video_gen / connections toolsets — measured 16.7s + 5.1s + 6.0s + 5.2s ≈ 28-36s on a
+# slow-network host, just to colour the banner's tool rows. Called inline from
+# ``session_inventory`` it made every Desktop ``session.resume`` blow the client's 30s request
+# budget: the owner finished the resume ~40s later with nowhere to send the reply
+# (``tui_gateway.ws: ws response send failed peer=... method=session.resume``).
+#
+# A process-wide TTL cache filled by a background thread fixes the shape of it: the first
+# resume after a gateway start answers from the warm value (or ``{}``), every later one is
+# instant. Nothing gates behaviour on this map — ``agent_init`` reads
+# ``check_toolset_requirements()`` — so a seconds-old, or briefly empty, availability snapshot
+# only changes banner colouring. ``HERMES_TOOL_AVAILABILITY_TTL_S`` tunes the window (0 =
+# always recompute in the background, never block).
+_availability_cache: dict[tuple[str, ...], tuple[float, dict]] = {}
+_availability_inflight: set[tuple[str, ...]] = set()
+
+
+def _cached_tool_availability(enabled) -> dict:
+    """Display-only tool availability, served from a TTL cache (see the note above)."""
+    try:
+        ttl = float(os.environ.get("HERMES_TOOL_AVAILABILITY_TTL_S", "600") or 600)
+    except ValueError:
+        ttl = 600.0
+
+    key = tuple(sorted(str(t) for t in (enabled or [])))
+    cached = _availability_cache.get(key)
+    if cached is not None and time.time() - cached[0] < ttl:
+        return cached[1]
+
+    if key not in _availability_inflight:
+        _availability_inflight.add(key)
+
+        def refresh() -> None:
+            from hermes_cli.banner import compute_toolset_availability
+            try:
+                data = compute_toolset_availability(list(key))
+            except Exception:  # health: allow BLE001 -- a failed probe must not lose the warm value
+                logger.debug("tool availability refresh failed", exc_info=True)
+                _availability_inflight.discard(key)
+                return
+            _availability_cache[key] = (time.time(), data)
+            _availability_inflight.discard(key)
+
+        threading.Thread(target=refresh, name="tool-availability-refresh", daemon=True).start()
+
+    # A stale-but-known answer beats a blank one; a cold cache answers {} for the few seconds the
+    # background probe needs — exactly what the banner shows before its first availability check.
+    return cached[1] if cached is not None else {}
 
 
 def _grouped(tools):
@@ -161,8 +216,7 @@ def session_inventory(authority, policy, agent, cwd):
         info["enabled_toolsets"] = sorted(enabled)
         with contextlib.suppress(Exception):
             # The classic CLI banner colours lazy (yellow) / disabled (red) tools from this.
-            from hermes_cli.banner import compute_toolset_availability
-            info["tool_availability"] = compute_toolset_availability(enabled)
+            info["tool_availability"] = _cached_tool_availability(enabled)
         if policy is not None and policy.source == "cli":
             info.update(_cli_startup_notices(enabled), unknown_toolsets=_unknown_toolsets(enabled, config))
         with contextlib.suppress(Exception):

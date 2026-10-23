@@ -44,6 +44,15 @@ def normalize_route_base_url(base_url: Any) -> str:
     return normalized
 
 
+def is_copilot_route_pair(configured: str, active: str) -> bool:
+    """Both URLs are Copilot API hosts. The token exchange rewrites ``api.githubcopilot.com`` to the
+    account's ``api.{individual,business,enterprise}.githubcopilot.com``: one route, not two."""
+    def _is_copilot(route: str) -> bool:
+        host = (urlsplit(route).hostname or "").lower()
+        return host == "api.githubcopilot.com" or (host.startswith("api.") and host.endswith(".githubcopilot.com"))
+    return _is_copilot(configured) and _is_copilot(active)
+
+
 def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Optional[bool]:
     """Whether ``model.base_url`` is *provider*'s own endpoint.
 

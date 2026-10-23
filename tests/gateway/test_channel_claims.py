@@ -1,10 +1,12 @@
 """Channel admission claims (design/channel-claim-lock.md): the intra-host claim gate must
 give one channel exactly one session — a DM thread reply joins the channel session, a peer
 gateway's live claim stands down instead of double-admitting, a crashed holder's claim is
-stolen after the lease, and a deleted session releases its claim."""
+stolen after the lease, and a deleted session releases its claim. The gateway.claim_lock
+config surface (t_e4138b0a) rolls the gate out: monitor mode (the fail-open default) logs
+each would-be stand-down instead of acting on it, and enabled=false turns the gate off."""
 import pytest
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import ClaimLockConfig, GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 from hermes_state_runtime import (
     CHANNEL_CLAIM_LEASE_SECONDS,
@@ -17,9 +19,13 @@ from hermes_state_runtime import (
 )
 
 
-def _store(tmp_path, monkeypatch, instance="gw-a"):
+def _store(tmp_path, monkeypatch, instance="gw-a", enabled=True, mode="enforce"):
+    """Enforce is the default here so the stand-down contract tests keep exercising the
+    acting gate; the rollout-surface tests pass ``mode="monitor"`` / ``enabled=False``."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    store = SessionStore(
+        tmp_path / "sessions",
+        GatewayConfig(claim_lock=ClaimLockConfig(enabled=enabled, mode=mode)))
     store._claim_instance_id = instance
     return store
 
@@ -232,3 +238,122 @@ async def test_admit_boundary_silences_claim_standdowns():
         async def _raising(event, _reason=reason):
             raise RuntimeStoreError(_reason)
         assert await admit_message(types.SimpleNamespace(admit_native=_raising), None) is None
+
+
+# ---------------------------------------------------------------------------
+# gateway.claim_lock rollout surface (t_e4138b0a): monitor (fail-open default)
+# and enabled=false (kill switch). Enforce stays the default in ``_store`` so the
+# stand-down contract tests above keep pinning the acting gate.
+
+
+def _group(chat_id, user_id, thread_id=None):
+    return SessionSource(
+        platform=Platform.MATTERMOST, chat_id=chat_id, chat_type="group",
+        user_id=user_id, chat_name="Chat", thread_id=thread_id,
+    )
+
+
+def test_monitor_admits_where_enforce_would_refuse(tmp_path, monkeypatch, caplog):
+    """Monitor mode: a live claim this store cannot serve logs the would-be refusal
+    (channel_claimed_elsewhere) and admits on the incoming key — the fail-open rollout
+    phase, so upstream merges change no behavior. The ghost peer keeps its claim."""
+    store = _store(tmp_path, monkeypatch, mode="monitor")
+    key_hint = store._generate_session_key(_dm("chat-mo1"))
+    db = store._db_for_key(key_hint)
+    acquired, _ = acquire_channel_claim(
+        db, platform="mattermost", scope_id="", chat_id="chat-mo1", profile="main",
+        instance_id="peer-gw", session_id="ghost")
+    assert acquired
+    with caplog.at_level("WARNING"):
+        entry = store.get_or_create_session(_dm("chat-mo1"))
+    assert entry.origin.chat_id == "chat-mo1"
+    assert "Channel claim monitor" in caplog.text
+    assert "channel_claimed_elsewhere" in caplog.text
+    claim = get_channel_claim(
+        db, platform="mattermost", scope_id="", chat_id="chat-mo1", profile="main")
+    assert claim["instance_id"] == "peer-gw"  # the claim store stays truthful
+
+
+def test_monitor_admits_a_second_lane_where_enforce_would_join(tmp_path, monkeypatch, caplog):
+    """Monitor mode, §6 case C: a live claim on another local lane logs the would-be
+    stand-down and admits the incoming key — the route-into-holder move is deferred to
+    the enforce phase, and the live lane keeps its claim untouched."""
+    store = _store(tmp_path, monkeypatch, mode="monitor")
+    holder = store.get_or_create_session(_group("chat-mo2", user_id="u1"))
+    with caplog.at_level("WARNING"):
+        other = store.get_or_create_session(_group("chat-mo2", user_id="u2"))
+    assert other.session_id != holder.session_id  # monitor minted the second lane
+    assert "would route this event into" in caplog.text
+    claim = get_channel_claim(_db(store, holder.session_key), **_claim_key(store, holder))
+    assert claim["session_id"] == holder.session_id  # the holder lane keeps the claim
+
+
+def test_monitor_keeps_the_claim_store_maintained(tmp_path, monkeypatch):
+    """Monitor is observability, not a no-op: acquisitions, the §6.1 fold and the
+    thread-root tag all still run, so arming enforce later flips behavior with no
+    warm-up."""
+    store = _store(tmp_path, monkeypatch, mode="monitor")
+    parent = store.get_or_create_session(_dm("chat-mo3"))
+    reply = store.get_or_create_session(_dm("chat-mo3", thread_id="t1"))
+    assert reply is parent  # the fold stays active in monitor
+    claim = get_channel_claim(_db(store, parent.session_key), **_claim_key(store, parent))
+    assert claim["session_id"] == parent.session_id
+    assert claim["thread_root_id"] == "t1"
+
+
+def test_disabled_gate_is_fully_off(tmp_path, monkeypatch):
+    """claim_lock.enabled=false is the kill switch: no fold, no acquire, no stand-down —
+    exactly the pre-claim-lock behavior, even past a live foreign claim."""
+    store = _store(tmp_path, monkeypatch, enabled=False)
+    key_hint = store._generate_session_key(_dm("chat-off1"))
+    db = store._db_for_key(key_hint)
+    scope = dict(platform="mattermost", scope_id="", chat_id="chat-off1", profile="main")
+    assert acquire_channel_claim(db, instance_id="peer-gw", session_id="ghost", **scope)[0]
+    first = store.get_or_create_session(_dm("chat-off1"))
+    second = store.get_or_create_session(_dm("chat-off1", thread_id="t2"))
+    assert second.session_id != first.session_id  # no fold: pre-claim-lock keying
+    assert len(store._entries) == 2
+    assert get_channel_claim(db, **scope)["session_id"] == "ghost"  # walked past
+
+
+def test_disabled_gate_skips_finish_and_renewal(tmp_path, monkeypatch):
+    """enabled=false also fences the bookkeeping: _finish_channel_claim moves no relic
+    claim and the TurnRunner renewal extends no lease (nothing was acquired)."""
+    import types
+
+    from gateway.run_turn_runner import TurnRunner
+
+    store = _store(tmp_path, monkeypatch, enabled=False)
+    entry = store.get_or_create_session(_dm("chat-off2"))
+    scope = _claim_key(store, entry)
+    db = _db(store, entry.session_key)
+    assert acquire_channel_claim(db, instance_id="peer-gw", session_id="relic", **scope)[0]
+
+    store._finish_channel_claim(
+        entry.session_key, end_session_id="", create_kwargs={"session_id": "minted"},
+        origin=entry.origin)
+    assert get_channel_claim(db, **scope)["session_id"] == "relic"  # nothing moved
+
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE channel_claims SET lease_expire = lease_expire - 60", ()))
+    before = get_channel_claim(db, **scope)["lease_expire"]
+    holder = types.SimpleNamespace(
+        _ctx=types.SimpleNamespace(session_key=entry.session_key, session_id=entry.session_id),
+        _runner=types.SimpleNamespace(session_store=store))
+    TurnRunner._renew_channel_claim_after_run(holder, entry.session_id)
+    assert get_channel_claim(db, **scope)["lease_expire"] == before  # lease never moved
+
+
+def test_enforce_still_stands_down_by_default_in_this_file(tmp_path, monkeypatch):
+    """The rollout did not silently soften the acting gate: with the helper's enforce
+    default, an unservable live claim still refuses to double-admit."""
+    store = _store(tmp_path, monkeypatch)  # enforce is the helper default
+    key_hint = store._generate_session_key(_dm("chat-enf1"))
+    db = store._db_for_key(key_hint)
+    acquired, _ = acquire_channel_claim(
+        db, platform="mattermost", scope_id="", chat_id="chat-enf1", profile="main",
+        instance_id="peer-gw", session_id="ghost")
+    assert acquired
+    with pytest.raises(RuntimeStoreError):
+        store.get_or_create_session(_dm("chat-enf1"))
+    assert store._entries == {}

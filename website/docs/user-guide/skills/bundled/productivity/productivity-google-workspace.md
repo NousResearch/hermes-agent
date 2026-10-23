@@ -86,6 +86,10 @@ Calendar/Drive/Sheets/Docs?"**
 - **Calendar/Drive/Sheets/Docs only** → Continue with this skill and use a
   narrower `--services` set like `calendar,drive,sheets,docs`.
 
+- **Read-only Calendar/Drive automation** → Prefer
+  `--services calendar-readonly,drive-readonly` so unattended jobs cannot
+  receive Calendar/Drive write scopes they do not need.
+
 - **Full Workspace access** → Continue with this skill and use the default
   `all` service set.
 

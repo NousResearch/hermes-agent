@@ -32,6 +32,8 @@ export interface NoticeTranslations {
 
   /** Once per computer, after a timed sleep interrupted a turn with keep-awake off. */
   keepAwakeOffer: { title: string; message: string; action: string }
+  /** The sign-in offer after apps connect on the free tier without the welcome trial. */
+  connectorOffer: { heading: string; body: string }
 }
 
 export interface SessionCommandNotices {

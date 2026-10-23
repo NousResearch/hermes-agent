@@ -143,7 +143,7 @@ def _pin_tool(args) -> int:
     lockfile.set_pin(args.name, args.version, artifacts)
     lockfile.save()
     print(f"pinned {args.name} {args.version} ({len(artifacts)} targets)")
-    return 0
+    return _regenerate_bootstrap_pins(lockfile)
 
 
 def _fmt_bytes(n: int) -> str:
@@ -590,10 +590,25 @@ def _sync_venv_step() -> bool:
     return True
 
 
+def _regenerate_bootstrap_pins(lockfile) -> int:
+    """Splice the new uv and Windows git pins into this checkout's installers.
+
+    curl|sh and irm|iex bootstrap those tools before any checkout exists to read
+    the lock, so they carry the pins as generated fragments. A lock outside a
+    checkout (a test fixture) feeds no installer.
+    """
+    script = lockfile.path.parent.parent / "scripts" / "gen-bootstrap-pins.py"
+    if not script.is_file():
+        return 0
+    return subprocess.run([sys.executable, str(script)], timeout=60, check=False).returncode
+
+
 def _apply_pins(changed: list, lockfile) -> int:
     if not changed:
         print("pm update: nothing to update")
-        return 0
+        # A run that saved the lock but failed to write the fragments leaves the
+        # pins current, so the retry lands here: it must still repair them.
+        return _regenerate_bootstrap_pins(lockfile)
     pinned: list[str] = []
     failed: dict[str, str] = {}
     for d in changed:
@@ -616,7 +631,8 @@ def _apply_pins(changed: list, lockfile) -> int:
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
     if pinned:
         lockfile.save()
-        rc = 1 if _install_names(pinned) or not _sync_venv_step() else 0
+        fragments = _regenerate_bootstrap_pins(lockfile)
+        rc = 1 if _install_names(pinned) or not _sync_venv_step() or fragments else 0
     else:
         print("pm update: every pin failed; lockfile untouched")
         rc = 1

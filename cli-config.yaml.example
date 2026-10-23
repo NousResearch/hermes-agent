@@ -1843,6 +1843,30 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
+  # backend: "default"                        # Strategy routing each delegate_task task: "default" = the keys below,
+                                              # else the parent's route. model_map / profile_routes come from the
+                                              # advanced-delegation plugin; a backend that is missing, disabled or
+                                              # unavailable fails closed (tool error naming it; /delegation default or
+                                              # `hermes config set delegation.backend default` restores the default).
+  # backends:                                 # Each plugin backend's own settings, keyed by its backend name.
+  #   model_map:                              # backend: model_map (advanced-delegation)
+  #     options:
+  #       - name: fast
+  #         description: "Cheap and quick; lookups, summaries, simple edits."
+  #         provider: "openrouter"
+  #         model: "google/gemini-3-flash-preview"
+  #       - name: deep
+  #         description: "Slow and careful; hard debugging and design work."
+  #         provider: "anthropic"
+  #         model: "claude-opus-5"
+  #         reasoning_effort: "high"
+  #         service_tier: "fast"              # optional: that task is refused when the route has no such tier
+  #         # fallback_providers: [...]         # optional; absent = delegation.fallback_providers, [] = none
+  #     default: fast                         # optional: option for tasks that set none
+  #   profile_routes:                         # backend: profile_routes (advanced-delegation). A listed
+  #     profiles:                             # profile's subagents use ITS credentials, pool, SOUL.md and terminal policy.
+  #       - name: coder
+  #         description: "Writes and refactors code; runs tests."
   max_iterations: 250                         # Max tool-calling turns per child (default: 250)
   # max_concurrent_children: 10               # Max parallel child agents per batch (default: 10, floor: 1, no ceiling).
                                               # WARNING: values above 10 multiply API cost linearly.

@@ -1168,7 +1168,7 @@ describe('device-code poll expiry', () => {
         return deviceStart(2)
       }
 
-      if (path === '/api/providers/oauth/nous/poll/device-sess-1') {
+      if (path.startsWith('/api/providers/oauth/nous/poll/device-sess-1')) {
         return { status: 'pending' }
       }
 
@@ -1195,7 +1195,7 @@ describe('device-code poll expiry', () => {
         return deviceStart(600)
       }
 
-      if (path === '/api/providers/oauth/nous/poll/device-sess-1') {
+      if (path.startsWith('/api/providers/oauth/nous/poll/device-sess-1')) {
         return { status: 'pending' }
       }
 

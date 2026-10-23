@@ -1020,6 +1020,11 @@ def _add_rotating_handler(
     _register_queued_handler(handler)
 
 
+def read_logging_config():
+    """Return configured log level, maximum size, and backup count."""
+    return _read_logging_config()
+
+
 def _read_logging_config():
     """Best-effort read of ``logging.*`` from config.yaml."""
     try:

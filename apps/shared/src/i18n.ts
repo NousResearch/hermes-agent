@@ -175,6 +175,7 @@ export const LOCALE_ENDONYMS = {
   es: 'Español',
   fr: 'Français',
   ga: 'Gaeilge',
+  he: 'עברית',
   hu: 'Magyar',
   it: 'Italiano',
   ja: '日本語',
@@ -191,7 +192,7 @@ export type EndonymLocale = keyof typeof LOCALE_ENDONYMS
 
 /** Locales whose script flows right-to-left; drives `<html dir>` so Tailwind's
  *  logical utilities (ms-/me-, ps-/pe-) flip. */
-export const RTL_LOCALES: ReadonlySet<string> = new Set<EndonymLocale>(['ar'])
+export const RTL_LOCALES: ReadonlySet<string> = new Set<EndonymLocale>(['ar', 'he'])
 
 /** Mirror the active locale onto `<html lang dir>`. No-op without a document
  *  (SSR, tests). `rtl` lets a registry that knows more locales than

@@ -86,6 +86,8 @@ cli-config.yaml
 skills/.hub/
 ignored/
 .worktrees/
+# treehouse worktree pool (see treehouse.toml): in-project, disposable slots
+.treehouse/
 environments/benchmarks/evals/
 
 # Web UI build output

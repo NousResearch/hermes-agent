@@ -1,0 +1,30 @@
+# treehouse pool for kanban card workspaces -- copy this file to a repo root
+# as `treehouse.toml` to opt that repo into a capped, recycled worktree pool.
+#
+# The dispatcher (hermes_cli/kanban_db_workspace.py) acquires a durable lease
+# with `treehouse get --lease` instead of materialising
+# `<repo>/.worktrees/<task-id>`, and returns the lease from the dispatch tick
+# (hermes_cli/kanban_treehouse.py::release_orphaned_leases) once the card's
+# worker is gone. A repo WITHOUT this file keeps the uncapped git-worktree
+# path, and the dispatcher logs that fallback reason for every such card.
+#
+# Invariants:
+#   * every slot lives under <repo>/.treehouse/ -- never at the repo root, and
+#     `.treehouse/` is gitignored so the pool never shows up as work to commit;
+#   * never rename a slot: treehouse keys its state file to recorded paths.
+#     The card id lives in the branch (`wt/<task-id>`) and in the lease holder
+#     label (`kanban:<task-id>`), not in the directory name.
+#
+# Verify with: treehouse status   (inside the repo)
+max_trees = 6
+
+# In-project pool at <repo>/.treehouse/, removed with the project.
+root = "."
+
+# Slots are cut from main, and returned slots are reset to it.
+base_branch = "main"
+
+# Name slots "<repo>-<slot>" so tooling that derives per-checkout identity from
+# the working directory's last segment (npm/bun workspaces, Xcode, pytest
+# rootdir) sees each slot as a distinct checkout.
+unique_leaf = true

@@ -95,7 +95,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _print_json({
             **{k: getattr(res, k)
                for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
-                         "reaped_terminal_workers")},
+                         "reaped_terminal_workers", "released_leases")},
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
             ],
@@ -109,6 +109,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "respawn_guarded": [
                 {"task_id": tid, "reason": reason}
                 for (tid, reason) in res.respawn_guarded
+            ],
+            "skipped_pool_exhausted": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.skipped_pool_exhausted
             ],
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
@@ -141,6 +145,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
+    for tid, reason in res.skipped_pool_exhausted:
+        print(f"Deferred (pool exhausted): {tid} - {reason}")
+    if res.released_leases:
+        print(f"Returned pool leases: {', '.join(res.released_leases)}")
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "

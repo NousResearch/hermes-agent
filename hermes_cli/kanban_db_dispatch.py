@@ -133,6 +133,13 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_pool_exhausted: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` deferred because the repo's treehouse pool has no
+    free slot (``max_trees`` reached). The card is NOT spawned outside the pool
+    and its failure budget is untouched; a returned slot lets it run."""
+    released_leases: list[str] = field(default_factory=list)
+    """Task ids whose treehouse pool workspace lease was returned this tick
+    (:func:`hermes_cli.kanban_treehouse.release_orphaned_leases`)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -161,12 +168,12 @@ class DispatchResult:
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
 
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
+    ``active_pr=1, recent_success=2, rate_limited=1, pool_exhausted=3,
+    skipped_locked=1, memory_pressure=critical`` - the respawn-guard reasons
+    counted per task plus the tick-level holds. Feeds the "dispatcher stuck"
+    warnings of the CLI daemon and the embedded gateway dispatcher, which
+    otherwise report a bare zero-spawn count while ``hermes kanban tail`` is
+    the only place the guard reason is written (#111910).
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
@@ -177,6 +184,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_pool_exhausted:
+            counts["pool_exhausted"] = counts.get("pool_exhausted", 0) + len(res.skipped_pool_exhausted)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -2048,6 +2057,36 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _record_workspace_failure(
+    conn: sqlite3.Connection,
+    claimed,
+    exc: Exception,
+    result: DispatchResult,
+    *,
+    failure_limit: int,
+) -> bool:
+    """Record a workspace-resolution failure; True when the card auto-blocked.
+
+    Pool exhaustion is a deferral, not the card's failure: it lands in
+    ``result.skipped_pool_exhausted`` with treehouse's quotable reason and the
+    failure budget is left alone (``infrastructure=True``). This is the race
+    path -- the pre-claim probe saw a free slot and another card took it before
+    this card's ``get``.
+    """
+    if isinstance(exc, _kbth.PoolExhausted):
+        result.skipped_pool_exhausted.append((claimed.id, str(exc)))
+        _record_task_failure(
+            conn, claimed.id, f"workspace: {exc}",
+            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True,
+            end_run=True, infrastructure=True,
+        )
+        return False
+    return _record_task_failure(
+        conn, claimed.id, f"workspace: {exc}",
+        outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+    )
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2117,6 +2156,20 @@ def _dispatch_lane_task(
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
+    # Capped treehouse pool: skip before claiming. The card stays ready for the
+    # next tick (no run, no failure count, no event per tick) and the reason is
+    # quotable on the board; it is never spawned outside the pool. Resolution
+    # re-checks the pool itself, so a slot that goes away in between is still
+    # caught below as PoolExhausted.
+    pool_reason = (
+        _kbw.pool_exhaustion_reason(row, board=board)
+        if row["workspace_kind"] == "worktree"
+        else None
+    )
+    if pool_reason:
+        result.skipped_pool_exhausted.append((task_id, pool_reason))
+        return False
+
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
@@ -2132,10 +2185,7 @@ def _dispatch_lane_task(
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)
     except Exception as exc:
-        if _record_task_failure(
-            conn, claimed.id, f"workspace: {exc}",
-            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
-        ):
+        if _record_workspace_failure(conn, claimed, exc, result, failure_limit=failure_limit):
             result.auto_blocked.append(claimed.id)
         return False
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
@@ -2218,6 +2268,7 @@ def _run_reclaim_phase(
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
+    result.released_leases = _kbth.release_orphaned_leases(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
@@ -2295,7 +2346,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, workspace_kind, workspace_path FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2703,6 +2754,7 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli import kanban_treehouse as _kbth
 
 # The worker spawn contract lives in the topical sibling; re-exported here so
 # ``kanban_db_dispatch._default_spawn``, ``_worker_argv`` and the other spawn

@@ -226,6 +226,64 @@ The same checks run on clean merged trees, and every dirty check counts files
 that `status.showUntrackedFiles=no` would hide and skip-worktree /
 assume-unchanged files whose bytes differ from the index.
 
+## Kanban worktree pool (`treehouse`)
+
+The Kanban dispatcher materialises one workspace per card. That is uncapped:
+each card leaves `<repo>/.worktrees/<task-id>` behind, and long-lived boards
+accumulate worktrees and disk without bound. A repo can opt into a capped,
+recycled pool instead by committing [`treehouse`](https://github.com/iann0036/treehouse)
+config at its root:
+
+```toml
+# treehouse.toml
+max_trees = 6
+root = "."
+base_branch = "main"
+unique_leaf = true
+```
+
+| Key | Meaning |
+|---|---|
+| `max_trees` | Hard cap. When every slot is leased, the card waits (see below) - the dispatcher never spawns a worktree outside the pool. |
+| `root = "."` | In-project pool at `<repo>/.treehouse/`, next to the code and removed with the project. |
+| `base_branch` | Branch new and recycled slots are cut from. |
+| `unique_leaf` | Name slots `<repo>-<slot>` so per-checkout identity (workspaces, pytest rootdir, Xcode derived data) never collides between slots. |
+
+With the file present, the dispatcher acquires a **durable lease**
+(`treehouse get --lease`) and records the slot path as the card's workspace.
+Without it, the card keeps the `git worktree add` path and the dispatcher logs
+that fallback reason for every card - the uncapped path is never silent. A
+malformed config, or a config with no `treehouse` binary installed, fails the
+card instead of degrading quietly.
+
+Lifecycle:
+
+- **Lease return.** Every dispatch tick returns the lease of any slot whose
+  card is no longer running a worker - completed, blocked, failed, timed out,
+  reaped, killed, or abandoned by a crashed dispatcher. The test is board truth
+  (task status + worker liveness), not an in-process callback, so a `SIGKILL`
+  cannot leak a lease. A returned slot is cleaned and reset, and `prune --yes`
+  reclaims it.
+- **Cap reached.** The pool is probed before the card is claimed, so a card
+  parked on a full pool writes nothing per tick. It is deferred with
+  `skipped_pool_exhausted` and the quotable reason `treehouse pool exhausted
+  for <repo>: all N worktrees are in use or dirty (max_trees = N, M leased)`.
+  It is not spawned outside the pool and it does not spend its failure budget;
+  it runs when another card returns a slot.
+- **Retry.** A card holds exactly one lease. On a retry it reuses the slot it
+  already holds (the branch is still checked out there), returns any duplicate
+  lease a crashed dispatcher may have left, and otherwise acquires a free slot
+  and checks out `wt/<task-id>` in it. The branch, not the slot, is the durable
+  artefact; a returned slot is reset and may be handed to any card.
+
+Two invariants: every slot lives under `<repo>/.treehouse/` (gitignored), and a
+slot is **never renamed** - `treehouse` keys its state file to recorded paths.
+The card id lives in the branch `wt/<task-id>` and in the lease holder label
+`kanban:<task-id>`.
+
+Onboarding another repo is copying that `treehouse.toml` into it; verify with
+`treehouse status` inside the repo.
+
 An archive is a commit stored at `refs/hermes/archive/<tree>` holding the
 tree's `HEAD`, staged changes, unstaged changes and untracked files (files your
 `.gitignore` excludes, such as `node_modules/` or `.venv/`, are not captured).

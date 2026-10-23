@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import contextlib
 
 from hermes_cli.worktree_ops import release_lsp_clients
+from hermes_cli import kanban_treehouse as _kbth
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -835,11 +836,81 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         )
 
 
+def _anchored_pool_workspace(
+    repo_root: Path, task_id: str, branch_name: str
+) -> tuple[Path, str]:
+    """Acquire this card's workspace from the repo's treehouse pool.
+
+    A repo opts in with ``<repo>/treehouse.toml``; without one this returns the
+    legacy ``<repo>/.worktrees/<task-id>`` worktree and logs why, so the
+    uncapped path is never silent. At ``max_trees`` the pool raises
+    :class:`kanban_treehouse.PoolExhausted` - the card waits for a slot instead
+    of growing a worktree outside the pool.
+    """
+    config = _kbth.read_pool_config(repo_root)
+    if config is None:
+        _kb._log.info(
+            "kanban: %s has no %s; falling back to git worktree add "
+            "<repo>/.worktrees/%s (uncapped, never recycled)",
+            repo_root, _kbth.CONFIG_FILENAME, task_id,
+        )
+        return _anchored_worktree(repo_root, task_id, branch_name)
+    lease = _kbth.acquire_lease(config, task_id, branch_name)
+    return lease.path, branch_name
+
+
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
     """Materialize the canonical ``<repo>/.worktrees/<task-id>`` worktree."""
     target = repo_root / ".worktrees" / task_id
     _ensure_git_worktree(repo_root, target, branch_name)
     return target, branch_name
+
+
+def _pool_repo_for_task(
+    task: Task | sqlite3.Row, *, board: Optional[str] = None
+) -> Optional[Path]:
+    """Repo root whose treehouse pool would own this card's workspace."""
+    workspace_path = task["workspace_path"] if isinstance(task, sqlite3.Row) else task.workspace_path
+    if workspace_path:
+        requested = Path(workspace_path).expanduser()
+        pool_repo = _kbth.pool_repo_root(requested)
+        if pool_repo is not None:
+            return pool_repo
+        if not requested.is_absolute():
+            return None
+        repo_root = _git_toplevel(requested)
+        if repo_root is not None and _path_key(requested.resolve(strict=False)) == _path_key(repo_root):
+            return repo_root
+        return None
+    board_slug = board if board else _kb.get_current_board()
+    board_default = (_kb.read_board_metadata(board_slug).get("default_workdir") or "").strip()
+    if not board_default:
+        return None
+    return _git_toplevel(Path(board_default).expanduser())
+
+
+def pool_exhaustion_reason(
+    task: Task | sqlite3.Row, *, board: Optional[str] = None
+) -> Optional[str]:
+    """Quotable reason when this card's pool has no free slot, else ``None``.
+
+    Read-only probe the dispatcher runs BEFORE claiming, so a card parked on a
+    full pool does not write a failed run every tick. Resolution re-checks
+    against treehouse's own state and raises ``PoolExhausted`` if a slot went
+    away in between; the spawn path turns that into the same deferral.
+    """
+    repo_root = _pool_repo_for_task(task, board=board)
+    if repo_root is None:
+        return None
+    try:
+        config = _kbth.read_pool_config(repo_root)
+        if config is None:
+            return None
+        return _kbth.cap_reason(config)
+    except _kbth.TreehouseError:
+        # A malformed config or a missing CLI must fail the card loudly at
+        # resolution, never read as "pool full".
+        return None
 
 
 def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> tuple[Path, str]:
@@ -871,7 +942,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
                 f"task {task.id} has workspace_kind=worktree but board "
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
-        return _anchored_worktree(repo_root, task.id, branch_name)
+        return _anchored_pool_workspace(repo_root, task.id, branch_name)
 
     requested = Path(task.workspace_path).expanduser()
     if not requested.is_absolute():
@@ -880,6 +951,24 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
             f"{task.workspace_path!r}; use an absolute path"
         )
     requested_resolved = requested.resolve(strict=False)
+
+    pool_repo = _kbth.pool_repo_root(requested_resolved)
+    if pool_repo is not None:
+        pool_config = _kbth.read_pool_config(pool_repo)
+        if pool_config is None:
+            # The repo stopped opting in after this card last ran. Never
+            # recreate a worktree at a stale .treehouse path (that slot is
+            # treehouse's, not git's); give the card the legacy anchor.
+            return _anchored_worktree(pool_repo, task.id, branch_name)
+        # One lease per card: reuses the card's own slot across a retry, returns
+        # any duplicate, and acquires a free slot when the recorded one was
+        # returned/pruned. At the cap this raises PoolExhausted; the dispatcher
+        # defers the card (see pool_exhaustion_reason) rather than spawning
+        # outside the pool.
+        lease = _kbth.resolve_pool_workspace(
+            pool_config, task.id, branch_name, preferred_path=requested_resolved,
+        )
+        return lease.path, branch_name
 
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
@@ -894,15 +983,14 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         if fallback_root is not None:
             fallback = fallback_root / ".worktrees" / task.id
             if _path_key(fallback.resolve(strict=False)) != _path_key(requested_resolved):
-                _ensure_git_worktree(fallback_root, fallback, branch_name)
-                return fallback.resolve(strict=False), branch_name
+                return _anchored_pool_workspace(fallback_root, task.id, branch_name)
         # No repo to anchor a fallback on (or the occupied path IS this task's
         # own canonical worktree): keep the legacy reuse rather than fail dispatch.
         return requested_resolved, actual_branch or branch_name
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and _path_key(requested_resolved) == _path_key(repo_root):
-        return _anchored_worktree(repo_root, task.id, branch_name)
+        return _anchored_pool_workspace(repo_root, task.id, branch_name)
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
     if repo_root is None:

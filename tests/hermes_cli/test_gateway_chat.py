@@ -8,7 +8,7 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     from hermes_cli import gateway_chat
     calls = []
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: calls.append(True))
-    for option in ("image", "worktree", "run_budget"):
+    for option in ("image", "worktree"):
         args = argparse.Namespace(**{option: True})
         assert gateway_chat.launch_from_args(args) == 2
         assert option.replace("_", "-") in capsys.readouterr().err
@@ -36,10 +36,9 @@ def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypa
     refusal prints a command they can run as-is."""
     from hermes_cli import gateway_chat
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
-    assert gateway_chat.launch_from_args(argparse.Namespace(worktree=True, run_budget=30.0)) == 2
+    assert gateway_chat.launch_from_args(argparse.Namespace(worktree=True)) == 2
     err = capsys.readouterr().err
     assert "--worktree: use" in err and "hermes --tui -w" in err
-    assert "--run-budget: use" in err and "run_budget_seconds" in err
     for name in gateway_chat._UNSUPPORTED:
         assert name in gateway_chat._RELOCATED, f"{name} refused without saying where it went"
     assert gateway_chat.launch_from_args(argparse.Namespace(safe_mode=True, query="x")) == 1

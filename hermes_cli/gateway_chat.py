@@ -14,10 +14,12 @@ from hermes_cli.gateway_connection import RESUME_REFUSALS
 
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
+# (--run-budget is accepted: it folds into the session.create policy via
+# _classic_only_policy, #143735.)
 _UNSUPPORTED = (
     "image", "worktree", "w",
     "no_restore_cwd",
-    "run_budget", "verbose", "compact",
+    "verbose", "compact",
 )
 _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url", "ignore_rules", "api_key",
            "yolo", "safe_mode", "ignore_user_config", "skills", "checkpoints", "accept_hooks", "pass_session_id")
@@ -27,7 +29,6 @@ _RELOCATED = {
     "worktree": "`hermes --tui -w`",
     "w": "`hermes --tui -w`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
-    "run_budget": "`agent.run_budget_seconds` in config.yaml",
     "verbose": "`hermes logs --follow`, or `hermes chat --tui -v`",
     "compact": "`display.compact: true` in config.yaml",
     "create-if-missing without -c <name>": "`-c <name> --create-if-missing`",

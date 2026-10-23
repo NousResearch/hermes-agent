@@ -38,6 +38,11 @@ _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
                 r"\[data-(?:slot|tour|sidebar|testid)\b")),
     ("app DOM reach",
      re.compile(r"\.observe\(\s*document\.body\s*,\s*\{[^}]*\b(?:childList|subtree)\b")),
+    # The preview Browser can hold pages the user is signed in to. Script reaches it only through
+    # ``ctx.preview.executeJavaScript``: a declared capability plus the user's per-origin consent.
+    # Grabbing the app's ``<webview>`` (or minting one on the preview partition) skips both.
+    ("preview guest reach",
+     re.compile(r"\b(?:querySelector(?:All)?|closest|getElementsByTagName|createElement)\(\s*[`'\"]webview\b")),
 )
 
 # String literals are matched first and kept, so a ``/*`` or ``//`` INSIDE a string (a glob such as

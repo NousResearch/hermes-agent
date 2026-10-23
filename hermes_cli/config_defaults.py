@@ -1330,8 +1330,8 @@ DEFAULT_CONFIG = {
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
         "write_approval": False,
-        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
-        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        "memory_char_limit": 4400,   # fork default (upstream: 2200): ~1600 tokens at 2.75 chars/token for Latin text; CJK runs ~1 char/token, so this is ~4400 tokens of Chinese — sized for CJK-first users
+        "user_char_limit": 2200,     # fork default (upstream: 1375): ~800 tokens at 2.75 chars/token; ~2200 tokens for CJK
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
         # One external provider: bundled (retaindb, byterover) or catalog-installed (honcho,

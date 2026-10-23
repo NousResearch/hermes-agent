@@ -1030,9 +1030,15 @@ memory:
   # Defaults to keeping the full provider-ranked recall. Restart to apply changes.
   prefetch_spill_enabled: false
   
-  # Character limits (~2.75 chars per token, model-independent)
-  memory_char_limit: 2200   # ~800 tokens
-  user_char_limit: 1375     # ~500 tokens
+  # Character limits (~2.75 chars per token for Latin text, model-independent).
+  # NOTE for CJK users: Chinese/Japanese/Korean text runs ~1 char per token, so the
+  # same limit costs ~2.75x more tokens than the Latin estimate below. This fork's
+  # defaults are doubled vs upstream (2200/1375) with that in mind; raise them
+  # further only if your model's context window and budget allow it.
+  # 中文用户注意：以上限按英文估算，中文约 1 字 1 token，实际开销约为标注值的 2.75 倍；
+  # 本 fork 默认值已较上游翻倍，窗口小或预算紧时请酌情调低。
+  memory_char_limit: 4400   # ~1600 tokens (Latin) / ~4400 tokens (CJK)
+  user_char_limit: 2200     # ~800 tokens (Latin) / ~2200 tokens (CJK)
 
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.

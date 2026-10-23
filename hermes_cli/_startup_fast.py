@@ -225,8 +225,12 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
         from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
         from hermes_cli.config import recommended_update_command
 
-        behind = check_for_updates(passive=True).get("behind")
-        if behind == UPDATE_AVAILABLE_NO_COUNT:
+        status = check_for_updates(passive=True)
+        behind = status.get("behind")
+        if status.get("rollback"):
+            print(f"Newer than stable release v{status.get('sourceVersion')} — "
+                  f"'{recommended_update_command()}' moves back to it")
+        elif behind == UPDATE_AVAILABLE_NO_COUNT:
             print(f"Update available — run '{recommended_update_command()}'")
         elif behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"

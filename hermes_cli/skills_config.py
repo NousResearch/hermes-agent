@@ -57,8 +57,8 @@ def save_disabled_skills(config: dict, disabled: set[str], platform: Optional[st
 def _list_all_skills() -> list[dict]:
     """Return all installed skills (ignoring disabled state)."""
     try:
-        from tools.skills_tool import _find_all_skills
-        return _find_all_skills(skip_disabled=True)
+        from tools.skills_tool import find_all_skills
+        return find_all_skills(skip_disabled=True)
     except Exception:
         return []
 

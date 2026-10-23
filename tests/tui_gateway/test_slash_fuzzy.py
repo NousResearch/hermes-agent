@@ -7,7 +7,7 @@ lookup: skill rows sort by fuzzy score first, then usage, then name.
 
 import math
 
-from tui_gateway.server import _rank_slash_completions
+from tui_gateway.command_discovery import _rank_slash_completions
 from tui_gateway.slash_fuzzy import (
     fuzzy_rank_slash_items,
     normalize_slash_search_query,

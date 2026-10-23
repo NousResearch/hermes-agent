@@ -20,7 +20,6 @@ class _Launched(Exception):
 def _run_chat(monkeypatch, argv, *, provider_configured):
     import hermes_cli.main as main_mod
     from hermes_cli._parser import build_top_level_parser
-    import hermes_cli.free_tier_bootstrap as bootstrap
     import hermes_cli.observability.shared_metrics_consent as consent
 
     parser, _subparsers, chat_parser = build_top_level_parser()
@@ -35,7 +34,6 @@ def _run_chat(monkeypatch, argv, *, provider_configured):
     def classic_main(**_k):
         calls.append("classic")
 
-    monkeypatch.setattr(bootstrap, "run_bootstrap", lambda **_k: None)
     monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: provider_configured)
     monkeypatch.setattr(main_mod, "_first_run_setup_guard", lambda _args: calls.append("guard"))
     monkeypatch.setattr(consent, "offer_consent_before_chat", lambda _args: calls.append("offer"))
@@ -47,10 +45,19 @@ def _run_chat(monkeypatch, argv, *, provider_configured):
     fake_cli = types.ModuleType("cli")
     fake_cli.main = classic_main
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    from hermes_cli import gateway_chat
+
+    # The classic CLI rides the gateway client: it must still front the guard and never reach
+    # a session (no gateway, no admission) when no provider is configured.
+    monkeypatch.setattr(gateway_chat, "run_gateway_chat", lambda *_a, **_k: calls.append("gateway"))
+    monkeypatch.setattr(gateway_chat, "_register_terminal_process", lambda: None, raising=False)
     try:
         main_mod.cmd_chat(args)
     except _Launched:
         pass
+    except SystemExit as exc:
+        # launch_gateway_chat returns 0 after the guard; anything else is a refusal we did not expect.
+        assert exc.code == 0, f"cmd_chat exited {exc.code} after {calls}"
     return calls
 
 

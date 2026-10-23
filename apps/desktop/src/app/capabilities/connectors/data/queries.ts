@@ -7,6 +7,7 @@ import type { ProfileScope } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { queryClient } from '@/lib/query-client'
+import { $freeTierTurnCompleted } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 
 import { hostedPhase } from '../derive'
@@ -102,8 +103,23 @@ export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
     queryKey: connectorsAccountsQueryKey(scope)
   })
 
+  // Rules exist only for an identity. The page list is empty until one does (no token, no gateway
+  // read), so rules are asked for once it has rows.
+  const listed = (list.data?.connectors.length ?? 0) > 0
+
+  // The identity can appear outside this page (an agent connect in a chat). Until the list has rows,
+  // every finished turn or connect re-reads the list, catalog and accounts, which then move to the signed-in routes.
+  useEffect(
+    () =>
+      listed
+        ? undefined
+        : $freeTierTurnCompleted.listen(() => invalidateConnectors(scope, 'list', 'catalog', 'accounts')),
+    [listed, scope]
+  )
+
   const policy = useQuery({
     ...read('policy'),
+    enabled: listed,
     queryFn: () => connectorPolicy(scope),
     queryKey: connectorsPolicyQueryKey(scope)
   })

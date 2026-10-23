@@ -1,16 +1,17 @@
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { en } from '@/i18n/en'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as DesktopFs from '@/lib/desktop-fs'
 import { $freeTierStatus } from '@/store/free-tier'
 import { INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
-import { $onboardingGate } from '@/store/onboarding-gate'
+import { markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 import {
   $connection,
   $currentCwd,
@@ -23,6 +24,7 @@ import {
 import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
+import { $desktopVersion, $updateStatus } from '@/store/updates'
 import type { FreeTierStatus } from '@/types/hermes'
 
 import { useStatusbarItems } from './use-statusbar-items'
@@ -125,6 +127,59 @@ afterEach(() => {
   $sessions.set([])
   $sessionStartedAt.set(null)
   $tileSessionFocusStartedAt.set(null)
+  $desktopVersion.set(null)
+  $updateStatus.set(null)
+})
+
+describe('statusbar update channel vocabulary', () => {
+  it('names a stable release update without presenting its commit distance', () => {
+    act(() => {
+      $desktopVersion.set({
+        appVersion: '0.21.6',
+        electronVersion: '37',
+        hermesRoot: '/h',
+        nodeVersion: '22',
+        platform: 'linux'
+      })
+      $updateStatus.set({
+        behind: 4,
+        channel: 'stable',
+        latestTag: 'v0.21.7',
+        supported: true,
+        updateAvailable: true
+      })
+    })
+
+    const version = renderStatusbarItems().statusbarItems.find(item => item.id === 'version-client')
+
+    expect(version?.label).toBe('v0.21.6 (update)')
+    expect(version?.title).toContain('v0.21.7 is available')
+  })
+
+  it('names a stable release older than the checkout as a rollback', () => {
+    act(() => {
+      $desktopVersion.set({
+        appVersion: '0.21.7',
+        electronVersion: '37',
+        hermesRoot: '/h',
+        nodeVersion: '22',
+        platform: 'linux'
+      })
+      $updateStatus.set({
+        behind: -1,
+        channel: 'stable',
+        rollback: true,
+        sourceVersion: '0.21.7',
+        supported: true,
+        updateAvailable: true
+      })
+    })
+
+    const version = renderStatusbarItems().statusbarItems.find(item => item.id === 'version-client')
+
+    expect(version?.title).toContain(en.settings.about.channel.rollbackBody('v0.21.7'))
+    expect(version?.title).not.toContain(en.shell.statusbar.update)
+  })
 })
 
 describe('statusbar workspace menu — "Open containing folder"', () => {
@@ -344,8 +399,6 @@ describe('free-tier Sign in in every interface mode', () => {
     notice_pending: false
   })
 
-  const desktopBridge = window.hermesDesktop
-
   function signInChipVisible(): boolean {
     const { leftStatusbarItems, statusbarItems } = renderStatusbarItems()
     const chip = [...leftStatusbarItems, ...statusbarItems].find(item => item.id === 'free-tier')
@@ -353,10 +406,11 @@ describe('free-tier Sign in in every interface mode', () => {
     return $statusbarVisible.get() && chip !== undefined && !chip.hidden
   }
 
+  beforeEach(() => markOnboardingDecided())
+
   afterEach(() => {
     $freeTierStatus.set(null)
-    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'idle' })
-    window.hermesDesktop = desktopBridge
+    setOnboardingSurfaceActive('onboarding', false)
     setInterfaceMode('advanced')
   })
 
@@ -376,13 +430,12 @@ describe('free-tier Sign in in every interface mode', () => {
     expect($statusbarVisible.get()).toBe(false)
   })
 
-  it('holds the chip while a guided setup is running and brings it back after', () => {
-    window.hermesDesktop = { ...desktopBridge, guestOnboardingEnabled: true } as typeof desktopBridge
+  it('holds the chip while onboarding is open and brings it back after', () => {
     $freeTierStatus.set(freeTier(true))
-    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'guided' })
+    setOnboardingSurfaceActive('onboarding', true)
     expect(signInChipVisible()).toBe(false)
 
-    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'done' })
+    setOnboardingSurfaceActive('onboarding', false)
     expect(signInChipVisible()).toBe(true)
   })
 })

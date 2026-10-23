@@ -49,6 +49,7 @@ import { routeTargetFromToken, sessionContextDrift } from '../session-context-dr
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
+import { attachmentContextRef } from './attachment-context'
 import {
   adoptPreparedSubmission,
   type PreparedSubmission,
@@ -58,7 +59,11 @@ import {
   writePreparedSubmission
 } from './prepared-submissions'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
-import { captureSubmissionDestination, destinationAfterCreate, sameAuthorityPublishedOwner } from './submission-destination'
+import {
+  captureSubmissionDestination,
+  destinationAfterCreate,
+  sameAuthorityPublishedOwner
+} from './submission-destination'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
@@ -212,6 +217,34 @@ function isPreAdmissionRefusal(error: unknown): boolean {
   return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
 }
 
+/** Freeze literal attachment aliases and terminal selections before submission. */
+function prepareComposerTransport(rawText: string, attachments: ComposerAttachment[], options?: SubmitTextOptions) {
+  let transportRaw = rawText
+  let bubbleOverride = options?.displayText
+
+  if (!options?.fromQueue) {
+    const frozen = freezeComposerTransportPayload(rawText, undefined, attachments)
+
+    if (frozen.missingLabels.length > 0) {
+      notify({
+        kind: 'warning',
+        title: translateNow('composer.terminalSelectionMissingTitle'),
+        message: translateNow('composer.terminalSelectionMissingBody')
+      })
+
+      return null
+    }
+
+    transportRaw = frozen.transportText
+
+    if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
+      bubbleOverride = frozen.displayText
+    }
+  }
+
+  return { visibleText: sanitizeComposerInput(transportRaw).trim(), bubbleOverride }
+}
+
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
   const {
     activeSessionIdRef,
@@ -248,34 +281,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         a => typeof a.titlePreview === 'string' && a.titlePreview.trim()
       )?.titlePreview
 
-      // Freeze `@terminal:` chips into transport text before send. Queue drains
-      // already carry frozen transport (tokens stripped at enqueue) — never
-      // re-resolve against the live selection map, or a later Cmd+L that reused
-      // the same shell:row label silently injects unrelated output (#77078).
-      let transportRaw = rawText
-      let bubbleOverride = options?.displayText
+      // Queue entries already own frozen transport; never resolve them against later selections.
+      const transport = prepareComposerTransport(rawText, attachments, options)
 
-      if (!options?.fromQueue) {
-        const frozen = freezeComposerTransportPayload(rawText)
-
-        if (frozen.missingLabels.length > 0) {
-          notify({
-            kind: 'warning',
-            title: translateNow('composer.terminalSelectionMissingTitle'),
-            message: translateNow('composer.terminalSelectionMissingBody')
-          })
-
-          return false
-        }
-
-        transportRaw = frozen.transportText
-
-        if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
-          bubbleOverride = frozen.displayText
-        }
+      if (!transport) {
+        return false
       }
 
-      const visibleText = sanitizeComposerInput(transportRaw).trim()
+      const { visibleText } = transport
+      let { bubbleOverride } = transport
+
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
@@ -291,7 +306,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const present = atts.filter((a): a is ComposerAttachment => Boolean(a))
 
         const contextRefs = present
-          .map(a => a.refText)
+          .map(a => attachmentContextRef(a, visibleText))
           .filter(Boolean)
           .join('\n')
 
@@ -497,8 +512,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // the retry is refused once, visibly, and the entry is retired: sending
         // the words again afterwards is the user's informed new turn.
         if (retained?.legacyAttempted && retainedKey) {
-          await removePreparedSubmission(retainedKey, retained.id).catch(error => console.warn('[prepared-submission-retire]', error))
-          notify({ kind: 'warning', title: copy.promptFailed, message: translateNow('promptNotices.legacySendUnconfirmed') })
+          await removePreparedSubmission(retainedKey, retained.id).catch(error =>
+            console.warn('[prepared-submission-retire]', error)
+          )
+          notify({
+            kind: 'warning',
+            title: copy.promptFailed,
+            message: translateNow('promptNotices.legacySendUnconfirmed')
+          })
 
           return false
         }
@@ -1109,7 +1130,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const prepared: NonNullable<typeof retained> = retained ?? {
           id: submissionId,
-          owner: destination.owner ?? sameAuthorityPublishedOwner(destination, targetStoredSessionId, ambientRequestGateway),
+          owner:
+            destination.owner ?? sameAuthorityPublishedOwner(destination, targetStoredSessionId, ambientRequestGateway),
           displayText: options?.displayText,
           attachments: syncedAttachments,
           text,
@@ -1256,7 +1278,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   receiptSessionId,
                   state => ({
                     ...state,
-                    messages: result.status === 'unknown' ? state.messages : state.messages.filter(message => message.id !== optimisticId),
+                    messages:
+                      result.status === 'unknown'
+                        ? state.messages
+                        : state.messages.filter(message => message.id !== optimisticId),
                     ...(!state.turnLive &&
                       !state.streamId &&
                       !state.sawAssistantPayload && {
@@ -1327,7 +1352,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // The gateway admitted it: a failed journal retirement (ENOSPC/EIO) must not report a
         // delivered prompt as failed and invite a resend. The identity is tombstoned first, so the
         // stale entry is never adopted again — not after a reload either.
-        await removePreparedSubmission(retryKey, prepared.id).catch(error => console.warn('[prepared-submission-retire]', error))
+        await removePreparedSubmission(retryKey, prepared.id).catch(error =>
+          console.warn('[prepared-submission-retire]', error)
+        )
 
         // The prompt is now accepted. Report the EXACT identity it landed on
         // (recovered id included) so a caller that must prove delivery — the

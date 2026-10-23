@@ -103,7 +103,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
-import { useComposerActions } from '../chat/hooks/use-composer-actions'
+import { useMainComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -659,7 +659,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     })
   }, [newProjectSessionRequest, openNewSessionTile])
 
-  const composer = useComposerActions({ activeSessionId, currentCwd, requestGateway })
+  const composer = useMainComposerActions({ activeSessionId, currentCwd, requestGateway })
 
   const branchInNewChat = useCallback(
     async (messageId?: string) => {

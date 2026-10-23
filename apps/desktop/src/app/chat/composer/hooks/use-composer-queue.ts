@@ -40,6 +40,7 @@ import type { ChatBarProps } from '../types'
  *  a chip has no selection payload (caller should abort without mutating the queue). */
 function freezeQueuedDraftText(
   text: string,
+  attachments: readonly ComposerAttachment[],
   copy: {
     terminalSelectionMissingTitle: string
     terminalSelectionMissingBody: string
@@ -51,7 +52,7 @@ function freezeQueuedDraftText(
     return { text }
   }
 
-  const frozen = freezeComposerTransportPayload(trimmed)
+  const frozen = freezeComposerTransportPayload(trimmed, undefined, attachments)
 
   if (frozen.missingLabels.length > 0) {
     notify({
@@ -236,7 +237,7 @@ export function useComposerQueue({
     }
 
     const frozen = draftRef.current.trim()
-      ? freezeQueuedDraftText(draftRef.current, t.composer)
+      ? freezeQueuedDraftText(draftRef.current, attachments, t.composer)
       : { text: draftRef.current }
 
     if (!frozen) {
@@ -292,7 +293,7 @@ export function useComposerQueue({
         return false
       }
 
-      const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
+      const frozen = text.trim() ? freezeQueuedDraftText(text, attachments, t.composer) : { text }
 
       if (!frozen) {
         return false
@@ -423,7 +424,7 @@ export function useComposerQueue({
     // Freeze `@terminal:` chips at enqueue. Persist the chip form; keep the
     // fenced selection in the runtime map so drain never re-resolves the live
     // label map and localStorage never stores terminal CONTENTS (#77078).
-    const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
+    const frozen = text.trim() ? freezeQueuedDraftText(text, attachments, t.composer) : { text }
 
     if (!frozen) {
       return false

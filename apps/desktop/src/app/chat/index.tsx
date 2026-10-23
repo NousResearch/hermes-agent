@@ -87,7 +87,7 @@ import {
   mergeOlderTranscriptPage,
   transcriptBackfillAvailable
 } from './transcript-backfill'
-import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
+import { advanceSessionTranscriptWindow, nextTranscriptWindowPages, type SessionWindowMemo } from './transcript-window'
 import { useChatBarState } from './use-chat-bar-state'
 import { useTranscriptRetention } from './use-transcript-retention'
 
@@ -357,12 +357,14 @@ export function ChatRuntimeBoundary({
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 
+  const { page: historicalPage, revealOlder } = history
+
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
       // A historical page is not the live tail: its older neighbours come from
       // the prompt range the rail already draws, never from store backfill.
-      if (history.page) {
-        return history.revealOlder(beforePrepend)
+      if (historicalPage) {
+        return revealOlder(beforePrepend)
       }
 
       // Network latency is not scroll intent. Capture at arrival, immediately
@@ -385,7 +387,7 @@ export function ChatRuntimeBoundary({
             const current = view.$messages.get()
 
             if (mergeOlderTranscriptPage(current, olderPage) === current) {
-              return
+              return false
             }
 
             beforePrepend?.()
@@ -396,6 +398,8 @@ export function ChatRuntimeBoundary({
 
               return grew ? { ...state, messages: merged } : state
             })
+
+            return grew
           }
         })
 
@@ -404,12 +408,25 @@ export function ChatRuntimeBoundary({
         return grew
       }
 
+      // A heavy active turn can keep the 30-message minimum even when one
+      // additional weight page is requested. Calculate the first page count
+      // that actually exposes an older row before capturing the scroll anchor:
+      // an unchanged window must never leave list.tsx's commit guard parked.
+      const windowState = windowStateRef.current.get(runtimeIdRef.current ?? '')?.state
+      const nextPages = windowState
+        ? nextTranscriptWindowPages(view.$messages.get(), windowState.window, windowState.pages)
+        : null
+
+      if (nextPages === null) {
+        return false
+      }
+
       beforePrepend?.()
-      setWindowPages(pages => pages + 1)
+      setWindowPages(pages => Math.max(pages + 1, nextPages))
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page, history.revealOlder]
+    [runtimeId, storedId, tailProfile, view, historicalPage, revealOlder]
   )
 
   // An open history page carries its own reach: its first prompt is the anchor,
@@ -418,8 +435,29 @@ export function ChatRuntimeBoundary({
   // still names older marks, so the entry point must stay live here too.
   const olderAvailable = history.page ? history.page.olderAvailable : windowed || restBackfillAvailable
   const isHistorical = Boolean(history.page)
+
+  // Source rows can coalesce or form hidden/sibling branches. Follow the
+  // canonical repository's visible chain rather than comparing raw source IDs.
+  const expectedRuntimeIds = useMemo(() => {
+    if (!isHistorical) {
+      return null
+    }
+
+    const parents = new Map(runtimeMessageRepository.messages.map(item => [item.message.id, item.parentId]))
+    const ids: string[] = []
+    let id = runtimeMessageRepository.headId
+
+    while (id) {
+      ids.push(id)
+      id = parents.get(id) ?? null
+    }
+
+    return ids.reverse().join('\n')
+  }, [isHistorical, runtimeMessageRepository])
+
   const newerAvailable = history.page?.newerAvailable ?? false
-  const { revealRow, returnToLatest } = history
+  const leadingRowId = history.page?.leadingRowId ?? null
+  const { revealRow, returnToLatest, revealNewer, error: historyError } = history
 
   const transcriptWindow = useMemo(
     () => ({
@@ -428,10 +466,26 @@ export function ChatRuntimeBoundary({
       revealRow,
       returnToLatest,
       currentMessages,
+      expectedRuntimeIds,
       isHistorical,
-      newerAvailable
+      newerAvailable,
+      revealNewer,
+      historyError,
+      leadingRowId
     }),
-    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+    [
+      expandWindow,
+      olderAvailable,
+      revealRow,
+      returnToLatest,
+      currentMessages,
+      expectedRuntimeIds,
+      isHistorical,
+      newerAvailable,
+      revealNewer,
+      historyError,
+      leadingRowId
+    ]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({

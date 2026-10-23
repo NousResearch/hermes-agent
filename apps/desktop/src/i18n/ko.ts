@@ -37,7 +37,137 @@ export const koOverrides = {
     authorizedToolsUnavailable: '승인됨. 도구를 사용할 수 없습니다.',
     required: '필수',
     namedAccount: (app, alias) => `Hermes가 이 ${app} 계정에 붙인 이름: ${alias}`,
-    renameAccount: '이름 변경'
+    renameAccount: '이름 변경',
+    directory: {
+      suggested: '추천',
+      allApps: '모든 앱',
+      receiptConnected: apps => `연결됨: ${apps}`,
+      receiptNone: '새로 연결된 앱 없음',
+      receiptTimedOut: '5분이 지나 닫힘',
+      finishInBrowser: '브라우저에서 마무리하세요',
+      signInFailed: '연결하지 못했습니다. 클릭해 재시도하세요'
+    }
+  },
+  catalog: {
+    add: '추가',
+    added: '추가됨',
+    discover: '탐색',
+    featured: '추천',
+    explorePlugins: '플러그인 탐색',
+    exploreSkills: '스킬 탐색',
+    mostStarred: '스타 많은 순',
+    newest: '최신순',
+    recentlyUpdated: '최근 업데이트순',
+    alphabetical: '이름순',
+    sortBy: '정렬',
+    seeAll: '모두 보기',
+    related: '비슷한 항목',
+    tags: '태그',
+    screenshots: '스크린샷',
+    listView: '목록 보기',
+    cardView: '카드 보기',
+    installTitle: (name: string) => `“${name}”을(를) 설치할까요?`,
+    installDescription: '이 스킬은 새 세션부터 사용할 수 있습니다. 신뢰하는 소스만 설치하세요.',
+    installTo: '설치 위치',
+    thisComputer: '이 컴퓨터',
+    installing: '설치 중…',
+    installComplete: (name: string) => `“${name}” 설치됨`,
+    destinationChanged: '설치 위치가 바뀌었습니다. 이 창을 닫고 설치 링크를 다시 여세요.',
+    install: '설치',
+    installed: '설치됨',
+    searchSkills: '스킬 검색',
+    searchPlugins: '플러그인 검색',
+    allSources: '모든 소스',
+    allCategories: '모든 카테고리',
+    about: '정보',
+    author: '작성자',
+    source: '소스',
+    category: '카테고리',
+    version: '버전',
+    platforms: '플랫폼',
+    requires: '요구 사항',
+    tools: '도구',
+    hooks: '훅',
+    middleware: '미들웨어',
+    commands: '명령',
+    license: '라이선스',
+    addedDate: '추가일',
+    updatedDate: '업데이트일',
+    repository: '저장소',
+    documentation: '문서',
+    noResults: '일치하는 항목 없음',
+    tryAnother: '다른 검색어를 쓰거나 필터를 지우세요.',
+    clearFilters: '필터 지우기',
+    filters: '필터',
+    loadFailed: '카탈로그를 불러오지 못했습니다',
+    retry: '재시도',
+    more: '더 보기',
+    pinned: '검토된 커밋',
+    snapshotHint: 'Hermes 카탈로그의 목록입니다. 탐색 중에는 소스 저장소에 접속하지 않습니다.',
+    installHint: '설치 전에 소스를 검토하세요. 변경 사항은 새 세션부터 적용됩니다.',
+    results: (count: number) => `결과 ${count.toLocaleString()}개`,
+    back: '결과로 돌아가기',
+    tier: '등급',
+    previousSlide: '이전 추천',
+    nextSlide: '다음 추천',
+    slideOf: (index, count) => `${index} / ${count}`,
+    tierLabels: {
+      official: '공식',
+      verified: '검증됨',
+      community: '커뮤니티'
+    },
+    tiers: {
+      official: {
+        title: '공식 플러그인',
+        blurb: 'Nous Research가 만들고 관리합니다.'
+      },
+      verified: {
+        title: '검증된 플러그인',
+        blurb: '연동 서비스 제공사가 만들고 Nous가 검증했습니다.'
+      }
+    },
+    moreToExplore: '더 둘러보기',
+    moreToExploreBlurb: '카탈로그의 작은 분야를 한곳에 모았습니다.',
+    skillsFor: category => `${category} 관련 스킬입니다.`,
+    discoverKind: kind => `${kind} 탐색`,
+    developer: {
+      heading: '개발자 모드',
+      title: 'Hermes용으로 만들기',
+      pitch: '도구, 커넥터, 플러그인, Mod를 만드셨나요?',
+      pitchFollowUp: '만들고 싶은데 방법을 모르시나요?',
+      submit: 'Mod 제출',
+      docs: '개발자 문서'
+    },
+    toolsets: {
+      mostUsed: '자주 쓰는 도구 세트',
+      mostUsedBlurb: '이 프로필에서 Hermes가 가장 자주 쓰는 도구 세트입니다.',
+      essentials: '필수',
+      essentialsBlurb: 'Hermes 작업 대부분이 이 도구로 돌아갑니다.',
+      toolCount: count => `도구 ${count}개`,
+      callCount: (count, _calls) => `호출 ${count}회`,
+      themes: {
+        work: {
+          label: '탐색, 작업, 자동화',
+          blurb: '브라우저와 데스크톱을 조작하고, 파일을 편집하고, 코드를 실행하고, 작업을 예약합니다.'
+        },
+        create: {
+          label: '보기, 듣기, 생성',
+          blurb: '이미지와 동영상을 보고, 음성을 받아쓰고, 미디어를 생성합니다.'
+        },
+        recall: {
+          label: '메모리와 지식',
+          blurb: 'Hermes가 기억하는 것, 그리고 검색할 수 있는 스킬과 기록입니다.'
+        },
+        connect: {
+          label: '연결과 소통',
+          blurb: '계정, 다른 에이전트, 스마트 홈, 웹 너머의 검색까지.'
+        },
+        more: {
+          label: '기타 도구',
+          blurb: '이 프로필에서 켤 수 있는 나머지 전부입니다.'
+        }
+      }
+    }
   },
 
   connectorsPage: {
@@ -404,21 +534,18 @@ export const koOverrides = {
     collectedUsage: '에이전트 품질: 실패한 편집, 잘못된 도구 호출, 갇힌 루프, 작업당 비용',
     collectedMachine: '기기: OS, RAM 범위, GPU 종류, Hermes 버전, 로컬 모델 사용 여부',
     sending:
-      '“Nous와 공유”를 고르지 않으면 통계는 이 컴퓨터에만 남습니다. 공유한 통계는 이 프로필의 무작위 ID와 함께 하루 한 번 Nous로 전송됩니다. 동의한 뒤에만 집계되는 Hermes 설치 1회 알림을 제외하면, 동의하기 전의 통계는 절대 전송되지 않습니다. 설정에서 언제든 바꿀 수 있습니다.',
+      '공유하면 Hermes가 이 프로필의 무작위 ID와 함께 하루 한 번 통계를 Nous로 전송합니다. Hermes 설치 1회 알림을 제외하면, 동의하기 전의 통계는 절대 전송되지 않습니다. 설정에서 언제든 바꿀 수 있습니다.',
     readDocs: '자세한 내용 읽기',
     share: 'Nous와 공유',
-    local: '이 컴퓨터에만 보관',
     off: '참여 안 함',
     saveFailed: '선택을 저장하지 못했습니다',
-    collectLabel: '사용 통계 수집',
-    collectDesc: '횟수만 집계해 이 컴퓨터에 보관합니다. 메시지, 파일, 경로, 오류 문구는 절대 담지 않습니다.',
     sendLabel: '사용 통계를 Nous와 공유',
     sendDesc:
-      '이 프로필의 무작위 ID와 함께 하루 한 번 통계를 Nous로 전송합니다. 설치 1회 알림을 제외하면 동의하기 전의 통계는 절대 전송되지 않습니다. 수집을 켜야 합니다.',
+      '개수만 이 프로필의 무작위 ID와 함께 하루 한 번 전송합니다. 메시지, 파일, 경로, 오류 문구는 절대 보내지 않습니다.',
     unavailable: '이 설정을 바꾸려면 Hermes 백엔드를 업데이트하세요.',
     stripBody: '횟수만 집계합니다. 메시지나 파일은 절대 담지 않습니다.',
     stripReaskBody: '한 번 더 여쭙니다: 이전 버전에서는 이 안내를 보기 전에 “참여 안 함”이 저장될 수 있었습니다.',
-    stripChoices: { share: 'Nous와 공유', local: '이 컴퓨터에만 보관', off: '참여 안 함' },
+    stripChoices: { share: 'Nous와 공유', off: '참여 안 함' },
     stripDetails: '자세히'
   },
 
@@ -431,6 +558,52 @@ export const koOverrides = {
     capabilities: { title: '기능', text: 'Hermes가 쓸 수 있는 스킬, 도구, 플러그인입니다. 여기서 더 추가하세요.' },
     messaging: { title: '메시징', text: 'Telegram, Slack, Discord 등에서 Hermes를 부르세요.' },
     rightPane: { title: '작업용 창', text: '파일, 터미널, 리뷰, 앱 내 브라우저를 오른쪽에 엽니다.' }
+  },
+  firstRun: {
+    beats: {
+      name: '이름',
+      theme: '강조 색상',
+      layout: '레이아웃',
+      connectors: '앱',
+      plugins: '플러그인',
+      tour: '투어',
+      build: '첫 작업'
+    },
+    namePlaceholder: '이름',
+    useName: name => `“${name}” 사용`,
+    install: '설치',
+    installed: '설치됨',
+    loading: '불러오는 중…',
+    noPlugins: '지금 표시할 플러그인이 없습니다.',
+    noneChosen: '없음',
+    noAnswer: '답변 없음',
+    answerRefused: '답변이 수락되지 않음',
+    tours: {
+      quick: '빠른 투어',
+      full: '전부 보여 주세요',
+      skip: '건너뛰고 바로 만들어 볼게요'
+    },
+    skippedAll: '설정 건너뜀',
+    skip: '설정 건너뛰기',
+    skipTip: '안내 설정을 끝내고 새 대화를 엽니다.',
+    skipFailed: '설정을 건너뛰지 못했습니다',
+    localModel: {
+      title: '이 컴퓨터에서 모델을 로컬로 구동할 수 있습니다',
+      text: (model, size) =>
+        `${model}(${size})은(는) 이 컴퓨터 사양으로 구동할 수 있습니다. 무료로 실행되며 대화는 이 컴퓨터에만 남습니다.`,
+      setUp: '설정하기',
+      notNow: '나중에'
+    },
+    intro: {
+      greeting: '안녕하세요, Hermes입니다.',
+      plan: '먼저 환경을 맞춰 드릴게요. 그다음 멋진 걸 하나 해내 봐요.'
+    },
+    rerun: {
+      title: '온보딩 다시 실행',
+      description: '현재 모델로 첫 실행 단계를 안내하는 새 설정 대화를 엽니다.',
+      action: '다시 실행',
+      failed: '온보딩을 시작하지 못했습니다'
+    }
   },
 
   fileMenu: {
@@ -676,6 +849,90 @@ export const koOverrides = {
       privacy: '개인정보 처리방침',
       after: '이 적용됩니다.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      '이 서버가 이 메시지의 이전 전송을 확인하지 못해 이미 실행되었을 수 있습니다. 다시 보내기 전에 대화를 확인하세요.',
+    mcpReloadDeferred:
+      '이 대화는 사용 중입니다. MCP 변경 사항은 현재 턴이 끝난 뒤 MCP를 다시 불러오거나 대화를 다시 열면 적용됩니다',
+    mcpReloadUnavailable: servers => `연결하지 못함: ${servers}`,
+    compactedTurnUnavailable: '대화를 압축할 때 이 메시지가 요약되어 더 이상 복원하거나 편집할 수 없습니다.',
+    staleTurnUnavailable: '이 메시지는 더 이상 이 대화 기록에 없습니다.',
+    sessionCommands: {
+      undoUsage: '사용법: /undo [N]',
+      undoNothing: '되돌릴 메시지가 없습니다',
+      undidOne: count => `메시지 ${count}개를 되돌렸습니다 — 제거한 메시지는 입력창에 있습니다`,
+      undidOther: count => `메시지 ${count}개를 되돌렸습니다 — 제거한 메시지는 입력창에 있습니다`,
+      retryNothing: '재시도할 메시지가 없습니다',
+      retryUnsupported: '/retry: 미디어나 알 수 없는 콘텐츠가 포함된 메시지는 재시도할 수 없습니다',
+      busy: command =>
+        `세션 사용 중 — Hermes가 아직 응답하고 있습니다. 먼저 현재 응답을 중지한 뒤(중지 버튼 또는 터미널에서 Ctrl+C) /${command} 명령을 실행하세요.`,
+      busyCompressing: command => `세션 사용 중 — /compress가 실행 중입니다. 끝나면 /${command} 명령을 실행하세요.`,
+      steerUsage: '사용법: /steer <prompt>',
+      steerQueued: preview => `개입 대기 중 — 다음 도구 호출 뒤에 전달됩니다: "${preview}"`,
+      steerNoActiveTurn: preview => `진행 중인 턴 없음 — 다음 턴으로 대기시킴: "${preview}"`,
+      steerRejected: '개입 거부됨 — 진행 중인 턴이 없어 다음 턴으로 대기시켰습니다',
+      queued: preview => `대기 중: "${preview}"`,
+      queueFailed: '메시지를 대기열에 넣지 못했습니다',
+      countOne: count => `대기 중인 메시지 ${count}개`,
+      countOther: count => `대기 중인 메시지 ${count}개`,
+      queueEditKeptTitle: '대기 중인 메시지가 바뀌지 않음',
+      queueEditKept: '편집을 저장하기 전에 메시지가 시작되었거나 거부되었습니다. 편집한 내용은 입력창에 있습니다.',
+      queueEditUnconfirmedTitle: '편집이 확인되지 않음',
+      queueEditUnconfirmed:
+        'Hermes가 편집을 확인하지 못했습니다. 다시 저장하면 같은 편집을 재시도하며, 대기열에 두 번 들어가지 않습니다.'
+    },
+    desktopCommands: {
+      error: message => `오류: ${message}`,
+      rollbackUsage: '사용법: /rollback [list] | diff <n|hash> | <n|hash> [file] [--all]',
+      checkpointsDisabled:
+        '이 세션에는 체크포인트가 켜져 있지 않습니다(config.yaml에서 checkpoints.enabled를 설정하세요).',
+      checkpointsEmpty: '이 작업 디렉터리에는 아직 체크포인트가 없습니다.',
+      checkpointsHeader: '체크포인트(최신순):',
+      checkpointsHint:
+        '/rollback <n> [file]로 복원합니다(직접 수정한 내용까지 덮어쓰려면 --all 추가). 미리 보려면 /rollback diff <n>을 쓰세요.',
+      noDiff: '그 체크포인트 이후 변경 사항이 없습니다.',
+      rollbackFailed: error => `롤백 실패: ${error}`,
+      unknownError: '알 수 없는 오류',
+      restored: hash => (hash ? `체크포인트 ${hash}을(를) 복원했습니다.` : '체크포인트를 복원했습니다.'),
+      rewound: count => `이 대화에서 메시지 ${count}개를 되감았습니다.`,
+      reopenForRewind: '되감은 대화를 보려면 이 대화를 다시 여세요.',
+      agentsEmpty: '이 대화에 활성 서브에이전트나 백그라운드 프로세스가 없습니다.',
+      subagentsHeader: count => `서브에이전트(${count}):`,
+      subagentFallback: '서브에이전트',
+      statusRunning: '실행 중',
+      toolCalls: count => `도구 호출 ${count}회`,
+      processesHeader: count => `백그라운드 프로세스(${count}):`,
+      configHeader: '설정(표시, 승인, 붙여넣기, 음성 설정만 표시하며 나머지는 표시하지 않음):',
+      configDefaults: '(기본값)',
+      configFooter: '설정에서 바꾸거나, 게이트웨이 호스트에서 `hermes config edit`으로 config.yaml을 편집하세요.',
+      historyHeader: count => `대화 기록(메시지 ${count}개):`,
+      historyEmpty: '아직 메시지가 없습니다.',
+      historyYou: '나',
+      historyHermes: 'Hermes',
+      saveUsage: '사용법: /save [json|md|html] [filename] [redact]',
+      saveLegacyRefused:
+        '저장하지 않음: 이 게이트웨이는 민감 정보를 가린 사본, 이름을 지정한 사본, JSON이 아닌 사본을 내보낼 수 없습니다. 게이트웨이를 업데이트하거나, 옵션 없이 /save를 실행해 게이트웨이 호스트에 원본 JSON을 기록하세요.',
+      savedOnHost: path => `게이트웨이 호스트에 저장됨: ${path}`,
+      unknownPath: '(알 수 없는 경로)',
+      saveUnsupported: '오류: 이 데스크톱 빌드는 파일을 저장할 수 없습니다',
+      saveDialogTitle: '대화 저장',
+      savedTo: path => `대화를 ${path}에 저장했습니다`,
+      saveCancelled: '저장하지 않음(취소됨).',
+      exportRemote:
+        '/export는 게이트웨이 호스트에서 프로필을 패키징하며, 그 호스트는 이 컴퓨터가 아닙니다. 해당 호스트에서 `hermes profile export`를 실행하세요.',
+      importRemote:
+        '/import는 게이트웨이 호스트에 프로필을 설치하며, 그 호스트는 이 컴퓨터가 아닙니다. 해당 호스트에서 `hermes profile import <archive>`를 실행하세요.',
+      timestampsUsage: '사용법: /timestamps [on|off|status]',
+      timestampsOn: '타임스탬프: 켜짐(이 창에만 적용. 유지하려면 config.yaml에서 display.timestamps를 설정하세요)',
+      timestampsOff: '타임스탬프: 꺼짐(이 창에만 적용. 유지하려면 config.yaml에서 display.timestamps를 설정하세요)'
+    }
+  },
+  keepAwakeOffer: {
+    title: 'Hermes가 작업하는 동안 컴퓨터가 절전 상태로 들어갔습니다',
+    message:
+      '작업이 실행되는 동안 Hermes가 컴퓨터 절전을 막을 수 있습니다. 화면은 그대로 꺼지며, 배터리 사용 중에는 절전 상태로 들어갈 수 있습니다.',
+    action: '작업 중 절전 방지'
   },
 
   billingBlock: {
@@ -965,6 +1222,8 @@ export const koOverrides = {
       openFolder: '데스크톱 플러그인 폴더 열기',
       rescan: '재검색',
       reveal: '파일 관리자에서 보기',
+      enable: '활성화',
+      disable: '비활성화',
       failed: '실패',
       kinds: { bundled: '내장', disk: '디스크', runtime: '런타임' },
       installModal: {
@@ -974,17 +1233,22 @@ export const koOverrides = {
         title: '플러그인 설치',
         description: '설치하기 전에 이 저장소에 무엇이 들어 있는지 확인하세요.',
         repoLabel: '저장소',
+        verified: '검증됨',
+        unverified: '미검증',
+        reviewedByNous: 'Nous가 검토했습니다.',
+        installsAndEnables: profile => `${profile}에 설치하고 바로 켭니다.`,
+        installsOnly: profile => `${profile}에 설치합니다.`,
+        advanced: '고급',
+        versionLabel: '버전',
+        reviewedPin: sha => (sha ? `검토된 고정 커밋 ${sha}` : '검토된 고정 커밋'),
+        latestCommit: '최신 커밋',
+        nothingToInstall: '이 패키지에는 여기에 설치할 것이 없습니다.',
         includesHeading: '이 패키지에 포함된 것',
         agentLabel: '에이전트 플러그인',
         desktopLabel: '데스크톱 UI',
         profileLabel: '설치할 프로필',
         agentTargetLocal: (profile, dir) => `${profile} 백엔드(${dir})에 설치합니다`,
         agentTargetRemote: profile => `연결된 ${profile} 백엔드에 설치합니다`,
-        catalogPinned: (name, sha) =>
-          `Hermes 카탈로그 항목 "${name}" — 에이전트 구성 요소는 브랜치 최신이 아니라 검토된 고정 커밋${sha ? ` ${sha}` : ''}에서 설치됩니다.`,
-        reviewedHeading: '검토된 카탈로그 항목',
-        reviewedIntro:
-          '이 항목은 고정된 커밋 시점에 사람이 검토했습니다. 아래에서 실제 코드를 직접 확인할 수도 있습니다.',
         toolsConnected: n => `도구 ${n}개 연결됨`,
         skillsReady: names => (names.length === 1 ? `스킬 ${names[0]} 준비됨` : `스킬 ${names.length}개 준비됨`),
         nextChat: '다음 대화에서 더 많은 도구를 쓸 수 있습니다',
@@ -997,12 +1261,10 @@ export const koOverrides = {
         desktopOnlyNote: '데스크톱 전용 패키지는 백엔드 에이전트 플러그인을 설치하지 않습니다.',
         insecureWarning:
           '이 URL은 안전하지 않거나 로컬 스킴을 사용합니다. 실제 설치에는 https:// 또는 git@ 사용을 권장합니다.',
-        securityHeading: '설치하기 전에',
         securityIntro: '신뢰하는 출처에서만 설치하세요 — 무엇이 추가되는지 보려면 아래 저장소를 확인하세요.',
         sourceHeading: '소스 코드',
         viewRepository: '저장소 보기',
         viewPluginFiles: '플러그인 파일 보기',
-        gitCloneLabel: 'Git 클론 URL',
         enableAgent: '설치 후 에이전트 플러그인 사용',
         forceReinstall: '강제 재설치(이미 설치되어 있으면 교체)',
         pinToCommit: '커밋 고정(선택)',
@@ -1654,12 +1916,6 @@ export const koOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '대기 중인 봇 백엔드',
-      warmBotBackendsTitle: '대기 중인 봇 백엔드',
-      backendIdleTimeoutAria: '백엔드 유휴 제한 시간(밀리초)',
-      backendIdleTimeoutTitle: '백엔드 유휴 제한 시간'
-    },
     customEndpoints: {
       active: '사용 중',
       apiKeySet: 'API 키 설정됨',
@@ -1722,7 +1978,11 @@ export const koOverrides = {
         detailsLabel: '채널',
         branch: b => `브랜치: ${b}`,
         change: '변경',
-        latestRelease: v => `최신 안정 릴리스(${v})를 쓰고 있습니다.`
+        latestRelease: v => `최신 안정 릴리스(${v})를 쓰고 있습니다.`,
+        rollbackTitle: v => `안정 릴리스 ${v}(으)로 되돌리기`,
+        rollbackBody: v => `이 빌드는 안정 릴리스 ${v}보다 최신입니다. 설치하면 Hermes가 그 릴리스로 되돌아갑니다.`,
+        rollbackAction: v => `${v}(으)로 롤백`,
+        allChanges: '모든 변경 사항 보기'
       }
     },
     config: {
@@ -1764,12 +2024,6 @@ export const koOverrides = {
       alwaysExternalLinksTitle: '링크를 항상 외부 브라우저로 열기',
       alwaysExternalLinksDesc:
         '클릭한 모든 링크를 앱 내 브라우저 대신 시스템 브라우저에서 엽니다. 마우스 오른쪽 버튼 메뉴의 "앱 내 브라우저에서 열기"는 그대로 동작합니다.',
-      developerTitle: '개발자',
-      resetOnboardingTitle: '첫 실행 설정 초기화',
-      resetOnboardingDesc:
-        '설정 대화를 삭제하고 설정 프로필을 다시 만든 뒤 첫 실행 설정을 다시 진행합니다. 직접 만든 프로필, 대화, 플러그인은 그대로 남습니다.',
-      resetOnboardingAction: '초기화',
-      resetOnboardingFailed: '첫 실행 설정을 초기화하지 못했습니다',
       voiceShortcutHintTitle: '음성 녹음 단축키 안내',
       voiceShortcutHintDesc:
         '음성 녹음 단축키는 설정 → 키보드 단축키("음성 대화 시작 / 중지")에서 지정합니다. voice.record_key 설정값은 CLI와 TUI에만 적용됩니다.',
@@ -2199,6 +2453,23 @@ export const koOverrides = {
         kanban_decomposer: { label: '칸반 분해', hint: '작업 분해' },
         profile_describer: { label: '프로필 설명', hint: '프로필 설명 자동 생성' },
         curator: { label: '큐레이터', hint: '스킬 사용 검토' }
+      },
+      subagents: {
+        inherit: '메인 에이전트 설정 상속',
+        modelOnly: '사용자 지정 모델(상위 에이전트 자격 증명 사용)',
+        providerLabel: '서브에이전트 공급자',
+        modelLabel: '서브에이전트 모델',
+        direct: '직접 엔드포인트 재정의',
+        customProvider: '사용자 지정 공급자...',
+        customProviderLabel: '사용자 지정 서브에이전트 공급자',
+        parentModel: '상위 모델 사용',
+        parentModelWarning:
+          '선택한 공급자가 상위 모델을 지원해야 합니다. 모델이 호환되지 않으면 공급자만 지정한 경로는 실패할 수 있습니다. 그 공급자가 자체 기본 모델을 정해 두었다면 서브에이전트는 그 모델을 씁니다.',
+        directActive:
+          '직접 엔드포인트가 활성 상태이며 저장된 공급자보다 우선합니다. 이 모드를 선택한 동안 엔드포인트와 자격 증명은 유지됩니다.',
+        directClear: '이 경로를 적용하면 직접 엔드포인트와 저장된 키가 지워집니다. 다른 요청 설정은 유지됩니다.',
+        catalogFailed: '모델 카탈로그를 사용할 수 없습니다. 공급자와 모델을 직접 입력하거나 재시도하세요.',
+        draftHint: '적용하기 전까지 변경 사항은 로컬에만 남습니다.'
       }
     },
     localModels: {
@@ -2891,18 +3162,11 @@ export const koOverrides = {
         unsupported_gpu: 'GPU 미지원',
         unknown: '상태 알 수 없음'
       },
-      catalogTitle: '플러그인 카탈로그',
-      catalogBrowse: '둘러보기',
-      catalogHide: '카탈로그 브라우저 숨기기',
-      catalogHint:
-        '원하는 플러그인에서 "+ 이 에이전트에 추가"를 누르세요 — 검토된 항목은 고정된 커밋으로 선택한 프로필에 설치됩니다. 에이전트+데스크톱 통합 플러그인은 양쪽 모두 제공합니다.',
       alreadyInstalled: (name: string) => `${name}은(는) 이 프로필에 이미 설치되어 있습니다.`,
       catalogProvenance: (sha: string) => `Hermes 카탈로그에서 설치됨${sha ? `, 고정 커밋 ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
         `커밋 ${sha}에 고정되었습니다. 새 고정으로 다시 설치하기 전까지 업데이트를 거부합니다.`,
       pinnedBadge: (sha: string) => `고정 @ ${sha}`,
-      tierOfficial: '공식',
-      tierCommunity: '커뮤니티',
       updateToPin: (sha: string) => `${sha}(으)로 업데이트`,
       updateFailed: (name: string) => `${name}을(를) 업데이트하지 못했습니다`,
       updated: (name: string) =>
@@ -2911,6 +3175,13 @@ export const koOverrides = {
       updateConsentBody: (name: string, sha: string) =>
         `${name}의 새 카탈로그 고정 커밋(${sha})은 설치된 버전에 없던 기능 영역을 추가합니다. 신뢰할 수 있을 때만 적용하세요:`,
       updateConsentConfirm: '업데이트 적용',
+      updateScanTitle: name => `${name} 보안 검사 경고`,
+      updateScanBody: (name, count) =>
+        `${name} 업데이트가 주의 판정을 받았습니다(발견 사항 ${count}개). 모든 업데이트는 검사를 거칩니다. 소스를 신뢰할 때만 적용하세요:`,
+      updateScanMore: count => `+ ${count}개 더`,
+      updateScanConfirm: '그래도 업데이트',
+      updateScanBlocked: name => `보안 검사가 ${name} 업데이트를 차단했습니다(위험 판정). 무시할 수 없습니다.`,
+      updatedGit: name => `${name}을(를) 최신 커밋으로 업데이트했습니다.`,
       uninstall: '제거',
       uninstallTip: (name: string, profile: string) => `${profile}에서 ${name} 제거`,
       uninstallConfirmTitle: (name: string) => `${name}을(를) 제거할까요?`,
@@ -2934,6 +3205,7 @@ export const koOverrides = {
         saved: (name: string) => `${name} 설정을 저장했습니다.`,
         saveFailed: (name: string) => `${name} 설정을 저장하지 못했습니다`,
         required: '필수',
+        optional: '(선택)',
         secretSet: '•••••••• (설정됨)',
         secretStoredAs: (env: string) =>
           `프로필의 .env에 ${env}(으)로 저장되며 config.yaml에는 절대 들어가지 않습니다. 현재 값을 유지하려면 비워 두세요.`
@@ -3027,6 +3299,11 @@ export const koOverrides = {
     importSuccess: nodes => `노드 ${nodes}개짜리 맵을 불러왔습니다.`,
     importedBadge: '가져온 맵',
     resetToMine: '내 맵으로 돌아가기'
+  },
+  gatewayGroupOpen: {
+    opening: '게이트웨이 그룹을 여는 중…',
+    lookupFailed: '게이트웨이에서 이 그룹을 찾지 못했습니다. 재시도하세요.',
+    missing: '이 게이트웨이 그룹은 더 이상 존재하지 않습니다.'
   },
   agents: {
     extendedTranscript: '전체 기록',
@@ -3999,6 +4276,7 @@ export const koOverrides = {
       movedTo: name => `${name}(으)로 이동했습니다`,
       moveFailed: '세션을 이동하지 못했습니다',
       moveNoFolder: '그 프로젝트에는 이동할 폴더가 없습니다',
+      moveBusy: '실행 중인 턴을 중지한 뒤 대화를 이동하세요',
       moveNoProjects: '다른 프로젝트가 없습니다',
       reveal: '폴더에서 보기',
       copyPath: '경로 복사',
@@ -4141,6 +4419,7 @@ export const koOverrides = {
     openDirective: '열기',
     queueMessage: '메시지 대기열에 넣기',
     steer: '진행 중인 실행에 개입',
+    redirect: '진행 중인 실행 방향 바꾸기',
     stop: '중지',
     send: '보내기',
     speaking: '말하는 중',
@@ -4283,6 +4562,12 @@ export const koOverrides = {
     queueSteer: '개입 — 진행 중인 턴의 방향을 지금 바꿉니다',
     queueSend: '보내기',
     queueDelete: '삭제',
+    queueLostNote: '재시작 중에 턴이 유실됨',
+    restoreImageDraft: '이미지 초안 복원',
+    queueCancelFailed: '대기 중인 턴을 제거하지 못했습니다',
+    queueLostDiscard: '버리기',
+    queueLostDiscardTip:
+      '게이트웨이가 턴 도중 재시작되어 이 턴을 끝낼 수 없습니다. 버리면 뒤에 대기 중인 턴이 실행됩니다.',
     queueResume: '재개',
     queueResumeTip: '중지로 일시 정지됨 — 대기 중인 턴 전송을 재개합니다',
     queueStuckTitle: '대기 중인 메시지가 전송되지 않음',
@@ -4320,43 +4605,6 @@ export const koOverrides = {
     snippetsDesc: '입력창에 넣을 시작 프롬프트를 고르세요.',
     dropFiles: '파일을 끌어다 놓으면 첨부됩니다',
     dropSession: '끌어다 놓으면 이 대화가 연결됩니다',
-    mcpSuggestions: {
-      label: server => `${server} 추가`,
-      tip: keyword => `“${keyword}”을(를) 언급해서 제안합니다 — 클릭하면 연결됩니다`,
-      connecting: server => `${server} 연결 중…`,
-      cancelTip: '클릭하면 취소됩니다',
-      added: server => `${server}을(를) 추가했습니다`,
-      addedTip: '연결됨 — 이 대화에서 도구를 쓸 수 있습니다',
-      connectFailed: server => `${server}을(를) 연결하지 못했습니다`
-    },
-    skillSuggestions: {
-      label: skill => `스킬 사용: ${skill}`,
-      tip: skill => `“${skill}”을(를) 언급했습니다 — 클릭하면 그 스킬로 시작합니다`,
-      done: skill => `/${skill}을(를) 추가했습니다`,
-      doneTip: '보내면 스킬이 불러와집니다'
-    },
-    githubSuggestions: {
-      label: 'GitHub 설정',
-      tip: '여기서 GitHub은 gh CLI 스킬로 동작합니다 — 클릭해 계정을 연결하세요',
-      done: '/github-auth를 추가했습니다',
-      doneTip: '메시지를 보내면 에이전트가 GitHub 로그인을 안내합니다'
-    },
-    repairSuggestions: {
-      label: server => `${server} 재연결`,
-      tip: server => `방금 ${server} 호출이 연결 오류로 실패했습니다`,
-      working: server => `${server} 재연결 중…`,
-      workingTip: '클릭하면 취소됩니다',
-      done: server => `${server}을(를) 재연결했습니다`,
-      doneTip: '새 자격 증명이 이 대화에 적용되었습니다',
-      failed: server => `${server}을(를) 재연결하지 못했습니다`
-    },
-    cronSuggestions: {
-      label: '이 작업 예약',
-      tip: phrase => `“${phrase}”은(는) 반복되는 일 같습니다 — 일정에 맞춰 실행해 보세요`,
-      prefix: '이것을 예약 작업으로 설정해 줘:',
-      done: '예약 대상으로 표시됨',
-      doneTip: '보내면 에이전트가 작업을 만듭니다'
-    },
     snippets: {
       codeReview: {
         label: '코드 리뷰',
@@ -4462,7 +4710,7 @@ export const koOverrides = {
       heartbeatEveryHours: hours => `${hours}시간마다`,
       heartbeatEverySeconds: seconds => `${seconds}초마다`,
       heartbeatNext: time => `다음 ${time}`,
-      heartbeatDueWaitingForIdle: '실행 시점 도달 — 유휴 상태를 기다리는 중',
+      dueWaitingForIdle: '실행 시점 도달 — 유휴 상태를 기다리는 중',
       heartbeatActions: '하트비트 동작',
       pauseHeartbeat: '하트비트 일시 중지',
       resumeHeartbeat: '하트비트 재개',
@@ -4685,20 +4933,6 @@ export const koOverrides = {
       owed: steps =>
         `백엔드는 업데이트됐지만 아직 남은 작업이 있습니다: ${steps}. 마무리하려면 \`hermes update\`를 다시 실행하세요.`
     }
-  },
-
-  handoffTour: {
-    profileTitle: '첫 작업은 기본 프로필에서 실행됩니다',
-    profileText:
-      '이 레일에서 프로필을 전환합니다. 지금 켜져 있는 것이 기본 프로필이고, 작업 세션이 여기에 있습니다. 다른 하나는 설정 프로필로, 환영 대화가 그곳에 있습니다.',
-    sessionsTitle: '프로필마다 자기 세션을 가집니다',
-    sessionsText:
-      '이 목록은 기본 프로필의 것입니다. 새 세션은 현재 선택된 프로필에서 시작됩니다. 레일에서 프로필을 바꾸면 목록도 함께 바뀝니다.',
-    stayTitle: 'Hermes는 클릭 한 번 거리에 있습니다',
-    stayText: '도움이 필요하면 언제든 설정 프로필로 전환해 Hermes 시작하기를 여세요. 계속 그 자리에 있습니다.',
-    localTitle: '이 머신에서 모델을 로컬로 구동할 수 있습니다',
-    localText: (model: string) =>
-      `${model}을(를) 이 하드웨어에서 구동할 수 있습니다. 무료이며 대화는 이 컴퓨터 밖으로 나가지 않습니다. 원할 때 언제든 여기 모델 메뉴에서 고르세요.`
   },
   install: {
     stageStates: {
@@ -4981,6 +5215,7 @@ export const koOverrides = {
     paneControls: '창 영역 컨트롤',
     appControls: '앱 컨트롤',
     modelMenu: {
+      pickDeferred: model => `${model}은(는) 다음 메시지부터 적용됩니다`,
       search: '모델 검색',
       noModels: '모델을 찾을 수 없음',
       editModels: '모델 편집…',
@@ -5567,6 +5802,22 @@ export const koOverrides = {
           title: 'Hermes가 루프에 빠졌습니다',
           body: '답변이 같은 단계를 반복해 Hermes가 중단했습니다. 재시도하고, 또 발생하면 새 대화를 시작하세요.'
         },
+        SESSION_OWNER_BUSY: {
+          title: 'Hermes가 이 대화에서 작업 중입니다',
+          body: '여기서 다른 턴이 실행 중이라 메시지를 그 대기열에 넣지 못했습니다. 아무것도 전송되지 않았습니다. 그 턴이 끝나면 재시도하세요.'
+        },
+        cron_session_read_only: {
+          title: '예약 작업에 속한 대화입니다',
+          body: '이 대화는 그 작업만 실행하므로 메시지가 실행되지 않았습니다. 보내려면 새 대화를 시작하세요.'
+        },
+        workspace_unavailable: {
+          title: '이 대화의 폴더가 사라졌습니다',
+          body: '이 대화가 작업하는 폴더가 이동되었거나 삭제되어 메시지가 실행되지 않았습니다. 폴더를 재생성하거나 “프로젝트로 이동”으로 다른 폴더를 지정한 뒤 재시도하세요.'
+        },
+        SESSION_OWNER_UNCONFIRMED: {
+          title: '메시지가 이미 대기열에 있을 수 있습니다',
+          body: '게이트웨이가 제때 메시지를 확인하지 못했습니다. 대기열에 들어갔다면 이전 턴이 끝나거나 처리된 뒤 실행됩니다. 다시 보내기 전에 대화를 확인하세요.'
+        },
         SESSION_NOT_OWNED: {
           title: '이 대화가 다른 곳에서 열려 있습니다',
           body: '이 대화가 지금 다른 Hermes 창이나 터미널에서 열려 있습니다. 그쪽을 닫고 메시지를 다시 보내거나, 여기서 새 대화를 시작하세요.'
@@ -5700,30 +5951,17 @@ export const koOverrides = {
       notDelivered:
         '이 질문이 앱에 전달되지 않아 여기서는 답할 수 없습니다. 중지를 눌러 턴을 끝낸 뒤 채팅에서 답하세요.'
     },
-    setupChoose: {
-      kinds: {
-        accent: '강조 색상',
-        connectors: '앱',
-        layout: '레이아웃',
-        plugins: '플러그인',
-        theme: '모양'
-      },
-      loading: '옵션을 불러오는 중…',
-      unavailable: '지금은 이 목록을 사용할 수 없습니다. 대신 대화에서 답하세요.',
-      findApp: '앱 찾기',
+    themePicker: {
+      accent: '강조 색상',
+      layout: '레이아웃',
+      mode: '모양',
       customColor: '사용자 지정 색상',
-      plugin: '플러그인',
-      startsLater: '시작할 때 설정해 드립니다.'
-    },
-    startChat: {
-      starting: title => `“${title}” 대화를 시작하는 중…`,
-      startingUntitled: '대화를 시작하는 중…',
-      untitled: '새 대화',
-      notStarted: '그 대화를 시작하지 못했습니다.',
-      retry: '재시도',
-      inProfile: profile => `${profile} 프로필`,
-      open: '열기',
-      openFailed: '대화를 열지 못했습니다'
+      themeAccent: '테마 기본값',
+      basic: '기본',
+      basicDetail: 'Hermes와 대화하기 위한 레이아웃입니다.',
+      elite: '엘리트',
+      eliteDetail: '개발자를 위한 레이아웃입니다. 터미널, 파일, diff.',
+      noPick: '선택 없음'
     },
     catalogInstall: {
       preparing: '설치를 준비하는 중…',
@@ -5738,7 +5976,7 @@ export const koOverrides = {
       hideNames: '이름 숨기기',
       skill: name => `스킬 ${name}`,
       kind: { plugin: '플러그인', skill: '스킬' },
-      tier: { official: '공식', community: '커뮤니티' },
+      tier: { official: '공식', verified: '검증됨', community: '커뮤니티' },
       targetProfile: profile => `${profile} 프로필에 설치합니다`,
       sendFailed: '답변을 전송하지 못했습니다. 재시도하세요.',
       commitLabel: '커밋',
@@ -5877,8 +6115,6 @@ export const koOverrides = {
           pending: '세션 기록을 검색하는 중',
           pendingAction: '검색하는 중'
         },
-        setup_choose: { done: '설정 질문함', pending: '설정 질문하는 중', pendingAction: '질문하는 중' },
-        start_chat: { done: '대화를 시작함', pending: '대화를 시작하는 중', pendingAction: '시작하는 중' },
         terminal: { done: '명령을 실행함', pending: '명령을 실행하는 중', pendingAction: '실행하는 중' },
         todo: { done: '할 일을 갱신함', pending: '할 일을 갱신하는 중', pendingAction: '갱신하는 중' },
         vision_analyze: { done: '이미지를 분석함', pending: '이미지를 분석하는 중', pendingAction: '분석하는 중' },

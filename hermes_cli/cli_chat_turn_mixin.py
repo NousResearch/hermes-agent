@@ -497,6 +497,27 @@ class CLIChatTurnMixin:
             self._write_terminal_breadcrumb()
             self._pending_title = None
 
+    def _handle_discard_command(self, cmd_original: str):
+        """/discard <admission_id>: acknowledge a turn the gateway lost in a restart without replaying
+        it (the owner's fenced ``prompt.resolve_unknown``), so prompts may run again."""
+        from cli import _cprint
+        from hermes_cli.gateway_chat_view import lost_admission
+        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.gateway_side import connection_for
+        connection = connection_for(self)
+        if connection is None:
+            _cprint("  /discard: no gateway session is open")
+            return
+        try:
+            lost = lost_admission(connection.reattach(self.session_id), cmd_original.partition(" ")[2].strip())
+            connection.call("prompt.resolve_unknown", session_id=self.session_id,
+                            admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
+            connection.reattach(self.session_id)  # the cached pending list the next prompt checks
+        except GatewayClientError as exc:
+            _cprint(f"  /discard: {exc}")
+            return
+        _cprint(f"  Discarded {lost['admission_id']}; send your prompt again.")
+
     def _chat_render_turn(self, turn, agent_thread, interrupt_msg):
         """Post-turn display: errors, interrupt marker, reasoning/response panels, bell, re-queues.
 

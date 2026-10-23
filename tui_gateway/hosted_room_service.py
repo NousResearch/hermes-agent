@@ -149,6 +149,7 @@ class HostedRoomService:
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action, task_progress=record_task_progress,
+            remote_member=self._member_is_peer,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
@@ -338,7 +339,7 @@ class HostedRoomService:
         if (
             recover is None or not isinstance(identity, driver.TaskIdentity)
             or not isinstance(payload, Mapping) or execution_generation < 1
-            or task.get("status") not in {"indeterminate", "stopping"}):
+            or task.get("status") not in {"indeterminate", "stopping", "deferred"}):
             return
         prompt = payload.get("prompt")
         source_event_seq = int(payload.get("source_event_seq") or 0)

@@ -3532,7 +3532,13 @@ class BasePlatformAdapter(ABC):
         """Return True for read/write timeouts — NOT retryable and NOT a plain-text
         fallback trigger, because the request may already have been delivered."""
         lowered = (error or "").lower()
-        return any(pat in lowered for pat in ("timed out", "readtimeout", "writetimeout"))
+        # Leading "Timeout …" (WeCom, DingTalk, ntfy) is a send timeout too — it has
+        # neither "timed out" nor a read/write timeout token. Do not match a bare
+        # "timeout" substring: "connecttimeout" never connected and stays retryable.
+        return (
+            any(pat in lowered for pat in ("timed out", "readtimeout", "writetimeout"))
+            or lowered.startswith("timeout")
+        )
 
     def _unwrap_ephemeral(self, response: Any) -> tuple[Optional[str], int]:
         """Unwrap a str/None/:class:`EphemeralReply` response into ``(text, ttl)``. ``ttl > 0``

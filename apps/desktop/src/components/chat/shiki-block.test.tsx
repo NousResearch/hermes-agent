@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
@@ -40,13 +40,49 @@ async function waitForHighlighted(): Promise<void> {
   await screen.findByTestId('shiki-container', undefined, { timeout: 2_000 })
 }
 
+/**
+ * jsdom has no layout, so the shim in vitest.setup.ts never delivers an
+ * intersection and a block that IS on screen would defer forever. Model a
+ * visible block: report intersection as soon as observing starts. Tests that
+ * exercise the deferred path install their own silent observer over this.
+ */
+function stubVisibleIntersection(): void {
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      private readonly callback: IntersectionObserverCallback
+
+      constructor(callback: IntersectionObserverCallback) {
+        this.callback = callback
+      }
+
+      disconnect() {}
+
+      observe(target: Element) {
+        this.callback(
+          [{ intersectionRatio: 1, isIntersecting: true, target } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver
+        )
+      }
+
+      takeRecords(): IntersectionObserverEntry[] {
+        return []
+      }
+
+      unobserve() {}
+    }
+  )
+}
+
 beforeEach(() => {
   codeToHtml.mockClear()
   highlightCache.clear()
+  stubVisibleIntersection()
 })
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
 })
 
 describe('CachedShikiBlock (warm-switch perf guard)', () => {
@@ -56,6 +92,47 @@ describe('CachedShikiBlock (warm-switch perf guard)', () => {
     expect(container.querySelector('pre code')?.textContent).toBe(code)
     expect(container.querySelector('script')).toBeNull()
     expect(codeToHtml).not.toHaveBeenCalled()
+  })
+
+  it('defers tokenization for an offscreen cache miss', async () => {
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      }
+    )
+
+    render(<CachedShikiBlock {...TS_BLOCK} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 250))
+
+    expect(screen.getByTestId('shiki-placeholder').textContent).toContain('const answer')
+    expect(codeToHtml).not.toHaveBeenCalled()
+  })
+
+  it('highlights once the block enters the viewport margin', async () => {
+    let deliver!: (entries: IntersectionObserverEntry[]) => void
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(callback: IntersectionObserverCallback) {
+          deliver = entries => callback(entries, this as unknown as IntersectionObserver)
+        }
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      }
+    )
+
+    render(<CachedShikiBlock {...TS_BLOCK} />)
+    expect(codeToHtml).not.toHaveBeenCalled()
+
+    act(() => deliver([{ intersectionRatio: 1, isIntersecting: true } as IntersectionObserverEntry]))
+    await waitForHighlighted()
+
+    expect(codeToHtml).toHaveBeenCalledTimes(1)
   })
 
   it('highlights on first mount and reuses the cached HTML on remount', async () => {

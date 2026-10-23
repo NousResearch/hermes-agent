@@ -92,14 +92,6 @@ def _build_orig_to_norm_map(original: str) -> list[int]:
     return result
 
 
-def _invert_norm_map(orig_to_norm: list[int]) -> dict[int, int]:
-    """norm_pos -> first original position mapping to it."""
-    inverted: dict[int, int] = {}
-    for orig_pos, norm_pos in enumerate(orig_to_norm[:-1]):
-        inverted.setdefault(norm_pos, orig_pos)
-    return inverted
-
-
 def _norm_end_to_orig(orig_to_norm: list[int], orig_start: int, norm_end: int) -> int:
     """Walk from ``orig_start`` until the mapped position reaches ``norm_end``."""
     orig_len = len(orig_to_norm) - 1
@@ -110,13 +102,18 @@ def _norm_end_to_orig(orig_to_norm: list[int], orig_start: int, norm_end: int) -
 
 
 def _map_positions_norm_to_orig(orig_to_norm: list[int], norm_matches: list[Span]) -> list[Span]:
-    """Convert spans in the normalised string to original-string spans."""
-    norm_to_orig_start = _invert_norm_map(orig_to_norm)
+    """Convert spans in the normalised string to original-string spans.
+
+    ``orig_to_norm`` is strictly increasing (no UNICODE_MAP replacement is empty), so
+    bisect names the original char owning a norm index even when the index falls inside a
+    multi-char expansion (em-dash -> ``--``): `-no` matching the second dash of ``well—no``
+    still resolves to the em-dash. Dict lookup alone found no entry there and silently
+    dropped the match, reporting "Could not find a match" for text that is present.
+    """
     results: list[Span] = []
     for norm_start, norm_end in norm_matches:
-        if norm_start in norm_to_orig_start:
-            orig_start = norm_to_orig_start[norm_start]
-            results.append((orig_start, _norm_end_to_orig(orig_to_norm, orig_start, norm_end)))
+        orig_start = bisect.bisect_right(orig_to_norm, norm_start) - 1
+        results.append((orig_start, _norm_end_to_orig(orig_to_norm, orig_start, norm_end)))
     return results
 
 

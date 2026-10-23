@@ -1842,18 +1842,19 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
     return False, "chat_completions"
 
 
-def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
+def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str,
+                                *, api_key: Optional[str] = None) -> str:
     """Re-detect api_mode from provider / resolved base URL / model when the hint pass
     landed on the chat_completions default (never called for an explicit api_mode)."""
     if fb_provider == "openai-codex":
         return "codex_responses"
-    from hermes_cli.models import opencode_model_api_mode
+    from hermes_cli.models import copilot_model_api_mode, normalize_provider, opencode_model_api_mode
+    if normalize_provider(fb_provider) == "copilot":
+        return copilot_model_api_mode(fb_model, api_key=api_key)
     from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
     opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
     if opencode_family is not None:
-        # OpenCode Zen/Go/free serve Responses-only (muse-spark, gpt-*, grok-*), anthropic_messages
-        # (minimax, qwen) and chat_completions models behind one provider; the primary /model path
-        # already re-derives per model — the fallback wire must agree (#102148).
+        # OpenCode fallback wire must agree with its per-model primary route (#102148).
         return opencode_model_api_mode(opencode_family, fb_model)
     if fb_provider in {"nous", "nous-portal", "nousresearch"}:
         # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
@@ -1864,7 +1865,6 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
         return "anthropic_messages"
     if agent._is_azure_openai_url(fb_base_url):
         return "chat_completions"  # Azure serves gpt-5.x on /chat/completions — no Responses API.
-    # Provider exceptions (Copilot gpt-5-mini) stay inside the requires-responses predicate.
     if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
         return "codex_responses"
     host = base_url_hostname(fb_base_url)

@@ -57,7 +57,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         if is_actual_route(provider, base_url):
             api_mode = "chat_completions"
         elif not api_mode_explicit and api_mode == "chat_completions":
-            api_mode = _fallback_api_mode_resolved(agent, provider, model, base_url)
+            api_mode = _fallback_api_mode_resolved(
+                agent, provider, model, base_url, api_key=getattr(client, "api_key", None))
 
     old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
     # Clear the per-config context_length override so the new model's own context window is

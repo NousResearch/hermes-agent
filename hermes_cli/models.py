@@ -3,7 +3,7 @@
 Origin module; cohesive clusters live in siblings and are re-imported here so
 ``hermes_cli.models.<name>`` stays the stable import/monkeypatch surface:
 ``models_catalog_static`` (curated tables, provider registry, aliases), ``models_reasoning_caps``,
-``models_local`` (Ollama / LM Studio), ``models_pricing``, ``models_validate``.
+``models_local`` (Ollama / LM Studio), ``models_pricing``, ``models_validate``, ``models_copilot``.
 """
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
     _xai_finalize_catalog)
+from hermes_cli.models_copilot import copilot_model_api_mode
 from hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
@@ -2477,27 +2478,6 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     if normalized.startswith("gpt-5"):
         return list(COPILOT_REASONING_EFFORTS_GPT5)
     return []
-
-
-def _should_use_copilot_responses_api(model_id: str) -> bool:
-    """opencode's ``shouldUseCopilotResponsesApi``: GPT-5+ uses the Responses API except
-    ``gpt-5-mini``; non-GPT models (Claude, Gemini, ...) use Chat Completions."""
-    match = re.match(r"^gpt-(\d+)", model_id)
-    return bool(match) and int(match.group(1)) >= 5 and not model_id.startswith("gpt-5-mini")
-
-
-def copilot_model_api_mode(
-    model_id: Optional[str], *, catalog: Optional[list[dict[str, Any]]] = None,
-    api_key: Optional[str] = None) -> str:
-    """API mode for a Copilot model from the id pattern (opencode's approach). Copilot's Claude models
-    go through its OpenAI-compatible chat endpoint, not the native Anthropic adapter: the catalog may
-    advertise /v1/messages but the Copilot token/header scheme lives in the OpenAI client path."""
-    if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
-        catalog = fetch_github_model_catalog(api_key=api_key)
-    normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
-    if normalized and _should_use_copilot_responses_api(normalized):
-        return "codex_responses"
-    return "chat_completions"
 
 
 def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:

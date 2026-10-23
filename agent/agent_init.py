@@ -23,7 +23,9 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
-from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
+from agent.agent_init_fallback import (
+    _fallback_entries, _init_fallback_chain, finalize_copilot_api_mode, recompute_init_fallback_api_mode,
+)
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
@@ -480,10 +482,7 @@ def _finalize_routing(agent, api_mode, credential_pool):
     from hermes_cli.anon_auth import pin_model_for_route
     agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
 
-    # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
-    # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
-    # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
-    # exceptions live in _provider_model_requires_responses_api.
+    # Pre-client upgrade; Copilot is finalized again after its credentials are resolved.
     from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     _base_lower = str(agent.base_url or "").lower()
@@ -2357,6 +2356,7 @@ def init_agent(
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
+    finalize_copilot_api_mode(agent, api_mode)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(

@@ -28,6 +28,8 @@ def test_copilot_runtime_api_mode_still_uses_default_without_target(monkeypatch)
         ("gpt-5.5", "claude-opus-4.8", "chat_completions"),
         ("gpt-5.5", "gemini-3-pro-preview", "chat_completions"),
         ("claude-opus-4.8", "gpt-5.5", "codex_responses"),
+        ("gpt-5.5", "grok-4.7", "codex_responses"),
+        ("gpt-5.5", "new-model", "codex_responses"),
     ],
 )
 def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
@@ -45,8 +47,10 @@ def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
     monkeypatch.setattr(rp, "resolve_provider", lambda *_args, **_kwargs: "copilot")
     # Keep this a real copilot_model_api_mode decision without making a live
-    # catalog request. The API-mode contract is determined by the model family.
-    monkeypatch.setattr(models, "fetch_github_model_catalog", lambda **_kwargs: [])
+    # catalog request. Unknown families must use advertised endpoint support.
+    monkeypatch.setattr(models, "fetch_github_model_catalog", lambda **_kwargs: [
+        {"id": "new-model", "supported_endpoints": ["/responses"]},
+    ])
 
     kwargs = {"requested": "copilot", "target_model": target_model}
     if credential_source == "pool":

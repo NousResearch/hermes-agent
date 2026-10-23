@@ -2205,15 +2205,14 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
         # Native Gemini, else OpenAI-wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)
+        if provider_id == "copilot":
+            return resolve_provider_client(provider_id, model, explicit_api_key=api_key, explicit_base_url=raw_base_url)
         if provider_id == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
             if is_native_gemini_base_url(base_url):
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
-        elif base_url_host_matches(base_url, "githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
-            headers = copilot_default_headers()
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             headers = build_nvidia_nim_headers(base_url)
         else:
@@ -5312,15 +5311,10 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
-    # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
-    # wrap so call_llm() transparently routes through responses.stream().
-    if provider == "copilot" and final_model and not req.raw_codex:
-        with contextlib.suppress(ImportError):
-            from hermes_cli.models import _should_use_copilot_responses_api
-            if _should_use_copilot_responses_api(final_model):
-                logger.debug("resolve_provider_client: copilot model %s needs "
-                             "Responses API — wrapping with CodexAuxiliaryClient", final_model)
-                client = CodexAuxiliaryClient(client, final_model)
+    if provider == "copilot" and final_model and req.api_mode in {None, "chat_completions", "codex_responses"}:
+        from hermes_cli.models import copilot_model_api_mode
+        req = req._replace(api_mode=copilot_model_api_mode(
+            final_model, api_key=api_key, preferred_api_mode=req.api_mode))
     # api_mode handling for any API-key provider (direct OpenAI + codex model) and Anthropic-wire
     # endpoints (api.kimi.com/coding, /anthropic gateways) without per-provider branches.
     client = _wrap_transport(req, client, final_model, raw_base_url, api_key)
@@ -5422,8 +5416,8 @@ def resolve_provider_client(
     The client always exposes ``.chat.completions.create()``; Codex/Responses providers get an adapter.
     ``provider``: built-in name, ``custom:<name>``, "custom" (OPENAI_BASE_URL + OPENAI_API_KEY) or "auto"
     (full auto-detection chain). ``model=None`` → provider's default aux model. ``raw_codex`` → bare OpenAI
-    client for ``responses.stream()`` callers. ``api_mode`` forces "codex_responses"/"chat_completions"/
-    "anthropic_messages" instead of auto-detect. Returns (client, resolved_model) or (None, None)."""
+    client for ``responses.stream()`` callers. ``api_mode`` chooses "codex_responses", "chat_completions", or
+    "anthropic_messages"; Copilot HTTP choices must match its catalog. Returns (client, resolved_model) or (None, None)."""
     _validate_proxy_env_urls()
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.

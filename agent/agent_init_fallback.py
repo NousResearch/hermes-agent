@@ -1,4 +1,4 @@
-"""Init-time fallback chain: entry normalization, chain setup, and the fallback's api_mode."""
+"""Init-time provider finalization and fallback chain setup."""
 
 from __future__ import annotations
 
@@ -40,6 +40,18 @@ def _init_fallback_chain(agent, fallback_model):
             print(f"🔄 Fallback chain ({len(chain)} providers): " + " → ".join(labels))
 
 
+def finalize_copilot_api_mode(agent, explicit_api_mode) -> None:
+    """Select Copilot's wire once its actual client credential is available."""
+    from hermes_cli.models import copilot_model_api_mode, normalize_provider
+
+    if (explicit_api_mode is not None or getattr(agent, "_fallback_activated", False)
+            or normalize_provider(agent.provider) != "copilot"):
+        return
+    agent.api_mode = copilot_model_api_mode(agent.model, api_key=agent.api_key)
+    if hasattr(agent, "_transport_cache"):
+        agent._transport_cache.clear()
+
+
 def recompute_init_fallback_api_mode(agent, fb_client) -> None:
     """Give an init-time fallback its own api_mode instead of the unreachable primary's.
 
@@ -53,7 +65,8 @@ def recompute_init_fallback_api_mode(agent, fb_client) -> None:
     from agent.chat_completion_helpers import _fallback_api_mode_resolved
     try:
         agent.api_mode = _fallback_api_mode_resolved(
-            agent, agent.provider, agent.model, str(getattr(fb_client, "base_url", "") or ""))
+            agent, agent.provider, agent.model, str(getattr(fb_client, "base_url", "") or ""),
+            api_key=getattr(fb_client, "api_key", None))
     except Exception:
         logger.debug("Init-time fallback api_mode detection failed for %s", agent.provider, exc_info=True)
         return

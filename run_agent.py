@@ -661,8 +661,8 @@ class AIAgent(
             return False
         if normalized_provider == "copilot":
             try:
-                from hermes_cli.models import _should_use_copilot_responses_api
-                return _should_use_copilot_responses_api(model)
+                from hermes_cli.models import copilot_model_api_mode
+                return copilot_model_api_mode(model) == "codex_responses"
             except Exception:
                 pass  # fall back to the generic GPT-5 rule
         return AIAgent._model_requires_responses_api(model)

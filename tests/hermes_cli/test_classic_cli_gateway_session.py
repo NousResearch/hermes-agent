@@ -24,8 +24,8 @@ class FakeClient:
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
         if method == "session.resume":
-            return {"session_id": params["session_id"], "revision": 1, "execution_generation": 7,
-                    "messages": [], "pending": list(self.pending)}
+            return {"session_id": params["session_id"], "subscription_id": "sub-1", "revision": 1,
+                    "execution_generation": 7, "messages": [], "pending": list(self.pending)}
         if method == "prompt.resolve_unknown":
             self.pending = [row for row in self.pending if row["admission_id"] != params["admission_id"]]
         if method == "prompt.submit":
@@ -54,6 +54,7 @@ def gateway():
         yield client
     conn = GatewayConnection(connect=connect)
     conn.start(5)
+    conn.reattach(SID)  # the session store's startup attach: a redial resubscribes it
     yield conn, client
     conn.close()
 
@@ -83,14 +84,16 @@ def test_a_restarted_gateway_gets_the_flag_again_before_the_next_turn(gateway):
     assert run_bounded(agent, "after the restart")["final_response"] == "ok"
     assert client.reasoning_sets() == [(SID, "1"), (SID, "1")]
     methods = client.methods()
+    assert methods.count("session.resume") == 2  # attach, then the redial's resubscribe
     assert max(i for i, m in enumerate(methods) if m == "config.set") < methods.index("prompt.submit")
 
 
 def test_a_prompt_behind_a_lost_turn_shows_the_discard_banner_and_discard_lets_it_run(gateway, monkeypatch):
     conn, client = gateway
     agent = GatewayAgent(connection=conn, session_id=SID)
-    client.pending = [LOST]
-    conn.reattach(SID)  # the reconnect's resubscribe: the owner fenced the interrupted turn unknown
+    client.pending = [LOST]  # the owner restarted and fenced the interrupted turn unknown
+    conn.loop.call_soon_threadsafe(client.events.put_nowait, GatewayClientError("Gateway disconnected"))
+    conn._thread.join(5)  # only the redial's resubscribe can tell this viewer
     refused = run_bounded(agent, "second ask")
     assert refused["failed"] and "/discard adm-lost" in refused["error"]
     assert "prompt.submit" not in client.methods()  # never queued behind the lost turn

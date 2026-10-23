@@ -425,10 +425,12 @@ class GatewayAgent:
         self._sync_show_reasoning()
 
     def _sync_show_reasoning(self):
-        """Sent once per session, value and gateway life: /new, /resume and /branch rotate the session,
-        and a restarted gateway starts without the flag (unset reads as off for a classic launch)."""
+        """Sent when the value differs from what this session and gateway life hold: /new, /resume and
+        /branch rotate the session, and a restarted gateway starts without the flag. Unset reads as off
+        for a classic launch, so ``_show_reasoning_sent`` is the (session, epoch) holding "1"."""
         show = self._reasoning_callback is not None
-        if (self.session_id, show, self.connection.epoch) == self._show_reasoning_sent:
+        key = (self.session_id, self.connection.epoch)
+        if show == (self._show_reasoning_sent == key):
             return
         try:
             self.connection.call("config.set", session_id=self.session_id, key="show_reasoning",
@@ -436,7 +438,7 @@ class GatewayAgent:
         except GatewayClientError as exc:
             logger.debug("config.set show_reasoning failed: %s", exc)
             return
-        self._show_reasoning_sent = (self.session_id, show, self.connection.epoch)
+        self._show_reasoning_sent = key if show else None
 
     @property
     def service_tier(self):

@@ -26,6 +26,7 @@ _WIZARDS = [
     ("plugins.platforms.line.adapter", "LINE_CHANNEL_ACCESS_TOKEN"),
     ("plugins.platforms.matrix.adapter", "MATRIX_PASSWORD"),
     ("plugins.platforms.mattermost.adapter", "MATTERMOST_TOKEN"),
+    ("plugins.platforms.ntfy.adapter", "NTFY_TOPIC"),
     ("plugins.platforms.raft.adapter", "RAFT_PROFILE"),
     ("plugins.platforms.simplex.adapter", "SIMPLEX_WS_URL"),
     ("plugins.platforms.slack.adapter", "SLACK_BOT_TOKEN"),

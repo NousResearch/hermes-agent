@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -88,17 +89,27 @@ def is_autonomous_silence_response(response: Any) -> bool:
     Models reliably bracket ``[SILENT]`` with a short note, so unlike the
     interactive EXACT rule this also suppresses when a marker sits on its own
     first/last line or the bracketed sentinel opens the response (``[SILENT] No
-    changes detected``).  A token buried mid-sentence is still delivered.
+    changes detected``).  A marker whose characters are split or padded by
+    whitespace (``"[\n\nSILENT]"``, ``"[ SILENT ] No changes"``) still counts.
+    A token buried mid-sentence is still delivered.
     Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the two sets cannot drift.
     """
     stripped = response.strip() if isinstance(response, str) else ""
     if not stripped:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    # A model can split the sentinel across lines ("[\n\nSILENT]") or pad inside the
+    # brackets ("[ SILENT ]"). Collapse all whitespace for a whole-response
+    # comparison, then normalize whitespace just inside brackets before the prefix
+    # rule so a padded prefix with a note still suppresses.
+    if "".join(stripped.upper().split()) in LIVE_GATEWAY_SILENT_MARKERS:
+        return True
+    bracketed = re.sub(r"\[\s+", "[", stripped.upper())
+    bracketed = re.sub(r"\s+\]", "]", bracketed)
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
     # be suppressed in chat yet delivered by cron.
-    return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
+    return bracketed.startswith(_BRACKETED_SILENCE_MARKERS) or any(
         is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
     )
 

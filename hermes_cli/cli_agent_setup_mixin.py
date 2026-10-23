@@ -370,6 +370,11 @@ class CLIAgentSetupMixin:
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             _retire_agent(self)
             self._active_agent_route_signature = None
+        elif self.agent is not None:
+            # Pool membership can change without changing the client or cached prompt.
+            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+            self.agent._credential_pool = self._credential_pool
+            sync_credential_pool_entry_id(self.agent)
         return True
 
     def _resolve_fallback_runtime(self, primary_exc):

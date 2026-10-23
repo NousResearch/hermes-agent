@@ -105,7 +105,33 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
+class _OutboundBot:
+    def __init__(self, bot): self._bot = bot
+    def __getattr__(self, name):
+        fn = getattr(self._bot, name)
+        if not (name.startswith('send_') or name.startswith('edit_')): return fn
+        async def checked(**kwargs):
+            from gateway.outbound_policy import enforce_outbound
+            chat, reply, _, decision = enforce_outbound('telegram', kwargs['chat_id'],
+                kwargs.get('text', kwargs.get('caption', '')), kwargs.get('reply_to_message_id'), kind=name,
+                references=tuple(str(kwargs[k]) for k in ('photo','video','audio','voice','document','media') if k in kwargs))
+            if decision.rerouted:
+                if name.startswith('edit_'):
+                    from gateway.outbound_policy import OutboundDenied
+                    raise OutboundDenied('cannot retarget an existing message edit')
+                for key in ('message_thread_id', 'direct_messages_topic_id', 'reply_to_message_id'):
+                    kwargs.pop(key, None)
+            kwargs['chat_id'] = chat
+            if 'reply_to_message_id' in kwargs: kwargs['reply_to_message_id'] = reply
+            return await fn(**kwargs)
+        return checked
+
+
 def _telegram_bot(token):
+    return _OutboundBot(_unwrapped_telegram_bot(token))
+
+
+def _unwrapped_telegram_bot(token):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
     blocked); falls back to a direct connection."""
     from telegram import Bot

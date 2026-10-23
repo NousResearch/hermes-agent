@@ -139,6 +139,14 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
 # it between the plugin sections and the timestamp.
 _ACTIVE_PROFILE_PREFIX = "Active Hermes profile: "
 
+# Labels of the paragraph _timestamp_line emits after the profile paragraph. A
+# timeless Bot Chat prompt drops the start date; with no zone either, its first
+# populated trailer field opens the paragraph (_join_tier strips the newline).
+_STARTED_LABEL = "Conversation started"
+_TIMEZONE_LABEL = "Timezone"
+_TRAILER_LABELS = ("Session ID", "Model", "Provider", "Platform")
+_TIMESTAMP_PARAGRAPH_HEADS = tuple(f"\n\n{label}:" for label in (_STARTED_LABEL, _TIMEZONE_LABEL, *_TRAILER_LABELS))
+
 
 def _past_profile_paragraph(tail: str) -> str:
     """*tail* (the prompt after the plugin sections) past the one active-profile
@@ -164,10 +172,7 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    # Bot Chat omits the date; without a timezone, the first populated
-    # metadata field opens the same paragraph (_join_tier strips its newline).
-    trailer_starts = ("Conversation started:", "Timezone:", "Session ID:", "Model:", "Provider:", "Platform:")
-    if not _past_profile_paragraph(prompt[after_end:]).startswith(tuple("\n\n" + label for label in trailer_starts)):
+    if not _past_profile_paragraph(prompt[after_end:]).startswith(_TIMESTAMP_PARAGRAPH_HEADS):
         return ()
     framed = prompt[start:after_end]
     restored = []
@@ -514,7 +519,7 @@ def _timestamp_line(agent: Any) -> str:
     _bits = _zone_bits(now, _hermes_tz())
     _zone_suffix = f" ({', '.join(_bits)})" if _bits else ""
     _start = _session_start_like(agent, now)
-    timestamp_line = f"Conversation started: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
+    timestamp_line = f"{_STARTED_LABEL}: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
     # Second line (maintainer design, salvaging #96224's anchor): long-lived sessions — Bot Mode
     # forever-chats, messenger channels people never close — span many days and many compactions. A lone
     # birth date leads the model to believe it is still living in that old day. The prompt is rebuilt at
@@ -526,9 +531,9 @@ def _timestamp_line(agent: Any) -> str:
         timestamp_line += (f"\nToday's date (as of the last context rebuild): {safe_strftime(now, '%A, %B %d, %Y')} "
                            "— trust this over the start date for what day it is now; query tools for exact time.")
     if getattr(agent, "_bot_chat_timeless_prompt", False):
-        timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""
-    trailer = (("Session ID", agent.session_id if agent.pass_session_id else None), ("Model", agent.model),
-               ("Provider", agent.provider), ("Platform", agent.platform))
+        timestamp_line = f"{_TIMEZONE_LABEL}: {', '.join(_bits)}" if _bits else ""
+    trailer = zip(_TRAILER_LABELS, (agent.session_id if agent.pass_session_id else None, agent.model,
+                                    agent.provider, agent.platform), strict=True)
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
 
 

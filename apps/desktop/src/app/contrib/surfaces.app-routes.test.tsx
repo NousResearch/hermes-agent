@@ -35,13 +35,21 @@ vi.mock('../shell/reasoning-menu-panel', () => ({ ReasoningMenuPanel: () => null
 afterEach(cleanup)
 
 // The route table (`APP_ROUTES`) and the `<Route>` list are kept by hand in two
-// files. A workspace page whose path is missing from the `<Route>` list matches
-// `:sessionId`, so the app opens a chat for a session named after the page.
-// Overlays are exempt: they are modal cards over whatever the shell shows.
+// files. A destination missing from the `<Route>` list matches `:sessionId`, so
+// the app opens a chat for a session named after the page. Every non-chat
+// destination is now an overlay card — no page replaces the workspace pane.
 describe('ChatRoutesSurface and APP_ROUTES', () => {
-  const pages = APP_ROUTES.filter(route => route.view !== 'chat' && !isOverlayView(route.view))
+  const destinations = APP_ROUTES.filter(route => route.view !== 'chat')
+  const surfaceDestinations = destinations.filter(route => route.id !== 'session-import')
 
-  it.each(pages.map(route => [route.path]))('%s has its own route and never opens as a session', path => {
+  it.each(destinations.map(route => [route.path, route.view]))('%s is classified as an overlay', (_path, view) => {
+    expect(isOverlayView(view)).toBe(true)
+  })
+
+  // Session import is mounted by the shell's overlay host, not by this
+  // workspace surface. The remaining destinations must still match an
+  // explicit route here rather than falling through to `:sessionId`.
+  it.each(surfaceDestinations.map(route => [route.path]))('%s never opens as a session', path => {
     const actions = { getGateway: () => null } as unknown as WiringActions
 
     render(

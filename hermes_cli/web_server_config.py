@@ -151,6 +151,9 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "delegation.busy_result_mode": _select(
         "Subagent result that finishes while the agent is running", "queue", "steer",
     ),
+    "display.background_process_busy_result_mode": _select(
+        "notify_on_complete process result that finishes while the agent is running", "queue", "steer",
+    ),
     "delegation.reasoning_effort": _select(
         "Reasoning effort for delegated subagents",
         "", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",

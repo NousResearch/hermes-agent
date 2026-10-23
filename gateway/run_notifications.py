@@ -152,6 +152,7 @@ class _CarriedCompletion:
     claim_id: str
     identity: Any
     siblings: tuple
+    waiter: Optional[asyncio.Future] = None  # a process completion's carry outcome
 
 
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
@@ -1266,12 +1267,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             completion_ids = [claim.delegation_id] if claim.claim_id else []
             completion_ids += [sibling["delegation_id"] for sibling, claim_id in sibling_claims if claim_id]
             evt = {**evt, "completion_ids": completion_ids}
-            if self._carry_completion_into_running_turn(synth_text, evt, claim, identity, sibling_claims):
+            carry = self._carry_completion_into_running_turn(synth_text, evt, claim, identity, sibling_claims)
+            if carry is True:
                 carried = True  # the running turn's tool result delivers it; claims settle there
                 return True
-            injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
-            if injection_result is not True:
-                return injection_result
+            if not carry or not await carry:  # a process completion no tool result carried: queue it
+                injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
+                if injection_result is not True:
+                    return injection_result
             accepted = True
             if identity is not None:
                 with self._completion_delivery_lock:
@@ -1297,34 +1300,39 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 if accepted and sibling_claims:
                     self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
 
-    def _delegation_busy_result_mode(self) -> str:
-        """``delegation.busy_result_mode`` of the profile in scope: ``queue`` (default) or ``steer``."""
+    def _busy_result_mode(self, evt_type: str) -> str:
+        """The profile in scope's busy-result mode for ``evt_type``: ``queue`` (default) or ``steer``."""
         from gateway.run import _load_gateway_config
+        from gateway.run_notifications_busy_result import BUSY_RESULT_MODE_KEYS
         from hermes_cli.config import cfg_get
-        mode = str(cfg_get(_load_gateway_config(), "delegation", "busy_result_mode", default="") or "queue")
-        mode = mode.strip().lower()
+        section, key = BUSY_RESULT_MODE_KEYS[evt_type]
+        mode = str(cfg_get(_load_gateway_config(), section, key, default="") or "queue").strip().lower()
         if mode not in ("queue", "steer"):
-            logger.warning("delegation.busy_result_mode=%r is not 'queue' or 'steer'; using 'queue'", mode)
+            logger.warning("%s.%s=%r is not 'queue' or 'steer'; using 'queue'", section, key, mode)
             return "queue"
         return mode
 
-    def _carry_completion_into_running_turn(self, synth_text: str, evt: dict, claim, identity, sibling_claims) -> bool:
+    def _carry_completion_into_running_turn(self, synth_text: str, evt: dict, claim, identity, sibling_claims):
         """``steer`` mode: hand a claimed completion to the session's running agent, which appends it
-        to its next tool result (``agent.background_results``), instead of queueing a new turn. The
-        claims stay held until ``_settle_carried_completions`` sees whether a tool batch carried it."""
-        if evt.get("type") != "async_delegation" or evt.get("task_failure_notice") or evt.get("origin_session_id"):
+        to its next tool result (``agent.background_results``), instead of queueing a new turn. A
+        delegation returns True and its claims stay held until ``_settle_carried_completions`` sees
+        whether a tool batch carried it; a process completion returns that outcome as a future."""
+        from gateway.run_notifications_busy_result import BUSY_RESULT_MODE_KEYS, offer_process_completion
+        if evt.get("type") not in BUSY_RESULT_MODE_KEYS or evt.get("task_failure_notice") or evt.get("origin_session_id"):
             return False
         from gateway.run import _AGENT_PENDING_SENTINEL
         state = self._peek_session_state(str(evt.get("session_key") or ""))
         agent = state.turn.agent if state is not None else None
         if agent is None or agent is _AGENT_PENDING_SENTINEL or not callable(getattr(agent, "steer", None)):
             return False
-        if self._delegation_busy_result_mode() != "steer":
+        if self._busy_result_mode(evt["type"]) != "steer":
             return False
         from agent.background_results import offer
-        offer(agent, _CarriedCompletion(evt, claim.delegation_id, claim.claim_id, identity, tuple(sibling_claims)),
-              synth_text)
+        carried = _CarriedCompletion(evt, claim.delegation_id, claim.claim_id, identity, tuple(sibling_claims))
         self.__dict__.setdefault("_carrying_agents", {})[id(agent)] = agent
+        if evt["type"] == "completion":
+            return offer_process_completion(agent, carried, synth_text)
+        offer(agent, carried, synth_text)
         logger.info("Carrying async delegation %s into the running turn of %s",
                     claim.delegation_id or "<legacy>", evt.get("session_key"))
         return True
@@ -1355,6 +1363,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _settle_carried_completion(self, carried: _CarriedCompletion, operation: str) -> None:
         from tools.process_registry import process_registry as _pr
+        if carried.waiter is not None:  # a process completion: its waiting delivery call settles it
+            if not carried.waiter.done():
+                carried.waiter.set_result(operation == "complete")
+            return
         async with self._completion_event_scope(carried.evt):
             if carried.claim_id:
                 self._settle_durable_claim(operation, carried.delegation_id, carried.claim_id)
@@ -1445,7 +1457,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # sibling is never discarded with it.
             delivered = None
             for _text, candidate_evt, _future in entries_to_deliver:
-                candidate_evt = dict(candidate_evt, _display_text=display_text)
+                candidate_evt = dict(candidate_evt, _display_text=display_text, _batch_session_ids=[
+                    evt.get("session_id") for _text, evt, _future in entries_to_deliver])
                 if getattr(self, 'session_authority', None) is not None:
                     candidate_evt = dict(candidate_evt, _automation_identities=[
                         producer_identity(self, evt) for _text, evt, _future in entries_to_deliver])

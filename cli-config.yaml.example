@@ -2004,6 +2004,10 @@ display:
   #   error:   Only the final raw-output message when exit code != 0
   #   all:     Running output updates + final raw-output message
   background_process_notifications: concise
+  # notify_on_complete result that finishes while the agent is mid-turn:
+  #   queue: its own next turn (default)
+  #   steer: carried on the running turn's next tool result
+  # background_process_busy_result_mode: queue
 
 
   # Play terminal bell when agent finishes a response.

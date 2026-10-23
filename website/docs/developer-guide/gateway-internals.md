@@ -691,6 +691,11 @@ completion and triggers a new agent turn. Verbosity: `display.background_process
 tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
 (final raw output only on non-zero exit), `off`.
 
+With `display.background_process_busy_result_mode: steer`, a completion whose session is mid-turn
+is offered to the running agent (`run_notifications_busy_result.py`) and appended to its next tool
+result (`agent/background_results.py`); the delivery call waits for that outcome and queues the
+completion as the next turn when the turn ends without carrying it.
+
 The watcher is armed on the gateway loop at registration time (`terminal_tool_background.py::
 _register_completion_watcher` → `run_notifications.py::arm_process_watcher`); `pending_watchers`
 is only the fallback for processes registered before the gateway serves (checkpoint recovery) or

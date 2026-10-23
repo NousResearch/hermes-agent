@@ -214,12 +214,20 @@ def _cfg_get_reasoning(params):
         effort = str(reasoning_config.get("effort") or "medium") if enabled else "none"
     else:
         raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
+        from hermes_constants import parse_reasoning_effort
         if isinstance(raw_effort, dict):  # {enabled, effort} form: render the tier, never str(dict)
-            from hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(raw_effort) or {}
             raw_effort = False if parsed.get("enabled") is False else parsed.get("effort")
-        # YAML `reasoning_effort: false` means thinking disabled, not "unset".
-        effort = "none" if raw_effort is False else str(raw_effort or "medium")
+        # YAML `reasoning_effort: false` means thinking disabled, not "unset" — and so does the
+        # quoted string 'off' that config.set reasoning off --global writes; the bare-string branch
+        # must parse like the dict one, or the read-back answers a picker-unknown 'off' that the
+        # dashboard renders as Medium (#90431 read-back half).
+        parsed = parse_reasoning_effort(raw_effort)
+        if raw_effort is False or (isinstance(parsed, dict) and parsed.get("enabled") is False):
+            effort = "none"
+        else:
+            # Unrecognized strings (bespoke provider tiers) pass through verbatim, as before.
+            effort = str((parsed or {}).get("effort") or raw_effort or "medium")
     display = "show" if (cfg.get("display") or {}).get("show_reasoning", True) else "hide"
     return {"value": effort, "display": display}
 

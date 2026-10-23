@@ -28,6 +28,12 @@ class TestParseReasoningConfig(unittest.TestCase):
         result = self._parse("none")
         self.assertEqual(result, {"enabled": False})
 
+    def test_off_disables_like_none(self):
+        """#90431: ``off`` means disabled here exactly as an unquoted ``reasoning_effort: off``
+        does in config.yaml — the same word, the same effective state on every surface."""
+        result = self._parse("off")
+        self.assertEqual(result, {"enabled": False})
+
     def test_valid_levels(self):
         for level in ("low", "medium", "high", "xhigh", "max", "ultra", "minimal"):
             result = self._parse(level)
@@ -78,6 +84,32 @@ class TestHandleReasoningCommand(unittest.TestCase):
         save_config.assert_not_called()
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
         self.assertIsNone(stub.agent)
+
+
+    def test_off_disables_effort_and_leaves_display_alone(self):
+        """Matrix 2+4 (#90431): ``off`` is an effort-disable word, not the hide alias — it must
+        resolve to enabled=False while show_reasoning (an independent projection) is untouched."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"}, show_reasoning=True)
+        with patch("cli.save_config_value") as save_config, patch("cli._cprint"):
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning off")
+
+        save_config.assert_not_called()  # session-scoped, like any other effort level
+        self.assertEqual(stub.reasoning_config, {"enabled": False})
+        self.assertTrue(stub.show_reasoning)
+
+    def test_hide_only_changes_the_display_projection(self):
+        """Matrix 1 (#90431): ``hide`` is the only hide-thinking word and touches only display."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"}, show_reasoning=True)
+        stub._current_reasoning_callback = lambda: None  # rebind path for a live agent
+        with patch("cli.save_config_value") as save_config, patch("cli._cprint"):
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning hide")
+
+        self.assertFalse(stub.show_reasoning)
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "medium"})
 
 
 

@@ -113,6 +113,47 @@ class TestReasoningCommand:
             "effort": effort,
         }
 
+    @pytest.mark.asyncio
+    async def test_reasoning_off_disables_effort_not_display(self, tmp_path, monkeypatch):
+        """Matrix 2+4 (#90431): ``off`` is an effort-disable word, not the hide alias — it must
+        set enabled=False while show_reasoning (an independent projection) is untouched."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n  reasoning_effort: medium\ndisplay:\n  show_reasoning: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event("/reasoning off")
+        session_key = runner._session_key_for_source(event.source)
+
+        await runner._handle_reasoning_command(event)
+
+        assert runner._session_reasoning_overrides[session_key] == {"enabled": False}
+        assert runner._show_reasoning is True
+
+    @pytest.mark.asyncio
+    async def test_reasoning_hide_only_changes_display(self, tmp_path, monkeypatch):
+        """Matrix 1 (#90431): ``hide`` is the only hide-thinking word and touches only display."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n  reasoning_effort: medium\ndisplay:\n  show_reasoning: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        runner = _make_runner()
+        runner._save_gateway_config_key = MagicMock(return_value=True)
+        event = _make_event("/reasoning hide")
+        session_key = runner._session_key_for_source(event.source)
+
+        await runner._handle_reasoning_command(event)
+
+        assert runner._show_reasoning is False
+        assert session_key not in runner._session_reasoning_overrides
+
 
     def test_resolve_session_reasoning_prefers_session_override(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

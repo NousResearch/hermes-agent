@@ -1129,9 +1129,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def _spawn_env(env_vars: dict) -> dict:
         """Sanitized child env from the session's client toolchain; PYTHONUNBUFFERED so poll sees progress."""
         from agent.session_client_env import toolchain_environ
+        from tools.environments.base_session_env import apply_tool_call_id_env
         env = _terminal_env(_sanitize_subprocess_env(toolchain_environ(), env_vars))
-        env["PYTHONUNBUFFERED"] = "1"
-        return env
+        return apply_tool_call_id_env(env | {"PYTHONUNBUFFERED": "1"})
 
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
         """Register before the reader can publish completion, even for an exited child."""

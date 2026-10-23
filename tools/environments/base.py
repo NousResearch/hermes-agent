@@ -25,6 +25,7 @@ from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
 from tools.environments.base_session_env import (
+    _current_tool_call_id,
     _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_marker, _snapshot_bootstrap_script, _split_cwd_marker,
     _wrap_command_script,
 )
@@ -460,6 +461,7 @@ class BaseEnvironment(ABC):
             passthrough_names=self._snapshot_excluded_passthrough_names(),
             snapshot_ready=self._snapshot_ready,
             persist_env=self._persist_env,
+            tool_call_id=_current_tool_call_id(),
             **self._snapshot_script_kwargs(cwd))
 
     @staticmethod

@@ -133,3 +133,28 @@ def test_snapshot_does_not_turn_later_commands_into_delegated_children(tmp_path)
         assert "[]" in parent["output"], f"parent command inherited the marker: {parent!r}"
     finally:
         env.cleanup()
+
+
+@pytest.mark.platforms("posix")  # POSIX bash snapshot path
+def test_tool_call_id_names_the_originating_call_and_never_leaks(tmp_path, monkeypatch):
+    """Each command sees the id of the call that started it; with no call bound, an id from the
+    daemon env or the previous command's snapshot never shows through."""
+    from tools.approval_context import reset_current_observability_context, set_current_observability_context
+    from tools.environments.local import LocalEnvironment
+
+    monkeypatch.setenv("HERMES_TOOL_CALL_ID", "stale-daemon-value")
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    env.init_session()
+    try:
+        def run(call_id):
+            tokens = set_current_observability_context(tool_call_id=call_id)
+            try:
+                return env.execute('echo "[${HERMES_TOOL_CALL_ID-unset}]"').get("output", "")
+            finally:
+                reset_current_observability_context(tokens)
+
+        assert "[call_A1]" in run("call_A1")
+        assert "[call_B2]" in run("call_B2")
+        assert "[unset]" in run("")
+    finally:
+        env.cleanup()

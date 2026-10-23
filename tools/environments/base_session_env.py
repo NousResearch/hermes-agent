@@ -29,7 +29,7 @@ from typing import Iterable
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
     "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|HERMES_DELEGATED_CHILD_CONTEXT|"
-    "HERMES_RPC_|HERMES_KERNEL_DIR)")
+    "HERMES_RPC_|HERMES_KERNEL_DIR|HERMES_TOOL_CALL_ID)")
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # mktemp template suffix + the shell variable holding the allocated temp path.
@@ -72,7 +72,7 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # AI_AGENT / HERMES_AGENT are per-command attribution markers re-exported
         # by every wrapper with ${VAR:-default} semantics; persisting them would
         # let the FIRST command's value override a later outer-harness value.
-        "AI_AGENT HERMES_AGENT "
+        "AI_AGENT HERMES_AGENT HERMES_TOOL_CALL_ID "
         # Scope markers stamped onto a delegate_task child's / cron run's subprocess
         # env; a snapshot taken inside that window would re-assert them on every
         # later ``source`` and fence the PARENT session's kanban CLI (#90782).
@@ -129,10 +129,32 @@ def _passthrough_save_restore(names: Iterable[str]) -> tuple[list[str], list[str
     return save, restore
 
 
+def _current_tool_call_id() -> str:
+    """Id of the tool call being dispatched, "" outside one (a NUL can't live in an env value)."""
+    from tools.approval_context import _approval_tool_call_id  # late: approval_context pulls config
+    call_id = _approval_tool_call_id.get() or ""
+    return "" if "\x00" in call_id else call_id
+
+
+def apply_tool_call_id_env(env: dict) -> dict:
+    """Background-spawn twin of the wrapper line: name the originating call, never inherit one."""
+    if call_id := _current_tool_call_id():
+        env["HERMES_TOOL_CALL_ID"] = call_id
+    else:
+        env.pop("HERMES_TOOL_CALL_ID", None)
+    return env
+
+
+def _tool_call_id_line(tool_call_id: str) -> str:
+    if tool_call_id and "\x00" not in tool_call_id:
+        return f"export HERMES_TOOL_CALL_ID={shlex.quote(tool_call_id)}"
+    return "unset HERMES_TOOL_CALL_ID"
+
+
 def _wrap_command_script(
     command: str, *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str,
     passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str,
-    persist_env: bool = True) -> str:
+    persist_env: bool = True, tool_call_id: str = "") -> str:
     """Per-command bash script: source snapshot, cd, run, re-dump env, emit CWD marker.
     ``persist_env=False`` skips the re-dump, so every command starts from the login-time
     snapshot and exports from one command never reach the next (the CWD marker still runs).
@@ -143,7 +165,9 @@ def _wrap_command_script(
     uses the same mktemp+mv atomic publish as the bootstrap and chains ``mv`` on the dump
     succeeding so a failed dump never replaces a good snapshot. ``umask 077`` is applied after
     the user's command so snapshot files (which may carry secrets) are private without
-    changing the command's umask.
+    changing the command's umask. ``HERMES_TOOL_CALL_ID`` names the tool call that started
+    this command (correlation for scripts/telemetry, never authorization); with no id it is
+    unset so a value from the daemon's env or an old snapshot never names the wrong call.
     """
     escaped = command.replace("'", "'\\''")
     save, restore = _passthrough_save_restore(passthrough_names)
@@ -154,6 +178,7 @@ def _wrap_command_script(
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
+        _tool_call_id_line(tool_call_id),
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         f"builtin cd -- {quoted_cwd} || exit 126",
         f"eval '{escaped}'",

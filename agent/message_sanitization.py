@@ -469,6 +469,7 @@ __all__ = [
     "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
     "route_reasoning_carriers",
     "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
+    "synchronize_tool_call_sidecar_ids",
     "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
 ]
 
@@ -583,6 +584,46 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
         )
     return tool_calls
 
+
+def synchronize_tool_call_sidecar_ids(
+    tool_calls: list, sidecar: Any, *, block_key: str = "toolUse", id_key: str = "toolUseId",
+) -> bool:
+    """Synchronize ordered native-provider tool blocks with final tool-call IDs.
+
+    Native response sidecars (notably Bedrock ``bedrock_content_blocks``) preserve
+    signed/reasoning block order and are authoritative during replay. ID repair
+    happens later on the shared ``tool_calls`` objects, so those sidecars must be
+    updated by tool-use order as well. Validate the complete correspondence first
+    and mutate only when every tool block matches its call; a malformed/mismatched
+    sidecar is left untouched rather than partially rewritten.
+    """
+    if not isinstance(sidecar, list) or not tool_calls:
+        return False
+
+    tool_blocks = [
+        block[block_key]
+        for block in sidecar
+        if isinstance(block, dict) and isinstance(block.get(block_key), dict)
+    ]
+    if len(tool_blocks) != len(tool_calls):
+        return False
+
+    updates = []
+    for tc, block in zip(tool_calls, tool_blocks):
+        function = _tc_field(tc, "function")
+        call_name = _tc_field(function, "name") or _tc_field(tc, "name") or ""
+        block_name = block.get("name") or ""
+        call_id = coalesce_tool_call_id(tc)
+        if not call_id or (call_name and block_name and call_name != block_name):
+            return False
+        updates.append((block, call_id))
+
+    changed = False
+    for block, call_id in updates:
+        if block.get(id_key) != call_id:
+            block[id_key] = call_id
+            changed = True
+    return changed
 
 _PROVIDER_TOOL_ID_PREFIXES = ("chatcmpl-tool-",)
 

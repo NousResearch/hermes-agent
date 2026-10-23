@@ -373,7 +373,6 @@ class TestStandaloneSendSMTPPort:
 
             def starttls(self, context=None):
                 captured["starttls"] = True
-                return None
 
             def login(self, *a, **k):
                 return None
@@ -528,7 +527,7 @@ class TestStandaloneSendFallback:
             raise RuntimeError("kaboom")
 
         monkeypatch.setattr(adapter_mod, "_markdown_to_html_email", boom)
-        result, sent, log_text = self._send(monkeypatch, caplog, markdown_missing=False)
+        result, _sent, log_text = self._send(monkeypatch, caplog, markdown_missing=False)
         assert result.get("success") is True
         assert "HTML conversion failed" in log_text
         assert "kaboom" in log_text

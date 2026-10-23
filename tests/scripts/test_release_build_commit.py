@@ -147,7 +147,7 @@ def test_commit_build_dispatch_is_repository_independent(fixture_repo):
 def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):
     repo, _, invoke = fixture_repo
     tip = git(repo, 'rev-parse', 'HEAD')
-    values = {'HERMES_GUEST_ONBOARDING': '1', 'HERMES_DATA_DIR_SUFFIX': 'magic-test',
+    values = {'HERMES_PREVIEW_FULL_CONNECTORS': '1', 'HERMES_DATA_DIR_SUFFIX': 'magic-test',
               'HERMES_DESKTOP_USER_DATA_DIR': '', 'HERMES_SHARED_AUTH_DIR': 'a=b "quote"\n$(not-a-command)'}
     flags = [part for key, value in values.items() for part in ('--bundle-env', f'{key}={value}')]
     result, calls = invoke('--build-commit', tip, '--publish', *flags)
@@ -156,7 +156,7 @@ def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):
     assert json.loads(next(field.split('=', 1)[1] for field in dispatch if field.startswith('bundle_env='))) == values
     for invalid in (['--bundle-env', 'MISSING'], ['--bundle-env', 'BAD-NAME=x'],
                     ['--bundle-env', 'NODE_OPTIONS=--require=evil'], ['--bundle-env', 'HERMES_SKIP_INTRO=1'],
-                    ['--bundle-unset', 'PATH'],
+                    ['--bundle-env', 'HERMES_GUEST_ONBOARDING=1'], ['--bundle-unset', 'PATH'],
                     ['--bundle-env', 'HERMES_HOME=x', '--bundle-env', 'HERMES_HOME=y']):
         result, calls = invoke('--build-commit', tip, '--publish', *invalid)
         assert result.returncode != 0 and not calls
@@ -228,7 +228,7 @@ def test_workflow_admission_checks_trust_before_publishing_outputs(tmp_path, fix
            'GITHUB_WORKFLOW_REF': 'fixture-owner/fixture-repo/.github/workflows/desktop-bundled-release.yml@refs/heads/main',
            'GITHUB_ACTOR': 'maintainer', 'GITHUB_TRIGGERING_ACTOR': 'maintainer',
            'GITHUB_OUTPUT': str(output), 'UPLOAD_RELEASE': 'false',
-           'BUNDLE_ENV_JSON': '{"HERMES_GUEST_ONBOARDING":"1","HERMES_HOME":null}'}
+           'BUNDLE_ENV_JSON': '{"HERMES_PREVIEW_FULL_CONNECTORS":"1","HERMES_HOME":null}'}
     result, calls = invoke('admit', extra=env)
     assert result.returncode == 0, result.stderr
     assert dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines()) == {

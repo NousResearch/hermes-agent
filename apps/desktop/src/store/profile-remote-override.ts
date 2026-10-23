@@ -91,9 +91,8 @@ export async function refreshProfileRemoteOverrides(names: string[]): Promise<vo
 }
 
 // The token-rotation failure shape: the remote host answered but refused the
-// credentials. Mirrors the auth-vocabulary used by suggestion-providers/repair
-// — connectivity failures (timeout, refused, DNS) stay generic so a down host
-// doesn't misread as a revoked token.
+// credentials. Connectivity failures (timeout, refused, DNS) stay generic so a
+// down host doesn't misread as a revoked token.
 const AUTH_FAILURE_RE =
   /\b(401|403|unauthorized|forbidden)\b|invalid[_ ]?token|token .*(expired|invalid|rejected)|authenticat\w+ (failed|required|expired)/i
 

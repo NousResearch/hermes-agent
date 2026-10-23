@@ -20,6 +20,7 @@ import {
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
+import { SET_THEME_TOOL, setThemeCall } from '@/components/assistant-ui/theme-picker/args'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -51,6 +52,7 @@ import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $showToolActivity } from '@/store/tool-activity'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
+import { $toolProgressFor, formatToolProgress } from '@/store/tool-progress'
 import {
   $anyToolDisclosureOpen,
   $hideCodeDiffs,
@@ -343,6 +345,24 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
   return persistedOpen ?? fallbackOpen
 }
 
+/** A running row's trailing meta: live MCP progress (`42% · message`, when the server sends it) + the timer. */
+function ToolRunningMeta({ seconds, toolCallId = '' }: { seconds: number; toolCallId?: string }) {
+  const sessionId = useStore(useSessionView().$runtimeId) ?? ''
+  const progress = useMemo(() => $toolProgressFor(sessionId, toolCallId), [sessionId, toolCallId])
+  const progressText = formatToolProgress(useStore(progress))
+
+  return (
+    <>
+      {progressText && (
+        <span className={cn(SCAFFOLD_META_CLASS, 'max-w-64 truncate')} data-slot="tool-progress" title={progressText}>
+          {progressText}
+        </span>
+      )}
+      <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={seconds} />
+    </>
+  )
+}
+
 function ToolEntry({ part }: ToolEntryProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool
@@ -540,7 +560,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const trailing = !embedded ? (
     <span className="flex shrink-0 items-center gap-1.5">
       <TimelineTimestamp className={SCAFFOLD_META_CLASS} completedAt={completedAt} timestamp={timestamp} />
-      {isPending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
+      {isPending && <ToolRunningMeta seconds={elapsed} toolCallId={toolCallId} />}
     </span>
   ) : undefined
 
@@ -1046,6 +1066,16 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   )
 }
 
+// The name the run splitter classifies a part by: connector and MCP calls are cards, and so is set_theme
+// reached through the tool_call bridge (a reloaded transcript).
+function toolGroupKey(toolName: string, args: ToolCallMessagePartProps['args']): string {
+  if (connectorCalls(toolName, args).length || mcpTargets(toolName, args).length) {
+    return CONNECTION_CARD_KEY
+  }
+
+  return setThemeCall(toolName, args) ? SET_THEME_TOOL : toolName
+}
+
 /**
  * A range of consecutive tool calls, split into the cards that must stay on
  * screen and the runs of activity between them.
@@ -1070,13 +1100,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const toolNameKey = useAuiState(state =>
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .map(part =>
-        part.type === 'tool-call'
-          ? connectorCalls(part.toolName, part.args).length || mcpTargets(part.toolName, part.args).length
-            ? CONNECTION_CARD_KEY
-            : part.toolName
-          : ''
-      )
+      .map(part => (part.type === 'tool-call' ? toolGroupKey(part.toolName, part.args) : ''))
       .join('\u0000')
   )
 

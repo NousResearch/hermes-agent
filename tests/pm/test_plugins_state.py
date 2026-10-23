@@ -166,7 +166,7 @@ def test_member_discovery_uses_real_enabled_config(homes):
     from pm.workspace import enabled_member_dirs
     home, _ = homes
     manifests = {
-        "modern/pyproject.toml": "[project]\n",
+        "modern/pyproject.toml": '[project]\ndependencies = ["requests>=2"]\n',
         "legacy/plugin.yaml": 'name: legacy\npip_dependencies: ["requests>=2"]\n',
         "plain/plugin.yaml": "name: plain\n",
         "orphan/pyproject.toml": "[project]\n",

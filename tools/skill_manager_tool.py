@@ -63,6 +63,63 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
+def _background_scan_required() -> bool:
+    """An unreadable origin must never select the optional foreground scan."""
+    try:
+        from tools.skill_provenance import is_background_review
+        return is_background_review()
+    except Exception:
+        return True
+
+
+def _security_scan_skill_strict(skill_dir: Path) -> Optional[str]:
+    """Fail-closed security scan for background-origin skill writes.
+
+    Unlike ``_security_scan_skill``, this always scans (ignores
+    ``guard_agent_created``) and fails closed on scanner exception — neither
+    of which the default foreground path does.
+
+    Returns an error string when the skill must not be published, else None.
+    """
+    try:
+        result = scan_skill(skill_dir, source="agent-created")
+        allowed, reason = should_allow_install(result)
+        if allowed is not True:
+            report = format_scan_report(result)
+            logger.warning(
+                "Background-origin skill blocked (dangerous findings): %s",
+                reason,
+            )
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+    except Exception as e:
+        logger.warning(
+            "Security scan failed for %s: %s", skill_dir, e, exc_info=True,
+        )
+        return (
+            f"Security scan raised an exception and the skill cannot be "
+            f"published from background origin without verification: {e}"
+        )
+    return None
+
+
+def _scan_staged_skill_write(skill_dir: Path, target: Path, content: str) -> Optional[str]:
+    """Scan the complete candidate package without touching its active files."""
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory(prefix="skill-stage-") as temporary:
+            staging = Path(temporary) / skill_dir.name
+            if skill_dir.exists():
+                shutil.copytree(skill_dir, staging, symlinks=True)
+            else:
+                staging.mkdir()
+            candidate = staging / target.relative_to(skill_dir)
+            if not candidate.resolve().is_relative_to(staging.resolve()):
+                return "Background skill write denied: staged target escapes the skill directory."
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(candidate, content, preserve_mode=True, create_mode=0o644)
+            return _security_scan_skill_strict(staging)
+    except Exception as exc:
+        return f"Background skill write could not be staged and verified: {exc}"
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
@@ -401,10 +458,13 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
+    background = _background_scan_required()
+    if background and (scan_error := _scan_staged_skill_write(skill_dir, target, content)):
+        return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir)
+    scan_error = None if background else _security_scan_skill(skill_dir)
     if not scan_error:
         return None
     if original is not None:
@@ -456,8 +516,17 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
         return _err(err)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
+    # Background-origin skill creation must fail closed: stage the bytes, scan
+    # with strict semantics, and only publish to the active root on success. No
+    # active SKILL.md may remain on reject or scanner exception
+    # (SECURITY-CLASS-6024d99228f118e5). Foreground keeps the existing
+    # write-then-optional-scan-with-rollback behavior. A provenance probe
+    # failure is treated as background-origin so it cannot skip the strict scan.
     skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
+    background = _background_scan_required()
+    if background and (scan_error := _scan_staged_skill_write(skill_dir, skill_dir / "SKILL.md", content)):
+        return _err(scan_error)
     mkdir_under_hermes_home(skill_dir.parent)
     try:
         skill_dir.mkdir(exist_ok=False)
@@ -474,7 +543,9 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
             return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
                         "directory, or unreadable). Choose another name, or move/remove that path and retry.")
     skill_md = skill_dir / "SKILL.md"
-    if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
+    if background:
+        atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
+    elif guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
         with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
             skill_dir.rmdir()
         return guard

@@ -677,12 +677,12 @@ DEFAULT_CONFIG = {
         # Absolute server compaction trigger (input tokens). None follows the local trigger with a
         # safety margin; explicit values only clamp downward so the server goes first.
         "codex_responses_compact_threshold": None,
-        # in_place: compaction rewrites the message list and system prompt WITHOUT rotating the
-        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the
-        # session-rotation bug cluster. Pre-compaction turns are soft-archived under the same id
-        # (active=0, compacted=1) — still session_search-able. False = legacy rotating-compaction
-        # path.
+        # in_place: compaction rewrites messages and the system prompt WITHOUT rotating the
+        # session id. Pre-compaction turns stay soft-archived (active=0, compacted=1) and
+        # session_search-able. False restores legacy rotation.
         "in_place": True,
+        # "Session compressed N times…" once compression_count reaches this. 0 disables.
+        "warn_after_compressions": 2,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
         # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
         # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the

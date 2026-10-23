@@ -122,6 +122,20 @@ class TestAgentConfigSignature:
         )
         assert sig1 != sig2
 
+    def test_warn_after_compressions_change_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.warn_after_compressions": 2},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.warn_after_compressions": 5},
+        )
+        assert sig1 != sig2
+
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
         from gateway.run import GatewayRunner

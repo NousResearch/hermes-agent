@@ -24,3 +24,26 @@ def test_threshold_tokens_default_and_null_opt_out(agent_cfg, expected):
     cs = _parse_compression_config(_agent(), agent_cfg)
     assert cs.threshold_tokens == expected
     assert cs.threshold == DEFAULT_CONFIG["compression"]["threshold"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (5, 5),
+        (0, 0),
+        (None, 2),
+        ("abc", 2),
+        (True, 2),
+        (-3, 0),
+    ],
+)
+def test_warn_after_compressions_coercion(raw, expected):
+    cs = _parse_compression_config(
+        _agent(), {"compression": {"warn_after_compressions": raw}}
+    )
+    assert cs.warn_after_compressions == expected
+
+
+def test_warn_after_compressions_defaults_when_unset():
+    cs = _parse_compression_config(_agent(), {})
+    assert cs.warn_after_compressions == DEFAULT_CONFIG["compression"]["warn_after_compressions"] == 2

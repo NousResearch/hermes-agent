@@ -783,6 +783,13 @@ compression:
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
 
+  # After this many compactions, Hermes warns that accuracy may degrade and
+  # suggests /new. Set to 0 to disable that warning. Default 2 (the warning
+  # starts at the second compaction and repeats on each later one). Invalid
+  # values fall back to 2. A running gateway or Desktop/TUI session picks up
+  # a change on the next message.
+  warn_after_compressions: 2
+
   # Idle compaction (default: 0 = disabled). When > 0, a session that resumes
   # after at least this many seconds of inactivity compacts its accumulated
   # history up front, before the first reply, so a long-lived thread you come

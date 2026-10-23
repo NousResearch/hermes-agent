@@ -1548,6 +1548,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
+    _raw_warn_after = cfg.get("warn_after_compressions", 2)
+    warn_after_compressions = max(0, _parse_config_int(_raw_warn_after, 2))
     return CompressionSettings(
         threshold=threshold,
         autoraise_notice_enabled=autoraise_notice_enabled,
@@ -1595,6 +1597,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        warn_after_compressions=warn_after_compressions,
     )
 
 
@@ -1974,12 +1977,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
-        # External engines own compaction policy — the host threshold (and its Codex
-        # autoraise) never reaches the plugin, so drop the notice.
         agent._compression_threshold_autoraised = None
-        # External engines own compaction policy: the host compression threshold (including the Codex
-        # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
-        # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
+        # Plugin engines ignore the host threshold, so skip the Codex autoraise notice (#44439).
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
@@ -2018,6 +2017,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             _bind_session_state(session_db=session_db, session_id=agent.session_id)
     agent.compression_enabled = cs.enabled
     agent.compression_in_place = cs.in_place
+    agent.compression_warn_after_compressions = cs.warn_after_compressions
     _cc = agent.context_compressor
     # Micro-compaction has no pre-compress checkpoint hook; suppress it while the gate is
     # armed (mirrors native_compaction.py).

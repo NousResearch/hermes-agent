@@ -66,9 +66,11 @@ describe('ChatRoutesSurface late-registered plugin routes', () => {
     })
 
     // The late registration must reach the route table and win over the
-    // `:sessionId` dynamic route.
-    expect(screen.getByTestId('late-page')).toBeTruthy()
+    // `:sessionId` dynamic route. Contributed pages are overlay-mounted now,
+    // so a matched route renders nothing in the workspace — the regression
+    // symptom this guards against is the chat catch-all KEEPING the path.
     expect(screen.queryByTestId('chat-view')).toBeNull()
+    expect(screen.queryByTestId('late-page')).toBeNull()
 
     act(() => dispose())
   })

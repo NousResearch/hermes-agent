@@ -1,13 +1,13 @@
 /**
- * A full page (Messaging/Artifacts/a contributed route) renders INSIDE the
- * `workspace` pane, so navigating to one has to front that pane — otherwise a
- * main zone parked on a session tile keeps the tile on screen and the click
- * looks dead until the app restarts (#72602).
+ * Every non-chat destination (Messaging/Artifacts/contributed routes) opens as
+ * an OVERLAY card over the workspace, so navigating to one must leave the
+ * workspace pane — and the session tabs the user is working in — completely
+ * alone: no fronting, no `$workspaceIsPage`. The reveal calls this file used
+ * to assert exist for the days when a page replaced the pane (#72602).
  *
  * Two layers, both covered here: `syncWorkspaceRoute` (the router location,
  * every entry point) and `navigateToWorkspacePage` (the re-click, where the
- * location doesn't change). Capabilities is an OVERLAY and must stay out of
- * both — it floats over the chat rather than replacing it.
+ * location doesn't change).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -96,39 +96,39 @@ describe('classification of targets carrying a query', () => {
 })
 
 describe('syncWorkspaceRoute', () => {
-  it('publishes and fronts on a page route', () => {
+  it('leaves the tab alone on a page route — pages are overlays now', () => {
     syncWorkspaceRoute(MESSAGING_ROUTE)
 
-    expect($workspaceIsPage.get()).toBe(true)
-    expect(fronted()).toBe(true)
+    expect($workspaceIsPage.get()).toBe(false)
+    expect(revealTreePane).not.toHaveBeenCalled()
   })
 
-  it('fronts on a page route reached with a query', () => {
+  it('leaves the tab alone on a page route reached with a query', () => {
     syncWorkspaceRoute(`${ARTIFACTS_ROUTE}?tab=files`)
 
-    expect($workspaceIsPage.get()).toBe(true)
-    expect(fronted()).toBe(true)
+    expect($workspaceIsPage.get()).toBe(false)
+    expect(revealTreePane).not.toHaveBeenCalled()
   })
 
-  it('fronts when moving between two pages — the atom never changes, the tab must', () => {
+  it('leaves the tab alone when moving between two pages', () => {
     syncWorkspaceRoute(ARTIFACTS_ROUTE)
     vi.mocked(revealTreePane).mockClear()
     vi.mocked(noteActiveTreeGroup).mockClear()
 
     syncWorkspaceRoute(MESSAGING_ROUTE)
 
-    expect($workspaceIsPage.get()).toBe(true)
-    expect(fronted()).toBe(true)
+    expect($workspaceIsPage.get()).toBe(false)
+    expect(revealTreePane).not.toHaveBeenCalled()
   })
 
-  it('fronts on a contributed page route', () => {
+  it('leaves the tab alone on a contributed page route', () => {
     const dispose = contributeRoute()
 
     try {
       syncWorkspaceRoute(CONTRIBUTED_ROUTE)
 
       expect(appViewForPath(CONTRIBUTED_ROUTE)).toBe('extension')
-      expect(fronted()).toBe(true)
+      expect(revealTreePane).not.toHaveBeenCalled()
     } finally {
       dispose()
     }
@@ -152,13 +152,13 @@ describe('syncWorkspaceRoute', () => {
 })
 
 describe('navigateToWorkspacePage', () => {
-  it('navigates and fronts, so a re-click on the page you are already on still shows it', () => {
+  it('navigates without fronting — the overlay opens from the route itself', () => {
     const navigate = vi.fn()
 
     navigateToWorkspacePage(navigate, MESSAGING_ROUTE)
 
     expect(navigate).toHaveBeenCalledWith(MESSAGING_ROUTE, undefined)
-    expect(fronted()).toBe(true)
+    expect(revealTreePane).not.toHaveBeenCalled()
   })
 
   it('navigates without fronting for chat, overlay and capabilities targets', () => {
@@ -180,7 +180,7 @@ describe('navigateToWorkspacePage', () => {
  * like the sidebar does.
  */
 describe('host.navigate', () => {
-  it('fronts the workspace pane even when already on the contributed page', () => {
+  it('leaves the workspace pane alone on the contributed page', () => {
     const dispose = contributeRoute()
 
     try {
@@ -191,7 +191,7 @@ describe('host.navigate', () => {
       host.navigate(CONTRIBUTED_ROUTE)
 
       expect(window.location.hash).toBe(`#${CONTRIBUTED_ROUTE}`)
-      expect(fronted()).toBe(true)
+      expect(revealTreePane).not.toHaveBeenCalled()
     } finally {
       dispose()
     }

@@ -43,6 +43,10 @@ from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
 from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
 
+class CronStoreError(RuntimeError):
+    """The cron store is unreadable or corrupt; callers must fail closed."""
+
+
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
 # (and past `_croniter_retry_at`).
@@ -1364,10 +1368,10 @@ def load_jobs() -> list[dict[str, Any]]:
         data, _strict_retry = _parse_jobs_file(jobs_file)
     except OSError as e:
         logger.error("IOError reading jobs.json: %s", e)
-        raise RuntimeError(f"Failed to read cron database: {e}") from e
+        raise CronStoreError(f"Failed to read cron database: {e}") from e
     except Exception as e:
         logger.error("Failed to auto-repair jobs.json: %s", e)
-        raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
+        raise CronStoreError(f"Cron database corrupted and unrepairable: {e}") from e
 
     # Accept the canonical dict, or a bare list (auto-repair); any other top-level shape is
     # corruption. Repair details are logged only by the locked pass (an unlocked pass re-runs
@@ -1396,7 +1400,7 @@ def load_jobs() -> list[dict[str, Any]]:
         jobs = data
         repair = "bare list wrapped as dict"
     else:
-        raise RuntimeError(
+        raise CronStoreError(
             f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}")
     junk = [j for j in jobs if not isinstance(j, dict)]
     if junk:
@@ -1490,7 +1494,7 @@ def _unmerged_disk_jobs(
         return []
     disk_jobs = _peek_jobs_unlocked()
     if disk_jobs is None:
-        raise RuntimeError(
+        raise CronStoreError(
             f"Cron database corrupted; refusing to overwrite {_current_cron_store().jobs_file}")
     seen = {str(j["id"]) for j in jobs if isinstance(j, dict) and j.get("id")}
     seen |= {str(i) for i in (removed_ids or ()) if i}

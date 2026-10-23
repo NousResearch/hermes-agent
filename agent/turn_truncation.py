@@ -302,6 +302,21 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     return None
 
 
+def _stop_partial_stream(st: _Trunc, content: Any) -> TruncationVerdict:
+    parts = [*st.truncated_response_parts]
+    if isinstance(content, str) and content:
+        parts.append((content, st.is_stub))
+    partial = collapse_continuation_trail(
+        st.agent, st.messages, st.current_turn_user_idx, finish_reason="length",
+        parts=parts,
+    )
+    error = "Provider stream ended before completion; automatic continuation is disabled."
+    st.agent._ephemeral_reasoning_off = False
+    st.agent._flush_status_buffer()
+    close_interrupted_tool_sequence(st.messages, partial or error)
+    return st.end_turn(partial or error, error, failure=("invalid_response", True))
+
+
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
@@ -515,6 +530,9 @@ def recover_from_truncation(
     _trunc_msg = normalize_response_for_agent(agent, response)
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+
+    if st.is_stub and not getattr(agent, "_partial_stream_continuation", True):
+        return _stop_partial_stream(st, _trunc_content)
 
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
     if abort is not None:

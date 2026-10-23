@@ -311,7 +311,10 @@ def restore_api_session(authority, session_id):
         store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
     from gateway.session_history_mount import is_history_mount
     live = authority.sessions.get(session_id)
-    if live is None or is_history_mount(live):
-        # A read-only view opened while the row had no binding gives way to the bound conversation.
+    if live is None:
         authority.sessions[session_id] = LiveSession(source, entry.session_key)
+    elif is_history_mount(live):
+        # A read-only view opened while the row had no binding becomes the bound conversation in place,
+        # so its viewers keep their subscriptions and event stream.
+        live.source, live.route, live.superseded, live.history_mount = source, entry.session_key, False, False
     return SessionRef(authority.profile_id, session_id)

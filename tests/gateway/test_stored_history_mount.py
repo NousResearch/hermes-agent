@@ -147,6 +147,17 @@ async def test_the_reads_a_viewer_sends_for_an_open_chat_answer_on_a_mount(tmp_p
                            ('config.get', {**sid, 'key': 'mtime'}), ('model.options', sid)):
         reply = await conn.dispatch({'id': 1, 'method': method, 'params': params})
         assert 'result' in reply, (method, reply)
+    from gateway.run import GatewayRunner
+    runner = conn.authority.runner
+    for name in ('_voice_key_for_source', '_voice_key', '_resolve_session_service_tier', '_resolve_session_key_or_none',
+                 '_peek_session_state', '_load_service_tier'):
+        setattr(runner, name, getattr(GatewayRunner, name).__get__(runner))
+    runner._adapter_profile_for_source = lambda source: None  # no adapters here
+    # Desktop's automatic voice read on open, and the TUI's /fast status read.
+    replies = {key: await conn.dispatch({'id': 1, 'method': 'config.get', 'params': {**sid, 'key': key}})
+               for key in ('voice', 'fast')}
+    assert {key: reply.get('result', {}).get('value') for key, reply in replies.items()} == {
+        'voice': 'off', 'fast': 'normal'}, replies
     for command in ('fast status', 'model'):
         reply = await conn.dispatch({'id': 1, 'method': 'slash.exec', 'params': {**sid, 'command': command}})
         assert reply['error']['message'] == 'session_read_only', (command, reply)
@@ -154,14 +165,23 @@ async def test_the_reads_a_viewer_sends_for_an_open_chat_answer_on_a_mount(tmp_p
 
 @pytest.mark.asyncio
 async def test_an_api_chat_opened_read_only_still_continues_through_the_api(tmp_path, monkeypatch):
-    """Binding the viewed row replaced nothing: the read-only mount had no source to check."""
+    """Binding the viewed row replaced nothing: the read-only mount had no source to check. The viewer
+    that opened it keeps receiving the bound conversation's events and detaches normally."""
+    import asyncio
+    import queue
     from gateway.config import Platform
     from gateway.session_api import bind_api_session
-    from gateway.session_history_mount import is_history_mount
     conn, ref = await _connect(tmp_path, monkeypatch, 'api-1')
-    await conn.resume(ref, {})
+    frames = queue.Queue()
+    conn.authority.events[conn.actor.transport_id] = SimpleNamespace(write=lambda frame: frames.put(frame) or True)
+    opened = await conn.resume(ref, {})
 
     assert bind_api_session(conn.authority, 'api-1', caller_key='agent:main:api_server:dm:api-1') == ref
 
     live = conn.authority.sessions['api-1']
-    assert live.source.platform == Platform.API_SERVER and not is_history_mount(live) and not live.superseded
+    assert live.source.platform == Platform.API_SERVER and not live.superseded
+    live.event_stream.publish('api-1', {'text': 'bound'})
+    frame = await asyncio.to_thread(frames.get, True, 5)
+    assert frame['params']['payload'] == {'text': 'bound'}
+    detached = await conn.detach(ref, {'session_id': 'api-1', 'subscription_id': opened['subscription_id']})
+    assert detached['detached'] is True

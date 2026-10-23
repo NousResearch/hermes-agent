@@ -116,6 +116,8 @@ async def config_get(connection, ref, params):
 def session_voice_mode(connection, ref):
     """``off`` / ``voice_only`` / ``all``: the session's ``/voice`` mode as the messaging handler stored it."""
     runner, live = connection.authority.runner, connection.authority.sessions[ref.session_id]
+    if live.source is None:  # a history mount: no chat for a voice mode to belong to
+        return 'off'
     modes = getattr(runner, '_voice_mode', None) or {}
     return modes.get(runner._voice_key_for_source(live.source), 'off')
 

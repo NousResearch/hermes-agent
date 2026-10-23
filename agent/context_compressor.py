@@ -1663,10 +1663,10 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
 
 def _sum_terminal(name, args, content, content_len, line_count):
-    cmd = _str_arg(args, "command")
-    cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
+    cmd = c if len(c := _str_arg(args, "command")) <= 80 else c[:77] + "..."
     exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
-    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+    m = re.fullmatch(r"\[terminal\] ran `.*; background session_id=([\w.:-]{1,40})", content, re.DOTALL) if content.startswith("[terminal] ran `") else re.search(r'"session_id"\s*:\s*"([\w.:-]{1,40})"', content)
+    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output" + (f"; background session_id={m[1]}" if m else "")
 
 
 def _sum_write_file(name, args, content, content_len, line_count):

@@ -318,6 +318,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
     launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``plugin_note``:
     ``(plugin_key, text)`` queued once per session for its next tool result or turn
     (``agent/plugin_live_notes.py``)."""
+    from agent.onboarding_session import carry_onboarding_toolset
     from hermes_constants import hermes_home_key
     want = hermes_home_key(home) if home is not None else None
     with _sessions_lock:
@@ -328,7 +329,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
         agent = sess["agent"]
         try:
             with _session_profile_runtime_scope(sess):
-                enabled = _carry_onboarding_toolset(_load_enabled_toolsets(getattr(agent, "platform", None)), agent)
+                enabled = carry_onboarding_toolset(_load_enabled_toolsets(getattr(agent, "platform", None)), agent)
                 disabled = _load_disabled_toolsets()
                 refresh(agent, enabled_override=enabled, disabled_override=disabled,
                         quiet_mode=True, preserve_prefix=preserve_prefix)
@@ -496,7 +497,7 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str, session=None) -> str:
+def _run_plugin_command(handler, arg: str, session=None, sid: str = "") -> str:
     """Run a plugin slash-command handler under the session's ``HERMES_SESSION_*`` binding.
 
     Plugin handlers read ``get_session_env()`` for the chat/session they serve; these RPCs run on
@@ -509,8 +510,11 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
     tokens = _set_session_context(key, cwd=str(session.get("cwd") or "")) if session else []
     context = {"source": None, "session_key": key, "platform": _session_source(session),
                "session_id": getattr(session.get("agent"), "session_id", None) or key if session else ""}
+    # ctx.ask_choice: the ``clarify`` server request this backend's clarify tool sends.
+    choices = _tools_mod("hermes_cli.plugin_choices")
     try:
-        return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
+        with choices.bind_asker(choices.clarify_asker(lambda questions: _clarify_block(sid, questions))):
+            return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
     finally:
         _clear_session_context(tokens)
 
@@ -588,7 +592,8 @@ def _is_registry_command(base: str) -> bool:
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
+            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(
+                handler, arg, session, params.get("session_id", ""))})
     return None
 
 
@@ -1058,7 +1063,8 @@ def _(rid, params: dict) -> dict:
             return dispatched
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
+            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session, params.get("session_id", ""))
+                             or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
@@ -1661,6 +1667,9 @@ def _plugin_rows() -> list[dict]:
     # names. One live-catalog resolution for the whole listing (see ``catalog_rows_maps``).
     pins, versions, titles = cat.catalog_rows_maps()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
+    # git installs the last update check found behind (the gateway's daily check or `check-updates`); no
+    # network here — the listing must stay fast.
+    git_updates = _tools_mod("hermes_cli.plugins_cadence").cached_git_updates(ref_pins)
     out = []
     active = pc._category_active_names()
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
@@ -1681,6 +1690,8 @@ def _plugin_rows() -> list[dict]:
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
             "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
             **cat.catalog_row_fields(_dir, pins, versions),
+            **({"update_available": True, "update_target": target}
+               if _dir_path and (target := git_updates.get(_dir_path.name)) else {}),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 
@@ -1760,33 +1771,30 @@ def _plugins_install(rid, params):
 
 
 def _plugins_update(rid, params):
-    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI).
-    A pin that widens the plugin (new tools/hooks/deps/capabilities/Desktop half) answers
-    ``{ok: false, consent_required: true, delta, delta_lines}`` with nothing changed; the client shows the
-    delta and retries with ``accept_capabilities: true``."""
+    """The same update as the dashboard and ``hermes plugins update``: a catalog install re-pins to the
+    current catalog SHA, a git install pulls. Every update is scanned. A refusal changes nothing and
+    answers ``ok: false`` with what the client must show before retrying: ``consent_required`` +
+    ``delta``/``delta_lines`` for a re-pin that widens the plugin (retry with ``accept_capabilities``), or
+    ``scan_blocked`` + ``scan_verdict``/``scan_findings`` for a scan block (retry a caution verdict with
+    ``force``)."""
     name = (params.get("name") or "").strip()
     if not name:
         return _err(rid, 4019, "plugins.update requires a 'name'")
-    pc, cat = _tools_mod("hermes_cli.plugins_cmd"), _tools_mod("hermes_cli.plugins_cmd_catalog")
-    target = pc._plugins_dir() / name
-    sidecar = cat.catalog_install_record(target) if target.is_dir() else None
-    if not sidecar:
-        return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
-    try:
-        result = cat.repin_catalog_plugin(
-            target, sidecar, consent_cb=(lambda _delta: True) if params.get("accept_capabilities") else None)
-    except cat.RepinConsentRequired as e:
-        return _ok(rid, {"ok": False, "consent_required": True, "name": e.name, "sha": e.sha, "delta": e.delta,
-                         "delta_lines": cat.surface_delta_lines(e.delta), "error": str(e)})
-    except pc.PluginOperationError as e:
-        return _err(rid, 4021, str(e))
-    payload = {"ok": True, "unchanged": not result.changed, "sha": result.sha, "name": result.installed_name,
-               "warnings": list(result.warnings)}
-    if result.changed:
-        _ensure_plugin_activation_listener()
-        activate = _tools_mod("hermes_cli.plugins_activation").activate_plugin_now
-        payload = _with_activation({**payload, **activate(result.installed_name)}, result.installed_name)
-    return _ok(rid, payload)
+    _ensure_plugin_activation_listener()
+    result = _tools_mod("hermes_cli.plugins_cmd").dashboard_update_user_plugin(
+        name, accept_capabilities=bool(params.get("accept_capabilities")), force=bool(params.get("force")))
+    if result.get("consent_required") or result.get("scan_blocked"):
+        keys = ("ok", "name", "sha", "error", "consent_required", "delta", "delta_lines",
+                "scan_blocked", "scan_verdict", "scan_findings")
+        return _ok(rid, {k: result[k] for k in keys if k in result})
+    if not result.get("ok"):
+        return _err(rid, 4021, result.get("error") or "update failed")
+    payload = {"ok": True, "unchanged": bool(result.get("unchanged")), "name": result.get("name") or name,
+               "warnings": list(result.get("warnings") or []),
+               **{k: result[k] for k in ("sha", "gateway_reloaded", "activation", "restart_required") if k in result}}
+    if result.get("unchanged"):
+        return _ok(rid, payload)
+    return _ok(rid, _with_activation(payload, payload["name"]))
 
 
 def _plugins_remove(rid, params):
@@ -1817,7 +1825,26 @@ def _plugins_settings(rid, params):
     except (ValueError, PermissionError) as e:
         return _err(rid, 4021, str(e))
     row = next((r for r in _plugin_rows() if r["key"] == canonical), None)
+    # A Desktop half applies its own preferences (a status-bar chip on/off) without polling.
+    events = _tools_mod("hermes_cli.plugin_events")
+    if events._PLUGIN_ID_RE.match(canonical):  # category keys (``image_gen/fal``) form no event name
+        events.broadcast_plugin_event(canonical, "settings.changed", {"written": written})
+    # A secret the form just stored may feed the plugin's MCP server env (``${MESHY_API_KEY}``): bounce
+    # only servers whose resolved launch inputs changed, off the RPC thread (an npx start takes seconds).
+    if plugin_dir and pc._is_portable_plugin_dir(plugin_dir):
+        servers = _portable_server_names(Path(str(plugin_dir)), canonical)
+        if servers:
+            from agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
+            discovery = _tools_mod("tools.mcp_tool_discovery")
+            spawn_context_thread(discovery.restart_mcp_servers_with_new_inputs, args=(servers,),
+                                 name=f"plugin-settings-mcp-{canonical}").start()
     return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
+
+
+def _portable_server_names(plugin_dir: Path, key: str) -> set[str]:
+    package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
+    name_for = _tools_mod("hermes_cli.plugins_manifest").portable_mcp_server_name
+    return {name_for(key, server) for server in package.mcp_servers}
 
 
 def _plugins_onboarding(rid, params):
@@ -1840,7 +1867,7 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install to the current catalog SHA; ``remove`` deletes
+    default True); ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
     a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 

@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
     share_hint: "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
     report_label: "Rapor"
+    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug` gönderin."
   deny:
     stale: "❌ Komut reddedildi (onay geçersizdi)."
     no_pending: "Reddedilecek bekleyen komut yok."
@@ -171,6 +172,10 @@ gateway:
     denied_plural: "❌ Komutlar reddedildi ({count} komut)."
     denied_reason_singular: "❌ Komut reddedildi. Gerekçe ajana iletildi: \"{reason}\""
     denied_reason_plural: "❌ Komutlar reddedildi ({count} komut). Gerekçe ajana iletildi: \"{reason}\""
+
+  usage_limit:
+    picker_title: "Başka bir modelle devam et:"
+    switch_choice: "{model} modeline geç ({note})"
   fast:
     not_supported: "⚡ /fast yalnızca Priority Processing destekleyen OpenAI modellerinde kullanılabilir."
     status: "⚡ Priority Processing\n\nMevcut mod: `{mode}`\n\n_Kullanım:_ `/fast <normal|fast|status>`"
@@ -445,6 +450,9 @@ gateway:
     state_no: "Hayır"
     queued: "**Sıradaki devam:** {count}"
     platforms: "**Bağlı platformlar:** {platforms}"
+  discard:
+    nothing: "Atılacak bir şey yok: bu sohbette yeniden başlatmada kaybolan bir tur yok."
+    done: "🗑️ Kaybolan {count} tur atıldı; yeniden çalıştırılmadı. Kaydedilen mesajların şimdi yanıtlanacak."
   stop:
     stopped_pending: "⚡ Durduruldu. Ajan henüz başlamamıştı — bu oturuma devam edebilirsin."
     stopped: "⚡ Durduruldu. Bu oturuma devam edebilirsin."
@@ -687,6 +695,8 @@ gateway:
     generic_failed_with_hint: "⚠️ Bir sorun oluştu ve bu yanıtı tamamlayamadım.{hint}\nYeniden denemek için /retry, yeni bir konuşma başlatmak için /new kullanın. Teknik ayrıntılar gateway günlüğünde (`hermes logs`)."
     history_unavailable: "⚠️ Bu oturumun geçmişi geçici olarak kullanılamıyor; bu nedenle mesaj işlenmedi. Operatörden state.db dosyasını incelemesini isteyin, düzeldikten sonra yeniden gönderin. /reset komutunu yalnızca bilinçli olarak yeni bir konuşma başlatmak istiyorsanız kullanın."
     no_credentials: "⚠️ Yapay zekâ model servisine bağlanamadım; bu nedenle mesaj işlenmedi. Yeniden giriş yapmak için /login, farklı bir model seçmek için /model kullanın. Sorun sürerse ana makinede `hermes doctor` çalıştırın."
+    cron_session_read_only: "⚠️ Bu sohbet zamanlanmış bir göreve ait ve yalnızca o görevi çalıştırıyor, bu yüzden mesajın çalıştırılmadı. Göndermek için yeni bir sohbet başlat."
+    workspace_unavailable: "⚠️ Bu sohbetin çalışma klasörü artık yok ({path}), bu yüzden mesajın çalıştırılmadı. Klasörü yeniden oluştur ya da sohbeti başka bir klasöre taşı (CLI'da `/worktree new`, masaüstü uygulamasında “Move to project”), sonra mesajını yeniden gönder."
   skills:
     disabled: "**{name}** skill'i kurulu ancak devre dışı.\nEtkinleştirmek için: `hermes skills config`"
     not_installed: "**{name}** skill'i mevcut ancak kurulu değil.\nKurmak için: `hermes skills install {install_name}`"
@@ -1530,6 +1540,8 @@ slash:
     description: "Paylaşılan bir profil arşivini yeni profil olarak içe aktar"
   stop:
     description: "Çalışan tüm arka plan süreçlerini sonlandır"
+  discard:
+    description: "Hermes yeniden başlarken kaybolan bir turu at, böylece bu sohbetin kuyruğu yeniden çalışsın"
   pause:
     description: "Yeni işleri genel olarak duraklat (acil durdurma); '/pause off' devam ettirir"
   deny:
@@ -1683,6 +1695,21 @@ slash:
   quit:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
+  modern:
+    thought_for: "{seconds} sn düşündü"
+    thought: "Düşündü"
+    working: "Çalışıyor…"
+    preparing: "{what} hazırlanıyor…"
+    hint_steer: "yönlendir"
+    hint_queue: "sıraya al"
+    hint_interrupt: "kes"
+    hint_stop: "durdur"
+    hint_commands: "komutlar"
+    hint_files: "dosyalar"
+    hint_shell: "kabuk"
+    placeholder_busy_steer: "bu turu yönlendirmek için yazın · Tab sonrası için sıraya alır"
+    placeholder_busy_interrupt: "bu turu değiştirmek için yazın · Tab sonrası için sıraya alır"
+    placeholder_busy_queue: "bu turdan sonrası için mesaj sıraya almak üzere yazın"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Faturalandırma yüklenemedi"
@@ -1746,6 +1773,21 @@ cli:
     desc_auto_reload: "bakiyeniz azaldığında otomatik olarak doldur"
     choice_monthly_limit: "Aylık limit"
     desc_monthly_limit: "aylık harcama üst sınırını göster (salt okunur)"
+    # Keep going on credits (window plans only; the portal sends the setting only there)
+    keep_going_choice: "Kredilerle devam et"
+    keep_going_desc: "dahil kullanım bittiğinde kredilerinizi kullanın"
+    keep_going_on_line: "Kredilerle devam et: açık (dahil kullanım bittiğinde kredilerinizi kullanın)"
+    keep_going_off_line: "Kredilerle devam et: kapalı (Hermes sıfırlanmayı bekler)"
+    keep_going_confirm_title: "Kredilerle devam et?"
+    keep_going_confirm_body: "Dahil kullanım bittiğinde kredilerinizi kullanın. Kapalı: Hermes sıfırlanmayı bekler."
+    keep_going_turn_on: "Aç"
+    keep_going_keep_off_desc: "kapalı bırak: Hermes sıfırlanmayı bekler"
+    keep_going_is_on_title: "Kredilerle devam et açık"
+    keep_going_turn_off: "Kapat"
+    keep_going_turn_off_desc: "Hermes sıfırlanmayı bekler"
+    keep_going_leave_on: "Açık bırak"
+    keep_going_turned_on: "✅ Kredilerle devam et: açık. Dahil kullanım bittiğinde kredilerinizi kullanın."
+    keep_going_turned_off: "✅ Kredilerle devam et: kapalı. Hermes sıfırlanmayı bekler."
     cancelled: "İptal edildi."
     cancelled_yellow: "🟡 İptal edildi."
     cancelled_no_funds: "İptal edildi. Para eklenmedi."
@@ -2226,6 +2268,7 @@ cli:
     queue_heading: "Kuyruk · {count} sırada · /queue list{controls}"
     more_queued: "+{count} tane daha"
     transcript_unavailable: "Canlı transkript henüz kullanılamıyor."
+    control_pending: "Gönderiliyor…"
     steer_prompt: "Yönlendir: "
     roster_empty: "Canlı alt ajan veya arka plan süreci yok. Sonuçlar konuşmaya gelir."
     entry_gone: "Bu kayıt artık canlı değil."
@@ -2364,6 +2407,14 @@ cli:
     move_out_of_range: "Kuyruk taşıma aralık dışında. Geçerli boyut: {size}"
     moved: "Kuyruk öğesi {source}, {destination} konumuna taşındı."
     usage_add: "Kullanım: /queue add <prompt>"
+    gateway_refused: "Ağ geçidi bunu kuyruğa almadı: {error}. Hiçbir şey kuyruğa alınmadı; tur bitince yeniden gönderin."
+    submit_unknown: "Ağ geçidi yanıt vermedi ({error}); istem zaten kuyrukta olabilir. Yeniden göndermeden önce /queue list ile kontrol edin."
+    move_gateway_fifo: "Ağ geçidi kuyruktaki istemleri gönderilme sırasıyla çalıştırır; bunun yerine birini düzenleyin veya kaldırın."
+    remove_refused: "Kuyruk öğesi {index} kaldırılamadı: {error}"
+    edit_refused: "Kuyruk öğesi {index} düzenlenemedi: {error}"
+    already_started: "Kuyruk öğesi {index} zaten başladı; gönderildiği gibi çalışıyor."
+    started_stopped: "Kuyruk öğesi {index} zaten başlamıştı; ağ geçidi onu durdurdu."
+    change_unknown: "Ağ geçidi kuyruk öğesi {index} için yanıt vermedi ({error}); yeniden denemeden önce /queue list ile kontrol edin."
   reload:
     env_reloaded: ".env yeniden yüklendi ({count} değişken güncellendi)"
   steer:
@@ -3004,6 +3055,10 @@ cli:
       usage_disconnect: "disconnect   Varsayılan tarayıcı arka ucuna geri döner"
       usage_status: "status       Geçerli tarayıcı modunu gösterir"
       usage_use: "use [off]    Browser Use moduna (CLI 3.0) geçer / yerleşik araçlara döner"
+      remote_gateway: "/browser connect ve /browser disconnect ağ geçidi ana makinesindeki bir Chromium tarayıcısını yönetir — yalnızca yerel ağ geçidine bağlıyken kullanılabilir."
+      checking: "{url} adresinde Chromium tarayıcısı uzaktan hata ayıklaması denetleniyor..."
+      new_sessions_only: "Yeni oturumlara uygulanır — bu oturum mevcut araçlarını korur (/new ile yeni başlatın)."
+      status_gateway_default: "🌐 Tarayıcı: ağ geçidinin varsayılan tarayıcı arka ucu (canlı CDP bağlantısı yok)"
     heartbeat:
       label: "Heartbeat'ler"
       paused: "⏸ Heartbeat duraklatıldı: {prompt}"
@@ -3569,7 +3624,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo özel bir GitHub skill kaynağı ekler."
   t070: "hermes skills snapshot export setup.json skill yapılandırmanızı yedekleme veya paylaşım için dışa aktarır."
   t071: "hermes mcp add github --command npx komut satırından MCP sunucuları ekler."
-  t072: "hermes mcp serve Hermes'in kendisini diğer ajanlar için bir MCP sunucusu olarak çalıştırır."
+  t072: "hermes mcp-serve Hermes'in kendisini diğer ajanlar için bir MCP sunucusu olarak çalıştırır."
   t073: "hermes auth add kimlik bilgisi havuzu rotasyonu için birden fazla API anahtarı eklemenizi sağlar."
   t074: "hermes completion bash >> ~/.bashrc tüm komutlar ve profiller için tab tamamlamayı etkinleştirir."
   t075: "hermes logs -f agent.log dosyasını gerçek zamanlı izler. --level WARNING --since 1h çıktıyı filtreler."
@@ -3772,7 +3827,7 @@ tips:
   t272: "GPT-5 ve Codex, mesaj biçiminde 'system' yerine 'developer' rolünü kullanır."
   t273: "Görev başına yardımcı geçersiz kılmalar: config.yaml içinde auxiliary.vision.provider, auxiliary.compression.model vb."
   t274: "Yardımcı istemci 'main' değerini bir sağlayıcı takma adı olarak ele alır — gerçek birincil sağlayıcınız + modelinize çözümlenir."
-  t275: "hermes claw migrate --dry-run, OpenClaw geçişini hiçbir şey yazmadan önizler."
+  t275: "hermes import-agent openclaw --dry-run, OpenClaw geçişini hiçbir şey yazmadan önizler."
   t276: "Tırnaklı veya kaçış boşluklu yapıştırılan dosya yolları otomatik işlenir — elle temizlik gerekmez."
   t277: "Slash komutları büyük yapıştırma daraltmasını asla tetiklemez — büyük argümanlı /command doğru çalışır."
   t278: "Kesme modunda, ajan çalışırken yazılan slash komutları kesme mantığını atlar ve hemen çalışır."
@@ -3887,3 +3942,24 @@ tips:
     p09: "Bu hatayı ve nasıl düzeltileceğini açıkla"
     p10: "Bir hatırlatıcı kur veya yinelenen bir görev zamanla"
     p11: "Komutlara göz atmak için / yazın, palet için Ctrl+P"
+
+# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+plan_usage:
+  level_free: "Ücretsiz"
+  level_top_tier: "Büyük"
+  resets_in: "{duration} sonra sıfırlanır"
+  resets_soon: "yakında sıfırlanır"
+  limit_reached: "{name} limitine ulaşıldı · {resets}"
+  limit_day: "Günlük"
+  limit_week: "Haftalık"
+  limit_month: "Aylık"
+  limit_top_tier: "Aylık büyük model"
+  then_credits: "ücretli modeller artık kredilerini kullanıyor (kullandıkça öde)"
+  then_credits_large: "büyük modeller artık kredilerini kullanıyor (kullandıkça öde)"
+  then_wait: "o zamana kadar yalnızca ücretsiz modeller"
+  then_wait_large: "büyük modeller o zamana kadar duraklatıldı"
+  large_notice: "Büyük model: mesaj başına planından daha fazla kullanım harcar."
+  large_notice_credits: "Büyük model: mesaj başına daha fazla kredi harcar (kullandıkça öde)."
+  large_notice_limit: "Büyük model: {name} limitine ulaşıldı ({resets})."
+  large_notice_limit_stops: "Büyük model: {name} limitine ulaşıldı ({resets}), o zamana kadar çalışmaz."
+  large_notice_percent: "Büyük model: mesaj başına planından daha fazla kullanım harcar. Aylık büyük model limiti: {percent} kullanıldı."

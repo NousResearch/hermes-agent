@@ -167,6 +167,7 @@ gateway:
     full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
+    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug` parancsot az összefoglaló jelentés feltöltéséhez."
   deny:
     stale: "❌ Parancs elutasítva (a jóváhagyás elavult)."
     no_pending: "Nincs elutasítható függőben lévő parancs."
@@ -174,6 +175,10 @@ gateway:
     denied_plural: "❌ Parancsok elutasítva ({count} parancs)."
     denied_reason_singular: "❌ Parancs elutasítva. Indok továbbítva az ügynöknek: \"{reason}\""
     denied_reason_plural: "❌ Parancsok elutasítva ({count} parancs). Indok továbbítva az ügynöknek: \"{reason}\""
+
+  usage_limit:
+    picker_title: "Keep going on another model:"
+    switch_choice: "Switch to {model} ({note})"
   fast:
     not_supported: "⚡ A /fast csak olyan OpenAI modelleknél érhető el, amelyek támogatják a Priority Processinget."
     status: "⚡ Priority Processing\n\nJelenlegi mód: `{mode}`\n\n_Használat:_ `/fast <normal|fast|status>`"
@@ -448,6 +453,9 @@ gateway:
     state_no: "Nem"
     queued: "**Sorban álló folytatások:** {count}"
     platforms: "**Csatlakoztatott platformok:** {platforms}"
+  discard:
+    nothing: "Nincs mit elvetni: ebben a csevegésben nem veszett el kör újraindításkor."
+    done: "🗑️ {count} elveszett kör elvetve; nem futottak újra. A mentett üzeneteidre most válasz érkezik."
   stop:
     stopped_pending: "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."
     stopped: "⚡ Leállítva. Folytathatod ezt a munkamenetet."
@@ -697,6 +705,8 @@ gateway:
     generic_failed_with_hint: "⚠️ Hiba történt, és nem tudtam befejezni ezt a választ.{hint}\nPróbáld újra a /retry paranccsal, vagy kezdj új beszélgetést a /new paranccsal. A technikai részletek az átjáró naplójában vannak (`hermes logs`)."
     history_unavailable: "⚠️ Ennek a munkamenetnek az előzményei átmenetileg nem érhetők el, ezért ez az üzenet nem lett feldolgozva. Kérd meg az üzemeltetőt, hogy nézze meg a state.db fájlt, majd küldd el újra, amikor rendben van. A /reset parancsot csak akkor használd, ha szándékosan új beszélgetést akarsz kezdeni."
     no_credentials: "⚠️ Nem tudtam kapcsolódni az AI-modellszolgáltatáshoz, ezért ez az üzenet nem lett feldolgozva. Jelentkezz be újra a /login paranccsal, vagy válassz másik modellt a /model paranccsal. Ha továbbra is hibázik, futtasd a `hermes doctor` parancsot a gépen."
+    cron_session_read_only: "⚠️ Ez a csevegés egy ütemezett feladathoz tartozik, és csak azt futtatja, ezért az üzeneted nem futott le. Indíts új csevegést az elküldéséhez."
+    workspace_unavailable: "⚠️ Ennek a csevegésnek a munkamappája már nem létezik ({path}), ezért az üzeneted nem futott le. Hozd létre újra a mappát, vagy helyezd át a csevegést egy másikba (`/worktree new` a CLI-ben, „Move to project” az asztali alkalmazásban), majd küldd el újra az üzenetet."
   skills:
     disabled: "A(z) **{name}** skill telepítve van, de ki van kapcsolva.\nBekapcsolás: `hermes skills config`"
     not_installed: "A(z) **{name}** skill elérhető, de nincs telepítve.\nTelepítés: `hermes skills install {install_name}`"
@@ -1547,6 +1557,8 @@ slash:
     description: "Megosztott profilarchívum importálása új profilként"
   stop:
     description: "Minden futó háttérfolyamat leállítása"
+  discard:
+    description: "Egy Hermes újraindításakor elveszett kör elvetése, hogy a csevegés sora újra fusson"
   pause:
     description: "Új munka globális szüneteltetése (vészleállítás); a '/pause off' folytatja"
   deny:
@@ -1700,6 +1712,21 @@ slash:
   quit:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:
+  modern:
+    thought_for: "{seconds} mp-ig gondolkodott"
+    thought: "Gondolkodott"
+    working: "Dolgozik…"
+    preparing: "{what} előkészítése…"
+    hint_steer: "terelés"
+    hint_queue: "sorba"
+    hint_interrupt: "megszakítás"
+    hint_stop: "leállítás"
+    hint_commands: "parancsok"
+    hint_files: "fájlok"
+    hint_shell: "shell"
+    placeholder_busy_steer: "írj, hogy tereld ezt a kört · Tab sorba állítja utánra"
+    placeholder_busy_interrupt: "írj, hogy átirányítsd ezt a kört · Tab sorba állítja utánra"
+    placeholder_busy_queue: "írj, hogy üzenetet állíts sorba e kör utánra"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Nem sikerült betölteni a számlázást"
@@ -1763,6 +1790,21 @@ cli:
     desc_auto_reload: "automatikus feltöltés, ha az egyenleged alacsony"
     choice_monthly_limit: "Havi limit"
     desc_monthly_limit: "a havi költési limit megjelenítése (csak olvasható)"
+    # Keep going on credits (window plans only; the portal sends the setting only there)
+    keep_going_choice: "Folytatás kreditekkel"
+    keep_going_desc: "a kreditjeid használata, ha elfogy a csomagban foglalt használat"
+    keep_going_on_line: "Folytatás kreditekkel: be (a kreditjeid használata, ha elfogy a csomagban foglalt használat)"
+    keep_going_off_line: "Folytatás kreditekkel: ki (a Hermes megvárja a visszaállítást)"
+    keep_going_confirm_title: "Folytatás kreditekkel?"
+    keep_going_confirm_body: "A kreditjeid használata, ha elfogy a csomagban foglalt használat. Ki: a Hermes megvárja a visszaállítást."
+    keep_going_turn_on: "Bekapcsolás"
+    keep_going_keep_off_desc: "maradjon kikapcsolva: a Hermes megvárja a visszaállítást"
+    keep_going_is_on_title: "A Folytatás kreditekkel be van kapcsolva"
+    keep_going_turn_off: "Kikapcsolás"
+    keep_going_turn_off_desc: "a Hermes megvárja a visszaállítást"
+    keep_going_leave_on: "Maradjon bekapcsolva"
+    keep_going_turned_on: "✅ Folytatás kreditekkel: be. A kreditjeid használata, ha elfogy a csomagban foglalt használat."
+    keep_going_turned_off: "✅ Folytatás kreditekkel: ki. A Hermes megvárja a visszaállítást."
     cancelled: "Megszakítva."
     cancelled_yellow: "🟡 Megszakítva."
     cancelled_no_funds: "Megszakítva. Nem történt feltöltés."
@@ -2243,6 +2285,7 @@ cli:
     queue_heading: "Sor · {count} sorban · /queue list{controls}"
     more_queued: "+{count} további"
     transcript_unavailable: "Élő átirat még nem érhető el."
+    control_pending: "Küldés…"
     steer_prompt: "Irányítás: "
     roster_empty: "Nincs élő alügynök vagy háttérfolyamat. Az eredmények a beszélgetésben érkeznek."
     entry_gone: "Ez a bejegyzés már nem élő."
@@ -2381,6 +2424,14 @@ cli:
     move_out_of_range: "A mozgatás kívül esik a soron. Jelenlegi méret: {size}"
     moved: "A(z) {source}. sorelem áthelyezve ide: {destination}."
     usage_add: "Használat: /queue add <prompt>"
+    gateway_refused: "Az átjáró nem állította sorba: {error}. Semmi sem került sorba; küldd újra, amikor a kör véget ér."
+    submit_unknown: "Az átjáró nem válaszolt ({error}), így lehet, hogy a prompt már sorban van. Nézd meg a /queue list kimenetét, mielőtt újra elküldöd."
+    move_gateway_fifo: "Az átjáró a sorban álló promptokat küldési sorrendben futtatja; inkább szerkessz vagy távolíts el egyet."
+    remove_refused: "Nem sikerült eltávolítani a(z) {index}. sorelemet: {error}"
+    edit_refused: "Nem sikerült szerkeszteni a(z) {index}. sorelemet: {error}"
+    already_started: "A(z) {index}. sorelem már elindult; úgy fut, ahogy elküldték."
+    started_stopped: "A(z) {index}. sorelem már elindult; az átjáró leállította."
+    change_unknown: "Az átjáró nem válaszolt a(z) {index}. sorelemről ({error}); nézd meg a /queue list kimenetét, mielőtt újra próbálod."
   reload:
     env_reloaded: ".env újratöltve ({count} változó frissült)"
   steer:
@@ -3021,6 +3072,10 @@ cli:
       usage_disconnect: "disconnect   Visszaállás az alapértelmezett böngésző-háttérrendszerre"
       usage_status: "status       Jelenlegi böngészőmód megjelenítése"
       usage_use: "use [off]    Átváltás Browser Use módra (CLI 3.0) / vissza a beépített eszközökre"
+      remote_gateway: "A /browser connect és /browser disconnect egy Chromium böngészőt kezel az átjáró gépén — csak helyi átjáróval érhető el."
+      checking: "A Chromium böngésző távoli hibakeresésének ellenőrzése: {url}..."
+      new_sessions_only: "Új munkamenetekre vonatkozik — ez megtartja a jelenlegi eszközeit (/new újat indít)."
+      status_gateway_default: "🌐 Böngésző: az átjáró alapértelmezett böngésző-háttere (nincs élő CDP-kapcsolat)"
     heartbeat:
       label: "Szívverések"
       paused: "⏸ Szívverés szüneteltetve: {prompt}"
@@ -3586,7 +3641,7 @@ tips:
   t069: "A hermes skills tap add myorg/skills-repo egyedi GitHub skill-forrást ad hozzá."
   t070: "A hermes skills snapshot export setup.json exportálja a skill-konfigurációdat biztonsági mentéshez vagy megosztáshoz."
   t071: "A hermes mcp add github --command npx parancssorból ad hozzá MCP-szervereket."
-  t072: "A hermes mcp serve magát a Hermest futtatja MCP-szerverként más ügynökök számára."
+  t072: "A hermes mcp-serve magát a Hermest futtatja MCP-szerverként más ügynökök számára."
   t073: "A hermes auth add több API-kulcsot is felvehet a hitelesítőadat-készlet rotálásához."
   t074: "A hermes completion bash >> ~/.bashrc bekapcsolja a Tab-kiegészítést minden parancshoz és profilhoz."
   t075: "A hermes logs -f valós időben követi az agent.log fájlt. A --level WARNING --since 1h szűri a kimenetet."
@@ -3789,7 +3844,7 @@ tips:
   t272: "A GPT-5 és a Codex az üzenetformátumban 'system' helyett 'developer' szerepet használ."
   t273: "Feladatonkénti kiegészítő felülírások: auxiliary.vision.provider, auxiliary.compression.model stb. a config.yaml-ban."
   t274: "A kiegészítő kliens a 'main' értéket szolgáltató-aliasként kezeli — a tényleges elsődleges szolgáltatódra és modelledre oldja fel."
-  t275: "A hermes claw migrate --dry-run megmutatja az OpenClaw-migráció eredményét anélkül, hogy bármit írna."
+  t275: "A hermes import-agent openclaw --dry-run megmutatja az OpenClaw-migráció eredményét anélkül, hogy bármit írna."
   t276: "Az idézőjelekkel vagy escape-elt szóközökkel beillesztett fájlútvonalakat automatikusan kezeljük — nem kell kézzel tisztogatni."
   t277: "A slash-parancsok sosem váltják ki a nagy beillesztések összecsukását — a /command nagy argumentumokkal is helyesen működik."
   t278: "Megszakítás módban az ügynök futása közben beírt slash-parancsok megkerülik a megszakítási logikát, és azonnal lefutnak."
@@ -3904,3 +3959,24 @@ tips:
     p09: "Magyarázd el ezt a hibát, és hogyan javítsam"
     p10: "Állíts be emlékeztetőt, vagy ütemezz ismétlődő feladatot"
     p11: "Írj / jelet a parancsokhoz, vagy nyomj Ctrl+P-t a palettához"
+
+# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+plan_usage:
+  level_free: "Ingyenes"
+  level_top_tier: "Nagy"
+  resets_in: "visszaáll: {duration}"
+  resets_soon: "hamarosan visszaáll"
+  limit_reached: "Elérted a(z) {name} korlátot · {resets}"
+  limit_day: "napi"
+  limit_week: "heti"
+  limit_month: "havi"
+  limit_top_tier: "nagy modellekre vonatkozó havi"
+  then_credits: "a fizetős modellek most a kreditjeidet használják (használat alapú fizetés)"
+  then_credits_large: "a nagy modellek most a kreditjeidet használják (használat alapú fizetés)"
+  then_wait: "addig csak ingyenes modellek"
+  then_wait_large: "a nagy modellek addig szünetelnek"
+  large_notice: "Nagy modell: üzenetenként többet használ a csomagodból."
+  large_notice_credits: "Nagy modell: üzenetenként több kreditet használ (használat alapú fizetés)."
+  large_notice_limit: "Nagy modell: elérted a(z) {name} korlátot ({resets})."
+  large_notice_limit_stops: "Nagy modell: elérted a(z) {name} korlátot ({resets}), így addig nem fut."
+  large_notice_percent: "Nagy modell: üzenetenként többet használ a csomagodból. Nagy modellekre vonatkozó havi korlát: {percent} felhasználva."

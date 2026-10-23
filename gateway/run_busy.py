@@ -999,7 +999,7 @@ class GatewayBusySessionMixin:
     _COMMAND_HANDLER_ALIASES = {"bg": "_handle_background_command", "sethome": "_handle_set_home_command"}
     # Ordinary slash handlers shared by idle and busy dispatch.
     _PLAIN_COMMANDS = (
-        "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
+        "status", "context", "restart", "approve", "deny", "pause", "discard", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
         "commands", "profile", "login", "update", "version", "autoprune",
     )

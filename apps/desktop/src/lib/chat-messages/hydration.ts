@@ -566,7 +566,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     let pendingAbsorbedRows = 0
 
-    if (message.role === 'assistant') {
+    // A machine notice stored as an assistant row (the failed-turn boundary) is
+    // Hermes speaking: it must not join the tool-call reply it follows.
+    if (displayRole === 'assistant') {
       if (pendingToolParts.length) {
         if (!appendPartsToActiveAssistant(pendingToolParts, message.timestamp ?? pendingToolTimestamp)) {
           parts.unshift(...pendingToolParts)

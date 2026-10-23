@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
     share_hint: "請將這些連結分享給 Hermes 團隊以取得支援。"
     report_label: "報告"
+    local_refused: "`/debug local` 會把報告留在執行 Hermes 的機器上，因此無法在聊天中使用。傳送 `/debug` 可上傳摘要報告。"
   deny:
     stale: "❌ 指令已拒絕（批准已過期）。"
     no_pending: "沒有待拒絕的指令。"
@@ -171,6 +172,10 @@ gateway:
     denied_plural: "❌ 指令已拒絕（{count} 條指令）。"
     denied_reason_singular: "❌ 指令已拒絕。 已將原因轉達給代理: \"{reason}\""
     denied_reason_plural: "❌ 指令已拒絕（{count} 條指令）。 已將原因轉達給代理: \"{reason}\""
+
+  usage_limit:
+    picker_title: "Keep going on another model:"
+    switch_choice: "Switch to {model} ({note})"
   fast:
     not_supported: "⚡ /fast 僅適用於支援 Priority Processing 的 OpenAI 模型。"
     status: "⚡ Priority Processing\n\n目前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|status>`"
@@ -445,6 +450,9 @@ gateway:
     state_no: "否"
     queued: "**排隊中的後續：** {count}"
     platforms: "**已連線平台：** {platforms}"
+  discard:
+    nothing: "沒有可捨棄的內容：此聊天沒有在重新啟動時遺失的回合。"
+    done: "🗑️ 已捨棄 {count} 個遺失的回合；未重新執行。現在會回覆你已儲存的訊息。"
   stop:
     stopped_pending: "⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。"
     stopped: "⚡ 已停止。你可以繼續此工作階段。"
@@ -687,6 +695,8 @@ gateway:
     generic_failed_with_hint: "⚠️ 發生錯誤，我無法完成這則回覆。{hint}\n請使用 /retry 重試，或使用 /new 開始新的對話。技術細節請見閘道日誌（`hermes logs`）。"
     history_unavailable: "⚠️ 此工作階段的歷史紀錄暫時無法使用，因此這則訊息未被處理。請管理者檢查 state.db，恢復正常後再重新傳送。只有在你確實想開始新對話時才使用 /reset。"
     no_credentials: "⚠️ 我無法連上 AI 模型服務，因此這則訊息未被處理。請使用 /login 重新登入，或使用 /model 選擇其他模型。若持續失敗，請在主機上執行 `hermes doctor`。"
+    cron_session_read_only: "⚠️ 此聊天屬於一個排程工作，只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。"
+    workspace_unavailable: "⚠️ 此聊天的工作資料夾已不存在（{path}），因此你的訊息未被執行。請重新建立該資料夾，或將聊天移至其他資料夾（CLI 中使用 `/worktree new`，桌面應用程式中使用「Move to project」），然後再次傳送訊息。"
   skills:
     disabled: "**{name}** 技能已安裝但已停用。\n啟用方式：`hermes skills config`"
     not_installed: "**{name}** 技能可用但尚未安裝。\n安裝方式：`hermes skills install {install_name}`"
@@ -1530,6 +1540,8 @@ slash:
     description: "將分享的設定檔封存檔匯入為新設定檔"
   stop:
     description: "終止所有執行中的背景程序"
+  discard:
+    description: "捨棄 Hermes 重新啟動時遺失的回合，讓此聊天的佇列繼續執行"
   pause:
     description: "全域暫停新工作（緊急停止）；'/pause off' 恢復"
   deny:
@@ -1683,6 +1695,21 @@ slash:
   quit:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
+  modern:
+    thought_for: "思考了 {seconds} 秒"
+    thought: "思考"
+    working: "工作中…"
+    preparing: "正在準備 {what}…"
+    hint_steer: "引導"
+    hint_queue: "排隊"
+    hint_interrupt: "中斷"
+    hint_stop: "停止"
+    hint_commands: "指令"
+    hint_files: "檔案"
+    hint_shell: "終端"
+    placeholder_busy_steer: "輸入以引導本輪 · Tab 排到之後"
+    placeholder_busy_interrupt: "輸入以改變本輪方向 · Tab 排到之後"
+    placeholder_busy_queue: "輸入以排隊一則本輪結束後的訊息"
   billing:
     load_failed: "{label}：{error}"
     load_failed_label: "無法載入帳務資訊"
@@ -1746,6 +1773,21 @@ cli:
     desc_auto_reload: "餘額不足時自動補充"
     choice_monthly_limit: "每月上限"
     desc_monthly_limit: "顯示每月消費上限（唯讀）"
+    # Keep going on credits (window plans only; the portal sends the setting only there)
+    keep_going_choice: "用額度繼續"
+    keep_going_desc: "包含的用量用完後，使用你的額度"
+    keep_going_on_line: "用額度繼續：開啟（包含的用量用完後，使用你的額度）"
+    keep_going_off_line: "用額度繼續：關閉（Hermes 等待重設）"
+    keep_going_confirm_title: "用額度繼續？"
+    keep_going_confirm_body: "包含的用量用完後，使用你的額度。關閉時，Hermes 等待重設。"
+    keep_going_turn_on: "開啟"
+    keep_going_keep_off_desc: "保持關閉：Hermes 等待重設"
+    keep_going_is_on_title: "用額度繼續已開啟"
+    keep_going_turn_off: "關閉"
+    keep_going_turn_off_desc: "Hermes 等待重設"
+    keep_going_leave_on: "保持開啟"
+    keep_going_turned_on: "✅ 用額度繼續：開啟。包含的用量用完後，使用你的額度。"
+    keep_going_turned_off: "✅ 用額度繼續：關閉。Hermes 等待重設。"
     cancelled: "已取消。"
     cancelled_yellow: "🟡 已取消。"
     cancelled_no_funds: "已取消。未加值。"
@@ -2226,6 +2268,7 @@ cli:
     queue_heading: "佇列 · {count} 個排隊中 · /queue list{controls}"
     more_queued: "還有 {count} 個"
     transcript_unavailable: "即時逐字稿尚未可用。"
+    control_pending: "傳送中…"
     steer_prompt: "引導："
     roster_empty: "沒有進行中的子代理或背景程序。結果會出現在對話中。"
     entry_gone: "此項目已不再進行中。"
@@ -2364,6 +2407,14 @@ cli:
     move_out_of_range: "佇列移動超出範圍。目前佇列長度：{size}"
     moved: "已將佇列項目 {source} 移至 {destination}。"
     usage_add: "用法：/queue add <prompt>"
+    gateway_refused: "閘道未將其加入佇列：{error}。未加入任何內容；請在本輪結束後重新傳送。"
+    submit_unknown: "閘道未回應（{error}），提示可能已在佇列中。重新傳送前請先查看 /queue list。"
+    move_gateway_fifo: "閘道依傳送順序執行佇列中的提示；請改為編輯或刪除其中一則。"
+    remove_refused: "無法移除佇列項目 {index}：{error}"
+    edit_refused: "無法編輯佇列項目 {index}：{error}"
+    already_started: "佇列項目 {index} 已開始執行；將依原樣執行。"
+    started_stopped: "佇列項目 {index} 已開始執行；閘道已將其停止。"
+    change_unknown: "閘道未回應佇列項目 {index}（{error}）；請先查看 /queue list 再重試。"
   reload:
     env_reloaded: "已重新載入 .env（更新了 {count} 個變數）"
   steer:
@@ -3004,6 +3055,10 @@ cli:
       usage_disconnect: "disconnect   還原為預設瀏覽器後端"
       usage_status: "status       顯示目前的瀏覽器模式"
       usage_use: "use [off]    切換至 Browser Use 模式（CLI 3.0）／切回內建工具"
+      remote_gateway: "/browser connect 與 /browser disconnect 管理閘道主機上的 Chromium 系瀏覽器 — 僅在連線至本機閘道時可用。"
+      checking: "正在檢查 {url} 的 Chromium 系瀏覽器遠端偵錯..."
+      new_sessions_only: "套用於新工作階段 — 此工作階段保留目前工具（/new 開始新的）。"
+      status_gateway_default: "🌐 瀏覽器：閘道的預設瀏覽器後端（無即時 CDP 連線）"
     heartbeat:
       label: "心跳"
       paused: "⏸ 心跳已暫停：{prompt}"
@@ -3569,7 +3624,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo 會新增自訂的 GitHub 技能來源。"
   t070: "hermes skills snapshot export setup.json 會匯出你的技能設定，供備份或分享。"
   t071: "hermes mcp add github --command npx 可從命令列新增 MCP 伺服器。"
-  t072: "hermes mcp serve 會將 Hermes 本身作為 MCP 伺服器執行，供其他代理使用。"
+  t072: "hermes mcp-serve 會將 Hermes 本身作為 MCP 伺服器執行，供其他代理使用。"
   t073: "hermes auth add 讓你新增多個 API 金鑰，用於憑證池輪替。"
   t074: "hermes completion bash >> ~/.bashrc 會為所有指令與設定檔啟用 Tab 自動完成。"
   t075: "hermes logs -f 會即時追蹤 agent.log。--level WARNING --since 1h 可篩選輸出。"
@@ -3772,7 +3827,7 @@ tips:
   t272: "GPT-5 與 Codex 在訊息格式中使用 'developer' 角色，而非 'system'。"
   t273: "按任務覆寫輔助設定：config.yaml 中的 auxiliary.vision.provider、auxiliary.compression.model 等。"
   t274: "輔助客戶端把 'main' 視為提供方別名 — 會解析為你實際使用的主要提供方與模型。"
-  t275: "hermes claw migrate --dry-run 可預覽 OpenClaw 遷移，而不會寫入任何內容。"
+  t275: "hermes import-agent openclaw --dry-run 可預覽 OpenClaw 遷移，而不會寫入任何內容。"
   t276: "貼上帶有引號或跳脫空格的檔案路徑會自動處理 — 不需手動清理。"
   t277: "指令絕不會觸發大量貼上的收合 — 帶有大量參數的 /command 也能正常運作。"
   t278: "在中斷模式下，代理執行期間輸入的指令會繞過中斷邏輯並立即執行。"
@@ -3887,3 +3942,24 @@ tips:
     p09: "解釋這個錯誤以及該如何修復"
     p10: "設定提醒或排程一項定期任務"
     p11: "輸入 / 瀏覽指令，或按 Ctrl+P 開啟指令面板"
+
+# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+plan_usage:
+  level_free: "免費"
+  level_top_tier: "大"
+  resets_in: "{duration}後重設"
+  resets_soon: "即將重設"
+  limit_reached: "已達{name}上限 · {resets}"
+  limit_day: "每日"
+  limit_week: "每週"
+  limit_month: "每月"
+  limit_top_tier: "每月大型模型"
+  then_credits: "付費模型現在使用你的額度（按量付費）"
+  then_credits_large: "大型模型現在使用你的額度（按量付費）"
+  then_wait: "在此之前僅可使用免費模型"
+  then_wait_large: "在此之前大型模型已暫停"
+  large_notice: "大型模型：每則訊息消耗更多方案用量。"
+  large_notice_credits: "大型模型：每則訊息消耗更多額度（按量付費）。"
+  large_notice_limit: "大型模型：已達{name}上限（{resets}）。"
+  large_notice_limit_stops: "大型模型：已達{name}上限（{resets}），在此之前無法執行。"
+  large_notice_percent: "大型模型：每則訊息消耗更多方案用量。每月大型模型上限：已用 {percent}。"

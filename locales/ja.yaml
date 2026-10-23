@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
+    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug` を送信してください。"
   deny:
     stale: "❌ コマンドを拒否しました (承認は期限切れでした)。"
     no_pending: "拒否待ちのコマンドはありません。"
@@ -171,6 +172,10 @@ gateway:
     denied_plural: "❌ コマンドを拒否しました ({count} 件)。"
     denied_reason_singular: "❌ コマンドを拒否しました。 理由をエージェントに伝達しました: \"{reason}\""
     denied_reason_plural: "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
+
+  usage_limit:
+    picker_title: "別のモデルで続ける:"
+    switch_choice: "{model} に切り替え ({note})"
   fast:
     not_supported: "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"
     status: "⚡ Priority Processing\n\n現在のモード: `{mode}`\n\n_使い方:_ `/fast <normal|fast|status>`"
@@ -445,6 +450,9 @@ gateway:
     state_no: "いいえ"
     queued: "**キュー内の後続:** {count}"
     platforms: "**接続プラットフォーム:** {platforms}"
+  discard:
+    nothing: "破棄するものはありません: このチャットに再起動で失われたターンはありません。"
+    done: "🗑️ 失われたターンを {count} 件破棄しました。再実行はしていません。保存されたメッセージにこれから応答します。"
   stop:
     stopped_pending: "⚡ 停止しました。エージェントはまだ開始していません — このセッションを続行できます。"
     stopped: "⚡ 停止しました。このセッションを続行できます。"
@@ -687,6 +695,8 @@ gateway:
     generic_failed_with_hint: "⚠️ 問題が発生し、この返答を完了できませんでした。{hint}\n/retry で再試行するか、/new で新しい会話を始めてください。技術的な詳細はゲートウェイのログ (`hermes logs`) にあります。"
     history_unavailable: "⚠️ このセッションの履歴が一時的に利用できないため、このメッセージは処理されませんでした。運用者に state.db の確認を依頼し、正常になってから再送信してください。/reset は意図的に新しい会話を始めたい場合のみ使ってください。"
     no_credentials: "⚠️ AI モデルサービスに接続できなかったため、このメッセージは処理されませんでした。/login で再度サインインするか、/model で別のモデルを選んでください。失敗が続く場合は、ホストで `hermes doctor` を実行してください。"
+    cron_session_read_only: "⚠️ このチャットはスケジュールされたジョブ専用で、そのジョブしか実行しないため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。"
+    workspace_unavailable: "⚠️ このチャットの作業フォルダーが見つかりません（{path}）。そのためメッセージは実行されませんでした。フォルダーを作り直すか、チャットを別のフォルダーへ移動してから（CLI では `/worktree new`、デスクトップアプリでは「Move to project」）、もう一度送信してください。"
   skills:
     disabled: "**{name}** スキルはインストールされていますが無効です。\n有効化するには: `hermes skills config`"
     not_installed: "**{name}** スキルは利用可能ですがインストールされていません。\nインストールするには: `hermes skills install {install_name}`"
@@ -1530,6 +1540,8 @@ slash:
     description: "共有されたプロファイルアーカイブを新しいプロファイルとしてインポート"
   stop:
     description: "実行中のバックグラウンドプロセスをすべて終了"
+  discard:
+    description: "Hermes の再起動で失われたターンを破棄し、このチャットのキューを再開します"
   pause:
     description: "新しい作業を全体的に一時停止（緊急停止）。'/pause off' で再開"
   deny:
@@ -1683,6 +1695,21 @@ slash:
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:
+  modern:
+    thought_for: "{seconds}秒考えました"
+    thought: "考えました"
+    working: "作業中…"
+    preparing: "{what} を準備中…"
+    hint_steer: "誘導"
+    hint_queue: "キュー"
+    hint_interrupt: "中断"
+    hint_stop: "停止"
+    hint_commands: "コマンド"
+    hint_files: "ファイル"
+    hint_shell: "シェル"
+    placeholder_busy_steer: "入力してこのターンを誘導 · Tab で後にキュー"
+    placeholder_busy_interrupt: "入力してこのターンを切り替え · Tab で後にキュー"
+    placeholder_busy_queue: "入力してこのターンの後にメッセージをキュー"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "請求情報を読み込めませんでした"
@@ -1746,6 +1773,21 @@ cli:
     desc_auto_reload: "残高が少なくなったら自動的に補充"
     choice_monthly_limit: "月間上限"
     desc_monthly_limit: "月間支出上限を表示（読み取り専用）"
+    # Keep going on credits (window plans only; the portal sends the setting only there)
+    keep_going_choice: "クレジットで続行"
+    keep_going_desc: "含まれる利用量を使い切ったらクレジットを使う"
+    keep_going_on_line: "クレジットで続行: オン（含まれる利用量を使い切ったらクレジットを使う）"
+    keep_going_off_line: "クレジットで続行: オフ（Hermes はリセットを待ちます）"
+    keep_going_confirm_title: "クレジットで続行しますか？"
+    keep_going_confirm_body: "含まれる利用量を使い切ったらクレジットを使います。オフ: Hermes はリセットを待ちます。"
+    keep_going_turn_on: "オンにする"
+    keep_going_keep_off_desc: "オフのままにする: Hermes はリセットを待ちます"
+    keep_going_is_on_title: "クレジットで続行はオンです"
+    keep_going_turn_off: "オフにする"
+    keep_going_turn_off_desc: "Hermes はリセットを待ちます"
+    keep_going_leave_on: "オンのままにする"
+    keep_going_turned_on: "✅ クレジットで続行: オン。含まれる利用量を使い切ったらクレジットを使います。"
+    keep_going_turned_off: "✅ クレジットで続行: オフ。Hermes はリセットを待ちます。"
     cancelled: "キャンセルしました。"
     cancelled_yellow: "🟡 キャンセルしました。"
     cancelled_no_funds: "キャンセルしました。資金は追加されていません。"
@@ -2226,6 +2268,7 @@ cli:
     queue_heading: "キュー · {count} 件キュー待ち · /queue list{controls}"
     more_queued: "+{count} 件"
     transcript_unavailable: "ライブトランスクリプトはまだ利用できません。"
+    control_pending: "送信中…"
     steer_prompt: "ステア: "
     roster_empty: "稼働中のサブエージェントやバックグラウンドプロセスはありません。結果は会話内に届きます。"
     entry_gone: "この項目はすでに終了しています。"
@@ -2364,6 +2407,14 @@ cli:
     move_out_of_range: "キューの移動先が範囲外です。現在のサイズ: {size}"
     moved: "キュー項目 {source} を {destination} に移動しました。"
     usage_add: "使い方: /queue add <prompt>"
+    gateway_refused: "ゲートウェイはキューに追加しませんでした: {error}。何も追加されていません。ターン終了後に再送してください。"
+    submit_unknown: "ゲートウェイが応答しませんでした ({error})。プロンプトはすでにキューにある可能性があります。再送する前に /queue list を確認してください。"
+    move_gateway_fifo: "ゲートウェイはキュー内のプロンプトを送信順に実行します。代わりに編集または削除してください。"
+    remove_refused: "キュー項目 {index} を削除できませんでした: {error}"
+    edit_refused: "キュー項目 {index} を編集できませんでした: {error}"
+    already_started: "キュー項目 {index} はすでに開始しています。送信したとおりに実行されます。"
+    started_stopped: "キュー項目 {index} はすでに開始していたため、ゲートウェイが停止しました。"
+    change_unknown: "ゲートウェイからキュー項目 {index} の応答がありません ({error})。再試行する前に /queue list を確認してください。"
   reload:
     env_reloaded: ".env を再読み込みしました（{count} 件の変数を更新）"
   steer:
@@ -3004,6 +3055,10 @@ cli:
       usage_disconnect: "disconnect   デフォルトのブラウザバックエンドに戻します"
       usage_status: "status       現在のブラウザモードを表示します"
       usage_use: "use [off]    Browser Use モード (CLI 3.0) に切り替え / 組み込みツールに戻します"
+      remote_gateway: "/browser connect と /browser disconnect はゲートウェイホスト上の Chromium 系ブラウザーを管理します — ローカルゲートウェイ接続時のみ利用できます。"
+      checking: "{url} で Chromium 系ブラウザーのリモートデバッグを確認しています..."
+      new_sessions_only: "新しいセッションに適用されます — このセッションは現在のツールを維持します（/new で開始）。"
+      status_gateway_default: "🌐 ブラウザー: ゲートウェイの既定ブラウザーバックエンド（ライブ CDP 接続なし）"
     heartbeat:
       label: "ハートビート"
       paused: "⏸ ハートビートを一時停止しました: {prompt}"
@@ -3569,7 +3624,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo はカスタムの GitHub スキルソースを追加します。"
   t070: "hermes skills snapshot export setup.json はバックアップや共有のためにスキル設定をエクスポートします。"
   t071: "hermes mcp add github --command npx はコマンドラインから MCP サーバーを追加します。"
-  t072: "hermes mcp serve は Hermes 自体を他のエージェント向けの MCP サーバーとして実行します。"
+  t072: "hermes mcp-serve は Hermes 自体を他のエージェント向けの MCP サーバーとして実行します。"
   t073: "hermes auth add で認証情報プールのローテーション用に複数の API キーを追加できます。"
   t074: "hermes completion bash >> ~/.bashrc はすべてのコマンドとプロファイルの Tab 補完を有効にします。"
   t075: "hermes logs -f は agent.log をリアルタイムで追跡します。--level WARNING --since 1h で出力を絞り込めます。"
@@ -3772,7 +3827,7 @@ tips:
   t272: "GPT-5 と Codex はメッセージ形式で 'system' の代わりに 'developer' ロールを使います。"
   t273: "タスクごとの補助モデルの上書き: config.yaml の auxiliary.vision.provider、auxiliary.compression.model など。"
   t274: "補助クライアントは 'main' をプロバイダーの別名として扱い、実際のプライマリプロバイダーとモデルに解決します。"
-  t275: "hermes claw migrate --dry-run は、何も書き込まずに OpenClaw からの移行内容をプレビューします。"
+  t275: "hermes import-agent openclaw --dry-run は、何も書き込まずに OpenClaw からの移行内容をプレビューします。"
   t276: "引用符付きやスペースがエスケープされた状態で貼り付けたファイルパスは自動的に処理されるため、手で整える必要はありません。"
   t277: "スラッシュコマンドは大量貼り付けの折りたたみを引き起こしません。大きな引数を付けた /command も正しく動作します。"
   t278: "中断モードでは、エージェント実行中に入力したスラッシュコマンドは中断ロジックを経由せず即座に実行されます。"
@@ -3887,3 +3942,24 @@ tips:
     p09: "このエラーの意味と修正方法を説明して"
     p10: "リマインダーを設定するか、定期タスクをスケジュールして"
     p11: "/ でコマンドを参照、Ctrl+P でパレットを開けます"
+
+# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+plan_usage:
+  level_free: "無料"
+  level_top_tier: "大"
+  resets_in: "{duration}後にリセット"
+  resets_soon: "まもなくリセット"
+  limit_reached: "{name}の上限に達しました · {resets}"
+  limit_day: "1日"
+  limit_week: "週間"
+  limit_month: "月間"
+  limit_top_tier: "大型モデルの月間"
+  then_credits: "有料モデルはクレジットを使用中（従量課金）"
+  then_credits_large: "大型モデルはクレジットを使用中（従量課金）"
+  then_wait: "それまでは無料モデルのみ"
+  then_wait_large: "それまで大型モデルは一時停止"
+  large_notice: "大型モデル：1メッセージあたりプランの利用量を多く消費します。"
+  large_notice_credits: "大型モデル：1メッセージあたりクレジットを多く消費します（従量課金）。"
+  large_notice_limit: "大型モデル：{name}の上限に達しました（{resets}）。"
+  large_notice_limit_stops: "大型モデル：{name}の上限に達しました（{resets}）。それまで実行できません。"
+  large_notice_percent: "大型モデル：1メッセージあたりプランの利用量を多く消費します。大型モデルの月間上限：{percent} 使用。"

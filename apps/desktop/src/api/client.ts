@@ -327,6 +327,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     })
   }
 
+  protected override isDesktopLocal(): boolean {
+    return this.canonical
+  }
+
   override async connect(wsUrl: string): Promise<void> {
     this.connectionGeneration++
     this.canonical = new URL(wsUrl).searchParams.has('native_dial')
@@ -413,6 +417,12 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // The attach may have identified the named launch profile behind an
     // implicit route. Its revision and generation are cached under that owner.
     params = this.routeCanonicalParams(method, params)
+
+    // Answered locally only once the owner's route is known: a named launch profile's
+    // retained rewind is keyed under its name, which a redial forgets until the attach.
+    const local = this.protocol.localAnswer(method, params)
+
+    if (local) { return local as T }
 
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)

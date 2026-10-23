@@ -317,6 +317,13 @@ declare global {
         filters?: Array<{ extensions: string[]; name: string }>
         title?: string
       }) => Promise<null | string>
+      /** Save dialog + main-process write of renderer-supplied text (/save; the gateway may be remote). */
+      saveTextFileAs?: (request: {
+        content: string
+        defaultPath?: string
+        filters?: Array<{ extensions: string[]; name: string }>
+        title?: string
+      }) => Promise<{ canceled?: boolean; path?: string; saved: boolean }>
       writeClipboard: (text: string) => Promise<boolean>
       readClipboard: () => Promise<string>
       saveGatewayFile?: (payload: {
@@ -892,6 +899,9 @@ export interface DesktopUpdateStatus {
   aheadOfRelease?: boolean
   /** Source stable: the checkout already contains the release, so installing it moves back. */
   rollback?: boolean
+  /** Source stable: `hermes update` would refuse the release (it predates the gateway runtime these
+   *  session stores use), so it is held instead of offered. */
+  held?: 'downgrade'
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

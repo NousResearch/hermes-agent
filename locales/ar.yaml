@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
+    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug` لرفع التقرير الموجز."
   deny:
     stale: "❌ رُفض الأمر (الموافقة كانت قديمة)."
     no_pending: "لا يوجد أمر معلّق لرفضه."
@@ -171,6 +172,10 @@ gateway:
     denied_plural: "❌ رُفضت الأوامر ({count} أوامر)."
     denied_reason_singular: "❌ رُفض الأمر. السبب المُبلّغ للوكيل: \"{reason}\""
     denied_reason_plural: "❌ رُفضت الأوامر ({count} أوامر). السبب المُبلّغ للوكيل: \"{reason}\""
+
+  usage_limit:
+    picker_title: "Keep going on another model:"
+    switch_choice: "Switch to {model} ({note})"
   fast:
     not_supported: "⚡ /fast متاح فقط لنماذج OpenAI التي تدعم المعالجة ذات الأولوية."
     status: "⚡ المعالجة ذات الأولوية\n\nالوضع الحالي: `{mode}`\n\n_الاستخدام:_ `/fast <normal|fast|status>`"
@@ -445,6 +450,9 @@ gateway:
     state_no: "لا"
     queued: "**المتابعات في الطابور:** {count}"
     platforms: "**المنصّات المتصلة:** {platforms}"
+  discard:
+    nothing: "لا شيء لتجاهله: لا توجد في هذه المحادثة جولة فُقدت أثناء إعادة التشغيل."
+    done: "🗑️ تم تجاهل {count} جولة مفقودة؛ لم تُعد تشغيلها. سيتم الرد على رسائلك المحفوظة الآن."
   stop:
     stopped_pending: "⚡ تم الإيقاف. لم يكن الوكيل قد بدأ بعد — يمكنك متابعة هذه الجلسة."
     stopped: "⚡ تم الإيقاف. يمكنك متابعة هذه الجلسة."
@@ -687,6 +695,8 @@ gateway:
     generic_failed_with_hint: "⚠️ حدث خطأ ما ولم أستطع إكمال هذا الرد.{hint}\nاستخدم /retry لإعادة المحاولة، أو /new لبدء محادثة جديدة. التفاصيل التقنية في سجل البوّابة (`hermes logs`)."
     history_unavailable: "⚠️ سجل هذه الجلسة غير متاح مؤقتًا، لذا لم تُعالج هذه الرسالة. اطلب من المشغّل فحص state.db، ثم أعد الإرسال بعد أن يعود سليمًا. استخدم /reset فقط إن كنت تريد فعلًا بدء محادثة جديدة."
     no_credentials: "⚠️ تعذّر الاتصال بخدمة نموذج الذكاء الاصطناعي، لذا لم تُعالج هذه الرسالة. استخدم /login لتسجيل الدخول مجددًا، أو /model لاختيار نموذج آخر. إن استمرّ الفشل، شغّل `hermes doctor` على المضيف."
+    cron_session_read_only: "⚠️ هذه المحادثة تابعة لمهمة مجدولة ولا تشغّل سوى تلك المهمة، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها."
+    workspace_unavailable: "⚠️ لم يعد مجلد عمل هذه المحادثة موجوداً ({path})، لذا لم تُنفَّذ رسالتك. أعد إنشاء المجلد، أو انقل المحادثة إلى مجلد آخر (`/worktree new` في واجهة سطر الأوامر، أو «Move to project» في تطبيق سطح المكتب)، ثم أرسل رسالتك مجدداً."
   skills:
     disabled: "مهارة **{name}** مثبّتة لكنها معطّلة.\nفعّلها بـ: `hermes skills config`"
     not_installed: "مهارة **{name}** متاحة لكنها غير مثبّتة.\nثبّتها بـ: `hermes skills install {install_name}`"
@@ -1530,6 +1540,8 @@ slash:
     description: "استيراد أرشيف ملف تعريفي مشترك كملف تعريفي جديد"
   stop:
     description: "إنهاء كل العمليات قيد التشغيل في الخلفية"
+  discard:
+    description: "تجاهل جولة فُقدت عند إعادة تشغيل Hermes لتستأنف قائمة انتظار هذه المحادثة"
   pause:
     description: "إيقاف الأعمال الجديدة مؤقتًا على مستوى النظام (إيقاف طارئ)؛ '/pause off' يستأنفها"
   deny:
@@ -1683,6 +1695,21 @@ slash:
   quit:
     description: "الخروج من واجهة سطر الأوامر (استخدم --delete لحذف سجل الجلسة أيضًا)"
 cli:
+  modern:
+    thought_for: "فكّر لمدة {seconds} ث"
+    thought: "فكّر"
+    working: "يعمل…"
+    preparing: "جارٍ تحضير {what}…"
+    hint_steer: "توجيه"
+    hint_queue: "إضافة للطابور"
+    hint_interrupt: "مقاطعة"
+    hint_stop: "إيقاف"
+    hint_commands: "الأوامر"
+    hint_files: "الملفات"
+    hint_shell: "الطرفية"
+    placeholder_busy_steer: "اكتب لتوجيه هذه الجولة · Tab يضيفها للطابور لما بعد"
+    placeholder_busy_interrupt: "اكتب لإعادة توجيه هذه الجولة · Tab يضيفها للطابور لما بعد"
+    placeholder_busy_queue: "اكتب لإضافة رسالة إلى الطابور بعد هذه الجولة"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "تعذّر تحميل الفوترة"
@@ -1746,6 +1773,21 @@ cli:
     desc_auto_reload: "أعد التعبئة تلقائيًا عند انخفاض رصيدك"
     choice_monthly_limit: "الحد الشهري"
     desc_monthly_limit: "عرض سقف الإنفاق الشهري (للقراءة فقط)"
+    # Keep going on credits (window plans only; the portal sends the setting only there)
+    keep_going_choice: "الاستمرار بالرصيد"
+    keep_going_desc: "استخدام رصيدك عند نفاد الاستخدام المضمّن"
+    keep_going_on_line: "الاستمرار بالرصيد: مفعّل (استخدام رصيدك عند نفاد الاستخدام المضمّن)"
+    keep_going_off_line: "الاستمرار بالرصيد: معطّل (ينتظر Hermes إعادة التعيين)"
+    keep_going_confirm_title: "الاستمرار بالرصيد؟"
+    keep_going_confirm_body: "استخدم رصيدك عند نفاد الاستخدام المضمّن. عند الإيقاف: ينتظر Hermes إعادة التعيين."
+    keep_going_turn_on: "تفعيل"
+    keep_going_keep_off_desc: "إبقاؤه معطّلًا: ينتظر Hermes إعادة التعيين"
+    keep_going_is_on_title: "الاستمرار بالرصيد مفعّل"
+    keep_going_turn_off: "إيقافه"
+    keep_going_turn_off_desc: "ينتظر Hermes إعادة التعيين"
+    keep_going_leave_on: "إبقاؤه مفعّلًا"
+    keep_going_turned_on: "✅ الاستمرار بالرصيد: مفعّل. استخدم رصيدك عند نفاد الاستخدام المضمّن."
+    keep_going_turned_off: "✅ الاستمرار بالرصيد: معطّل. ينتظر Hermes إعادة التعيين."
     cancelled: "أُلغي."
     cancelled_yellow: "🟡 أُلغي."
     cancelled_no_funds: "أُلغي. لم تُضَف أي أموال."
@@ -2226,6 +2268,7 @@ cli:
     queue_heading: "قائمة الانتظار · {count} في الانتظار · /queue list{controls}"
     more_queued: "+{count} أخرى"
     transcript_unavailable: "النص المباشر غير متاح بعد."
+    control_pending: "جارٍ الإرسال…"
     steer_prompt: "توجيه: "
     roster_empty: "لا وكلاء فرعيين نشطين ولا عمليات في الخلفية. تصل النتائج في المحادثة."
     entry_gone: "هذا العنصر لم يعد نشطًا."
@@ -2364,6 +2407,14 @@ cli:
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"
     moved: "نُقل عنصر قائمة الانتظار من {source} إلى {destination}."
     usage_add: "الاستخدام: /queue add <prompt>"
+    gateway_refused: "لم تضعه البوابة في الطابور: {error}. لم يُضف شيء؛ أرسله مرة أخرى عند انتهاء الدور."
+    submit_unknown: "لم تُجب البوابة ({error})، لذا قد تكون الرسالة في الطابور بالفعل. راجع /queue list قبل إرسالها مجددًا."
+    move_gateway_fifo: "تشغّل البوابة المطالبات في الطابور بترتيب إرسالها؛ عدّل واحدة أو احذفها بدلاً من ذلك."
+    remove_refused: "تعذّرت إزالة عنصر الطابور {index}: {error}"
+    edit_refused: "تعذّر تعديل عنصر الطابور {index}: {error}"
+    already_started: "بدأ عنصر الطابور {index} بالفعل؛ سيُنفَّذ كما أُرسل."
+    started_stopped: "كان عنصر الطابور {index} قد بدأ بالفعل؛ أوقفته البوابة."
+    change_unknown: "لم تُجب البوابة بشأن عنصر الطابور {index} ({error})؛ راجع /queue list قبل المحاولة مجددًا."
   reload:
     env_reloaded: "أُعيد تحميل .env (تم تحديث {count} متغيّر)"
   steer:
@@ -3004,6 +3055,10 @@ cli:
       usage_disconnect: "disconnect   الرجوع إلى الواجهة الخلفية الافتراضية للمتصفح"
       usage_status: "status       عرض وضع المتصفح الحالي"
       usage_use: "use [off]    التبديل إلى وضع Browser Use (CLI 3.0) / الرجوع إلى الأدوات المضمّنة"
+      remote_gateway: "‏/browser connect و /browser disconnect يديران متصفحًا من عائلة Chromium على مضيف البوابة — متاح فقط عند الاتصال ببوابة محلية."
+      checking: "جارٍ التحقق من التصحيح عن بُعد لمتصفح Chromium على {url}..."
+      new_sessions_only: "ينطبق على الجلسات الجديدة — تحتفظ هذه الجلسة بأدواتها الحالية (‏/new لبدء جلسة)."
+      status_gateway_default: "🌐 المتصفح: الواجهة الافتراضية لمتصفح البوابة (لا يوجد اتصال CDP مباشر)"
     heartbeat:
       label: "النبضات"
       paused: "⏸ تم إيقاف النبض مؤقتًا: {prompt}"
@@ -3569,7 +3624,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo يضيف مصدر مهارات مخصصًا من GitHub."
   t070: "hermes skills snapshot export setup.json يصدّر إعدادات مهاراتك للنسخ الاحتياطي أو المشاركة."
   t071: "hermes mcp add github --command npx يضيف خوادم MCP من سطر الأوامر."
-  t072: "hermes mcp serve يشغّل Hermes نفسه كخادم MCP لوكلاء آخرين."
+  t072: "hermes mcp-serve يشغّل Hermes نفسه كخادم MCP لوكلاء آخرين."
   t073: "hermes auth add يتيح لك إضافة عدة مفاتيح API للتناوب ضمن مجموعة بيانات الاعتماد."
   t074: "hermes completion bash >> ~/.bashrc يفعّل الإكمال بمفتاح Tab لجميع الأوامر والملفات التعريفية."
   t075: "hermes logs -f يتابع agent.log في الوقت الفعلي. و--level WARNING --since 1h يصفّي المخرجات."
@@ -3772,7 +3827,7 @@ tips:
   t272: "تستخدم نماذج GPT-5 وCodex الدور 'developer' بدلًا من 'system' في صيغة الرسائل."
   t273: "تجاوزات مساعدة لكل مهمة: auxiliary.vision.provider وauxiliary.compression.model وغيرها في config.yaml."
   t274: "يعامل العميل المساعد 'main' كاسم بديل للمزوّد — يُحلّ إلى مزوّدك الأساسي الفعلي ونموذجه."
-  t275: "يعرض hermes claw migrate --dry-run معاينة لترحيل OpenClaw دون كتابة أي شيء."
+  t275: "يعرض hermes import-agent openclaw --dry-run معاينة لترحيل OpenClaw دون كتابة أي شيء."
   t276: "تُعالج مسارات الملفات الملصقة بعلامات اقتباس أو مسافات مهرّبة تلقائيًا — دون تنظيف يدوي."
   t277: "لا تُطلق أوامر الشرطة المائلة أبدًا طيّ اللصق الكبير — يعمل /command مع الوسائط الكبيرة بشكل صحيح."
   t278: "في وضع القطع، تتجاوز أوامر الشرطة المائلة المكتوبة أثناء تنفيذ الوكيل منطق القطع وتعمل فورًا."
@@ -3887,3 +3942,24 @@ tips:
     p09: "اشرح هذا الخطأ وكيفية إصلاحه"
     p10: "اضبط تذكيرًا أو جدولة مهمة متكررة"
     p11: "اكتب / لاستعراض الأوامر، أو Ctrl+P للوحة الأوامر"
+
+# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+plan_usage:
+  level_free: "مجاني"
+  level_top_tier: "كبير"
+  resets_in: "يُعاد التعيين خلال {duration}"
+  resets_soon: "يُعاد التعيين قريبًا"
+  limit_reached: "تم بلوغ الحد {name} · {resets}"
+  limit_day: "اليومي"
+  limit_week: "الأسبوعي"
+  limit_month: "الشهري"
+  limit_top_tier: "الشهري للنماذج الكبيرة"
+  then_credits: "النماذج المدفوعة تستخدم رصيدك الآن (الدفع حسب الاستخدام)"
+  then_credits_large: "النماذج الكبيرة تستخدم رصيدك الآن (الدفع حسب الاستخدام)"
+  then_wait: "النماذج المجانية فقط حتى ذلك الحين"
+  then_wait_large: "النماذج الكبيرة متوقفة مؤقتًا حتى ذلك الحين"
+  large_notice: "نموذج كبير: يستهلك المزيد من استخدام خطتك لكل رسالة."
+  large_notice_credits: "نموذج كبير: يستهلك المزيد من الرصيد لكل رسالة (الدفع حسب الاستخدام)."
+  large_notice_limit: "نموذج كبير: تم بلوغ حدك {name} ({resets})."
+  large_notice_limit_stops: "نموذج كبير: تم بلوغ حدك {name} ({resets})، لذا لن يعمل حتى ذلك الحين."
+  large_notice_percent: "نموذج كبير: يستهلك المزيد من استخدام خطتك لكل رسالة. الحد الشهري للنماذج الكبيرة: {percent} مستخدم."

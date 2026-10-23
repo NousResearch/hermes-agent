@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
+    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug`를 보내세요."
   deny:
     stale: "❌ 명령이 거부되었습니다 (승인이 만료됨)."
     no_pending: "거부 대기 중인 명령이 없습니다."
@@ -171,6 +172,10 @@ gateway:
     denied_plural: "❌ 명령이 거부되었습니다 ({count}개)."
     denied_reason_singular: "❌ 명령이 거부되었습니다. 사유를 에이전트에 전달함: \"{reason}\""
     denied_reason_plural: "❌ 명령이 거부되었습니다 ({count}개). 사유를 에이전트에 전달함: \"{reason}\""
+
+  usage_limit:
+    picker_title: "Keep going on another model:"
+    switch_choice: "Switch to {model} ({note})"
   fast:
     not_supported: "⚡ /fast는 Priority Processing을 지원하는 OpenAI 모델에서만 사용할 수 있습니다."
     status: "⚡ Priority Processing\n\n현재 모드: `{mode}`\n\n_사용법:_ `/fast <normal|fast|status>`"
@@ -445,6 +450,9 @@ gateway:
     state_no: "아니오"
     queued: "**대기 중인 후속 작업:** {count}"
     platforms: "**연결된 플랫폼:** {platforms}"
+  discard:
+    nothing: "버릴 것이 없습니다: 이 채팅에는 재시작으로 손실된 턴이 없습니다."
+    done: "🗑️ 손실된 턴 {count}개를 버렸습니다. 다시 실행하지 않았습니다. 저장된 메시지에 이제 응답합니다."
   stop:
     stopped_pending: "⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다."
     stopped: "⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다."
@@ -687,6 +695,8 @@ gateway:
     generic_failed_with_hint: "⚠️ 문제가 발생해서 이 응답을 끝내지 못했어요.{hint}\n/retry로 다시 시도하거나, /new로 새 대화를 시작하세요. 기술적인 세부 정보는 게이트웨이 로그(`hermes logs`)에 있어요."
     history_unavailable: "⚠️ 이 세션의 기록을 일시적으로 사용할 수 없어서 이 메시지는 처리되지 않았어요. 운영자에게 state.db를 점검해 달라고 요청한 뒤, 정상화되면 다시 보내 주세요. 의도적으로 새 대화를 시작하려는 경우에만 /reset을 사용하세요."
     no_credentials: "⚠️ AI 모델 서비스에 연결할 수 없어서 이 메시지는 처리되지 않았어요. /login으로 다시 로그인하거나, /model로 다른 모델을 선택하세요. 계속 실패하면 호스트에서 `hermes doctor`를 실행하세요."
+    cron_session_read_only: "⚠️ 이 채팅은 예약된 작업 전용이며 그 작업만 실행하므로 메시지가 실행되지 않았습니다. 보내려면 새 채팅을 시작하세요."
+    workspace_unavailable: "⚠️ 이 채팅의 작업 폴더가 더 이상 없습니다({path}). 그래서 메시지가 실행되지 않았습니다. 폴더를 다시 만들거나 채팅을 다른 폴더로 옮긴 뒤(CLI에서는 `/worktree new`, 데스크톱 앱에서는 'Move to project') 메시지를 다시 보내세요."
   skills:
     disabled: "**{name}** 스킬은 설치되어 있지만 비활성화되어 있어요.\n활성화 방법: `hermes skills config`"
     not_installed: "**{name}** 스킬은 사용할 수 있지만 설치되어 있지 않아요.\n설치 방법: `hermes skills install {install_name}`"
@@ -1530,6 +1540,8 @@ slash:
     description: "공유된 프로필 아카이브를 새 프로필로 가져오기"
   stop:
     description: "실행 중인 모든 백그라운드 프로세스 종료"
+  discard:
+    description: "Hermes 재시작 중 손실된 턴을 버리고 이 채팅의 대기열을 다시 실행합니다"
   pause:
     description: "새 작업을 전체 일시 중지 (긴급 정지); '/pause off'로 재개"
   deny:
@@ -1683,6 +1695,21 @@ slash:
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:
+  modern:
+    thought_for: "{seconds}초 동안 생각함"
+    thought: "생각함"
+    working: "작업 중…"
+    preparing: "{what} 준비 중…"
+    hint_steer: "유도"
+    hint_queue: "대기열"
+    hint_interrupt: "중단"
+    hint_stop: "정지"
+    hint_commands: "명령어"
+    hint_files: "파일"
+    hint_shell: "셸"
+    placeholder_busy_steer: "입력해 이번 턴을 유도 · Tab 은 이후로 대기열에 추가"
+    placeholder_busy_interrupt: "입력해 이번 턴을 전환 · Tab 은 이후로 대기열에 추가"
+    placeholder_busy_queue: "입력해 이번 턴 이후 메시지를 대기열에 추가"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "결제 정보를 불러올 수 없어요"
@@ -1746,6 +1773,21 @@ cli:
     desc_auto_reload: "잔액이 부족해지면 자동으로 충전"
     choice_monthly_limit: "월 한도"
     desc_monthly_limit: "월 지출 상한 보기 (읽기 전용)"
+    # Keep going on credits (window plans only; the portal sends the setting only there)
+    keep_going_choice: "크레딧으로 계속하기"
+    keep_going_desc: "포함된 사용량이 소진되면 크레딧 사용"
+    keep_going_on_line: "크레딧으로 계속하기: 켜짐 (포함된 사용량이 소진되면 크레딧 사용)"
+    keep_going_off_line: "크레딧으로 계속하기: 꺼짐 (Hermes가 초기화를 기다립니다)"
+    keep_going_confirm_title: "크레딧으로 계속할까요?"
+    keep_going_confirm_body: "포함된 사용량이 소진되면 크레딧을 사용합니다. 꺼짐: Hermes가 초기화를 기다립니다."
+    keep_going_turn_on: "켜기"
+    keep_going_keep_off_desc: "꺼 두기: Hermes가 초기화를 기다립니다"
+    keep_going_is_on_title: "크레딧으로 계속하기가 켜져 있습니다"
+    keep_going_turn_off: "끄기"
+    keep_going_turn_off_desc: "Hermes가 초기화를 기다립니다"
+    keep_going_leave_on: "켜 두기"
+    keep_going_turned_on: "✅ 크레딧으로 계속하기: 켜짐. 포함된 사용량이 소진되면 크레딧을 사용합니다."
+    keep_going_turned_off: "✅ 크레딧으로 계속하기: 꺼짐. Hermes가 초기화를 기다립니다."
     cancelled: "취소되었어요."
     cancelled_yellow: "🟡 취소되었어요."
     cancelled_no_funds: "취소되었어요. 금액이 추가되지 않았어요."
@@ -2226,6 +2268,7 @@ cli:
     queue_heading: "대기열 · {count}개 대기 중 · /queue list{controls}"
     more_queued: "+{count}개 더"
     transcript_unavailable: "실시간 기록을 아직 볼 수 없어요."
+    control_pending: "보내는 중…"
     steer_prompt: "조정: "
     roster_empty: "진행 중인 서브에이전트나 백그라운드 프로세스가 없어요. 결과는 대화에 도착해요."
     entry_gone: "이 항목은 더 이상 진행 중이 아니에요."
@@ -2364,6 +2407,14 @@ cli:
     move_out_of_range: "대기열 이동 범위를 벗어났어요. 현재 크기: {size}"
     moved: "대기열 항목 {source}을(를) {destination}으로 이동했어요."
     usage_add: "사용법: /queue add <prompt>"
+    gateway_refused: "게이트웨이가 대기열에 넣지 않았습니다: {error}. 아무것도 대기열에 없습니다. 턴이 끝나면 다시 보내세요."
+    submit_unknown: "게이트웨이가 응답하지 않았습니다 ({error}). 프롬프트가 이미 대기열에 있을 수 있습니다. 다시 보내기 전에 /queue list를 확인하세요."
+    move_gateway_fifo: "게이트웨이는 대기 중인 프롬프트를 보낸 순서대로 실행합니다. 대신 편집하거나 삭제하세요."
+    remove_refused: "대기열 항목 {index}을(를) 제거할 수 없습니다: {error}"
+    edit_refused: "대기열 항목 {index}을(를) 편집할 수 없습니다: {error}"
+    already_started: "대기열 항목 {index}은(는) 이미 시작되었습니다. 보낸 그대로 실행됩니다."
+    started_stopped: "대기열 항목 {index}은(는) 이미 시작되어 게이트웨이가 중지했습니다."
+    change_unknown: "게이트웨이가 대기열 항목 {index}에 응답하지 않았습니다 ({error}). 다시 시도하기 전에 /queue list를 확인하세요."
   reload:
     env_reloaded: ".env를 다시 불러왔어요 (변수 {count}개 업데이트됨)"
   steer:
@@ -3004,6 +3055,10 @@ cli:
       usage_disconnect: "disconnect   기본 브라우저 백엔드로 되돌리기"
       usage_status: "status       현재 브라우저 모드 표시"
       usage_use: "use [off]    Browser Use 모드(CLI 3.0)로 전환 / 내장 도구로 복귀"
+      remote_gateway: "/browser connect 및 /browser disconnect는 게이트웨이 호스트의 Chromium 계열 브라우저를 관리합니다 — 로컬 게이트웨이에 연결된 경우에만 사용할 수 있습니다."
+      checking: "{url}에서 Chromium 계열 브라우저 원격 디버깅을 확인하는 중..."
+      new_sessions_only: "새 세션에 적용됩니다 — 이 세션은 현재 도구를 유지합니다 (/new로 새로 시작)."
+      status_gateway_default: "🌐 브라우저: 게이트웨이 기본 브라우저 백엔드 (실시간 CDP 연결 없음)"
     heartbeat:
       label: "하트비트"
       paused: "⏸ 하트비트 일시 중지됨: {prompt}"
@@ -3569,7 +3624,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo는 사용자 지정 GitHub 스킬 소스를 추가해요."
   t070: "hermes skills snapshot export setup.json은 백업이나 공유를 위해 스킬 설정을 내보내요."
   t071: "hermes mcp add github --command npx는 명령줄에서 MCP 서버를 추가해요."
-  t072: "hermes mcp serve는 Hermes 자체를 다른 에이전트를 위한 MCP 서버로 실행해요."
+  t072: "hermes mcp-serve는 Hermes 자체를 다른 에이전트를 위한 MCP 서버로 실행해요."
   t073: "hermes auth add로 자격 증명 풀 순환을 위한 API 키를 여러 개 추가할 수 있어요."
   t074: "hermes completion bash >> ~/.bashrc는 모든 명령과 프로필에 대한 탭 자동 완성을 활성화해요."
   t075: "hermes logs -f는 agent.log를 실시간으로 따라가요. --level WARNING --since 1h로 출력을 필터링해요."
@@ -3772,7 +3827,7 @@ tips:
   t272: "GPT-5와 Codex는 메시지 형식에서 'system' 대신 'developer' 역할을 사용해요."
   t273: "작업별 보조 모델 설정: config.yaml에서 auxiliary.vision.provider, auxiliary.compression.model 등을 지정할 수 있어요."
   t274: "보조 클라이언트는 'main'을 제공자 별칭으로 취급해요 — 실제 기본 제공자 + 모델로 해석돼요."
-  t275: "hermes claw migrate --dry-run은 아무것도 쓰지 않고 OpenClaw 마이그레이션 결과를 미리 보여줘요."
+  t275: "hermes import-agent openclaw --dry-run은 아무것도 쓰지 않고 OpenClaw 마이그레이션 결과를 미리 보여줘요."
   t276: "따옴표나 이스케이프된 공백이 포함된 채로 붙여 넣은 파일 경로는 자동으로 처리돼요 — 직접 정리할 필요가 없어요."
   t277: "슬래시 명령은 대량 붙여넣기 접기를 절대 일으키지 않아요 — 긴 인자를 가진 /command도 정상 동작해요."
   t278: "인터럽트 모드에서 에이전트 실행 중 입력한 슬래시 명령은 인터럽트 로직을 건너뛰고 즉시 실행돼요."
@@ -3887,3 +3942,24 @@ tips:
     p09: "이 오류를 설명하고 해결 방법을 알려 줘"
     p10: "리마인더를 설정하거나 반복 작업을 예약해 줘"
     p11: "/ 를 입력해 명령을 둘러보거나 Ctrl+P로 팔레트를 여세요"
+
+# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+plan_usage:
+  level_free: "무료"
+  level_top_tier: "대형"
+  resets_in: "{duration} 후 초기화"
+  resets_soon: "곧 초기화"
+  limit_reached: "{name} 한도에 도달했습니다 · {resets}"
+  limit_day: "일일"
+  limit_week: "주간"
+  limit_month: "월간"
+  limit_top_tier: "대형 모델 월간"
+  then_credits: "유료 모델은 이제 크레딧을 사용합니다(종량제)"
+  then_credits_large: "대형 모델은 이제 크레딧을 사용합니다(종량제)"
+  then_wait: "그때까지 무료 모델만 사용 가능"
+  then_wait_large: "그때까지 대형 모델 일시 중지"
+  large_notice: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다."
+  large_notice_credits: "대형 모델: 메시지당 크레딧을 더 많이 씁니다(종량제)."
+  large_notice_limit: "대형 모델: {name} 한도에 도달했습니다({resets})."
+  large_notice_limit_stops: "대형 모델: {name} 한도에 도달했습니다({resets}). 그때까지 실행되지 않습니다."
+  large_notice_percent: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다. 대형 모델 월간 한도: {percent} 사용."

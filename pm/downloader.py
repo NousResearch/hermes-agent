@@ -471,14 +471,14 @@ class Download:
 
     @staticmethod
     def _write_sidecar(side: Path, part: Path, covered: _Ranges, remote: _Remote, sha256: str) -> None:
-        from pm.filesystem import durable_write_bytes
+        from pm.filesystem import durable_write_bytes, retry_held
 
         # Workers flush before announcing coverage. Snapshot those ranges,
         # fsync the data, then atomically publish only that durable snapshot.
         with part.open("r+b") as stream:
             os.fsync(stream.fileno())
         record = {"total": remote.total, "etag": remote.etag, "sha256": sha256, "ranges": covered}
-        durable_write_bytes(side, json.dumps(record).encode("utf-8"))
+        retry_held(lambda: durable_write_bytes(side, json.dumps(record).encode("utf-8")))
 
     def _fetch_ranged(self, source: Source, remote: _Remote, tick) -> int:
         key = self._key(source.url)
@@ -511,7 +511,7 @@ class Download:
                     self.connections = 1
                     continue
                 raise next((error for error in errors if not is_transient(error)), errors[0])
-            written = sum(end - start for start, end in covered)
+            written = self._durable_done
             if written != remote.total:
                 raise http.client.IncompleteRead(b"", remote.total - written)
             return written
@@ -595,16 +595,20 @@ class Download:
                     finished = pending == 0
                     updated.clear()
                 now = time.monotonic()
-                written = sum(end - start for start, end in snapshot)
                 if now >= next_checkpoint:
                     if snapshot != checkpointed:
                         try:
                             self._write_sidecar(part.with_suffix(".ranges"), part, snapshot, remote, source.sha256)
+                        except OSError as exc:
+                            logging.getLogger(__name__).warning(
+                                "could not save download progress for %s; continuing: %s", source.dest.name, exc,
+                            )
                         except BaseException:
                             stop.set()
                             raise
-                        self._durable_done = written
-                        checkpointed = snapshot
+                        else:
+                            self._durable_done = sum(end - start for start, end in snapshot)
+                            checkpointed = snapshot
                     next_checkpoint = time.monotonic() + _CHECKPOINT_SECONDS
                 # Only the coordinator observes progress. Slow UI/worker IPC
                 # coalesces intermediate snapshots, never holds up range writes.

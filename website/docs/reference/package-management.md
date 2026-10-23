@@ -578,7 +578,8 @@ Each retry logs its cause, delay and consecutive failures without progress.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.
-Ranged downloads save durable progress every five seconds and after each attempt.
+Ranged downloads checkpoint every five seconds and after each attempt. A failed
+periodic checkpoint logs a warning and retries later; the final checkpoint is required.
 Servers without range support require a fresh stream. Pause interrupts backoff
 and preserves the partial download.
 

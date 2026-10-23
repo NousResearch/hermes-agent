@@ -69,7 +69,7 @@ def edge_block(exc: BaseException) -> str | None:
             "retry from another network")
 
 
-def _delay(exc: Exception, attempt: int, *, maximum: float | None = _MAX_DELAY) -> float:
+def _delay(exc: Exception, attempt: int) -> float:
     delay = float(2 ** attempt)
     if isinstance(exc, urllib.error.HTTPError):
         value = exc.headers.get("Retry-After", "") if exc.headers else ""
@@ -85,7 +85,7 @@ def _delay(exc: Exception, attempt: int, *, maximum: float | None = _MAX_DELAY) 
                 except (TypeError, ValueError, OverflowError):
                     retry_after = 0.0
             delay = max(delay, retry_after)
-    return delay if maximum is None else min(delay, maximum)
+    return delay
 
 
 def retry_network(
@@ -120,12 +120,10 @@ def retry_network(
             if failures_since_progress >= _ATTEMPTS:
                 raise
             delay = _delay(exc, backoff)
-            if progress is not None:
-                # Do not retry before Retry-After or wait hours for an embargo.
-                requested = _delay(exc, 0, maximum=None)
-                if requested > _MAX_RECOVERY_DELAY:
-                    raise
-                delay = max(delay, requested)
+            if progress is None:
+                delay = min(delay, _MAX_DELAY)
+            elif delay > _MAX_RECOVERY_DELAY:
+                raise
             backoff += 1
             logging.getLogger(__name__).warning(
                 "network request failed (%s); retrying in %gs (%d/%d failures without progress)",

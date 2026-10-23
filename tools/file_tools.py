@@ -425,7 +425,8 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str,
+                             max_chars: int | None = None) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -477,7 +478,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         result_dict["hint"] = (
             f"Use offset={end_line + 1} to continue reading "
             f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)")
-    max_chars = _get_max_read_chars()
+    max_chars = min(_get_max_read_chars(), max_chars) if max_chars is not None else _get_max_read_chars()
     if len(result_dict["content"]) > max_chars:
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
@@ -603,7 +604,8 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT,
+                   task_id: str = "default", max_chars: int | None = None) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
@@ -650,7 +652,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if block_error:
             return tool_error(block_error)
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, max_chars)
         if extracted is not None:
             return extracted
 
@@ -668,7 +670,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
         # Dedup: identical (path, offset, limit) on an unchanged file returns a
         # lightweight stub instead of re-sending the content.
-        dedup_key = (resolved_str, offset, limit)
+        # A batch's smaller per-item budget must not stub a later full-size read.
+        dedup_key = (resolved_str, offset, limit) if max_chars is None else (resolved_str, offset, limit, max_chars)
         with _read_tracker_lock:
             task_data = _task_data(task_id)
             cached_version = task_data["dedup"].get(dedup_key)
@@ -699,7 +702,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # redaction (skip the regex pass on huge content); truncate gracefully
         # with a next_offset instead of rejecting.
         file_size = result_dict.get("file_size", 0)
-        max_chars = _get_max_read_chars()
+        max_chars = min(_get_max_read_chars(), max_chars) if max_chars is not None else _get_max_read_chars()
         if len(result.content or "") > max_chars:
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
@@ -1160,33 +1163,45 @@ READ_FILE_SCHEMA = {
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read a file with line numbers and pagination. Use path for one file, or requests for 1-4 independent reads (each has path and optional offset/limit); do not mix modes. Batch reads cap each item at 16K characters and give next_offset to continue. Single reads cap at ~100K characters. Documents auto-extract (.ipynb, Office, PDF (text layer), OpenDocument, RTF, EPUB, SQLite). Cannot read images/binary — use vision_analyze.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000},
+            "requests": {"type": "array", "minItems": 1, "maxItems": 4,
+                         "description": "Independent file reads; partial failures are reported per item.",
+                         "items": {"type": "object", "properties": {
+                             "path": {"type": "string"},
+                             "offset": {"type": "integer", "minimum": 1},
+                             "limit": {"type": "integer", "minimum": 1, "maximum": 2000},
+                         }, "required": ["path"]}}
         },
-        "required": ["path"]
+        "required": []
     }
 }
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Write a whole file (path/content), or 1-4 independent files in one call (files: [{path,content}]); do not mix modes. For existing files read their full current content first. Every batch entry is validated before editing; writes are sequential, NOT atomic, and partial failures list each result. Use patch for targeted multi-file edits. Syntax checks run per edit. verified:true confirms the on-disk hash.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
             "content": {"type": "string", "description": "Complete content to write to the file"},
+            "files": {"type": "array", "minItems": 1, "maxItems": 4,
+                      "description": "Independent whole-file writes; non-atomic and reported separately.",
+                      "items": {"type": "object", "properties": {
+                          "path": {"type": "string"}, "content": {"type": "string"},
+                      }, "required": ["path", "content"]}},
             # NOTE: the handler still accepts `cross_profile` (bool) — it now
             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
             # rejection error teaches it. Unadvertised: the cross-PROFILE
             # guard it was named for was removed (profiles are not isolated,
             # maintainer decision), and mirror hits are rare + self-teaching.
         },
-        "required": ["path", "content"]
+        "required": []
     }
 }
 
@@ -1310,11 +1325,72 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
+    if "requests" in args:
+        requests = args["requests"]
+        if any(k in args for k in ("path", "offset", "limit")):
+            return tool_error("read_file: use either path/offset/limit or requests, not both")
+        if not isinstance(requests, list) or not 1 <= len(requests) <= 4:
+            return tool_error("read_file: requests must contain 1-4 entries")
+        if any(not isinstance(r, dict) or not isinstance(r.get("path"), str)
+               or not r["path"].strip()
+               or any(not isinstance(r.get(k), int) or isinstance(r[k], bool)
+                      or not low <= r[k] <= high
+                      for k, low, high in (("offset", 1, 2**31), ("limit", 1, 2000)) if k in r)
+               for r in requests):
+            return tool_error("read_file: each request needs path and optional positive offset/limit (limit <= 2000)")
+        results = []
+        for request in requests:
+            result = json.loads(read_file_tool(
+                path=request["path"], offset=request.get("offset", 1),
+                limit=request.get("limit", DEFAULT_READ_LIMIT), task_id=tid,
+                max_chars=16_000))
+            results.append({"request": request, "result": result})
+        completed = sum(not r["result"].get("error") and r["result"].get("success") is not False
+                        for r in results)
+        return json.dumps({"success": completed == len(requests), "completed": completed,
+                           "total": len(requests), "results": results}, ensure_ascii=False)
     return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
+    if "files" in args:
+        files = args["files"]
+        if any(k in args for k in ("path", "content", "cross_profile")):
+            return tool_error("write_file: use either path/content or files, not both")
+        if not isinstance(files, list) or not 1 <= len(files) <= 4:
+            return tool_error("write_file: files must contain 1-4 entries")
+        if any(not isinstance(f, dict) or not isinstance(f.get("path"), str)
+               or not f["path"].strip() or not isinstance(f.get("content"), str)
+               for f in files):
+            return tool_error("write_file: each file needs path and content strings; nothing was written")
+        paths = [f["path"] for f in files]
+        if len({os.path.normcase(os.path.normpath(p)) for p in paths}) != len(paths):
+            return tool_error("write_file: duplicate paths in files; nothing was written")
+        # Preflight the full batch before the first edit: one approval for all paths,
+        # and refuse known forbidden/stale items without partial writes. This is
+        # not a transaction: a target may change after preflight. Each item is
+        # rechecked under its own lock and may fail after earlier writes succeed.
+        err = (_write_precheck_error(paths, paths, tid, False)
+               or next(("Refusing to write internal read_file display text as file content."
+                        for f in files if _is_internal_file_tool_content(f["content"])), None))
+        if err:
+            return tool_error(err)
+        resolved = [_resolve_or_none(path, tid) for path in paths]
+        if len({r or os.path.normcase(os.path.normpath(p)) for p, r in zip(paths, resolved)}) != len(paths):
+            return tool_error("write_file: multiple paths resolve to the same file; nothing was written")
+        for path, target in zip(paths, resolved):
+            blocker = _stale_overwrite_blocker(path, target, tid)
+            if blocker:
+                return json.dumps(_stale_write_refusal(path, blocker, target), ensure_ascii=False)
+        results = []
+        for entry in files:
+            result = json.loads(_handle_write_file(entry, **kw))
+            results.append({"path": entry["path"], "result": result})
+        completed = sum(not r["result"].get("error") and r["result"].get("success") is not False
+                        for r in results)
+        return json.dumps({"success": completed == len(files), "completed": completed,
+                           "total": len(files), "results": results}, ensure_ascii=False)
     if not args.get("path") or not isinstance(args.get("path"), str):
         return tool_error(
             "write_file: missing required field 'path'. Re-emit the tool call with "

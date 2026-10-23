@@ -1567,7 +1567,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if profile_name == primary:
                 continue
             try:
-                with _profile_runtime_scope(Path(profile_home), {}):
+                with _profile_runtime_scope(Path(profile_home)):
                     count = fn()
             except Exception:
                 logger.warning("Could not replay async completions for profile %r", profile_name, exc_info=True)

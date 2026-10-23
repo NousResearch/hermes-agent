@@ -180,7 +180,10 @@ def describe(decl: declaration.Declaration, available: Availability, liveness_st
     app_name = display_name or decl.name
     gpu = declaration.gpu_label(decl.required_gpu)
     action, _retry = _action(liveness_state, app_name, gpu)
-    if liveness_state == "missing_app":
+    if liveness_state == "missing_app" and available.state == "unsupported_os":
+        reason = f"{app_name} is not supported on this operating system."
+        action = "Use a supported operating system."
+    elif liveness_state == "missing_app":
         reason = f"{app_name} is not installed."
         if available.min_version:
             action = f"Install {app_name} {available.min_version} or newer, then try again."

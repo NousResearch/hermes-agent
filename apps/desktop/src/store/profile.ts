@@ -604,8 +604,10 @@ async function resolveConnectionForProfile(profile: string): Promise<HermesConne
 // chat stays put; single-profile users never leave the primary).
 export async function ensureGatewayProfile(
   profile: string | null | undefined,
-  { forceLegacyRoute = false }: { forceLegacyRoute?: boolean } = {}
+  { forceLegacyRoute = false, signal }: { forceLegacyRoute?: boolean; signal?: AbortSignal } = {}
 ): Promise<void> {
+  signal?.throwIfAborted()
+
   if (profile == null || !String(profile).trim()) {
     // "No explicit profile" = use the current gateway. But if an explicit swap
     // (e.g. the user just picked a profile in the switcher) is still in flight,
@@ -670,12 +672,18 @@ export async function ensureGatewayProfile(
     await gatewaySwitch.catch(() => undefined)
   }
 
+  signal?.throwIfAborted()
+
   if (routeAgrees()) {
     return
   }
 
-  $gatewaySwapTarget.set(target)
-  gatewaySwitch = (async () => {
+  // Cancellable SDK opens own their overlay, not this shared activation.
+  if (!signal) {
+    $gatewaySwapTarget.set(target)
+  }
+
+  const activationWork = (async () => {
     // ensureGatewayForProfile opens (or reuses) the target's socket and points
     // the active gateway at it — without closing the profile you came from.
     // The descriptor resolves concurrently so nothing awaits between the
@@ -683,7 +691,9 @@ export async function ensureGatewayProfile(
     // syncConnectionToActiveProfile await left a window where $gateway
     // already targeted the new backend while $connection still described the
     // previous one, and remote-aware paths announced the wrong mode (#46651).
-    const [connection] = await Promise.all([resolveConnectionForProfile(target), ensureGatewayForProfile(target)])
+    const activation = signal ? ensureGatewayForProfile(target, signal) : ensureGatewayForProfile(target)
+    const [connection] = await Promise.all([resolveConnectionForProfile(target), activation])
+    signal?.throwIfAborted()
 
     // ONE publication frame. batch() defers Nanostores' notifications to the
     // end of the callback, so the profile pointer and the connection
@@ -726,11 +736,19 @@ export async function ensureGatewayProfile(
   // cross-profile session writes (#81094). The rejection propagates to
   // await-callers (session actions, slash commands) which surface it in their
   // own flows; fire-and-forget callers surface it via their own .catch below.
+  const switching = releaseWhenAborted(activationWork, signal)
+  gatewaySwitch = switching
+
   try {
-    await gatewaySwitch
+    await switching
   } finally {
-    gatewaySwitch = null
-    $gatewaySwapTarget.set(null)
+    if (gatewaySwitch === switching) {
+      gatewaySwitch = null
+    }
+
+    if (!signal) {
+      $gatewaySwapTarget.set(null)
+    }
   }
 }
 
@@ -819,10 +837,6 @@ function releaseWhenAborted(promise: Promise<void>, signal?: AbortSignal): Promi
     return promise
   }
 
-  if (signal.aborted) {
-    return Promise.resolve()
-  }
-
   return new Promise<void>((resolve, reject) => {
     const onAbort = () => {
       signal.removeEventListener('abort', onAbort)
@@ -834,11 +848,18 @@ function releaseWhenAborted(promise: Promise<void>, signal?: AbortSignal): Promi
       callback()
     }
 
-    signal.addEventListener('abort', onAbort, { once: true })
+    // Work may have aborted synchronously during setup. Still observe its
+    // eventual result even when this caller has already released the mutex.
     promise.then(
       () => settle(resolve),
       error => settle(() => reject(error))
     )
+
+    if (signal.aborted) {
+      resolve()
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
   })
 }
 

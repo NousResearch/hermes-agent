@@ -904,3 +904,23 @@ For more information on securing your Hermes Agent deployment, see the [Security
 - **Auto-join**: The bot automatically accepts room invites and joins. It starts responding immediately after joining.
 - **Media support**: Hermes can send and receive images, audio, video, and file attachments. Media is uploaded to your homeserver using the Matrix content repository API.
 - **Native voice messages (MSC3245)**: The Matrix adapter automatically tags outgoing voice messages with the `org.matrix.msc3245.voice` flag. This means TTS responses and voice audio are rendered as **native voice bubbles** in Element and other clients that support MSC3245, rather than as generic audio file attachments. Incoming voice messages with the MSC3245 flag are also correctly identified and routed to speech-to-text transcription. No configuration is needed — this works automatically. An audio file attached with a `MEDIA:` tag (an `.mp3`/`.wav` the agent produced, not marked `[[audio_as_voice]]`) is sent as a plain `m.audio` attachment in its original format instead of a voice bubble.
+
+### Recovering missed room keys and sending from the CLI
+
+Hermes answers cross-user room-key recovery requests only for explicitly listed
+`MATRIX_ALLOWED_USERS` whose devices meet the configured crypto trust threshold.
+Both the requester and bot must still be joined to the requested room, and the
+room must satisfy the adapter's room policy. Open access does not grant recovery
+access. Requests from the bot's own account keep mautrix's default policy.
+
+Private Olm one-time keys are stored before their public halves are uploaded.
+If an upload response is lost, the next attempt reuses unpublished keys. One
+adapter owns each crypto store at a time, including adapters in the same process.
+Stop the owning gateway before opening that store elsewhere.
+
+`hermes send --to matrix:ROOM --message "hello"` uses the live gateway's adapter
+and event loop through its local control socket, preserving the selected profile.
+An uncertain relay response returns an error without retrying. When E2EE is
+optional or required, the standalone HTTP sender refuses delivery: start a gateway
+with relay support instead. Standalone HTTP delivery remains available with E2EE
+off.

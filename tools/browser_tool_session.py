@@ -930,6 +930,25 @@ def _dispatch_browser_command(
     return engine, result
 
 
+def _ensure_tab_foreground(task_id: str, timeout: int = 10) -> None:
+    """Best-effort bring the session's active tab to the foreground (#103280).
+
+    Chrome produces no compositor frame for a hidden tab, so Page.captureScreenshot
+    blocks until the command timeout. ``tab list`` -> ``tab <active id>`` makes
+    agent-browser send Page.bringToFront first. Any failure is logged and swallowed:
+    the caller's own command still runs and reports its own error.
+    """
+    try:
+        tabs_result = _run_browser_command(task_id, "tab", ["list"], timeout=timeout)
+        tabs = (tabs_result.get("data") or {}).get("tabs") if tabs_result.get("success") else None
+        active_tab = next((t for t in tabs or [] if t.get("active")), None)
+        tab_id = (active_tab or {}).get("tabId")
+        if tab_id:
+            _run_browser_command(task_id, "tab", [str(tab_id)], timeout=timeout)
+    except Exception as exc:  # health: allow BLE001 -- best-effort pre-step by design (#103280): any failure is logged and the screenshot still runs
+        _bt.logger.debug("tab foreground pre-step for screenshot failed (task=%s): %s", task_id, exc, exc_info=True)
+
+
 def _run_browser_command(
     task_id: str,
     command: str,

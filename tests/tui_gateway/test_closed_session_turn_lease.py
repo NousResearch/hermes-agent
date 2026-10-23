@@ -105,10 +105,11 @@ def test_close_landing_while_turn_claims_lease_leaves_no_lease(turn_env, monkeyp
     turn_env.append(session)
     server._sessions[SID] = session
     claim = server._ensure_active_session_slot
+    submitting_thread = threading.current_thread()
     at_claim: dict = {}
 
     def _claim_after_close(sid, claiming):
-        if threading.current_thread() is claiming.get("_run_thread") and not claiming.get("_closing"):
+        if threading.current_thread() is not submitting_thread and not claiming.get("_closing"):
             at_claim["closed"] = _rpc("session.close")["result"]["closed"]
             at_claim["leases"] = _registry_session_ids()
         return claim(sid, claiming)

@@ -357,6 +357,40 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
     assert captured["registered"]["target_url"] == ("https://peer.example.test")
 
 
+def test_reregistered_peer_route_keeps_its_trace_identity(home, monkeypatch):
+    """A fresh grant for the same member must replay accepted work byte for byte: the target
+    fingerprints the dispatch body, trace and cancellation ids included, under its key."""
+    room, routes = _create_room(), []
+    params, _ = _serve_peer_client(monkeypatch, room)
+    catalog = params["catalog"]
+
+    class FakeService:
+        db_path = hosted_rooms_default_db_path()
+
+        def register_peer_route(self, **kwargs):
+            routes.append(kwargs["route"])
+
+    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    for grant in ("first.room.grant", "second.room.grant"):
+        _result(srv._methods["groups.peer.register"](3, params | {"grant": grant}))
+
+    first, second = routes
+    assert (first.grant, second.grant) == ("first.room.grant", "second.room.grant")
+    assert (first.trace_id, first.cancellation_scope_id) == (second.trace_id, second.cancellation_scope_id)
+    assert first.cancellation_scope_id == "cancel-room-1"
+
+    # A route stored before the identity was derived (a random trace) keeps the one it has: the
+    # member's gateway fingerprinted that body when it accepted the turn.
+    from gateway import hosted_room_links
+    from gateway.hosted_room_peer import GatewayRoomCatalog
+    hosted_room_links.save_room_link(FakeService.db_path, hosted_room_links.make_stored_link(
+        room_id="room-1", member_id="member-peer", target_url="https://peer.example.test",
+        target_profile="reviewer", grant="older.room.grant", catalog=GatewayRoomCatalog.from_mapping(catalog),
+        cancellation_scope_id="cancel-room-1", trace_id="trace-" + "ab" * 16))
+    _result(srv._methods["groups.peer.register"](4, params | {"grant": "renewed.room.grant"}))
+    assert (routes[-1].trace_id, routes[-1].cancellation_scope_id) == ("trace-" + "ab" * 16, "cancel-room-1")
+
+
 def test_register_rejects_plaintext_non_loopback(home, monkeypatch):
     class FakeService:
         db_path = hosted_rooms_default_db_path()
@@ -1040,3 +1074,28 @@ def test_approve_routes_one_exact_peer_action(home, monkeypatch):
         "request_id": "approval-1",
         "choice": "once",
     }
+
+
+def _serve_peer_client(monkeypatch, room, *, during_probe=lambda: None):
+    from gateway.hosted_room_peer import catalog_mapping
+    from gateway.hosted_rooms import local_authority_gateway_id
+
+    catalog = catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+    probes = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def probe(self, *, grant):
+            probes.append(grant)
+            during_probe()
+            return {"room_id": "room-1", "home_install_id": local_authority_gateway_id(),
+                    "authority_gateway_id": room["authority_gateway_id"],
+                    "authority_epoch": room["authority_epoch"], "member_id": "member-peer",
+                    "target_profile": "reviewer", "catalog": catalog}
+
+    monkeypatch.setattr("tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient", FakeClient)
+    params = {"room_id": "room-1", "member_id": "member-peer", "target_url": "https://peer.example.test",
+              "target_profile": "reviewer", "grant": "late.room.grant", "catalog": catalog}
+    return params, probes

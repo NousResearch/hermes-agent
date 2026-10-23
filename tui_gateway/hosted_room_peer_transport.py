@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 from gateway.hosted_room_driver import TaskIdentity
@@ -116,6 +117,23 @@ class PeerMemberRoute:
     trace_id: str
     grant: str
     execution_policy_digest: str = ""
+
+
+def route_identity(
+    *, db_path: Path | str, home_install_id: str, room_id: str, member_id: str) -> tuple[str, str]:
+    """``(cancellation_scope_id, trace_id)`` for one member route. Both are in every dispatch body,
+    and the target fingerprints that body under its idempotency key, so a route re-registered with
+    a fresh grant must replay an accepted dispatch byte for byte: it keeps the pair already stored
+    for that room and member (a route registered before the pair was derived keeps its random
+    trace). A new route derives it: the trace from home, room and member, and the cancellation
+    scope from the room, as ``hermes serve`` has always named it."""
+    from gateway import hosted_rooms
+    stored = next((row for row in hosted_rooms.list_room_link_records(db_path)
+                   if (row["room_id"], row["member_id"]) == (room_id, member_id)), None)
+    if stored is not None and stored["cancellation_scope_id"] and stored["trace_id"]:
+        return str(stored["cancellation_scope_id"]), str(stored["trace_id"])
+    seed = "\0".join((home_install_id, room_id, member_id)).encode("utf-8")
+    return f"cancel-{room_id}", "trace-" + hashlib.sha256(seed).hexdigest()[:32]
 
 
 def build_member_dispatch(

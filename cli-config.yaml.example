@@ -410,6 +410,9 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Board-less create/dispatch/swarm warn if the shared kanban/current file selects
+  # a non-default board. Set true to refuse instead; --board or an env pin bypasses it.
+  require_explicit_board: false
 
 # =============================================================================
 # Terminal Tool Configuration

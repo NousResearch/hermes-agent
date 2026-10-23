@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 // matches multiple nodes.
 afterEach(cleanup)
 
-// Faithful mirror of index.tsx's Enter wiring (handleEditorKeyDown's Enter
-// branch + submitDraft), driven through REAL DOM keydown events on a
-// contentEditable.
+// Minimal mirror of index.tsx's live-DOM Enter guard and submit path.
+// This regression harness is intentionally not a replacement for tests that
+// render the real ChatBar; it protects the DOM/state race separately.
 //
 // Regression repro for #39630: pressing Enter right after typing (fast typing /
 // IME) did nothing. The composer state (`draft` from useAuiState) and its
@@ -25,12 +25,8 @@ afterEach(cleanup)
 function Harness({
   busy = false,
   disabled = false,
-  queued = [],
   onSubmit,
-  onQueue,
-  onCancel,
-  onDrain,
-  onSendNow
+  onQueue
 }: {
   busy?: boolean
   disabled?: boolean
@@ -74,15 +70,13 @@ function Harness({
     const text = draftRef.current
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
+    if (!payloadPresent) {
+      return
+    }
+
     if (busy) {
-      if (payloadPresent) {
-        onQueue(text)
-      } else {
-        onCancel()
-      }
-    } else if (!payloadPresent && queued.length > 0) {
-      onDrain()
-    } else if (payloadPresent) {
+      onQueue(text)
+    } else {
       onSubmit(text)
     }
   }
@@ -108,19 +102,9 @@ function Harness({
         return
       }
 
-      if (!busy && !hasLivePayload && queued.length > 0) {
-        onDrain()
-
-        return
-      }
-
-      if (busy && !hasLivePayload) {
-        const head = queued[0]
-
-        if (head) {
-          onSendNow?.(head)
-        }
-
+      // Empty Enter no longer advances a queued row (busy or idle).
+      // Only a visible queue control may resume or send a queued message.
+      if (!hasLivePayload) {
         return
       }
 
@@ -208,7 +192,7 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     expect(onSendNow).not.toHaveBeenCalled()
   })
 
-  it('double-send: an empty Enter while busy with a queued turn sends that turn now', async () => {
+  it('does not send the queued head on empty Enter while busy', async () => {
     const onCancel = vi.fn()
     const onSendNow = vi.fn()
 
@@ -231,12 +215,11 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
       fireEvent.keyDown(editor, { key: 'Enter' })
     })
 
-    // Head of the queue, and NOT a bare cancel — send-now promotes + interrupts.
-    expect(onSendNow).toHaveBeenCalledWith('queued-1')
+    expect(onSendNow).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
   })
 
-  it('drains the next queued prompt on Enter when idle with a truly empty editor', async () => {
+  it('does not drain a parked or pending queue on empty Enter while idle', async () => {
     const onDrain = vi.fn()
     const onSubmit = vi.fn()
 
@@ -251,7 +234,7 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
       fireEvent.keyDown(editor, { key: 'Enter' })
     })
 
-    expect(onDrain).toHaveBeenCalledTimes(1)
+    expect(onDrain).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 

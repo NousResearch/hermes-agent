@@ -26,9 +26,8 @@ import { useComposerQueue } from './use-composer-queue'
 
 // The park ↔ drain contract at the hook level. The store tests pin the pure
 // pieces (shouldAutoDrain, park bookkeeping); these pin the wiring — the
-// auto-drain effect honoring the park, and send-now-while-busy lifting it so
-// the settle drain still flows (the regression that sank the old blanket
-// interrupt latch).
+// auto-drain effect honoring the park, and per-entry Send now preserving the
+// rest of the queue instead of silently resuming it.
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
@@ -49,12 +48,13 @@ function renderQueueHook(
   overrides: {
     busy?: boolean
     draft?: string
-    onCancel?: () => void
+    onCancel?: ChatBarProps['onCancel']
     onSteer?: ChatBarProps['onSteer']
+    onSubmit?: ChatBarProps['onSubmit']
     replaceServerQueued?: (admissionId: string, text: string, submissionId: string) => Promise<unknown>
   } = {}
 ) {
-  const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
+  const onSubmit = vi.fn<ChatBarProps['onSubmit']>(overrides.onSubmit ?? (async () => true))
   const onCancel = overrides.onCancel ?? vi.fn()
   const onSteer = overrides.onSteer
   const queueEditRef: { current: QueueEditState | null } = { current: null }
@@ -263,28 +263,218 @@ describe('useComposerQueue park integration', () => {
     expect(isQueueParked(SESSION_KEY)).toBe(false)
   })
 
-  it('sendQueuedNow while busy unparks so the settle drain flows (no stale latch)', async () => {
-    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
-    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'send me now' })
-    parkQueuedPrompts(SESSION_KEY)
+  it('sends only the selected entry after interrupt, leaving the other entries parked', async () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })!
+    const target = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'send me now' })!
 
     const { hook, onCancel, onSubmit } = renderQueueHook({ busy: true })
-    const target = getQueuedPrompts(SESSION_KEY).find(e => e.id !== first!.id)!
 
     act(() => {
       hook.result.current.sendQueuedNow(target.id)
     })
 
-    // The interrupt fired and the park lifted — this interrupt exists to reach
-    // the queue, not to halt it.
     expect(onCancel).toHaveBeenCalledTimes(1)
-    expect(isQueueParked(SESSION_KEY)).toBe(false)
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+    // Manual Send now must not reorder or drain the first item.
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([first.id, target.id])
 
-    // Turn settles → the promoted entry drains.
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]?.[0]).toBe('send me now')
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['first'])
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+
+  it('explicit Stop after Send now cancels the pending delivery, even if already parked', async () => {
+    const target = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'do not send' })!
+    const { hook, onSubmit } = renderQueueHook({ busy: true })
+
+    act(() => {
+      void hook.result.current.sendQueuedNow(target.id)
+      // Transcript Stop and composer Stop both park the session queue.
+      parkQueuedPrompts(SESSION_KEY)
+    })
+
+    hook.rerender({ busy: false })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([target.id])
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+  it('does not dispatch before cancellation is acknowledged even if busy briefly becomes false', async () => {
+    let acknowledgeCancel!: () => void
+    const cancelling = new Promise<void>(resolve => {
+      acknowledgeCancel = resolve
+    })
+    const target = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after cancel' })!
+    const { hook, onSubmit } = renderQueueHook({ busy: true, onCancel: () => cancelling })
+
+    act(() => {
+      void hook.result.current.sendQueuedNow(target.id)
+    })
+    hook.rerender({ busy: false })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    await act(async () => {
+      acknowledgeCancel()
+      await cancelling
+    })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]?.[0]).toBe('after cancel')
+  })
+
+  it('allows reselecting an entry while cancellation is pending', async () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first choice' })!
+    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second choice' })!
+    const { hook, onCancel, onSubmit } = renderQueueHook({ busy: true })
+
+    act(() => {
+      void hook.result.current.sendQueuedNow(first.id)
+      void hook.result.current.sendQueuedNow(second.id)
+    })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]?.[0]).toBe('second choice')
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([first.id])
+  })
+
+  it('retries a selected send after an older drain unlocks without lifting the new park', async () => {
+    let completeFirst!: (accepted: boolean) => void
+    const firstResult = new Promise<boolean>(resolve => {
+      completeFirst = resolve
+    })
+    let calls = 0
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })!
+    const selected = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'selected' })!
+    const trailing = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'trailing' })!
+    parkQueuedPrompts(SESSION_KEY)
+
+    const { hook, onSubmit } = renderQueueHook({
+      onSubmit: () => {
+        calls += 1
+        return calls === 1 ? firstResult : Promise.resolve(true)
+      }
+    })
+
+    await act(async () => {
+      void hook.result.current.drainNextQueued()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      void hook.result.current.sendQueuedNow(selected.id)
+    })
+
+    await act(async () => {
+      completeFirst(true)
+      await firstResult
+    })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2))
+
+    expect(onSubmit.mock.calls.map(call => call[0])).toEqual(['first', 'selected'])
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([trailing.id])
+    expect(getQueuedPrompts(SESSION_KEY).some(entry => entry.id === first.id)).toBe(false)
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+  it('does not cancel a running turn for a stale queued id', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'real item' })
+    const { hook, onCancel } = renderQueueHook({ busy: true })
+
+    await act(async () => {
+      expect(await hook.result.current.sendQueuedNow('removed-elsewhere')).toBe(false)
+    })
+
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+  })
+
+  it('keeps an in-flight Send now after a hidden fallback enqueues', async () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })!
+    const selected = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'selected' })!
+    const { hook, onSubmit } = renderQueueHook({ busy: true })
+
+    act(() => {
+      void hook.result.current.sendQueuedNow(selected.id)
+      enqueueQueuedPrompt(
+        SESSION_KEY,
+        { attachments: [], text: 'setup note', displayKind: 'hidden' },
+        { resumeQueue: false }
+      )
+    })
+
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]?.[0]).toBe('selected')
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toContain(first.id)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['first', 'setup note'])
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+  it('keeps an interrupted manual send parked when cancellation rejects', async () => {
+    const target = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'retained' })!
+    const { hook, onSubmit } = renderQueueHook({
+      busy: true,
+      onCancel: () => Promise.reject(new Error('gateway unavailable'))
+    })
+
+    act(() => {
+      void hook.result.current.sendQueuedNow(target.id)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    hook.rerender({ busy: false })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([target.id])
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+  it('parks an initially unparked idle queue for an isolated send', async () => {
+    setSessionsLoading(true)
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })!
+    const selected = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'selected' })!
+    const { hook, onSubmit } = renderQueueHook()
+
+    act(() => {
+      void hook.result.current.sendQueuedNow(selected.id)
+    })
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+    setSessionsLoading(false)
     hook.rerender({ busy: false })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
-    expect(onSubmit.mock.calls[0]?.[0]).toBe('send me now')
+    expect(onSubmit.mock.calls[0]?.[0]).toBe('selected')
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([first.id])
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+  it('sends only the selected entry while idle without resuming a parked queue', async () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })!
+    const selected = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'selected' })!
+    parkQueuedPrompts(SESSION_KEY)
+    const { hook, onSubmit } = renderQueueHook()
+
+    await act(async () => {
+      await hook.result.current.sendQueuedNow(selected.id)
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('selected', expect.any(Object))
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([first.id])
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
   })
 
   it('steerQueuedNow delivers via onSteer without cancelling and removes the entry', async () => {
@@ -337,7 +527,7 @@ describe('useComposerQueue park integration', () => {
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
   })
 
-  it('a delivered steer lifts the park so the rest of the queue flows', async () => {
+  it('a delivered queued steer preserves a pre-existing park', async () => {
     const steerable = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'redirect' })
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'follows after' })
     parkQueuedPrompts(SESSION_KEY)
@@ -349,7 +539,7 @@ describe('useComposerQueue park integration', () => {
       expect(await hook.result.current.steerQueuedNow(steerable!.id)).toBe(true)
     })
 
-    expect(isQueueParked(SESSION_KEY)).toBe(false)
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
   })
 
@@ -383,79 +573,6 @@ describe('useComposerQueue park integration', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
-  })
-
-  describe('deliverQueuedNow (double-Enter while busy)', () => {
-    it('steers a text entry into the live turn instead of interrupting it', async () => {
-      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'fix the header too' })!
-      const onSteer = vi.fn(async () => true)
-      const { hook, onCancel, onSubmit } = renderQueueHook({ busy: true, onSteer })
-
-      await act(async () => {
-        expect(await hook.result.current.deliverQueuedNow(entry.id)).toBe(true)
-      })
-
-      expect(onSteer).toHaveBeenCalledWith('fix the header too')
-      expect(onCancel).not.toHaveBeenCalled()
-      expect(onSubmit).not.toHaveBeenCalled()
-      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
-    })
-
-    it('falls back to send-now (interrupt) when the live turn refuses the steer', async () => {
-      const other = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'older' })!
-      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'refused' })!
-      const onSteer = vi.fn(async () => false)
-      const { hook, onCancel } = renderQueueHook({ busy: true, onSteer })
-
-      await act(async () => {
-        await hook.result.current.deliverQueuedNow(entry.id)
-      })
-
-      expect(onSteer).toHaveBeenCalledTimes(1)
-      expect(onCancel).toHaveBeenCalledTimes(1)
-      expect(getQueuedPrompts(SESSION_KEY).map(e => e.id)).toEqual([entry.id, other.id])
-    })
-
-    it('interrupts directly for a payload a steer cannot carry', async () => {
-      const entry = enqueueQueuedPrompt(SESSION_KEY, {
-        attachments: [{ id: 'shot', kind: 'image', label: 'shot.png' }],
-        text: 'look at this'
-      })!
-
-      const onSteer = vi.fn(async () => true)
-      const { hook, onCancel } = renderQueueHook({ busy: true, onSteer })
-
-      await act(async () => {
-        await hook.result.current.deliverQueuedNow(entry.id)
-      })
-
-      expect(onSteer).not.toHaveBeenCalled()
-      expect(onCancel).toHaveBeenCalledTimes(1)
-    })
-
-    it('a repeat Enter while the steer is in flight never escalates to an interrupt', async () => {
-      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'once' })!
-
-      let accept: (value: boolean) => void = () => {}
-
-      const onSteer = vi.fn(() => new Promise<boolean>(resolve => (accept = resolve)))
-      const { hook, onCancel } = renderQueueHook({ busy: true, onSteer })
-
-      let first: Promise<unknown> = Promise.resolve()
-
-      await act(async () => {
-        first = hook.result.current.deliverQueuedNow(entry.id)
-        expect(await hook.result.current.deliverQueuedNow(entry.id)).toBe(true)
-      })
-
-      await act(async () => {
-        accept(true)
-        await first
-      })
-
-      expect(onSteer).toHaveBeenCalledTimes(1)
-      expect(onCancel).not.toHaveBeenCalled()
-    })
   })
 
   it('freezes @terminal selection at enqueue so a later label collision cannot inject unrelated output', async () => {

@@ -347,7 +347,6 @@ export function ChatBar({
   // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
   const {
     beginQueuedEdit,
-    deliverQueuedNow,
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
@@ -381,9 +380,8 @@ export function ChatBar({
   // wrapper, which parks the queue first — an explicit halt must not roll
   // straight into the next queued prompt (that read as Stop not working; the
   // queued text also seemed to vanish, since the collapsed panel row was its
-  // only trace). Interrupts that exist to advance the queue (send-now-while-
-  // busy) call the raw onCancel and keep draining on settle. Parked entries
-  // stay in the panel until resumed, sent, edited, or deleted.
+  // only trace). A one-shot Send now uses raw onCancel but parks the other
+  // entries until explicitly resumed. Parked entries remain visible.
   const haltRun = useCallback(() => {
     parkQueuedPrompts(activeQueueSessionKeyRef.current)
 
@@ -424,7 +422,6 @@ export function ChatBar({
     disabled,
     draftScopeRef,
     draftRef,
-    drainNextQueued,
     editorRef,
     exitQueuedEdit,
     focusInput,
@@ -438,7 +435,6 @@ export function ChatBar({
     onSubmit,
     queueCurrentDraft,
     queueEdit,
-    queuedPrompts,
     sessionId,
     setComposerText,
     stashAt,
@@ -999,28 +995,10 @@ export function ChatBar({
         return
       }
 
-      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
-        void drainNextQueued()
-
-        return
-      }
-
-      // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second delivers them
-      // now — steered into the live turn when a steer can carry them, else
-      // promote + interrupt + drain on settle — mirroring the idle empty-Enter
-      // drain above. With nothing queued it stays a no-op — interrupting is
-      // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
-      // DOM payload (not the render-lagged composer state) so a message typed
-      // fast / via IME while busy still reaches submitDraft() and gets queued
-      // instead of being mistaken for an empty Enter.
-      if (busy && !hasLivePayload) {
-        const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
-
-        if (head) {
-          void deliverQueuedNow(head.id)
-        }
-
+      // Empty Enter never drains the queue. The user can send an individual
+      // queued entry from its row or explicitly resume via the queue controls.
+      // Read live DOM text so a just-typed message is not mistaken for empty.
+      if (!hasLivePayload && !queueEdit) {
         return
       }
 

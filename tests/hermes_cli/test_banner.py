@@ -1,5 +1,6 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
+import pytest
 from unittest.mock import patch
 
 from rich.console import Console
@@ -83,7 +84,8 @@ def test_baked_banner_uses_live_identity(monkeypatch):
     assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}
 
 
-def test_docker_banner_prefers_installed_image_identity_over_mounted_git(tmp_path, monkeypatch):
+@pytest.mark.parametrize("distribution", ["docker", "nix"])
+def test_sealed_banner_prefers_installed_identity_over_mounted_git(tmp_path, monkeypatch, distribution):
     """A mutable source checkout must not impersonate immutable Docker code."""
     import subprocess
     from hermes_cli import version_info
@@ -99,7 +101,7 @@ def test_docker_banner_prefers_installed_image_identity_over_mounted_git(tmp_pat
     assert mounted_sha != "12345678"
 
     image = version_info.VersionInfo("1.0", "1.0", 0, "12345678abcdef01", None,
-                                     "docker", distribution="docker")
+                                     distribution, distribution=distribution)
     monkeypatch.setattr(version_info, "get_version_info", lambda: image)
     monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: tmp_path)
     assert banner._compute_git_banner_state() == {

@@ -469,6 +469,20 @@ def test_reasoning_sink_sets_the_sessions_show_reasoning_flag_on_attach_and_togg
     assert values == ["1", "0", "1"]
 
 
+@pytest.mark.parametrize("sink", [True, False], ids=["shown", "hidden"])
+def test_session_switch_sends_the_show_reasoning_flag_to_the_new_session(make_agent, sink):
+    """/new, /resume and /branch repoint ``session_id`` without reinstalling the reasoning sink: the
+    session moved to still gets this viewer's flag, or a CLI launch falls back to post-turn reasoning."""
+    agent, client = make_agent([], reasoning_callback=(lambda text: None) if sink else None)
+    agent.session_id = "local-fresh"
+    sets = [p for m, p in client.calls if m == "config.set" and p.get("key") == "show_reasoning"]
+    value = "1" if sink else "0"
+    assert sets == [{"session_id": SID, "key": "show_reasoning", "value": value},
+                    {"session_id": "local-fresh", "key": "show_reasoning", "value": value}]
+    agent.session_id = "local-fresh"  # unchanged: no second RPC
+    assert len([m for m, p in client.calls if m == "config.set" and p.get("key") == "show_reasoning"]) == 2
+
+
 def test_gateway_sudo_request_opens_mains_sudo_panel_and_replies_with_the_value(make_agent):
     """The gateway's ``sudo`` server→client request (a JSON-RPC request frame with an ``srq-`` id)
     is answered by main's masked sudo panel (the turn's registered callback) as a response frame."""

@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_constants import FINISH_REASON_LENGTH
 
 
@@ -33,6 +34,45 @@ class _AgentStandIn:
 
     def __init__(self, reasoning_config):
         self.reasoning_config = reasoning_config
+
+
+class _AbortAgentStandIn:
+    """Minimal agent surface ``_abort_reason`` reads for think-block handling."""
+
+    def _has_content_after_think_block(self, text):
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        return bool(text) and bool(strip_think_blocks(self, text).strip())
+
+    def _strip_think_blocks(self, text):
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        return strip_think_blocks(self, text)
+
+
+class TestThinkingBudgetAbortCoversEveryThinkTag:
+    """The truncation abort must recognize every tag in the one think-tag list.
+
+    MiniMax-M3 emits CJK reasoning tags (思考/反思/推理/推敲). When the abort's own
+    regex lagged THINK_TAG_NAMES, a reasoning-only ``finish_reason="length"`` response
+    was not recognized as thinking-budget exhaustion: the loop burned continuation
+    nudges and never surfaced the actionable message. Derive the regex from the list so
+    a tag added there is covered here too, and assert the relationship directly.
+    """
+
+    @pytest.mark.parametrize("tag", THINK_TAG_NAMES)
+    def test_reasoning_only_response_aborts(self, tag):
+        from agent.turn_truncation import _abort_reason
+
+        abort = _abort_reason(
+            _AbortAgentStandIn(), f"<{tag}>reasoning only, no answer</{tag}>", False
+        )
+        assert abort is not None, f"{tag!r} must classify as thinking-budget exhaustion"
+
+    def test_visible_answer_does_not_abort(self):
+        from agent.turn_truncation import _abort_reason
+
+        assert _abort_reason(_AbortAgentStandIn(), "Here is the actual answer.", False) is None
 
 
 class TestReasoningOffOneShotOverride:

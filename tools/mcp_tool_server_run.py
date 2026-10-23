@@ -8,6 +8,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
+from agent.redact import redact_credential_url
 from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
@@ -137,7 +138,7 @@ class MCPServerRunMixin:
                     except Exception as exc:
                         root = _errors._unwrap_exception_group(exc)
                         logger.warning("MCP server '%s' keepalive failed, triggering reconnect (state: connected → "
-                                       "degraded): %s: %s", self.name, type(root).__name__, root)
+                                       "degraded): %s: %s", self.name, type(root).__name__, redact_credential_url(root))
                         self.mark_suspect(f"keepalive failed: {type(root).__name__}: {root}")
                         self._reconnect_event.set()
                         break
@@ -294,7 +295,7 @@ class MCPServerRunMixin:
                     client_cert=_errors._resolve_client_cert(self.name, config),
                     strict_redirect_headers=bool(config.get("strict_redirect_headers")))
         except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:
-            logger.warning("%s", exc)
+            logger.warning("%s", redact_credential_url(exc))
             self._publish_error(exc)  # fail fast and non-retryably
             return False
         return True
@@ -320,7 +321,7 @@ class MCPServerRunMixin:
                 fresh.get(k) == config.get(k) for k in self._REMOTE_REBIND_KEYS):
             return config
         logger.info("MCP server '%s': definition changed in config.yaml (%s -> %s); rebuilding with the new one",
-                    self.name, config.get("url"), fresh.get("url"))
+                    self.name, redact_credential_url(config.get("url")), redact_credential_url(fresh.get("url")))
         self._config = fresh
         self._auth_type = (fresh.get("auth") or "").lower().strip()
         self._sse_fallback = False  # latched for the old endpoint
@@ -446,7 +447,7 @@ class MCPServerRunMixin:
         failure_class = _errors._classify_mcp_failure(root)
         if self._is_recycled_stdio():
             logger.warning("MCP server '%s': lazy reconnect after stdio recycle failed, marking unavailable "
-                           "while retrying: %s: %s", self.name, type(root).__name__, root)
+                           "while retrying: %s: %s", self.name, type(root).__name__, redact_credential_url(root))
             self._recycled_reason = None
         # Initial-connect ladder (a startup blip must not kill the server); gated on
         # _ever_connected, not _ready (which clears every reconnect cycle).
@@ -460,7 +461,7 @@ class MCPServerRunMixin:
             return await self._on_initial_connect_error(exc, root, failure_class, budget)
         if self._shutdown_event.is_set():
             logger.debug("MCP server '%s' disconnected during shutdown: %s: %s",
-                         self.name, type(root).__name__, root)
+                         self.name, type(root).__name__, redact_credential_url(root))
             return False
         if failure_class == "permanent":
             return await self._on_permanent_error(root, budget)
@@ -469,11 +470,11 @@ class MCPServerRunMixin:
             self._log_park(
                 "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe every %ds "
                 "until it recovers (state: degraded → parked): %s: %s",
-                self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
+                self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, redact_credential_url(root))
             return await self._park_and_rearm("from parked state", budget)
         logger.debug("MCP server '%s' connection lost (attempt %d/%d), reconnecting in %.0fs: %s: %s",
                      self.name, self._reconnect_retries, _core._MAX_RECONNECT_RETRIES, budget.backoff,
-                     type(root).__name__, root)
+                     type(root).__name__, redact_credential_url(root))
         await self._backoff_sleep(budget)
         return not self._shutdown_event.is_set()
 
@@ -486,7 +487,7 @@ class MCPServerRunMixin:
                       f"`hermes mcp login {self.name}`" if _errors._is_auth_error(root)
                       else "connection with a permanent error, parking without retries")
             self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
-                           self.name, detail, type(root).__name__, root)
+                           self.name, detail, type(root).__name__, redact_credential_url(root))
             self._arm_auth_park(root)
             return await self._park_initial_failure(exc, "after permanent initial failure", budget)
         budget.initial_retries += 1
@@ -494,12 +495,12 @@ class MCPServerRunMixin:
             self._log_park(
                 "MCP server '%s' failed initial connection after %d attempts, parking until a reconnect is "
                 "requested (state: connecting → parked): %s: %s",
-                self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, root)
+                self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, redact_credential_url(root))
             return await self._park_initial_failure(exc, "after initial connection failures", budget)
         logger.debug(
             "MCP server '%s' initial connection failed (attempt %d/%d), retrying in %.0fs: %s: %s",
             self.name, budget.initial_retries, _core._MAX_INITIAL_CONNECT_RETRIES, budget.backoff,
-            type(root).__name__, root)
+            type(root).__name__, redact_credential_url(root))
         await self._backoff_sleep(budget)
         if self._shutdown_event.is_set():
             self._publish_error(exc)
@@ -514,14 +515,14 @@ class MCPServerRunMixin:
             logger.warning(
                 "MCP server '%s': auth error on a previously healthy session — marking suspect and forcing "
                 "one reconnect instead of parking (state: connected → suspect): %s: %s",
-                self.name, type(root).__name__, root)
+                self.name, type(root).__name__, redact_credential_url(root))
             self._reconnect_retries, budget.backoff = 0, 1.0
             await asyncio.sleep(_jittered(1.0))
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.
         self._log_park(
             "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
-            "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
+            "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, redact_credential_url(root))
         self._arm_auth_park(root)
         return await self._park_and_rearm("from parked state (permanent error)", budget)
 

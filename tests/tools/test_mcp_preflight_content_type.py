@@ -383,3 +383,14 @@ def test_streamable_http_client_strips_credentials_on_redirect(monkeypatch):
 
         asyncio.run(_drive())
     assert "authorization" not in seen and "x-api-key" not in seen
+
+
+def test_non_mcp_content_type_redacts_query_values():
+    task = _make_task("cred_srv")
+    with _serve(_handler(status=200, content_type="text/html")) as base:
+        url = f"{base}/mcp?access_token=supersecret"
+        with pytest.raises(NonMcpEndpointError) as exc_info:
+            asyncio.run(task._preflight_content_type(url, timeout=5.0))
+    msg = str(exc_info.value)
+    assert "access_token=***" in msg
+    assert "supersecret" not in msg

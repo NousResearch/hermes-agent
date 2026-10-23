@@ -773,6 +773,12 @@ def _redact_strict_url_credentials(text: str) -> str:
     return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 
+def redact_credential_url(value: object) -> str:
+    """Mask credential endpoint URLs in diagnostics without changing workflow URL policy."""
+    text = redact_sensitive_text("" if value is None else str(value))
+    return _redact_strict_url_credentials(text) if text else text
+
+
 def redact_cdp_url(value: object) -> str:
     """Mask secrets in a CDP/browser endpoint URL before it is logged.
 

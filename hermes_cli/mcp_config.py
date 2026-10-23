@@ -8,6 +8,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.redact import redact_credential_url
+
 from hermes_cli.config import (
     cfg_get,
     load_config,
@@ -127,7 +129,7 @@ def redact_mcp_probe_text(text: object) -> str:
     covered the same way. The generic secret redactor then runs with
     ``force=True`` as defense in depth.
     """
-    raw = "" if text is None else str(text)
+    raw = redact_credential_url(text)
     if not raw:
         return raw
     mapping, unquoted_mapping, wire, bare_scheme = _probe_redaction_res()
@@ -559,7 +561,7 @@ def _configure_http_auth(
             else:
                 _warning("OAuth setup failed — MCP SDK auth module not available")
         except Exception as exc:
-            _warning(f"OAuth error: {exc}")
+            _warning(f"OAuth error: {redact_mcp_probe_text(exc)}")
         if not oauth_ok:
             _info("This server may not support OAuth.")
             if not _confirm("Continue without authentication?", default=True):
@@ -567,7 +569,7 @@ def _configure_http_auth(
                 return False
         return True
 
-    _info(f"Connecting to {url}")
+    _info(f"Connecting to {redact_credential_url(url)}")
     needs_auth = _confirm("Does this server require authentication?", default=True)
     if needs_auth and (auth_type == "header" or not auth_type):
         env_key = _env_key_for_server(name)
@@ -762,7 +764,7 @@ def cmd_mcp_list(args=None):
 
     for name, cfg in servers.items():
         if "url" in cfg:
-            transport = cfg["url"]
+            transport = redact_credential_url(cfg["url"])
         elif "command" in cfg:
             transport = cfg["command"]
             cmd_args = cfg.get("args", [])
@@ -847,7 +849,7 @@ def cmd_mcp_test(args):
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
-        _info(f"Transport: HTTP → {cfg['url']}")
+        _info(f"Transport: HTTP → {redact_credential_url(cfg['url'])}")
     else:
         _info(f"Transport: stdio → {cfg.get('command', '?')}")
 
@@ -911,7 +913,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             get_manager().evict(name)
             HermesTokenStorage(name).remove(keep_metadata=True)
     except Exception as exc:
-        _warning(f"Could not clear existing OAuth state: {exc}")
+        _warning(f"Could not clear existing OAuth state: {redact_mcp_probe_text(exc)}")
 
     print()
     _info(f"Starting OAuth flow for '{name}'...")
@@ -946,7 +948,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             )
             print()
             for line in (
-                "mcp_servers:", f"  {name}:", f"    url: {url}", "    auth: oauth", "    oauth:",
+                "mcp_servers:", f"  {name}:", f"    url: {redact_credential_url(url)}", "    auth: oauth", "    oauth:",
                 '      client_id: "<your-oauth-client-id>"',
                 '      client_secret: "<your-oauth-client-secret>"',
             ):

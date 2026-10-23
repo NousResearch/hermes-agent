@@ -42,6 +42,10 @@ MAX_INACTIVITY_CLEANUP_FAILURES = 3
 
 _active_sessions: dict[str, dict[str, Any]] = {}
 _session_last_activity: dict[str, float] = {}
+# Cache keys with a browser_exec call currently RUNNING. The harness daemon talks CDP straight to
+# the browser, so a long call's traffic never reaches _session_last_activity; without this set the
+# janitor reads wall-clock inactivity as an idle session and kills the browser mid-call.
+_session_inflight: set[str] = set()
 # Owner Hermes home per session: the janitor is one process-global thread, so each teardown re-enters the
 # OWNING profile's scope (#86402).
 _session_owner_homes: dict[str, str] = {}

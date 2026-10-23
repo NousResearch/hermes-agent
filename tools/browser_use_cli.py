@@ -748,11 +748,16 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
 
-    if bot_desktop_browser:
-        from tools.browser_session import run_fenced
-        dispatched = run_fenced({"features": {"local": True}}, dispatch)
-    else:
-        dispatched = dispatch()
+    # The harness daemon talks CDP straight to the browser, so this call's own traffic never reaches
+    # _session_last_activity; without the inflight registration the janitor kills a call longer than
+    # browser.inactivity_timeout mid-flight (route key == the session layer's cache key on every route).
+    from tools import browser_session_lifecycle as _lifecycle
+    with _lifecycle.inflight_session_scope(_backend_cache_key(task_id, session, local_sidecar)):
+        if bot_desktop_browser:
+            from tools.browser_session import run_fenced
+            dispatched = run_fenced({"features": {"local": True}}, dispatch)
+        else:
+            dispatched = dispatch()
     _reload_if_republished(env, generation)
     if "proc" not in dispatched:
         if "error_result" in dispatched:

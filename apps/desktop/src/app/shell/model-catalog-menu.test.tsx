@@ -883,13 +883,13 @@ describe('the Portal sign-in offer', () => {
   it('appears when Portal is absent from the catalog', async () => {
     renderMenu()
 
-    expect(await screen.findByText('Connect Nous Portal')).toBeTruthy()
+    expect(await screen.findByText('Access hundreds more models through Nous Portal')).toBeTruthy()
   })
 
   it('starts the Portal OAuth flow when chosen', async () => {
     renderMenu()
 
-    fireEvent.click(await screen.findByText('Connect Nous Portal'))
+    fireEvent.click(await screen.findByText('Access hundreds more models through Nous Portal'))
 
     expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', 'default')
   })
@@ -902,18 +902,18 @@ describe('the Portal sign-in offer', () => {
     renderMenu()
     await screen.findByText(/Portal Model/i)
 
-    expect(screen.queryByText('Connect Nous Portal')).toBeNull()
+    expect(screen.queryByText('Access hundreds more models through Nous Portal')).toBeNull()
   })
 
   // A query means "find me a model", not "sell me one".
   it('gets out of the way while searching', async () => {
     renderMenu()
-    await screen.findByText('Connect Nous Portal')
+    await screen.findByText('Access hundreds more models through Nous Portal')
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini' } })
 
     await vi.waitFor(() => {
-      expect(screen.queryByText('Connect Nous Portal')).toBeNull()
+      expect(screen.queryByText('Access hundreds more models through Nous Portal')).toBeNull()
     })
   })
 })

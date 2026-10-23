@@ -5,7 +5,7 @@ export const ruModelMenu = {
   editModels: 'Изменить модели…',
   followDefault: 'Использовать модель по умолчанию из настроек',
   refreshModels: 'Обновить модели',
-  portalCta: 'Подключить Nous Portal',
+  portalCta: 'Получите доступ к сотням других моделей через Nous Portal',
   favorites: 'Избранное',
   addFavorite: 'Добавить в избранное',
   removeFavorite: 'Убрать из избранного',

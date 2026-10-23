@@ -193,6 +193,8 @@ interface ModelCatalogMenuProps {
    * across sources, so this participates in the React Query cache key. */
   ownerConnectionId?: string
   profile?: string
+  /** Composer defaults: expand the active provider, collapse the others. */
+  collapseInactiveProviders?: boolean
   /** Session whose catalog to fetch. A live session's catalog can differ from
    *  the profile-global one, and the app invalidates the SESSION-scoped query
    *  key on model changes — a surface bound to a session must pass it or its
@@ -274,6 +276,7 @@ export function ModelCatalogMenu({
   includeMoa = false,
   ownerConnectionId,
   profile = 'default',
+  collapseInactiveProviders = false,
   request,
   sessionId = null
 }: ModelCatalogMenuProps): ReactElement {
@@ -287,7 +290,13 @@ export function ModelCatalogMenu({
   // type. Typing a slug without this works too; the row just makes it findable.
   const [slugEntry, setSlugEntry] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
-  const collapsedProviders = useStoreCollapsed()
+  const storedCollapsedProviders = useStoreCollapsed()
+
+  const [collapseOverride, setCollapseOverride] = useState<{ scope: string; values: Record<string, boolean> }>({
+    scope: '',
+    values: {}
+  })
+
   const defaultEffort = useDefaultEffort()
   // Which models the user curated in Edit Models. Read HERE rather than taken
   // as a prop: it's one global preference, so every surface that shows a
@@ -365,9 +374,45 @@ export function ModelCatalogMenu({
 
   const current = controller.current
 
+  // Presence is the compatibility signal for older catalogs without auth hints;
+  // explicit unauthenticated and automatic free-tier rows are not a Portal login.
+  const portalConnected =
+    providers?.some(p => p.slug === 'nous' && p.authenticated !== false && !p.free_tier_row) ?? false
+
+  const portalLayout = collapseInactiveProviders && portalConnected
+  const collapseScope = JSON.stringify([ownerConnectionId, profile, sessionId, current.provider])
+
+  const collapsedProviders = useMemo(
+    () =>
+      portalLayout
+        ? pickerProviders
+            .filter(
+              provider =>
+                (collapseOverride.scope === collapseScope ? collapseOverride.values[provider.slug] : undefined) ??
+                !catalogProviderMatches(provider, current.provider)
+            )
+            .map(provider => provider.slug)
+        : storedCollapsedProviders,
+    [portalLayout, pickerProviders, collapseOverride, collapseScope, current.provider, storedCollapsedProviders]
+  )
+
+  const toggleProvider = (slug: string) => {
+    if (!portalLayout) {
+      toggleCollapsedProvider(slug)
+
+      return
+    }
+
+    setCollapseOverride({
+      scope: collapseScope,
+      values: {
+        ...(collapseOverride.scope === collapseScope ? collapseOverride.values : {}),
+        [slug]: !collapsedProviders.includes(slug)
+      }
+    })
+  }
+
   const q = normalize(search)
-  const showPortalCta =
-    !q && !loading && !error && pickerProviders.every(provider => provider.slug.toLowerCase() !== PORTAL_SLUG)
 
   // In-flight downloads render inside the Local provider group when it
   // exists, else as their own trailing 'Local' group (first download —
@@ -381,8 +426,13 @@ export function ModelCatalogMenu({
   useEffect(() => seedKnownModels(pickerProviders), [pickerProviders])
 
   const shownKeys = useMemo(
-    () => effectiveVisibleKeys(visibleModels, pickerProviders),
-    [visibleModels, pickerProviders]
+    () => {
+      const keys = effectiveVisibleKeys(visibleModels, pickerProviders)
+
+      // A star still overrides the shortlist when favorites live in provider groups.
+      return portalLayout ? new Set([...keys, ...favoriteKeys]) : keys
+    },
+    [visibleModels, pickerProviders, portalLayout, favoriteKeys]
   )
 
   // Favorites paint their own section ABOVE the provider groups — the whole
@@ -393,8 +443,9 @@ export function ModelCatalogMenu({
   // explicit "always show me this one". A search turns the section off — a
   // query means "show me every match", listed in their provider's place.
   const favoriteRows = useMemo(
-    () => (q ? [] : resolveFavoriteRows(pickerProviders, favoriteKeys)),
-    [pickerProviders, favoriteKeys, q]
+    // Keep favorites inside their provider when Portal owns the group order.
+    () => (q || portalLayout ? [] : resolveFavoriteRows(pickerProviders, favoriteKeys)),
+    [pickerProviders, favoriteKeys, q, portalLayout]
   )
 
   // The same rows are dropped from the provider groups, so no model is ever
@@ -413,9 +464,9 @@ export function ModelCatalogMenu({
         search,
         { model: current.model, provider: current.provider },
         shownKeys,
-        q ? null : favoriteSet
+        q || portalLayout ? null : favoriteSet
       ),
-    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
+    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet, portalLayout]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -789,15 +840,6 @@ export function ModelCatalogMenu({
         </DropdownMenuItem>
       ) : hasList ? (
         <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
-          {showPortalCta ? (
-            <DropdownMenuItem
-              className={cn(dropdownMenuRow, 'gap-2')}
-              onSelect={() => startManualProviderOAuth(PORTAL_SLUG, profile)}
-            >
-              <Codicon className="text-(--ui-accent)" name="sparkle" size="0.75rem" />
-              <span className="min-w-0 flex-1 truncate">{copy.portalCta}</span>
-            </DropdownMenuItem>
-          ) : null}
           {/* Favorites first — the shortcut the star exists for. The section
               paints nothing with no favorites, and nothing while searching,
               where every match is listed in its provider's place instead. */}
@@ -842,7 +884,7 @@ export function ModelCatalogMenu({
                   )}
                   onSelect={event => {
                     event.preventDefault()
-                    toggleCollapsedProvider(slug)
+                    toggleProvider(slug)
                   }}
                   textValue=""
                 >
@@ -956,6 +998,17 @@ export function ModelCatalogMenu({
           contributes rows (the composer's Refresh Models) keeps the single
           trailing block it has always rendered. */}
       <DropdownMenuSeparator className="mx-0" />
+      {!portalConnected && !loading && !error && !q ? (
+        <DropdownMenuItem
+          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+          onSelect={() =>
+            startManualProviderOAuth(PORTAL_SLUG, ownerConnectionId ? { connectionId: ownerConnectionId, profile } : profile)
+          }
+        >
+          <Codicon name="link-external" size="0.75rem" />
+          <span className="whitespace-normal">{copy.portalCta}</span>
+        </DropdownMenuItem>
+      ) : null}
       {footer}
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)', slugEntry && 'text-foreground')}

@@ -5,7 +5,7 @@ export const esModelMenu = {
   editModels: 'Editar modelos…',
   followDefault: 'Usar el predeterminado de Ajustes',
   refreshModels: 'Actualizar modelos',
-  portalCta: 'Conectar Nous Portal',
+  portalCta: 'Accede a cientos de modelos más a través de Nous Portal',
   favorites: 'Favoritos',
   addFavorite: 'Añadir a favoritos',
   removeFavorite: 'Quitar de favoritos',

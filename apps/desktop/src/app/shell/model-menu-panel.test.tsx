@@ -4,6 +4,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $customModels } from '@/store/custom-models'
+import { $favoriteModels, favoriteModelKey } from '@/store/favorite-models'
+import { $localModelsEnabled } from '@/store/local-models-flag'
+import { $visibleModels, emptyProviderSentinelKey, modelVisibilityKey } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $activeSessionId, $currentModel, $currentProvider, setCurrentModelSource } from '@/store/session'
 
@@ -17,6 +20,11 @@ beforeAll(() => {
 })
 
 const getGlobalModelOptions = vi.fn()
+const startManualProviderOAuth = vi.fn()
+
+vi.mock('@/store/onboarding', () => ({
+  startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args)
+}))
 
 vi.mock('@/hermes', () => ({
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
@@ -48,6 +56,9 @@ beforeEach(() => {
   $currentProvider.set('')
   $collapsedProviders.set([])
   $customModels.set([])
+  $favoriteModels.set([])
+  $visibleModels.set(null)
+  $localModelsEnabled.set(false)
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
 
@@ -56,7 +67,11 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void) {
+function renderPanel(
+  onSelectModel = vi.fn(),
+  onFollowDefaultModel?: () => void,
+  scope?: { ownerConnectionId: string; profile: string }
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   const requestGateway = vi.fn(async (method: string) => {
@@ -72,6 +87,7 @@ function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void)
       <DropdownMenu open>
         <DropdownMenuContent>
           <ModelMenuPanel
+            {...scope}
             onFollowDefaultModel={onFollowDefaultModel}
             onSelectModel={onSelectModel}
             requestGateway={requestGateway as never}
@@ -83,6 +99,73 @@ function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void)
 
   return { onSelectModel, content }
 }
+
+describe('ModelMenuPanel Portal presentation', () => {
+  const portalCta = 'Access hundreds more models through Nous Portal'
+  const nous = { authenticated: true, models: ['openai/gpt-4o'], name: 'Nous Portal', slug: 'nous' }
+  const copilot = { models: ['copilot-only-model'], name: 'GitHub Copilot', slug: 'copilot' }
+
+  it.each(['nous', 'copilot'])('puts signed-in Nous first and expands only the active provider (%s)', async active => {
+    $currentProvider.set(active)
+    $currentModel.set(active === 'nous' ? 'openai/gpt-4o' : 'copilot-only-model')
+    $favoriteModels.set([favoriteModelKey('copilot', 'copilot-only-model')])
+    $visibleModels.set(new Set([emptyProviderSentinelKey('copilot'), modelVisibilityKey('nous', 'openai/gpt-4o')]))
+    getGlobalModelOptions.mockResolvedValue({ providers: [copilot, nous, GOOGLE_PROVIDER] })
+    const { onSelectModel } = renderPanel()
+
+    const portalHeading = await screen.findByText('Nous Portal')
+    const copilotHeading = screen.getByText('GitHub Copilot')
+    expect(portalHeading.compareDocumentPosition(copilotHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByText(portalCta)).toBeNull()
+    expect(screen.queryByText('Favorites')).toBeNull()
+    expect(screen.queryByText('Gemini 3.1 Pro')).toBeNull()
+    expect(Boolean(screen.queryByText('GPT-4o'))).toBe(active === 'nous')
+    expect(Boolean(screen.queryByText('Copilot Only Model'))).toBe(active === 'copilot')
+
+    // Defaults are not a lock: every collapsed provider is still expandable.
+    const inactiveHeading = active === 'nous' ? copilotHeading : portalHeading
+    const inactiveModel = active === 'nous' ? 'Copilot Only Model' : 'GPT-4o'
+    fireEvent.click(inactiveHeading)
+    expect(await screen.findByText(inactiveModel)).toBeTruthy()
+    fireEvent.click(inactiveHeading)
+    expect(screen.queryByText(inactiveModel)).toBeNull()
+
+    // Search deliberately spans collapsed providers; the keyboard selects the actual route.
+    const search = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(search, { target: { value: 'gemini' } })
+    fireEvent.keyDown(search, { key: 'Enter' })
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-3.1-pro',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
+    })
+    expect($favoriteModels.get()).toEqual([favoriteModelKey('copilot', 'copilot-only-model')])
+  })
+
+  it.each(['absent', 'signed-out', 'automatic-free-tier'])('offers Portal only without a sign-in (%s)', async state => {
+    $currentProvider.set('copilot')
+    $currentModel.set('copilot-only-model')
+
+    const portalRows =
+      state === 'absent'
+        ? []
+        : [
+            {
+              ...nous,
+              authenticated: state !== 'signed-out',
+              free_tier_row: state === 'automatic-free-tier'
+            }
+          ]
+
+    getGlobalModelOptions.mockResolvedValue({ providers: [copilot, ...portalRows] })
+    renderPanel(vi.fn(), undefined, { ownerConnectionId: 'remote-work', profile: 'work' })
+
+    fireEvent.click(await screen.findByText(portalCta))
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', { connectionId: 'remote-work', profile: 'work' })
+  })
+})
 
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {

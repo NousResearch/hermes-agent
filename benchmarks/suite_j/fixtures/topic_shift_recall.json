@@ -1,0 +1,254 @@
+[
+  {
+    "id": "tsr_01",
+    "description": "Same domain: PostgreSQL replication vs indexing. Overlapping terms: PostgreSQL, index, default",
+    "topic_a_facts": [
+      "Primary database port is 5432",
+      "Streaming replication uses WAL segments",
+      "Replication slot names prevent data loss",
+      "Synchronous replication requires acknowledgment"
+    ],
+    "topic_b_facts": [
+      "Default index type in PostgreSQL is B-tree",
+      "GIN indexes accelerate JSONB full-text search",
+      "Partial indexes reduce storage consumption",
+      "Expression indexes enable computed column indexing"
+    ],
+    "query": "What is the default index type in PostgreSQL?",
+    "gold_answer": "B-tree",
+    "forbidden_terms": ["replication", "WAL", "slot", "streaming"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "tsr_02",
+    "description": "Same domain: Kubernetes networking vs storage. Overlapping terms: Kubernetes, default, access mode",
+    "topic_a_facts": [
+      "ClusterIP service exposes pods on internal IP",
+      "NodePort ranges from 30000-32767",
+      "Ingress controller terminates TLS at edge",
+      "DNS addon resolves service names cluster-wide"
+    ],
+    "topic_b_facts": [
+      "Default storage access mode is ReadWriteOnce",
+      "StorageClass provisions dynamic volumes",
+      "PersistentVolumeClaim binds to PersistentVolume",
+      "ReadOnlyMany allows multiple read-only mounts"
+    ],
+    "query": "What is the default storage access mode?",
+    "gold_answer": "ReadWriteOnce",
+    "forbidden_terms": ["ClusterIP", "Ingress", "NodePort", "DNS"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "tsr_03",
+    "description": "Same domain: JWT authentication vs OAuth2 authorization. Overlapping terms: token, access, scope",
+    "topic_a_facts": [
+      "JWT tokens use HS256 algorithm by default",
+      "Access tokens expire after 15 minutes",
+      "Refresh tokens allow silent re-authentication",
+      "JWT payload contains user ID and roles"
+    ],
+    "topic_b_facts": [
+      "OAuth2 authorization_code grant requires user consent",
+      "Scopes define granular permission boundaries",
+      "Token endpoint exchanges code for access token",
+      "PKCE prevents authorization code interception"
+    ],
+    "query": "What OAuth2 grant type requires user consent?",
+    "gold_answer": "authorization_code",
+    "forbidden_terms": ["HS256", "JWT", "refresh", "expire"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "tsr_04",
+    "description": "Same domain: Redis pub/sub vs persistence. Overlapping terms: Redis, background, key",
+    "topic_a_facts": [
+      "Redis SUBSCRIBE listens on channel names",
+      "Pattern matching supports wildcard channel subscriptions",
+      "Pub/sub delivers messages at-most-once",
+      "Channel names are binary-safe strings"
+    ],
+    "topic_b_facts": [
+      "RDB snapshots persist data in background via fork",
+      "AOF logs every operation for durability",
+      "fsync policy controls disk write frequency",
+      "Backgroundrewrite compacts AOF files"
+    ],
+    "query": "What mechanism persists Redis data in the background?",
+    "gold_answer": "RDB snapshots",
+    "forbidden_terms": ["SUBSCRIBE", "channel", "pub/sub", "pattern"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "tsr_05",
+    "description": "Same domain: Docker bridge vs host networking. Overlapping terms: network, expose, port",
+    "topic_a_facts": [
+      "Bridge network creates docker0 interface automatically",
+      "NAT translation enables container internet access",
+      "Subnet 172.17.0.0/16 is assigned to bridge network",
+      "Port mapping exposes container ports to host"
+    ],
+    "topic_b_facts": [
+      "Host network shares host namespace directly",
+      "No network isolation exists in host mode",
+      "Container port exposes without NAT translation",
+      "1:1 port mapping between host and container"
+    ],
+    "query": "Which Docker network mode shares the host namespace?",
+    "gold_answer": "host network",
+    "forbidden_terms": ["bridge", "NAT", "subnet", "docker0"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "tsr_06",
+    "description": "Same domain: API rate limiting algorithms. Overlapping terms: rate, limit, window, Redis",
+    "topic_a_facts": [
+      "Token bucket algorithm uses capacity and refill rate",
+      "Burst allowance permits momentary limit overflow",
+      "Tokens consume per request processed",
+      "Sliding window tracks requests in rolling timeframe"
+    ],
+    "topic_b_facts": [
+      "Fixed window divides time into discrete intervals",
+      "Redis sorted set stores request timestamps",
+      "Window reset clears accumulated request count",
+      "Lag compensation adjusts for processing delays"
+    ],
+    "query": "Which rate limiting algorithm uses a rolling timeframe?",
+    "gold_answer": "sliding window",
+    "forbidden_terms": ["token", "bucket", "capacity", "burst"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "tsr_07",
+    "description": "Same domain: gRPC unary vs streaming RPC. Overlapping terms: gRPC, stream, HTTP/2",
+    "topic_a_facts": [
+      "Unary RPC follows request-response pattern",
+      "All gRPC calls use HTTP/2 as transport",
+      "Protobuf defines service method signatures",
+      "Blocking stubs pause for server response"
+    ],
+    "topic_b_facts": [
+      "Server streaming sends multiple responses per request",
+      "Client streaming sends multiple requests per response",
+      "Bidirectional streaming enables simultaneous exchange",
+      "Flow control prevents receiver buffer overflow"
+    ],
+    "query": "What gRPC communication pattern allows simultaneous bidirectional messages?",
+    "gold_answer": "bidirectional streaming",
+    "forbidden_terms": ["unary", "request-response", "Protobuf", "blocking"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "tsr_08",
+    "description": "Same domain: Kubernetes ConfigMaps vs Secrets. Overlapping terms: Kubernetes, data, mount",
+    "topic_a_facts": [
+      "ConfigMaps store non-sensitive configuration key-value pairs",
+      "Environment variables inject ConfigMap values into pods",
+      "Volume mount exposes ConfigMap as filesystem files",
+      "Immutable ConfigMaps prevent modification after creation"
+    ],
+    "topic_b_facts": [
+      "Secrets use base64 encoding for sensitive data",
+      "RBAC policies control secret access permissions",
+      "Secrets encrypt data at rest in etcd",
+      "Service account tokens auto-mount into pods"
+    ],
+    "query": "How does Kubernetes protect secret data at rest?",
+    "gold_answer": "encrypts data at rest in etcd",
+    "forbidden_terms": ["ConfigMap", "key-value", "environment", "mount"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "tsr_09",
+    "description": "Hard same-domain: MySQL InnoDB vs MyISAM. Overlapping terms: MySQL, locking, table, engine. Recency trap: store reversed.",
+    "topic_a_facts": [
+      "InnoDB uses MVCC for concurrent reads",
+      "Row-level locking prevents write conflicts",
+      "Gap locks index range coverage",
+      "Auto-increment uses mutex-protected counters",
+      "Foreign key constraints enforce referential integrity"
+    ],
+    "topic_b_facts": [
+      "MyISAM uses table-level locking exclusively",
+      "Full-text search indexes accelerate LIKE queries",
+      "Compressed tables reduce storage footprint",
+      "MyISAM lacks transaction support",
+      " table can be repaired after crashes"
+    ],
+    "query": "Which MySQL storage engine uses row-level locking?",
+    "gold_answer": "InnoDB",
+    "forbidden_terms": ["MVCC", "table-level", "gap", "full-text", "MyISAM"],
+    "difficulty": "hard",
+    "store_order": "reversed"
+  },
+  {
+    "id": "tsr_10",
+    "description": "Hard same-domain: Elasticsearch queries vs aggregations. Overlapping terms: Elasticsearch, field, type, query. Recency trap: store reversed.",
+    "topic_a_facts": [
+      "Term query matches exact values in a field",
+      "Match query analyzes text before matching",
+      "Bool query combines must should must_not clauses",
+      "Multi_match query searches multiple fields",
+      "Range query filters numeric or date field bounds"
+    ],
+    "topic_b_facts": [
+      "Terms aggregation groups by field value cardinalities",
+      "Avg aggregation calculates mean field values",
+      "Date histogram buckets events by time intervals",
+      "Cardinality aggregation counts unique field values",
+      "Top hits aggregation returns matching documents per bucket"
+    ],
+    "query": "What aggregation counts the number of unique values in a field?",
+    "gold_answer": "Cardinality aggregation",
+    "forbidden_terms": ["term query", "match query", "bool query", "range"],
+    "difficulty": "hard",
+    "store_order": "reversed"
+  },
+  {
+    "id": "tsr_11",
+    "description": "Hard same-domain: Kafka producer vs consumer settings. Overlapping terms: Kafka, producer, consumer, batch, offset",
+    "topic_a_facts": [
+      "Producer acks=0 enables fire-and-forget delivery",
+      "Batch size configures bytes accumulated before send",
+      "Linger.ms delays batch transmission for efficiency",
+      "Compression type reduces network transfer volume",
+      "Retries control automatic resubmission attempts"
+    ],
+    "topic_b_facts": [
+      "Consumer group.id partitions workload across instances",
+      "Auto offset reset determines starting position",
+      "Enable auto.commit commits offsets periodically",
+      "Max poll records limits single fetch batch size",
+      "Session timeout detects consumer failures"
+    ],
+    "query": "What Kafka producer setting controls acknowledgment requirements?",
+    "gold_answer": "acks",
+    "forbidden_terms": ["batch size", "linger.ms", "compression", "group.id"],
+    "difficulty": "hard",
+    "store_order": "reversed"
+  },
+  {
+    "id": "tsr_12",
+    "description": "Hard same-domain: TLS 1.2 vs TLS 1.3. Overlapping terms: TLS, cipher, AES, handshake, certificate",
+    "topic_a_facts": [
+      "TLS 1.2 cipher suites use CBC mode for encryption",
+      "SHA-256 PRF pseudo-random function derives keys",
+      "Client certificates authenticate during handshake",
+      "Session tickets enable session resumption",
+      "Static RSA key exchange is supported"
+    ],
+    "topic_b_facts": [
+      "TLS 1.3 cipher suites only use AEAD algorithms",
+      "ChaCha20-Poly1305 provides alternative to AES",
+      "AES-GCM offers authenticated encryption combined",
+      "1-RTT handshake reduces connection latency",
+      "0-RTT enables early data on resumption"
+    ],
+    "query": "What TLS version supports 1-RTT handshake?",
+    "gold_answer": "TLS 1.3",
+    "forbidden_terms": ["CBC", "SHA-256", "session tickets", "static RSA"],
+    "difficulty": "hard",
+    "store_order": "normal"
+  }
+]

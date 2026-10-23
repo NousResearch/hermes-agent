@@ -1,0 +1,165 @@
+[
+  {
+    "id": "cp_01",
+    "description": "Critical port number must survive merge of network config facts",
+    "facts": [
+      "The API server listens on port 9000",
+      "API server configured in config/api.yaml",
+      "Nginx reverse proxy forwards port 443 to 9000 internally",
+      "Port 9000 is firewall-whitelisted on all app servers",
+      "API server supports HTTP/2",
+      "Healthcheck endpoint: GET /health on port 9000"
+    ],
+    "critical_facts": ["The API server listens on port 9000"],
+    "query": "What port does the API server use?",
+    "gold_answer": "9000",
+    "must_preserve": ["9000"]
+  },
+  {
+    "id": "cp_02",
+    "description": "Breaking change version and migration requirement must survive merge",
+    "facts": [
+      "v2.0 introduces breaking changes in the auth module",
+      "v2.0 released March 15, 2024",
+      "v2.0 requires Python 3.11+",
+      "v2.0 drops support for PostgreSQL < 14",
+      "v2.0 migration requires running: python manage.py migrate_auth",
+      "v1.x users must run migration script before upgrading to v2.0"
+    ],
+    "critical_facts": [
+      "v2.0 introduces breaking changes in the auth module",
+      "v1.x users must run migration script before upgrading to v2.0"
+    ],
+    "query": "What do v1.x users need to do before upgrading to v2.0?",
+    "gold_answer": "run migration script",
+    "must_preserve": ["migration"]
+  },
+  {
+    "id": "cp_03",
+    "description": "Rate limit must survive merge of API documentation facts",
+    "facts": [
+      "Public API rate limit: 1000 requests per minute per API key",
+      "Exceeding rate limit returns HTTP 429",
+      "Rate limit headers: X-RateLimit-Remaining, X-RateLimit-Reset",
+      "Premium API keys have 10000 requests per minute",
+      "Rate limits reset at the start of each minute",
+      "IP-based rate limit: 100 req/min for unauthenticated requests"
+    ],
+    "critical_facts": ["Public API rate limit: 1000 requests per minute per API key"],
+    "query": "What is the standard API rate limit?",
+    "gold_answer": "1000 requests per minute",
+    "must_preserve": ["1000"]
+  },
+  {
+    "id": "cp_04",
+    "description": "Data retention duration must survive merge of compliance facts",
+    "facts": [
+      "User data is retained for 7 years per GDPR compliance requirements",
+      "Deleted accounts: data anonymized after 30 days",
+      "Logs retained for 90 days in hot storage, 7 years cold",
+      "Financial records: 7 years mandatory retention",
+      "GDPR right-to-erasure honored within 72 hours"
+    ],
+    "critical_facts": ["User data is retained for 7 years per GDPR compliance requirements"],
+    "query": "How long is user data retained?",
+    "gold_answer": "7 years",
+    "must_preserve": ["7 years"]
+  },
+  {
+    "id": "cp_05",
+    "description": "Worker memory limit must survive merge of infrastructure facts",
+    "facts": [
+      "Worker processes are capped at 512MB RAM each",
+      "Max 8 worker processes per host",
+      "Workers killed and restarted if they exceed 512MB",
+      "Memory monitoring via Prometheus metrics endpoint /metrics",
+      "Alert fires if average worker memory exceeds 400MB",
+      "OOM killer logs available in /var/log/worker-oom.log"
+    ],
+    "critical_facts": ["Worker processes are capped at 512MB RAM each"],
+    "query": "What is the memory limit for worker processes?",
+    "gold_answer": "512MB",
+    "must_preserve": ["512MB", "512"]
+  },
+  {
+    "id": "cp_06",
+    "description": "Critical environment variable name must survive merge",
+    "facts": [
+      "Set DATABASE_URL to configure the database connection",
+      "DATABASE_URL format: postgres://user:pass@host:port/dbname",
+      "Never commit DATABASE_URL to version control",
+      "DATABASE_URL is auto-injected in Kubernetes via secret",
+      "Missing DATABASE_URL causes startup failure with clear error"
+    ],
+    "critical_facts": ["Set DATABASE_URL to configure the database connection"],
+    "query": "What environment variable configures the database?",
+    "gold_answer": "DATABASE_URL",
+    "must_preserve": ["DATABASE_URL"]
+  },
+  {
+    "id": "cp_07",
+    "description": "Backup frequency must survive merge of operational facts",
+    "facts": [
+      "Database backups run every 6 hours",
+      "Backups stored in S3 bucket: hermes-db-backups",
+      "Backup retention: 30 daily, 12 monthly, 3 yearly",
+      "Point-in-time recovery available for last 7 days",
+      "Backup verification test runs monthly",
+      "Restore drill conducted quarterly"
+    ],
+    "critical_facts": ["Database backups run every 6 hours"],
+    "query": "How often are database backups taken?",
+    "gold_answer": "every 6 hours",
+    "must_preserve": ["6 hours", "6"]
+  },
+  {
+    "id": "cp_08",
+    "description": "Two-factor authentication requirement must survive merge",
+    "facts": [
+      "All admin accounts must have 2FA enabled",
+      "2FA required for production access",
+      "Supported 2FA methods: TOTP (Google Authenticator), SMS",
+      "2FA bypass available for automated service accounts with IP allowlist",
+      "Lost 2FA device: contact security@company.com"
+    ],
+    "critical_facts": [
+      "All admin accounts must have 2FA enabled",
+      "2FA required for production access"
+    ],
+    "query": "Is 2FA required for admin accounts?",
+    "gold_answer": "yes, all admin accounts must have 2FA enabled",
+    "must_preserve": ["2FA", "admin"]
+  },
+  {
+    "id": "cp_09",
+    "description": "Max file upload size must survive merge of API constraint facts",
+    "facts": [
+      "Maximum file upload size: 50MB per request",
+      "File uploads go to S3 via presigned URLs",
+      "Supported file types: jpg, png, pdf, csv, json",
+      "Files larger than 50MB should use multipart upload API",
+      "Upload timeout: 120 seconds",
+      "Files are virus-scanned on upload"
+    ],
+    "critical_facts": ["Maximum file upload size: 50MB per request"],
+    "query": "What is the maximum file upload size?",
+    "gold_answer": "50MB",
+    "must_preserve": ["50MB", "50"]
+  },
+  {
+    "id": "cp_10",
+    "description": "Minimum password length must survive merge of security policy facts",
+    "facts": [
+      "Passwords must be at least 12 characters long",
+      "Password must include uppercase, lowercase, number, and symbol",
+      "Passwords expire every 90 days",
+      "Cannot reuse last 10 passwords",
+      "Three failed login attempts locks account for 15 minutes",
+      "Password manager use encouraged; 1Password company license available"
+    ],
+    "critical_facts": ["Passwords must be at least 12 characters long"],
+    "query": "What is the minimum password length?",
+    "gold_answer": "12 characters",
+    "must_preserve": ["12"]
+  }
+]

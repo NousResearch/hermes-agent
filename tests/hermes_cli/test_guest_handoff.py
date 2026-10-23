@@ -561,6 +561,19 @@ def test_auth_status_shows_what_moved(portal, capsys):
     assert "nous: logged in" in out and "Your apps moved to sid@example.com: gmail." in out
 
 
+@pytest.mark.parametrize("kind", ["moved", "swapped"])
+def test_a_move_with_no_named_apps_reads_as_nothing_moved(portal, kind):
+    """A free tier that only read its connectors gets a vendor id row on the service, so the claim
+    answers ``moved``/``swapped`` with an empty list; that empty list is the truth."""
+    from hermes_cli import guest_handoff
+    portal.claim_answers = [httpx.Response(200, json={
+        **CLAIMED, "connectors": {"kind": kind, "moved_toolkits": [], "dropped_toolkits": []}})]
+    _mint_guest()
+    _persist(_account())
+    assert guest_handoff.status_lines(guest_handoff.handoff_status()) == [
+        "Signed in as sid@example.com. There were no free-tier apps to move."]
+
+
 def test_status_copy_never_names_the_mechanism(portal):
     from hermes_cli import guest_handoff
     for status in (
@@ -571,5 +584,5 @@ def test_status_copy_never_names_the_mechanism(portal):
         text = " ".join(guest_handoff.status_lines(status)).lower()
         assert text and not any(word in text for word in ("guest", "anonymous", "claim"))
     moved = guest_handoff.status_lines(
-        {"state": "claimed", "connectors_kind": "moved", "moved_toolkits": [], "account_email": "a@b.c"})
-    assert moved == ["Your apps moved to a@b.c."]
+        {"state": "claimed", "connectors_kind": "moved", "moved_toolkits": ["gmail"], "account_email": "a@b.c"})
+    assert moved == ["Your apps moved to a@b.c: gmail."]

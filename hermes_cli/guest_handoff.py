@@ -209,7 +209,8 @@ def note_promoted(anon_token: str, *, account_email: Optional[str]) -> None:
         record = record or {"attempts": 0, "profiles": [], "created_at": _iso(_now())}
         record.pop("anon_token", None)
         record.update(state=CLAIMED, error=None, result={
-            "account_email": account_email, "connectors_kind": "moved", "moved_toolkits": [],
+            # The promotion reports no list of what moved: neutral copy, not "nothing moved".
+            "account_email": account_email, "connectors_kind": "unknown", "moved_toolkits": [],
             "dropped_toolkits": []})
         if home not in record["profiles"]:
             record["profiles"].append(home)
@@ -608,11 +609,13 @@ def status_lines(status: dict[str, Any]) -> list[str]:
     if state != CLAIMED:
         return []
     kind = status.get("connectors_kind")
-    if kind in ("moved", "swapped"):
-        lines = [f"Your apps moved to {where}" + (f": {', '.join(moved)}." if moved else ".")]
+    # An empty moved list is the truth: the service refuses a move it could not read, and gives a
+    # free tier that only read its connectors a vendor row, so kind alone says nothing.
+    if kind in ("moved", "swapped") and moved:
+        lines = [f"Your apps moved to {where}: {', '.join(moved)}."]
     elif kind == "conflict":
         lines = [f"{where} already had its own apps, so the free-tier apps stayed behind."]
-    elif kind == "none":
+    elif kind in ("none", "moved", "swapped"):
         lines = [f"Signed in as {where}. There were no free-tier apps to move."]
     else:
         lines = [f"Signed in as {where}. Any free-tier apps are in this account now."]

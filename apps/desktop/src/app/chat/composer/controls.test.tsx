@@ -109,6 +109,32 @@ describe('HUD mode', () => {
   })
 })
 
+// `voice.show_controls: false` trims the row without disabling voice: the mic
+// and everything it fans out (or folds into) disappear, and Send, the pills and
+// the input stay exactly where they were.
+describe('voice control visibility', () => {
+  it('shows the dictation hub by default', () => {
+    renderControls()
+
+    expect(screen.getByLabelText('Voice dictation')).toBeTruthy()
+  })
+
+  it('drops the hub and its fan when showVoiceControls is false', () => {
+    renderControls({ showVoiceControls: false })
+
+    expect(screen.queryByLabelText('Voice dictation')).toBeNull()
+    expect(screen.getByLabelText('Send')).toBeTruthy()
+  })
+
+  it('drops the folded menu too, so no voice entry point survives in the HUD', () => {
+    $hudMode.set(true)
+    renderControls({ showVoiceControls: false })
+
+    expect(screen.queryByLabelText('Voice')).toBeNull()
+    expect(screen.queryByLabelText('Voice dictation')).toBeNull()
+  })
+})
+
 // A tile can be narrower than the controls cost, and the row is inside an
 // overflow-hidden surface — so anything that doesn't fold gets clipped off the
 // right edge, send button first. The ladder keeps going past `stacked`: voice

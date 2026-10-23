@@ -10,6 +10,7 @@ import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import { $activeGatewayProfile } from '@/store/profile'
 import { localShowReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import { $connection } from '@/store/session'
+import { setShowVoiceControlsFromConfig } from '@/store/voice-controls'
 import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
@@ -158,6 +159,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
         setShowReasoningFromConfig(localShowReasoning(config.display))
+        setShowVoiceControlsFromConfig(config.voice?.show_controls)
         setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)

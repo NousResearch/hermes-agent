@@ -534,6 +534,8 @@ export interface HermesConfig {
     barge_in?: unknown
     barge_in_threshold_multiplier?: unknown
     silence_duration?: unknown
+    /** Show the composer's voice/dictation controls (default true). */
+    show_controls?: boolean
   }
 }
 

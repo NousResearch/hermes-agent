@@ -313,6 +313,18 @@ class HostedRoomRuntime:
         return self.remote_member is not None and bool(
             self.remote_member(task["identity"].room_id, _member_id(task)))
 
+    def _defer_unconfirmed_stop(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease) -> bool:
+        """A member on another gateway that has not confirmed a Stop within the deferral window may
+        stay unreachable: release the room's queue. The turn is deferred, never reported cancelled,
+        since its run may still be going there."""
+        if (not self._remote(task)
+                or self.clock() < float(task.get("updated_at") or 0) + self.indeterminate_defer_seconds):
+            return False
+        self._publish(binding, self._fenced(
+            state.defer_unconfirmed_stop, None, task, lease, reason="member_unavailable"))
+        return True
+
     def _publish(self, binding: HostedRoomBinding, task: dict[str, Any]) -> dict[str, Any]:
         if self.publish_terminal is not None:
             self.publish_terminal(binding, task)
@@ -462,10 +474,11 @@ class HostedRoomRuntime:
                 if self._peer_stop_acknowledged(binding, task):
                     self._complete_cancel(task)
                     continue
-                if not self._finish_stop(binding, task, lease):
-                    return True
+                if self._finish_stop(binding, task, lease):
+                    continue
             except Exception as exc:
                 self._record_error(_STOP_PENDING.format(exc=exc))
+            if not self._defer_unconfirmed_stop(binding, task, lease):
                 return True
         return False
 
@@ -755,6 +768,8 @@ class HostedRoomRuntime:
                         return None
                 except Exception as exc:
                     self._record_error(_STOP_PENDING.format(exc=exc))
+                if self._defer_unconfirmed_stop(binding, task, lease):
+                    return None
                 self._wake.wait(self.active_poll_interval_seconds)
                 self._wake.clear()
                 continue

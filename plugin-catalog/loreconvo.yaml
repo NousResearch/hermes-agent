@@ -1,6 +1,6 @@
 name: loreconvo
 repo: https://github.com/labyrinth-analytics/loreconvo
-sha: bb82f6ab70e8bc12d8b4cbb361b201c99a940c7f
+sha: 4ea667e92a92a2c3ecce28dd7d80e44c72e56d17
 subdir: integrations/hermes
 description: "LoreConvo memory provider: cross-surface persistent session memory with search, recall and structured memory items. Disclosure — stores end-of-session transcripts (truncated, including tool output) and Hermes memory writes in ~/.loreconvo/sessions.db, a store shared across all Hermes profiles and other LoreConvo clients, and injects context from those sessions into each turn; a Pro license enables a one-time Hugging Face embedding-model download; installs the loreconvo package (BUSL-1.1) with lancedb, fastembed and onnxruntime into the Hermes environment."
 tier: community
@@ -16,5 +16,5 @@ capabilities:
   requires_env:
     - LORECONVO_HERMES_PROJECT
 requires_hermes: ">=0.21.0"
-version: "0.10.18"
+version: "0.10.19"
 docs_url: https://github.com/labyrinth-analytics/loreconvo?tab=readme-ov-file#loreconvo

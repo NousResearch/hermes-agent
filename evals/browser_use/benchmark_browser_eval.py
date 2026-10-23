@@ -1,6 +1,6 @@
-"""Quick benchmark: subprocess eval vs supervisor-WS eval.
+"""Quick benchmark: supervisor-WS ``Runtime.evaluate`` latency against a live Chrome.
 
-Runs both paths against the same live Chrome and prints a comparison table.
+Prints mean/median/min/max for the supervisor's persistent CDP WebSocket path.
 Not a pytest — a script you run manually for the PR description.
 
 Usage:
@@ -87,23 +87,6 @@ def main():
             assert out.get("ok"), out
             ws_times.append((t1 - t0) * 1000)
 
-        # ── Bench 2: agent-browser subprocess path ────────────────────────
-        # Skip if agent-browser isn't installed — the WS bench still tells
-        # us what we need.
-        if shutil.which("agent-browser") is None and shutil.which("npx") is None:
-            print("agent-browser CLI not found — skipping subprocess bench.")
-            sub_times = []
-        else:
-            from tools.browser_tool_session import _run_browser_command
-            from tools.browser_tool import _last_session_key
-            task_id = _last_session_key("bench-eval")
-            sub_times = []
-            for _ in range(args.iterations):
-                t0 = time.monotonic()
-                _run_browser_command(task_id, "eval", ["1 + 1"])
-                t1 = time.monotonic()
-                sub_times.append((t1 - t0) * 1000)
-
         def fmt(name: str, ts: list[float]) -> str:
             if not ts:
                 return f"  {name:<40} (skipped)"
@@ -119,11 +102,6 @@ def main():
         print(f"browser_eval benchmark — {args.iterations} iterations of `1 + 1`")
         print("-" * 90)
         print(fmt("supervisor WS (Runtime.evaluate)", ws_times))
-        print(fmt("agent-browser subprocess (eval)", sub_times))
-        if ws_times and sub_times:
-            speedup = statistics.mean(sub_times) / statistics.mean(ws_times)
-            print()
-            print(f"Speedup: {speedup:.1f}x (mean)")
 
     finally:
         SUPERVISOR_REGISTRY.stop_all()

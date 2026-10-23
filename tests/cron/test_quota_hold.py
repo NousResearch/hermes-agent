@@ -11,7 +11,7 @@ parsed wait is clamped to the longest window a provider really names.
 """
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -82,8 +82,8 @@ def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
 ):
     """A weekly fire blocked by a shorter quota window retries when the provider reopens;
     it is not silently deferred until the following week's natural occurrence."""
-    now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
-    natural_next = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 18, 12, 1, tzinfo=UTC)
+    natural_next = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
     monkeypatch.setattr(qh, "_hermes_now", lambda: now)
     job = create_job("weekly digest", "0 12 * * 5")
@@ -110,12 +110,12 @@ def test_recovery_fire_skips_dense_schedules_and_never_re_parks(monkeypatch):
     """Recovery is one attempt for sparse schedules only: an hourly job whose hold ends two
     minutes before :00 keeps its natural :00 (no off-lattice near-duplicate), and a job that is
     already the recovery fire (carries quota_hold_until) failing again is not re-parked."""
-    now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 18, 12, 1, tzinfo=UTC)
     monkeypatch.setattr(qh, "_hermes_now", lambda: now)
 
     dense = {
         "schedule": {"kind": "cron", "expr": "0 * * * *"},
-        "next_run_at": datetime(2026, 9, 18, 13, 0, tzinfo=timezone.utc).isoformat(),
+        "next_run_at": datetime(2026, 9, 18, 13, 0, tzinfo=UTC).isoformat(),
     }
     natural = dense["next_run_at"]
     assert not qh.plan_hold(dense, hold_seconds=57 * 60 - qh.HOLD_SLACK_SECONDS,
@@ -139,6 +139,18 @@ def _raise_quota(**_kw):
     raise _quota_error()
 
 
+def _acquire_store(*_args, **_kwargs):
+    """The canonical owner's store when this fire has one; a stub otherwise.
+
+    ``_open_cron_session_db`` fails closed unless ``acquire`` returns the owner's exact db, so a
+    bare stub would turn a real run into ``RuntimeError: cron requires the canonical owner
+    store``. The pre-flight tests never open the store, so the stub stays for them."""
+    from gateway.session_cron import current_execution
+
+    owner = current_execution()
+    return owner[0].db if owner is not None else MagicMock()
+
+
 def _tick(job, home, deliveries, resolve, *, result=None):
     """One real scheduler tick (preflight ON) with the provider resolver replaced by *resolve*.
 
@@ -149,11 +161,12 @@ def _tick(job, home, deliveries, resolve, *, result=None):
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=MagicMock()), \
+         patch("hermes_state_registry.acquire", side_effect=_acquire_store), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
-         patch.object(sched, "_deliver_result",
-                      side_effect=lambda jb, content, **kw: deliveries.append(content)), \
+         patch("cron.delivery_queue.enqueue",
+               side_effect=lambda execution_id, jb, content, **kw: (
+                   deliveries.append(content), {"status": "pending"})[1]), \
          patch("run_agent.AIAgent") as agent_cls:
         if result is None:
             agent_cls.return_value.run_conversation.side_effect = RuntimeError("model said no")
@@ -162,15 +175,18 @@ def _tick(job, home, deliveries, resolve, *, result=None):
         sched.run_one_job(dict(job))
 
 
-def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_reach(tmp_cron_home):
+def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_reach(tmp_cron_home, cron_owner):
     """A 30-minute job whose provider resolve raises the Codex quota AuthError ('retry after
     123518s') is parked by the real scheduler tick: preflight lets the rate-limited AuthError
     through (it is not a missing credential), the one delivered alert carries the hold notice,
     and the job does not fire again inside the window (not even after the stale-error re-arm's
     cadence+grace). The marker clears once a run reaches the model."""
-    job = create_job("portfolio triage", "every 30m", deliver="local")
+    # A real (non-local) lane: the alert rides the durable delivery queue, whose enqueue is the seam.
+    (tmp_cron_home / "config.yaml").write_text(
+        "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n", encoding="utf-8")
+    job = create_job("portfolio triage", "every 30m", deliver="slack:alerts")
     job_id = job["id"]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     deliveries: list = []
 
     _tick(get_job(job_id), tmp_cron_home, deliveries, _raise_quota)
@@ -234,12 +250,16 @@ def test_failed_result_stamps_its_rate_limit_window_on_the_error_the_scheduler_r
     assert qh.hold_seconds_from_failure(other.value) is None
 
 
-def test_mid_run_429_result_parks_the_job_through_the_real_scheduler_tick(tmp_cron_home):
+def test_mid_run_429_result_parks_the_job_through_the_real_scheduler_tick(tmp_cron_home, cron_owner):
     """End to end: a failed turn result whose verdict is a rate limit parks a sub-hourly job past
     the window the provider named, instead of re-firing it into the wall every 30 minutes."""
-    job = create_job("portfolio triage", "every 30m", deliver="local")
+    # A real (non-local) lane: the alert rides the durable delivery queue, whose enqueue is the
+    # seam. A ``deliver="local"`` failure would take base's on-demand gateway spawn instead.
+    (tmp_cron_home / "config.yaml").write_text(
+        "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n", encoding="utf-8")
+    job = create_job("portfolio triage", "every 30m", deliver="slack:alerts")
     job_id = job["id"]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     deliveries: list = []
 
     _tick(get_job(job_id), tmp_cron_home, deliveries, _resolve_ok, result={

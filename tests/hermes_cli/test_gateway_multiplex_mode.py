@@ -20,6 +20,7 @@ import hermes_constants
 from gateway.config import GatewayConfig, load_gateway_config
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_multiplex_mode as mode
+from datetime import UTC
 
 
 @pytest.fixture
@@ -152,7 +153,7 @@ def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fle
 def test_migration_plan_treats_the_unset_default_as_not_yet_multiplexed(fleet):
     """The fleet the boot guard refuses is exactly the one ``hermes gateway migrate --multiplex`` folds:
     an unset flag must not read as "already multiplexed" or the migration would short-circuit."""
-    root, services, pids = fleet
+    _root, services, pids = fleet
     pids.update({"coder": 4101, "ops": 4102})
     services.update({"coder": [("systemd", False)], "ops": [("systemd", False)]})
     plan = gm.build_migration_plan()
@@ -164,7 +165,7 @@ def test_live_record_outranks_the_raw_flag_for_other_processes(fleet, monkeypatc
     """A CLI process asks the LIVE default gateway (which settled the unset default itself) before
     reading config; a gateway that stayed standalone recorded an empty served set."""
     root, _services, _pids = fleet
-    import gateway.status as status
+    from gateway import status
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
     record = {"pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running", "served_profiles": []}
@@ -181,7 +182,118 @@ def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_
     from gateway import status as gw_status
     from hermes_cli.gateway_multiplex_mode import MultiplexDecision, record_multiplex_decision
     monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: tmp_path / "gateway_state.json")
+    monkeypatch.setattr(gw_status, "owns_gateway_runtime_lock", lambda: True)  # the serving gateway records
     record_multiplex_decision(MultiplexDecision(False, "guard", "profile(s) 'coder' still run their own gateway"))
     assert "coder" in gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"]
     record_multiplex_decision(MultiplexDecision(True, "default", "unset; default applies"))
     assert gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"] is None
+
+
+@pytest.mark.spawns_gateway_lookalike  # a stub that records a decision and takes the lock; reaped below
+def test_pre_lock_decision_never_publishes_a_rival_gateway_owner(tmp_path):
+    """The multiplex decision is made while the config loads, before the runtime-lock claim. Writing
+    it then published that launch's pid in gateway_state.json, and a launch racing it read that pid as
+    a live gateway and refused, so neither served (the cron e2e's "A gateway already owns this host").
+    A real `hermes gateway run`-shaped child records its decision without the lock; the rival must
+    still see no owner, and the decision lands only once that child holds the lock."""
+    import subprocess
+    import sys
+    import textwrap
+
+    home = tmp_path / "home"
+    home.mkdir()
+    entry = tmp_path / "bin" / "hermes"  # the argv a gateway identity check accepts
+    entry.parent.mkdir()
+    entry.write_text(textwrap.dedent("""
+        import os, sys
+        from gateway import status
+        from hermes_cli.gateway_multiplex_mode import MultiplexDecision, record_multiplex_decision
+        record_multiplex_decision(MultiplexDecision(False, "guard", "profile 'coder' runs its own gateway"))
+        print("decided", flush=True)
+        sys.stdin.readline()
+        assert status.acquire_gateway_runtime_lock()
+        from hermes_cli.gateway_multiplex_mode import publish_pending_multiplex_decision
+        publish_pending_multiplex_decision()
+        print("claimed", os.getpid(), flush=True)  # the lock owner (Popen.pid is the venv launcher on Windows)
+        sys.stdin.readline()
+    """), encoding="utf-8")
+    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+    child = subprocess.Popen([sys.executable, str(entry), "gateway", "run"], env=env, text=True,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    probe = textwrap.dedent("""
+        import json
+        from gateway import status
+        record = status.read_runtime_status() or {}
+        print(json.dumps([status.get_running_pid(), record.get("multiplex_standalone_reason")]))
+    """)
+
+    def rival() -> list:
+        out = subprocess.run([sys.executable, "-c", probe], env=env, text=True, capture_output=True, timeout=60, check=False)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+    try:
+        assert child.stdout.readline().strip() == "decided"
+        assert rival() == [None, None]  # nothing claims to own the home before the lock does
+        child.stdin.write("\n")
+        child.stdin.flush()
+        claimed, owner = child.stdout.readline().split()
+        assert claimed == "claimed"
+        assert rival() == [int(owner), "profile 'coder' runs its own gateway"]
+    finally:
+        child.kill()
+        child.wait(timeout=30)
+
+
+def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(tmp_path, monkeypatch):
+    """Dead or stale gateway_state.json must not emit standalone warnings (#120991)."""
+    import gateway.status as gw_status
+    from datetime import datetime, timezone
+
+    state_file = tmp_path / "gateway_state.json"
+    monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: state_file)
+    # A multi-profile host: without unserved profiles the box is empty regardless of liveness,
+    # so the dead/stale cases below would pass vacuously.
+    monkeypatch.setattr(mode, "unserved_profiles", lambda: ["other_profile"])
+
+    # 1. Stopped gateway
+    state_file.write_text(json.dumps({
+        "gateway_state": "stopped",
+        "pid": os.getpid(),
+        "updated_at": datetime.now(UTC).isoformat(),
+        "multiplex_standalone_reason": "orphan reason",
+    }), encoding="utf-8")
+    assert mode.recorded_standalone_warning_lines() == []
+
+    # 2. Dead PID
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": 999999999,
+        "updated_at": datetime.now(UTC).isoformat(),
+        "multiplex_standalone_reason": "orphan reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: False)
+    assert mode.recorded_standalone_warning_lines() == []
+
+    # 3. Stale heartbeat but LIVE PID: a paused/wedged standalone gateway still warns (the
+    # heartbeat is a health signal, not liveness).
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": os.getpid(),
+        "updated_at": "2020-01-01T00:00:00Z",
+        "multiplex_standalone_reason": "wedged reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)
+    assert any("wedged reason" in line for line in mode.recorded_standalone_warning_lines())
+
+    # 4. Live and fresh record emits warning
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": os.getpid(),
+        "updated_at": datetime.now(UTC).isoformat(),
+        "multiplex_standalone_reason": "real standalone reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)
+    monkeypatch.setattr(gw_status, "runtime_status_is_stale", lambda r: False)
+    lines = mode.recorded_standalone_warning_lines()
+    assert any("STANDALONE" in line for line in lines)
+    assert any("real standalone reason" in line for line in lines)

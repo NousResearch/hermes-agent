@@ -55,6 +55,14 @@ verificationWritePath?: string
  * handle's `path` to let the test decide when the process exits.
  */
 backgroundReleasePath?: string
+
+/**
+ * Port to bind (default: any free port). An install/update journey runs its
+ * phases in separate CI steps, and each step's mock dies with that step while
+ * the detached gateway survives with the provider URL it read at boot; the
+ * next step rebinds the same port so that URL keeps answering.
+ */
+port?: number
 }
 
 export interface MockServer {
@@ -269,7 +277,7 @@ const SIDEBAR_CROSS_SCRIPT: ScriptedTurn[] = sidebarCrossScript()
 const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
   {
     text: 'Starting a task that will keep this turn active.',
-    toolCalls: [{ name: 'clarify', args: { question: 'Keep working?', choices: ['Yes', 'No'] } }],
+    toolCalls: [{ name: 'clarify', args: { questions: [{ question: 'Keep working?', choices: ['Yes', 'No'] }] } }],
   },
   { text: 'The paused task completed.' },
 ]
@@ -379,7 +387,7 @@ const TOOL_THEN_FAILURE_TURN: ScriptedTurn = {
 
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
-  toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
+  toolCalls: [{ name: 'clarify', args: { questions: [{ question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] }] } }],
 }
 
 /**
@@ -400,6 +408,22 @@ const BATCH_CLARIFY_TURN: ScriptedTurn = {
   toolCalls: [{ name: 'clarify', args: { questions: BATCH_CLARIFY_QUESTIONS } }],
 }
 
+/**
+ * A marker that makes the mock emit a ONE-ENTRY batch clarify — the exact
+ * payload shape every single question takes since the `questions[]`-only
+ * schema (#95907). Coverage gap called out in #98645: nothing exercised
+ * `questions:[{question, choices}]` before this.
+ */
+export const SINGLE_BATCH_CLARIFY_TRIGGER = 'E2E_SINGLE_BATCH_CLARIFY_TRIGGER'
+export const SINGLE_BATCH_CLARIFY_QUESTIONS = [
+  { question: 'Pick a single-batch drink?', choices: ['Espresso', 'Latte'] },
+]
+
+const SINGLE_BATCH_CLARIFY_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'clarify', args: { questions: SINGLE_BATCH_CLARIFY_QUESTIONS } }],
+}
+
 function includesBatchClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BATCH_CLARIFY_TRIGGER)
@@ -411,6 +435,22 @@ function includesBatchClarifyTrigger(value: unknown): boolean {
 
   if (value && typeof value === 'object') {
     return Object.values(value).some(includesBatchClarifyTrigger)
+  }
+
+  return false
+}
+
+function includesSingleBatchClarifyTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(SINGLE_BATCH_CLARIFY_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesSingleBatchClarifyTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesSingleBatchClarifyTrigger)
   }
 
   return false
@@ -763,6 +803,27 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             }
           }
 
+          if (includesSingleBatchClarifyTrigger(parsed.messages)) {
+            // Unlike the 2-question trigger (fresh conversation), this one
+            // shares history with it, so "any tool result" would false-positive
+            // — match only THIS turn's answered result by its question text.
+            const hasOwnToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some(
+                (message: { role?: string }) =>
+                  message?.role === 'tool' && JSON.stringify(message).includes('single-batch'),
+              )
+
+            if (!hasOwnToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
+              }
+
+              return
+            }
+          }
+
           if (includesBlockingClarifyTrigger(parsed.messages)) {
             if (stream) {
               streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
@@ -941,7 +1002,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
     server.on('error', reject)
 
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(options.port ?? 0, '127.0.0.1', () => {
       const addr = server.address()
 
       if (addr === null || typeof addr === 'string') {

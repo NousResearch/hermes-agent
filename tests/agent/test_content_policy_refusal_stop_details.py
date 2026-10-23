@@ -7,7 +7,7 @@ from agent.turn_truncation import handle_content_policy_refusal
 
 
 def _agent():
-    import agent.transports.anthropic  # noqa: F401
+    import agent.transports.anthropic
     from agent.transports import get_transport
 
     agent = MagicMock()

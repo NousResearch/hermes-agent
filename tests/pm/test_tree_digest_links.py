@@ -70,6 +70,7 @@ def test_junctions_bind_target_text_without_walking_outside(tmp_path, monkeypatc
         result = subprocess.run(
             [command, "/d", "/c", "mklink", "/J", str(junction), str(target)],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+            check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
 

@@ -7,4 +7,4 @@ the real install root through ``hermes_constants`` and exits the process when th
 Importing it once here, before any window opens, keeps boot out of the mocked import.
 """
 
-import hermes_bootstrap  # noqa: F401
+import hermes_bootstrap

@@ -12,6 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
+import { ShellMenuItems } from '@/app/context-menu/shell-menu-items'
 import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -48,7 +49,6 @@ import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
-  $mainTileZoneCount,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -100,6 +100,7 @@ import { paneChrome } from './track-model'
 function ZoneMenu({
   children,
   closable,
+  includeAppActions = false,
   minimizable = true,
   minimizeLabel,
   minimized,
@@ -109,6 +110,7 @@ function ZoneMenu({
   targetPane
 }: {
   children: ReactNode
+  includeAppActions?: boolean
   /** The pane the menu closes (the right-clicked chip / the active pane);
    *  undefined = not closable (the main zone). */
   closable?: () => string | undefined
@@ -200,7 +202,11 @@ function ZoneMenu({
               {/* The hint's `ml-auto` makes the label the row's flexible part,
                   so without this it breaks mid-phrase before the menu widens. */}
               <span className="whitespace-nowrap">{stripVisible ? t.zones.hideTabStrip : t.zones.showTabStrip}</span>
-              {toggleHint && <span className="ml-auto pl-2 text-(--ui-text-quaternary)">{toggleHint}</span>}
+              {toggleHint && (
+                <span className="ml-auto shrink-0 pl-2 whitespace-nowrap text-(--ui-text-quaternary)">
+                  {toggleHint}
+                </span>
+              )}
             </>
           ),
           onSelect: () => setTreeGroupTabStrip(nodeId, stripVisible ? 'never' : 'always')
@@ -213,12 +219,20 @@ function ZoneMenu({
             label: minimized ? t.zones.restore : (minimizeLabel ?? t.zones.minimize),
             onSelect: () => setTreeGroupMinimized(nodeId, !minimized)
           })}
+        {includeAppActions && (
+          <>
+            <kit.Separator />
+            <ShellMenuItems kit={kit} primaryOnly />
+          </>
+        )}
       </>
     )
   }
 
+  // `w-40` clips the spelled-out chord (`Ctrl+Alt+T`) under the menu's
+  // overflow-x-hidden. Size to the row; `min-w-40` keeps the short rows.
   return (
-    <ActionsContextMenu contentClassName="w-40" items={items}>
+    <ActionsContextMenu contentClassName="w-max min-w-40" items={items}>
       {children}
     </ActionsContextMenu>
   )
@@ -264,9 +278,6 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
-  // A count that moves only when a main zone appears or goes — NOT the tree
-  // itself (see the note above `targetPane` on why zones never subscribe to it).
-  const mainTileZoneCount = useStore($mainTileZoneCount)
   const workspaceMode = useStore($workspaceMode)
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
@@ -381,8 +392,7 @@ export function TreeGroup({
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,
-    shown,
-    siblingMainZone: mainTileZoneCount > (shown.some(id => paneChrome(paneFor(id)).placement === 'main') ? 1 : 0)
+    shown
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
@@ -779,9 +789,29 @@ export function TreeGroup({
           `visibility` (not display) keeps the hidden pane's layout box, so
           scroll positions and measurements survive the round-trip — which also
           makes a hidden layer's rect identical to the visible one's, hence the
-          marker document-wide lookups filter on (see pane-visibility.ts). */}
+          marker document-wide lookups filter on (see pane-visibility.ts).
+          The body carries the zone's right-click menu too: a pane without a
+          header (no strip showing) otherwise has no Close anywhere on screen
+          (#92500) — same ZoneMenu the strip and the edit veil already serve. */}
       {(!node.minimized || mountedPanes.length > 0 || hostedPanes.length > 0) && (
-        <PaneBody hidden={Boolean(node.minimized)}>
+        <PaneBody
+          hidden={Boolean(node.minimized)}
+          wrap={
+            !isEmpty
+              ? body => (
+                  <ZoneMenu {...zoneMenu} includeAppActions>
+                    <div
+                      aria-label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}
+                      data-zone-body={node.id}
+                      style={{ display: 'contents' }}
+                    >
+                      {body}
+                    </div>
+                  </ZoneMenu>
+                )
+              : undefined
+          }
+        >
           {hostedPanes.map(paneId => (
             <KeepAlivePaneSlot
               groupId={node.id}
@@ -804,7 +834,10 @@ export function TreeGroup({
               return (
                 <div
                   aria-hidden={!isActive || undefined}
-                  className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
+                  className={cn(
+                    'absolute inset-0 overflow-auto',
+                    !isActive && 'pointer-events-none invisible opacity-0'
+                  )}
                   inert={!isActive || undefined}
                   key={paneId}
                   {...hiddenPaneProps(!isActive)}

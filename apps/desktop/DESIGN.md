@@ -235,6 +235,13 @@ Notes:
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
+## Profile rail
+
+The profile rail keeps its create/import actions outside the scrolling squares.
+Clipped horizontal edges reuse `edgeMask(edges, 'x')` from `fade-scroll.tsx`;
+the default axis remains vertical for `FadeScroll`. Fitting content is unmasked,
+and profile drag gestures temporarily remove the mask so the dragged square stays legible.
+
 ## Context-sensitive dialogs
 
 Sudo password dialogs keep the backdrop unblurred (`DialogContent`'s
@@ -336,6 +343,16 @@ so glass and message-bubble transparency do not reveal scrolling text.
   that wants the answer inline instead of a mounted dialog calls `confirm()`
   from `src/store/confirm.ts`, which renders this same primitive through the
   single `ConfirmHost` at the shell — the way `notify()` backs notifications.
+
+## Chat typography
+
+Appearance → Typography keeps **UI Scale** as whole-window zoom (100% by
+default). **Chat Text Size** is a separate desktop-local multiplier (110% by
+default) on conversation text and the composer editor, including floating and
+inline-edit composers.
+It does not resize the sidebar, settings, toolbars, media, or pane geometry.
+Conversation size and line-height tokens are derived inside the transcript/editor
+from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 
 ## Chat, tools & boot surfaces
 
@@ -449,6 +466,11 @@ so glass and message-bubble transparency do not reveal scrolling text.
   Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
+- Hover paints instantly; only the return eases. Put the transition on the
+  resting state and drop it while hovered (`transition-colors duration-100
+  hover:transition-none`, or the CSS equivalent on `:hover`). A group that
+  dims siblings goes instant too. Exceptions are named, e.g. the catalog
+  card's arc border fades in and out.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
   then settle the surface — the outer container's fade is *delayed* so it
   doesn't swallow the inner animation. Don't let a global fade race the detail.
@@ -505,6 +527,9 @@ long transcript or a busy terminal.
   tone consistent across all of them. `fr`, `de`, and `es` are complete
   `Translations` objects, so a key missing there fails the type check; the
   `defineLocale()` overlays fall back to English instead.
+- **Sparse locales** (`ar`, `ru`) override the English base through
+  `defineLocale()`. Large catalogs are split by topic: the Arabic source lives
+  in `src/i18n/ar_<topic>.ts`, recomposed by `src/i18n/ar.ts`.
 
 ## State (TypeScript)
 

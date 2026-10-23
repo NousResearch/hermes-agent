@@ -229,6 +229,21 @@ class TestCrossProfileProjectTree:
 
         assert labels == {"Only default", "Only worker"}
 
+    def test_a_named_profile_reads_only_its_own_tree(self, client, profiles_on_disk, tmp_path):
+        # The per-profile read a native grant makes; its caller merges the profiles by mergeKey.
+        for name in profiles_on_disk:
+            (tmp_path / "repos" / f"only-{name}").mkdir(parents=True)
+            _seed_session(profiles_on_disk[name], f"{name}-chat", source="cli")
+            _seed_project(profiles_on_disk[name], f"Only {name}", tmp_path / "repos" / f"only-{name}")
+
+        payload = client.get("/api/profiles/projects/tree", params={"profile": "worker"}).json()
+
+        assert payload["errors"] == []
+        assert {project["label"] for project in payload["projects"] if not project["isNoProject"]} == {"Only worker"}
+        assert all(project["mergeKey"] for project in payload["projects"])
+        sessions = [s for project in payload["projects"] for s in project.get("previewSessions") or []]
+        assert {s["profile"] for s in sessions} == {"worker"}
+
     def test_a_profile_that_cannot_be_read_does_not_sink_the_rest(
         self, client, profiles_on_disk, tmp_path, monkeypatch
     ):
@@ -282,3 +297,35 @@ class TestSidebarTruncation:
             _seed_session(home, f"s-{index}", source="desktop", pinned=index == 5)
         # Six on disk, two pins among the newest four: a full window, more below it.
         assert window() == (4, {"default": True})
+
+
+class TestSidebarShowSubagents:
+    """``sessions.show_subagents`` is read from each profile's OWN config and only widens recents (#97202)."""
+
+    @staticmethod
+    def _seed_subagent(home, parent_id, child_id):
+        from hermes_state import SessionDB
+
+        _seed_session(home, parent_id, source="desktop")
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            db.create_session(child_id, source="subagent", parent_session_id=parent_id,
+                              model_config={"_delegate_from": parent_id})
+            db.append_message(session_id=child_id, role="user", content="audit billing")
+        finally:
+            db.close()
+
+    def test_recents_list_subagent_runs_only_for_the_profile_that_opted_in(self, client, profiles_on_disk):
+        (profiles_on_disk["worker"] / "config.yaml").write_text("sessions:\n  show_subagents: true\n")
+        self._seed_subagent(profiles_on_disk["default"], "default-parent", "default-sub")
+        self._seed_subagent(profiles_on_disk["worker"], "worker-parent", "worker-sub")
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "all", "recents_exclude": "cron,subagent", "messaging_exclude": "cli,cron,desktop"},
+        ).json()
+
+        assert payload["errors"] == []
+        assert _slice_ids(payload, "recents") == {"default-parent", "worker-parent", "worker-sub"}
+        # The messaging slice keeps its shape: a subagent run is not a platform thread.
+        assert _slice_ids(payload, "messaging") == set()

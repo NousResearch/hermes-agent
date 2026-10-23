@@ -1,7 +1,9 @@
 """Publish plugin code and its dependency selection through one recoverable handoff."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 import shutil
 
 
@@ -13,12 +15,18 @@ def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
 
 
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
-                   *, target_digest: str | None = None, require_consent: bool = False) -> None:
+                   *, target_digest: str | None = None, require_consent: bool = False,
+                   assume_consent: bool = False) -> None:
+    """Publish *staged* into *target*. *assume_consent* is consent the caller
+    already holds (``--yes-deps``, or a memory-provider migration under
+    ``security.allow_lazy_installs``): the active-replacement consent veto is
+    skipped, so an unattended install carries that decision instead of being
+    refused non-interactively."""
     from pm.client import sync_venv
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest
 
-    if require_consent:
+    if require_consent and not assume_consent:
         from hermes_cli import plugins_cmd
         from pm.workspace import enabled_plugin_dirs
 
@@ -26,8 +34,13 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
             consented, reason = plugins_cmd._install_plugin_python_deps(
                 plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())
             if not consented:
+                outcome = ("Reinstall declined: {}. The installed plugin and active environment are unchanged."
+                           if target.exists() else "Install declined: {}. Nothing was installed.")
+                # The refusal carries its closed class (plugins_cmd_install._ConsentRefusal).
+                from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+
                 raise plugins_cmd.PluginOperationError(
-                    f"Reinstall declined: {reason}. The installed plugin and active environment are unchanged.")
+                    outcome.format(reason), failure_class=tagged_failure_class(reason) or "other")
 
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),
@@ -63,7 +76,7 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
         return  # a disabled plugin's deps are admitted (and consented) by `hermes plugins enable`
     before, after = read_python_declaration(target), read_python_declaration(staged)
     added = tuple(spec for spec in after.install_requirements if spec not in before.install_requirements)
-    if not added and not (after.is_member and not before.is_member):
+    if not added and not (after.installs_packages and not before.installs_packages):
         return
     if not interactive:
         raise pc.PluginOperationError(
@@ -80,12 +93,19 @@ def update_plugin(
     *,
     catalog_entry=None,
     interactive: bool = False,
-    preserved_files: Path | None = None,
+    force: bool = False,
+    scan_decision_cb: Callable[[Any], bool] | None = None,
+    carry_user_files: Callable[[Path], list[str]] | None = None,
 ) -> str:
     """Prepare a catalog re-pin or custom Git pull without changing the live tree.
 
     *interactive*: a terminal user is present to consent to newly declared dependencies;
-    the dashboard and the gateway's auto-apply pass False and get a refusal instead."""
+    the dashboard and the gateway's auto-apply pass False and get a refusal instead.
+    Every update is scanned: *force* accepts a caution verdict (the user already saw it), and
+    *scan_decision_cb(result)* may accept one by asking; a dangerous verdict always blocks.
+    *carry_user_files(staged)* may merge user-owned state into the staged tree before
+    manifest validation, example-file generation, dependency preparation and publication; it
+    returns the carried paths so a scan block can attribute findings to them."""
     import tempfile
 
     from hermes_cli import plugins_cmd as pc
@@ -158,8 +178,7 @@ def update_plugin(
                     if not ok:
                         raise pc.PluginOperationError(output)
                 revision = pc._git_head_revision(staged, pc._resolve_git_executable())
-            if preserved_files is not None and preserved_files.exists():
-                shutil.copytree(preserved_files, staged, dirs_exist_ok=True)
+            merged = carry_user_files(staged) if carry_user_files is not None else None
             manifest = pc._read_manifest_for_install(staged)
             installed_name = str(manifest.get("name") or target.name)
             if catalog_entry is None and installed_name != target.name:
@@ -172,7 +191,8 @@ def update_plugin(
                 raise pc.PluginOperationError(
                     f"The updated plugin renamed itself to '{installed_name}', but that plugin already exists.")
             pc._check_manifest_version(manifest, installed_name)
-            pc._scan_plugin_tree(staged, source, force=False)
+            pc._scan_merged_tree(staged, source, merged, force=force, scan_decision_cb=scan_decision_cb,
+                                 reviewed_pin=catalog_entry is not None)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:

@@ -1,0 +1,25 @@
+name: runbox
+repo: https://github.com/Zek-Takai/hermes-runbox
+sha: 544e6f35c65c45d085a90078a328dbd8c3fb8872
+subdir: plugin
+title: runbox
+version: "0.1.0"
+description: "Build, run and test Python in an offline container per chat, with results as a plain file:line issue list. The agent syncs files or folders in as copies, then runs run (a shell command), check (ruff error rules) and test (pytest); fixes stay in the box until the user asks for export, which writes changed files back through write_file and reports host files changed since the sync as conflicts. In Hermes Desktop a VS Code-style editor opens beside the chat: file tabs with in-place editing, Run / Check / Test / Stop, and PROBLEMS / OUTPUT / RUNS panels that follow the agent live. Ships the runbox:dev-loop starting-point skill. Disclosure — needs Docker (on macOS a dedicated colima profile 'runbox', started on demand with --activate=false and its own Docker config); pulls the container image pinned by digest and installs a hash-pinned checker toolchain (ruff 0.16.9, pytest 9.1.1 and deps) from PyPI once per image; the work container has no network, hardened flags, and runs commands without Hermes' dangerous-command approval like Hermes' Docker backend; install (PyPI) always asks for approval in a separate installer container; a write_file/patch on an imported original asks for approval (guard_imports); export reads each existing target through read_file before replacing it; a background thread removes idle containers (15 min), stops the VM, and removes boxes of deleted or long-idle chats (reads state.db read-only hourly); adds a short per-turn note (about 80 tokens); no credentials or telemetry."
+maintainer: Zek-Takai
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+platforms: [linux, macos]
+image: https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/544e6f35c65c45d085a90078a328dbd8c3fb8872/docs/runbox-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/544e6f35c65c45d085a90078a328dbd8c3fb8872/docs/runbox-desktop.png
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/544e6f35c65c45d085a90078a328dbd8c3fb8872/docs/runbox-demo.gif
+known_issues:
+  - "Needs Docker: on macOS install colima and the docker CLI (brew install colima docker); on Linux a running Docker daemon. The first start on macOS downloads the VM image and takes a few minutes."
+  - "The Hermes data folder must be under your home folder on macOS (colima shares only that)."
+  - "The agent may not always pick runbox on its own (the model chooses its tools). Ask it to use runbox."
+capabilities:
+  provides_tools: [runbox]
+  provides_hooks: [pre_tool_call, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

@@ -106,6 +106,7 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     [
         ("kanban_request_review", "build worker handing off for same-card review"),
         ("kanban_request_changes", "review agent sending the card back"),
+        ("kanban_schedule", "worker parking the card on a timed wait"),
     ],
 )
 def test_no_nudge_after_handoff_tool(clear_kanban_env, tool_name, who):

@@ -636,7 +636,7 @@ class TestProbeApiKeyForwarding:
         """The full lookup path resolves the key from cfg and hands it to the
         probe — the exact chain that sprayed 401s in #89863."""
         key = _fake_key("lookup")
-        import agent.models_dev  # noqa: F401 — make the patch target importable
+        import agent.models_dev
         with patch(
             "agent.models_dev.get_model_capabilities", return_value=None
         ), patch(
@@ -655,8 +655,8 @@ class TestCodexContextVariantVisionLookup:
 
     def test_valid_variant_resolves_against_base_slug(self, monkeypatch):
         from types import SimpleNamespace
-        import agent.models_dev as models_dev
-        import agent.image_routing as image_routing
+        from agent import models_dev
+        from agent import image_routing
 
         seen = []
 

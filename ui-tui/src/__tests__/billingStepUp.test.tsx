@@ -15,6 +15,7 @@ vi.mock('@hermes/ink', async importOriginal => {
 import type { BillingOverlayState } from '../app/interfaces.js'
 import { BillingOverlay } from '../components/billingOverlay.js'
 import type { BillingStateResponse } from '../gatewayTypes.js'
+import { messages } from '../i18n/runtime.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const t = DEFAULT_THEME
@@ -78,6 +79,7 @@ const billState = (overrides: Partial<BillingStateResponse> = {}): BillingStateR
 
 const ctx = {
   applyAutoReload: vi.fn(() => Promise.resolve(true)),
+  applyKeepGoingOnCredits: vi.fn(() => Promise.resolve(true)),
   charge: vi.fn(() => Promise.resolve('submitted' as const)),
   openPortal: vi.fn(),
   refreshState: vi.fn(() => Promise.resolve(null)),
@@ -168,6 +170,6 @@ describe('BillingOverlay — auto-reload card divergence', () => {
     })
 
     expect(out).not.toContain('not your card on file')
-    expect(out).not.toContain('Use your card on file — manage on portal')
+    expect(out).not.toContain(messages().billing.autoReload.manageCardOnPortal)
   })
 })

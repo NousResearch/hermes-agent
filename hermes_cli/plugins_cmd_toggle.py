@@ -8,7 +8,10 @@ imported late here, never at module level).
 from __future__ import annotations
 
 import functools
+import logging
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 def _pc():
@@ -100,11 +103,7 @@ def cmd_toggle() -> None:
         (f"{name} \u2014 {description}" if description else name) + (" [bundled]" if source == "bundled" else "")
         for name, _version, description, source, _d, _key in entries
     ]
-    # Selected when enabled AND not disabled; the legacy bare name counts on either side.
-    plugin_selected = {
-        i for i, (name, _v, _desc, _src, _d, key) in enumerate(entries)
-        if {key, name} & enabled_set and not ({key, name} & disabled_set)
-    }
+    plugin_selected = _effective_plugin_selection(entries, enabled_set, disabled_set)
     categories = _pc()._provider_categories()
 
     if not sys.stdin.isatty():
@@ -117,34 +116,37 @@ def cmd_toggle() -> None:
         _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled_set, categories, console, expected_config=expected_config)
 
 
-def _persist_plugin_selection(plugin_keys, chosen, disabled, *, expected_config=None) -> tuple[bool, set]:
-    """Save the composite UI's checkbox state; returns ``(changed, new_enabled)``.
+def _effective_plugin_selection(entries, enabled: set, disabled: set) -> set:
+    """Row indices ticked on open: the load-time rule, not list membership — bundled platforms,
+    backends and model providers are active without a ``plugins.enabled`` entry."""
+    from hermes_cli.plugins_cmd_listing import _entry_status
+    active = _pc()._category_active_names()
+    return {i for i, entry in enumerate(entries) if _entry_status(entry, enabled, disabled, active) == "enabled"}
 
-    Unchecked plugins go to the disabled-list (so they stay off even if something auto-enables
-    them) under the canonical key ONLY, so the list can't drift from what ``cmd_enable`` clears.
-    Re-checking also drops any stale legacy bare-leaf disable.
+
+def _persist_plugin_selection(plugin_keys, chosen, disabled, initial, *, expected_config=None) -> tuple[list, list]:
+    """Write only the rows flipped this session; returns the ``(turned_on, turned_off)`` keys.
+
+    Untouched rows are never persisted, so a never-ticked row is not mistaken for an explicit untick
+    and list entries for plugins the picker didn't show survive. Canonical key only, with every alias
+    purged from the opposing list like ``hermes plugins enable/disable`` (#40190).
     """
-    # See #40190.
-    # Persist by canonical key only — never the bare manifest name — so the disabled-list stays aligned with
-    # cmd_enable / PluginManager (#40190).
+    turned_on = [plugin_keys[i] for i in sorted(chosen - initial)]
+    turned_off = [plugin_keys[i] for i in sorted(initial - chosen)]
+    if not (turned_on or turned_off):
+        return [], []
     if expected_config is None:
         expected_config = _pc()._plugin_selection_version()
-    new_enabled: set = set()
-    new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
-    for i, key in enumerate(plugin_keys):
-        if i in chosen:
-            new_enabled.add(key)
-            _pc()._discard_key_and_leaf(new_disabled, key)
-        else:
-            new_disabled.add(key)
-
-    changed = new_enabled != _pc()._get_enabled_set() or new_disabled != disabled
-    if changed:
-        # C13: the composite UI's candidate goes through the ONE admission
-        # authority — refusal raises AdmissionRefused BEFORE any config
-        # write; the caller surfaces it and the selection stays unsaved.
-        _pc()._admit_and_save_plugin_sets(new_enabled, new_disabled, action="Save plugin selection", expected_config=expected_config)
-    return changed, new_enabled
+    new_enabled, new_disabled = set(_pc()._get_enabled_set()), set(disabled)
+    entries = _pc()._discover_all_plugins()
+    for keys, enable in ((turned_on, True), (turned_off, False)):
+        for key in keys:
+            _pc()._apply_activation(new_enabled, new_disabled, key, _pc()._plugin_aliases(key, entries), enable=enable)
+    # C13: the composite UI's candidate goes through the ONE admission authority — refusal raises
+    # AdmissionRefused BEFORE any config write; the caller surfaces it and the selection stays unsaved.
+    _pc()._admit_and_save_plugin_sets(new_enabled, new_disabled, action="Save plugin selection", expected_config=expected_config)
+    logger.info("plugins picker: enabled %s; disabled %s", turned_on or "none", turned_off or "none")
+    return turned_on, turned_off
 
 
 def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled, categories, console, *, expected_config=None):
@@ -260,7 +262,8 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
     from hermes_cli.plugins_admission import AdmissionRefused
 
     try:
-        changed, new_enabled = _persist_plugin_selection(plugin_keys, chosen, disabled, expected_config=expected_config)
+        turned_on, turned_off = _persist_plugin_selection(plugin_keys, chosen, disabled, plugin_selected,
+                                                          expected_config=expected_config)
     except AdmissionRefused as exc:
         console.print(f"[red]✗[/red] Plugin selection refused, not saved: {exc}")
         console.print(
@@ -268,10 +271,9 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
             "Run `hermes pm install` to resolve, then retry.[/dim]"
         )
         return
-    if changed:
+    if turned_on or turned_off:
         console.print(
-            f"\n[green]\u2713[/green] General plugins: {len(new_enabled)} enabled, "
-            f"{len(plugin_keys) - len(new_enabled)} disabled.")
+            f"\n[green]\u2713[/green] General plugins: {len(turned_on)} turned on, {len(turned_off)} turned off.")
     elif n_plugins > 0:
         console.print("\n[dim]General plugins unchanged.[/dim]")
     if providers_changed:
@@ -306,7 +308,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
             except (ValueError, KeyboardInterrupt, EOFError):
                 return
             print()
-        _save_plugin_selection_fallback(plugin_keys, chosen, disabled, expected_config=expected_config)
+        _save_plugin_selection_fallback(plugin_keys, chosen, disabled, plugin_selected, expected_config=expected_config)
 
     if categories:
         print(color("\n  Provider Plugins", Colors.YELLOW))
@@ -324,12 +326,12 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
     print()
 
 
-def _save_plugin_selection_fallback(plugin_keys, chosen, disabled, *, expected_config=None) -> None:
+def _save_plugin_selection_fallback(plugin_keys, chosen, disabled, initial, *, expected_config=None) -> None:
     """The text fallback's save: same admission authority, refusal printed."""
     from hermes_cli.plugins_admission import AdmissionRefused
 
     try:
-        _persist_plugin_selection(plugin_keys, chosen, disabled, expected_config=expected_config)
+        _persist_plugin_selection(plugin_keys, chosen, disabled, initial, expected_config=expected_config)
     except AdmissionRefused as exc:
         print(f"  Plugin selection refused, not saved: {exc}")
         print("  config.yaml and the active environment are unchanged.")

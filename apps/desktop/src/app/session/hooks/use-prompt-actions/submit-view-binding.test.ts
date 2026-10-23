@@ -51,10 +51,7 @@ function bindPane({
   sessions?: SessionInfo[]
   targetStoredSessionId?: string
 }): BoundPaneResult {
-  const earlier: ChatMessage[] = [
-    row('u1', 'user', 'earlier prompt'),
-    row('a1', 'assistant', 'earlier reply')
-  ]
+  const earlier: ChatMessage[] = [row('u1', 'user', 'earlier prompt'), row('a1', 'assistant', 'earlier reply')]
 
   const paneState: ClientSessionState = { ...createClientSessionState(paneStoredSessionId), messages: earlier }
 
@@ -62,11 +59,7 @@ function bindPane({
     [RESUMED_RUNTIME, createClientSessionState(targetStoredSessionId)]
   ])
 
-  const updateSessionState: ResumedRuntimeBindingDeps['updateSessionState'] = (
-    sessionId,
-    updater,
-    storedSessionId
-  ) => {
+  const updateSessionState: ResumedRuntimeBindingDeps['updateSessionState'] = (sessionId, updater, storedSessionId) => {
     const current = states.get(sessionId) ?? createClientSessionState(storedSessionId)
     const updated = updater(current)
 

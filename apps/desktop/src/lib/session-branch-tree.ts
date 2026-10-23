@@ -17,6 +17,28 @@ export interface FlattenSessionsOptions {
 
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
+/**
+ * Parent id to nest under, or undefined for a top-level sibling.
+ *
+ * `/new` and idle/daily rotation keep `parent_session_id` for durable lineage
+ * but stamp `_reset_from`. Those are new conversations, not nested forks.
+ * Genuine `/branch` writes `_branched_from`. Optimistic desktop branch rows
+ * (and legacy forks minted before the marker) only have `parent_session_id`.
+ */
+export function forkParentId(session: SessionInfo): string | undefined {
+  if (session._reset_from?.trim()) {
+    return undefined
+  }
+
+  const branchedFrom = session._branched_from?.trim()
+
+  if (branchedFrom) {
+    return branchedFrom
+  }
+
+  return session.parent_session_id?.trim() || undefined
+}
+
 // Profile-qualified compression lineage, same key as mergeSessionPage (store/session.ts). The
 // backend's `_lineage_root_id` follows compression edges only; /branch and /new children get
 // their own root, so rows sharing a key are one conversation, never a fork.
@@ -97,7 +119,7 @@ export function flattenSessionsWithBranches(
   const nestedIds = new Set<string>()
 
   for (const session of sessions) {
-    const parentId = session.parent_session_id?.trim()
+    const parentId = forkParentId(session)
 
     if (!parentId) {
       continue

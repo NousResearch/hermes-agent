@@ -100,8 +100,10 @@ scripts/run_tests.sh -v --tb=long             # pass-through pytest flags
 - Run `python -m pm.build_env --source . --out .venv --group dev --group test`.
   The output must not exist. Stop its processes and intentionally remove only
   that disposable environment before regeneration.
-- The runner probes repository `.venv`, `venv`, and the standard source-install
-  venv before falling back to `HERMES_PYTHON`. Each candidate must contain pytest.
+- Activation builds a managed test environment that the runner selects
+  automatically. An independent interpreter (the `.venv` above or an external
+  environment) is used only when selected via `HERMES_PYTHON` in an unactivated
+  shell and it contains pytest; an activated shell keeps the managed one.
 - **Windows:** run the same wrapper through Git Bash. See `references/windows-quirks.md`.
 - After editing `pyproject.toml`, run `hermes pm lock`, re-source `./activate`, and
   commit `pyproject.toml` with `uv.lock`.

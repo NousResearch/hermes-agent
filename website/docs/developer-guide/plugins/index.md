@@ -25,6 +25,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **video-generation backend** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
 | A **web-search / extract backend** | [Web Search Provider Plugins](../web-search-provider-plugin.md) |
 | A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](../browser-provider-plugin.md) |
+| A **delegation strategy** (pick a profile or a named model per subagent) | [Delegation Provider Plugins](../delegation-provider-plugin.md) — `ctx.register_delegation_provider()` |
 | A **computer-use driver** (desktop control behind the `computer_use` tool) | [Computer-use backend plugins](#computer-use-backend-plugins) — `ctx.register_computer_use_provider()` |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
@@ -143,9 +144,46 @@ call to that server that is not annotated `readOnlyHint: true` asks the user
 first, and fails closed where nobody can answer (cron, unattended runs). The
 only other accepted value is `full`, the default, so a package can narrow
 access but never widen it. A `config.yaml` server with the same name replaces
-the package's entry, including its trust. Other harnesses ignore this extension.
+the package's entry, including its trust, but keeps the package's declared costs
+and spend limit (below) unless it sets its own. Other harnesses ignore this extension.
 `trust` can sit beside `app`, `requires` and `liveness` in the same server
 entry (see [Application declarations](./application-declarations.md)).
+
+A server whose tools spend money or credits can declare what each call costs
+and a budget per chat. Hermes then names the cost in the approval prompt along
+with the chat's running total, and a call that would take the chat past
+`spend_limit` asks first even when the user has made the server trusted:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "renders": {
+          "trust": "untrusted",
+          "costs": {
+            "create_image": 20,
+            "animate": { "credits": [5, 20], "note": "per animation" }
+          },
+          "spend_limit": 100,
+          "cost_unit": "credits"
+        }
+      }
+    }
+  }
+}
+```
+
+Keys of `costs` are MCP tool names as the server lists them. A cost is a
+non-negative number, a `[min, max]` range, or an object with `credits` (number
+or range) and a short `note`. `spend_limit` is optional (`0` or absent = no
+limit) and `cost_unit` defaults to `credits`. A malformed table makes the
+package fail to load with an error naming the key. These map to the native
+`tool_costs`, `spend_limit` and `cost_unit` keys (see
+[Tool costs and spend limits](../../user-guide/features/mcp.md#tool-costs-and-spend-limits)).
+Costs are facts about the server, so they survive a user's same-name
+`config.yaml` entry (the way a user widens trust) unless that entry sets the
+key itself; the user's `spend_limit` wins, including `0` to turn it off.
 
 A long-running server can also declare a Hermes-specific tool-call `timeout`
 (in seconds) in `plugin.json`, without changing other servers' defaults:
@@ -647,6 +685,9 @@ When both exist the `pyproject.toml` wins. What Hermes does with them:
 - **`--yes-deps`** answers the dependency question up front, so a headless install (CI, SSH
   automation, a container entrypoint) prepares the declared dependencies instead of being refused.
   It is mutually exclusive with `--no-deps`.
+- **A `pyproject.toml` that installs nothing** (`dependencies = []`, no `[build-system]`, extras
+  or dependency groups) counts as no declaration: no dependency question, and enabling or updating
+  the plugin leaves the dependency environment as it is.
 - **`python_runtime: external`** keeps a sidecar's dependencies out of the shared union.
   Hermes does not install that Python runtime or modify its declaration.
 - **Nothing to load is an error** — `hermes plugins validate` rejects `plugin.yaml` without
@@ -1756,6 +1797,37 @@ from agent.runtime_cwd import resolve_agent_cwd
 def _handle_todo(raw_args: str) -> str:
     todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
     return todo.read_text() if todo.exists() else "No TODO.md here."
+```
+
+### Ask the user to pick an option
+
+A sync slash-command handler can ask the user who ran it to pick one option with `ctx.ask_choice(question, choices)`. It blocks until the user answers and returns the picked choice's `value`, or `None`. Each surface shows it the way it shows the agent's `clarify` questions:
+
+| Surface | What the user sees |
+|---|---|
+| Telegram, Discord, Slack | A card with one button per choice (plus "Other") |
+| Other messaging platforms | A numbered list; the user replies with the number or the label |
+| Classic CLI, Ink TUI, Desktop | The clarify picker |
+
+A choice is a string (the label and the value) or a dict `{"value", "label", "description"}`; the description is shown after the label. A typed value or label, in any case, also picks that choice. `ask_choice` returns `None` when the user cancels, types something that is not a choice, or lets the clarify timeout (`agent.clarify_timeout`) pass. It also returns `None` when nothing can ask: a hook, a cron job, an async handler (blocking would stall the event loop that delivers the answer). The handler then falls back to its text usage:
+
+```python
+_MODES = [
+    {"value": "default", "label": "Default", "description": "delegation.model / parent model"},
+    {"value": "model_map", "label": "Model routes", "description": "per-task model map"},
+    {"value": "profile_routes", "label": "Profiles", "description": "delegate to other profiles"},
+]
+
+def register(ctx):
+    def delegation(raw_args: str) -> str:
+        mode = raw_args.strip() or ctx.ask_choice("Delegation mode", _MODES)
+        if mode not in {m["value"] for m in _MODES}:
+            return "Usage: /delegation default|model_map|profile_routes"
+        ctx.set_config("mode", mode)
+        return f"Delegation mode: {mode}"
+
+    ctx.register_command("delegation", delegation, description="Switch the delegation mode",
+                         args_hint="[mode]")
 ```
 
 ### Dispatch tools from slash commands

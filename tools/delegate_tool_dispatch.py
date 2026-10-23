@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
@@ -50,6 +50,9 @@ class _Batch:
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
     live_home: Any = None  # explicit profile home for transcripts/manifest (#91996); None = ambient resolve
+    # Result entries of tasks their backend refused (no child): joined into a sync result, listed in a background
+    # call's dispatch payload. Units carved for async dispatch never carry them.
+    refused: list = field(default_factory=list)
 
     def owner_kwargs(self) -> dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -203,6 +206,9 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
                 batch.live_writers[_idx].finalize(entry)
             if _idx < len(batch.live_paths):
                 entry["live_transcript"] = batch.live_paths[_idx]
+    if batch.refused:
+        results.extend(batch.refused)
+        results.sort(key=lambda r: r["task_index"])
     update_manifest_statuses(batch.live_deleg_id, results, home=batch.live_home)
     finish_delegation_unit(batch.task_list, results, background=not honor_parent_interrupt)
 
@@ -348,7 +354,7 @@ _BACKGROUND_NOTES = {
 def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     """Model-facing handle for an accepted background call: one entry per async unit."""
     goals = [t["goal"] for t in batch.task_list]
-    n = len(goals)
+    n = len(batch.children)  # running children; refused tasks are listed under "refused"
     payload = {
         "status": "dispatched", "mode": "background", "count": n,
         "delegation_id": batch.live_deleg_id or units[0][1], "goals": goals,
@@ -363,6 +369,8 @@ def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     if any(isinstance(s, str) and s for s in sids):
         payload["subagent_ids"] = sids
         payload["control_hint"] = _BACKGROUND_NOTES["control_hint"]
+    if batch.refused:
+        payload["refused"] = batch.refused
     if batch.live_paths:
         payload["live_transcripts"] = list(batch.live_paths)
         payload["live_transcripts_hint"] = _BACKGROUND_NOTES["live_transcripts_hint"]
@@ -435,7 +443,7 @@ def _dispatch_background(batch: _Batch) -> str:
         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
     )
 
-    units = _units_of(batch)
+    units = [replace(unit, refused=[]) for unit in _units_of(batch)]
     dispatched: list[tuple[_Batch, str]] = []
     inline_results: list[dict] = []
     slot_key: Optional[str] = None

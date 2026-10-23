@@ -126,14 +126,11 @@ class TestFreeTierBeatsImplicitHostCredentials:
             _config(monkeypatch, {"provider": config_provider, "default": "some-model"})
         assert resolve_provider("auto") == expected
 
-    def test_on_the_cli_surface_a_claimed_guest_never_resolves_to_nous(self, portal, monkeypatch):
+    def test_on_the_cli_surface_a_claimed_guest_still_beats_host_credentials(self, portal, monkeypatch):
+        from tests.hermes_cli.anon_portal import off_local_desktop
         _claimed_trial_with_aws(monkeypatch)
-        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-        assert resolve_provider("auto") == "bedrock"
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
-        with pytest.raises(AuthError):
-            resolve_provider("auto")
+        off_local_desktop(monkeypatch)
+        assert resolve_provider("auto") == "nous"
 
     def test_skip_free_tier_answers_what_else_would_carry_inference(self, portal, monkeypatch):
         """With the free tier hidden, a claimed trial is not an answer and the ladder falls through

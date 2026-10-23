@@ -69,6 +69,12 @@ def _capture_timers(monkeypatch):
     return armed
 
 
+def _stale_rows(monkeypatch):
+    """Every restored row already idle past the legacy TTL, so the startup arm uses the plain grace."""
+    import gateway.session_viewer_close as viewer_close
+    monkeypatch.setattr(viewer_close, 'STARTUP_IDLE_S', 0.0, raising=False)
+
+
 def _stored_close(db, sid):
     from gateway.session_viewer_close import CLOSE_PREFIX
     return db.get_meta(CLOSE_PREFIX + sid)
@@ -181,6 +187,7 @@ async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path,
     from gateway.session_local_recovery import recover_local_sessions
 
     armed = _capture_timers(monkeypatch)
+    _stale_rows(monkeypatch)
     first, _ = await _owner(tmp_path, monkeypatch)
     sid = _create(first).session_id
     await _attach(first, sid)  # the gateway stops with this viewer attached: no detach ever runs
@@ -200,12 +207,55 @@ async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_a_session_active_before_the_restart_is_kept_for_its_idle_classic_cli(tmp_path, monkeypatch):
+    """An idle classic CLI redials only on its next call: boot must not end its session in minutes."""
+    from gateway.session_local_recovery import recover_local_sessions
+    from gateway.session_viewer_close import STARTUP_IDLE_S
+
+    armed = _capture_timers(monkeypatch)
+    first, _ = await _owner(tmp_path, monkeypatch)
+    sid = _create(first).session_id
+    await _attach(first, sid)
+
+    authority, _ = await _owner(tmp_path, monkeypatch)
+    recover_local_sessions(authority, schedule=True)
+    [(delay, _)] = armed
+    assert STARTUP_IDLE_S - 60 < delay <= STARTUP_IDLE_S
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('config, startup, detach', [
+    ('dashboard:\n  ws_orphan_reap_grace_s: 0\n', [], []),
+    ('dashboard:\n  startup_orphan_sweep: false\n', [], [300.0]),
+    ('dashboard:\n  ws_orphan_reap_grace_s: 0\n  startup_orphan_sweep: false\n'
+     'sessions:\n  orphan_end_grace_s: 60\n', [60.0], [60.0]),
+])
+async def test_the_legacy_reap_opt_outs_hold_until_the_new_key_is_set(tmp_path, monkeypatch, config, startup, detach):
+    from gateway.session_local_recovery import recover_local_sessions
+
+    armed = _capture_timers(monkeypatch)
+    _stale_rows(monkeypatch)
+    first, _ = await _owner(tmp_path, monkeypatch)
+    sid = _create(first).session_id
+    await _attach(first, sid)
+    (Path(first.db.db_path).parent / 'config.yaml').write_text(config)
+
+    authority, _ = await _owner(tmp_path, monkeypatch)
+    recover_local_sessions(authority, schedule=True)
+    assert [delay for delay, _ in armed] == startup
+    viewer, _ = await _attach(authority, sid)
+    await viewer.close()
+    assert [delay for delay, _ in armed[len(startup):]] == detach
+
+
+@pytest.mark.asyncio
 async def test_a_session_left_with_queued_input_ends_after_boot_once_it_drains(tmp_path, monkeypatch):
     import gateway.session_finite as finite
     from gateway.session_local_recovery import recover_local_sessions
     from hermes_state_runtime import admit_session_input, list_session_admissions
 
     armed = _capture_timers(monkeypatch)
+    _stale_rows(monkeypatch)
     first, _ = await _owner(tmp_path, monkeypatch)
     sid = _create(first).session_id
     admit_session_input(first.db, epoch=first.epoch, principal_id=first.sessions[sid].source.user_id,

@@ -1069,7 +1069,10 @@ group_sessions_per_user: true
 # A CLI/TUI/Desktop session left with no viewer (a killed terminal, a dropped
 # connection, a gateway restart) is ended by the gateway orphan_end_grace_s
 # seconds later, once its running turn settles. It stays resumable, and a viewer
-# that comes back within the grace keeps it open. 0 never ends it.
+# that comes back within the grace keeps it open. 0 never ends it. After a
+# restart it also waits out the rest of 6h since the session's last activity.
+# It replaces dashboard.ws_orphan_reap_grace_s / startup_orphan_sweep for these
+# sessions; while it is unset, their opt-outs (0 / false) still turn it off.
 #
 # Uncomment to change the defaults shown; auto_prune: true bounds the file,
 # auto_prune: false keeps every ended session and silences the low-disk prompt.

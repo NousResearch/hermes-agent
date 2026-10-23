@@ -2310,8 +2310,8 @@ DEFAULT_CONFIG = {
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
-        # Seconds a local CLI/TUI/Desktop session may sit with no viewer (killed terminal, gateway restart)
-        # before the gateway ends it, once its turn settles; it stays resumable. 0 = never.
+        # Seconds before a local session with no viewer is ended (resumable) once its turn settles; 0 = never; after a
+        # restart also >= 6h idle. Unset: dashboard.ws_orphan_reap_grace_s: 0 / startup_orphan_sweep: false opt out.
         "orphan_end_grace_s": 300.0,
     },
     # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.

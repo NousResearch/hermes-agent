@@ -1198,7 +1198,11 @@ never closed by this sweep.
 viewer disappeared without closing it (a killed terminal, a dropped connection,
 or a gateway stop or restart while it was open) is ended by the gateway
 `sessions.orphan_end_grace_s` seconds later (default `300`; `0` never ends it),
-`end_reason: ws_orphan_reap` (or `startup_orphan_reap` after a restart). A turn
+`end_reason: ws_orphan_reap` (or `startup_orphan_reap` after a restart, no
+sooner than 6 hours after its last activity, since an idle classic CLI only
+reconnects when you next use it). While `orphan_end_grace_s` is unset, the
+legacy `dashboard.ws_orphan_reap_grace_s: 0` turns this off, and
+`dashboard.startup_orphan_sweep: false` turns off the after-restart end. A turn
 still running keeps running, and the session ends once it settles; one paused on
 an interrupted turn stays open until you Discard it. A viewer that reconnects
 within the grace keeps the session open. Ending is non-destructive: the session

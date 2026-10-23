@@ -136,3 +136,27 @@ def test_truncated_reasoning_only_stop_is_not_delivered_as_the_answer(loop_agent
     # The fragment is never the answer; the ladder's second call supplies the real one.
     assert result["final_response"] == RECOVERED
     assert result["api_calls"] == 2
+
+
+def test_complete_reasoning_only_stop_still_promotes_on_the_first_call(loop_agent):
+    """The positive arm: a WHOLE reasoning field is still the answer, with no extra API call.
+
+    Without this arm the gate could satisfy the regression by declining every promotion, which
+    would silently delete the feature the promotion exists for (the 38254- and 9890-char
+    whole-answer-as-reasoning cases).
+    """
+    from tests.agent.test_run_agent import _mock_response
+
+    whole = "The last run reported success. All jobs show a clean last run."
+    loop_agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="stop", reasoning_content=whole),
+    ]
+    with (
+        patch.object(loop_agent, "_persist_session"),
+        patch.object(loop_agent, "_save_trajectory"),
+        patch.object(loop_agent, "_cleanup_task_resources"),
+    ):
+        result = loop_agent.run_conversation("what did the last run report?")
+
+    assert result["final_response"] == whole
+    assert result["api_calls"] == 1

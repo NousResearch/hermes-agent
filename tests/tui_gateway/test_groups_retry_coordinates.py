@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
+from contextlib import closing
 from types import SimpleNamespace
+
+import pytest
 
 import tui_gateway.server as srv
 from gateway import hosted_room_driver as driver
@@ -54,3 +58,27 @@ def test_retry_row_round_trips_through_groups_retry(tmp_path, monkeypatch):
     retried = srv.handle_request(
         {"id": 2, "method": "groups.retry", "params": {"room_id": "room", **coordinates}})
     assert retried["result"]["task"]["status"] == "queued"
+
+
+def test_stale_retry_cannot_requeue_a_newer_attempt(tmp_path, monkeypatch):
+    service, task_id = _deferred_room(tmp_path, monkeypatch)
+    identity = driver.list_tasks(service.db_path, room_id="room", status="deferred")[0]["identity"]
+    select = service._list_tasks
+
+    def select_then_advance(room_id, statuses):
+        candidates = list(select(room_id, statuses))
+        # Another Retry runs generation 2, which also ends deferred, before this request resumes.
+        lease = service.runtime._ensure_lease(service.bindings()[0])
+        driver.requeue_deferred_task(service.db_path, identity, lease, expected_execution_generation=1,
+                                     expected_cancel_generation=0, clock=service.runtime.clock)
+        driver.start_task(service.db_path, identity, lease, expected_cancel_generation=0,
+                          clock=service.runtime.clock)
+        with closing(sqlite3.connect(service.db_path)) as conn, conn:
+            conn.execute("UPDATE hosted_room_driver_tasks SET status='deferred' WHERE task_id=?", (task_id,))
+        return candidates
+
+    monkeypatch.setattr(service, "_list_tasks", select_then_advance)
+    with pytest.raises(driver.StaleTaskError):
+        service.retry_room_task("room", task_id=task_id, member_id="worker", execution_generation=1)
+    task = driver.get_task(service.db_path, identity)
+    assert (task["status"], task["execution_generation"]) == ("deferred", 2)

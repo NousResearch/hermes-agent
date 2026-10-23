@@ -216,9 +216,26 @@ def _dist_installed(req: str) -> Optional[bool]:
 
 
 def missing_python_dependencies(manifest: Any) -> list[str]:
-    """The plugin's declared ``python_dependencies`` this process cannot import."""
+    """The plugin's declared ``python_dependencies`` this process cannot import.
+
+    A requirement whose environment marker excludes this interpreter is never missing: PM does not
+    install it here, so reporting it would ask for a restart or repair that can never help."""
     return [req for req in getattr(manifest, "python_dependencies", None) or ()
-            if _dist_installed(req) is False]
+            if _applies_here(req) and _dist_installed(req) is False]
+
+
+def _applies_here(req: str) -> bool:
+    if ";" not in req:
+        return True
+    try:
+        from packaging.requirements import InvalidRequirement, Requirement
+    except ImportError:
+        return True
+    try:
+        marker = Requirement(req).marker
+        return marker is None or marker.evaluate()
+    except (InvalidRequirement, ValueError, KeyError):  # unparseable: keep reporting it
+        return True
 
 
 def installed_in_selected_environment(requirements: list[str]) -> bool:

@@ -146,3 +146,13 @@ def test_enable_needs_no_restart_when_the_gateway_imports_everything(home, monke
 
 def test_selected_generation_probe_is_false_without_a_selection(home):
     assert installed_in_selected_environment([REQ]) is False
+
+
+def test_a_dependency_excluded_by_its_marker_is_never_missing():
+    """PM never installs a marker-excluded requirement here; reporting it would demand a restart
+    (or repair) on every enable that can never help."""
+    from hermes_cli.plugins import PluginManifest
+
+    excluded = f"{DIST}>=1.0,<2; python_version < '3.0'"
+    manifest = PluginManifest(name="depprobe", python_dependencies=[excluded, REQ])
+    assert missing_python_dependencies(manifest) == [REQ]

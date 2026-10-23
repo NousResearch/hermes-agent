@@ -3781,6 +3781,7 @@ def _prepare_same_provider_retry(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url, task=task,
+        api_mode=resolved_api_mode,
     )
     # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
     if extra_headers:
@@ -6731,11 +6732,15 @@ def _build_call_kwargs(
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
     no_progress_timeout: Optional[float] = None,
+    api_mode: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments.
     ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
     ``_CodexCompletionsAdapter.create``'s ``**kwargs`` catch-all); callers must only pass it
-    when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it."""
+    when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it.
+    ``api_mode`` is the resolved wire declaration (same one that picked the client wrapper):
+    a named custom provider configured with ``api_mode: anthropic_messages`` has no profile of
+    its own, so without it the reasoning effort never reaches the Messages adapter (#136653)."""
     kwargs: dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
     if no_progress_timeout is not None:
         kwargs["no_progress_timeout"] = no_progress_timeout
@@ -6785,12 +6790,16 @@ def _build_call_kwargs(
     # /v1/messages. A profile declaring api_mode=anthropic_messages (commandcode-anthropic) is on
     # that wire regardless of URL shape — once it overrides build_api_kwargs_extras the generic
     # ``extra_body.reasoning`` fallback the adapter used to read is gone, so this is the adapter's
-    # only path. _wrap_transport wraps such providers on the same declaration.
+    # only path. _wrap_transport wraps such providers on the same declaration. A named custom
+    # provider configured with api_mode: anthropic_messages has no profile entry (it shares the
+    # generic OpenAI wire policy), so the resolved api_mode is the only remaining signal that the
+    # request rides the Messages wire (#136653).
     if reasoning_config and isinstance(reasoning_config, dict):
         raw_base = base_url or ""
         if (
             provider_norm == "anthropic" or projection.messages_wire or _nous_on_messages_wire(provider_norm, model)
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
+            or api_mode == "anthropic_messages"
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
     # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
@@ -7515,7 +7524,7 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
-        no_progress_timeout=no_progress_timeout)
+        no_progress_timeout=no_progress_timeout, api_mode=resolved_api_mode)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)

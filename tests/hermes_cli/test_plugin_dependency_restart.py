@@ -10,9 +10,12 @@ logged "run hermes pm repair" — on a hosted container the terminal backend the
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,7 +26,13 @@ DIST = "hermes-depprobe-fixture"
 REQ = f"{DIST}>=1.0,<2"
 
 
-def _select_generation(home: Path, *, with_dist: bool) -> Path:
+def _dist_info(site: Path, version: str) -> None:
+    info = site / f"{DIST.replace('-', '_')}-{version}.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: {version}\n", encoding="utf-8")
+
+
+def _select_generation(home: Path, *, with_dist: bool, version: str = "1.0") -> Path:
     """Commit a PM selection for this checkout under *home*, the way a sync leaves it."""
     from pm.environments import install_state_dir, runtime_facts_path, site_packages
     from pm.paths import repo_root
@@ -34,9 +43,7 @@ def _select_generation(home: Path, *, with_dist: bool) -> Path:
     site = site_packages(venv)
     site.mkdir(parents=True)
     if with_dist:
-        info = site / f"{DIST.replace('-', '_')}-1.0.dist-info"
-        info.mkdir()
-        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {DIST}\nVersion: 1.0\n", encoding="utf-8")
+        _dist_info(site, version)
     facts = runtime_facts_path(repo_root())
     facts.write_text(json.dumps({"schema": 1, "packages": {"venv": {"environment": str(venv)}}}),
                      encoding="utf-8")
@@ -156,3 +163,48 @@ def test_a_dependency_excluded_by_its_marker_is_never_missing():
     excluded = f"{DIST}>=1.0,<2; python_version < '3.0'"
     manifest = PluginManifest(name="depprobe", python_dependencies=[excluded, REQ])
     assert missing_python_dependencies(manifest) == [REQ]
+
+
+def test_a_plugin_importing_its_new_dependency_at_load_still_asks_for_a_restart(home, monkeypatch):
+    """The common shape: ``import <dep>`` at module top. In a gateway booted before the install the
+    load fails, so the plugin has no activation summary; the reload answer must still carry what
+    blocked it, or enable reports "nothing of this plugin needs a session or restart"."""
+    from gateway.run_plugin_rewire import reload_plugins_verb
+    from hermes_cli import plugins
+    from tui_gateway.contracts.tools_mcp_plugins import PluginActivation
+
+    _select_generation(home, with_dist=True)
+    (home / "plugins" / "depprobe" / "__init__.py").write_text(
+        "import hermes_depprobe_fixture\n\ndef register(ctx):\n    pass\n", encoding="utf-8")
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    try:
+        answer = reload_plugins_verb(SimpleNamespace(adapters={}), loop)()  # the gateway's real verb
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        plugins._reset_plugin_managers_for_tests()
+    monkeypatch.setattr("gateway.control_socket.reload_gateway_plugins",
+                        lambda target, *, profile_home=None, timeout=30.0: answer)
+    monkeypatch.setattr(plugins_activation, "notify_serve_backend", lambda name, home: None)
+
+    result = plugins_activation.activate_plugin_now("depprobe", in_process=False)
+
+    assert result["restart_required"] is True
+    assert result["activation"]["missing_dependencies"] == [REQ]
+    assert "nothing of this plugin needs" not in plugins_activation.activation_hint(result)
+    PluginActivation.model_validate(result["activation"])  # the plugins.manage wire accepts it
+
+
+def test_an_installed_version_the_requirement_rejects_is_missing(home, monkeypatch, tmp_path):
+    """``plugins update`` raising a floor: the running process holds 1.0, the selected generation
+    1.7. A name-only probe called that satisfied and asked for no restart."""
+    _select_generation(home, with_dist=True, version="1.7")
+    running = tmp_path / "running-site"
+    _dist_info(running, "1.0")
+    monkeypatch.syspath_prepend(str(running))
+    from hermes_cli.plugins import PluginManifest
+
+    raised = f"{DIST}>=1.5,<2"
+    assert missing_python_dependencies(PluginManifest(name="depprobe", python_dependencies=[raised])) == [raised]
+    assert installed_in_selected_environment([raised]) is True
+    assert installed_in_selected_environment([f"{DIST}>=1.8"]) is False

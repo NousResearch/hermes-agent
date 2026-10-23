@@ -90,6 +90,22 @@ def activation_summaries(manager: Any) -> list[dict[str, Any]]:
     return out
 
 
+def dependency_blocked_summaries(manager: Any) -> list[dict[str, Any]]:
+    """Plugins that failed to load in this process while a declared Python dependency is not
+    importable here, as ``{name, key, activated_now: {}, deferred: {}, missing_dependencies}``. A
+    plugin importing a just-installed dependency at load time fails in a process booted before the
+    install; without this entry the caller would read "loaded nothing, needs nothing" instead of
+    "restart". Never part of the ``on_plugin_loaded`` payload: nothing of these plugins loaded."""
+    from hermes_cli.plugins_loader import missing_python_dependencies
+    out = []
+    for key, loaded in list(manager._plugins.items()):
+        manifest = getattr(loaded, "manifest", None)
+        if getattr(loaded, "error", None) and (missing := missing_python_dependencies(manifest)):
+            out.append({"name": getattr(manifest, "name", None) or key, "key": key, "activated_now": {},
+                        "deferred": {}, "missing_dependencies": missing})
+    return out
+
+
 def find_activation(summaries: Optional[list[dict[str, Any]]], name: str) -> Optional[dict[str, Any]]:
     """The summary for ``name`` (manifest name, canonical key, or bare leaf of the key)."""
     for entry in summaries or ():
@@ -168,7 +184,9 @@ def load_and_go_live(name: str) -> Optional[dict[str, Any]]:
     """Force-rediscover plugins in THIS process under the caller's profile scope, connect ``name``'s
     MCP servers and hand them (and its skills) to this profile's open chats with a turn note. Returns
     the activation summary with ``live_now: {mcp_servers, skills}``; ``deferred`` then keeps only what
-    waits for the next session (Python ``tools``, ``prompt``). None when the plugin did not load."""
+    waits for the next session (Python ``tools``, ``prompt``). None when the plugin did not load, except
+    a load that failed on a dependency this process cannot import: that returns the
+    :func:`dependency_blocked_summaries` entry, so the caller asks for a restart."""
     # A forced rediscovery unloads every plugin before it loads them again, which drops their server
     # configs, skills and liveness declarations for the length of the pass. Two installs finishing
     # together (one card, two rows) each go live; the second one's pass must not run while the first
@@ -188,13 +206,14 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
         with manager._discovery_lock:
             manager.discover_and_load(force=True)
             activation = find_activation(activation_summaries(manager), name)
+            blocked = None if activation else find_activation(dependency_blocked_summaries(manager), name)
             portable = manager.get_portable_mcp_servers()
             skills = plugin_skills(activation["key"]) if activation else []
     except Exception:
         logger.debug("in-process plugin reload after change to %r failed", name, exc_info=True)
         return None
     if activation is None:
-        return None
+        return blocked
     servers = connect_plugin_mcp(activation, portable)
     activation["live_now"] = {"mcp_servers": servers, "skills": skills}
     activation["deferred"] = {k: v for k, v in (activation.get("deferred") or {}).items() if k != "mcp_servers"}
@@ -255,16 +274,19 @@ def _gateway_present() -> bool:
             or _installed_service_kind() is not None)
 
 
-def dependency_restart_hint(missing: list[str]) -> str:
-    """What to do when the running gateway / backend cannot import a plugin's dependencies."""
+def dependency_restart_hint(missing: list[str], *, gateway: bool) -> str:
+    """What to do when the running gateway / backend cannot import a plugin's dependencies. *gateway*:
+    the messaging gateway answered; otherwise only the Desktop / dashboard backend did, and restarting
+    a gateway that does not run would apply to nothing."""
     from hermes_cli.plugins_loader import installed_in_selected_environment
     deps = ", ".join(missing)
+    restart = ("  hermes gateway restart" if gateway
+               else "  quit and reopen the Hermes desktop app (or restart hermes dashboard)")
     if installed_in_selected_environment(missing):
         return (f"Its Python dependencies ({deps}) were installed after the running gateway or dashboard "
                 "started, and a running process never switches dependency environments. Restart them to "
-                "load the plugin:\n  hermes gateway restart")
-    return (f"Its Python dependencies ({deps}) are not installed. Run hermes pm repair, then restart:\n"
-            "  hermes gateway restart")
+                f"load the plugin:\n{restart}")
+    return f"Its Python dependencies ({deps}) are not installed. Run hermes pm repair, then restart:\n{restart}"
 
 
 def report_activation(console, name: str) -> None:
@@ -287,7 +309,7 @@ def activation_hint(result: dict[str, Any]) -> str:
     lines.extend(f"MCP server {s['name']} not connected: {s.get('error') or 'unknown error'}"
                  for s in live.get("mcp_servers") or () if not s.get("connected"))
     if missing := act.get("missing_dependencies"):
-        return "\n".join([*lines, dependency_restart_hint(missing)])
+        return "\n".join([*lines, dependency_restart_hint(missing, gateway=bool(result.get("gateway_reloaded")))])
     if not result.get("gateway_reloaded"):
         # Live in open chats, or no gateway runs or is installed for this profile (first-time setup):
         # a messaging gateway that starts later loads it at boot, so a restart applies to nothing.

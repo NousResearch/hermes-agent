@@ -89,7 +89,7 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_hermes_home, hermes_home_key
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        from hermes_cli.plugins_activation import activation_summaries
+        from hermes_cli.plugins_activation import activation_summaries, dependency_blocked_summaries
         from gateway.run import _profile_runtime_scope
         params = params or {}
         gateway_home = Path(get_hermes_home())
@@ -108,7 +108,10 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
         with scope:
             discover_plugins(force=True)
             manager = get_plugin_manager()
-            names, activations = sorted(manager._plugins), activation_summaries(manager)
+            # A plugin that failed on a dependency this gateway booted without rides along, so the
+            # enabling caller asks for the restart that loads it.
+            names = sorted(manager._plugins)
+            activations = activation_summaries(manager) + dependency_blocked_summaries(manager)
         try:
             rewired = asyncio.run_coroutine_threadsafe(_count_adapters(runner, profile_name), loop).result(timeout=5.0)
         except Exception:

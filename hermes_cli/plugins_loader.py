@@ -201,18 +201,25 @@ def _dist_name(req: str) -> str:
     return re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
 
 
-def _dist_installed(req: str) -> Optional[bool]:
-    """Best-effort presence probe on a requirement's distribution name; ``None`` when unprobeable."""
+def _dist_installed(req: str, path: Optional[list[str]] = None) -> Optional[bool]:
+    """Best-effort probe: a distribution the requirement accepts is installed (on ``path`` when given,
+    else this process's ``sys.path``); ``None`` when unprobeable. The version counts: a running
+    process holding ``x 1.2`` cannot serve a plugin that now requires ``x>=1.3``."""
     dist = _dist_name(req)
     if not dist:
         return None
     try:
-        importlib.metadata.version(dist)
-        return True
-    except importlib.metadata.PackageNotFoundError:
-        return False
+        found = next(iter(importlib.metadata.distributions(name=dist, path=path) if path
+                          else importlib.metadata.distributions(name=dist)), None)
     except Exception:
         return None
+    if found is None:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(req).specifier.contains(found.version, prereleases=True)
+    except (ImportError, ValueError):  # no packaging, or an unparseable requirement/version: presence decides
+        return True
 
 
 def missing_python_dependencies(manifest: Any) -> list[str]:
@@ -250,9 +257,7 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
         from pm.paths import repo_root
 
         site = str(site_packages(selected_venv(repo_root())))
-        return bool(requirements) and all(
-            next(iter(importlib.metadata.distributions(name=_dist_name(req), path=[site])), None) is not None
-            for req in requirements)
+        return bool(requirements) and all(_dist_installed(req, [site]) for req in requirements)
     except (OSError, RuntimeError, ValueError):  # unreadable or invalid selection record
         return False
 

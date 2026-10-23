@@ -744,13 +744,15 @@ class PluginActivation(Result):
     (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
     error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
     note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)
-    apply from the next session."""
+    apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements the
+    process that answered cannot import (installed after it booted, or never) — only a restart loads them."""
 
     name: str
     key: str
     activated_now: dict[str, list[str]] = Field(default_factory=dict)
     live_now: PluginLiveNow | None = None
     deferred: dict[str, list[str]] = Field(default_factory=dict)
+    missing_dependencies: list[str] = Field(default_factory=list)
 
 
 class OnboardingCatalogPlugin(Result):

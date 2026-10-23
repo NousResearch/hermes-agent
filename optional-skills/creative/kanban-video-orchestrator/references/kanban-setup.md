@@ -102,7 +102,7 @@ configure_profile() {
     local profile="$1"
     local toolsets_json="$2"     # JSON array, e.g. '["kanban","terminal","file"]'
     local skills_json="$3"       # JSON array, e.g. '["ascii-video"]'
-    python3 - "$profile" "$toolsets_json" "$skills_json" <<'PY'
+    python - "$profile" "$toolsets_json" "$skills_json" <<'PY'
 import json, os, sys
 from ruamel.yaml import YAML
 yaml = YAML(typ="safe", pure=True)

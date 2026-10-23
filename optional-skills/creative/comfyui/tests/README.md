@@ -7,14 +7,14 @@ without any setup; cloud integration tests need a Comfy Cloud API key.
 
 ```bash
 # Unit tests only (no network required) — runs in <1s
-python3 -m pytest tests/ -c tests/pytest.ini -o addopts="-p no:xdist"
+python -m pytest tests/ -c tests/pytest.ini -o addopts="-p no:xdist"
 
 # Including cloud integration tests
-COMFY_CLOUD_API_KEY="comfyui-..." python3 -m pytest tests/ \
+COMFY_CLOUD_API_KEY="comfyui-..." python -m pytest tests/ \
   -c tests/pytest.ini -o addopts="-p no:xdist"
 
 # Just cloud tests
-COMFY_CLOUD_API_KEY="comfyui-..." python3 -m pytest tests/test_cloud_integration.py \
+COMFY_CLOUD_API_KEY="comfyui-..." python -m pytest tests/test_cloud_integration.py \
   -c tests/pytest.ini -o addopts="-p no:xdist" -v
 ```
 

@@ -62,7 +62,7 @@ cloud browser if available, and encryption if `age` is installed), records your 
 the autonomous queue: scan, opt out (parents first), send and verify emails, schedule re-checks. You
 hear from it twice: at intake, and with one digest of anything only a human can do.
 
-The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
+The underlying CLI (run via `terminal`, as `python scripts/pdd.py <cmd>`):
 
 | Command | Purpose |
 |---|---|
@@ -127,7 +127,7 @@ fakes):
 
 ```bash
 scripts/run_tests.sh tests/skills/test_unbroker_skill.py           # CI-parity harness
-python3 tests/skills/test_unbroker_skill.py                        # dependency-free fallback runner
+python tests/skills/test_unbroker_skill.py                         # dependency-free fallback runner
 ```
 
 ## Safety and ethics

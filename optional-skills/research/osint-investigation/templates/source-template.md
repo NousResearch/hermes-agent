@@ -41,7 +41,7 @@ Path: `scripts/fetch_<source>.py`
 Example:
 
 ```bash
-python3 SKILL_DIR/scripts/fetch_<source>.py --<filter> <value> --out data/<source>.csv
+python SKILL_DIR/scripts/fetch_<source>.py --<filter> <value> --out data/<source>.csv
 ```
 
 Output CSV columns: `<col1>, <col2>, ...`

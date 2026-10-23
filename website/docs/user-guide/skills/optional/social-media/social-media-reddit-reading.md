@@ -79,12 +79,12 @@ missing or rejected it falls back to the anonymous feeds and says so on stderr.
 Run every command through `terminal` with the skill-relative script path:
 
 ```bash
-python3 scripts/reddit.py doctor                                  # which backend, current rate-limit window
-python3 scripts/reddit.py sub LocalLLaMA --sort hot --limit 15
-python3 scripts/reddit.py search "hermes agent" --sub LocalLLaMA --sort new
-python3 scripts/reddit.py thread https://www.reddit.com/r/x/comments/abc123/slug/ --limit 40
-python3 scripts/reddit.py user spez --limit 10
-python3 scripts/reddit.py --json search "topic"                  # machine-readable
+python scripts/reddit.py doctor                                  # which backend, current rate-limit window
+python scripts/reddit.py sub LocalLLaMA --sort hot --limit 15
+python scripts/reddit.py search "hermes agent" --sub LocalLLaMA --sort new
+python scripts/reddit.py thread https://www.reddit.com/r/x/comments/abc123/slug/ --limit 40
+python scripts/reddit.py user spez --limit 10
+python scripts/reddit.py --json search "topic"                  # machine-readable
 ```
 
 ## Quick Reference
@@ -140,7 +140,7 @@ account. Never ask for a Reddit password or browser cookies.
 
 ## Verification
 
-`python3 scripts/reddit.py doctor` prints `anonymous_feed: ok` and an
+`python scripts/reddit.py doctor` prints `anonymous_feed: ok` and an
 `x-ratelimit-reset` value; `sub announcements --limit 1` returns one entry with a
 `reddit.com/r/announcements/comments/` URL. With credentials set, `doctor` prints
 `active_backend: oauth` and `thread …` output shows numeric scores.

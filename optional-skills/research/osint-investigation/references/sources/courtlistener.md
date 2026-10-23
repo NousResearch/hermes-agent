@@ -65,19 +65,19 @@ Path: `scripts/fetch_courtlistener.py`
 
 ```bash
 # Search opinions for a party / keyword
-python3 SKILL_DIR/scripts/fetch_courtlistener.py --query "Example Corp" \
+python SKILL_DIR/scripts/fetch_courtlistener.py --query "Example Corp" \
     --out data/cl.csv
 
 # PACER dockets (best for recent litigation)
-python3 SKILL_DIR/scripts/fetch_courtlistener.py --query "Example Corp" \
+python SKILL_DIR/scripts/fetch_courtlistener.py --query "Example Corp" \
     --type dockets --out data/cl_dockets.csv
 
 # Restrict to a court
-python3 SKILL_DIR/scripts/fetch_courtlistener.py --query "Microsoft" \
+python SKILL_DIR/scripts/fetch_courtlistener.py --query "Microsoft" \
     --court ca9 --out data/cl_9th.csv
 
 # Date range
-python3 SKILL_DIR/scripts/fetch_courtlistener.py --query "Example Corp" \
+python SKILL_DIR/scripts/fetch_courtlistener.py --query "Example Corp" \
     --date-from 2020-01-01 --date-to 2024-12-31 --out data/cl.csv
 ```
 

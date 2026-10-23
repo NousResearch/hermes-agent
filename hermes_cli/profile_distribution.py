@@ -586,7 +586,7 @@ def install_distribution(
 ) -> InstallPlan:
     """Install a distribution from *source* into a new profile; returns the resolved plan.
     Use :func:`plan_install` first to preview + prompt."""
-    from hermes_cli.profiles import check_alias_collision, create_wrapper_script
+    from hermes_cli.profiles import _maybe_register_gateway_service, check_alias_collision, create_wrapper_script
     with tempfile.TemporaryDirectory(prefix="hermes_dist_install_") as tmp:
         plan = plan_install(source, Path(tmp), override_name=name)
         if plan.existing and not force:
@@ -601,6 +601,10 @@ def install_distribution(
         _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
         if create_alias and check_alias_collision(plan.manifest.name) is None:
             create_wrapper_script(plan.manifest.name)
+        # s6 slot registration mirrors create_profile()'s Phase 4: without it
+        # `hermes -p <name> gateway start` fails with "no such gateway" in a
+        # container right after install. No-op on host.
+        _maybe_register_gateway_service(plan.manifest.name)
         return plan
 
 
@@ -633,6 +637,10 @@ def update_distribution(profile_name: str, force_config: bool = False) -> Instal
         plan = plan_install(existing_manifest.source, Path(tmp), override_name=canon)
         plan.preserves_config = not force_config
         _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=plan.preserves_config)
+        # Recovery path for profiles installed before the install-side registration
+        # existed: the idempotent hook re-registers a missing s6 slot here. No-op on host.
+        from hermes_cli.profiles import _maybe_register_gateway_service
+        _maybe_register_gateway_service(canon)
         return plan
 
 

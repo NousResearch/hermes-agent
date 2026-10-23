@@ -80,6 +80,66 @@ class _FakeBlueBubblesRequest:
         return self._body
 
 
+class TestBlueBubblesWebhookAuth:
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_wrong_password(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message"}, password="wrong")
+        )
+        await asyncio.sleep(0)
+
+        assert response.status == 401
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_unicode_mismatch(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, password="päss")
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message"}, password="pass")
+        )
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_when_password_unset(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, password="")
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message"}, password="")
+        )
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_webhook_accepts_unicode_password(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, password="päss")
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({
+                "type": "new-message",
+                "data": {
+                    "guid": "msg-unicode",
+                    "text": "hi",
+                    "handle": {"address": "+15555550100"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "iMessage;-;+15555550100"}],
+                },
+            }, password="päss")
+        )
+        await asyncio.sleep(0)
+        assert response.status == 200
+        assert handled
+
+
 class TestBlueBubblesMentionGating:
     @pytest.mark.asyncio
     async def test_group_message_without_mention_is_acknowledged_and_skipped(self, monkeypatch):

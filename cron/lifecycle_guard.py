@@ -272,6 +272,9 @@ _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
+# Suffixes that alone mark a token as a probable shell script, shared by the bare-path reference
+# branch and the mention provenance check.
+_SHELL_SCRIPT_SUFFIXES = frozenset({".sh", ".bash", ".zsh"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
@@ -879,8 +882,14 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
-def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
-    """Yield the scripts the token at *index* executes, if any."""
+def _references_at(
+    segment: list[str], index: int, cwd: Optional[str]
+) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, via_shell)`` for scripts the token at *index* executes, if any.
+    ``via_shell`` marks references a shell will consume verbatim (``bash x``, ``source x``) —
+    the file's text is executed regardless of what it looks like; a bare path is only executed
+    by the kernel, which fallback-runs shebang-less text through the shell only when the
+    executable bit is set."""
     if index >= len(segment):
         return
     executable = segment[index]
@@ -888,7 +897,9 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in {".", "source"}:
         if len(segment) > index + 1:
-            yield from _resolved_or_nothing(segment[index + 1], cwd)
+            yield from (
+                (path, True) for path in _resolved_or_nothing(segment[index + 1], cwd)
+            )
         return
 
     if executable_name in _SHELL_EXECUTABLES:
@@ -909,19 +920,26 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
                 continue
             break
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
-            yield from _resolved_or_nothing(arguments[arg_index], cwd)
+            yield from (
+                (path, True) for path in _resolved_or_nothing(arguments[arg_index], cwd)
+            )
         return
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
-    if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+    if executable.strip("/") and (
+        "/" in executable or executable.endswith(tuple(_SHELL_SCRIPT_SUFFIXES))
+    ):
+        yield from ((path, False) for path in _resolved_or_nothing(executable, cwd))
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
-    original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
-    a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
+def _iter_referenced_shell_scripts(
+    command: str, *, cwd: Optional[str] = None
+) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, via_shell)`` for scripts executed directly or through a POSIX shell. Each
+    segment is read at the original token AND at the peeled wrapper target — additive on purpose:
+    peeling must never REMOVE a reference (a local ``./timeout`` is a script, not the coreutils
+    wrapper)."""
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
@@ -962,6 +980,24 @@ def _has_binary_magic(data: bytes) -> bool:
     if data.startswith(b"#!"):
         return False
     return data.startswith(_BINARY_MAGICS)
+
+
+def _has_shell_provenance(script_path: Path, script_text: str) -> bool:
+    """True when a referenced file could plausibly be consumed as shell source: a shebang, a shell
+    script suffix, or the executable bit (a direct exec of shebang-less text falls back to the
+    shell only when the file is executable). Applied ONLY to files a masked heredoc body merely
+    MENTIONED (#134313): Hermes writes command-shaped approval descriptions into user
+    ``config.yaml``, and tokenizing that YAML as shell blocked benign commands that just read the
+    config. Mentions routed through a shell (``bash x``, ``source x``) and executed references are
+    never gated — a shell runs any text it is handed."""
+    if script_path.suffix in _SHELL_SCRIPT_SUFFIXES:
+        return True
+    if script_text.startswith("#!"):
+        return True
+    try:
+        return os.access(script_path, os.X_OK)
+    except (OSError, ValueError):
+        return False
 
 
 def _read_referenced_script(
@@ -1126,11 +1162,17 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    candidates = [
+        (path, executed, via_shell)
+        for path, via_shell in _iter_referenced_shell_scripts(walk_command, cwd=cwd)
+    ]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        candidates += [
+            (path, False, via_shell)
+            for path, via_shell in _iter_referenced_shell_scripts(command, cwd=cwd)
+        ]
 
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed, via_shell in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:
@@ -1174,6 +1216,16 @@ def _contains_unsafe_gateway_action(
                     )
                 continue
         if not script_text:
+            continue
+        # (#134313) A file a masked heredoc body only MENTIONED as a bare path is scanned only
+        # when a shell could actually consume it; data files (YAML/JSON/...) whose own text merely
+        # looks like a lifecycle command stay allowed. Shell-routed mentions and executed
+        # references are never gated.
+        if (
+            not candidate_executed
+            and not via_shell
+            and not _has_shell_provenance(script_path, script_text)
+        ):
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):

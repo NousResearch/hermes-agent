@@ -1309,6 +1309,10 @@ class SessionStore(
     def _check_relay_claim_gate(
         self, source: SessionSource, session_key: str, candidate_sid: str, now: datetime,
     ) -> None:
+        gate = getattr(self.config, "claim_lock", None)
+        if gate is None or not gate.enabled:
+            return  # claim_lock.enabled=false: no relay acquire, no cross-instance stand-down
+        monitor = getattr(gate, "mode", "monitor") != "enforce"
         from gateway.relay import relay_instance_id
         instance_id = relay_instance_id()
         if not instance_id or not self._routing_home:
@@ -1322,6 +1326,12 @@ class SessionStore(
                 instance_id, candidate_sid,
             )
             if not acquired and claim and float(claim.get("lease_expire", 0)) >= time.time() and str(claim.get("instance_id")) != instance_id:
+                if monitor:
+                    logger.warning(
+                        "Channel claim monitor for %s/%s: would stand down to gateway "
+                        "instance %s (enforce raises channel_claim_standdown); admitting",
+                        source.platform.value, source.chat_id, claim.get("instance_id"))
+                    return
                 raise ChannelClaimBlocked(
                     "channel_claim_standdown",
                     field=f"other_instance={claim.get('instance_id')}",

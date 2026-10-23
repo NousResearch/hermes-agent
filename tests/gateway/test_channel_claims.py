@@ -357,3 +357,60 @@ def test_enforce_still_stands_down_by_default_in_this_file(tmp_path, monkeypatch
     with pytest.raises(RuntimeStoreError):
         store.get_or_create_session(_dm("chat-enf1"))
     assert store._entries == {}
+
+
+# ── Cross-instance relay gate under gateway.claim_lock (release union) ────────
+
+
+def _relay_gated_store(tmp_path, monkeypatch, instance="gw-ws", enabled=True, mode="enforce"):
+    """A store whose relay slice is enrolled and pointed at a fresh routing root."""
+    store = _store(tmp_path, monkeypatch, instance=instance, enabled=enabled, mode=mode)
+    relay_root = tmp_path / "relay-root"
+    relay_root.mkdir()
+    store._routing_home = relay_root
+    monkeypatch.setattr("gateway.relay.relay_instance_id", lambda: "inst-" + instance)
+    return store, relay_root
+
+
+def test_relay_gate_disabled_acquires_nothing(tmp_path, monkeypatch):
+    """claim_lock.enabled=false: the relay slice writes no claim and blocks no one."""
+    store, relay_root = _relay_gated_store(tmp_path, monkeypatch, enabled=False)
+    entry = store.get_or_create_session(_dm("chat-relay1"))
+    assert entry.origin.chat_id == "chat-relay1"
+    claims = relay_root / "bot_relay" / "channel_claims"
+    assert [p for p in claims.rglob("*") if p.is_file()] == []
+
+
+def test_relay_gate_monitor_admits_behind_a_foreign_instance(tmp_path, monkeypatch, caplog):
+    """Monitor mode: a live foreign relay claim logs the would-be stand-down and admits."""
+    from tools.bot_relay import _normalize_profile_for_claim, acquire_relay_claim
+
+    store, relay_root = _relay_gated_store(tmp_path, monkeypatch, mode="monitor")
+    acquired, _ = acquire_relay_claim(
+        relay_root, "mattermost", "", "chat-relay2",
+        _normalize_profile_for_claim("main"), "inst-mac", "sid-mac")
+    assert acquired
+    with caplog.at_level("WARNING"):
+        entry = store.get_or_create_session(_dm("chat-relay2"))
+    assert entry.origin.chat_id == "chat-relay2"
+    assert "Channel claim monitor" in caplog.text
+    assert "inst-mac" in caplog.text
+
+
+def test_relay_gate_enforce_stands_down_to_the_foreign_instance(tmp_path, monkeypatch):
+    """Enforce: a live foreign relay claim refuses the double-admit (ChannelClaimBlocked)."""
+    from datetime import datetime, timezone
+
+    from gateway.session import ChannelClaimBlocked
+    from tools.bot_relay import _normalize_profile_for_claim, acquire_relay_claim
+
+    store, relay_root = _relay_gated_store(tmp_path, monkeypatch)
+    acquired, _ = acquire_relay_claim(
+        relay_root, "mattermost", "", "chat-relay3",
+        _normalize_profile_for_claim("main"), "inst-mac", "sid-mac")
+    assert acquired
+    source = _dm("chat-relay3")
+    with pytest.raises(ChannelClaimBlocked):
+        store._check_relay_claim_gate(
+            source, store._generate_session_key(source), "sid-cand",
+            datetime.now(timezone.utc))

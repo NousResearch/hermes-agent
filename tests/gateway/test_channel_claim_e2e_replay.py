@@ -113,7 +113,12 @@ class World:
 
         self.journal: CaptureHandler = install_journal()
 
-        self.runner = GatewayRunner(GatewayConfig(group_sessions_per_user=False))
+        # The replay pins enforce: the harness regression-tests the acting gate (the
+        # monitor rollout phase is covered by the test_channel_claims.py unit tests).
+        from gateway.config import ClaimLockConfig
+
+        self.runner = GatewayRunner(GatewayConfig(group_sessions_per_user=False,
+            claim_lock=ClaimLockConfig(mode="enforce")))
         self.adapter = MattermostAdapter(PlatformConfig(
             enabled=True, token="fixture-token", typing_indicator=False,
             extra={"reply_mode": "thread"}))

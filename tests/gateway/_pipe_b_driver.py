@@ -123,7 +123,7 @@ async def run(job: dict) -> dict:
     journal = Journal()
     logging.getLogger().addHandler(journal)
     logging.getLogger().setLevel(logging.DEBUG)
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.config import ClaimLockConfig, GatewayConfig, Platform, PlatformConfig
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.platforms.base import SendResult
@@ -133,7 +133,8 @@ async def run(job: dict) -> dict:
     edits: list[dict] = []
     counter = {"n": 0}
 
-    runner = GatewayRunner(GatewayConfig(group_sessions_per_user=False))
+    runner = GatewayRunner(GatewayConfig(group_sessions_per_user=False,
+        claim_lock=ClaimLockConfig(mode="enforce")))
     adapter = MattermostAdapter(PlatformConfig(
         enabled=True, token="pipe-b-token", typing_indicator=False,
         extra={"reply_mode": "thread"}))

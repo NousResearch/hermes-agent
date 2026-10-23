@@ -339,6 +339,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                             user_config=self._ctx.user_config, diagnostic=diagnostic)
 
     def _maybe_renew_relay_claim(self) -> None:
+        lock = getattr(getattr(self._runner.session_store, "config", None), "claim_lock", None)
+        if lock is None or not lock.enabled:
+            return  # claim_lock off: the gate acquired nothing, so nothing renews
         ctx = self._ctx
         from gateway.relay import relay_instance_id
         instance_id = relay_instance_id()

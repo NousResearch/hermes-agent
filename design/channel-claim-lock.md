@@ -476,3 +476,20 @@ Fixing this requires either:
 4. **Backward compatibility?** The change is additive: a new table, a gate before session creation. Existing sessions without a claim row continue to work (they will acquire the claim on their next turn or inbound event). No migration of existing `state.db` rows is needed.
 5. **What about open-but-idle sessions?** They are not protected by an active claim. After 300 s of inactivity, the claim expires. New events steal and start fresh sessions. Old sessions remain in `sessions` for explicit `/resume`.
 6. **What about duplicate-credential profiles?** This design does not prevent cross-profile double sessions on shared tokens. The multiplex-migration blocker is named in §9.5.
+
+## 13. Release configuration (`gateway.claim_lock`)
+
+The claim gate rolls out behind one config block:
+
+```yaml
+gateway:
+  claim_lock:
+    enabled: true
+    mode: monitor   # monitor | enforce
+```
+
+- `enabled: false` is the kill switch: no claim acquire, no thread fold, no renewal, no stand-down. This is the pre-claim-lock behavior exactly.
+- `mode: monitor` (the default) keeps both claim stores maintained (intra-host SQLite, the cross-instance relay surface) and logs each would-have-blocked admission. It refuses no one. A mode value that is not one of `monitor`, `enforce` fails open to monitor with a warning, so a config typo cannot arm enforcement.
+- `mode: enforce` acts on live claim conflicts as sections 5 and 6 describe: route into the holder, stand down to the owning gateway, refuse the double-admit.
+
+`scope` and `lease_s` stay with the cross-instance claim ops (`tools/bot_relay.py`) and are not read from this block yet.

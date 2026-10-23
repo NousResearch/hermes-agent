@@ -167,6 +167,39 @@ def _load_script_maker():
         return None
 
 
+def _store_script_maker(python_exe: Path):
+    """ScriptMaker from the pip that ships with the interpreter being bound.
+
+    A launch activates only the dependency environment, which carries no
+    distlib and drops the store's site-packages, so the update that repins
+    Python could only publish a .cmd and retire hermes.exe -- which Desktop's
+    backend sweep, shortcuts and terminal profiles name. python-build-standalone
+    ships pip (the installer mints the first hermes.exe through it), and its
+    vendored distlib is self-contained. It loads under a private name so the
+    store's pip never answers an ``import pip`` in this process."""
+    package = Path(python_exe).parent / "Lib" / "site-packages" / "pip" / "_vendor" / "distlib"
+    if not (package / "scripts.py").is_file():
+        return None
+    import hashlib
+    import importlib
+    import importlib.util
+
+    # One private package per store copy: a later repin's pip never reuses the first one's.
+    name = f"_hermes_store_distlib_{hashlib.sha256(str(package).encode()).hexdigest()[:12]}"
+    try:
+        if name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                name, package / "__init__.py", submodule_search_locations=[str(package)])
+            if spec is None or spec.loader is None:
+                return None
+            sys.modules[name] = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(sys.modules[name])
+        return importlib.import_module(f"{name}.scripts").ScriptMaker
+    except (ImportError, OSError, SyntaxError, AttributeError):  # a torn or foreign pip: mint a .cmd
+        sys.modules.pop(name, None)
+        return None
+
+
 def exe_is_venv_bound(exe: Path, venv_dir: Path | None) -> bool:
     """True when an existing launcher exe embeds the venv interpreter —
     i.e. it is a copied venv console-script trampoline from the pre-pm
@@ -227,7 +260,7 @@ def mint_launcher(
     if not _is_windows():
         return _mint_shell_launcher(name, out_dir, python_exe, script)
 
-    script_maker_cls = _load_script_maker()
+    script_maker_cls = _load_script_maker() or _store_script_maker(python_exe)
     if script_maker_cls is not None:
         class _PathedScriptMaker(script_maker_cls):  # type: ignore[misc,valid-type]
             def _get_script_text(self, entry):
@@ -572,8 +605,9 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
 
 
 def _collect_retired(exe: Path) -> None:
-    """Delete aside copies of ``exe`` whose process has since exited."""
-    for leftover in exe.parent.glob(f"{exe.name}.*.deleteme"):
+    """Delete aside copies of ``exe`` whose process has since exited: ours
+    (``.<pid>.deleteme``) and distlib's own (``.deleteme``)."""
+    for leftover in exe.parent.glob(f"{exe.name}*.deleteme"):
         with suppress(OSError):
             leftover.unlink()
 

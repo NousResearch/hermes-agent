@@ -46,6 +46,19 @@ def test_all_three_formats_normalise_to_the_same_entry_shape_and_utc_dates():
     assert [e["title"] for e in newest] == ["Newer"]
 
 
+def test_non_strict_iso_dates_are_normalised_and_invalid_dates_are_dropped():
+    """Regression for #133300: normalize whitespace and drop invalid dates."""
+    published = feed.parse_date("2026-10-05 16:36:43  +0800")
+    assert published == "2026-10-05T08:36:43+00:00"
+
+    invalid = feed.parse_date("not a date")
+    assert invalid is None
+    assert (
+        feed.filter_entries([{"published": invalid}], limit=10, since="2026-10-03")
+        == []
+    )
+
+
 def test_page_url_discovers_advertised_feed_then_reads_it():
     """A non-feed page falls through to <link rel=alternate> discovery (resolved against the page URL)
     and `read` returns the parsed feed tagged with where it was discovered from."""

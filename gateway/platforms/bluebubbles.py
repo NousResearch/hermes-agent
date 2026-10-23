@@ -1,15 +1,18 @@
 """BlueBubbles iMessage platform adapter: local BlueBubbles macOS server for outbound REST sends and
-inbound webhooks (text, media attachments, typing indicators, read receipts)."""
+inbound webhooks with REST polling recovery (text, media, typing indicators, read receipts)."""
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import os
 import re
 import uuid
 from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
+from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, quote
@@ -24,7 +27,8 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from .media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task, compile_mention_patterns, strip_markdown
+from hermes_constants import get_hermes_home
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -64,6 +68,14 @@ _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
+_DEDUP_TTL = 900
+
+
+class _Ingest(Enum):
+    DISPATCHED = auto()
+    SKIPPED = auto()
+    MISSING_FIELDS = auto()
+    RETRYABLE = auto()
 
 
 def _redact(text: str) -> str:
@@ -111,6 +123,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     def __init__(self, config: PlatformConfig):
+        from gateway.platforms.bluebubbles_poll import DEFAULT_POLL_INTERVAL
+
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
         self.server_url = _normalize_server_url(_extra_or_secret(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
@@ -131,6 +145,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._dedup = MessageDeduplicator(max_size=2000, ttl_seconds=_DEDUP_TTL)
+        self._ingest_inflight: dict[str, asyncio.Future] = {}
+        self._hermes_home = str(get_hermes_home())
+        self._poller = None
+        self._poll_task: Optional[asyncio.Task] = None
+        raw_interval = _extra_or_secret(extra, "poll_interval", "BLUEBUBBLES_POLL_INTERVAL", DEFAULT_POLL_INTERVAL)
+        try:
+            interval = float(raw_interval)
+            if not math.isfinite(interval):
+                raise ValueError("non-finite interval")
+        except (TypeError, ValueError):
+            logger.warning("[bluebubbles] invalid poll_interval; using %s seconds", DEFAULT_POLL_INTERVAL)
+            interval = DEFAULT_POLL_INTERVAL
+        self.poll_interval = max(2.0, interval) if interval > 0 else 0.0
 
     # --- API helpers ---
 
@@ -213,6 +241,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
             await self._close_client()
             return False
+        if self.poll_interval > 0:
+            from gateway.platforms.bluebubbles_poll import BlueBubblesPoller
+
+            server_key = hashlib.sha1(self.server_url.encode()).hexdigest()[:8]
+            state_path = Path(self._hermes_home) / "bluebubbles" / f"poll_state-{server_key}.json"
+            # Restore dedup and enable durable handoff before the listener accepts webhooks.
+            self._poller = BlueBubblesPoller(self, interval=self.poll_interval, state_path=state_path)
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
         # with no Content-Length.
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
@@ -232,6 +267,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
                         self.webhook_path)
         await self._register_webhook()  # the server only sends events to webhooks registered via its API
+        if self._poller is not None:
+            self._poll_task = asyncio.create_task(self._poller.run(), name="bluebubbles-poll")
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
@@ -242,11 +279,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
+        await cancel_task(self._poll_task)
+        self._poll_task = None
         await self._unregister_webhook()
         await self._close_client()
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
+        self._poller = None
         self._mark_disconnected()
 
     @property
@@ -488,7 +528,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             # Videos, documents, and everything else
             return await cache_document_from_bytes_async(data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}")
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
+            # HTTP errors include the authenticated URL; never log its password query parameter.
+            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), type(exc).__name__)
             return None
 
     # --- Webhook handling ---
@@ -545,11 +586,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _resolve_chat_and_sender(self, payload: dict[str, Any], record: dict[str, Any]):
         """Returns ``(chat_guid, chat_identifier, sender)`` from the many BlueBubbles payload shapes."""
         chat_guid = self._value(record.get("chatGuid"), payload.get("chatGuid"), record.get("chat_guid"),
-                                payload.get("chat_guid"), payload.get("guid"))
+                                payload.get("chat_guid"))
         # BlueBubbles v1.9+ payloads omit top-level chatGuid; it's nested under data.chats[0].guid.
         _chats = record.get("chats") or []
         if not chat_guid and _chats and isinstance(_chats[0], dict):
             chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        # A direct REST record's guid identifies the message, never its conversation.
+        if not chat_guid and payload is not record:
+            chat_guid = self._value(payload.get("guid"))
         chat_identifier = self._value(record.get("chatIdentifier"), record.get("identifier"),
                                       payload.get("chatIdentifier"), payload.get("identifier"))
         handle = record.get("handle")
@@ -569,15 +613,58 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[bluebubbles] webhook parse error: %s", exc)
             return web.json_response({"error": "invalid payload"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "invalid payload"}, status=400)
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
         if event_type and event_type not in _MESSAGE_EVENTS:  # ack non-message events silently
             return _ok()
         record = self._extract_payload_record(payload) or {}
+        disposition = await self._ingest_message(payload, record, origin="webhook")
+        if disposition in {_Ingest.MISSING_FIELDS, _Ingest.RETRYABLE}:
+            return web.json_response({"error": "missing message fields"}, status=400)
+        if self._poller is not None:
+            # ACK only after persistence. A failed save keeps ingest's local dedup claim,
+            # so a webhook retry retries the save without dispatching the message again.
+            await self._poller.record_webhook(record)
+        return _ok()
+
+    def _message_key(self, record: dict[str, Any]) -> str:
+        guid = self._value(record.get("guid"), record.get("messageGuid"), record.get("id"))
+        if not guid:
+            return ""
+        text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
+        return f"{guid}:{hashlib.sha1(text.encode()).hexdigest()[:12]}"
+
+    async def _ingest_message(self, payload: dict[str, Any], record: dict[str, Any], *, origin: str) -> _Ingest:
         if record.get("isFromMe") or record.get("fromMe") or record.get("is_from_me"):
-            return _ok()
+            return _Ingest.SKIPPED
         assoc_type = record.get("associatedMessageType")
         if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
-            return _ok()
+            return _Ingest.SKIPPED
+        key = self._message_key(record)
+        if not key:
+            return await self._ingest_claimed_message(payload, record, origin=origin)
+        # Same-message races await the owner; unrelated chats and control messages keep flowing.
+        # Shielding ensures cancellation of a duplicate cannot cancel the owner's completion.
+        while pending := self._ingest_inflight.get(key):
+            await asyncio.shield(pending)
+        if self._dedup.is_duplicate(key):
+            return _Ingest.SKIPPED
+        completion = asyncio.get_running_loop().create_future()
+        self._ingest_inflight[key] = completion
+        try:
+            result = await self._ingest_claimed_message(payload, record, origin=origin)
+            if result in {_Ingest.MISSING_FIELDS, _Ingest.RETRYABLE}:
+                self._dedup.discard(key)
+            return result
+        except (Exception, asyncio.CancelledError):
+            self._dedup.discard(key)
+            raise
+        finally:
+            self._ingest_inflight.pop(key)
+            completion.set_result(None)
+
+    async def _ingest_claimed_message(self, payload: dict[str, Any], record: dict[str, Any], *, origin: str) -> _Ingest:
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         session_chat_id = chat_guid or chat_identifier
@@ -587,13 +674,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
-                return _ok()
+                return _Ingest.SKIPPED
             text = self._clean_mention_text(text)
         media_urls, media_types, msg_type = await self._collect_attachments(record)
         if not text and media_urls:
             text = "(attachment)"
-        if not sender or not (chat_guid or chat_identifier) or not text:
-            return web.json_response({"error": "missing message fields"}, status=400)
+        if not sender or not session_chat_id:
+            return _Ingest.MISSING_FIELDS
+        if not text:
+            # An attachment-only message can become usable on a later download attempt. Keep
+            # its poll position retryable without changing text+attachment partial delivery.
+            return (_Ingest.RETRYABLE if any(self._value(att.get("guid")) for att in record.get("attachments") or [])
+                    else _Ingest.MISSING_FIELDS)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
                                    chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
                                    chat_id_alt=chat_identifier)
@@ -602,9 +694,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_id=self._value(record.get("guid"), record.get("messageGuid"), record.get("id")),
             reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
             media_urls=media_urls, media_types=media_types)
-        task = asyncio.create_task(self.handle_message(event))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        # Base.handle_message starts background turn processing itself. Await its short intake
+        # step so a polling cursor never outruns the message's handoff to the gateway.
+        await self.handle_message(event)
+        if origin == "poll":
+            logger.info("[bluebubbles] message recovered via poll")
         if self.send_read_receipts and session_chat_id:  # fire-and-forget read receipt
-            asyncio.create_task(self.mark_read(session_chat_id))
-        return _ok()
+            receipt = asyncio.create_task(self.mark_read(session_chat_id))
+            self._background_tasks.add(receipt)
+            receipt.add_done_callback(self._background_tasks.discard)
+        return _Ingest.DISPATCHED

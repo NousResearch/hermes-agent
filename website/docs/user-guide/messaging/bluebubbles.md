@@ -126,9 +126,30 @@ iMessage → Messages.app → BlueBubbles Server → Webhook → Hermes
 Hermes → BlueBubbles REST API → Messages.app → iMessage
 ```
 
-- **Inbound:** BlueBubbles sends webhook events to a local listener when new messages arrive. No polling — instant delivery.
+- **Inbound:** BlueBubbles sends webhook events to a local listener for immediate delivery. Hermes also polls the REST API every 15 seconds to recover messages whose webhooks were missed.
 - **Outbound:** Hermes sends messages via the BlueBubbles REST API.
 - **Media:** Images, voice messages, videos, and documents are supported in both directions. Inbound attachments are downloaded and cached locally for the agent to process.
+
+### Polling fallback
+
+Webhooks remain the primary delivery path. The polling fallback uses the same authorization, group mention rules, and attachment handling. Recent deliveries from both paths are handled once when their message GUID and text match; an edit with different text can still be handled.
+
+Configure the interval in your profile's `config.yaml`:
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      poll_interval: 15
+```
+
+`poll_interval` is measured in seconds. Set it to `0` to disable polling; positive values below `2` are raised to `2`. `BLUEBUBBLES_POLL_INTERVAL` overrides the YAML setting when present.
+
+The first poll initializes a cursor without replaying messages that existed when polling started. The cursor and recent message identities are saved separately for each profile and server. A restart within 10 minutes of the last successful poll catches up on missed messages; a longer gap resets the cursor with a warning so stale history does not flood the agent. Each poll includes a 60-second overlap to recover late database inserts within that window. This bounded recovery does not provide a full history sync.
+
+Attachment-only messages that cannot be downloaded are retried on later polls. After three failed poll attempts, Hermes logs a warning and skips the unavailable message so later messages can proceed. Saved polling checkpoints suppress replay after restart; a crash before a delivery is checkpointed can still cause redelivery.
+
+When polling recovers a message, `hermes logs gateway` records an INFO line containing `recovered via poll`. Repeated recovery lines indicate that webhook delivery needs attention.
 
 ### Two URLs, opposite directions
 
@@ -155,6 +176,7 @@ Two details worth knowing:
 | `BLUEBUBBLES_WEBHOOK_HOST` | No | `127.0.0.1` | Webhook listener bind address |
 | `BLUEBUBBLES_WEBHOOK_PORT` | No | `8645` | Webhook listener port |
 | `BLUEBUBBLES_WEBHOOK_PATH` | No | `/bluebubbles-webhook` | Webhook URL path |
+| `BLUEBUBBLES_POLL_INTERVAL` | No | `15` | REST fallback interval in seconds; `0` disables, positive values below `2` use `2` |
 | `BLUEBUBBLES_HOME_CHANNEL` | No | — | Phone/email for cron delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | No | — | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
@@ -206,7 +228,9 @@ One caveat: "basic messaging works without Private API" assumes BlueBubbles can 
 - Ensure network connectivity (firewall, port forwarding)
 
 ### Messages not arriving
-- Check `hermes logs gateway` for webhook errors (or `hermes logs -f` to follow in real-time)
+- Check `hermes logs gateway` for webhook or polling errors (or `hermes logs -f` to follow in real-time)
+- With polling enabled, a missed webhook can be recovered on a later poll. Look for `recovered via poll`; verify `platforms.bluebubbles.extra.poll_interval` or `BLUEBUBBLES_POLL_INTERVAL` is not `0`
+- First initialization and restarts more than 10 minutes after the last successful poll skip existing history. Send a fresh test message after initialization to check recovery
 - Hermes registers the webhook itself on connect — only inspect BlueBubbles Server → Settings → API → Webhooks if the log shows a registration failure
 - A webhook row in the BlueBubbles UI is not proof of delivery; the end-to-end proof is Hermes logging the message and replying
 - If Hermes and BlueBubbles run on different machines, the default webhook bind address `127.0.0.1` is unreachable from the Mac — set `BLUEBUBBLES_WEBHOOK_HOST` to a reachable address and restart the gateway
@@ -222,8 +246,9 @@ One caveat: "basic messaging works without Private API" assumes BlueBubbles can 
 - For the multi-user setup itself, follow [BlueBubbles: multiple users on the same Mac](https://docs.bluebubbles.app/server/basic-guides/multiple-users-on-the-same-mac) — one port per user, and don't log out the user running the server
 
 ### Duplicate replies
+- Recent repeated deliveries with the same message GUID and text are collapsed across webhooks and polling. Changed text under the same GUID is treated as an edit and can trigger another reply
+- Check for a second gateway or iMessage bridge handling the same account; deduplication is local to one Hermes adapter and its saved polling state
 - Known issue: session handling can split one correspondent into two sessions (raw-GUID form vs. phone/email form) — tracked in [#30708](https://github.com/NousResearch/hermes-agent/issues/30708) and [#34372](https://github.com/NousResearch/hermes-agent/issues/34372)
-- Not a documentation or configuration problem — follow those issues for fixes
 
 ### "♻️ Recovered reply" repeats, or sends hang for minutes
 - If a `BLUEBUBBLES_HOME_CHANNEL` (or `platforms.bluebubbles.home_channel`) is configured, gateway restarts and platform reconnects notify the home channel and may re-deliver pending replies as "♻️ Recovered reply"
@@ -233,4 +258,3 @@ One caveat: "basic messaging works without Private API" assumes BlueBubbles can 
 ### "Private API helper not connected"
 - Install the Private API helper: [docs.bluebubbles.app](https://docs.bluebubbles.app/helper-bundle/installation)
 - Basic messaging works without it — only reactions, typing, and read receipts require it
-

@@ -19,6 +19,7 @@ from gateway.config import (
     HomeChannel,
     Platform,
     PlatformConfig,
+    _coerce_float,
     _getenv_str,
     _has_usable_api_server_key,
     SHARED_LISTENER_MIRROR_PLATFORMS,
@@ -617,7 +618,10 @@ _ENV_STEPS: tuple = (
             ("send_read_receipts", "BLUEBUBBLES_SEND_READ_RECEIPTS", "true", is_truthy_value),
             ("require_mention", "BLUEBUBBLES_REQUIRE_MENTION", "", _truthy_token),
         ),
-        optional=(("mention_patterns", "BLUEBUBBLES_MENTION_PATTERNS", _mention_patterns),),
+        optional=(
+            ("mention_patterns", "BLUEBUBBLES_MENTION_PATTERNS", _mention_patterns),
+            ("poll_interval", "BLUEBUBBLES_POLL_INTERVAL", partial(_coerce_float, default=15)),
+        ),
     ),
     _Home(Platform.BLUEBUBBLES, "BLUEBUBBLES_HOME_CHANNEL"),
     # QQ (Official Bot API v2)

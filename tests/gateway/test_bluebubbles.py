@@ -1,7 +1,9 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
+import hashlib
 import json
-from unittest.mock import AsyncMock
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -48,6 +50,18 @@ class TestBlueBubblesConfigLoading:
 
 
 class TestBlueBubblesHelpers:
+
+    @pytest.mark.parametrize("value, expected", [
+        (0, 0), ("0", 0), (-1, 0), (0.5, 2), (30, 30),
+        ("invalid", 15), (float("nan"), 15), (float("inf"), 15),
+    ])
+    def test_poll_interval_normalization(self, monkeypatch, value, expected):
+        monkeypatch.delenv("BLUEBUBBLES_POLL_INTERVAL", raising=False)
+        assert _make_adapter(monkeypatch, poll_interval=value).poll_interval == expected
+
+    def test_poll_interval_environment_override(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_POLL_INTERVAL", "0")
+        assert _make_adapter(monkeypatch, poll_interval=30).poll_interval == 0
 
 
     def test_format_message_preserves_underscores_in_identifiers(self, monkeypatch):
@@ -112,6 +126,140 @@ class TestBlueBubblesMentionGating:
 
 
 class TestBlueBubblesWebhookParsing:
+
+    @pytest.mark.asyncio
+    async def test_duplicate_webhook_dispatches_once(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handle_message = AsyncMock()
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+        payload = {"type": "new-message", "data": {
+            "guid": "message-duplicate", "text": "hello",
+            "handle": {"address": "user@example.com"},
+            "chats": [{"guid": "iMessage;-;user@example.com"}],
+        }}
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        await asyncio.sleep(0)
+
+        assert first.status == second.status == 200
+        handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_fields_remain_retryable(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handle_message = AsyncMock()
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+        payload = {"type": "new-message", "data": {
+            "guid": "message-incomplete", "text": "hello",
+        }}
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        assert first.status == second.status == 400
+        handle_message.assert_not_awaited()
+
+        payload["data"]["handle"] = {"address": "user@example.com"}
+        recovered = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        await asyncio.sleep(0)
+        assert recovered.status == 200
+        handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
+    async def test_failed_handoff_releases_duplicate_claim(self, monkeypatch, error_type):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handle_message = AsyncMock(side_effect=[error_type(), None])
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+        payload = {"type": "new-message", "data": {
+            "guid": "message-retry", "text": "hello",
+            "handle": {"address": "user@example.com"},
+        }}
+
+        with pytest.raises(error_type):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+
+        assert response.status == 200
+        assert handle_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_slow_attachment_does_not_block_unrelated_text(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        download_started = asyncio.Event()
+        release_download = asyncio.Event()
+        handle_message = AsyncMock()
+
+        async def download(guid, metadata):
+            download_started.set()
+            await release_download.wait()
+            return "/tmp/cached.jpg"
+
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+        slow_record = {"guid": "slow-message", "handle": {"address": "alice@example.com"},
+                       "attachments": [{"guid": "attachment", "mimeType": "image/jpeg"}]}
+        other_record = {"guid": "unrelated-message", "text": "/stop",
+                        "handle": {"address": "bob@example.com"}}
+        slow_task = asyncio.create_task(adapter._handle_webhook(_FakeBlueBubblesRequest({"data": slow_record})))
+        try:
+            await asyncio.wait_for(download_started.wait(), timeout=2)
+            response = await asyncio.wait_for(
+                adapter._handle_webhook(_FakeBlueBubblesRequest({"data": other_record})), timeout=2)
+            assert response.status == 200
+            handle_message.assert_awaited_once()
+            assert handle_message.call_args.args[0].text == "/stop"
+        finally:
+            release_download.set()
+            await asyncio.wait_for(slow_task, timeout=2)
+
+    @pytest.mark.asyncio
+    async def test_attachment_only_download_failure_is_retryable(self, monkeypatch):
+        from gateway.platforms.bluebubbles import _Ingest
+
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handle_message = AsyncMock()
+        download = AsyncMock(side_effect=[None, None, "/tmp/cached.jpg"])
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+        record = {"guid": "attachment-message", "handle": {"address": "user@example.com"},
+                  "attachments": [{"guid": "attachment", "mimeType": "image/jpeg"}]}
+
+        first = await adapter._ingest_message(record, record, origin="poll")
+        assert first is _Ingest.RETRYABLE
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({"data": record}))
+        assert response.status == 400
+        handle_message.assert_not_awaited()
+
+        recovered = await adapter._ingest_message(record, record, origin="poll")
+        assert recovered is _Ingest.DISPATCHED
+        handle_message.assert_awaited_once()
+        assert handle_message.call_args.args[0].media_urls == ["/tmp/cached.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_text_with_failed_attachment_still_dispatches(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handle_message = AsyncMock()
+        monkeypatch.setattr(adapter, "_download_attachment", AsyncMock(return_value=None))
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+        record = {"guid": "text-and-attachment", "text": "hello",
+                  "handle": {"address": "user@example.com"},
+                  "attachments": [{"guid": "attachment", "mimeType": "image/jpeg"}]}
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({"data": record}))
+
+        assert response.status == 200
+        handle_message.assert_awaited_once()
+        assert handle_message.call_args.args[0].text == "hello"
+
+    @pytest.mark.parametrize("chats, expected", [
+        ([{"guid": "iMessage;+;family"}], ("iMessage;+;family", None, "user@example.com")),
+        ([], (None, "user@example.com", "user@example.com")),
+    ])
+    def test_direct_record_never_uses_message_guid_as_chat(self, monkeypatch, chats, expected):
+        adapter = _make_adapter(monkeypatch)
+        record = {"guid": "message-guid", "handle": {"address": "user@example.com"}, "chats": chats}
+        assert adapter._resolve_chat_and_sender(record, record) == expected
 
     def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -229,6 +377,55 @@ class TestBlueBubblesGuidResolution:
         monkeypatch.setattr(adapter, "_api_post", fake_api_post)
         await adapter._resolve_chat_guid("user@example.com")
         assert "user@example.com" not in adapter._guid_cache
+
+
+class TestBlueBubblesPollLifecycle:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("interval", [0, 0.5])
+    async def test_connect_and_disconnect_poll_lifecycle(self, monkeypatch, tmp_path, interval):
+        monkeypatch.delenv("BLUEBUBBLES_POLL_INTERVAL", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "owner"))
+        adapter = _make_adapter(monkeypatch, poll_interval=interval)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "other"))
+        poll_started = asyncio.Event()
+        stopped_before_close = []
+
+        async def poll_run():
+            poll_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped_before_close.append(adapter.client is not None)
+
+        poller_factory = Mock(return_value=Mock(run=poll_run))
+        monkeypatch.setattr("gateway.platforms.bluebubbles_poll.BlueBubblesPoller", poller_factory)
+        client = Mock(aclose=AsyncMock())
+        monkeypatch.setattr("gateway.platforms.bluebubbles.httpx.AsyncClient", Mock(return_value=client))
+        monkeypatch.setattr(adapter, "_api_get", AsyncMock(return_value={"data": {}}))
+        monkeypatch.setattr(adapter, "_register_webhook", AsyncMock(return_value=True))
+        monkeypatch.setattr(adapter, "_unregister_webhook", AsyncMock(return_value=True))
+        monkeypatch.setattr(adapter, "_wire_plugin_handlers", Mock())
+        monkeypatch.setattr("gateway.platforms.shared_ingress.bind_listener", AsyncMock(return_value=None))
+
+        assert await adapter.connect()
+        task = adapter._poll_task
+        if interval:
+            await asyncio.wait_for(poll_started.wait(), timeout=2)
+            state_path = poller_factory.call_args.kwargs["state_path"]
+            server_key = hashlib.sha1(adapter.server_url.encode()).hexdigest()[:8]
+            assert state_path == Path(tmp_path / "owner" / "bluebubbles" / f"poll_state-{server_key}.json")
+            assert poller_factory.call_args.kwargs["interval"] == 2
+        else:
+            assert task is None
+            poller_factory.assert_not_called()
+
+        await adapter.disconnect()
+
+        assert adapter._poll_task is None
+        client.aclose.assert_awaited_once()
+        if interval:
+            assert task.done()
+            assert stopped_before_close == [True]
 
 
 class TestBlueBubblesAttachmentDownload:

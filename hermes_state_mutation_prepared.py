@@ -60,7 +60,19 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
 
 
 def reasoning_in_transaction(db, conn, session_id, payload, prepared):
+    from hermes_state_runtime import _json
     snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    # This level is newer than any still waiting for a turn boundary, beside or inside a deferred model pick.
+    key = DEFERRED_PICK_PREFIX + session_id
+    row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    if row is not None:
+        pick = json.loads(row[0])
+        pick.pop('reasoning', None)
+        pick.get('payload', {}).pop('reasoning', None)
+        if 'application_id' in pick:
+            conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(pick), key))
+        else:
+            conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
     return {session_id, snapshot['target']}, {'effort': payload['effort'], 'execution_generation': generation}
 
 

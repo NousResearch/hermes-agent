@@ -49,3 +49,52 @@ async def test_levels_picked_during_a_running_turn_apply_to_the_next_turn_in_pic
         release.set()
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_level_committed_after_the_turn_settles_supersedes_the_deferred_one(tmp_path, monkeypatch):
+    from gateway import session_deferred_pick
+    from gateway.session_contract import Submission
+    from gateway.session_policy import policy_for_source
+    import hermes_state_runtime as rt
+    started, release = threading.Event(), asyncio.Event()
+    seen, state = [], {}
+
+    async def handle(event):
+        live = state['authority'].sessions[state['ref'].session_id]
+        seen.append((event.text, (policy_for_source(state['authority'].runner, live.source).reasoning_config
+                                   or {}).get('effort')))
+        if event.text == 'RUNNING':
+            started.set()
+            await release.wait()
+        return 'ok'
+
+    async def pick(n, effort):
+        snap = db.get_session(ref.session_id)
+        reply = await owner.dispatch({'id': n, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': f'pick-{n}', 'expected_revision': snap['runtime_revision'],
+            'expected_generation': snap['runtime_generation'], 'operation': 'reasoning',
+            'payload': {'effort': effort}}})
+        return reply['result'].get('status')
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    state.update(authority=authority, ref=ref)
+    authority.runner._set_session_reasoning_override = lambda *a: None
+    apply = session_deferred_pick.apply_deferred_pick
+    try:
+        first = await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
+        await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
+        assert await pick(0, 'low') == 'deferred'
+        # The newer pick takes the mutation lock before the drain reaches the boundary.
+        monkeypatch.setattr(session_deferred_pick, 'apply_deferred_pick', lambda *a: asyncio.sleep(0))
+        release.set()
+        await async_wait_until(
+            lambda: rt.get_session_admission(db, admission_id=first.admission_id)['status'] == 'terminal',
+            timeout=10, what='the running turn settled')
+        assert await pick(1, 'high') is None  # committed now, not deferred
+        monkeypatch.setattr(session_deferred_pick, 'apply_deferred_pick', apply)
+        await _run_turn(authority, owner, db, ref, 'NEXT')
+        assert seen[-1] == ('NEXT', 'high'), seen
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()

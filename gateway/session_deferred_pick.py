@@ -47,7 +47,10 @@ def defer_pick(authority, actor, ref, params):
             current.get('payload', {}).pop('reasoning', None)  # this level is newer than the one picked with the model
             value, picked = {**current, 'reasoning': pick}, {'effort': params['payload']['effort']}
         else:
-            value = {**pick, **({'reasoning': current['reasoning']} if 'reasoning' in current else {})}
+            # A level picked with this model is newer than one deferred before it, which it drops: the
+            # slot never holds both, so committing the slot's level never strips the model's own.
+            older = 'reasoning' in current and 'reasoning' not in params['payload']
+            value = {**pick, **({'reasoning': current['reasoning']} if older else {})}
             picked = {'model': params['payload']['model']}
         result = {'session_id': ref.session_id, 'operation': operation, 'status': 'deferred', **picked,
                   'revision': row[0], 'execution_generation': row[1]}

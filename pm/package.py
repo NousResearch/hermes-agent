@@ -268,6 +268,9 @@ def _untar_deb_payload(name: str, payload: bytes, staged: Path) -> None:
 
     try:
         extract_tar(io.BytesIO(payload), staged)
+    except InstallError:
+        # Pre-PEP 706 interpreters also lack tarfile.FilterError.
+        raise
     except tarfile.FilterError as exc:
         member = exc.tarinfo.name if exc.tarinfo is not None else "?"
         raise InstallError(name, f"unsafe member {member!r}: {exc}") from exc

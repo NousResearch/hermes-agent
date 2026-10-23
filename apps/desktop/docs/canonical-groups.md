@@ -6,6 +6,8 @@ The Bots roster lists the selected connection/profile's gateway rooms as ordinar
 
 ## Which group chats are gateway group chats
 
+A gateway can also seat a text-only Bot from another gateway in a group chat it owns (`groups.peer.invite` / `groups.peer.register`, described in the Bot Mode guide); Desktop does not offer that yet.
+
 One classifier, `groupExecutionMode`, reads `groups.capabilities`. Two surfaces answer it: the gateway's own (`gateway/session_group_controls.py`) and the standalone server, reached by SSH, URL and Cloud connections (`hermes serve`, `hermes dashboard`; `tui_gateway/methods_groups.py`).
 
 - **Gateway group chats:** an answer with `driver: true`, from either surface. Both run their own group chat driver, so these group chats keep working while Desktop is closed. An answer without a running driver is unavailable (below), but a group chat Desktop has already bound (opened from the gateway list, or earlier in this session) still opens and says its group driver is unavailable.

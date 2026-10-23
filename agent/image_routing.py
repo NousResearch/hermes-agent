@@ -271,18 +271,23 @@ def _explicit_aux_vision_override(cfg: Optional[dict[str, Any]]) -> bool:
     )
 
 
-def _probe_managed_runtime(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+def _probe_managed_runtime(
+    provider: str, model: str, cfg: Optional[dict[str, Any]], *, requested_provider: str = "",
+) -> Optional[bool]:
     """Managed local runtime verdict: the server receiving the image is the authority
     on whether it can see (its /props reports modalities). Cloud catalogs have never
     heard of a local GGUF, so without this every local model reads as text-only and
-    screenshots detour to a cloud auxiliary."""
+    screenshots detour to a cloud auxiliary. ``requested_provider`` is part of the
+    uniform probe protocol (see :data:`_VISION_PROBES`); unused here."""
     from hermes_cli.local_runtime.capabilities import is_managed_provider, managed_model_supports_vision
 
     managed = is_managed_provider(provider, _resolve_inference_base_url(cfg, provider) or "")
     return managed_model_supports_vision(model) if managed else None
 
 
-def _probe_models_dev(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+def _probe_models_dev(
+    provider: str, model: str, cfg: Optional[dict[str, Any]], *, requested_provider: str = "",
+) -> Optional[bool]:
     """models.dev catalog verdict. ``allow_network=True`` on purpose: this runs only
     when an image needs routing, and the text-only-main guard depends on catalog
     data — a cold cache returning "unknown" would reintroduce attempting the call.
@@ -301,12 +306,22 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[dict[str, Any]]) 
         from agent.model_metadata import strip_codex_context_variant_suffix
 
         model = strip_codex_context_variant_suffix(model)
-    caps = get_model_capabilities(provider, model, allow_network=True)
+    caps = get_model_capabilities(provider, model, allow_network=True, config=cfg)
+    requested = requested_provider.strip()
+    if caps is None and requested and requested.lower() != (provider or "").strip().lower():
+        # A named custom provider reaches this probe canonicalized to ``custom``, a name the
+        # catalog can never resolve; retry under the requested name so its ``catalog_provider``
+        # alias is honored without per-model supports_vision overrides (#143347).
+        caps = get_model_capabilities(requested, model, allow_network=True, config=cfg)
     return None if caps is None else caps.supports_vision
 
 
-def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
-    """Ollama ``/api/show`` verdict for local endpoints (see :func:`_should_probe_ollama_vision`)."""
+def _probe_ollama(
+    provider: str, model: str, cfg: Optional[dict[str, Any]], *, requested_provider: str = "",
+) -> Optional[bool]:
+    """Ollama ``/api/show`` verdict for local endpoints (see :func:`_should_probe_ollama_vision`).
+    ``requested_provider`` is part of the uniform probe protocol (see :data:`_VISION_PROBES`);
+    unused here — base URL/key resolution has its own runtime fallback."""
     base_url = _resolve_inference_base_url(cfg, provider)
     if not base_url and _clean_str(provider).lower() == "ollama":
         base_url = "http://localhost:11434/v1"
@@ -320,6 +335,9 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> O
 
 # Capability probes after the config override, in priority order; each returns
 # True/False or None (unknown → next probe). Exceptions are logged and treated as None.
+# Every probe receives the pre-canonicalization provider identity so a canonicalized
+# ``custom`` name can still be resolved against the user's config (#143347); the
+# catalog probe is the consumer today.
 _VISION_PROBES: tuple[tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
     ("caps lookup", _probe_models_dev),
@@ -363,7 +381,7 @@ def _lookup_supports_vision(
 
     for label, probe in _VISION_PROBES:
         try:
-            verdict = probe(provider, model, cfg)
+            verdict = probe(provider, model, cfg, requested_provider=requested_provider)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("image_routing: %s failed for %s:%s — %s", label, provider, model, exc)
             continue

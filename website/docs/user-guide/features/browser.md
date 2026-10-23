@@ -691,7 +691,7 @@ Click @e5 to press the "Sign In" button
 
 ### `browser_type`
 
-Type text into an input field. Clears the field first, then types the new text.
+Replace text in an input, textarea, or `contentEditable` editor. Clears existing content first, then inserts the new text. Rich editors receive native selection, deletion, and paragraph input so their internal state stays synchronized; blank lines and a trailing newline are preserved. On a native `<select>` dropdown it chooses the option whose value or visible label matches the text, and fails with the available options when none does.
 
 ```
 Type "hermes agent" into the search field @e3

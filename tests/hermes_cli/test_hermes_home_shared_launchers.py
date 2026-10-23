@@ -147,3 +147,34 @@ def test_dead_exe_never_shadows_kept_cmd(tmp_path, monkeypatch):
     # that would have run instead of it is gone.
     assert local / "hermes.cmd" in written
     assert not (local / "hermes.exe").exists()
+
+
+def _deny_is_file(monkeypatch, denied: Path) -> None:
+    """A parent tree whose ACL fails the interpreter's stat with PermissionError."""
+    real_is_file = Path.is_file
+
+    def is_file_or_denied(self: Path) -> bool:
+        if self == denied:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file_or_denied)
+
+
+@pytest.mark.platforms("any")
+def test_an_acl_denied_interpreter_republishes_like_a_dead_one(tmp_path, monkeypatch):
+    # A kept launcher's interpreter can sit under a tree whose ACL denies the stat
+    # outright. The unreadable pin must read like the dead one above — republish —
+    # instead of crashing the launch path (#135036).
+    default_home, _ = _make_home(tmp_path, "default")
+    temp_home, temp_python = _make_home(tmp_path, "temp")
+    repo = _make_repo(tmp_path)
+    _isolate(tmp_path, monkeypatch, default_home)
+    _publish(repo)
+    denied = _launchers.resolve_store_python(repo)
+    assert denied is not None
+
+    _deny_is_file(monkeypatch, denied)
+    _isolate(tmp_path, monkeypatch, temp_home)
+    healed = _publish(repo)
+    assert all(_launchers._launcher_python(repo / ".hermes" / "bin" / name) == temp_python for name in healed)

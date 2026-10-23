@@ -210,7 +210,10 @@ A server entry key this Hermes does not know (one a newer release added) is
 ignored with a warning, which `hermes plugins validate` lists, and the package
 still installs. Releases from before this rule reject the package instead, and a
 release that ignores a key may behave less safely than intended, so declare a new
-key together with a catalog `requires_hermes` floor.
+key together with a catalog `requires_hermes` floor. `plugin.json` has no version
+field, so that catalog floor is a portable package's only one: an install by
+catalog name refuses on an older Hermes, and `hermes plugins update` keeps the
+installed pin until Hermes is updated.
 
 An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
 whose budget exceeds the shared concurrent-batch deadline becomes a sequential

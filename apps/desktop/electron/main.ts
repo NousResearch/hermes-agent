@@ -14514,10 +14514,10 @@ ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundl
   // (#72166). The explicit flag carries the intent instead.
   bootstrapRepairAttempt += 1
 
-  // Probe the live backend process so the guard can distinguish "venv is
-  // genuinely broken" (force reinstall) from "backend is just transiently
-  // stalled under GIL pressure" (#74874 — `event loop stalled` followed by
-  // `ws ready frame send failed`, then renderer keeps reporting dead).
+  // Probe the live backend process and the installed launcher before tearing
+  // either down. A running process may only be stalled (#74874), whereas the
+  // launcher's bounded --version probe shares the real boot path and detects
+  // a damaged PM generation that a restart could never repair.
   const primaryProc = backendConnectionState.getProcess()
 
   const primaryBackendAlive = Boolean(
@@ -14526,16 +14526,21 @@ ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundl
     (primaryProc as { signalCode?: string | null }).signalCode === null
   )
 
+  const runtimeUsable =
+    (await resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, [], { hermesHome: HERMES_HOME })) !== null
+
   const repairDecision = decideBootstrapRepair({
     attempt: bootstrapRepairAttempt,
     maxSoftAttempts: MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS,
-    primaryBackendAlive
+    primaryBackendAlive,
+    runtimeUsable
   })
 
   rememberLog(
     `[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure ` +
       `(attempt=${repairDecision.attempt}/${MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS}, ` +
       `primaryBackendAlive=${primaryBackendAlive}, ` +
+      `runtimeUsable=${runtimeUsable}, ` +
       `hardReinstall=${repairDecision.hardReinstall}): ${repairDecision.reason}`
   )
 

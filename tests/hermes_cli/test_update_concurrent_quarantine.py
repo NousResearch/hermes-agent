@@ -104,6 +104,10 @@ def test_pause_stops_launcher_after_worker_drain(
     """Capture the launcher identity while its worker is still inspectable."""
     import hermes_cli.gateway as gateway_mod
     import gateway.status as status_mod
+    from hermes_cli import update_windows_tasks
+
+    # This topology fixture models user-owned processes, not SYSTEM tasks.
+    monkeypatch.setattr(update_windows_tasks, "discover_profile_tasks", lambda *_: {})
 
     # The install venv is whatever hermes_constants.project_venv_dir resolves for the checkout (a
     # CI checkout has no venv/ and the test interpreter lives elsewhere); pin it to the fixture layout.

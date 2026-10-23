@@ -2466,6 +2466,18 @@ class TestFtsRebuildLoopWithoutTrigram:
         statements = []
         self._trace(monkeypatch, statements, trigram=False)
 
+        # The first pre-v33 open must rebuild the redacted projection once.
+        # The no-trigram convergence contract applies after that mandatory
+        # migration; it must not turn into a rebuild on every later open.
+        from hermes_state_common import SCHEMA_VERSION
+        migrated = SessionDB(db_path=db_path)
+        try:
+            assert migrated._conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+            assert self._legacy_wipes(statements) == ["DELETE FROM messages_fts"]
+            assert len(migrated.search_messages("zebra")) == 5
+        finally:
+            migrated.close()
+
         for _ in range(2):
             statements.clear()
             db = SessionDB(db_path=db_path)

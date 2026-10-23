@@ -3110,14 +3110,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from hermes_state_mutation_retirement import create_conflict
             if conflict := create_conflict(conn, session_id):  # one BEGIN IMMEDIATE write: a racing create sees the row
                 return None, conflict
+            system_prompt_hash = db._store_system_prompt(conn, system_prompt)
             conn.execute(
                 """INSERT INTO sessions (
-                   id, source, model, model_config, system_prompt, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                   id, source, model, model_config, system_prompt, system_prompt_hash, started_at
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?)""",
                 (session_id, source, model_name, json.dumps(model_config) if model_config else None,
-                 system_prompt, time.time()))
+                 system_prompt_hash, time.time()))
             if title is not None:
-                clean_title = db.sanitize_title(str(title))
+                clean_title = db.sanitize_durable_title(str(title))
                 if clean_title:
                     try:
                         db._resolve_title_conflict(conn, session_id, clean_title)
@@ -3125,6 +3126,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
                         return None, f"title:{exc}"
                 conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))
+            if system_prompt_hash is not None:
+                db._delete_unreferenced_system_prompts(conn)
             session_row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             return (dict(session_row) if session_row else {
                 "id": session_id, "source": source, "model": model_name, "title": title}), None

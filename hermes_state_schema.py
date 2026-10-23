@@ -51,6 +51,7 @@ _MESSAGE_UID_BACKFILL_DONE = "message_uid_backfill"
 _MESSAGE_UID_BACKFILL_CURSOR = "message_uid_backfill_id"
 _MESSAGE_UID_BACKFILL_CHUNK = 2000
 _MESSAGE_UID_BACKFILL_BUDGET_S = 1.0
+_V31_IMPORT_IDENTITY_RESET_DONE = "v31_import_identity_reset"
 
 
 def _holder_cmdline(pid: int) -> str:
@@ -141,10 +142,9 @@ _STALE_KEY_UPSERT_SQL = (
 _STATE_META_UPSERT_SQL = (
     "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 )
-_CLEAR_REBUILD_MARKERS_SQL = "DELETE FROM state_meta WHERE key IN ('fts_rebuild_high_water', 'fts_rebuild_progress')"
-# FTS_STORAGE_VERSION < 3 truncated tool rows only above a moving state_meta mark; the aligned
-# projection truncates by role alone, so the retired marker is dropped with the realign.
+# FTS_STORAGE_VERSION < 3 used a moving high-water mark; the aligned projection retires it.
 _DROP_RETIRED_TOOL_HIGH_WATER_SQL = "DELETE FROM state_meta WHERE key = 'fts_tool_full_content_high_water'"
+_CLEAR_REBUILD_MARKERS_SQL = "DELETE FROM state_meta WHERE key IN ('fts_rebuild_high_water', 'fts_rebuild_progress')"
 
 
 def _legacy_inline_reinsert_sql(table: str, indent: int, *, delete_first: bool = False) -> str:
@@ -301,6 +301,7 @@ class SessionSchemaMixin:
         ).fetchone()
         return row is not None and "messages_fts_src" not in (row[0] or "")
 
+
     @staticmethod
     def _execute_ddl_skipping_settled_triggers(cursor: sqlite3.Cursor, ddl: str) -> None:
         """Run *ddl* statement by statement, skipping each ``DROP TRIGGER IF EXISTS x`` /
@@ -402,6 +403,7 @@ class SessionSchemaMixin:
             return
         self._run_admitted_startup_rebuild(cursor, do_align)
 
+
     @staticmethod
     def _sqlite_table_exists(cursor: sqlite3.Cursor, name: str) -> bool:
         return cursor.execute(
@@ -451,12 +453,18 @@ class SessionSchemaMixin:
             logger.debug("Could not drop residual CJK UPDATE trigger after quarantine", exc_info=True)
 
     @staticmethod
-    def _rebuild_fts_indexes(cursor: sqlite3.Cursor, *, legacy: bool = False, include_trigram: bool = True) -> None:
+    def _rebuild_fts_indexes(
+        cursor: sqlite3.Cursor, *, legacy: bool = False, include_trigram: bool = True, include_cjk: bool = False,
+    ) -> None:
         """v23+ external-content 'rebuild'. It indexes EVERY row, so the deferred-backfill
         markers are cleared or the worker would re-insert covered rows (duplicates).
         ``legacy`` (pre-v23 inline layout) has no external-content 'rebuild' source, so it
         DELETEs + reinserts the concatenated content the legacy triggers produced."""
-        tables = ("messages_fts", "messages_fts_trigram") if include_trigram else ("messages_fts",)
+        tables = ("messages_fts",)
+        if include_trigram:
+            tables += ("messages_fts_trigram",)
+        if include_cjk and not legacy:
+            tables += ("messages_fts_cjk",)
         for tbl in tables:
             if legacy:
                 cursor.execute(f"DELETE FROM {tbl}")
@@ -979,6 +987,13 @@ class SessionSchemaMixin:
             )
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_foreign_import_identity "
+                "ON sessions(source, import_identity_digest) WHERE import_identity_digest IS NOT NULL"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_sessions_foreign_import_identity create skipped: %s", exc)
         self._execute_ddl_skipping_settled_triggers(cursor, DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
 
         # Heal NULL ``active`` rows on every startup: older reconciler builds added ``active``
@@ -1000,8 +1015,10 @@ class SessionSchemaMixin:
             self._drop_all_fts_triggers(cursor)
         if not fts5_available:
             # Existing FTS triggers would still fire though this runtime cannot read their
-            # targets. Drop only the triggers; a future FTS5 runtime recreates them.
-            self._drop_fts_triggers(cursor)
+            # targets. Drop every base, trigram, and CJK trigger; a future FTS5
+            # runtime recreates them. Leaving CJK sync triggers made canonical
+            # migration updates fail on tokenizer-less hosts.
+            self._drop_all_fts_triggers(cursor)
 
         row = cursor.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
@@ -1015,12 +1032,25 @@ class SessionSchemaMixin:
                  (_MESSAGE_UID_BACKFILL_DONE, "1")],  # a fresh store has no legacy rows to backfill
             )
         else:
-            self._run_data_migrations(cursor, row[0], fts5_available)
+            needs_v31_sanitation, fts_migrations_complete = self._run_data_migrations(
+                cursor, row[0], fts5_available,
+            )
+        if row is None:
+            needs_v31_sanitation = False
 
         self._ensure_unique_title_index(cursor)
         if fts5_available:
             self._init_fts(cursor)
             self._stamp_settled_fts_layout(cursor)
+        # SQLite cannot VACUUM inside the transaction that rewrites the legacy rows. Commit
+        # those redacted projections first, then force a sole-opener checkpoint/rewrite before
+        # stamping the current version. Failed sanitation or incomplete FTS migration
+        # leaves the old version intact so the next open retries both gates.
+        if needs_v31_sanitation:
+            self._conn.commit()
+            self._sanitize_v31_legacy_redaction_storage()
+            if fts_migrations_complete:
+                cursor.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
         self._conn.commit()
 
     def _stamp_settled_fts_layout(self, cursor: sqlite3.Cursor) -> None:
@@ -1047,9 +1077,13 @@ class SessionSchemaMixin:
         ).fetchone() is None:
             cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
 
-    def _run_data_migrations(self, cursor: sqlite3.Cursor, current_version: int, fts5_available: bool) -> None:
+    def _run_data_migrations(
+        self, cursor: sqlite3.Cursor, current_version: int, fts5_available: bool,
+    ) -> tuple[bool, bool]:
         """Version-gated chain for DATA migrations only (row backfills); column additions never
-        belong here. Advances schema_version at the end unless FTS5 is unavailable."""
+        belong here. Return (needs physical sanitation, FTS migrations complete) so sanitation
+        cannot override an unfinished FTS version hold. FTS work is skipped when unavailable;
+        durable migrations still advance."""
         # Renew the lease: the chain can rewrite whole tables on large DBs.
         report_startup_progress(600.0, phase="state_db_data_migrations")
         # (v10 trigram backfill and v11 inline FTS re-index were superseded by v23 and removed.)
@@ -1103,12 +1137,53 @@ class SessionSchemaMixin:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
         self._advance_message_uid_backfill(cursor)
+        # v33 extends the durable-redaction rewrite to gateway routing projections.
+        # Use the same physical sanitation fence as v31: logical replacement alone
+        # leaves legacy bytes in SQLite pages/WAL.
+        needs_v31_sanitation = current_version < 33
+        if current_version == 31 and _meta_row(cursor, _V31_IMPORT_IDENTITY_RESET_DONE) is None:
+            # v31 may contain the original unkeyed SHA-256 identity values. Its
+            # origins are already redacted, so they cannot be safely re-keyed;
+            # retain neither the dictionary oracle nor a redaction-derived key.
+            secure_delete = cursor.execute("PRAGMA secure_delete=ON").fetchone()
+            if not secure_delete or int(secure_delete[0]) != 1:
+                raise sqlite3.OperationalError("could not enable SQLite secure_delete for v32 import identity migration")
+            # The schema version can remain at 31 while FTS is incomplete. Record
+            # this reset atomically so a retry does not erase newly keyed identities
+            # after their raw provenance has already been redacted.
+            cursor.execute("SAVEPOINT v31_import_identity_reset")
+            try:
+                cursor.execute("UPDATE sessions SET import_identity_digest = NULL WHERE import_identity_digest IS NOT NULL")
+                self.set_meta(_V31_IMPORT_IDENTITY_RESET_DONE, "1", cursor=cursor)
+                cursor.execute("RELEASE SAVEPOINT v31_import_identity_reset")
+            except BaseException:
+                cursor.execute("ROLLBACK TO SAVEPOINT v31_import_identity_reset")
+                cursor.execute("RELEASE SAVEPOINT v31_import_identity_reset")
+                raise
+            # The raw digest can survive a logical UPDATE in a copied DB/WAL, so
+            # use the same checkpoint/VACUUM discipline as v31 before stamping.
+            needs_v31_sanitation = True
+        if current_version < 33:
+            # Upstream also used v31/v32, without redaction. Preserve those raw import
+            # identities too; the backfill refuses already-redacted identity operands.
+            self._backfill_foreign_import_identity_digests(cursor)
         fts_migrations_complete = True
-        if current_version < 30 and fts5_available:
+        if current_version < 32 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);
             # v30: delegate-child transcripts too (FTS_TRIGRAM_EXCLUDED_SOURCES + _delegate_from).
-            # Rebuild once so rows indexed by older view/trigger definitions do not linger.
-            fts_migrations_complete = self._migrate_trigram_cron_exclusion(cursor)
+            # Rebuild once so rows indexed by older view/trigger definitions do not linger. v30 is
+            # also the predecessors of v31 and v32: rerun this idempotent repair on every
+            # pre-v32 upgrade before sanitation/rebuilds, otherwise a partial external layout
+            # can carry excluded rows forever.
+            if fts5_available:
+                fts_migrations_complete = self._migrate_trigram_cron_exclusion(cursor)
+        if current_version < 33:
+            # Enable before overwriting legacy cells and FTS rows so SQLite zeroes discarded
+            # payloads even before the required post-commit database rewrite below.
+            secure_delete = cursor.execute("PRAGMA secure_delete=ON").fetchone()
+            if not secure_delete or int(secure_delete[0]) != 1:
+                raise sqlite3.OperationalError("could not enable SQLite secure_delete for durable redaction migration")
+            self._redact_legacy_durable_projections(cursor, fts5_available=fts5_available)
 
         # The FTS layout stamp is written by _stamp_settled_fts_layout after _init_fts, not here.
         # v23: FTS storage redesign (issues #22478, #43690, #55233). The v11 inline-mode FTS tables each
@@ -1131,10 +1206,207 @@ class SessionSchemaMixin:
         # created by _init_schema's executescript(SCHEMA_SQL) + _reconcile_columns() before this chain;
         # the version only records that the store has them (#140315).
         # Advance schema_version — deliberately NOT gated on the FTS opt-in (that would block
-        # every future migration for a user who never optimizes). FTS5 unavailable is the
-        # one skip: claiming current would lie.
-        if current_version < SCHEMA_VERSION and fts_migrations_complete and fts5_available:
+        # every future migration for a user who never optimizes). FTS5 availability only gates
+        # FTS work: durable migrations complete safely without it.
+        if current_version < SCHEMA_VERSION and fts_migrations_complete and not needs_v31_sanitation:
             cursor.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+        return needs_v31_sanitation, fts_migrations_complete
+
+    def _backfill_foreign_import_identity_digests(self, cursor: sqlite3.Cursor) -> None:
+        """Digest legacy raw import identities before their provenance is redacted.
+
+        Already-redacted identity operands are deliberately left NULL: deriving a
+        digest from their display projection would recreate the collision bug.
+        """
+        from hermes_state_portability import SessionPortabilityMixin
+
+        for row in cursor.execute(
+            "SELECT id, source, origin_json FROM sessions "
+            "WHERE import_identity_digest IS NULL AND origin_json IS NOT NULL"
+        ).fetchall():
+            parsed = safe_json_loads(row["origin_json"], default={}) or {}
+            origin = parsed.get("imported_from") if isinstance(parsed, dict) else None
+            if not isinstance(origin, dict) or origin.get("tool") != row["source"]:
+                continue
+            # Versions 31/32 exist both upstream (raw origins) and in early redaction
+            # builds (projected origins). Never turn a redaction placeholder into an
+            # identity: unrelated imports can share exactly that display projection.
+            identity_value = origin.get("foreign_session_id") or origin.get("path")
+            if (not isinstance(identity_value, str)
+                    or any(marker in identity_value for marker in ("[REDACTED", "«redacted:", "...", "…"))):
+                continue
+            try:
+                digest = SessionPortabilityMixin._foreign_import_identity_digest(origin)
+            except (KeyError, TypeError, ValueError):
+                continue
+            cursor.execute("UPDATE sessions SET import_identity_digest = ? WHERE id = ?", (digest, row["id"]))
+
+    def _sanitize_v31_legacy_redaction_storage(self) -> None:
+        """Rewrite v31's committed redacted image and truncate every active WAL frame.
+
+        This deliberately runs only during the v30 -> v31 migration, after its logical
+        updates/FTS rebuild have committed. ``VACUUM`` cannot run in that transaction, and a
+        checkpoint can be blocked by another reader; either condition is a migration failure,
+        never a reason to advance the schema marker without the physical cleanup.
+        """
+        def checkpoint_truncate(phase: str) -> None:
+            row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row is None or int(row[0]) != 0 or int(row[1]) != 0:
+                raise sqlite3.OperationalError(
+                    f"v31 redaction storage sanitization {phase} checkpoint could not truncate WAL: {row!r}"
+                )
+
+        try:
+            enabled = self._conn.execute("PRAGMA secure_delete=ON").fetchone()
+            if not enabled or int(enabled[0]) != 1:
+                raise sqlite3.OperationalError("could not enable SQLite secure_delete for v31 storage sanitization")
+            checkpoint_truncate("pre-VACUUM")
+            self._conn.execute("VACUUM")
+            checkpoint_truncate("post-VACUUM")
+            freelist = self._conn.execute("PRAGMA freelist_count").fetchone()
+            if freelist is None or int(freelist[0]) != 0:
+                raise sqlite3.OperationalError("v31 redaction storage sanitization left SQLite freelist pages")
+        except sqlite3.Error:
+            logger.exception("v31 redaction storage sanitization failed; schema version remains below v31")
+            raise
+
+    def _redact_legacy_durable_projections(self, cursor: sqlite3.Cursor, *, fts5_available: bool) -> None:
+        """Redact persisted display projections and rebuild FTS when available.
+
+        ``sessions.title``, ``origin_json``, and the display-only diagnostics
+        (``last_activity_description``, ``handoff_error``, and
+        ``compression_failure_error``) are free-form projections. The remaining
+        text/JSON session columns are deliberately operational: gateway peer/routing identity
+        (``user_id``/``session_key``/``chat_*``/``display_name``),
+        workspace/model restoration (``cwd``/Git/``model_config``/``tool_names``),
+        or structured lifecycle diagnostics and labels. Redacting those here
+        would break routing, resume, or recovery semantics; system prompts are
+        separately redacted below.
+        """
+        from hermes_state_messages import _redact_durable_projection
+
+        # ``tool_calls`` are live replay operands. Keep their arguments literal: rewriting
+        # a token-looking file payload here would make a resumed write_file/patch call
+        # write the redaction placeholder instead of the original requested content.
+        json_columns = ("reasoning_details", "codex_reasoning_items", "codex_message_items", "display_metadata")
+        string_columns = (
+            "role", "content", "tool_call_id", "tool_name", "effect_disposition", "finish_reason", "reasoning",
+            "reasoning_content", "platform_message_id", "api_content", "display_kind",
+        )
+        rows = cursor.execute("SELECT id, " + ", ".join((*string_columns, *json_columns)) + " FROM messages").fetchall()
+        for row in rows:
+            updates = {}
+            for column in string_columns:
+                redacted = _redact_durable_projection(row[column])
+                if redacted != row[column]:
+                    updates[column] = redacted
+            for column in json_columns:
+                raw = row[column]
+                if raw is None:
+                    continue
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                except (TypeError, ValueError):
+                    parsed = "[REDACTED: invalid durable JSON projection]"
+                serialized = json.dumps(_redact_durable_projection(parsed))
+                if serialized != raw:
+                    updates[column] = serialized
+            if updates:
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                cursor.execute(f"UPDATE messages SET {assignments} WHERE id = ?", (*updates.values(), row["id"]))
+        # System prompt snapshots are separately normalized and joined into
+        # replay/display projections. Their hash is content-addressed, so migrate
+        # by inserting the redacted hash, rewiring session references, then
+        # removing the raw row (rather than mutating a primary key in place).
+        try:
+            prompts = cursor.execute("SELECT hash, prompt FROM system_prompts").fetchall()
+        except sqlite3.OperationalError:
+            prompts = []
+        for row in prompts:
+            redacted = _redact_durable_projection(row["prompt"])
+            if redacted == row["prompt"]:
+                continue
+            prompt_hash = hashlib.sha256(redacted.encode("utf-8")).hexdigest()
+            cursor.execute("INSERT OR IGNORE INTO system_prompts (hash, prompt) VALUES (?, ?)", (prompt_hash, redacted))
+            cursor.execute("UPDATE sessions SET system_prompt_hash = ? WHERE system_prompt_hash = ?", (prompt_hash, row["hash"]))
+            cursor.execute("DELETE FROM system_prompts WHERE hash = ?", (row["hash"],))
+        # Titles share the same durable display boundary as message projections,
+        # but must be migrated independently because they do not participate in FTS.
+        # Two different legacy raw titles can redact to the same projection while
+        # the old global unique-title index is still live. Derive every target
+        # before updating, then temporarily clear changed rows so an existing
+        # source title cannot block another row's target. The profile-private
+        # HMAC suffix is stable across retries and never exposes an ID that could
+        # itself contain raw context, unlike appending a session ID or unkeyed hash.
+        from hermes_state_portability import SessionPortabilityMixin
+        title_rows = cursor.execute(
+            "SELECT id, title FROM sessions WHERE title IS NOT NULL ORDER BY id"
+        ).fetchall()
+        allocated_titles = set()
+        title_updates = []
+        for row in title_rows:
+            title = row["title"]
+            redacted = _redact_durable_projection(title)
+            candidate = redacted
+            if candidate in allocated_titles:
+                suffix_id = SessionPortabilityMixin._import_title_collision_suffix(str(row["id"]))
+                attempt = 1
+                while True:
+                    suffix = f" ({suffix_id})" if attempt == 1 else f" ({suffix_id} #{attempt})"
+                    candidate = self.sanitize_title(redacted[:self.MAX_TITLE_LENGTH - len(suffix)] + suffix)
+                    if candidate not in allocated_titles:
+                        break
+                    attempt += 1
+            allocated_titles.add(candidate)
+            if candidate != title:
+                title_updates.append((candidate, row["id"]))
+        if title_updates:
+            cursor.executemany("UPDATE sessions SET title = NULL WHERE id = ?", ((session_id,) for _, session_id in title_updates))
+            cursor.executemany("UPDATE sessions SET title = ? WHERE id = ?", title_updates)
+        # Foreign import provenance is a durable display projection, not live routing state.
+        # Parse it first so keys cross the recursive redactor too; malformed legacy JSON fails closed.
+        for row in cursor.execute("SELECT id, origin_json FROM sessions WHERE origin_json IS NOT NULL").fetchall():
+            raw = row["origin_json"]
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+            except (TypeError, ValueError):
+                parsed = "[REDACTED: invalid durable JSON projection]"
+            serialized = json.dumps(_redact_durable_projection(parsed))
+            if serialized != raw:
+                cursor.execute("UPDATE sessions SET origin_json = ? WHERE id = ?", (serialized, row["id"]))
+        # Gateway routing keys are the exact opaque match operand needed to restore a
+        # restarted gateway. Every duplicate/display field in entry_json is projected;
+        # load_gateway_routing_entries() reinjects the operational key in memory.
+        try:
+            from hermes_state_gateway import _gateway_routing_entry_projection
+            routing_rows = cursor.execute("SELECT scope, session_key, entry_json FROM gateway_routing").fetchall()
+        except sqlite3.OperationalError:
+            routing_rows = []
+        for row in routing_rows:
+            projected = _gateway_routing_entry_projection(row["entry_json"])
+            if projected != row["entry_json"]:
+                cursor.execute(
+                    "UPDATE gateway_routing SET entry_json = ? WHERE scope = ? AND session_key = ?",
+                    (projected, row["scope"], row["session_key"]),
+                )
+        diagnostic_columns = ("last_activity_description", "handoff_error", "compression_failure_error")
+        for row in cursor.execute(
+            "SELECT id, " + ", ".join(diagnostic_columns) + " FROM sessions"
+        ).fetchall():
+            updates = {
+                column: _redact_durable_projection(row[column]) for column in diagnostic_columns
+                if _redact_durable_projection(row[column]) != row[column]
+            }
+            if updates:
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                cursor.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", (*updates.values(), row["id"]))
+        if fts5_available and self._sqlite_table_exists(cursor, "messages_fts"):
+            self._rebuild_fts_indexes(
+                cursor,
+                legacy=self._db_has_legacy_inline_fts(cursor),
+                include_trigram=self._sqlite_table_exists(cursor, "messages_fts_trigram"),
+                include_cjk=self._sqlite_table_exists(cursor, "messages_fts_cjk"),
+            )
 
     def _advance_message_uid_backfill(self, cursor: sqlite3.Cursor) -> None:
         """Mint ``message_uid`` onto rows written before the column existed, one bounded slice per open.
@@ -1311,6 +1583,7 @@ class SessionSchemaMixin:
         # IF NOT EXISTS cannot rewrite pre-existing broad AFTER UPDATE triggers.
         if self._fts_enabled:
             self._migrate_broad_fts_update_triggers(cursor)
+
 
     def _run_admitted_startup_rebuild(self, cursor, rebuild_fn) -> None:
         """Run FTS bootstrap or trigger-repair rebuild under cross-process admission.

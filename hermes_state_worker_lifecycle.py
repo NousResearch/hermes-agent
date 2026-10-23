@@ -3,6 +3,7 @@ import json
 import time
 
 from hermes_state_runtime import RuntimeStoreError
+from hermes_state_messages import _redact_durable_projection
 
 
 _IDENTITY_FIELDS = frozenset({
@@ -120,7 +121,7 @@ def worker_activity(db, conn, session_id, payload):
     when = time.time() if when is None else float(when)
     conn.execute('UPDATE sessions SET last_activity_at=?,last_activity_description=?,last_activity_provenance=? '
                  'WHERE id=? AND (last_activity_at IS NULL OR last_activity_at<?)',
-                 (when, bound_activity_description(payload['description']),
+                 (when, _redact_durable_projection(bound_activity_description(payload['description'])),
                   normalize_activity_provenance(payload['provenance']).value, session_id, when))
     return {'value': None}
 
@@ -146,13 +147,13 @@ def worker_billing_route(db, conn, session_id, payload):
 
 
 def worker_api_content(db, conn, session_id, payload):
-    from hermes_state_messages import _scrub_surrogates
     if set(payload) != {'content', 'api_content'} or not isinstance(payload['api_content'], str):
         raise RuntimeStoreError('invalid_params')
     value = conn.execute(
         "UPDATE messages SET api_content=? WHERE id=(SELECT id FROM messages WHERE session_id=? "
         "AND role='user' AND active=1 ORDER BY id DESC LIMIT 1) AND content IS ?",
-        (_scrub_surrogates(payload['api_content']), session_id, db._encode_content(payload['content']))).rowcount
+        (_redact_durable_projection(payload['api_content']), session_id,
+         db._encode_content(_redact_durable_projection(payload['content'])))).rowcount
     return {'value': value}
 
 
@@ -165,13 +166,12 @@ def _row_id(payload):
 
 def worker_message_api_content(db, conn, session_id, payload):
     """Row-addressed sidecar backfill, same guards as ``SessionDB.set_message_api_content``."""
-    from hermes_state_messages import _scrub_surrogates
     if set(payload) != {'row_id', 'content', 'api_content'} or not isinstance(payload['api_content'], str):
         raise RuntimeStoreError('invalid_params')
     return {'value': conn.execute(
         "UPDATE messages SET api_content=? WHERE id=? AND session_id=? AND role='user' AND active=1 AND content IS ?",
-        (_scrub_surrogates(payload['api_content']), _row_id(payload), session_id,
-         db._encode_content(payload['content']))).rowcount}
+        (_redact_durable_projection(payload['api_content']), _row_id(payload), session_id,
+         db._encode_content(_redact_durable_projection(payload['content'])))).rowcount}
 
 
 def worker_user_content(db, conn, session_id, payload):
@@ -180,7 +180,7 @@ def worker_user_content(db, conn, session_id, payload):
         raise RuntimeStoreError('invalid_params')
     return {'value': conn.execute(
         "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
-        (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
+        (db._encode_content(_redact_durable_projection(payload['content'])), _row_id(payload), session_id)).rowcount}
 
 
 WORKER_LIFECYCLE_HANDLERS = {
@@ -210,7 +210,7 @@ def insert_session_row_in_transaction(
     The ordinary constructor should delegate here too. Worker identity is
     validated before entry; this helper never opens or commits a DB.
     """
-    from hermes_state_sessions import _UPSERT_KEEP_EXISTING_SQL
+    from hermes_state_sessions import _UPSERT_KEEP_EXISTING_SQL, _redact_origin_json
     from hermes_state_mutation_retirement import RETIRED_PREFIX
     # A delayed constructor/accounting backfill must not recreate a deleted session
     # beside its durable tombstone (the exact delete retry would then report a stale
@@ -269,7 +269,7 @@ def insert_session_row_in_transaction(
         (
             session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, model,
             json.dumps(model_config) if model_config else None, system_prompt_hash,
-            parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
+            parent_session_id, cwd, profile_name, transport_profile, git_repo_root, _redact_origin_json(origin_json),
             display_name, time.time(),
         ),
     )

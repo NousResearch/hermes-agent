@@ -19,6 +19,76 @@ def _ensure_redaction_enabled(monkeypatch):
 
 class TestKnownPrefixes:
 
+    @pytest.fixture
+    def isolated_basic_registry(self, monkeypatch):
+        # Match an unregistered leak, not an exact vault-value replacement.
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "basic")
+        monkeypatch.setattr("agent.redact._VAULT_REDACTION_VALUES", {})
+
+    @pytest.mark.parametrize("suffix", [".", "...", ".segment.", ",", ");", '\".', "]!"])
+    @pytest.mark.parametrize("body", ["Q" * 32, "Q" * 16 + ".segment-_"])
+    def test_sk_punctuation_masks_full_key_and_is_idempotent(
+        self, isolated_basic_registry, body, suffix
+    ):
+        token = "sk-" + body
+        # A single dotted segment is part of the key, not trailing prose.
+        matched = token + (".segment" if suffix == ".segment." else "")
+        punctuation = "." if suffix == ".segment." else suffix
+        text = "Observed " + token + suffix
+        expected = "Observed " + mask_secret(matched, head=6, tail=4, floor=18) + punctuation
+        result = redact_sensitive_text(text, force=True)
+        assert result == expected
+        assert redact_sensitive_text(result, force=True) == result
+        assert redact_sensitive_text(text, force=True, file_read=True) == (
+            "Observed «redacted:sk-…»" + punctuation
+        )
+
+    @pytest.mark.parametrize("body", ["Q" * 9, "Q" * 8 + "-", "Q" * 8 + "_", "abc.def", "pro...EFGH", "abc.de...WXYZ"])
+    @pytest.mark.parametrize("suffix", ["", ".", "...", ","])
+    def test_sk_short_keys_and_display_masks_are_not_partially_redacted(
+        self, isolated_basic_registry, body, suffix
+    ):
+        text = "Observed sk-" + body + suffix
+        assert redact_sensitive_text(text, force=True) == text
+
+    @pytest.mark.parametrize("body", ["Q" * 10, "Q" * 9 + "-", "Q" * 9 + "_", "abcd.efghi", "abcd.efgh-", "abcd.efgh_"])
+    def test_sk_minimum_length_and_trailing_token_characters(
+        self, isolated_basic_registry, body
+    ):
+        token = "sk-" + body
+        assert redact_sensitive_text("Observed " + token + ".", force=True, file_read=True) == (
+            "Observed «redacted:sk-…»."
+        )
+
+    @pytest.mark.parametrize("suffix", [".", "...", ".segment."])
+    def test_sk_punctuation_durable_content_survives_reopen_without_cleartext(
+        self, isolated_basic_registry, tmp_path, suffix
+    ):
+        from hermes_state import SessionDB
+        from hermes_state_messages import _redact_durable_projection
+
+        token = "sk-" + "Q" * 32
+        content = "Observed " + token + suffix
+        projected = _redact_durable_projection(content)
+        assert token not in projected
+        assert _redact_durable_projection(projected) == projected
+        path = tmp_path / "punctuation.db"
+        db = SessionDB(path)
+        try:
+            db.create_session("punctuation", source="cli")
+            db.append_message("punctuation", "assistant", content=content)
+        finally:
+            db.close()
+        db = SessionDB(path)
+        try:
+            stored = db._conn.execute(
+                "SELECT content FROM messages WHERE session_id = ?", ("punctuation",)
+            ).fetchone()[0]
+            assert stored == projected
+            assert token not in stored
+        finally:
+            db.close()
+
     def test_dotted_sk_and_prefixless_zhipu_keys_fully_masked_on_every_surface(self):
         """A key whose body carries dots must never leave a cleartext tail, and the
         prefix-less Zhipu ``id.secret`` shape must mask at all: on the terminal
@@ -1427,15 +1497,27 @@ class TestHermesHomePathClassification:
         from agent import file_safety
         from agent.redact import _is_secret_file_arg
 
-        home = tmp_path / "hermes"  # no ".hermes" segment
+        from pathlib import Path
+
+        # Classification is lexical/resolved-path only; no files need to exist.
+        # tmp_path may itself sit under .hermes, which intentionally classifies
+        # every descendant config.yaml as secret-bearing. Use synthetic absolute
+        # paths without that ancestor to exercise the resolved-home arm alone.
+        root = Path(tmp_path.anchor) / "redaction-path-fixture"
+        home = root / "hermes"
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: home)
         monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: home)
         assert _is_secret_file_arg(str(home / "config.yaml"))
         assert _is_secret_file_arg(str(home / "profiles" / "coder" / "config.yaml"))
         assert _is_secret_file_arg(str(home / "backups" / "config" / "config.yaml.good.20260914-184559"))
         assert not _is_secret_file_arg(str(home / "config.yaml.pdf"))  # only the backups/config/ copies
-        assert not _is_secret_file_arg(str(tmp_path / "proj" / "config.yaml"))
+        assert not _is_secret_file_arg(str(root / "proj" / "config.yaml"))
         assert not _is_secret_file_arg("config.yaml")  # relative, not resolvable to the home
+        assert not _is_secret_file_arg("proj/config.yaml")
+        # The literal .hermes arm must still work independently of the active home.
+        assert _is_secret_file_arg(str(root / ".hermes" / "config.yaml"))
+        assert _is_secret_file_arg(".hermes/config.yaml")
 
 
 class TestFireworksToken:
@@ -1633,3 +1715,92 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+class TestRedactLevelStandard:
+    def test_standard_level_masks_luhn_valid_card_but_not_invalid_candidate(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard")
+        valid_card = "4111 1111 1111 1111"
+        invalid_candidate = "4111 1111 1111 1112"
+
+        result = redact_sensitive_text(
+            f"valid={valid_card}; invalid={invalid_candidate}", force=True
+        )
+
+        assert valid_card not in result
+        assert invalid_candidate in result
+
+    @pytest.mark.parametrize(
+        "card",
+        [
+            "41111111111111113",
+            "411111111111111118",
+            "4111111111111111110",
+        ],
+    )
+    def test_standard_level_masks_valid_luhn_cards_through_nineteen_digits(
+        self, monkeypatch, card
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard")
+
+        result = redact_sensitive_text(f"card={card}", force=True)
+
+        assert card not in result
+
+    def test_standard_level_masks_ssn_and_iban(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard")
+        ssn = "123-45-6789"
+        iban = "GB82WEST12345698765432"
+
+        result = redact_sensitive_text(f"ssn={ssn}; iban={iban}", force=True)
+
+        assert ssn not in result
+        assert iban not in result
+
+
+class TestRedactLevelStrict:
+    def test_strict_level_masks_email_and_non_loopback_ipv4(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "strict")
+        email = "alice@example.com"
+        public_ip = "203.0.113.42"
+        loopback = "127.0.0.1"
+
+        result = redact_sensitive_text(
+            f"email={email}; public={public_ip}; loopback={loopback}", force=True
+        )
+
+        assert email not in result
+        assert public_ip not in result
+        assert loopback in result
+
+    def test_basic_level_preserves_optional_pii(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "basic")
+        text = "card=4111 1111 1111 1111; email=alice@example.com; ip=203.0.113.42"
+
+        assert redact_sensitive_text(text, force=True) == text
+
+
+class TestAdditionalCredentialPatterns:
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "AC" + "a" * 32,
+            "SK" + "b" * 32,
+            "c" * 32 + "-us3",
+            "Bot." + "a" * 24 + "." + "b" * 6 + "." + "c" * 27,
+            "whsec_" + "d" * 32,
+        ],
+    )
+    def test_supported_credential_pattern_is_redacted(self, token):
+        assert token not in redact_sensitive_text(f"leak: {token}", force=True)
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "AC" + "a" * 32,
+            "SK" + "b" * 32,
+            "c" * 32 + "-us3",
+        ],
+    )
+    def test_credential_patterns_do_not_match_inside_larger_identifiers(self, token):
+        text = f"prefix{token}{' ' if token.endswith('-us3') else 'suffix'}"
+
+        assert redact_sensitive_text(text, force=True) == text

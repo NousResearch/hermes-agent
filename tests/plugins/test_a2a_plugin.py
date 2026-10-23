@@ -19,12 +19,43 @@ import socket
 import threading
 import urllib.error
 import urllib.request
+from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 
 import pytest
 
 from plugins.platforms.a2a import protocol, security, tools
+
+
+@asynccontextmanager
+async def _forwarding_owner(tmp_path, monkeypatch):
+    """Real owner ingress and persistence, without scheduling a provider turn."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(run, "_load_gateway_config", lambda: {
+        "model": {"default": "fixture"}, "platform_toolsets": {"cli": []},
+    })
+    monkeypatch.setattr(run, "_resolve_gateway_model", lambda config: "fixture")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    runner = run.GatewayRunner.__new__(run.GatewayRunner)
+    runner.adapters = {}
+    runner.session_store = store
+    runner._session_db = store._db
+    runner._draining = False
+    authority = await initialize_session_authority(runner, profile_id="target", instance_id="test")
+    authority._schedule = lambda ref: None
+    connection = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {"user_id": "producer"})
+    try:
+        yield connection, authority.db
+    finally:
+        await connection.close()
+        authority.db.close()
 
 
 def _free_port() -> int:
@@ -314,6 +345,12 @@ class TestAudit:
         assert rec["peer"] == "peer-y"
         assert rec["task_id"] == "task-1"
 
+    def test_audit_redacts_durable_summary(self, monkeypatch, tmp_path):
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security.audit("inbound", "peer-y", "task-1", f"summary {secret}")
+        assert secret not in (tmp_path / "a2a_audit.jsonl").read_text(encoding="utf-8")
+
 
 # --------------------------------------------------------------------------
 # Protocol v1.0 shapes
@@ -469,6 +506,15 @@ class TestV1Task:
 
 
 class TestPersistence:
+    def test_persisted_conversation_redacts_text_without_mutating_live_operand(self, monkeypatch, tmp_path):
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        text = f"live {secret}"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        protocol.persist_message("ctx-redacted", "user", text, "task-1")
+        assert text == f"live {secret}"
+        path = tmp_path / "a2a_conversations" / "ctx-redacted.jsonl"
+        assert secret not in path.read_text(encoding="utf-8")
+
     def test_persist_and_load(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         protocol.persist_message("ctx-abc", "user", "hello", "task-1")
@@ -1373,8 +1419,20 @@ class TestPushNotificationEndToEnd:
 
 class TestMultiAgentRouting:
     def test_path_routed_agent_card_uses_prefix_and_canonical_path(self, monkeypatch):
+        import tools.registry as registry_module
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
+
+        # Earlier gateway tests import built-ins into the process-global registry
+        # (web exists, research does not). Give this route its own complete catalog
+        # so card generation cannot switch branches based on test import order.
+        registry = registry_module.ToolRegistry()
+        for toolset in ("web", "research", "terminal"):
+            registry.register(
+                name=f"fixture_{toolset}", toolset=toolset,
+                schema={}, handler=lambda args: "unused",
+            )
+        monkeypatch.setattr(registry_module, "registry", registry)
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
@@ -1758,6 +1816,78 @@ class TestV1SpecRegressionFixes:
         assert calls[0][1]['input_id']
         assert not (tmp_path / 'state.db').exists()
 
+
+    def test_forwarded_context_id_redacts_secret_before_owner_lookup(self, monkeypatch, tmp_path):
+        from agent.redact import redact_sensitive_text
+        from plugins.platforms.a2a.adapter import _safe_context_slug
+
+        # Titles are no longer written by the forwarding adapter. The owner's
+        # legacy-title lookup is still a display boundary, before slugging can
+        # destroy a credential's recognizable shape.
+        captured = []
+        secret = "sk-abcdefghijklmnop"
+        async def run():
+            async with _forwarding_owner(tmp_path, monkeypatch) as (connection, db):
+                original = db.get_session_by_title
+
+                def lookup(title):
+                    captured.append(title)
+                    return original(title)
+
+                monkeypatch.setattr(db, "get_session_by_title", lookup)
+                ids = []
+                for context in (f"ctx/{secret}", "ctx/unsafe value"):
+                    response = await connection.dispatch({"id": 1, "method": "a2a.forward", "params": {
+                        "agent": "dev", "tenant": "team", "peer": "peer", "context_id": context,
+                        "input_id": "first", "text": "hello",
+                    }})
+                    assert "result" in response, response
+                    ids.append(response["result"]["session_id"])
+                assert len(set(ids)) == 2
+                assert len(captured) == 2
+                assert secret not in captured[0]
+                assert captured[0] == "a2a-dev-" + _safe_context_slug(
+                    redact_sensitive_text(f"ctx/{secret}", force=True))
+                assert captured[1] == "a2a-dev-ctx-unsafe-value"
+                # The owner must never resurrect the old adapter's direct SQL
+                # title writes, or turn an identity into a display title.
+                assert all(db.get_session(sid)["title"] is None for sid in ids)
+
+        asyncio.run(run())
+
+    def test_forwarded_session_title_uses_durable_redaction_through_owner(self, monkeypatch, tmp_path):
+        from agent.redact import redact_sensitive_text
+
+        # Renaming now belongs to the revision-fenced canonical owner, not
+        # an adapter-local SQL helper.
+
+        secret = "sk-proj-A2A-DURABLE-REDACTION-SECRET"
+        async def run():
+            async with _forwarding_owner(tmp_path, monkeypatch) as (connection, db):
+                forwarded = await connection.dispatch({"id": 1, "method": "a2a.forward", "params": {
+                    "agent": "dev", "tenant": "team", "peer": "peer", "context_id": "ctx/title",
+                    "input_id": "first", "text": "hello",
+                }})
+                assert "result" in forwarded, forwarded
+                sid = forwarded["result"]["session_id"]
+                params = {
+                    "session_id": sid, "request_id": "rename", "operation": "rename",
+                    "expected_revision": db.get_session(sid)["runtime_revision"],
+                    "payload": {"title": "Review " + secret},
+                }
+                response = await connection.dispatch({"id": 2, "method": "session.mutate", "params": params})
+                assert "result" in response, response
+                saved = db.get_session(sid)
+                assert saved["title"] == redact_sensitive_text("Review " + secret, force=True)
+                assert saved["title"].startswith("Review ")
+                assert secret not in saved["title"]
+                assert saved["runtime_revision"] > params["expected_revision"]
+                # A successful durable receipt must survive an exact retry.
+                retry = await connection.dispatch({"id": 3, "method": "session.mutate", "params": params})
+                assert retry["result"] == response["result"]
+                assert db.get_session(sid)["title"] == saved["title"]
+
+        asyncio.run(run())
 
 
 # --------------------------------------------------------------------------

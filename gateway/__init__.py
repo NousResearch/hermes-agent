@@ -24,4 +24,9 @@ def __getattr__(name):
     module = _EXPORTS.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    # Defer config loading for control/status imports, but initialize the redactor's
+    # import-time snapshot before a requested export can import session/agent code.
+    from ._startup import bootstrap_gateway_redaction
+
+    bootstrap_gateway_redaction()
     return getattr(import_module(module, __name__), name)

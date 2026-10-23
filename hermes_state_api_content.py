@@ -31,12 +31,13 @@ class SessionApiContentMixin:
         :meth:`_insert_message_rows`), use :meth:`set_message_api_content`
         instead — it addresses the exact row and cannot land on a neighbour.
         """
-        from hermes_state_messages import _scrub_surrogates
+        from hermes_state_messages import _redact_durable_projection
         return self._write_rowcount(
             "UPDATE messages SET api_content = ? WHERE id = (SELECT id FROM messages "
             "WHERE session_id = ? AND role = 'user' AND active = 1 ORDER BY id DESC LIMIT 1"
             ") AND content IS ?",
-            (_scrub_surrogates(api_content), session_id, self._encode_content(content)))
+            (_redact_durable_projection(api_content), session_id,
+             self._encode_content(_redact_durable_projection(content))))
 
     def set_message_api_content(
         self, session_id: str, row_id: int, content: Any, api_content: str
@@ -58,10 +59,11 @@ class SessionApiContentMixin:
         row the compaction archived, or one a racing rewrite changed, is left
         untouched.
         """
-        from hermes_state_messages import _scrub_surrogates
+        from hermes_state_messages import _redact_durable_projection
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
         return self._write_rowcount(
             "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
             "AND role = 'user' AND active = 1 AND content IS ?",
-            (_scrub_surrogates(api_content), row_id, session_id, self._encode_content(content)))
+            (_redact_durable_projection(api_content), row_id, session_id,
+             self._encode_content(_redact_durable_projection(content))))

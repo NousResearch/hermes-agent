@@ -120,7 +120,12 @@ async def forward(connection, params):
         # it (that would hand one peer another's history), and never refuse every peer whose
         # slug collides: start this identity's own canonical session and leave the old row be.
         from plugins.platforms.a2a.adapter import _safe_context_slug
-        title = f'a2a-{params["agent"]}-{_safe_context_slug(params["context_id"])}'
+        from hermes_state_messages import _redact_durable_projection
+        # This is a display-only legacy lookup (and may be logged), not the
+        # exact identity used for admission. Redact before slugging can hide
+        # credential syntax; keep the routing identity above unchanged.
+        title = _redact_durable_projection(
+            f'a2a-{params["agent"]}-{_safe_context_slug(_redact_durable_projection(params["context_id"]))}')
         legacy = authority.db.get_session_by_title(title)
         if legacy is not None:
             logger.warning('A2A: pre-authority session %s titled %r has no peer identity; '

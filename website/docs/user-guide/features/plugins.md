@@ -346,7 +346,7 @@ When you upgrade to a version of Hermes that has opt-in plugins (config schema v
 
 ## Available hooks
 
-Plugins can register the 27 lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](./hooks.md#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
+Plugins can register the lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](./hooks.md#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
 
 | Descriptive category | Shipped hooks |
 |---|---|
@@ -1111,6 +1111,9 @@ Hooks, tools and injected turns of every chat and every local session (CLI, TUI,
 
 - `os.getcwd()` is the gateway's own directory, shared by every session; Hermes never changes it. Use `ctx.session_cwd()` for the working directory of the session the hook or tool runs for: the workspace a CLI/TUI/Desktop session was started in, or the profile's terminal cwd for a chat (`""` when there is none). Pass it as `cwd=` to subprocesses. It reads the session from the running turn, so it works in code that runs for a session: turn hooks, tool handlers and approval hooks. Ingress hooks such as `pre_gateway_dispatch` run before the message is admitted to any session; there it returns the profile's terminal cwd, or `""` when none is configured.
 - `ctx.session_surface()` names the calling session's client: `"cli"`, `"tui"`, `"desktop"`, `"acp"`, or the messaging platform (`"telegram"`, …); `""` outside a session.
+- `ctx.session_key()` returns the routing key bound to the current hook or tool, or `""` outside a bound conversation. It never falls back to process environment variables. Capture the key during the turn, then pass it explicitly to `ctx.inject_message(text, session_key=key)` from a background worker. A hook's `session_id` identifies its history and is not interchangeable with this routing key. An empty key does not authorize choosing another chat, and injection still checks the plugin's profile and `allow_gateway_injection` permission.
+- `ctx.session_supports_async_delivery()` reports the current surface's delivery capability. Check it before offering asynchronous input to a stateless API or finite automation run. It does not grant injection permission or confirm that a host has accepted a message; use the boolean returned by `ctx.inject_message` for that.
+- `ctx.is_interrupted()` checks cancellation of the tool worker that called the plugin, including across `plugins.isolation: host`. Poll it during long waits and release external waits before returning. Call it from the executing handler; a fresh unbound background task has no originating tool to cancel. This keeps cancellation in the parent process instead of consulting a plugin host's unrelated thread table.
 - `print()` output goes to the gateway's `gateway-stdio.log`, not to your terminal. Use `logging` instead.
 - `input()` gets end-of-file: the gateway has no terminal. Ask through a tool result or a slash command.
 

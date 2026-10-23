@@ -655,6 +655,31 @@ CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
     failure_streak INTEGER NOT NULL DEFAULT 0
 );
 
+-- Intra-host admission claim per (platform, scope_id, chat_id, profile): exactly one gateway
+-- instance may open sessions for a channel at a time; concurrent admissions converge on the
+-- holder's session instead of spawning a second one (design/channel-claim-lock.md). ``instance_id``
+-- identifies the SessionAuthority that owns the claim, ``session_id`` the session it was acquired
+-- for ('' while that admission has not minted its session yet). The lease makes a crashed gateway
+-- release the channel by expiry instead of forever; the indexes serve lease sweeps and
+-- release-on-session-id.
+CREATE TABLE IF NOT EXISTS channel_claims (
+    platform     TEXT NOT NULL,
+    scope_id     TEXT NOT NULL DEFAULT '',
+    chat_id      TEXT NOT NULL,
+    profile      TEXT NOT NULL,
+    instance_id  TEXT NOT NULL,
+    session_id   TEXT NOT NULL,
+    thread_root_id TEXT NOT NULL DEFAULT '',
+    lease_expire REAL NOT NULL,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL,
+    PRIMARY KEY (platform, scope_id, chat_id, profile)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_claims_lease
+    ON channel_claims(lease_expire);
+CREATE INDEX IF NOT EXISTS idx_channel_claims_session
+    ON channel_claims(session_id);
+
 -- Monotonic conversation generation per routing peer (#96811).
 --
 -- A host-declared conversation key (X-Hermes-Session-Key / build_session_key)

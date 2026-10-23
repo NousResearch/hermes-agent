@@ -53,6 +53,9 @@ def _db_returning(rows: dict) -> MagicMock:
     # mirroring the real SessionDB.get_compression_tip. Without this a bare Mock
     # would return a Mock the routing heal then assigns as session_id.
     db.get_compression_tip.side_effect = lambda sid: sid
+    # Claim gate stand-in: acquire_channel_claim unpacks (acquired, claim) from
+    # _execute_write, and the claim path treats these stores as always-acquire.
+    db._execute_write.return_value = (True, {})
     return db
 
 

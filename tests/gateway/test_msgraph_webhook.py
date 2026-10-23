@@ -264,3 +264,52 @@ class TestMSGraphSourceIPAllowlist:
         assert resp.status == 403
 
 
+class TestMSGraphClaimStanddown:
+    """Claim-gate stand-downs must not 500: inflight redelivers via the parked-route retry
+    status (the retry then joins the live session); a foreign claim acknowledges quietly."""
+
+    def _stub(self, monkeypatch, reason):
+        import types
+
+        import gateway.session_ingress_context as ingress_context
+        from gateway.platforms import webhook_ingress
+        from hermes_state_runtime import RuntimeStoreError
+
+        class _Authority:
+            runner = None
+
+            def _require_admission_open(self):
+                pass
+
+            def _publish_route(self, *args):  # attribute lookup precedes the awaited raise
+                return args
+
+            def _reserve_route(self, source):
+                raise RuntimeStoreError(reason)
+
+        class _Scope:
+            async def __aenter__(self):
+                return _Authority()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(webhook_ingress, "producer_scope", lambda self, event: _Scope())
+        monkeypatch.setattr(ingress_context, "capture_provenance", lambda *a, **k: {"p": 1})
+        return types.SimpleNamespace(message_id="m", text="x", source=types.SimpleNamespace())
+
+    @pytest.mark.anyio
+    async def test_inflight_claim_redelivers_via_parked_route(self, monkeypatch):
+        from gateway.parked_route_refusal import ParkedRouteRefused
+
+        event = self._stub(monkeypatch, "channel_claim_inflight")
+        with pytest.raises(ParkedRouteRefused) as raised:
+            await _make_adapter()._admit_notification(event)
+        assert "concurrent admission" in str(raised.value)
+
+    @pytest.mark.anyio
+    async def test_foreign_claim_acknowledges_without_processing(self, monkeypatch):
+        event = self._stub(monkeypatch, "channel_claimed_elsewhere")
+        assert await _make_adapter()._admit_notification(event) is None
+
+

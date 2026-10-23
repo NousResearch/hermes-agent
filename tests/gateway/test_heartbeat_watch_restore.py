@@ -32,8 +32,11 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
     try:
         for profile, status, topic in [(None, 'active', '11'), ('work', 'active', '22'),
                                        ('work', 'paused', '33'), (None, 'cleared', '44')]:
-            source = SessionSource(platform=Platform.TELEGRAM, chat_id='chat',
-                                   thread_id=topic, profile=profile, scope_id='workspace')
+            # One chat per lane: the channel claim lock folds extra thread lanes of a
+            # chat into its one live session, so distinct chats keep these persisted
+            # routes distinct (this test exercises restore/profiles, not thread lanes).
+            source = SessionSource(platform=Platform.TELEGRAM, chat_id='chat' + topic,
+                                   profile=profile, scope_id='workspace')
             with _profile_runtime_scope(named if profile else home):
                 entry = store.get_or_create_session(source)
                 manager = HeartbeatManager(entry.session_id)

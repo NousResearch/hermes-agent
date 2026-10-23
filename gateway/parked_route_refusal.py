@@ -32,8 +32,8 @@ class ParkedRouteRefused(Exception):
     """An unacknowledged delivery routed to a parked profile: nothing was admitted, answer ``status``."""
     code, status, headers = 'profile_parked', 503, {'Retry-After': '30'}
 
-    def __init__(self):
-        super().__init__('The routed profile is not being served right now; retry this delivery')
+    def __init__(self, reason: str = 'The routed profile is not being served right now; retry this delivery'):
+        super().__init__(reason)
 
 
 class ParkedProfileRefusal(RuntimeStoreError):

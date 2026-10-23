@@ -30,6 +30,7 @@ logger = logging.getLogger("agent.conversation_loop")
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
     "_dropped_toolcall_nudge",
+    "_final_answer_extension_synthetic",  # plugin final-answer extension rows never become transcript
 )
 
 

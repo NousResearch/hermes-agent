@@ -861,6 +861,7 @@ class PluginCatalogLookupEntry(Result):
     repo: str
     sha: str
     subdir: str
+    tier: str = "community"
 
 
 class PluginCatalogLookupResult(Result):

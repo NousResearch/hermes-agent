@@ -107,7 +107,6 @@ import { useComposerScope, useComposerSurfaceId } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
-import { SuggestionPills } from './suggestion-pills'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -1309,7 +1308,6 @@ export function ChatBar({
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
             <ActionBadges sessionId={statusSessionId} />
-            <SuggestionPills sessionId={statusSessionId} />
             <PreparedImageRecovery
               occupied={hasText || attachments.length > 0 || busy || disabled}
               onRestore={(text, restored, id) => {

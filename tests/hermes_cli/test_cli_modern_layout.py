@@ -209,6 +209,23 @@ def test_tool_rows_keep_the_classic_tool_emoji():
     assert failed.startswith("✗ ") and "[exit 1]" in failed, failed
 
 
+def test_refused_skill_write_reads_neutral_not_failed():
+    """A skill_manage write the agent will re-plan (size cap, stale old_string) keeps the tool's own
+    emoji and a dim reason: no red ✗ for the agent's routine retry loop."""
+    from agent.display import get_tool_emoji
+    from hermes_cli.cli_modern_layout import _RED, tool_row
+
+    refused = ('{"success": false, "error": "operations[0] (patch on \'hermes-agent-dev\') failed: '
+               'SKILL.md content is 100,193 characters (limit: 100,000).", '
+               '"file_preview": "Never ignore a ROLLBACK FAILED note."}')
+    row = tool_row("skill_manage", {"operations": [{"action": "patch", "name": "hermes-agent-dev"}]}, 1.1, refused)
+    assert _plain(row).startswith(get_tool_emoji("skill_manage") + " "), row
+    assert "[operations[0]" in _plain(row) and _RED not in row, row
+    # A failed rollback left partial changes on disk: that one stays a red failure.
+    broken = refused.replace('(limit: 100,000)."', '(limit: 100,000). — batch aborted, ROLLBACK FAILED for demo."')
+    assert _plain(tool_row("skill_manage", {"operations": []}, 1.1, broken)).startswith("✗ ")
+
+
 def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
     """User message, reasoning and answer each read as: blank line, bar, content, bar, blank line.
     The blank line after a closing bar is paid by whatever prints next (a tool row, the footer)

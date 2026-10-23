@@ -250,6 +250,29 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
         )
 
 
+def catalog_hermes_error(entry: PluginCatalogEntry) -> Optional[str]:
+    """``<name> needs Hermes <spec>; this is <version>.`` when the entry's ``requires_hermes`` rejects the
+    running Hermes, else ``None``. The verdict IS the plugin.yaml gate's
+    (:func:`~hermes_cli.plugins_manifest.requires_hermes_error`): same version source, same comparison, so
+    a dev checkout or canary build is judged the same by both, and an unknown version never blocks."""
+    from hermes_cli.plugins_manifest import requires_hermes_error, running_hermes_version
+    if not requires_hermes_error({"requires_hermes": entry.requires_hermes}):
+        return None
+    return f"{entry.name} needs Hermes {entry.requires_hermes}; this is {running_hermes_version()}."
+
+
+def refuse_incompatible_catalog_entry(entry: PluginCatalogEntry) -> None:
+    """``PluginOperationError`` when the catalog says *entry* cannot run here: a platform it does not list,
+    or a ``requires_hermes`` the running version fails. Every install by catalog name passes through here."""
+    from hermes_cli.config import recommended_update_command
+    from hermes_cli.plugins_cmd import PluginOperationError
+    _refuse_unsupported_catalog_platform(entry)
+    reason = catalog_hermes_error(entry)
+    if reason:
+        raise PluginOperationError(f"{reason} Update Hermes (`{recommended_update_command()}`) and install again.",
+                                   failure_class="incompatible")
+
+
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
                           assume_deps_consent: bool = False, before_swap=None) -> tuple:
@@ -259,7 +282,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     from hermes_cli.plugins_cmd import _install_plugin_core
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
-    _refuse_unsupported_catalog_platform(entry)
+    refuse_incompatible_catalog_entry(entry)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
         reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
@@ -581,6 +604,14 @@ def repin_catalog_plugin(
     refuse_if_installed_removed(catalog_name, target)
     if at_catalog_pin(sidecar, entry.sha):
         return RepinResult(entry.sha, False, target.name, [])
+    held = catalog_hermes_error(entry)
+    if held:
+        # The pin moved past what this Hermes can run: keep the installed tree, name the way forward.
+        from hermes_cli.config import recommended_update_command
+        raise PluginOperationError(
+            f"Update of {catalog_name} to {entry.sha[:8]} not applied: {held} {catalog_name} stays at "
+            f"{str(sidecar.get('sha') or '')[:8] or 'its installed version'}; the update is available after "
+            f"you update Hermes (`{recommended_update_command()}`).", failure_class="incompatible")
 
     local, modified = _local_changes(target)
     old_sha8 = str(sidecar.get("sha") or "old")[:8]
@@ -718,7 +749,8 @@ def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
     for e in sorted(entries, key=lambda e: (e.category, rank.get(e.tier, len(rank)), e.name)):
         tier = f"[{style.get(e.tier, 'magenta')}]{e.tier}[/{style.get(e.tier, 'magenta')}]"
         desc = e.description if len(e.description) <= 60 else e.description[:57] + "..."
-        table.add_row(e.name, e.category, tier, desc, pin_label(e), _capability_counts(e))
+        name = e.name + (f"\n[yellow]needs Hermes {e.requires_hermes}[/yellow]" if catalog_hermes_error(e) else "")
+        table.add_row(name, e.category, tier, desc, pin_label(e), _capability_counts(e))
     console.print()
     console.print(table)
     console.print()
@@ -730,7 +762,8 @@ def cmd_search(term: str = "", *, json_output: bool = False) -> None:
     from hermes_cli.plugins_cmd import _console
     matches = filter_entries(load_catalog_live(), term)
     if json_output:
-        print(json.dumps({"query": term, "results": [e.to_dict() for e in matches]}, indent=2))
+        print(json.dumps({"query": term, "results": [
+            {**e.to_dict(), "needs_newer_hermes": catalog_hermes_error(e)} for e in matches]}, indent=2))
         return
     console = _console()
     if not matches:
@@ -770,6 +803,11 @@ def cmd_info(name: str) -> None:
     if removed is not None:
         console.print(f"[red bold]✗ REMOVED from catalog: {removed.reason or 'no reason recorded'}"
                       f"{f' ({removed.date})' if removed.date else ''}[/red bold]")
+        console.print()
+    held = catalog_hermes_error(entry)
+    if held:
+        from hermes_cli.config import recommended_update_command
+        console.print(f"[yellow]⚠ {held} Update Hermes (`{recommended_update_command()}`) to install it.[/yellow]")
         console.print()
     console.print(f"[dim]Install:[/dim]     hermes plugins install {entry.name}")
     console.print()

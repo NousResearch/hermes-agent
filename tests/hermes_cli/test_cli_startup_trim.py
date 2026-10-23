@@ -59,7 +59,6 @@ def test_non_chat_agent_command_still_registers_hooks(monkeypatch):
 @pytest.mark.parametrize(("command", "subcommand", "interactive"), [
     ("gateway", {"gateway_command": "run"}, False),  # a service: a hidden console is not a person (#127822)
     ("cron", {"cron_command": "tick"}, False),       # scheduled: nobody at the console
-    ("mcp", {"mcp_action": "serve"}, False),         # stdin carries the protocol stream
     ("acp", {}, False),                              # stdin carries the protocol stream
     ("rl", {}, True),                                # a foreground command may still ask at its terminal
 ])

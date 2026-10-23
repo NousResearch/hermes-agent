@@ -16,6 +16,9 @@
   openssh,
   ffmpeg,
 
+  # for pm
+  writeShellApplication,
+
   # linux-only deps
   wl-clipboard,
   xclip,
@@ -28,6 +31,8 @@
   pyproject-nix,
   pyproject-build-systems,
   npm-lockfile-fix,
+  # nix/pm-packages.nix output: every pm/lock.json pin as a derivation.
+  pmPackages,
   # Locked git revision of the flake source — embedded so banner.py can
   # check for updates without needing a local .git directory. Null for
   # impure / dirty builds where flakes can't determine a rev.
@@ -50,7 +55,10 @@ let
   # Install stamp values — written to install-stamp.json so the Python
   # runtime (CLI, TUI) reads one file instead of env vars or .git probes.
   stampDistance =
-    if builtins.isInt distance && distance >= 0 then distance else throw "distance must be a non-negative integer";
+    if builtins.isInt distance && distance >= 0 then
+      distance
+    else
+      throw "distance must be a non-negative integer";
   stampDisplayVersion =
     if stampDistance > 0 && rev != null then
       "${version}+${toString stampDistance}.g${builtins.substring 0 7 rev}"
@@ -60,22 +68,24 @@ let
       version;
 
   # CLI and Electron consume the same provenance and update owner.
-  installStampFile = writeText "hermes-install-stamp.json" (builtins.toJSON {
-    schemaVersion = 2;
-    commit = rev;
-    commitDate = lastModified;
-    inherit branch dirty;
-    builtAt = null;
-    baseVersion = version;
-    displayVersion = stampDisplayVersion;
-    distance = stampDistance;
-    source = "nix";
-    distribution = "nix";
-    pmRuntime = toString pmRuntime;
-    updateMechanism = "external";
-    payload = "bootstrap";
-    tag = null;
-  });
+  installStampFile = writeText "hermes-install-stamp.json" (
+    builtins.toJSON {
+      schemaVersion = 2;
+      commit = rev;
+      commitDate = lastModified;
+      inherit branch dirty;
+      builtAt = null;
+      baseVersion = version;
+      displayVersion = stampDisplayVersion;
+      distance = stampDistance;
+      source = "nix";
+      distribution = "nix";
+      pmRuntime = toString pmRuntime;
+      updateMechanism = "external";
+      payload = "bootstrap";
+      tag = null;
+    }
+  );
 
   mkHermesVenv =
     extraDependencyGroups:
@@ -97,7 +107,7 @@ let
   };
 
   hermesNpmLib = callPackage ./lib.nix {
-    inherit npm-lockfile-fix;
+    inherit npm-lockfile-fix pmPackages;
   };
 
   hermesTui = callPackage ./tui.nix {
@@ -169,38 +179,41 @@ let
     ];
   };
 
-  agentInputsFile = writeText "hermes-agent-inputs.json" (builtins.toJSON {
-    project = "${../pyproject.toml}";
-    code = "${hermesVenv}/${sitePackagesPath}";
-    repo = "share/hermes-agent";
-    placement = "references";
-    target = "${if stdenv.hostPlatform.isDarwin then "darwin" else "linux"}-${
-      if stdenv.hostPlatform.isAarch64 then "arm64" else "x64"
-    }";
-    python = "${hermesVenv}/bin/python3";
-    site_packages = "${hermesVenv}/${sitePackagesPath}";
-    environment = toString hermesVenv;
-    pm_runtime = toString pmRuntime;
-    command_dir = "${hermesVenv}/bin";
-    resources = {
-      skills = toString bundledSkills;
-      optional-skills = toString bundledOptionalSkills;
-      plugins = toString bundledPlugins;
-      locales = toString bundledLocales;
-      optional-mcps = toString bundledOptionalMcps;
-    };
-    frontends = {
-      tui = "${hermesTui}/lib/hermes-tui";
-      web = toString hermesWeb;
-    };
-    ref = if dirty then null else rev;
-    stamp = toString installStampFile;
-    env = {
-      HERMES_NODE = lib.getExe hermesNpmLib.nodejs;
-    } // lib.optionalAttrs (rev != null && !dirty) {
-      HERMES_REVISION = rev;
-    };
-  });
+  agentInputsFile = writeText "hermes-agent-inputs.json" (
+    builtins.toJSON {
+      project = "${../pyproject.toml}";
+      code = "${hermesVenv}/${sitePackagesPath}";
+      repo = "share/hermes-agent";
+      placement = "references";
+      target = "${if stdenv.hostPlatform.isDarwin then "darwin" else "linux"}-${
+        if stdenv.hostPlatform.isAarch64 then "arm64" else "x64"
+      }";
+      python = "${hermesVenv}/bin/python3";
+      site_packages = "${hermesVenv}/${sitePackagesPath}";
+      environment = toString hermesVenv;
+      pm_runtime = toString pmRuntime;
+      command_dir = "${hermesVenv}/bin";
+      resources = {
+        skills = toString bundledSkills;
+        optional-skills = toString bundledOptionalSkills;
+        plugins = toString bundledPlugins;
+        locales = toString bundledLocales;
+        optional-mcps = toString bundledOptionalMcps;
+      };
+      frontends = {
+        tui = "${hermesTui}/lib/hermes-tui";
+        web = toString hermesWeb;
+      };
+      ref = if dirty then null else rev;
+      stamp = toString installStampFile;
+      env = {
+        HERMES_NODE = lib.getExe hermesNpmLib.nodejs;
+      }
+      // lib.optionalAttrs (rev != null && !dirty) {
+        HERMES_REVISION = rev;
+      };
+    }
+  );
 
   # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
   # Without this, a plugin listing e.g. requests as a dep would fail at runtime
@@ -273,8 +286,9 @@ stdenv.mkDerivation (finalAttrs: {
       makeWrapper "$source" "$out/$destination" "$@" \
         --suffix PATH : "${runtimePath}" \
         --set-default HERMES_BIN "$out/bin/hermes"${
-          lib.optionalString (extraPythonPackages != [ ])
-            " \\\n        --suffix PYTHONPATH : \"${pythonPath}\""
+          lib.optionalString (
+            extraPythonPackages != [ ]
+          ) " \\\n        --suffix PYTHONPATH : \"${pythonPath}\""
         }
     }
     ${python}/bin/python3 - "$out/command-map.json" > "$TMPDIR/agent-wrappers.sh" <<'PY'
@@ -301,6 +315,20 @@ stdenv.mkDerivation (finalAttrs: {
   passthru =
     let
       devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+      # The shell's interpreter: the exact build pm/lock.json installs, not
+      # nixpkgs'. uv2nix structurally needs a nixpkgs interpreter to BUILD the
+      # venv, so the site-packages stay Nix-owned and only the interpreter the
+      # shell runs (and `hermes` uses) comes from the lock.
+      devSitePackages = "${devPython}/${sitePackagesPath}";
+      pmPython = pythonLock.pinned;
+      pm = writeShellApplication {
+        name = "pm";
+        text = ''
+          root="$(git rev-parse --show-toplevel)"
+          cd "$root"
+          exec python -m pm.cli "$@"
+        '';
+      };
     in
     {
       inherit
@@ -313,6 +341,9 @@ stdenv.mkDerivation (finalAttrs: {
         installStampFile
         pmRuntime
         python
+        devPython
+        devSitePackages
+        pmPython
         ;
 
       # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
@@ -323,22 +354,51 @@ stdenv.mkDerivation (finalAttrs: {
       # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
       # of the agent resolution in the desktop wrapper.
       hermesDesktop = callPackage ./desktop.nix {
-        inherit hermesNpmLib electron installStampFile generatedIcons;
+        inherit
+          hermesNpmLib
+          electron
+          installStampFile
+          generatedIcons
+          ;
         python3 = python;
         hermesAgent = finalAttrs.finalPackage;
       };
 
       devShellHook = ''
-        export HERMES_PYTHON=${devPython}/bin/python3
+        export HERMES_PYTHON=${pmPython}/bin/python3
+        # Dependencies come from the Nix-built editable venv; only the
+        # interpreter is the lock's own build. PYTHONPATH rather than the
+        # venv's bin/python3, which is the nixpkgs interpreter.
+        export PYTHONPATH=${devSitePackages}:$HERMES_PYTHON_SRC_ROOT
       '';
 
       devDeps =
-        runtimeDeps
-        ++ [
-          devPython
+        # The pinned tool set, straight from pm/lock.json: the shell runs the
+        # same uv, node, npm, ripgrep and ffmpeg `hermes pm install` provisions
+        # on a non-Nix host. nixpkgs still supplies what pm ships no Linux
+        # artifact for — git and openssh are win32-only pins — plus the
+        # platform tools Nix owns. hermesNpmLib.nodejs is the pinned node with
+        # the pinned npm already in its bin/, the same tree the builds use.
+        [
+          hermesNpmLib.nodejs
+          pmPackages.uv
+          pmPackages.ripgrep
+          pmPackages.ffmpeg
+          git
+          openssh
         ]
         ++ lib.optionals stdenv.isLinux [
+          wl-clipboard
+          xclip
           cage # for running e2e tests without popping windows
+        ]
+        ++ [
+          # The lock's interpreter first: `python` in the shell is the build a
+          # real install runs. devPython stays on PATH for its console scripts
+          # (pytest, debugpy), which are bound to the Nix-built venv.
+          pmPython
+          devPython
+          pm
         ];
     };
 

@@ -14,7 +14,8 @@
 #
 # Routing:
 #   no args                       → exec `hermes` (the default)
-#   first arg is an executable    → exec it directly (sleep, bash, sh, …)
+#   first arg is an executable    → exec it directly (sleep, bash, sh, …),
+#                                   unless it is also a hermes subcommand (mcp, login)
 #   first arg is anything else    → exec `hermes <args>` (subcommand passthrough)
 #
 # Drop to hermes via s6-setuidgid, but skip it when already non-root.
@@ -83,8 +84,11 @@ fi
 # A leading flag is a hermes global option (`-p <profile> gateway run`), never an executable:
 # `command -v -p` parses -p as an option to `command` itself and succeeds, so the wrapper exec'd
 # "-p" and the container restart-looped.
+# A hermes subcommand also wins over a program of the same name on PATH: `mcp` is the MCP SDK's
+# console script in the venv and `login` is util-linux, so `mcp list` ran the SDK's CLI and
+# `login` the system login. tests/docker/test_main_invocation.py fails on any new collision.
 case "$1" in
-    -*) ;;
+    -*|mcp|login) ;;
     *)
         if command -v "$1" >/dev/null 2>&1; then
             # Bare executable — pass through directly.

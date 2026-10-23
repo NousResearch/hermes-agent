@@ -1,0 +1,27 @@
+name: fleet-inbox
+title: Hermes Fleet Inbox
+repo: https://github.com/RohiRIK/hermes-inbox
+sha: 87597329c2fa3634183ca187ad89ccbcebc553dc
+subdir: inbox
+version: "0.2.0"
+description: "Fleet work threads, durable observations, independent consumer cursors and occurrence-scoped acknowledgment/snooze through hermes inbox. Derived from inbox. Disclosure — reads profile config.yaml, local process/cron/session JSON, native task and shared Kanban SQLite stores, and opt-in same-host Herald ledgers; source databases are opened read-only. Explicit actions write only profile-local inbox/state.db. No network requests, shell execution, background polling, telemetry, credential-store access or automatic task actions."
+maintainer: RohiRIK
+tier: community
+category: general
+docs_url: https://github.com/RohiRIK/hermes-inbox#readme
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+screenshots:
+  - https://raw.githubusercontent.com/RohiRIK/hermes-inbox/87597329c2fa3634183ca187ad89ccbcebc553dc/assets/fleet-inbox-cli.png
+known_issues:
+  - "Shares the inbox manifest ID and hermes inbox command with upstream; exclusive replacement, not side-by-side installation. The existing inbox catalog entry is unchanged."
+  - "Recorded same-host snapshots, not live worker heartbeats or remote-host coverage. Missing sources and bounded/truncated results remain explicit."
+  - "Short real-task pilot and isolated failure tests completed; a longer normal-work soak has not completed. Older Hermes releases have not been qualified."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

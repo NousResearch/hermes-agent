@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections import Counter
 
 # The TUI surfaces whose /status and /context read as main's TUI sidecar did.
@@ -33,6 +34,12 @@ def _stored_id(authority, ref) -> str:
         from hermes_state_local import local_receipt
         return local_receipt(authority.db, ref.session_id)['entry']['session_id'] or ref.session_id
     return ref.session_id
+
+
+def _context_id(authority, ref) -> str:
+    """The compression tip the session's model context lives in; the runtime id may still name a parent."""
+    stored = _stored_id(authority, ref)
+    return authority.db.get_compression_tip(stored) or stored
 
 
 def _status(authority, ref, live, policy, agent, arg) -> str:
@@ -59,7 +66,7 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
 def _context(authority, ref, live, policy, agent, arg) -> str:
     """Main's ``_format_live_context_output``: counts by role, model/provider, then the category
     table off the live agent (``render_context_breakdown_lines(grid=False)``), else the stored usage."""
-    stored = _stored_id(authority, ref)
+    stored = _context_id(authority, ref)
     rows = []
     with contextlib.suppress(Exception):
         rows = authority.db.get_messages_as_conversation(stored, include_ancestors=True, include_row_ids=True)
@@ -70,8 +77,7 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
         with contextlib.suppress(Exception):
             from agent.context_breakdown import (
                 compute_context_details, compute_session_context_breakdown, render_context_breakdown_lines)
-            conversation = authority.db.get_messages_as_conversation(stored, include_ancestors=True)
-            payload = compute_session_context_breakdown(agent, conversation)
+            payload = compute_session_context_breakdown(agent, authority.db.get_resume_conversations(stored)[0])
             details = None
             if arg.strip().lower() in {'all', 'full', 'details'}:
                 with contextlib.suppress(Exception):
@@ -112,9 +118,10 @@ async def run_tui_read(authority, ref, live, policy, render, arg) -> dict:
 
 async def context_breakdown(connection, ref, params) -> dict:
     """``session.context_breakdown`` on the owner: the category estimate (``compute_session_context_
-    breakdown``) and context-file manifest of this session's resident agent over its stored
-    transcript, built in the session's workspace. Before the agent exists: empty categories plus the
-    session's stored usage (the contract's pre-build shape)."""
+    breakdown``) and context-file manifest of this session's resident agent over its compression tip's
+    model history, built in the session's workspace. With no resident agent (not run since the gateway
+    started, or reaped): the same categories from what the session froze (``_stored_breakdown``) beside
+    its stored usage."""
     from gateway.session_busy_controls import authorize
     from hermes_state_runtime import RuntimeStoreError
     if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
@@ -125,37 +132,51 @@ async def context_breakdown(connection, ref, params) -> dict:
     if live is None:
         raise RuntimeStoreError('not_found')
     agent = authority.agent(ref)
+    usage = None
     if agent is None:
         from gateway.session_usage import stats
         usage = await stats(connection, ref, {'session_id': ref.session_id})
         usage = usage.get('usage') if isinstance(usage.get('usage'), dict) else usage
-        return {'categories': [], 'context_max': int(usage.get('context_max') or 0),
-                'context_percent': int(usage.get('context_percent') or 0),
-                'context_used': int(usage.get('context_used') or 0), 'estimated_total': 0,
-                'context_estimated': bool(usage.get('context_estimated', False)),
-                'context_source': str(usage.get('context_source') or 'provider_usage'),
-                'model': str(usage.get('model') or '')}
     from gateway.session_authorities import owner_scope
     from gateway.session_commands import _session_workspace
-    stored = _stored_id(authority, ref)
 
     def build():
         from agent.context_breakdown import compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
+            tip = _context_id(authority, ref)
             # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
             # system prompt. Reuse the payload while neither the transcript nor the agent moved.
-            key = (id(agent), _agent_context_marks(agent),
-                   authority.db.conversation_revision(stored, include_ancestors=True))
+            key = (id(agent), _agent_context_marks(agent), authority.db.conversation_revision(tip))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
                 return dict(cached[1])
-            conversation = authority.db.get_messages_as_conversation(stored, include_ancestors=True)
-            payload = compute_session_context_breakdown(agent, conversation)
-            payload['context_files'] = context_file_sources_for_agent(agent)
+            # The display history keeps superseded compression segments; only the model projection
+            # (the tip's active rows, no session_meta) is the working context.
+            conversation = authority.db.get_resume_conversations(tip)[0]
+            if agent is None:
+                payload = _stored_breakdown(authority.db.get_session(tip) or {}, conversation, usage)
+            else:
+                payload = compute_session_context_breakdown(agent, conversation)
+                payload['context_files'] = context_file_sources_for_agent(agent)
             live.context_breakdown = (key, payload)
             return dict(payload)
     return await asyncio.to_thread(build)
+
+
+def _stored_breakdown(row, conversation, usage) -> dict:
+    """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin, beside its
+    stored usage. A legacy name-only pin has no schemas to measure."""
+    from agent.context_breakdown import stored_context_breakdown
+    breakdown = {'categories': [], 'estimated_total': 0}
+    # No prompt until an agent first built one: nothing to measure yet, the contract's pre-build shape.
+    if prompt := row.get('system_prompt'):
+        pin = json.loads(row.get('tool_names') or 'null')
+        breakdown = stored_context_breakdown(prompt, pin['tools'] if isinstance(pin, dict) else [], conversation)
+    return {**breakdown, 'context_max': int(usage.get('context_max') or 0),
+            'context_percent': int(usage.get('context_percent') or 0), 'context_used': int(usage.get('context_used') or 0),
+            'context_estimated': bool(usage.get('context_estimated', False)),
+            'context_source': str(usage.get('context_source') or 'provider_usage'), 'model': str(usage.get('model') or '')}
 
 
 def _agent_context_marks(agent) -> tuple:

@@ -1,5 +1,6 @@
 """Slack adapter on slack-sdk 3.44+, which ships the Agent Sessions API (agents.sessions.*)."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,9 +49,10 @@ class _SlackSdk344Client:
     sees beneath the composer.
     """
 
-    def __init__(self):
+    def __init__(self, legacy_error: str = ""):
         self.text: dict[tuple[str, str | None], str] = {}
         self.session: dict[tuple[str, str | None], str] = {}
+        self.legacy_error = legacy_error
 
     def shown(self, channel_id: str, thread_ts: str) -> str | None:
         key = (channel_id, thread_ts)
@@ -64,6 +66,8 @@ class _SlackSdk344Client:
         self.session[(channel_id, thread_ts)] = status
 
     async def assistant_threads_setStatus(self, *, channel_id, thread_ts, status, **_kwargs):
+        if self.legacy_error:
+            raise _SlackApiError({"ok": False, "error": self.legacy_error})
         self.text[(channel_id, thread_ts)] = status
 
 
@@ -94,6 +98,21 @@ class TestAgentSessionsApiRouting:
 
         await a.stop_typing("C123", metadata=meta)
         assert slack.shown("C123", "171234.0001") == ""
+
+    @pytest.mark.asyncio
+    async def test_rejected_status_write_warns_once_per_workspace_and_error(self, caplog):
+        a = self._adapter(_SlackSdk344Client(legacy_error="missing_scope"))
+        a._remember_channel_team("C123", "T1")
+        meta = {"thread_id": "171234.0001"}
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):  # the typing refresh re-sends the status for the whole turn
+                await a.send_typing("C123", metadata=meta)
+            await a.stop_typing("C123", metadata=meta)
+            await a.stop_typing("C123", metadata=meta)  # untracked now: a clear with no team id
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno >= logging.WARNING and "setStatus" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "assistant.threads.setStatus" in warnings[0] and "missing_scope" in warnings[0]
 
     @pytest.mark.asyncio
     async def test_thread_title_uses_agents_sessions_rename(self):

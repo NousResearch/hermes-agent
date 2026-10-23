@@ -58,10 +58,12 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_status import log_status_failure
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_status import log_status_failure  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -2758,12 +2760,13 @@ class SlackAdapter(BasePlatformAdapter):
         """``assistant.threads.setStatus`` (empty ``status`` clears), also on slack-sdk 3.44+:
         ``agents.sessions.setStatus`` takes only a lifecycle enum and rejects free text and "".
         Slack documents a compatibility bridge from this call to the session lifecycle (text ->
-        processing, "" -> active). Failures are debug-logged."""
+        processing, "" -> active). A rejection is a WARNING once per workspace and Slack error."""
         try:
+            team_id = team_id or self._channel_team.get(chat_id, "")
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            log_status_failure(self._lazy_attr("_status_error_warned", set), team_id, fail_label, e)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

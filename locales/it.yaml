@@ -275,6 +275,13 @@ gateway:
   profile:
     header: "👤 **Profilo:** `{profile}`"
     home: "📂 **Home:** `{home}`"
+    picker_title: "Which profile should serve this chat?"
+    override_set: "✓ Chat pinned to profile {profile}. New messages route there; /new starts a clean session."
+    override_cleared: "✓ Chat pin cleared — routing is back to gateway.profile_routes."
+    override_active: "📌 Pinned to `{profile}` (overrides gateway.profile_routes)"
+    unknown: "Unknown profile `{profile}`. Served: {available}"
+    override_requires_multiplex: "Live profile switching needs `gateway.multiplex_profiles` enabled with more than one served profile."
+    available: "Served profiles: {profiles} — use `/profile set <name>`."
     plain: "Profilo: {profile}\nHome: {home}"
   reasoning:
     level_default: "medio (predefinito)"

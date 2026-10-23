@@ -4170,6 +4170,28 @@ class GatewayRunner(
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
+        # A live per-chat pin (/profile set, or a pick in the /profile picker) wins over any
+        # configured route — that is the point of the runtime switch: change who serves a chat
+        # without editing config or restarting. A pin naming a profile the gateway does not
+        # serve is ignored (loudly) rather than routing the chat into a runtime that is not up.
+        try:
+            from gateway.profile_overrides import resolve_override
+            pinned = resolve_override(
+                source.platform.value, source.chat_id, getattr(source, "thread_id", None),
+            )
+        except Exception:
+            logger.warning("Live profile pin lookup failed for %s/%s", source.platform, source.chat_id,
+                           exc_info=True)
+            pinned = None
+        if pinned:
+            try:
+                served = {name for name, _home in _multiplex_profile_homes(config)}
+            except Exception:
+                served = set()
+            if pinned in served:
+                return pinned
+            logger.warning("Ignoring live profile pin %r for %s/%s: profile is not served",
+                           pinned, source.platform, source.chat_id)
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None

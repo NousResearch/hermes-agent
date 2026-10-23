@@ -304,15 +304,33 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _gateway_config_home, _platform_config_key
         return _gateway_config_home() / "config.yaml", _platform_config_key(event.source.platform)
 
-    async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show the profile serving this source and its home.  On a multiplexed
-        gateway the process-level profile is the multiplexer's own ("default" in every chat), so
-        with ``multiplex_profiles`` on report ``source.profile`` and resolve home under that
-        profile's runtime scope; when off the stamp is ignored, mirroring ``_run_agent``."""
+    async def _handle_profile_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /profile — status, plus live per-chat switching.
+
+        No args reports the profile serving this source and its home (unchanged). ``set <name>``
+        pins this chat (or thread) to ``<name>``; ``set`` with no name opens a picker over the
+        profiles this gateway serves; ``clear`` drops the pin. A pin overrides
+        ``gateway.profile_routes`` for that scope from the next inbound message, without a
+        config edit or a gateway restart.
+        """
         from hermes_constants import display_hermes_home
         source = getattr(event, "source", None)
+        multiplex = bool(getattr(getattr(self, "config", None), "multiplex_profiles", False))
+        args = event.get_command_args().strip().split()
+        verb = args[0].lower() if args else ""
+        target = args[1].strip() if len(args) > 1 else ""
+
+        if verb in {"set", "pin"}:
+            return await self._pin_profile(event, source, target, multiplex)
+        if verb in {"clear", "unpin", "unset"}:
+            return self._clear_profile_pin(source, multiplex)
+
+        # Status path (unchanged behaviour): on a multiplexed gateway the process-level profile is
+        # the multiplexer's own ("default" in every chat), so report ``source.profile`` and resolve
+        # home under that profile's runtime scope; when off the stamp is ignored, mirroring
+        # ``_run_agent``.
         profile_name = display = ""
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+        if multiplex:
             profile_name = (getattr(source, "profile", "") or "").strip()
             try:
                 from gateway.run import _profile_runtime_scope
@@ -324,8 +342,83 @@ class GatewaySlashCommandsMixin(
         # Shared executor resolves process-level fallbacks; the multiplexed per-source overrides
         # (when any) ride in via options.
         reply = _execute("profile", options={"profile_name": profile_name, "home_display": display})
-        return "\n".join([t("gateway.profile.header", profile=reply.data["profile"]),
-                          t("gateway.profile.home", home=reply.data["home"])])
+        lines = [t("gateway.profile.header", profile=reply.data["profile"]),
+                 t("gateway.profile.home", home=reply.data["home"])]
+        pinned = self._live_profile_pin(source) if multiplex else None
+        if pinned:
+            lines.append(t("gateway.profile.override_active", profile=pinned))
+        return "\n".join(lines)
+
+    def _live_profile_pin(self, source) -> Optional[str]:
+        """The live pin serving *source*, or None (read-only; never raises into the command)."""
+        if source is None:
+            return None
+        try:
+            from gateway.profile_overrides import resolve_override
+            return resolve_override(
+                source.platform.value, source.chat_id, getattr(source, "thread_id", None),
+            )
+        except Exception:
+            logger.warning("Live profile pin lookup failed", exc_info=True)
+            return None
+
+    def _served_profiles(self) -> list:
+        """Profiles this gateway can route to, in config order (empty when it cannot resolve)."""
+        from gateway.run import _multiplex_profile_homes
+        try:
+            return [name for name, _home in _multiplex_profile_homes(getattr(self, "config", None))]
+        except Exception:
+            logger.warning("Served-profile set could not be resolved", exc_info=True)
+            return []
+
+    def _clear_profile_pin(self, source, multiplex: bool) -> str:
+        if not multiplex:
+            return t("gateway.profile.override_requires_multiplex")
+        from gateway.profile_overrides import clear_override
+        try:
+            clear_override(source.platform.value, source.chat_id, getattr(source, "thread_id", None))
+        except Exception:
+            logger.warning("Clearing the live profile pin failed", exc_info=True)
+        return t("gateway.profile.override_cleared")
+
+    async def _pin_profile(self, event: MessageEvent, source, target: str, multiplex: bool) -> Optional[str]:
+        """Pin this chat/thread, either to an explicit *target* or to a picker selection."""
+        from gateway.profile_overrides import set_override
+        if not multiplex:
+            return t("gateway.profile.override_requires_multiplex")
+        served = self._served_profiles()
+        if not served:
+            return t("gateway.profile.override_requires_multiplex")
+
+        def _pin(name: str) -> str:
+            set_override(source.platform.value, source.chat_id, name, getattr(source, "thread_id", None))
+            return t("gateway.profile.override_set", profile=name)
+
+        if target:
+            if target not in served:
+                return t("gateway.profile.unknown", profile=target, available=", ".join(served))
+            return _pin(target)
+
+        current = (getattr(source, "profile", "") or "").strip()
+
+        async def _on_choice_selected(_chat_id: str, value: str) -> str:
+            # Re-check: profiles can appear on disk between the picker being sent and the tap,
+            # but a name that is not served must never be pinned.
+            if value not in self._served_profiles():
+                return t("gateway.profile.unknown", profile=value, available=", ".join(self._served_profiles()))
+            return _pin(value)
+
+        sent = await self._try_send_choice_picker(
+            event,
+            self._session_key_for_source(source),
+            title=t("gateway.profile.picker_title"),
+            choices=[{"value": name, "label": name, "is_current": name == current} for name in served],
+            on_choice_selected=_on_choice_selected,
+        )
+        if sent:
+            return None
+        # No picker on this platform: list the names instead of failing silently.
+        return t("gateway.profile.available", profiles=", ".join(served))
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""

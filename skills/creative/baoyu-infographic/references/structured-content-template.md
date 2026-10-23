@@ -110,7 +110,7 @@ All statistics, numbers, and quotes exactly as they appear in source:
 - "[Exact statistic 3]"
 
 ### Quotes
-- "[Exact quote]" — [Attribution]
+- "[Exact quote]": [Attribution]
 
 ### Key Terms
 - **[Term 1]**: [Definition from source]

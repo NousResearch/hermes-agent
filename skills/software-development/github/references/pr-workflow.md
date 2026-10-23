@@ -44,7 +44,7 @@ echo "Owner: $OWNER, Repo: $REPO"
 
 ## 1. Branch Creation
 
-This part is pure `git` — identical either way:
+This part is pure `git`: identical either way:
 
 ```bash
 # Make sure you're up to date
@@ -56,11 +56,11 @@ git checkout -b feat/add-user-authentication
 ```
 
 Branch naming conventions:
-- `feat/description` — new features
-- `fix/description` — bug fixes
-- `refactor/description` — code restructuring
-- `docs/description` — documentation
-- `ci/description` — CI/CD changes
+- `feat/description`: new features
+- `fix/description`: bug fixes
+- `refactor/description`: code restructuring
+- `docs/description`: documentation
+- `ci/description`: CI/CD changes
 
 ## 2. Making Commits
 
@@ -132,7 +132,7 @@ curl -s -X POST \
   }"
 ```
 
-The response JSON includes the PR `number` — save it for later commands.
+The response JSON includes the PR `number`: save it for later commands.
 
 To create as a draft, add `"draft": true` to the JSON body.
 
@@ -181,7 +181,7 @@ for cr in data.get('check_runs', []):
 ### Poll Until Complete (git + curl)
 
 ```bash
-# Simple polling loop — check every 30 seconds, up to 10 minutes
+# Simple polling loop: check every 30 seconds, up to 10 minutes
 SHA=$(git rev-parse HEAD)
 for i in $(seq 1 20); do
   STATUS=$(curl -s \

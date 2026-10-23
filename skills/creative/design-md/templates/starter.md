@@ -66,7 +66,7 @@ does it evoke? What emotional response should a user have on first impression?
 
 - **Primary ({colors.primary}):** Core text, headlines, high-emphasis surfaces.
 - **Secondary ({colors.secondary}):** Supporting text, borders, metadata.
-- **Tertiary ({colors.tertiary}):** Interaction driver — buttons, links,
+- **Tertiary ({colors.tertiary}):** Interaction driver, buttons, links,
   selected states. Use sparingly to preserve its signal.
 - **Neutral ({colors.neutral}):** Page background and surface fills.
 
@@ -82,7 +82,7 @@ Spacing scale is a 4px baseline. Use `md` (16px) for intra-component gaps,
 
 ## Shapes
 
-Rounded corners are modest — `sm` on interactive elements, `md` on cards.
+Rounded corners are modest: `sm` on interactive elements, `md` on cards.
 `full` is reserved for avatars and pill badges.
 
 ## Components
@@ -94,6 +94,6 @@ Rounded corners are modest — `sm` on interactive elements, `md` on cards.
 
 - **Do** use token references (`{colors.primary}`) instead of literal hex in
   component definitions.
-- **Don't** introduce colors outside the palette — extend the palette first.
+- **Don't** introduce colors outside the palette: extend the palette first.
 - **Don't** nest component variants. `button-primary-hover` is a sibling,
   not a child.

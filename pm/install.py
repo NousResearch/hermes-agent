@@ -154,11 +154,12 @@ def uv_launcher(name: str) -> Path | None:
 def _identity(lockfile: Lockfile, name: str, target: str):
     """The identity the lock currently pins for `name` on `target`:
     (target, tuple(artifact sha256s)) — or None when the lock pins no
-    artifacts (nothing digest-bound to compare)."""
-    artifacts = lockfile.artifacts(name, target)
-    if not artifacts:
-        return None
-    return (target, tuple(a["sha256"] for a in artifacts))
+    digest-bound artifacts (nothing to compare; a docker reference like
+    termux-docker pins its digest in the version field, and the version
+    check already covers it)."""
+    digests = [a["sha256"] for a in lockfile.artifacts(name, target)
+               if isinstance(a, dict) and "sha256" in a]
+    return (target, tuple(digests)) if digests else None
 
 
 def lazy_installs_allowed() -> bool:

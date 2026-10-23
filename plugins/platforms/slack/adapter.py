@@ -3550,8 +3550,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
         """Resolve a workspace ID from the event plus Bolt's outer payload.
-        Bolt passes only the inner ``event``; Slack puts ``team_id`` on the outer payload."""
-        for payload in (event, body or {}):
+        Bolt passes only the inner ``event``; Slack puts ``team_id`` on the outer payload.
+        The outer payload wins: in a Slack Connect channel the inner ``event.team`` is the
+        *sender's* org (the other workspace), not the workspace this bot is installed in,
+        so trusting it first keys the dedup id and the session scope to a team the app has
+        no installation in and lets the message+mention pair through as two turns (#143792)."""
+        for payload in (body or {}, event):
             if not isinstance(payload, dict):
                 continue
             team = payload.get("team_id") or payload.get("team")
@@ -4446,6 +4450,17 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         channel_id = event.get("channel", "")
         if self._is_ignored_channel(channel_id):
             logger.info("[Slack] Ignoring message in configured ignored channel %s", channel_id)
+            return None
+        # A Slack Connect external-org user can DM the bot even though their home workspace
+        # never installed it. Their DM event carries the sender's org as the inner ``team``,
+        # while the envelope resolves to our install, so mismatch means foreign-org sender
+        # and the DM must be refused regardless of allowlists (#143792).
+        author_team = event.get("user_team") or event.get("team") or ""
+        is_dm_event = event.get("channel_type") == "im" or str(channel_id).startswith("D")
+        if is_dm_event and author_team and dedup_team_id and author_team != dedup_team_id:
+            logger.info(
+                "[Slack] Ignoring DM from external-org user %s (team %s) in %s",
+                event.get("user"), author_team, channel_id)
             return None
         if await self._drop_bot_sender(event):
             return None

@@ -718,6 +718,38 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
     )
 
 
+def per_request_claude_code_credential(agent: Any, api_key: Any, effective_key: Any, is_native: bool) -> Any:
+    """What ``agent_init`` hands ``build_anthropic_client``: a per-request provider for the
+    ambient Claude Code login, else ``effective_key`` unchanged.
+
+    Only when the token came from the ambient login (no explicit ``api_key``) on native
+    Anthropic with an OAuth route: an explicit key or a third-party endpoint keeps the string.
+    """
+    if is_native and not api_key and getattr(agent, "_is_anthropic_oauth", False) and isinstance(effective_key, str):
+        return claude_code_token_provider(getattr(agent, "model", None), effective_key)
+    return effective_key
+
+
+def claude_code_token_provider(model: Any, fallback: str):
+    """A per-request bearer for the native Anthropic client built from the ambient Claude Code login.
+
+    A subscription token lives ~8h and `claude` refreshes it on its own schedule. The SDK
+    freezes ``auth_token`` at construction, so a long session kept presenting the token it
+    started with and got 401 "OAuth access token has been revoked". Same remedy as MiniMax in
+    ``agent_init``: hand the SDK a callable; ``resolve_anthropic_token`` re-reads the login on
+    each call, so a refresh by any process is picked up on the next request.
+    """
+
+    def _fresh_anthropic_oauth_token() -> str:
+        try:
+            return resolve_anthropic_token(model=model) or fallback
+        except Exception:  # health: allow BLE001 -- runs inside the SDK's auth hook; a read failure must not end the turn
+            logger.debug("Claude Code token re-read failed; presenting the last known token", exc_info=True)
+            return fallback
+
+    return _fresh_anthropic_oauth_token
+
+
 def run_oauth_setup_token() -> Optional[str]:
     """Run 'claude setup-token' interactively; the resulting token or None. FileNotFoundError if no 'claude' CLI."""
     from agent.anthropic_adapter import find_claude_code_cli  # late: the adapter imports this module

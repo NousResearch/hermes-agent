@@ -3841,21 +3841,6 @@ def _refresh_nous_credentials() -> bool:
     ))
 
 
-def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
-    token = failed_api_key
-    if not token:
-        return False
-    pool = load_pool("anthropic")
-    if pool.entry_id_for_api_key(token):
-        return pool.try_refresh_matching(api_key_hint=token) is not None
-    creds = read_claude_code_credentials()
-    # Never spend an ambient login's refresh rotation for another request's key.
-    if isinstance(creds, dict) and creds.get("accessToken") == token and creds.get("refreshToken"):
-        return bool(_refresh_oauth_token(creds))
-    return False
-
-
 def _refresh_xai_oauth_credentials() -> bool:
     """Pool-level refresh first, then the singleton auth-store resolver."""
     pool = load_pool("xai-oauth")
@@ -3874,6 +3859,9 @@ def _refresh_vertex_credentials() -> bool:
     from agent.vertex_adapter import get_vertex_config
     token, base_url = get_vertex_config()
     return bool(isinstance(token, str) and token.strip() and isinstance(base_url, str) and base_url.strip())
+
+
+from agent.auxiliary_claude_code_token import refresh_anthropic_credentials as _refresh_anthropic_credentials
 
 
 # Each refresher returns True when a usable credential exists; the caller then evicts cached clients.
@@ -4608,7 +4596,9 @@ def _try_main_provider_route(
             explicit_api_key = runtime_api_key
     elif runtime_api_key:
         # Pin aux to the main session's working key, not a re-selected (maybe exhausted) pool key.
-        explicit_api_key = runtime_api_key
+        # Unless it is a Claude Code token `claude` already replaced: then "working" is the one on disk.
+        from agent.auxiliary_claude_code_token import supersede_stale_anthropic_oauth_key
+        explicit_api_key = supersede_stale_anthropic_oauth_key(runtime_api_key, runtime_base_url)
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
     if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):

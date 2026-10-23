@@ -744,7 +744,7 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
     from agent.anthropic_adapter import build_anthropic_client
-    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.anthropic_credentials import per_request_claude_code_credential, resolve_anthropic_token
     agent.client = None
     agent._client_kwargs = {}
     agent._anthropic_base_url = base_url
@@ -784,7 +784,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # cause 401/403 on their endpoints. See #1739.
     from agent.anthropic_credentials import anthropic_route_is_oauth
     agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
-    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+    agent._anthropic_client = build_anthropic_client(per_request_claude_code_credential(agent, api_key, effective_key, _is_native_anthropic), base_url, timeout=_provider_timeout)  # per-request bearer: follows a `claude` refresh
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
         _print_key_banner(effective_key, "token")

@@ -75,9 +75,9 @@ _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 
 
 def _header_delivery_id(headers) -> str:
-    """The provider's delivery id (GitHub, Svix, Standard Webhooks, generic), else a fresh one."""
-    return headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-        "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
+    """The provider's delivery id (GitHub, Hermes outbound, Svix, Standard Webhooks, generic), else a fresh one."""
+    return headers.get("X-GitHub-Delivery", headers.get("X-Hermes-Delivery", headers.get("svix-id", headers.get(
+        "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex)))))
 
 
 @dataclass(frozen=True)
@@ -688,6 +688,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return mcp_control
         delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
+                      or headers.get("X-Hermes-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
@@ -856,7 +857,8 @@ class WebhookAdapter(BasePlatformAdapter):
     # --- Signature validation ---
 
     def _validate_signature(self, request: web.Request, body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, Hermes outbound,
+        generic HMAC-SHA256)."""
         headers = request.headers
 
         def _header(name: str) -> str:
@@ -873,9 +875,11 @@ class WebhookAdapter(BasePlatformAdapter):
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)
         # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.
+        # Hermes outbound hooks (agent/outbound_webhooks.py) sign GitHub-style under their own header.
         for provided, expected in (
                 (_header("linear-signature"), lambda: _hex_hmac(secret, body)),
                 (headers.get("X-Hub-Signature-256", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
+                (headers.get("X-Hermes-Signature-256", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
                 (headers.get("X-Gitlab-Token", ""), lambda: secret)):
             if provided:
                 return _hmac_str_equal(provided, expected())

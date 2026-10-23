@@ -619,7 +619,9 @@ auxiliary:
 带有 `compression.summary_model`、`compression.summary_provider` 和 `compression.summary_base_url` 的旧版配置在首次加载时自动迁移到 `auxiliary.compression.*`（配置版本 17）。无需手动操作。
 :::
 
-`hygiene_hard_message_limit` 是仅限 gateway 的**预压缩安全阀**。它的存在是为了打破一个死循环：当超大会话的 API 调用持续断开时，gateway 永远收不到 token 使用数据，基于 token 的阈值因此无法触发，于是 transcript 持续增长、断开愈发严重。这个基于消息数的下限仅凭消息数量触发（无论 API 是否失败，消息数始终已知），强制压缩以恢复会话。默认 `5000` —— 远高于任何正常会话，包括做数千次短轮次的大上下文（1M+）模型，它们早就在 token 阈值处压缩了。对于异常平台可调得更高；要强制更积极的压缩则调低。在运行中的 gateway 上编辑此值将在下一条消息时生效（见下文）。
+`hygiene_hard_message_limit` 是**预压缩安全阀**，在 gateway 会话预压缩与交互式（TUI/CLI）预检路径（turn 开始与 in-turn 预 API 守卫）均生效。它的存在是为了打破一个死循环：当超大会话的 API 调用持续断开时，永远收不到 token 使用数据，基于 token 的阈值因此无法触发，于是 transcript 持续增长、断开愈发严重。这个基于消息数的下限仅凭消息数量触发（无论 API 是否失败，消息数始终已知），强制压缩以恢复会话。默认 `5000` —— 远高于任何正常会话，包括做数千次短轮次的大上下文（1M+）模型，它们早就在 token 阈值处压缩了。对于异常平台可调得更高；要强制更积极的压缩则调低。在运行中的 gateway 上编辑此值将在下一条消息时生效（见下文）。
+
+在交互式路径上，消息数越限会强制压缩，恢复语义是有界的：它是唯一绕过摘要失败冷却、结构性空转退避与防抖断路器（两次无效压缩）的触发器，因此会话总能被恢复。强制只作用于压缩**尝试**而非提交：摘要的终态失败（配额/网络/截断）仍会中止并原样保留 transcript，每轮 `compression.max_attempts` 预算也照常生效。恢复由消息数本身界定——一次成功提交会把 transcript 压回下限之下，在消息数重新增长到 `hygiene_hard_message_limit` 之前阀门不会再次触发。Codex app-server 原生线程（由 provider 自行压缩）与 review fork 首请求待定期间不适用。
 
 `context_timeout_seconds`（默认 `120`）是 agent 侧 `compress_context`（对话循环、预检压缩、手动 `/compress`）的**无进展超时**，语义与 gateway 会话预压缩（session hygiene）的 inactivity 预算相同：摘要模型仍在流式出 token 时会延长等待；仅当完全无输出时才跳过压缩并保留原消息。设为 `0` 可关闭。Gateway 会话预压缩仍使用自己的 `hygiene_timeout_seconds`，不会被双重包装。
 

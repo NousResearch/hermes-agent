@@ -81,7 +81,7 @@ The most common report looks like this: you tell the agent where something lives
 
 3. **Check you are reading the same memory you wrote.** Memory is per [profile](../profiles.md): `hermes -p work` (or `work chat` / `work gateway start`) reads `~/.hermes/profiles/work/memories/`, not `~/.hermes/memories/`. A CLI session in the default profile and a Telegram bot on another profile do not share notes. `hermes profile list` shows what exists.
 
-4. **Check memory is enabled.** `memory.memory_enabled: false` (or `memory` under `agent.disabled_toolsets`) removes the tool entirely — the model cannot save anything, whatever it says. See [Configuration](#configuration).
+4. **Check the store you are writing to is enabled.** `memory.memory_enabled` controls `MEMORY.md` (target `memory`) and `memory.user_profile_enabled` controls `USER.md` (target `user`). If only one is `false`, the `memory` tool stays but only offers the other target, so writes to the disabled file fail. Setting both to `false`, or listing `memory` under `agent.disabled_toolsets`, hides the built-in tool from the model. See [Configuration](#configuration).
 
 5. **Remember the snapshot is frozen at session start.** A fact saved in the current session is visible to the *next* session, not to another session that was already running. Start a new session (`/new`, or a fresh CLI invocation) after the write.
 

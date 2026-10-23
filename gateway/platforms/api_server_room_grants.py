@@ -221,14 +221,20 @@ async def _handle_room_member_grant_revoke(
         return _json_error(
             _openai_error, "Grant revoke accepts no fields.",
             code="invalid_room_grant_revoke", status=400)
+    from gateway import hosted_rooms
     try:
-        from gateway import hosted_rooms
         # Idempotent: a response-lost retry authenticates with the grant just denylisted, so
         # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
         claims = _decode_request_grant(self, request, permission="status")
         _local_target(claims, _api_request_profile)
         hosted_rooms.revoke_room_grant_scope(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
-    except Exception:
+    except (sqlite3.Error, OSError):
+        # This gateway's own store or secret failed: nothing was revoked and nothing is known about
+        # the grant. "Invalid" here would tell a home it owes nothing, so answer a retryable fault.
+        return _json_error(
+            _openai_error, "Room grant store is unavailable.", err_type="server_error",
+            code="room_grant_store_unavailable", status=503)
+    except (ValueError, KeyError, TypeError):  # this grant cannot pass here: unsigned, expired, not ours
         return _room_grant_error_response(_openai_error=_openai_error)
     return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})

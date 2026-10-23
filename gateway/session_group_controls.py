@@ -228,12 +228,13 @@ def _group(authority, actor, method, params, *, host_scope=False):
                 name=params.get('name'), members=normalized, authority_gateway_id=gateway_id,
                 admit=admit)}
 
+    attached = getattr(authority, 'hosted_room_service', None)
+
     def disband():
         from contextlib import nullcontext
         # Registration publishes under this lock too, so no peer route appears mid-Disband. It is
         # the attached service's lock, whether or not its driver still runs: a registration that
         # started before the driver stopped still holds it.
-        attached = getattr(authority, 'hosted_room_service', None)
         with getattr(attached, 'peer_route_lock', None) or nullcontext():
             return disband_unlocked()
 
@@ -245,14 +246,19 @@ def _group(authority, actor, method, params, *, host_scope=False):
                               cancel_id=params.get('cancel_id') or 'room-disbanded',
                               require_acknowledged=True)
             service.revoke_room_routes(params.get('room_id'))
-        # Metadata control must not destroy an active execution or bypass Stop,
-        # nor forget a peer route whose target grant only the driver can revoke.
+        # Metadata control must not destroy an active execution or bypass Stop.
         if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
                for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
             raise RuntimeStoreError('runtime_coordination_required')
-        if service is None and state.get('disbanded_at') is None and any(
-                link['room_id'] == params.get('room_id') for link in rooms.list_room_link_records(db_path)):
-            raise RuntimeStoreError('runtime_coordination_required')
+        if service is None and state.get('disbanded_at') is None:
+            # Without a running driver the room's peer routes still go, each grant's revoke owed
+            # (paid once a driver on this store runs), so no route outlives the room.
+            if attached is not None:
+                attached.revoke_room_routes(params.get('room_id'))
+            else:
+                from gateway.hosted_room_peer import room_grant_hard_expiry
+                rooms.retire_room_link_records(db_path, room_id=params.get('room_id'),
+                                               expiry=room_grant_hard_expiry)
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
                 expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}

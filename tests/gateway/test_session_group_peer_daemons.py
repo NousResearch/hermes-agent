@@ -1,14 +1,15 @@
 """Two real canonical gateways: a Group Chat on one, with a member hosted by the other."""
-from tests.waiting import wait_until, async_wait_until
-from types import SimpleNamespace
 import asyncio
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import socket
 import sqlite3
 import struct
+from tests.waiting import wait_until, async_wait_until
 import threading
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 
@@ -148,6 +149,22 @@ def _grant_status(url, grant):
         return exc.code, json.loads(exc.read())
 
 
+async def _revoked(url, grant, timeout=60):
+    """Wait for the home's worker to pay the revoke Disband left it owing."""
+    def revoked():
+        status, body = _grant_status(url, grant)
+        if status == 200:
+            return False
+        assert (status, body['error']['code']) == (403, 'room_reauthorization_required'), body
+        return True
+    await asyncio.to_thread(wait_until, revoked, timeout=timeout, interval=.25, what="grant revocation")
+
+
+def _owed(home):
+    with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+        return db.execute('SELECT room_id, member_id FROM hosted_room_owed_revokes').fetchall()
+
+
 async def _wait_rpc(ws, method, ready, *, timeout, **params):
     loop = asyncio.get_running_loop()
 
@@ -278,25 +295,39 @@ def test_peer_member_on_another_gateway_joins_replies_stops_recovers_and_is_revo
 
     async def after_restart(home_desc):
         async with websocket(g.home, home_desc) as home_ws:
-            # The restarted g.home recovers the accepted turn from its stored route: one run, one reply.
+            # The restarted home recovers the accepted turn from its stored route: one run, one reply.
             replies = await _events(home_ws, 'message.member', count=2)
             assert [r['payload']['text'] for r in replies] == ['PEER_REPLY', 'PEER_REPLY'], replies
             assert sum('HOLD_RESTART' in _last_user_text(r) for r in g.target_model.requests) == 1
             for grant in grants:
                 assert (await asyncio.to_thread(_grant_status, routes[0], grant))[0] == 200
 
+    async def disband_while_member_is_down(home_desc):
+        async with websocket(g.home, home_desc) as home_ws:
             disbanded = await rpc(home_ws, 'groups.disband', room_id='linked')
             assert 'tombstone' in disbanded['result'], disbanded
-            for grant in grants:
-                status, body = await asyncio.to_thread(_grant_status, routes[0], grant)
-                assert (status, body['error']['code']) == (403, 'room_reauthorization_required'), body
+            assert not any(grant in json.dumps(disbanded) for grant in grants)
+            assert _owed(g.home) == [('linked', 'reviewer')]
 
-    with daemon(g.root, g.target, g.target_env, barrier=False) as (_, target_desc):
+    async def revoked_once_member_returns():
+        for grant in grants:
+            await _revoked(routes[0], grant, timeout=120)
+        await async_wait_until(lambda: not _owed(g.home), timeout=30, what="revoke debt draining")
+
+    with ExitStack() as running:
+        member = running.enter_context(ExitStack())
+        _, target_desc = member.enter_context(daemon(g.root, g.target, g.target_env, barrier=False))
         with daemon(g.root, g.home, g.home_env, barrier=False) as (home_proc, home_desc):
             asyncio.run(before_restart(home_desc, target_desc, home_proc))
         g.target_model.gates['HOLD_RESTART'][1].set()
-        with daemon(g.root, g.home, g.home_env, barrier=False) as (_, home_desc):
-            asyncio.run(after_restart(home_desc))
+        _, home_desc = running.enter_context(daemon(g.root, g.home, g.home_env, barrier=False))
+        asyncio.run(after_restart(home_desc))
+        # The member's gateway stops while the room is live: Disband still ends it on the home,
+        # which owes the revoke and pays it once that gateway runs again.
+        member.close()
+        asyncio.run(disband_while_member_is_down(home_desc))
+        running.enter_context(daemon(g.root, g.target, g.target_env, barrier=False))
+        asyncio.run(revoked_once_member_returns())
 
 
 class _LossyRelay:

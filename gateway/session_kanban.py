@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 from contextlib import closing
 from dataclasses import asdict, replace
+from functools import partial
 import threading
 import json
 from pathlib import Path
@@ -15,6 +16,7 @@ def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
     from gateway.session_policy import build_policy
+    from hermes_cli.kanban_worker_policy import _apply_worker_policy, _parse_worker_policy
     authority, actor = connection.authority, connection.actor
     if not connection.native_owner or 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -24,6 +26,7 @@ def build_kanban_policy(connection, params, config):
             or any(not isinstance(params[k], str) or not params[k] for k in ('board', 'task_id', 'claim_lock'))
             or type(params['run_id']) is not int):
         raise RuntimeStoreError('invalid_params')
+    worker_policy = _parse_worker_policy(config)
     try:
         board = kb._require_slug(params['board'])
         path = Path(params['db']).resolve(strict=True) if 'db' in params else kb.kanban_db_path(board=board).resolve()
@@ -42,10 +45,9 @@ def build_kanban_policy(connection, params, config):
             if bound and json.loads(bound[0])['request_id'] != 'kanban:' + json.dumps([board, task.id, task.current_run_id], separators=(',', ':')):
                 raise RuntimeStoreError('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
+            lane = kb._retry_status_for_run(conn, task.id, task.current_run_id)
+            worker_policy, refused = _apply_worker_policy(task, lane, None, policy=worker_policy)
             skills = list(task.skills or ())
-            if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
-                # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
-                skills = list(dict.fromkeys([*skills, 'sdlc-review']))
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise RuntimeStoreError('invalid_kanban_claim') from exc
     cwd = task.workspace_path
@@ -55,6 +57,8 @@ def build_kanban_policy(connection, params, config):
             params_policy[name] = value
     private = {}
     policy = build_policy(params_policy, config, private_secrets=private)
+    if refused:
+        _record_policy_refusal(path, task, refused)
     if policy.model is None:
         from gateway.run import _resolve_gateway_model
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))
@@ -62,27 +66,52 @@ def build_kanban_policy(connection, params, config):
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
         goal_text='\n\n'.join(p for p in (task.title, task.body) if p), context=context,
-        max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True)
+        max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True,
+        lifecycle_toolset=worker_policy.lifecycle_toolset or 'none')
     context['db'] = str(path)
     request = json.loads(policy.request_json)
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
-    return replace(policy, source='kanban', platform='cli', toolsets=tuple(sorted(set(policy.toolsets) | {'kanban'})),
+    lifecycle = {worker_policy.lifecycle_toolset} if worker_policy.lifecycle_toolset else set()
+    return replace(policy, source='kanban', platform='cli', toolsets=tuple(sorted(set(policy.toolsets) | lifecycle)),
                    request_json=json.dumps(request, sort_keys=True), kanban_json=json.dumps(context)), private
+
+
+def _record_policy_refusal(path, task, refused):
+    """Record owner decisions against the exact attempt, deduplicating dispatcher evidence."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect_closing
+    with connect_closing(path) as conn, kb.write_txn(conn):
+        current = kb.get_task(conn, task.id)
+        if (not current or current.status != 'running' or current.current_run_id != task.current_run_id
+                or current.claim_lock != task.claim_lock):
+            raise RuntimeStoreError('stale_kanban_claim')
+        rows = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_policy_refused'",
+                            (task.id, task.current_run_id)).fetchall()
+        if not any(json.loads(row[0]).get('refused') == refused for row in rows):
+            kb._append_event(conn, task.id, 'worker_policy_refused', {'refused': refused}, run_id=task.current_run_id)
+
+
+def _load_owner_policy(connection, params):
+    from hermes_cli.config_effective import load_user_config_effective
+
+    # New capabilities require the owner's current policy, never gateway fallback
+    # defaults or last-good recovery from before a broken policy edit.
+    config = load_user_config_effective(Path(connection.authority.profile_id) / 'config.yaml', fail_closed=True)
+    return build_kanban_policy(connection, params, config)
 
 
 async def run_task(connection, params):
     if not connection.native_owner or 'session:create' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    from gateway.run import _load_gateway_config
     from gateway.session_local import create_local_session
     from gateway.session_contract import Submission
     from gateway.session_local_recovery import local_identity
     from hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
+    from gateway.session_runtime_workers import tracked_write
     authority = connection.authority
-    # Resolved off-loop up front: no await separates the saved-claim check from session
-    # creation. The Kanban claim check and its marker share one off-loop transaction; a
-    # concurrent retry of the same attempt meets that marker (same session) or a stale claim.
+    # Resolve off-loop; admission rechecks the claim and its marker in one tracked
+    # transaction before resume/submit, including after policy construction yields.
     owner_db = str(await asyncio.to_thread(Path(authority.db.db_path).resolve))
     # The dispatcher attempt is the durable request identity, including after the
     # task closes. Retry checks the saved claim, never reinterprets updated cards.
@@ -98,7 +127,10 @@ async def run_task(connection, params):
         from gateway.session_local_recovery import restore_local_session
         ref = restore_local_session(authority, sid)
     else:
-        policy, private = build_kanban_policy(connection, params, _load_gateway_config())
+        # Refusal evidence takes the Kanban writer lock even when deduplicating.
+        # Track it through cancellation/retirement without blocking the owner loop.
+        policy, private = await tracked_write(authority,
+            partial(_load_owner_policy, connection, params))
         ref = create_local_session(authority, connection.actor, {'request_id': request_id},
                                    trusted_policy=policy, trusted_secrets=private)
     from hermes_cli.kanban_db_connect import connect_closing
@@ -128,7 +160,6 @@ async def run_task(connection, params):
                     {'db': owner_db, 'session_id': ref.session_id,
                      'request_id': request_id, 'pid': os.getpid(), 'birth': process_birth(psutil.Process())},
                     run_id=task.current_run_id)
-    from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
     # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
@@ -164,7 +195,8 @@ def bind_worker_context(frame):
         'HERMES_KANBAN_DB': context['db'], 'HERMES_KANBAN_RUN_ID': str(context['run_id']),
         'HERMES_KANBAN_CLAIM_LOCK': context['claim_lock'], 'HERMES_KANBAN_WORKSPACE': context['workspace'],
         'HERMES_KANBAN_WORKSPACES_ROOT': context['workspaces_root'], 'HERMES_PROFILE': context['profile'],
-        'HERMES_SESSION_SOURCE': 'kanban'}
+        'HERMES_SESSION_SOURCE': 'kanban',
+        'HERMES_KANBAN_LIFECYCLE_TOOLSET': context.get('lifecycle_toolset', 'kanban')}
     for key, value in (('HERMES_KANBAN_BRANCH', context['branch']), ('HERMES_TENANT', context['tenant'])):
         if value:
             env[key] = value

@@ -2,6 +2,7 @@
 Kanban DB is the cross-profile dispatch bus (busy_timeout up to 120 s), so a dispatcher holding
 its writer must not freeze every session on the loop. Real Kanban SQLite, a real held writer."""
 import asyncio
+import json
 from itertools import pairwise
 from contextlib import closing
 import sqlite3
@@ -9,10 +10,15 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 HOLD_S = 3.0
 
 
-def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
+@pytest.mark.parametrize('lifecycle_toolset,refusal_recorded', [
+    ('kanban', False), ('none', False), ('none', True),
+])
+def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch, lifecycle_toolset, refusal_recorded):
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
     from gateway.session_contract import Principal
@@ -32,8 +38,9 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
         board_db = conn.execute('PRAGMA database_list').fetchone()[2]
-    config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
-    monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
+    config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']},
+              'kanban': {'worker_policy': {'lifecycle_toolset': lifecycle_toolset}}}
+    (tmp_path / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
     monkeypatch.setattr('gateway.session_local.create_local_session', lambda *a, **k: SimpleNamespace(
         session_id='owner-session', profile_id=str(tmp_path)))
     calls = []
@@ -49,6 +56,9 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
     actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task_id, run_id=task.current_run_id, claim_lock=task.claim_lock)
+    if refusal_recorded:
+        from gateway.session_kanban import build_kanban_policy
+        build_kanban_policy(connection, params, config)
     held = threading.Event()
 
     def dispatcher_holds_the_bus():
@@ -83,4 +93,6 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
     assert calls == ['resume', 'submit']
     with closing(connect(board='owned')) as conn:
         assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='owner_admitted'", (task_id,)).fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='worker_policy_refused'",
+                            (task_id,)).fetchone()[0] == (1 if lifecycle_toolset == 'none' else 0)
     assert gap < HOLD_S / 2, f'the owner loop stalled {gap:.2f}s behind a held Kanban writer'

@@ -121,7 +121,8 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
         kb.recompute_ready(conn)
         old = kb.claim_task(conn, task_id)
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
-    monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
+    import json
+    (tmp_path / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
     calls = []
     def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
         # Another process reclaims the task while the owner session is being created.

@@ -684,6 +684,77 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     assert captured == [["domain-specific-review", "sdlc-review"]]
 
 
+def test_worker_policy_refusals_are_visible_in_the_task_history(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    from hermes_cli import kanban_worker_policy as kwp
+
+    monkeypatch.setattr(kwp, "_worker_profile_home", lambda _assignee: "/worker-profile")
+    monkeypatch.setattr(
+        kwp,
+        "_worker_policy",
+        lambda _home: kwp.WorkerPolicy(
+            task_skills=frozenset(),
+            review_skill=None,
+            lifecycle_toolset=None,
+            allow_task_model_override=False,
+            allow_task_reasoning_override=False,
+        ),
+    )
+    captured: list[kb.Task] = []
+
+    def spawn(task, workspace):
+        captured.append(task)
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="policy-controlled task",
+            assignee="reviewer",
+            skills=["card-skill"],
+            model_override="gpt-5.6-sol",
+            provider_override="openai",
+            reasoning_effort="high",
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'worker_policy_refused'",
+            (task_id,),
+        ).fetchone()
+
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured[0].skills == []
+    assert captured[0].model_override is None
+    assert captured[0].reasoning_effort is None
+    assert json.loads(event["payload"])["refused"] == [
+        "task_skills",
+        "task_model_override",
+        "task_reasoning_override",
+        "lifecycle_toolset",
+    ]
+
+
+def test_malformed_worker_policy_releases_claim_without_spawning(kanban_home: Path) -> None:
+    """A bad assignee config follows the spawn-failure path instead of aborting the tick."""
+    (kanban_home / "config.yaml").write_text(
+        'kanban:\n  worker_policy:\n    lifecycle_toolset: []\n', encoding="utf-8")
+    spawned = []
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="invalid worker policy", assignee="default")
+        result = kbd.dispatch_once(conn, spawn_fn=lambda *args: spawned.append(args))
+        assert not result.spawned
+        assert not spawned
+        task = kb.get_task(conn, task_id)
+        assert task.status == "ready"
+        assert task.claim_lock is None
+        run = conn.execute("SELECT status, outcome FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+        assert run["status"] != "running"
+        assert run["outcome"] == "spawn_failed"
+
+
 def test_review_dispatch_honors_global_and_per_profile_caps(
     kanban_home: Path,
     monkeypatch: pytest.MonkeyPatch,

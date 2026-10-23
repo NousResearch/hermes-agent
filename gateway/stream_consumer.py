@@ -926,7 +926,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Tool boundary: edit-based transports reset so the next chunk is a fresh message.
         Cumulative transports must NOT reset — clearing _accumulated makes the next frame a
         non-prefix snapshot and the connector re-appends the whole answer.  preserve_no_edit:
-        "__no_edit__" (platform never returned a real id — Signal, github_comment webhook)
+        "__no_edit__" (platform never returned a real id — github_comment webhook)
         must keep its sentinel or every tool boundary posts a new message; the
         continuation goes out once via _send_fallback_final."""
         if self._cumulative_transport():

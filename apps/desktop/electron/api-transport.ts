@@ -36,14 +36,50 @@
 import http from 'node:http'
 import https from 'node:https'
 
+// Pool TTL: destroy a socket that has sat FREE (in the keep-alive pool, not
+// mid-request) this long, so a connection the server closed while idle — edge
+// keep-alive idle timeout, NAT/session expiry, sleep-wake — is pruned before
+// it can be reused. A reused zombie turns a non-idempotent POST (the
+// ws-ticket mint) into a silent timeout the client refuses to retry by
+// design. 15s sits well below the idle-close windows observed behind
+// TLS-terminating proxies (~40-90s) while keeping warm pools warm.
+const KEEPALIVE_TTL_MS = 15_000
+const TTL_SYMBOL = Symbol.for('hermes.keepaliveTtlTimer')
+
+// Mixin over the caller's Agent class: HTTPS pools MUST extend https.Agent
+// (its createConnection does the TLS handshake); extending http.Agent there
+// would silently pool plaintext sockets.
+type AgentClass = typeof http.Agent | typeof https.Agent
+function ttlKeepAlive(Base: AgentClass, ttlMs: number = KEEPALIVE_TTL_MS): typeof http.Agent {
+  const TtlAgent = class extends (Base as typeof http.Agent) {
+    keepSocketAlive(socket) {
+      super.keepSocketAlive(socket)
+      // Node keeps the socket whenever it hasn't ended; arm unconditionally —
+      // a destroyed socket's own close/error handlers moot the timer anyway.
+      const timer = setTimeout(() => socket.destroy(), ttlMs)
+      timer.unref()
+      socket[TTL_SYMBOL] = timer
+    }
+
+    reuseSocket(socket, request) {
+      if (socket[TTL_SYMBOL]) {
+        clearTimeout(socket[TTL_SYMBOL])
+        socket[TTL_SYMBOL] = null
+      }
+      super.reuseSocket(socket, request)
+    }
+  }
+  return TtlAgent
+}
+
 // JSON pool: many small concurrent calls (session lists, config, prompts).
-const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: 50 })
-const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: 50 })
+const HTTP_JSON_AGENT = new (ttlKeepAlive(http.Agent))({ keepAlive: true, maxSockets: 50 })
+const HTTPS_JSON_AGENT = new (ttlKeepAlive(https.Agent))({ keepAlive: true, maxSockets: 50 })
 
 // Download pool: few long-lived streaming bodies. Isolated from the JSON pool
 // so saturating it with large file downloads can't block interactive calls.
-const HTTP_DOWNLOAD_AGENT = new http.Agent({ keepAlive: true, maxSockets: 8 })
-const HTTPS_DOWNLOAD_AGENT = new https.Agent({ keepAlive: true, maxSockets: 8 })
+const HTTP_DOWNLOAD_AGENT = new (ttlKeepAlive(http.Agent))({ keepAlive: true, maxSockets: 8 })
+const HTTPS_DOWNLOAD_AGENT = new (ttlKeepAlive(https.Agent))({ keepAlive: true, maxSockets: 8 })
 
 function jsonAgentFor(protocol) {
   return protocol === 'https:' ? HTTPS_JSON_AGENT : HTTP_JSON_AGENT
@@ -276,8 +312,10 @@ export {
   isIdempotentMethod,
   isTransientTransportError,
   jsonAgentFor,
+  KEEPALIVE_TTL_MS,
   readJsonErrorBody,
   readStatusCode,
   shouldRetryRequest,
+  ttlKeepAlive,
   withRetry
 }

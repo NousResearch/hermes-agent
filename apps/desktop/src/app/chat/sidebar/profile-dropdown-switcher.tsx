@@ -50,6 +50,7 @@ import { PROFILES_ROUTE } from '../../routes'
 
 import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, type FleetAgent, fleetRouteKey } from './fleet-rail'
+import { $gatewayGroupHidden } from './gateway-group-preferences'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
@@ -98,11 +99,16 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   }, [createRequest])
 
   const connections = registry?.connections
+  // Same rail-visibility preference the square strip honours: the condensed
+  // picker is the same fleet list in a different container, so a gateway hidden
+  // from the rail must not reappear here.
+  const hiddenGatewayIds = useStore($gatewayGroupHidden)
+  const hidden = useMemo(() => new Set(hiddenGatewayIds), [hiddenGatewayIds])
 
   const restGroups = useMemo(
     () =>
-      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], order, roster }) : [],
-    [activeConnectionId, connections, multipleConnections, order, roster]
+      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], hidden, order, roster }) : [],
+    [activeConnectionId, connections, hidden, multipleConnections, order, roster]
   )
 
   const activeKey = normalizeProfileKey(gatewayProfile)

@@ -112,6 +112,16 @@ def owned_receipt(authority, sid):
     return receipt, source, route, _checked_entry(authority, receipt, source, route)
 
 
+def unused_session(conn, session_id):
+    """*session_id* holds nothing: no transcript, ledger rows or children (what the SessionStore's
+    stale-route heal, #54878, mints as a route's replacement before any turn runs on it)."""
+    return conn.execute(
+        'SELECT 1 FROM messages WHERE session_id=? UNION ALL SELECT 1 FROM session_admissions '
+        'WHERE target_session_id=? UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? '
+        'UNION ALL SELECT 1 FROM sessions WHERE parent_session_id=? LIMIT 1',
+        (session_id, session_id, session_id, session_id)).fetchone() is None
+
+
 def _stray_route_target(authority, receipt, session_id):
     """*session_id* is a replacement the SessionStore's stale-route self-heal minted on this local
     route before #140642: outside the receipt's lineage, never admitted, no transcript. The receipt
@@ -121,13 +131,8 @@ def _stray_route_target(authority, receipt, session_id):
     if not session_id or session_id in receipt.get('lineage', [receipt['session_id']]):
         return False
     with authority.db._read_ctx() as conn:
-        busy = conn.execute(
-            'SELECT 1 FROM messages WHERE session_id=? UNION ALL SELECT 1 FROM session_admissions '
-            'WHERE target_session_id=? UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? '
-            'UNION ALL SELECT 1 FROM sessions WHERE parent_session_id=? LIMIT 1',
-            (session_id, session_id, session_id, session_id)).fetchone()
-    if busy is not None:
-        return False
+        if not unused_session(conn, session_id):
+            return False
     logging.getLogger(__name__).warning(
         'Local route for %s named an empty replacement %s outside its lineage; restoring the receipt target',
         receipt['session_id'], session_id)
@@ -191,10 +196,16 @@ def restore_local_session(authority, sid):
     else:
         with store._lock:
             current = store._entry_locked(route)
-            if current is None or (current.session_id not in receipt.get('lineage', [sid])
-                                   and not _stray_route_target(authority, receipt, current.session_id)):
+            if current is None:
+                # A route the loaded store cannot see (an older release's scope, a pruned row) is the
+                # receipt's to rebuild, as on a cold restore: refusing wedges every claim until a restart.
+                entry.origin = source
+                store._entries[route] = entry
+            elif (current.session_id not in receipt.get('lineage', [sid])
+                    and not _stray_route_target(authority, receipt, current.session_id)):
                 raise RuntimeStoreError('admission_conflict')
-            current.session_id = target
+            else:
+                current.session_id = target
     return SessionRef(authority.profile_id, sid)
 
 

@@ -874,8 +874,12 @@ class SessionAuthority:
             with live.event_stream.lock:
                 adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
                 if adopted_generation != generation:
-                    agent = self.agent(ref)
-                    if not self._runs_own_agent(ref):
+                    # Its execution returned and only the settlement is left: nothing to stop, and the route's
+                    # agent may already be the NEXT turn's (own-agent runs install it before their claim).
+                    returned = (live.event_stream.execution.get('execution_generation') == generation
+                                and self.executing.get(ref.session_id) != generation)
+                    agent = None if returned else self.agent(ref)
+                    if not returned and not self._runs_own_agent(ref):
                         # Accepted for this exact claim before its turn adopted an agent: whatever agent
                         # the turn adopts for this generation must not run the work as if no Stop arrived.
                         self.pending_stops[ref.session_id] = generation
@@ -1104,10 +1108,29 @@ class SessionAuthority:
             return True
         return False
 
+    async def _refuse_head(self, ref, admission_id, reason):
+        """Settle the queued head a preclaim check refused as cancelled: its waiters get *reason* (the
+        ingress notice, the API's refusal) and its successors revalidate on their own merits."""
+        from gateway.session_runtime_workers import tracked_write
+        try:
+            row = await tracked_write(self, partial(cancel_session_input, self.db, epoch=self.epoch,
+                                                    admission_id=admission_id))
+        except RuntimeStoreError:
+            return False
+        if (row['status'], row['outcome']) != ('terminal', 'cancelled'):
+            return False
+        waiter = self.waiters.pop(admission_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_exception(RuntimeStoreError(reason))
+        self._settle_cancelled(ref, admission_id)
+        from gateway.session_ingress_media import release_admission_media
+        await asyncio.to_thread(release_admission_media, self.db, admission_id)
+        return True
+
     async def _claim_with_retry(self, ref, live):
         """The drain's next ``(row, first)``, waiting out transient storage and a classic turn on the
         route; None when the drain must exit (paused, or stopping with committed rows left queued)."""
-        backoff = 0.0
+        backoff, conflicted = 0.0, None
         while True:
             try:
                 row, first = await self._claim_next(ref, live)
@@ -1117,6 +1140,17 @@ class SessionAuthority:
                     # person's lost turn keeps the FIFO paused for them to resolve.
                     from gateway.session_unattended_unknown import settle_unattended_unknown
                     if await settle_unattended_unknown(self, ref):
+                        continue
+                if exc.reason == 'admission_conflict':
+                    # A verdict on the head alone (its route or binding moved under it) that every drain
+                    # repeats: pausing behind it strands the FIFO for good. Refused only once the same head
+                    # conflicted twice, read after each: never a successor a cancel advanced the FIFO to.
+                    head = next((row['admission_id'] for row in list_session_admissions(
+                        self.db, session_id=ref.session_id) if row['status'] == 'queued'), None)
+                    if head is not None and head != conflicted:
+                        conflicted = head
+                        continue
+                    if head is not None and await self._refuse_head(ref, head, exc.reason):
                         continue
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)

@@ -426,6 +426,7 @@ class CLISessionMixin:
     def show_history(self):
         """Display conversation history."""
         from cli import _cli_visible_print
+        from hermes_cli.cli_agent_setup_mixin import _user_display_text
         if not self.conversation_history:
             if not self._show_recent_sessions(reason="history"):
                 _cli_visible_print(t("cli.session.history_empty"))
@@ -472,7 +473,8 @@ class CLISessionMixin:
             visible_index += 1
 
             content = msg.get("content")
-            content_text = "" if content is None else str(content)
+            # Native image turns hold a parts list: show its text and [image], not the list's repr.
+            content_text = _user_display_text(content)
             preview = content_text[:preview_limit]
             suffix = "..." if len(content_text) > preview_limit else ""
             if role == "user":

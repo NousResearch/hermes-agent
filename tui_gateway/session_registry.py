@@ -171,6 +171,9 @@ def _attach_built_agent(sid: str, current: dict, agent) -> bool:
         if _sessions.get(sid) is not current:
             return False
         current["agent"] = agent
+        if current.get("creation_binding") is not None and "creation_engine" not in current:
+            from .session_creation_binding import EngineCreationBinding
+            current["creation_engine"] = EngineCreationBinding.capture(current["creation_binding"], agent)
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)
     _session_todo_state(current)
@@ -341,7 +344,7 @@ def _init_session(
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
-            "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
+            "agent": agent, "session_key": key, "history": history, "history_lock": threading.RLock(),
             "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
             "running": False, "attached_images": [], "image_counter": 0, "cwd": cwd or _completion_cwd(),
             "explicit_cwd": bool(explicit_cwd), "cols": cols, "slash_worker": None,

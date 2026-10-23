@@ -10,7 +10,7 @@ export interface CapturedLiveStatusRequest {
   scope: LiveStatusScope
   request: <T>() => Promise<T>
 }
-export type CaptureLiveStatusRequest = () => Promise<CapturedLiveStatusRequest>
+export type CaptureLiveStatusRequest = (source?: LiveStatusScope) => Promise<CapturedLiveStatusRequest>
 
 export function normalizeLiveStatusScope(scope: LiveStatusScope | string): LiveStatusScope {
   return typeof scope === 'string' ? { connectionId: null, profile: scope } : scope

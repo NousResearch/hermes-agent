@@ -144,9 +144,9 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
 
   // Capture BEFORE any owner probe/dial awaits. Chrome's nominal profile need
   // not match the focused Bot Chat, and focus may move again before the reply.
-  const captureLiveStatusRequest: CaptureLiveStatusRequest = async () => {
+  const captureLiveStatusRequest: CaptureLiveStatusRequest = async source => {
     const ambientScope = { connectionId: activeGatewayConnectionId(), profile: activeGatewayProfileKey() }
-    const { owner } = await resolveTarget()
+    const { owner } = source ? { owner: source } : await resolveTarget()
 
     const scope: LiveStatusScope = typeof owner === 'object' && owner
       ? { ...owner }

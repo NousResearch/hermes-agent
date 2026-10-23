@@ -86,6 +86,7 @@ import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
+import { type ReconnectStatusSource, unconfirmedReconnectSettles } from './session-reconnect-settles'
 import {
   isSessionOwnerRoute,
   requestForSessionProfile,
@@ -754,7 +755,8 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     if (deferringReconcileUnread) {
       unconfirmedReconnectSettles.set(runtimeId, {
         storedId,
-        scope: deferringReconcileUnread
+        scope: registryBackendScopeKey(deferringReconcileUnread.connectionId, deferringReconcileUnread.profile),
+        source: deferringReconcileUnread
       })
 
       return
@@ -799,16 +801,19 @@ function lightUnreadCompletion(storedId: string, runtimeId?: string) {
 }
 
 /** Primary reconnect claims await a snapshot from the SAME captured source. */
-const unconfirmedReconnectSettles = new Map<string, { storedId: string; scope: string }>()
-let deferringReconcileUnread: string | undefined
+let deferringReconcileUnread: ReconnectStatusSource | undefined
 
 /** Confirm same-source parked claims, including turns never seen by a poll.
  * An empty set retains the old-gateway fallback, but only for its own source. */
 export function confirmReconnectSettlesExcept(workingStoredIds: ReadonlySet<string>, scope = 'default') {
   for (const [runtimeId, pending] of unconfirmedReconnectSettles) {
-    if (pending.scope === scope && !workingStoredIds.has(pending.storedId)) {
+    if (pending.scope === scope) {
       unconfirmedReconnectSettles.delete(runtimeId)
-      lightUnreadCompletion(pending.storedId, runtimeId)
+
+      // A live replacement runtime proves the old parked claim was a blip too.
+      if (!workingStoredIds.has(pending.storedId)) {
+        lightUnreadCompletion(pending.storedId, runtimeId)
+      }
     }
   }
 }
@@ -989,7 +994,7 @@ export function clearAllSessionStates() {
  *  wiring mounted). A PRIMARY reconcile also clears the focused draft
  *  latches, which outlive the state they mirrored; a scoped one leaves them
  *  alone — a background socket says nothing about the primary composer. */
-export function reconcileBusyStatesOnReconnect(scope?: string, primaryScope = registryBackendScopeKey(activeGatewayConnectionId(), activeGatewayProfileKey())) {
+export function reconcileBusyStatesOnReconnect(scope?: string, primarySource: ReconnectStatusSource = { connectionId: activeGatewayConnectionId(), profile: activeGatewayProfileKey() }) {
   const states = $sessionStates.get()
   const focusedRuntimeId = $activeSessionId.get()
   let retiredFocusedTurn = false
@@ -997,7 +1002,7 @@ export function reconcileBusyStatesOnReconnect(scope?: string, primaryScope = re
   // Only the primary socket has a confirm producer for a parked completion
   // (the active profile's `session.active_list` poll); a scoped reconcile
   // lights the dot immediately — see handleTransition.
-  deferringReconcileUnread = scope === undefined ? primaryScope : undefined
+  deferringReconcileUnread = scope === undefined ? { ...primarySource } : undefined
 
   try {
     for (const [runtimeId, state] of Object.entries(states)) {

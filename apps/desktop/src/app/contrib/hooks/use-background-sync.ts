@@ -37,12 +37,14 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
+import { pendingReconnectStatusSources } from '@/store/session-reconnect-settles'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
   confirmReconnectSettlesExcept,
   noteSessionEvent,
+
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setLiveTurnBackend,
@@ -1280,30 +1282,41 @@ export function useBackgroundSync({
       }
 
       inFlight = true
-      const stateAtRequest = $sessionStates.get()
-      let captured: CapturedLiveStatusRequest | undefined
+      const requestedScopes = new Set<string>()
+
+      const refreshSource = async (source?: LiveStatusScope) => {
+        const stateAtRequest = $sessionStates.get()
+        let captured: CapturedLiveStatusRequest | undefined
+
+        try {
+          captured = await captureLiveStatusRequest(source)
+
+          const key = liveStatusScopeKey(captured.scope)
+
+          if (cancelled || requestedScopes.has(key)) { return }
+
+          requestedScopes.add(key)
+
+          const response = await captured.request<LiveSessionStatusResponse>()
+
+          if (!cancelled) {
+            rehydrateLiveSessionStatuses(response, Date.now(), captured.scope, stateAtRequest)
+          }
+        } catch {
+          // An old gateway cannot confirm a parked claim. Fall back only for
+          // this exact source; a failure elsewhere says nothing about it.
+          const failedSource = captured?.scope ?? source
+
+          if (!cancelled && failedSource) {
+            confirmReconnectSettlesExcept(new Set(), liveStatusScopeKey(failedSource))
+          }
+        }
+      }
 
       try {
-        captured = await captureLiveStatusRequest()
-
-        if (cancelled) {
-          return
-        }
-
-        const response = await captured.request<LiveSessionStatusResponse>()
-
-        if (!cancelled) {
-          rehydrateLiveSessionStatuses(response, Date.now(), captured.scope, stateAtRequest)
-        }
-      } catch {
-        // Older gateways may not expose session.active_list. Live stream events
-        // still work as before; leave the current sidebar state untouched —
-        // except completions the reconnect reconcile parked awaiting this
-        // snapshot: with no snapshot to confirm them they light now (the
-        // pre-#113029 behaviour) rather than never.
-        if (!cancelled && captured) {
-          confirmReconnectSettlesExcept(new Set(), liveStatusScopeKey(captured.scope))
-        }
+        // Parked primary claims must not wait forever behind another Bot Chat.
+        // Each source gets its own RPC and ledger; no session lists are merged.
+        await Promise.all([refreshSource(), ...pendingReconnectStatusSources().map(source => refreshSource(source))])
       } finally {
         inFlight = false
 

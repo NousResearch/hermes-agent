@@ -6,7 +6,8 @@ import { group } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $changeEventsAvailable, $sessionsChangeTick } from '@/store/live-sync'
 import { $activeSessionId, $unreadFinishedSessionIds, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
-import { $sessionStates, clearAllSessionStates, reconcileBusyStatesOnReconnect } from '@/store/session-states'
+import { pendingReconnectStatusSources } from '@/store/session-reconnect-settles'
+import { $sessionStates, clearAllSessionStates, confirmReconnectSettlesExcept, reconcileBusyStatesOnReconnect } from '@/store/session-states'
 
 import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking, useBackgroundSync } from './use-background-sync'
 
@@ -36,6 +37,17 @@ function mount() {
     updateSessionState: vi.fn() as never
   }))
 }
+
+it('confirms a parked primary completion while another profile stays focused', async () => {
+  rehydrateLiveSessionStatuses(working('rt-primary'), Date.now(), { connectionId: 'local', profile: 'default' })
+  reconcileBusyStatesOnReconnect(undefined, { connectionId: 'local', profile: 'default' })
+  focus('focus-b', 'local', 'probe-x')
+  transport.request.mockResolvedValue({ sessions: [] })
+  mount()
+  await act(async () => undefined)
+  expect(transport.request.mock.calls.map(call => call.slice(0, 2))).toContainEqual(['local', 'default'])
+  expect($unreadFinishedSessionIds.get()).toContain('shared-stored-id')
+})
 
 const working = (id: string) => ({ sessions: [{ id, session_key: 'shared-stored-id', status: 'working' as const }] })
 
@@ -118,17 +130,67 @@ it('pins a remote target-profile override for both dispatch and absence tracking
 })
 
 it.each([false, true])('only confirms parked reconnect completions from the captured scope (RPC fails: %s)', async fails => {
-  rehydrateLiveSessionStatuses(working('rt-primary'))
-  reconcileBusyStatesOnReconnect()
+  const source = { connectionId: 'local', profile: 'default' }
+  rehydrateLiveSessionStatuses(working('rt-primary'), Date.now(), source)
+  reconcileBusyStatesOnReconnect(undefined, source)
   expect($unreadFinishedSessionIds.get()).toEqual([])
   focus('focus-b', 'other-connection', 'default')
+  let finishPrimary!: (response: { sessions: [] }) => void
+  transport.request.mockImplementation((connection: string) => {
+    if (connection === 'local') { return new Promise(resolve => { finishPrimary = resolve }) }
 
-  if (fails) {transport.request.mockRejectedValue(new Error('method not found'))}
-  else {transport.request.mockResolvedValue(working('rt-other'))}
+    return fails ? Promise.reject(new Error('method not found')) : Promise.resolve(working('rt-other'))
+  })
 
   mount()
   await act(async () => undefined)
   expect($unreadFinishedSessionIds.get()).toEqual([])
-  rehydrateLiveSessionStatuses({ sessions: [] })
+  await act(async () => { finishPrimary({ sessions: [] }) })
+  expect($unreadFinishedSessionIds.get()).toContain('shared-stored-id')
+})
+
+it.each(['rt-old', 'rt-new'])('retires the old parked runtime when the same source reports %s still working', async runtimeId => {
+  const source = { connectionId: 'local', profile: 'default' }
+  rehydrateLiveSessionStatuses(working('rt-old'), Date.now(), source)
+  reconcileBusyStatesOnReconnect(undefined, source)
+  focus('focus-b', 'local', 'probe-x')
+  transport.request.mockImplementation(async (_connection, profile) => profile === 'default' ? working(runtimeId) : { sessions: [] })
+  mount()
+  await act(async () => undefined)
+  expect(transport.request.mock.calls.map(call => call.slice(0, 2))).toContainEqual(['local', 'default'])
+  expect($sessionStates.get()[runtimeId]?.busy).toBe(true)
+  expect($unreadFinishedSessionIds.get()).toEqual([])
+  expect(pendingReconnectStatusSources()).toEqual([])
+  // A later fallback must not resurrect the old runtime's parked completion.
+  confirmReconnectSettlesExcept(new Set(), 'conn:local::default')
+  expect($unreadFinishedSessionIds.get()).toEqual([])
+})
+
+it.each(['method not found', 'request timed out'])('falls back for a pending source only after its own %s', async message => {
+  const source = { connectionId: 'local', profile: 'default' }
+  rehydrateLiveSessionStatuses(working('rt-primary'), Date.now(), source)
+  reconcileBusyStatesOnReconnect(undefined, source)
+  focus('focus-b', 'local', 'probe-x')
+  transport.request.mockImplementation(async (_connection, profile) => {
+    if (profile === 'default') { throw new Error(message) }
+
+    return working('rt-other')
+  })
+  mount()
+  await act(async () => undefined)
+  expect($unreadFinishedSessionIds.get()).toContain('shared-stored-id')
+  expect($sessionStates.get()['rt-other']?.busy).toBe(true)
+  expect(pendingReconnectStatusSources()).toEqual([])
+})
+
+it('deduplicates the focused source when it is also awaiting reconnect confirmation', async () => {
+  const source = { connectionId: 'local', profile: 'default' }
+  rehydrateLiveSessionStatuses(working('rt-primary'), Date.now(), source)
+  reconcileBusyStatesOnReconnect(undefined, source)
+  focus('focus-a', 'local', 'default')
+  transport.request.mockResolvedValue({ sessions: [] })
+  mount()
+  await act(async () => undefined)
+  expect(transport.request).toHaveBeenCalledTimes(1)
   expect($unreadFinishedSessionIds.get()).toContain('shared-stored-id')
 })

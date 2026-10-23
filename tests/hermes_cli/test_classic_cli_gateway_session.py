@@ -76,6 +76,13 @@ def test_a_new_session_gets_the_show_reasoning_flag(gateway):
     assert client.reasoning_sets() == [(SID, "1"), ("local-new", "1")]
 
 
+def test_a_hidden_viewer_resuming_a_session_turns_its_reasoning_flag_off(gateway):
+    conn, client = gateway
+    agent = GatewayAgent(connection=conn, session_id=SID)
+    agent.session_id = "local-shown"  # /resume of a session another viewer left showing reasoning
+    assert ("local-shown", "0") in client.reasoning_sets()
+
+
 def test_a_restarted_gateway_gets_the_flag_again_before_the_next_turn(gateway):
     conn, client = gateway
     agent = GatewayAgent(connection=conn, session_id=SID, reasoning_callback=print)

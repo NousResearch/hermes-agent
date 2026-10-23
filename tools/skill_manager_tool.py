@@ -12,6 +12,7 @@ import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -110,7 +111,6 @@ MAX_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')  # filesystem-safe, URL-friendly
-ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}  # for write_file/remove_file
 _FRONTMATTER_END_RE = re.compile(r'\n---\s*\n')
 _NAME_RULE = "Use lowercase letters, numbers, hyphens, dots, and underscores."
 
@@ -353,23 +353,42 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
 
 
 def _validate_file_path(file_path: str) -> Optional[str]:
-    """Validate a write_file/remove_file path: under an allowed subdir, no escape."""
+    """Validate a write_file/remove_file path: any relative file path inside the skill
+    (agentskills.io allows any files and directories beside SKILL.md); no escape, no hidden
+    components."""
     from tools.path_security import has_traversal_component
-    if not file_path:
+    parts = Path(file_path or "").parts  # '.' and './' collapse to () too
+    if not parts:
         return "file_path is required."
-    parts = Path(file_path).parts
+    if Path(file_path).is_absolute():
+        return f"file_path must be relative to the skill directory. Got: '{file_path}'"
     # Traversal first, so the SKILL.md exception is unreachable by a traversal-laden path.
     if has_traversal_component(file_path):
         return "Path traversal ('..') is not allowed."
+    # A skill dir can be its own git checkout: writes must never reach .git/ or dotfiles.
+    if any(p.startswith(".") for p in parts):
+        return f"Hidden files and directories are not writable. Got: '{file_path}'"
     # SKILL.md lives at the skill root; accept 'SKILL.md' and '<skill>/SKILL.md'.
-    if parts and parts[-1] == "SKILL.md" and len(parts) in (1, 2):
+    if parts[-1] == "SKILL.md" and len(parts) in (1, 2):
         return None
-    if not parts or parts[0] not in ALLOWED_SUBDIRS:
-        allowed = ", ".join(sorted(ALLOWED_SUBDIRS))
-        return f"File must be under one of: {allowed}. Got: '{file_path}'"
-    if len(parts) < 2:
-        return f"Provide a file path, not just a directory. Example: '{parts[0]}/myfile.md'"
+    # Skill scanners walk every subdir but the support dirs for these names, so a nested copy
+    # would surface as a phantom skill or category description; 'skill.md' would also alias
+    # SKILL.md on a case-insensitive filesystem.
+    if parts[-1].lower() in ("skill.md", "description.md"):
+        return (f"'{parts[-1]}' is reserved for skill index files; use 'SKILL.md' for the main "
+                f"file. Got: '{file_path}'")
     return None
+
+
+def _visible_skill_files(skill_dir: Path) -> list[str]:
+    """Skill-relative paths of every file but SKILL.md, skipping hidden entries (and so never
+    walking a skill's own .git/)."""
+    found = []
+    for root, dirs, files in os.walk(skill_dir):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        rel_root = Path(root).relative_to(skill_dir)
+        found += [(rel_root / f).as_posix() for f in sorted(files) if not f.startswith(".")]
+    return [f for f in found if f != "SKILL.md"]
 
 
 def _resolve_supporting_file(skill_dir: Path, file_path: str):
@@ -378,6 +397,8 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
     from tools.path_security import validate_within_dir
     target = skill_dir / (file_path or "")
     err = _validate_file_path(file_path) or validate_within_dir(target, skill_dir)
+    if not err and target.is_dir():
+        err = f"'{file_path}' is a directory; provide a file path, e.g. '{file_path.rstrip('/')}/<file>'."
     return (None, _err(err)) if err else (target, None)
 
 
@@ -637,8 +658,7 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     if err:
         return err
     if not target.exists():  # list what IS there so the model can pick the right path
-        available = [str(f.relative_to(skill_dir)) for subdir in ALLOWED_SUBDIRS
-                     if (skill_dir / subdir).exists() for f in (skill_dir / subdir).rglob("*") if f.is_file()]
+        available = _visible_skill_files(skill_dir)
         return _err(f"File '{file_path}' not found in skill '{name}'.", available_files=available or None)
     if read_guard := _background_review_read_before_write_guard(name, target, "remove_file", file_path):
         return read_guard
@@ -845,8 +865,8 @@ _NEW_STRING = {"type": "string", "description": "Replacement; empty string delet
 _FILE_PATH = {
     "type": "string",
     "description": (
-        "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' — no leading "
-        "slash, never absolute; first segment references/, templates/, scripts/, or assets/."
+        "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' or 'CHANGELOG.md' "
+        "— no leading slash, never absolute, no hidden paths (.git/, dotfiles)."
     ),
 }  # stated once (write_file); patch/remove_file point at it
 

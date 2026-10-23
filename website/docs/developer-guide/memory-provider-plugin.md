@@ -90,6 +90,7 @@ Your plugin implements the `MemoryProvider` abstract base class from `agent/memo
 
 ```python
 from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -98,7 +99,7 @@ class MyMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         """Check if this provider can activate. NO network calls."""
-        return bool(os.environ.get("MY_API_KEY"))
+        return bool(get_secret("MY_API_KEY"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Called once at agent startup.
@@ -106,7 +107,7 @@ class MyMemoryProvider(MemoryProvider):
         kwargs always includes:
           hermes_home (str): Active HERMES_HOME path. Use for storage.
         """
-        self._api_key = os.environ.get("MY_API_KEY", "")
+        self._api_key = get_secret("MY_API_KEY") or ""
         self._session_id = session_id
 
     # ... implement remaining methods
@@ -188,13 +189,29 @@ identity should skip destructive mirroring when it is absent.
 
 ### Oversized prefetch results
 
-External `prefetch()` results above the configured spill threshold are written
-to a private spill file and replaced with the configured head/tail preview.
-The preview includes the path so the agent can read the full result when it is
-actually needed. Results at or below the threshold are returned unchanged.
+External `prefetch()` results are returned in full by default, preserving the
+provider's relevance-ranked recall, up to a safety ceiling of 10×
+`hooks.output_spill.max_chars` (at least 100,000 characters) above which they
+still spill. Keep your own recall budget well under that. To opt into spilling oversized results for
+the active profile, set:
 
-This uses the shared `hooks.output_spill` settings (`10,000` characters by
-default); see [Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
+```yaml
+memory:
+  prefetch_spill_enabled: true  # default: false
+```
+
+When enabled, results above the shared `hooks.output_spill.max_chars` threshold
+(default `10,000` characters) are written to a private spill file and replaced
+with the configured head/tail preview plus its path. The default preview keeps
+only the first and last `500` characters; the model must read the file to recover
+the middle. Results at or below the threshold remain unchanged.
+
+The shared `hooks.output_spill` preview lengths and directory still apply, and
+`hooks.output_spill.enabled: false` disables spilling even with memory opt-in.
+Both settings are snapshotted when the external provider is registered; restart
+Hermes to apply changes to existing sessions. Built-in memory and normal
+plugin-hook spilling are unaffected. See
+[Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
 
 ## Pre-Compress Checkpoints (fail-closed)
 
@@ -319,7 +336,7 @@ def get_config_schema(self):
 Fields with `secret: True` and `env_var` go to `.env`. Non-secret fields are passed to `save_config()`.
 
 :::tip Minimal vs Full Schema
-Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the Supermemory provider for an example — it only prompts for the API key; all other options live in `supermemory.json`.
+Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the [Supermemory provider](https://github.com/supermemoryai/hermes-supermemory) (a plugin catalog entry) for an example — it only prompts for the API key; all other options live in `supermemory.json`.
 :::
 
 ## Save Config
@@ -411,13 +428,25 @@ workspace data.
 All storage paths **must** use the `hermes_home` kwarg from `initialize()`, not hardcoded `~/.hermes`:
 
 ```python
-# CORRECT — profile-scoped
-from hermes_constants import get_hermes_home
-data_dir = get_hermes_home() / "my-provider"
+# CORRECT — profile-scoped, bound on the instance
+def initialize(self, session_id, **kwargs):
+    self._data_dir = Path(kwargs["hermes_home"]) / "my-provider"
 
 # WRONG — shared across all profiles
 data_dir = Path("~/.hermes/my-provider").expanduser()
 ```
+
+### Multiplexed gateways
+
+One gateway process can serve several profiles at once, and their turns run concurrently on different threads. Each agent gets its own `MemoryManager` and its own provider instance, initialized for one profile. Your provider must:
+
+- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's manager already bound, and logs `memory_provider_instance_shared`.
+- **Bind from `initialize()`.** Derive every store, path, client, bank and tenant from the `hermes_home` keyword (and secrets read through `get_secret()` during `initialize`), and keep that binding on `self`.
+- **Keep nothing profile-specific at module or class level.** No global "current store", and no rebinding a shared binding on each call. Two profiles' calls interleave, so a per-call rebind races.
+
+The manager enforces the other half. It runs tool calls and every lifecycle hook (`prefetch`, `queue_prefetch`, `sync_turn`, `on_memory_write`, `on_session_end`, …) only from the profile the instance was initialized for. On a multiplexed gateway a caller that names no profile is refused, and the refusal is logged as `memory_caller_profile_unresolved` in the profile's `errors.log` (`hermes logs errors`) and in `gateway.log`. Background hooks run under the owning profile's `HERMES_HOME`. `handle_tool_call(..., **kwargs)` also receives `hermes_home`, `agent_identity` and `caller_gsk`. They name the profile your instance is already bound to, so you can assert on them, but don't rebind from them.
+
+Hermes can't verify a provider's internals. A provider that keeps a process-wide binding still mixes profiles' memories, even with these checks in place.
 
 ## Testing
 
@@ -480,7 +509,7 @@ def register_cli(subparser) -> None:
 
 ### Reference implementation
 
-See `plugins/memory/honcho/cli.py` for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
+See the Honcho plugin's [`cli.py`](https://github.com/plastic-labs/honcho/blob/main/hermes-plugin-honcho/cli.py) for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
 
 ### Directory structure with CLI
 

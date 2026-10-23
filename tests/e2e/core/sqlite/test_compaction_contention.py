@@ -239,7 +239,7 @@ def test_compaction_episode(rig, fault):
     try:
         _agent(rig, gw, sid=gw_sid, tag="g", turns=5)
         _agent(rig, tui, sid=tui_sid, tag="t", turns=5, compress_at=3, keep=2, env=rig.tui_env)
-        micro = [e for e in ch.events(gw) if e.get("event") == "ready"][0]["micro"]
+        micro = next(e for e in ch.events(gw) if e.get("event") == "ready")["micro"]
         assert micro, f"{ctx} gateway agent did not load micro_compact from its config"
         ch.spawn("writer", plain, tag="p", sessions=[f"{fault}-plain"], source="telegram", pace=0.01)
         ch.spawn("reader", reader, pace=0.05)

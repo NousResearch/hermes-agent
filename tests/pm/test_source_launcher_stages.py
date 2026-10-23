@@ -78,7 +78,7 @@ exit 0
     env['PATHEXT'] = '.COM;.EXE;.BAT;.CMD'
     env.pop('UV_PYTHON_INSTALL_DIR', None)
     result = subprocess.run([str(powershell), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(wrapper)],
-                            cwd=tmp_path, env=env, capture_output=True, timeout=90)
+                            cwd=tmp_path, env=env, capture_output=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert b'REACHED_PATH_PUBLICATION' in result.stdout
     assert calls.read_text(encoding='utf-8-sig').splitlines() == [
@@ -89,7 +89,7 @@ exit 0
         child_env = dict(env)
         child_env.pop('HERMES_HOME', None)
         child = subprocess.run([str(command), 'from-powershell'], cwd=tmp_path, env=child_env,
-                               capture_output=True, text=True, encoding='utf-8', timeout=30)
+                               capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
         assert child.returncode == 7, child.stdout + child.stderr
         witness = json.loads(child.stdout)
         assert witness['value'] == 11 and witness['argv'] == ['from-powershell']

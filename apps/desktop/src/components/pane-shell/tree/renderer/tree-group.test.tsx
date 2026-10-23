@@ -1,10 +1,12 @@
+import { fireEvent, screen } from '@testing-library/react'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { $tabStripDefault, setTabStripDefault } from '@/store/tabstrip-prefs'
-import { stubResizeObserver } from '@/test/jsdom'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import type { GroupNode } from '../model'
 import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
@@ -23,7 +25,7 @@ function render(ui: ReactNode) {
   }
 
   act(() => {
-    root!.render(ui)
+    root!.render(<MemoryRouter>{ui}</MemoryRouter>)
   })
 }
 
@@ -325,5 +327,39 @@ describe('TreeGroup', () => {
         expect(sheet()).not.toBeNull()
       })
     })
+  })
+
+  // #92500: a zone with no visible header (strip hidden) strands its pane with
+  // no Close anywhere on screen. The BODY must serve the same right-click zone
+  // menu the strip carries, so Close/Minimize stay reachable from the pane's
+  // own content.
+  it('opens the zone menu from ordinary pane body content', () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { height: '12rem' },
+      id: 'terminal',
+      render: () => <div>Terminal</div>,
+      title: 'Terminal'
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    stubMenuDomApis()
+
+    render(<TreeGroup node={terminalGroup(false)} parentAxis="column" />)
+
+    const body = globalThis.document.querySelector(`[data-zone-body="terminal-zone"] .relative.min-h-0`)
+
+    expect(body).not.toBeNull()
+
+    // Radix opens the ContextMenu from the contextmenu event; the pointerdown
+    // that precedes a real right-click only matters for touch/pen long-press.
+    fireEvent.contextMenu(body!, { button: 2 })
+
+    // The zone's own Close (plus the terminal pane's domain menu may carry its
+    // own close-flavored row) — what matters is that the BODY opens A menu
+    // offering a Close verb.
+    expect(screen.getAllByRole('menuitem', { name: /close/i }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('menuitem', { name: /new (chat|session)/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /settings/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /update/i })).toBeTruthy()
   })
 })

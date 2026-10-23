@@ -39,3 +39,24 @@ function Get-SourceHermesForStartup([string]$Root) {
     if (Test-Path -LiteralPath $legacy -PathType Leaf) { return $legacy }
     throw "No installed Hermes command to start under $Root"
 }
+
+# Official source checkouts default to the stable channel (the latest published
+# vX.Y.Z), and these fixtures publish commits on main, not releases: a fresh
+# install at HEAD is newer than the latest release and correctly waits, so the
+# HEAD -> NEXT legs would find no update. Record `main` for the install BEFORE
+# the user-state snapshot (config.yaml is part of the baseline). Releases that
+# predate --set-channel follow main already.
+function Set-SourceMainChannel([string]$Root) {
+    $exe = Get-SourceHermes $Root
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try {
+        $help = & $exe update --help 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "update --help failed: $help" }
+        if ($help -notmatch '--set-channel') { return }
+        $out = & $exe update --set-channel main 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "could not record the main update channel: $out" }
+        Write-Host "  $($out.Trim())"
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}

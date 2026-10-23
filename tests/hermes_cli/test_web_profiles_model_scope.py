@@ -12,9 +12,9 @@ secrets) around both the validate and save spans.
 import pytest
 
 pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from agent import secret_scope  # noqa: E402
+from agent import secret_scope
 
 ACME_YAML = (
     "custom_providers:\n"

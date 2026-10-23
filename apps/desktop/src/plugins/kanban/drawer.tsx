@@ -232,7 +232,15 @@ function WorkspaceValue({ kind, path }: { kind: null | string | undefined; path:
 /** The dashboard's diagnostics panel: severity-toned, plain-English, with the
  *  backend's structured recovery actions as buttons. `reassign` is skipped —
  *  the Assignee control in the meta table IS that action, inline. */
-function Diagnostics({ items, onReclaim, onUnblock }: { items: Diagnostic[]; onReclaim: () => void; onUnblock: () => void }) {
+function Diagnostics({
+  items,
+  onReclaim,
+  onUnblock
+}: {
+  items: Diagnostic[]
+  onReclaim: () => void
+  onUnblock: () => void
+}) {
   const k = useKanban()
 
   const act = (action: DiagnosticAction) => {
@@ -250,7 +258,10 @@ function Diagnostics({ items, onReclaim, onUnblock }: { items: Diagnostic[]; onR
     <div className="flex flex-col gap-2">
       {items.map(diag => {
         const tone = SEVERITY_TONE[diag.severity]
-        const actions = diag.actions.filter(action => action.kind === 'reclaim' || action.kind === 'unblock' || action.kind === 'cli_hint')
+
+        const actions = diag.actions.filter(
+          action => action.kind === 'reclaim' || action.kind === 'unblock' || action.kind === 'cli_hint'
+        )
 
         return (
           <Callout
@@ -1050,7 +1061,12 @@ export function TaskDrawer({
                       <Diagnostics
                         items={task.diagnostics}
                         onReclaim={() => void mutate(() => reclaimTask(task.id))()}
-                        onUnblock={() => void mutate(() => patchTask(task.id, { status: 'ready' }), () => host.notify({ kind: 'success', message: k.unblockedMessage(shortId(task.id)) }))()}
+                        onUnblock={() =>
+                          void mutate(
+                            () => patchTask(task.id, { status: 'ready' }),
+                            () => host.notify({ kind: 'success', message: k.unblockedMessage(shortId(task.id)) })
+                          )()
+                        }
                       />
                     </Section>
                   )}

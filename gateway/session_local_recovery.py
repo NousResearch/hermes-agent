@@ -1,5 +1,6 @@
 """Restore only private, profile-bound local policy into the existing authority."""
 import asyncio
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -361,6 +362,19 @@ _BOOT_RECEIPTS_SQL = (
     "OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = substr(m.key, ?) "
     "AND a.status IN ('queued','started','unknown')) "
     "OR EXISTS (SELECT 1 FROM state_meta c WHERE c.key = ? || substr(m.key, ?)))")
+
+
+def restore_completion_route(runner, session_key):
+    """Background work that outlived its local session reports after a restart: boot left that ended
+    session unrestored, so restore it first, as ``authorize`` does on a viewer's first touch, and its
+    completion is noted on it as before. Anything else is left to the delivery's own checks."""
+    from gateway.run import _parse_session_key
+    from gateway.session_authorities import active_authority
+    authority, parsed = active_authority(runner), _parse_session_key(session_key) or {}
+    if authority is None or parsed.get('platform') != Platform.LOCAL.value or parsed['chat_id'] in authority.sessions:
+        return
+    with contextlib.suppress(RuntimeStoreError):
+        restore_local_session(authority, parsed['chat_id'])
 
 
 def local_receipt_ids(authority):

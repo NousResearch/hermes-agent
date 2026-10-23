@@ -182,6 +182,39 @@ async def test_boot_restores_only_open_sessions_and_an_ended_one_on_first_touch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('producer', ['delegation', 'process'])
+async def test_work_finishing_after_close_and_restart_is_noted_on_the_ended_session(tmp_path, monkeypatch, producer):
+    """Boot leaves ended sessions unrestored, but not one whose background work has not reported yet."""
+    from hermes_state_local import end_idle_local_session
+    from tests.gateway.test_completion_admission import pending
+    from tests.gateway.test_session_end_delegations import _local
+    from tests.gateway.test_unviewed_completion_notes import _delegation_note, _process_event, _restart, _target
+    import tools.async_delegation as delegation
+
+    delegation._reset_for_tests()
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+    if producer == 'delegation':
+        evt = dict(pending(route, 'deleg_late'), parent_session_id=target)
+    else:
+        evt = _process_event(authority, ref, target, 'proc_late')
+    assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
+                                  target_id=target, reason='cli_close')
+    runner, authority = await _restart(tmp_path, monkeypatch, authority)
+    try:
+        if producer == 'delegation':
+            assert await runner._deliver_async_delegation_group([evt]) is True
+        else:
+            assert await runner._deliver_completion_notification('[finished] RESULT_proc_late', evt) is True
+        await authority._drain(ref)
+        assert len(_delegation_note(authority, target, evt.get('delegation_id', 'proc_late'))) == 1
+        assert authority.db.get_session(target)['end_reason'] == 'cli_close'
+    finally:
+        authority.db.close()
+        delegation._reset_for_tests()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('viewer_returns', [False, True])
 async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path, monkeypatch, viewer_returns):
     from gateway.session_local_recovery import recover_local_sessions
@@ -289,6 +322,31 @@ async def test_a_dropped_viewer_expands_the_grace_against_its_own_profile(tmp_pa
     viewer, _ = await _attach(authority, _create(authority).session_id)
     await viewer.close()
     assert [delay for delay, _ in armed] == [7.0]
+
+
+@pytest.mark.asyncio
+async def test_a_sibling_torn_down_with_the_shared_socket_reads_its_own_grace(tmp_path, monkeypatch):
+    """A shared socket's close tears its sibling connections down under the primary profile's scope;
+    each still detaches as its own owner, so the sibling's grace expands against its own ``.env``."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import get_hermes_home
+
+    armed = _capture_timers(monkeypatch)
+    home, primary = get_hermes_home(), tmp_path / 'primary'
+    primary.mkdir()
+    (home / 'config.yaml').write_text('sessions:\n  orphan_end_grace_s: ${ORPHAN_GRACE}\n')
+    (home / '.env').write_text('ORPHAN_GRACE=900\n')
+    (primary / '.env').write_text('ORPHAN_GRACE=1\n')
+    sibling, _ = await _owner(home, monkeypatch)  # profile id, store and config share one home
+    sibling.runner.config = SimpleNamespace(multiplex_profiles=True)
+    viewer, _ = await _attach(sibling, _create(sibling).session_id)
+
+    token = set_secret_scope(build_profile_secret_scope(primary), profile_home=str(primary))
+    try:
+        await viewer.close()  # reached from the primary connection's close: its scope is bound
+    finally:
+        reset_secret_scope(token)
+    assert [delay for delay, _ in armed] == [900.0]
 
 
 @pytest.mark.asyncio

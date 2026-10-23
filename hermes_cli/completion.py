@@ -94,13 +94,29 @@ _hermes_completion() {{
         return
     fi
 
-    if [[ $COMP_CWORD -ge 2 ]]; then
-        case "${{COMP_WORDS[1]}}" in
+    # Profile selection is stripped before argparse; it is not a subcommand.
+    local command_index=1
+    while [[ $command_index -lt $COMP_CWORD ]]; do
+        case "${{COMP_WORDS[command_index]}}" in
+            -p|--profile)
+                if [[ "${{COMP_WORDS[command_index+1]}}" == "=" ]]; then
+                    ((command_index += 3))
+                else
+                    ((command_index += 2))
+                fi
+                ;;
+            --profile=*) ((command_index += 1)) ;;
+            *) break ;;
+        esac
+    done
+
+    if [[ $COMP_CWORD -gt $command_index ]]; then
+        case "${{COMP_WORDS[command_index]}}" in
 {cases_str}
         esac
     fi
 
-    if [[ $COMP_CWORD -eq 1 ]]; then
+    if [[ $COMP_CWORD -eq $command_index ]]; then
         COMPREPLY=($(compgen -W "{top_cmds}" -- "$cur"))
     fi
 }}

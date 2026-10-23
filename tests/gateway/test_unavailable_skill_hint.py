@@ -100,3 +100,32 @@ def test_unknown_command_still_returns_none(
         assert gateway_run._check_unavailable_skill("no-such-skill") is None
 
 
+@pytest.mark.parametrize("disabled", [True, False], ids=["disabled", "optional"])
+def test_unavailable_underscore_skill_has_actionable_hint(
+    tmp_skills: Path, tmp_path: Path, disabled: bool
+) -> None:
+    """Both the original slug and Telegram menu alias identify the unavailable skill."""
+    from gateway import run as gateway_run
+
+    optional_root = tmp_path / "optional-skills"
+    if not disabled:
+        _write_skill(optional_root, "research/a-sibling", "spec-driven")
+    _write_skill(tmp_skills if disabled else optional_root, "research/__spec-driven", "__spec-driven")
+
+    with patch(
+        "tools.skills_tool._get_disabled_skill_names",
+        return_value={"__spec-driven"} if disabled else set(),
+    ), patch(
+        "agent.skill_utils.get_all_skills_dirs", return_value=[tmp_skills]
+    ), patch(
+        "hermes_constants.get_optional_skills_dir", return_value=optional_root
+    ):
+        for command in ("__spec-driven", "spec_driven"):
+            msg = gateway_run._check_unavailable_skill(command)
+            assert msg is not None
+            if disabled:
+                assert "disabled" in msg.lower()
+                assert "hermes skills config" in msg
+            else:
+                assert "available but not installed" in msg
+                assert "hermes skills install official/research/__spec-driven" in msg

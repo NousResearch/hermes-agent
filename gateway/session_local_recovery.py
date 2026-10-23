@@ -351,19 +351,36 @@ def reset_local_session(store, old_entry, session_id, now, display_name):
     return entry
 
 
+# The receipts boot restores: an open row (or one compressed away, for its catch-up), unsettled input
+# or a stored close. An ended session keeps its receipt and stays resumable; ``authorize`` restores it
+# on first touch, so the live registry no longer grows with every session ever opened (#143547 LC-36).
+_BOOT_RECEIPTS_SQL = (
+    "SELECT m.key FROM state_meta m LEFT JOIN sessions s "
+    "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
+    "WHERE m.key LIKE ? AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
+    "OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = substr(m.key, ?) "
+    "AND a.status IN ('queued','started','unknown')) "
+    "OR EXISTS (SELECT 1 FROM state_meta c WHERE c.key = ? || substr(m.key, ?)))")
+
+
 def local_receipt_ids(authority):
+    from gateway.session_viewer_close import CLOSE_PREFIX
+    start = len(POLICY_PREFIX) + 1
     with authority.db._read_ctx() as conn:
         return [row[0][len(POLICY_PREFIX):] for row in conn.execute(
-            'SELECT key FROM state_meta WHERE key LIKE ?', (POLICY_PREFIX + '%',))]
+            _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '%', start, CLOSE_PREFIX, start))]
 
 
 def recover_local_sessions(authority, *, schedule=False):
+    idle = []
     for sid in local_receipt_ids(authority):
         try:
             ref = restore_local_session(authority, sid)
             pending = list_session_admissions(authority.db, session_id=sid)
             if schedule and pending and not any(row['status'] == 'unknown' for row in pending):
                 authority._schedule(ref)
+            if not pending:
+                idle.append(sid)
         except (_ReceiptRefused, _CatchUpPending):
             continue  # logged: the check that refused it, or the catch-up handed to a worker
         except RuntimeStoreError as exc:
@@ -377,3 +394,5 @@ def recover_local_sessions(authority, *, schedule=False):
             if any(row['status'] == 'unknown' for row in list_session_admissions(authority.db, session_id=sid)):
                 # A hard-killed owner's turn: the drain pauses on it, so the close resolves it.
                 track_mutation(authority, settle_viewer_close(authority, sid))
+        from gateway.session_viewer_close import arm_startup_orphan_closes
+        arm_startup_orphan_closes(authority, idle)

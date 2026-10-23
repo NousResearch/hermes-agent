@@ -1194,6 +1194,16 @@ platform sessions (Telegram, Discord, …), TUI/desktop sessions, pinned
 sessions, and sessions with a live turn or compression in progress are
 never closed by this sweep.
 
+**Local sessions nobody closed.** A CLI, TUI or Desktop session whose last
+viewer disappeared without closing it (a killed terminal, a dropped connection,
+or a gateway stop or restart while it was open) is ended by the gateway
+`sessions.orphan_end_grace_s` seconds later (default `300`; `0` never ends it),
+`end_reason: ws_orphan_reap` (or `startup_orphan_reap` after a restart). A turn
+still running keeps running, and the session ends once it settles; one paused on
+an interrupted turn stays open until you Discard it. A viewer that reconnects
+within the grace keeps the session open. Ending is non-destructive: the session
+stays resumable, and its next message reopens it on the same id.
+
 ### Oversized-Transcript Guards
 
 Two limits stop a runaway transcript from being loaded into memory all at once

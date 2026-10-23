@@ -38,6 +38,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 
 import {
   $boardSlug,
+  ALL_BOARDS,
   boardsKey,
   createBoard,
   deleteBoard,
@@ -335,9 +336,11 @@ export function BoardSwitcher() {
     return null
   }
 
+  const allBoards = slug === ALL_BOARDS
   const currentSlug = slug || boards.current
   const current = boards.boards.find(meta => meta.slug === currentSlug)
-  const label = current?.name || current?.slug || k.board
+  const total = boards.boards.reduce((sum, meta) => sum + (meta.total ?? 0), 0)
+  const label = allBoards ? k.allBoards : current?.name || current?.slug || k.board
 
   return (
     <>
@@ -353,14 +356,20 @@ export function BoardSwitcher() {
               <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="project" size="0.8125rem" />
               <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{k.board}</span>
               <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
-              {typeof current?.total === 'number' && (
-                <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
+              {(allBoards || typeof current?.total === 'number') && (
+                <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{allBoards ? total : current?.total}</span>
               )}
               <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
             </Button>
           </DropdownMenuTrigger>
         </Tip>
         <DropdownMenuContent align="center">
+          <DropdownMenuItem onSelect={() => $boardSlug.set(ALL_BOARDS)}>
+            {k.allBoards}
+            <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{total}</span>
+            {allBoards && <Codicon className="ml-auto" name="check" size="0.8rem" />}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           {boards.boards.map(meta => (
             <DropdownMenuItem
               key={meta.slug}

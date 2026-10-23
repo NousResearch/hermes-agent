@@ -53,6 +53,9 @@ let os: null | PluginOs = null
 /** Selected board slug ('' = the server's current board). Persisted. */
 export const $boardSlug = atom<string>('')
 
+/** A client-only selection; it is never sent as a backend board slug. */
+export const ALL_BOARDS = '__all_boards__'
+
 /** Whether the "how this board works" intro was dismissed. Persisted. */
 export const $introDismissed = atom<boolean>(false)
 
@@ -113,7 +116,7 @@ function eventsSince(scope: string, slug: string): number | undefined {
 function eventsUrl(slug: string, since: number | undefined): string {
   const params = new URLSearchParams()
 
-  if (slug) {
+  if (slug && slug !== ALL_BOARDS) {
     params.set('board', slug)
   }
 
@@ -127,7 +130,7 @@ function eventsUrl(slug: string, since: number | undefined): string {
 }
 
 function boardSnapshotPath(slug: string): string {
-  return slug ? `/board?board=${encodeURIComponent(slug)}` : '/board'
+  return slug && slug !== ALL_BOARDS ? `/board?board=${encodeURIComponent(slug)}` : '/board'
 }
 
 /** Cache-scope id for the active connection — the segment every query key
@@ -387,6 +390,35 @@ export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', s
 
 export const fetchBoard = (archived: boolean) =>
   call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
+
+/** Read every active board without changing the server-wide current board. */
+export const fetchAllBoards = async (): Promise<KanbanBoard> => {
+  const { boards } = await fetchBoards()
+  const snapshots = await Promise.all(
+    boards.map(async meta => ({
+      board: await call<KanbanBoard>(`/board?board=${encodeURIComponent(meta.slug)}`),
+      meta
+    }))
+  )
+  const columns = new Map<string, KanbanTask[]>()
+
+  for (const { board, meta } of snapshots) {
+    for (const column of board.columns) {
+      columns.set(column.name, [
+        ...(columns.get(column.name) ?? []),
+        ...column.tasks.map(task => ({ ...task, board_name: meta.name || meta.slug, board_slug: meta.slug }))
+      ])
+    }
+  }
+
+  return {
+    assignees: [...new Set(snapshots.flatMap(({ board }) => board.assignees))],
+    columns: [...columns].map(([name, tasks]) => ({ name, tasks })),
+    latest_event_id: Math.max(0, ...snapshots.map(({ board }) => board.latest_event_id)),
+    now: Math.max(0, ...snapshots.map(({ board }) => board.now)),
+    tenants: [...new Set(snapshots.flatMap(({ board }) => board.tenants))]
+  }
+}
 
 export const fetchTask = async (id: string) => {
   const downloadAttachment = captureGatewayFileDownload()

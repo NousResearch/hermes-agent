@@ -34,6 +34,9 @@ export interface KanbanTask {
   /** Unblock-loop counter — how many times this task re-blocked for the same
    *  reason after a human unblock. 0/absent on legacy payloads. */
   block_recurrences?: number
+  /** Present only in the Desktop's client-side all-boards aggregate. */
+  board_name?: string
+  board_slug?: string
 }
 
 export interface KanbanColumn {

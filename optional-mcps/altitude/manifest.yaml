@@ -1,0 +1,57 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: altitude
+description: 'Altitude: Workspace balances, transactions and statements (read-only).'
+source: https://docs.altitude.xyz/mcp/setup
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# through a WorkOS AuthKit tenant (verified live: RFC 9728 protected-resource
+# metadata -> AS metadata with registration_endpoint). The protected-resource
+# document advertises the tenant with a root slash (https://<tenant>.authkit.app/)
+# and the AS metadata names it without one, so browser sign-in needs Hermes to
+# accept that root-slash issuer equivalence (open fixes: #133681, #113762,
+# #132253). Until one merges, sign-in fails with an issuer mismatch.
+#
+# Altitude's documented tools are read-only except generate_exports, which
+# prepares a PDF/CSV statement for the signed-in user (no email is sent);
+# it and download_export are excluded by default below. The
+# server cannot create, approve or submit payments, change Workspace settings,
+# or move funds, and connecting does not change the account's permissions.
+
+transport:
+  type: http
+  url: https://mcp.altitude.xyz/mcp
+
+auth:
+  type: oauth
+
+# Excluded by default: the only action tool and the bulk document download.
+# Statement PDFs/CSVs are whole banking records pulled into model context;
+# users who want them can re-enable both in `hermes mcp configure altitude`.
+tools:
+  default_excluded:
+    - generate_exports
+    - download_export
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - altitude
+    - business banking
+  hosts:
+    - altitude.xyz
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to
+  Altitude (or run `hermes mcp login altitude`). Approve access,
+  then restart the session so tools load.
+
+  Statement generation and download are off by default; enable
+  them with `hermes mcp configure altitude`.
+
+  Results follow your existing Altitude Workspace permissions.
+  Review or disconnect clients under Settings → My account →
+  MCP connections in the Altitude app.

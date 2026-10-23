@@ -1158,6 +1158,7 @@ class GatewayBusySessionMixin:
             queued = MessageEvent(
                 text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
                 source=event.source, raw_message=event.raw_message, message_id=event.message_id,
+                reply_anchor_override=event.reply_anchor_override,
                 media_urls=list(getattr(event, "media_urls", []) or []),
                 media_types=list(getattr(event, "media_types", []) or []),
                 media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
@@ -1189,7 +1190,8 @@ class GatewayBusySessionMixin:
             adapter = self._delivery_adapter_for(source)
             if adapter and await self._queue_command_turn(quick_key, event, MessageEvent(
                 text=steer_text, message_type=MessageType.TEXT, source=event.source,
-                message_id=event.message_id, channel_prompt=event.channel_prompt,
+                message_id=event.message_id, reply_anchor_override=event.reply_anchor_override,
+                channel_prompt=event.channel_prompt,
                 channel_context=event.channel_context,
             ), adapter, reply):
                 return None  # its commit sends the reply

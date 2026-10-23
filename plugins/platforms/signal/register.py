@@ -49,11 +49,21 @@ def _parse_send_target(ref):
     return (f"group:{group_id}", None) if group_id else NOT_EXPLICIT
 
 
+def _reply_metadata(source, anchor):
+    # A redirect may retain the opening sender but change the reply target.
+    # Only quote when the persisted source still binds this timestamp to its author.
+    if anchor is None or str(anchor) != source.message_id:
+        return {}
+    return {"signal_quote_timestamp": str(anchor),
+            "signal_quote_author": source.user_id_alt or source.user_id}
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
         target_ref_syntax_fn=_parse_send_target,
+        reply_metadata_for_source_fn=_reply_metadata,
         # Attachments ride the JSON-RPC param on the final chunk.
         standalone_send=StandaloneSendPolicy(label="Signal", media=True, empty_list_between_chunks=True,
                                              text_direct=True),

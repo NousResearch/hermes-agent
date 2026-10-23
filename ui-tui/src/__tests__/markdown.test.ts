@@ -176,6 +176,29 @@ describe('INLINE_RE inline math', () => {
     expect(matches('$P=a_n x^n + a_0$')).toEqual(['$P=a_n x^n + a_0$'])
     expect(matches('$\\beta_1,\\dots,\\beta_r$')).toEqual(['$\\beta_1,\\dots,\\beta_r$'])
   })
+
+  it('places math content in the correct capture group (regression: m[16] is bare URL)', () => {
+    // When `m[16]` was the bare URL group AND the inline-math `$...$`
+    // group simultaneously (because the bare URL pattern lacked its own
+    // capturing parens), MdInline rendered `$\\mathbb{R}$` as an
+    // underlined autolink instead of italic amber math. Lock down the
+    // numbering: math goes in m[17] / m[18], URLs go in m[16].
+    const url = [...'see https://example.com here'.matchAll(INLINE_RE)][0]!
+    const dollarMath = [...'$\\mathbb{R}$'.matchAll(INLINE_RE)][0]!
+    const parenMath = [...'\\(\\pi\\)'.matchAll(INLINE_RE)][0]!
+
+    expect(url[16]).toBe('https://example.com')
+    expect(url[17]).toBeUndefined()
+    expect(url[18]).toBeUndefined()
+
+    expect(dollarMath[16]).toBeUndefined()
+    expect(dollarMath[17]).toBe('\\mathbb{R}')
+    expect(dollarMath[18]).toBeUndefined()
+
+    expect(parenMath[16]).toBeUndefined()
+    expect(parenMath[17]).toBeUndefined()
+    expect(parenMath[18]).toBe('\\pi')
+  })
 })
 
 describe('protocol sentinels', () => {
@@ -256,9 +279,6 @@ describe('Md link labels', () => {
   const md = (text: string, width = 200) =>
     React.createElement(Box, { width }, React.createElement(Md, { cols: width, t: DEFAULT_THEME, text }))
 
-  // The link target has to survive as literal text, not just as OSC 8
-  // metadata: a bare URL that renders as a site name leaves nothing to read,
-  // copy or retype on any terminal that strips the escape.
   it('renders a bare URL verbatim instead of a derived label', () => {
     const url = 'https://connect.example.com/link/lk_9f2c1d7e'
     const rendered = renderPlain(md(`see ${url} for details`)).join('\n')

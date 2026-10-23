@@ -26,7 +26,8 @@ export type { TerminalTitlePair } from './ink/hooks/use-terminal-title.js'
 export { useTerminalViewport } from './ink/hooks/use-terminal-viewport.js'
 export { default as measureElement } from './ink/measure-element.js'
 export { scrollFastPathStats, type ScrollFastPathStats } from './ink/render-node-to-output.js'
-export { createRoot, forceRedraw, default as render, renderSync } from './ink/root.js'
+export { createRoot, forceRedraw, default as render, renderSync, peekInkInstance } from './ink/root.js'
+export { dispatchClick } from './ink/hit-test.js'
 export { stringWidth } from './ink/stringWidth.js'
 export {
   isXtermJs,
@@ -37,6 +38,7 @@ export {
   terminalForegroundHex
 } from './ink/terminal.js'
 export type { MouseTrackingMode } from './ink/termio/dec.js'
+export { setClipboard } from './ink/termio/osc.js'
 export { wrapAnsi } from './ink/wrapAnsi.js'
 
 // NOTE: Do not re-export from 'ink-text-input' here.

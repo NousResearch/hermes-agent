@@ -103,6 +103,14 @@ describe('describeRpcError', () => {
     expect(text).toContain('/resume')
   })
 
+  it('explains a read-only stored chat instead of echoing its reason code', () => {
+    const text = describeRpcError(new JsonRpcGatewayError('session_read_only', { code: 4001 }))
+
+    expect(text).not.toContain('session_read_only')
+    expect(text).toContain('/new')
+    expect(describeRpcError(new JsonRpcGatewayError('session_has_children', { code: 4001 }))).toMatch(/not deleted/)
+  })
+
   it('passes ordinary domain errors through unchanged', () => {
     expect(describeRpcError(new JsonRpcGatewayError('hash required', { code: 4014 }))).toBe('hash required')
   })

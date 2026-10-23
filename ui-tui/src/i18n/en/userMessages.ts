@@ -47,6 +47,10 @@ export const userMessagesEn = {
         'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.',
       sessionNotFound:
         'This chat is no longer attached to the backend (it was idle or the backend restarted). Your history is saved: type /resume to reopen it.',
+      sessionReadOnly:
+        'This chat is stored history Hermes can show but not continue, so your message was not run. Use /new to start a new chat.',
+      sessionHasChildren:
+        'This chat has child sessions (such as subagent runs) that deleting it would remove too, so it was not deleted.',
       notConnected:
         'Hermes is not connected right now, so that was not sent. It reconnects automatically; wait a moment and try again, or type /logs if this persists.',
       /** `{0}` = timeout in seconds. */

@@ -549,6 +549,33 @@ class TestDeleteSkill:
         assert result["success"] is False
         assert (tmp_path / "narrow").exists()
 
+    @pytest.mark.parametrize("first_attempt", ["flat", "operations"])
+    def test_failed_delete_requires_explicit_confirmation_before_retry(self, tmp_path, first_attempt):
+        """Regression for #137448: validation must not coach a bare retry into deletion."""
+        with _skill_dir(tmp_path):
+            _create_skill("guarded-skill", VALID_SKILL_CONTENT)
+            _create_skill("other-skill", VALID_SKILL_CONTENT)
+            if first_attempt == "flat":
+                first = json.loads(skill_manage(
+                    action="delete", name="guarded-skill", absorbed_into="guarded-skill",
+                    session_id="delete-retry-session"))
+            else:
+                first = json.loads(skill_manage(action="", name="", session_id="delete-retry-session",
+                    operations=[{"action": "delete", "name": "guarded-skill"},
+                                {"action": "patch", "name": "guarded-skill", "content": VALID_SKILL_CONTENT}]))
+            retry = json.loads(skill_manage(
+                action="delete", name="guarded-skill", session_id="delete-retry-session"))
+
+            assert first["success"] is False
+            assert retry["success"] is False
+            assert "confirm=true" in retry["error"]
+            assert (tmp_path / "guarded-skill").exists()
+            assert _delete_skill("other-skill")["success"] is True
+
+            confirmed = json.loads(skill_manage(
+                action="delete", name="guarded-skill", session_id="delete-retry-session", confirm=True))
+            assert confirmed["success"] is True
+
 # ---------------------------------------------------------------------------
 # write_file / remove_file
 # ---------------------------------------------------------------------------

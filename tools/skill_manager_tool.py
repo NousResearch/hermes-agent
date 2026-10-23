@@ -11,9 +11,11 @@ import contextvars as _ctxvars
 import hashlib
 import json
 from contextlib import ExitStack, suppress
+from collections import OrderedDict
 import logging
 import re
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -654,6 +656,51 @@ _skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
+# A failed delete is a strong signal that a model may have chosen the wrong action. Keep a
+# bounded, process-local mark per real session and skill; an explicit confirmation consumes it.
+_failed_delete_attempts: OrderedDict[tuple[str, str], None] = OrderedDict()
+_failed_delete_attempts_lock = threading.Lock()
+_MAX_FAILED_DELETE_ATTEMPTS = 1024
+
+
+def _delete_retry_key(name: str, session_id: str | None) -> tuple[str, str] | None:
+    """Return the scoped retry key, or None for legacy callers without a session identity."""
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    return session_id, name
+
+
+def _mark_failed_delete_attempt(name: str, session_id: str | None) -> None:
+    if (key := _delete_retry_key(name, session_id)) is None:
+        return
+    with _failed_delete_attempts_lock:
+        _failed_delete_attempts[key] = None
+        _failed_delete_attempts.move_to_end(key)
+        while len(_failed_delete_attempts) > _MAX_FAILED_DELETE_ATTEMPTS:
+            _failed_delete_attempts.popitem(last=False)
+
+
+def _delete_validation_refusal() -> str:
+    return ("Delete refused. If you intended to update this skill, use patch with content to replace "
+            "the full SKILL.md.")
+
+
+def _delete_retry_guard(name: str, session_id: str | None, confirm: bool) -> dict[str, Any] | None:
+    """Require an explicit confirmation after a delete failure in this session."""
+    if (key := _delete_retry_key(name, session_id)) is None:
+        return None
+    with _failed_delete_attempts_lock:
+        if key not in _failed_delete_attempts:
+            return None
+        if confirm is True:
+            del _failed_delete_attempts[key]
+            return None
+    return _err(
+        "Delete refused because an earlier delete attempt for this skill failed in this session. "
+        "Retry only with confirm=true if permanent deletion is intended. Otherwise, use patch with "
+        "content to replace the full SKILL.md.")
+
+
 def _run_write_gate(build_staging):
     """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
     ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
@@ -687,7 +734,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
-                 "absorbed_into", "operations")
+                 "absorbed_into", "confirm", "operations")
 
 
 def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
@@ -769,7 +816,7 @@ def skill_manage(
     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
     replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
-    session_id: str | None = None, operations=None) -> str:
+    session_id: str | None = None, operations=None, confirm: bool = False) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
     if operations is not None:
@@ -777,11 +824,13 @@ def skill_manage(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
+    if action == "delete" and (retry_guard := _delete_retry_guard(name, session_id, confirm)) is not None:
+        return json.dumps(retry_guard, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
     # of origin; bypassed when replaying an approved staged write.
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
-                absorbed_into=absorbed_into)
+                absorbed_into=absorbed_into, confirm=confirm)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
     if (shape_err := _op_shape_error(action, args)) is not None:
@@ -810,6 +859,9 @@ def skill_manage(
         result = handler({"name": name, **args})
         if isinstance(result, str):
             return result  # tool_error JSON for argument-shape problems (patch)
+        if action == "delete" and not result.get("success"):
+            _mark_failed_delete_attempt(name, session_id)
+            result["error"] = _delete_validation_refusal()
         if result.get("success"):
             _record_success(
                 action, name, result, file_path=file_path, absorbed_into=absorbed_into,
@@ -909,6 +961,9 @@ SKILL_MANAGE_SCHEMA = {
                         "absorbed_into": {"type": "string",
                                           "description": "Curator consolidation only: umbrella skill "
                                                          "that absorbed this one (must exist)."},
+                        "confirm": {"type": "boolean",
+                                    "description": "Required only after a failed delete attempt for this skill "
+                                                   "in this session, to confirm permanent deletion."},
                     }, ()),
                 ]},
             },

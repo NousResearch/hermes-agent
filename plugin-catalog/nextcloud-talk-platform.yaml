@@ -1,18 +1,21 @@
 name: nextcloud-talk-platform
 repo: https://github.com/smilinTux/hermes-nextcloud-talk
-sha: e58bfa6ab14fed6b064fbdfb6e1fbdb0c13f82ea
+sha: 4dfe25094867a33dca67647fe0d5cffdb00e4747
 description: >-
   Nextcloud Talk platform adapter for Hermes Agent, in two modes behind one
   plugin: a webhook bot (Nextcloud Talk Bot API, HMAC-SHA256 signed) and a
   real Nextcloud user account (app password, long-polling the Chat REST
-  API, with federation-invite support). Mode is picked automatically by
-  which credential is configured. No extra SDKs -- aiohttp for bot mode,
-  httpx for user mode, both already Hermes dependencies.
+  API, with federation-invite support, per-room mention/watch/free modes,
+  and an agent-to-agent loop guard plus active-listening context for
+  multi-agent rooms). Mode is picked automatically by which credential is
+  configured. No extra SDKs -- aiohttp for bot mode, httpx for user mode,
+  both already Hermes dependencies.
 maintainer: smilinTux
 tier: community
 category: platform
 docs_url: https://github.com/smilinTux/hermes-nextcloud-talk#readme
-version: "1.0.0"
+version: "1.1.1"
+readme: true
 capabilities:
   provides_tools: []
   provides_hooks: []

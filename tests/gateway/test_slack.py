@@ -108,9 +108,9 @@ def _pin_legacy_assistant_threads_api():
 
     The mocked slack_sdk module would make the class-attribute probe in
     ``_sdk_supports_agent_sessions`` return a MagicMock auto-attribute
-    (always truthy), silently flipping every typing/title test onto the
-    Agent Sessions path. Tests that exercise the new path set the cached
-    flag to True explicitly.
+    (always truthy), silently flipping every thread-title test onto
+    agents.sessions.rename. Tests that exercise the slack-sdk 3.44 path
+    set the cached flag to True explicitly.
     """
     prev = _slack_mod._AGENT_SESSIONS_SUPPORTED
     _slack_mod._AGENT_SESSIONS_SUPPORTED = False

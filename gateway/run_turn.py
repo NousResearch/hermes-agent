@@ -110,36 +110,8 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
-# Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
-# transcript meta row is logging-only — neither reaches the model, but both are the head a
-# fail-closed payload keeps.
-_HYGIENE_SETUP_ROLES = ("system", "session_meta")
-
-
-def bound_model_input_without_hygiene(history: list[Any], limit: int) -> list[Any]:
-    """Fail-closed in-context bound for a turn where hygiene has not landed (#111988).
-
-    Keeps the leading ``system``/``session_meta`` setup rows plus the newest tail, total <= ``limit``.
-    Deterministic (the same transcript always yields the same cut) and payload-only: the stored
-    transcript is never touched, so the agent's durable-prefix slice (``history_offset``) is
-    unaffected. Returns ``history`` unchanged — same object — when nothing needs dropping, so the
-    landed-compression and below-the-limit paths stay byte-identical.
-    """
-    if len(history) <= limit:
-        return history
-    head_end = 0
-    while (head_end < len(history) and isinstance(history[head_end], dict)
-           and history[head_end].get("role") in _HYGIENE_SETUP_ROLES):
-        head_end += 1
-    # Always leave room for the newest row: a setup-only payload would answer nothing.
-    head_end = min(head_end, limit - 1)
-    tail_start = len(history) - (limit - head_end)
-    # Never start the kept tail on a tool result: its parent assistant(tool_calls) row is dropped
-    # with it, and an orphaned tool result is an invalid sequence for every provider.
-    while (tail_start < len(history) and isinstance(history[tail_start], dict)
-           and history[tail_start].get("role") == "tool"):
-        tail_start += 1
-    return history[:head_end] + history[tail_start:]
+from gateway.run_turn_bounds import (  # topical sibling (code-health FILE_LINES); re-exported
+    _HYGIENE_SETUP_ROLES, bound_model_input_without_hygiene)
 
 
 def hygiene_no_commit_reason(agent) -> str:
@@ -572,7 +544,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
             header = t("gateway.background.complete_header", preview=preview)
             images, media_files, text_content = [], [], ""
+            media_captions: dict = {}
             if response:
+                media_captions = BasePlatformAdapter.extract_media_captions(response)
                 media_files, response = adapter.extract_media(response)
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
@@ -591,13 +565,16 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             # streaming + kanban paths do.
             from gateway.platforms.base import should_send_media_as_audio as _should_send_media_as_audio
             from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
+            from tools.send_message_senders import _bound_caption
             for media_path, _is_voice in (media_files or []):
                 _ext = os.path.splitext(media_path)[1].lower()
+                _caption = _bound_caption(media_captions.get(media_path), source.platform) or None
+                _cap_kw = {"caption": _caption} if _caption else {}
                 with suppress(Exception):
                     if _should_send_media_as_audio(source.platform, _ext, _is_voice):
                         await adapter.send_voice(
                             chat_id=source.chat_id, audio_path=media_path, metadata=_thread_metadata,
-                            is_voice=_is_voice,
+                            is_voice=_is_voice, **_cap_kw,
                         )
                     else:
                         sender, key = (
@@ -605,7 +582,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                             else (adapter.send_image_file, "image_path") if _ext in _IMAGE_EXTS
                             else (adapter.send_document, "file_path")
                         )
-                        await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                        await sender(chat_id=source.chat_id, metadata=_thread_metadata,
+                                     **_cap_kw, **{key: media_path})
 
         except Exception:
             logger.exception("Background task %s failed", task_id)

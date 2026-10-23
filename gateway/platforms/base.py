@@ -418,7 +418,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
@@ -431,6 +431,11 @@ from gateway.platforms.base_exec_approval import (
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
+# MEDIA-tag scanning helpers live in a topical sibling (code-health FILE_LINES); re-exported here so
+# ``gateway.platforms.base.<name>`` keeps resolving for adapters, the stream consumer and tests.
+from gateway.platforms.base_media_tags import (
+    _extensionless_media_matches, _match_extensionless_path, _normalize_media_tag_path,
+    _path_lacks_deliverable_extension, _real_media_tag_spans, extract_media_captions)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
@@ -1301,60 +1306,6 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     re.IGNORECASE)
 
 
-def _match_extensionless_path(scan_text: str, match: re.Match) -> Optional[tuple[str, int]]:
-    """Extensionless MEDIA tag match -> validated on-disk ``(safe_path, end_offset)`` or None: the
-    captured path first, then extended across single spaces (max 8 tokens, never past a newline
-    or the next ``MEDIA:``).
-
-    When that fails validation, the candidate is progressively extended forward across single spaces
-    (validation-gated, bounded at 8 tokens, never past a newline or a subsequent ``MEDIA:`` keyword) so
-    unknown-extension paths containing spaces deliver (#24032). Returns ``(safe_path, end_offset)`` where
-    ``end_offset`` is the index in ``scan_text`` just past the matched path, or ``None`` when nothing
-    validates.
-    """
-    path = _normalize_media_tag_path(match.group("path"))
-    if not path:
-        return None
-    safe = validate_media_delivery_path(path)
-    if safe:
-        return safe, match.end("path")
-    start = match.start("path")
-    segment = scan_text[start:].split("\n", 1)[0]
-    nxt = segment.find("MEDIA:", 1)
-    if nxt != -1:
-        segment = segment[:nxt]
-    pos = match.end("path") - start
-    for _ in range(8):
-        token = re.match(r"[ \t]*[^ \t]+", segment[pos:])
-        if not token:
-            break
-        tok_end = pos + token.end()
-        safe = validate_media_delivery_path(_normalize_media_tag_path(segment[:tok_end]))
-        if safe:
-            return safe, start + tok_end
-        pos = tok_end
-    return None
-
-
-def _normalize_media_tag_path(raw: str) -> str:
-    path = str(raw or "").strip()
-    if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-        path = path[1:-1].strip()
-    return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-
-
-def _path_lacks_deliverable_extension(path: str) -> bool:
-    """True when ``path`` has no extension or one outside MEDIA_DELIVERY_EXTS — such paths
-    take the validated delivery pass so nonexistent / denylisted ones stay visible.
-
-    ``path`` — either the basename has no extension at all (Caddyfile, Makefile, …) or the extension is not
-    in MEDIA_DELIVERY_EXTS (.py, .log, .weirdext, …). Such paths route through the validated delivery pass
-    (``validate_media_delivery_path``) instead of the unconditional one, so every file type is deliverable
-    (#36060) while nonexistent / denylisted paths stay visible in the text.
-    """
-    return Path(path).suffix.lower() not in MEDIA_DELIVERY_EXTS
-
-
 def _has_media_directives(text: str) -> bool:
     return "MEDIA:" in text or "[[audio_as_voice]]" in text or "[[as_document]]" in text
 
@@ -1395,25 +1346,6 @@ def _deliverable_tag_spans(text: str) -> list:
     start = _terminal_sentinel_start(text)
     if spans and start >= 0:
         spans.append((start, len(text.rstrip())))
-    return spans
-
-
-def _extensionless_media_matches(masked: str):
-    """Yield ``(match, safe_path, end_offset)`` for every extension-less / unknown-extension
-    MEDIA tag in ``masked`` that ``validate_media_delivery_path`` accepts."""
-    for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
-        path = _normalize_media_tag_path(match.group("path"))
-        if path and _path_lacks_deliverable_extension(path):
-            resolved = _match_extensionless_path(masked, match)
-            if resolved is not None:
-                yield match, resolved[0], resolved[1]
-
-
-def _real_media_tag_spans(masked: str) -> list:
-    """(start, end) spans of deliverable MEDIA tags on a masked copy: known-extension tags
-    unconditionally, extension-less / unknown ones only if validate_media_delivery_path accepts."""
-    spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
-    spans.extend((match.start(), end) for match, _, end in _extensionless_media_matches(masked))
     return spans
 
 
@@ -1593,6 +1525,7 @@ class _ExtractedResponse:
     local_files: list
     force_document_attachments: bool
     pre_extract: str
+    media_captions: dict = field(default_factory=dict)  # {delivered_path: caption} from ``MEDIA:<path> | <caption>`` tags
 
 
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -3306,6 +3239,16 @@ class BasePlatformAdapter(ABC):
         return media, cleaned
 
     @staticmethod
+    def extract_media_captions(content: str) -> dict[str, str]:
+        """``{delivered_path: caption}`` for ``MEDIA:<path> | <caption>`` tags.
+
+        Additive sibling of ``extract_media`` (whose ``(path, is_voice)`` tuple contract is
+        unchanged): dispatch sites look a caption up by the delivered path and pass it as the
+        attachment caption. See module-level ``extract_media_captions``.
+        """
+        return extract_media_captions(content)
+
+    @staticmethod
     def strip_media_directives_for_display(text: str) -> str:
         """Strip MEDIA: directives from streamed/display text. Known-extension tags are
         removed unconditionally (as ``MEDIA_TAG_CLEANUP_RE``); extension-less tags only when
@@ -4278,12 +4221,18 @@ class BasePlatformAdapter(ABC):
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
         force_document_attachments: bool, human_delay: float, metadata: dict[str, Any],
-        record_delivery: Callable) -> None:
+        record_delivery: Callable,
+        media_captions: dict[str, str] | None = None) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
         tags only, never bare local files), video → send_video, else send_document. Every failure is
-        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
+        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS.
+
+        ``media_captions`` maps a delivered path to the caption carried by its MEDIA tag
+        (``MEDIA:<path> | <caption>``); absent tags get no caption."""
         from urllib.parse import quote as _quote
+        from tools.send_message_senders import _bound_caption
+        _captions = media_captions or {}
 
         def _as_image(path: str) -> bool:
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
@@ -4291,22 +4240,30 @@ class BasePlatformAdapter(ABC):
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
-                record_delivery)
+                event, [(f"file://{_quote(p)}", _bound_caption(_captions.get(p, ""), self.platform))
+                        for p in _image_paths],
+                metadata, human_delay, record_delivery)
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
             """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
-            do."""
+            do. A MEDIA-tag caption rides on the attachment bubble."""
             ext = Path(path).suffix.lower()
+            caption = _bound_caption(_captions.get(path), self.platform) or None if media_tag else None
+            # Only pass ``caption`` when a tag carried one: an absent caption keeps the call shape
+            # byte-identical to the pre-caption behaviour (adapters predating captions included).
+            _cap_kw = {"caption": caption} if caption else {}
             if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
+                result = await self.send_voice(
+                    chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice, **_cap_kw)
             elif ext in _VIDEO_EXTS:
                 if media_tag:
                     logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
-                result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
+                result = await self.send_video(
+                    chat_id=chat_id, video_path=path, metadata=metadata, **_cap_kw)
             else:
-                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+                result = await self.send_document(
+                    chat_id=chat_id, file_path=path, metadata=metadata, **_cap_kw)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
@@ -4423,7 +4380,8 @@ class BasePlatformAdapter(ABC):
         await self._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
-            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
+            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery,
+            media_captions=getattr(extracted, "media_captions", None))
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
@@ -4454,6 +4412,10 @@ class BasePlatformAdapter(ABC):
         # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
         # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
         with self._media_delivery_scope(event.source):
+            # Per-tag captions (`MEDIA:<path> | <caption>`) are read from the ORIGINAL response: the
+            # caption text is deleted from the body by extract_media below, so it must be captured
+            # first (and inside the same delivery scope, so caption keys match the delivered paths).
+            media_captions = extract_media_captions(response)
             media_files, response = self.extract_media(response)
             media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
             images, text_content = self.extract_images(response)
@@ -4490,7 +4452,8 @@ class BasePlatformAdapter(ABC):
                 text_content = _recovered
         return _ExtractedResponse(
             text_content=text_content, images=images, media_files=media_files,
-            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
+            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract,
+            media_captions=media_captions)
 
     async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is

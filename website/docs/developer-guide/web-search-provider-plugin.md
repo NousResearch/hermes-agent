@@ -157,12 +157,13 @@ Full contract in `agent/web_search_provider.py`. Methods you may override:
 | `search(query, limit)` | conditional | raises | Required when `supports_search()` returns `True` |
 | `extract(urls, **kwargs)` | conditional | raises | Required when `supports_extract()` returns `True` |
 | `supports_search_depth()` | — | `False` | Return `True` when `search()` accepts `depth="quick"` / `"deep"` and maps it to a vendor option (see below) |
+| `search_route_label()` | — | `""` | Short name of a non-default route this call takes (`"keyless"`, `"managed"`), used in the depth note |
 
 Providers can advertise multiple capabilities from a single class — Firecrawl, Tavily, Perplexity, Keenable, Exa, and Parallel all implement both search and extract. Brave Search and DDGS are search-only; SearXNG is search-only with a documented "pair me with an extract provider" workflow.
 
 ### Search depth
 
-The `web_search` tool takes an optional `depth` (`quick`, `standard`, `deep`). Hermes passes it on only to a provider whose `supports_search_depth()` returns `True`, and only when it is not `standard`, as a keyword: `search(query, limit, depth="deep")`. Every other call is `search(query, limit)`, so a provider that has no depth option needs no change. A provider that opts in should keep its `standard` request exactly as before, and should return `False` from `supports_search_depth()` on a route that cannot honour depth (for example an anonymous free tier), so the tool result can say the depth was not applied.
+The `web_search` tool takes an optional `depth` (`quick`, `standard`, `deep`). Hermes passes it on only to a provider whose `supports_search_depth()` returns `True`, and only when it is not `standard`, as a keyword: `search(query, limit, depth="deep")`. Every other call is `search(query, limit)`, so a provider that has no depth option needs no change. A provider that opts in should keep its `standard` request exactly as before, and should return `False` from `supports_search_depth()` on a route that cannot honour depth (for example an anonymous free tier), naming that route in `search_route_label()`, so the tool result can say `<name> keyless search has no depth setting`.
 
 ## Response shape
 

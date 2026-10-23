@@ -1842,6 +1842,86 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
     assert kwargs["system"][-1]["text"].count("claude-code") == 3  # the caller's block, not the CC prefix
 
 
+def test_oauth_system_prompt_sanitizer_preserves_spaced_path_components():
+    """Regression for #137003: OAuth rebranding must not rename real directories."""
+    kwargs = build_anthropic_kwargs(
+        model="claude-sonnet-4-20250514",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Read /Users/alice/Projects/My Hermes Agent/notes and "
+                    r"C:\Users\alice\Nous Research\runbook. "
+                    "Use skill_view(name='Hermes Agent') for the identifier. "
+                    "Hermes Agent by Nous Research provides the instructions."
+                ),
+            },
+            {"role": "user", "content": "Hi"},
+        ],
+        tools=None,
+        max_tokens=4096,
+        reasoning_config=None,
+        is_oauth=True,
+    )
+
+    system_text = "\n".join(block["text"] for block in kwargs["system"])
+    assert "/Users/alice/Projects/My Hermes Agent/notes" in system_text
+    assert r"C:\Users\alice\Nous Research\runbook" in system_text
+    assert "skill_view(name='Hermes Agent')" in system_text
+    assert "Claude Code by Anthropic provides the instructions." in system_text
+
+
+@pytest.mark.parametrize("content, expected", [
+    ("/Users/alice/Projects/Hermes Agent", "/Users/alice/Projects/Hermes Agent"),
+    ("/Users/alice/Projects/My Hermes Agent", "/Users/alice/Projects/My Hermes Agent"),
+    ("~/Hermes Agent", "~/Hermes Agent"),
+    ("~/My Hermes Agent", "~/My Hermes Agent"),
+    (r"C:\Users\alice\Nous Research", r"C:\Users\alice\Nous Research"),
+    (r"C:\Users\alice\My Hermes Agent", r"C:\Users\alice\My Hermes Agent"),
+    ("/Users/alice/Projects/My Hermes Agent/notes", "/Users/alice/Projects/My Hermes Agent/notes"),
+    ("skill_view(name='Hermes Agent')", "skill_view(name='Hermes Agent')"),
+    ('"~/My Personal Hermes Agent" and Hermes Agent', '"~/My Personal Hermes Agent" and Claude Code'),
+    ("'/tmp/My Personal Nous Research' by Nous Research", "'/tmp/My Personal Nous Research' by Anthropic"),
+    ("~/My Personal Hermes Agent", "~/My Personal Claude Code"),  # Ambiguous unquoted prefix.
+    ('"~/My Personal Hermes Agent notes" and Hermes Agent',
+     '"~/My Personal Hermes Agent notes" and Claude Code'),
+    ('Read "~/Hermes Agent\nHermes Agent by Nous Research\n/tmp/notes',
+     'Read "~/Hermes Agent\nClaude Code by Anthropic\n/tmp/notes'),
+    ("/Hermes Agent/Nous Research/Hermes agent", "/Hermes Agent/Nous Research/Hermes agent"),
+    ("Hermes Agent by Nous Research", "Claude Code by Anthropic"),
+    ("Read /Users/alice/notes and compare Hermes Agent", "Read /Users/alice/notes and compare Claude Code"),
+    ("store it under ~/Hermes Agent please", "store it under ~/Hermes Agent please"),
+    ("Read ~/My Hermes Agent and compare Hermes Agent by Nous Research.",
+     "Read ~/My Hermes Agent and compare Claude Code by Anthropic."),
+    ("Read '/Users/alice/My Hermes Agent', then Hermes Agent.",
+     "Read '/Users/alice/My Hermes Agent', then Claude Code."),
+    ('Read "~/Nous Research"; Hermes agent!', 'Read "~/Nous Research"; Claude Code!'),
+    ("Read `~/Hermes agent` (~/My Nous Research). Hermes Agent?",
+     "Read `~/Hermes agent` (~/My Nous Research). Claude Code?"),
+    (r"~/Hermes agent, C:\Users\alice\My Nous Research; /tmp/My Hermes agent/notes! Hermes agent.",
+     r"~/Hermes agent, C:\Users\alice\My Nous Research; /tmp/My Hermes agent/notes! Claude Code."),
+    ("~/Hermes Agent\nHermes Agent by Nous Research\n/tmp/notes",
+     "~/Hermes Agent\nClaude Code by Anthropic\n/tmp/notes"),
+    ("Read /tmp/notes and compare Hermes Agent with /tmp/other",
+     "Read /tmp/notes and compare Claude Code with /tmp/other"),
+    ("Read /tmp/notes\nHermes Agent by Nous Research\n/tmp/other",
+     "Read /tmp/notes\nClaude Code by Anthropic\n/tmp/other"),
+    ("Read ~/My Hermes Agent/notes and Hermes Agent; use ~/My Nous Research/logs.",
+     "Read ~/My Hermes Agent/notes and Claude Code; use ~/My Nous Research/logs."),
+])
+def test_oauth_system_prompt_sanitizer_bounds_spaced_paths(content, expected):
+    """Terminal brand directories survive without shielding adjacent prose or lines."""
+    kwargs = build_anthropic_kwargs(
+        model="claude-sonnet-4-20250514",
+        messages=[{"role": "system", "content": content}, {"role": "user", "content": "Hi"}],
+        tools=None,
+        max_tokens=4096,
+        reasoning_config=None,
+        is_oauth=True,
+    )
+    assert kwargs["system"][-1]["text"] == expected
+
+
 def test_unsupported_inline_image_subtype_downgrades_to_text_for_anthropic(monkeypatch):
     """Sibling of the Responses guard: a data:image/svg+xml (or bmp/tiff) part forwarded verbatim as
     ``media_type`` 400s the Anthropic request on every replay — it must become a text placeholder

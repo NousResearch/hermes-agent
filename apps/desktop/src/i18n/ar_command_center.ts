@@ -357,13 +357,13 @@ export const arCommandCenter = {
         help: 'موصى به. معرّفات مستخدمين (واحد في كل حقل) بصيغة @user:server.'
       },
       SIGNAL_HTTP_URL: {
-        label: 'رابط جسر Signal',
+        label: 'رابط signal-cli HTTP',
         placeholder: 'http://127.0.0.1:8080',
-        help: 'رابط جسر signal-cli REST قيد التشغيل.'
+        help: 'رابط خادم signal-cli HTTP الأصلي قيد التشغيل.'
       },
       SIGNAL_ACCOUNT: {
         label: 'رقم الهاتف',
-        help: 'الرقم المسجّل مع جسر signal-cli الخاص بك.'
+        help: 'الرقم المرتبط بـ signal-cli الخاص بك.'
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'مستخدمو Signal المسموح بهم',

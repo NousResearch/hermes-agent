@@ -1990,11 +1990,11 @@ export const ruOverrides = {
         help: 'Рекомендуется. ID пользователей (по одному в поле) в формате @user:server.'
       },
       SIGNAL_HTTP_URL: {
-        label: 'URL моста Signal',
+        label: 'URL HTTP signal-cli',
         placeholder: 'http://127.0.0.1:8080',
-        help: 'URL работающего REST-моста signal-cli.'
+        help: 'URL работающего нативного HTTP-демона signal-cli.'
       },
-      SIGNAL_ACCOUNT: { label: 'Номер телефона', help: 'Номер, зарегистрированный в вашем мосте signal-cli.' },
+      SIGNAL_ACCOUNT: { label: 'Номер телефона', help: 'Номер, привязанный к вашему signal-cli.' },
       SIGNAL_ALLOWED_USERS: {
         label: 'Разрешённые пользователи Signal',
         help: 'Рекомендуется. Идентификаторы Signal (по одному в поле).'

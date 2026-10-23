@@ -3084,13 +3084,13 @@ export const esOverrides = {
         help: 'Recomendado. IDs (uno por casilla) en formato @usuario:servidor.'
       },
       SIGNAL_HTTP_URL: {
-        label: 'URL del puente Signal',
+        label: 'URL de signal-cli HTTP',
         placeholder: 'http://127.0.0.1:8080',
-        help: 'URL de un puente REST signal-cli en ejecución.'
+        help: 'URL del daemon HTTP nativo de signal-cli en ejecución.'
       },
       SIGNAL_ACCOUNT: {
         label: 'Número de teléfono',
-        help: 'El número registrado con tu puente signal-cli.'
+        help: 'El número de teléfono vinculado a tu signal-cli.'
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Usuarios de Signal permitidos',

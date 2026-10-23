@@ -102,10 +102,31 @@ def _cmd_boards_rm(args: argparse.Namespace) -> int:
         return _err(f"kanban boards rm: {exc}")
     if res["action"] == "archived":
         print(f"Board {res['slug']!r} archived → {res['new_path']}\n"
-              "Recover by moving the directory back to <root>/kanban/boards/<slug>/ "
-              "and deleting the archived tombstone board.json left in its place.")
+              "Recover with "
+              f"`hermes kanban boards restore {res['slug']}` "
+              "(preferred) or by moving the directory back to "
+              "<root>/kanban/boards/<slug>/ and deleting the archived "
+              "tombstone board.json left in its place.")
     else:
         print(f"Board {res['slug']!r} deleted.")
+    return 0
+
+
+def _cmd_boards_restore(args: argparse.Namespace) -> int:
+    """Restore a board previously archived by ``boards rm``.
+
+    Prefer this over manually moving directories: it refuses to clobber a
+    live board and picks the newest matching archive by default.
+    """
+    archive_path = getattr(args, "from_path", None) or None
+    try:
+        res = kb.restore_board(args.slug, archive_path=archive_path)
+    except ValueError as exc:
+        return _err(f"kanban boards restore: {exc}")
+    print(
+        f"Board {res['slug']!r} restored from {res['from_path']} → {res['new_path']}\n"
+        f"  Use `hermes kanban boards switch {res['slug']}` to make it current."
+    )
     return 0
 
 
@@ -210,6 +231,7 @@ _BOARD_HANDLERS = {
     "list": _cmd_boards_list, "ls": _cmd_boards_list,
     "create": _cmd_boards_create, "new": _cmd_boards_create,
     "rm": _cmd_boards_rm, "remove": _cmd_boards_rm, "delete": _cmd_boards_rm,
+    "restore": _cmd_boards_restore, "unarchive": _cmd_boards_restore,
     "switch": _cmd_boards_switch, "use": _cmd_boards_switch,
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,

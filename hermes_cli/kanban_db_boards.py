@@ -1,6 +1,6 @@
 """Board metadata (``board.json``) and board lifecycle management for the Kanban DB:
-read/write of per-board display metadata, board creation/discovery/archival, and the
-``board.json``-as-identity-marker rule.
+read/write of per-board display metadata, board creation/discovery/archival/restore,
+and the ``board.json``-as-identity-marker rule.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
@@ -193,6 +193,216 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     import shutil
     shutil.rmtree(d)
     return {"slug": normed, "action": "deleted", "new_path": ""}
+
+
+def _archive_name_matches(name: str, normed: str) -> bool:
+    """True for ``remove_board`` archive dirs: ``<slug>-<unix>`` or ``<slug>-<unix>-<n>``.
+
+    Slugs may themselves contain hyphens, so a bare ``startswith(slug + "-")``
+    would treat ``foo-bar-<ts>`` as an archive of ``foo`` and move another
+    board's data.
+    """
+    prefix = f"{normed}-"
+    if not name.startswith(prefix):
+        return False
+    rest = name[len(prefix):]
+    head, sep, tail = rest.partition("-")
+    if not head.isdigit():
+        return False
+    return not sep or tail.isdigit()
+
+
+def _looks_like_archived_board(path: Path) -> bool:
+    return (path / "kanban.db").exists() or (path / "board.json").exists()
+
+
+def list_archived_board_dirs(slug: str | None = None) -> list[Path]:
+    """Return archived board directories under ``boards/_archived/``.
+
+    When ``slug`` is given, only ``remove_board`` names for that slug are
+    returned. Newest (lexicographically last / timestamped last) is first.
+    """
+    archive_root = _kb.boards_root() / "_archived"
+    if not archive_root.is_dir():
+        return []
+    normed = None
+    if slug is not None:
+        normed = _kb._normalize_board_slug(slug)
+        if not normed:
+            return []
+    entries: list[Path] = []
+    for child in archive_root.iterdir():
+        if not child.is_dir() or not _looks_like_archived_board(child):
+            continue
+        if normed is not None and not _archive_name_matches(child.name, normed):
+            continue
+        entries.append(child)
+    entries.sort(key=lambda p: p.name, reverse=True)
+    return entries
+
+
+def _resolve_restore_source(normed: str, archive_path: str | Path | None) -> Path:
+    """Newest matching archive, or ``archive_path`` confined under ``_archived``."""
+    archive_root = (_kb.boards_root() / "_archived").resolve()
+    if archive_path is None:
+        candidates = list_archived_board_dirs(normed)
+        if not candidates:
+            raise ValueError(
+                f"no archived board found for slug {normed!r} under "
+                f"{_kb.boards_root() / '_archived'}"
+            )
+        return candidates[0]
+    try:
+        src = Path(archive_path).expanduser().resolve(strict=False)
+    except OSError as exc:
+        raise ValueError(f"invalid archive path: {archive_path}") from exc
+    try:
+        src.relative_to(archive_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"archive path must be under {archive_root}; got {src}"
+        ) from exc
+    if not src.is_dir():
+        raise ValueError(f"archive path does not exist: {src}")
+    if not _archive_name_matches(src.name, normed):
+        raise ValueError(
+            f"archive path {src.name!r} does not match slug {normed!r} "
+            f"(expected a directory named '{normed}-<timestamp>')"
+        )
+    if not _looks_like_archived_board(src):
+        raise ValueError(
+            f"archive path {src} does not look like a board "
+            f"(missing kanban.db / board.json)"
+        )
+    return src
+
+
+def _discard_live_init_cache(live: Path) -> None:
+    live_db = live / "kanban.db"
+    try:
+        _kb._INITIALIZED_PATHS.discard(str(live_db.resolve()))
+    except OSError:
+        pass
+    _kb._INITIALIZED_PATHS.discard(str(live_db))
+
+
+def _is_archived_tombstone_dir(live: Path) -> bool:
+    """True when ``live`` is only the ``archived: true`` marker ``board.json``."""
+    try:
+        children = list(live.iterdir())
+    except OSError:
+        return False
+    if len(children) != 1 or children[0].name != "board.json":
+        return False
+    try:
+        raw = json.loads(children[0].read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(raw, dict) and raw.get("archived") is True
+
+
+def _park_tombstone(live: Path) -> Path:
+    parked = live.with_name(f".{live.name}.restore-tombstone")
+    if parked.exists():
+        parked = live.with_name(f".{live.name}.restore-tombstone-{time.time_ns()}")
+    live.rename(parked)
+    return parked
+
+
+def _live_collision(normed: str, live: Path) -> ValueError:
+    return ValueError(
+        f"board {normed!r} already exists at {live}. "
+        f"Remove or rename it before restoring an archive."
+    )
+
+
+def _clear_live_for_restore(normed: str, live: Path) -> Optional[Path]:
+    """Make ``live`` absent without removing user board data.
+
+    An empty directory is removed. The post-archive tombstone is renamed
+    aside and returned so the caller can delete it only after the archive
+    itself is in place. A database, a non-archived ``board.json``, or any
+    other contents are left untouched.
+    """
+    if not live.exists():
+        return None
+    if not live.is_dir():
+        raise _live_collision(normed, live)
+    if not any(live.iterdir()):
+        live.rmdir()
+        return None
+    if _is_archived_tombstone_dir(live):
+        return _park_tombstone(live)
+    raise _live_collision(normed, live)
+
+
+def _restore_parked_tombstone(parked: Optional[Path], live: Path) -> None:
+    """Put the marker back if the rename failed and ``live`` is still absent.
+
+    When ``live`` was recreated, drop only the marker we parked — never the
+    live directory or the archive.
+    """
+    if parked is None or not parked.exists():
+        return
+    if not live.exists():
+        parked.rename(live)
+        return
+    if not _is_archived_tombstone_dir(parked):
+        return
+    parked.joinpath("board.json").unlink(missing_ok=True)
+    try:
+        parked.rmdir()
+    except OSError:
+        pass
+
+
+def restore_board(slug: str, *, archive_path: str | Path | None = None) -> dict:
+    """Restore a board archived by :func:`remove_board`.
+
+    Moves the newest (or explicitly named) ``boards/_archived/<slug>-<ts>``
+    directory back to ``boards/<slug>/``. The archived-tombstone directory
+    ``remove_board`` leaves behind is moved aside only when it contains
+    nothing except that marker, and deleted only after the archive rename
+    succeeds. A live board (database or any other files) is refused and
+    left in place.
+
+    Raises :class:`ValueError` when:
+    - the slug is invalid / is ``default``
+    - a live board already exists at ``boards/<slug>/``
+    - no matching archive directory is found
+    - ``archive_path`` is outside ``boards/_archived/``
+    """
+    _kb._assert_not_delegated_child_mutation()
+    normed = _kb._require_slug(slug)
+    if normed == _kb.DEFAULT_BOARD:
+        raise ValueError("the 'default' board cannot be restored from _archived")
+
+    src = _resolve_restore_source(normed, archive_path)
+    live = _kb.board_dir(normed)
+    _discard_live_init_cache(live)
+    parked = _clear_live_for_restore(normed, live)
+    live.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        src.rename(live)
+    except OSError as exc:
+        _restore_parked_tombstone(parked, live)
+        if live.exists():
+            raise _live_collision(normed, live) from exc
+        raise ValueError(
+            f"failed to restore board {normed!r} from {src} to {live}: {exc}"
+        ) from exc
+    _restore_parked_tombstone(parked, live)
+    return {
+        "slug": normed,
+        "action": "restored",
+        "from_path": str(src),
+        "new_path": str(live),
+    }
+
+
+def has_archived_board(slug: str) -> bool:
+    """True if ``boards/_archived/`` holds at least one directory for ``slug``."""
+    return bool(list_archived_board_dirs(slug))
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

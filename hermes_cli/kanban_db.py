@@ -4210,9 +4210,12 @@ from hermes_cli.kanban_db_boards import (
     _dir_holds_board,
     board_metadata_path,
     create_board,
+    has_archived_board,
+    list_archived_board_dirs,
     list_boards,
     read_board_metadata,
     remove_board,
+    restore_board,
     write_board_metadata,
 )
 from hermes_cli.kanban_db_connect import (

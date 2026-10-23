@@ -15,6 +15,7 @@ import json
 import subprocess
 import tomllib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -42,6 +43,21 @@ class VersionInfo:
         if self.base_version == "unknown":
             return self.derived_version
         return _derived_version(self.base_version, self.distance)
+
+    @property
+    def release_date(self) -> str:
+        """``YYYY.M.D`` (UTC) of the commit this build was cut from, or ``""`` when unknown.
+
+        Every stamp writer records ``commitDate`` for the commit it packaged — the
+        release tag's commit for a stable build — so this is the date the running
+        build actually shipped, unlike a checked-in literal that the tag-based
+        release flow never bumps (#135217). Unpadded, keeping the historical
+        ``2026.9.24`` shape the version label has always printed.
+        """
+        if self.commit_date is None:
+            return ""
+        moment = datetime.fromtimestamp(self.commit_date, tz=UTC)
+        return f"{moment.year}.{moment.month}.{moment.day}"
 
 
 def _derived_version(
@@ -303,6 +319,23 @@ def get_version_info() -> VersionInfo:
 
     _cached_version_info = info
     return info
+
+
+def get_release_date() -> str:
+    """The date label surfaces print beside the version; never empty.
+
+    Identity first (:attr:`VersionInfo.release_date`), then the legacy
+    ``hermes_cli.__release_date__`` literal for a tree with no provenance at all
+    (no install stamp and no git). Resolved from the same process-cached identity
+    every other caller uses, so this adds no git work to the startup-banner path,
+    and the legacy literal stays import-light in ``hermes_cli/__init__.py``.
+    """
+    date = get_version_info().release_date
+    if date:
+        return date
+    from hermes_cli import __release_date__ as legacy_placeholder
+
+    return legacy_placeholder
 
 
 def get_code_identity(refresh: bool = False) -> dict:

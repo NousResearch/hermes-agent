@@ -2574,8 +2574,8 @@ def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, cap
         config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     )
 
-    assert server._load_enabled_toolsets() is None
-    assert capsys.readouterr().err.strip()  # a warning is printed
+    assert server._load_enabled_toolsets() == []  # fail closed, not None (= every toolset)
+    assert "starting with no tools" in capsys.readouterr().err  # a warning is printed
 
 
 def test_load_enabled_toolsets_honors_builtin_env_if_config_fails(monkeypatch):

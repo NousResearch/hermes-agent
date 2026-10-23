@@ -3659,6 +3659,7 @@ def _commit_compaction(
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
                     covered_ids=covered_ids, unresolved_held=unresolved_held,
+                    system_prompt=new_system_prompt,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"
@@ -3672,8 +3673,7 @@ def _commit_compaction(
                 # Rotation-independent signal; the gateway reads this (not an id diff) to
                 # re-baseline transcript handling.
                 compacted_in_place = True
-                # In-place still updates the current row's prompt; rotation published it atomically above.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                # archive_and_compact commits prompt + transcript in one BEGIN IMMEDIATE, as rotation does.
                 agent._last_flushed_db_idx = 0
             else:
                 # Bind old_session_id first: it is the rollback key in the handler below.

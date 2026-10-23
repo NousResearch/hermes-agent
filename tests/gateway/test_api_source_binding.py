@@ -26,6 +26,28 @@ def test_private_api_binding_restores_exact_route(owner):
     assert 'foreign-native' not in owner.sessions
 
 
+@pytest.mark.parametrize('source', ['hermes_browser', 'hermes_web', 'hermes_mobile'])
+def test_private_api_binding_takes_first_party_client_rows(owner, source):
+    """The Web, Mobile and Browser Extension clients store their own label on the sessions they create;
+    those are API conversations, so they bind, restore and re-bind like an ``api_server`` row."""
+    from gateway.session_api import bind_api_session, restore_api_session
+    owner.db.create_session('first-party', source=source)
+    ref = bind_api_session(owner, 'first-party')
+    assert bind_api_session(owner, 'first-party') == ref  # met live
+    owner.sessions.clear()
+    assert restore_api_session(owner, 'first-party') == ref  # met after a restart
+    assert owner.db.get_session('first-party')['source'] == source
+
+
+@pytest.mark.parametrize('source', ['cli', 'tui', 'acp', 'desktop', 'dashboard', 'discord', 'slack', 'cron'])
+def test_private_api_binding_refuses_every_other_surface(owner, source):
+    from gateway.session_api import bind_api_session
+    owner.db.create_session('foreign-native', source=source)
+    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        bind_api_session(owner, 'foreign-native')
+    assert 'foreign-native' not in owner.sessions
+
+
 def test_private_api_binding_adopts_matching_legacy_declared_key(owner):
     """Regression for #139835: a pre-binding API row stores the caller's declared key."""
     from gateway.session_api import bind_api_session, declared_api_session

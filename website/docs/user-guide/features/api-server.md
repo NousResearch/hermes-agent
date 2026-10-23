@@ -796,9 +796,9 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`) |
-| `POST` | `/api/sessions` | Create an empty session |
+| `POST` | `/api/sessions` | Create an empty session; accepts an optional client `source` |
 | `GET` | `/api/sessions/{id}` | Read session metadata |
-| `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
+| `PATCH` | `/api/sessions/{id}` | Update `title`, `end_reason`, or client `source` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session. `include_compacted=true` also returns the turns a context compaction archived (default: live transcript only). `inline_images=false` renders image attachments as `[image]` placeholders instead of inline data URIs — the transcript travels in kilobytes, for clients reading over a network |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
@@ -806,6 +806,8 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, `tool.failed` (a tool that finished with an error), then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
+
+The public client `source` values are `api_server`, `hermes_web`, `hermes_mobile`, and `hermes_browser`. Only a session stored under one of them takes REST turns (chat, runs and responses), and it keeps its label across turns; a session stored under any other source belongs to another surface and is refused with `permission_denied`, as described under `POST /v1/runs`. `POST /api/sessions` defaults to `api_server` when `source` is omitted, while first-party IDs beginning with `hermes-web-` or `hermes-browser-` are categorized automatically. `PATCH /api/sessions/{id}` can change `source` only on a session stored under one of those four values, and only to another of them; relabelling a CLI, TUI, Desktop, ACP or messaging session, or labelling a session as one of those surfaces, answers 403 `permission_denied`, an unrecognized value answers 400 `invalid_session_source`, and a refused PATCH (including one whose title is too long or already taken) changes nothing. Forks keep a first-party source from their parent and otherwise start as `api_server`.
 
 ```bash
 # fork a session and run one turn

@@ -142,6 +142,8 @@ from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
+from gateway.platforms.api_server_session_source import (
+    apply_session_patch, client_label, normalize_session_source, patch_refusal)
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -1747,7 +1749,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     self.name, sid)
                 return
             db.record_gateway_session_peer(
-                sid, source=self._SESSION_SOURCE, session_key=key,
+                sid, source=client_label(existing.get("source")), session_key=key,
                 include_compression_ancestors=True)
         except Exception:
             logger.debug(
@@ -2091,14 +2093,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if model_lock or payload.get("model_lock"):
             result["model_lock"] = cls._clean_runtime_id(model_lock or payload.get("model_lock"), max_len=32)
         return result
-
-    @staticmethod
-    def _normalize_session_source(value: Any) -> str:
-        text = str(value or "").strip().lower()
-        allowed = {"api_server", "hermes_browser", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
-        if text not in allowed:
-            return "api_server"
-        return "hermes_browser" if text == "browser" else text
 
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[dict[str, Any]]:
         """The gateway's per-session ``/model`` override for *session_key*, if any — a
@@ -3087,7 +3081,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return _error_response("system_prompt must be a string", 400, code="invalid_system_prompt")
-        source = self._normalize_session_source(body.get("source") or "api_server")
+        # Unknown create-time sources coerce to api_server (pre-existing client contract); only PATCH rejects.
+        source = normalize_session_source(body.get("source"), session_id=session_id) or "api_server"
         runtime_request = self._session_runtime_request_from_body(body)
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
@@ -3153,33 +3148,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        # pinned/archived/unread are durable desktop-sidebar flags.
-        unknown = sorted(set(body) - {"title", "end_reason", "pinned", "archived", "hidden", "unread"})
-        if unknown:
-            return _error_response(
-                f"Unsupported session fields: {', '.join(unknown)}", 400, code="unsupported_session_field")
-        for flag in ("pinned", "archived", "hidden", "unread"):
-            if flag in body and not isinstance(body[flag], bool):
-                return _error_response(f"'{flag}' must be a boolean", 400, code="invalid_session_field")
+        if err := patch_refusal(body):
+            return err
         db = await self._ensure_session_db_async()
-        if db is None:
-            return self._session_db_unavailable()
-        if "title" in body:
-            try:
-                await asyncio.to_thread(
-                    db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
-            except ValueError as exc:
-                return _error_response(str(exc), 400, code="invalid_title")
-        # Pinned last: set_session_pinned clears hidden, so a pin in the same request
-        # wins over an explicit hidden (same order as the dashboard's _RENAME_FLAG_SETTERS).
-        for flag, setter in (("archived", db.set_session_archived), ("hidden", db.set_session_hidden),
-                             ("pinned", db.set_session_pinned)):
-            if flag in body:
-                await asyncio.to_thread(setter, session_id, body[flag])
-        if "unread" in body:
-            await asyncio.to_thread(db.set_session_read, session_id, read=not body["unread"])
-        if body.get("end_reason"):
-            await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
+        if err := await apply_session_patch(db, session_id, body):
+            return err
         session = await asyncio.to_thread(db.get_session, session_id) or session
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
@@ -3278,8 +3251,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # ``_branched_from`` is the durable branch marker (same as CLI /branch): with the child created
         # first, the timestamp fallback in _BRANCH_CHILD_SQL (child.started_at >= parent.ended_at) no
         # longer holds, and an unmarked child would vanish from default session listings.
+        fork_source = client_label(source.get("source"))
         await asyncio.to_thread(
-            db.create_session, fork_id, "api_server", model=source.get("model"),
+            db.create_session, fork_id, fork_source, model=source.get("model"),
             system_prompt=source.get("system_prompt"), parent_session_id=source_id,
             model_config={"_branched_from": source_id})
         await asyncio.to_thread(db.end_session, source_id, "branched")

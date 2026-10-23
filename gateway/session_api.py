@@ -11,6 +11,22 @@ from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 from hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
 
+# The stored ``sessions.source`` labels a REST client owns: the API server's own and the first-party
+# clients' (Hermes Web, Mobile, Browser Extension). They are one conversation class: every one takes REST
+# turns, and a REST client may relabel a session only between them. The label normalizer, the turn gate,
+# the binding and PATCH all read these two names, so a new first-party label is added in one place.
+FIRST_PARTY_SESSION_SOURCES = frozenset({'hermes_browser', 'hermes_mobile', 'hermes_web'})
+API_CLIENT_SOURCES = frozenset({'api_server'}) | FIRST_PARTY_SESSION_SOURCES
+# A hosted-room member is the only other conversation an API turn may bind (``bind_api_steps``).
+API_TURN_SOURCES = API_CLIENT_SOURCES | {'bot_room'}
+
+
+def api_owns_source(stored, storage_source='api_server'):
+    """Whether a row stored as *stored* is an API conversation of *storage_source* (the binding's
+    class: ``api_server`` for a client's, ``bot_room`` for a hosted-room member's). A client's row
+    keeps whichever client label it carries; a room member's is exactly ``bot_room``."""
+    return stored in API_CLIENT_SOURCES if storage_source == 'api_server' else stored == storage_source
+
 
 def declared_api_session(db, key):
     with db._read_ctx() as conn:
@@ -172,7 +188,7 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         storage_source, title = 'bot_room', f'Group: {dispatch.room_id}'
     if session_id in authority.sessions:
         if (authority.sessions[session_id].source.platform != Platform.API_SERVER
-                or authority.db.get_session(session_id)['source'] != storage_source):
+                or not api_owns_source(authority.db.get_session(session_id)['source'], storage_source)):
             raise RuntimeStoreError('permission_denied')
     # An API session is the shared-listener row of the transport matrix: the launch profile's
     # ``api_server`` adapter receives ``/p/<name>/`` and answers it, while the turn RUNS under the
@@ -223,7 +239,7 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
                          (_DECLARED_PREFIX + declared_key, session_id))
         row = conn.execute('SELECT source,session_key,title FROM sessions WHERE id=?', (session_id,)).fetchone()
-        if row is not None and row['source'] != storage_source:
+        if row is not None and not api_owns_source(row['source'], storage_source):
             raise RuntimeStoreError('permission_denied')
         if storage_source == 'bot_room':
             if row is not None and row['title'] != title:
@@ -266,12 +282,18 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
 
 
 def api_storage_source(db, session_id, fallback):
+    """The ``sessions.source`` a peer refresh writes for an API row: its binding's storage class, except
+    that a first-party client's label (``hermes_web`` ...) is kept, so a turn never relabels it."""
     if fallback != 'api_server':
         return fallback
     with db._read_ctx() as conn:
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_BINDING_PREFIX + session_id,)).fetchone()
-    return json.loads(saved[0]).get('storage_source', fallback) if saved else fallback
+        row = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()
+    storage_source = json.loads(saved[0]).get('storage_source', fallback) if saved else fallback
+    if storage_source == 'api_server' and row is not None and row['source'] in FIRST_PARTY_SESSION_SOURCES:
+        return row['source']
+    return storage_source
 
 
 def restore_api_session(authority, session_id):
@@ -290,7 +312,7 @@ def restore_api_session(authority, session_id):
     row = authority.db.get_session(session_id)
     if (receipt['session_id'] != session_id or entry.session_id != session_id
             or source.platform != Platform.API_SERVER or source.chat_id != session_id
-            or row is None or row['source'] != receipt.get('storage_source', 'api_server')
+            or row is None or not api_owns_source(row['source'], receipt.get('storage_source', 'api_server'))
             or (row['session_key'], row['chat_id'], row['user_id']) != (entry.session_key, session_id, source.user_id)
             or entry.session_key != authority.runner.session_store._generate_session_key(source)):
         raise RuntimeStoreError('admission_conflict')

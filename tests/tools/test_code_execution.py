@@ -660,6 +660,29 @@ class TestEnvVarFiltering(unittest.TestCase):
             os.environ.clear()
             os.environ.update(env_backup)
 
+    def test_container_tz_inherited_and_hermes_timezone_wins(self):
+        """#138741: with no Hermes timezone configured, the deployment's own TZ
+        (the `docker run -e TZ=...` idiom) must reach the sandbox child like
+        PATH/HOME do — otherwise the child runs on the image's system zone while
+        terminal and cron in the same container follow the operator's TZ. An
+        explicitly configured Hermes timezone stays authoritative over the
+        inherited one. The pass-through is exact-name: glibc's TZDIR, a
+        different variable that merely shares the prefix, stays scrubbed."""
+        env_backup = os.environ.copy()
+        try:
+            os.environ["TZ"] = "Asia/Shanghai"
+            os.environ["TZDIR"] = "/usr/share/zoneinfo"
+            with patch("hermes_time.get_timezone_name", return_value=""):
+                child_env = self._get_child_env()
+                self.assertEqual(child_env.get("TZ"), "Asia/Shanghai")
+                self.assertNotIn("TZDIR", child_env)
+            with patch("hermes_time.get_timezone_name", return_value="Europe/Berlin"):
+                child_env = self._get_child_env()
+                self.assertEqual(child_env.get("TZ"), "Europe/Berlin")
+        finally:
+            os.environ.clear()
+            os.environ.update(env_backup)
+
 
 
 # ---------------------------------------------------------------------------

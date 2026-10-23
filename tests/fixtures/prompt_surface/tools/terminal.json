@@ -39,7 +39,7 @@
       },
       "pty": {
         "default": false,
-        "description": "With background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
+        "description": "Implies background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
         "type": "boolean"
       },
       "timeout": {

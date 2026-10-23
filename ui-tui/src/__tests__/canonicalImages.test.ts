@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -49,6 +49,25 @@ it('stages private immutable local bytes, uploads remote bytes, and never falls 
     await expect(stageImagePath(source, gw, captureDestination())).rejects.toThrow('upload refused')
     writeFileSync(source, 'not an image')
     await expect(stageImagePath(source, gw, captureDestination())).rejects.toThrow(/image/i)
+  } finally { resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
+})
+
+it('resolves a relative image path in the session folder, never the ui-tui install', async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ink-relative-')))
+  const project = join(home, 'project')
+  mkdirSync(project)
+  writeFileSync(join(project, 'shot.png'), png)
+  vi.stubEnv('HERMES_HOME', home)
+  vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
+  vi.stubEnv('HERMES_CWD', '')
+  const gw = { request: vi.fn() } as any
+
+  try {
+    resetUiState(); patchUiState({ sid: 'owner', info: { cwd: project } as never })
+    expect(readFileSync((await stageImagePath('shot.png caption', gw, captureDestination())).path)).toEqual(png)
+    // No session folder yet: the folder `hermes --tui` was launched from.
+    resetUiState(); patchUiState({ sid: 'owner' }); vi.stubEnv('HERMES_CWD', project)
+    expect(await stageImagePath('./shot.png', gw, captureDestination())).toMatchObject({ mime: 'image/png', name: 'shot.png' })
   } finally { resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
 })
 

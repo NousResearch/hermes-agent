@@ -182,10 +182,10 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
 
 
 def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool,
-                       session_key: str | None = None) -> list[dict]:
+                       session_key: str | None = None, local: bool | None = None) -> list[dict]:
     """Prefix-match entries of the directory ``path_part`` points at (max 30)."""
     import posixpath
-    local = _effective_terminal_backend() == "local"
+    local = _effective_terminal_backend() == "local" if local is None else local
     # A non-local backend expands ``~`` itself (the gateway host's home is the wrong one) and its listing
     # script speaks POSIX: from a Windows gateway host, os.path would hand it ``~\\src`` and list nothing.
     pth = os.path if local else posixpath
@@ -235,18 +235,28 @@ def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     local = _effective_terminal_backend() == "local"
     # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
-    # session cwd (Desktop sends it) or the session's terminal cwd as-is.
-    root = _completion_cwd(params) if local else (params.get("cwd") or _terminal_task_cwd(session))
+    # session cwd (Desktop sends it) or the session's terminal cwd as-is (".": the backend's own cwd). The TUI
+    # echoes session.info's cwd back; for a sandbox session nobody gave a workspace that is the host launch dir.
+    client_cwd = params.get("cwd")
+    if session and client_cwd == session.get("cwd") and _is_remote_launch_cwd(session):
+        client_cwd = None
+    root = _completion_cwd(params) if local else (client_cwd or _terminal_task_cwd(session) or ".")
     session_key = session.get("session_key") if session else None
+    return _ok(rid, {"items": _path_completion_items(word, root, session_key, local)})
+
+
+def _path_completion_items(word: str, root: str, session_key: str | None, local: bool) -> list[dict]:
+    """``complete.path``'s items for ``word`` resolved against ``root``; the shared gateway serves the
+    same listing against a local session's own folder (``gateway/session_complete_path.py``)."""
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
     if is_context and not query:
-        return _ok(rid, {"items": _at_root_items()})
+        return _at_root_items()
     # Plugin `@<prefix>:<query>` runs before the built-in file/folder branching.
     if is_context and ":" in query:
         pfx, _, qval = query.partition(":")
         if pfx not in _BUILTIN_AT_PREFIXES and (plugin_items := _plugin_reference_items(pfx, qval)) is not None:
-            return _ok(rid, {"items": plugin_items})
+            return plugin_items
     # Bare `@folder` lists as soon as the keyword is typed (the static `@folder:` hint is not accepted).
     if is_context and (query in {"file", "folder"} or query.startswith(("file:", "folder:"))):
         prefix_tag, _, path_part = query.partition(":")
@@ -263,12 +273,12 @@ def _(rid, params: dict) -> dict:
     if local and bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
         items = _fuzzy_basename_items(root, path_part, prefix_tag)
     else:
-        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key)
+        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key, local)
     # Bare-word `@name` may be an agent mention: profiles rank ABOVE file hits.
     if bare_word and not prefix_tag:
         with contextlib.suppress(Exception):
             items = _profile_mention_items(path_part) + items
-    return _ok(rid, {"items": items})
+    return items
 
 
 @method("complete.slash")

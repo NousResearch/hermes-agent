@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - dependency guidance only
 # rejects it. The two gates must see the same strings identically.
 NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}\Z")
 SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
-TIERS = ("official", "community")
+TIERS = ("official", "verified", "community")
 CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 PLATFORMS = ("linux", "macos", "windows")
 CAPABILITY_KEYS = (

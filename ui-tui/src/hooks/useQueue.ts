@@ -91,6 +91,17 @@ interface PendingQueue {
   items: QueueItem[]
 }
 
+// Restored and migrated queues order by `createdAt`; one process-wide clock keeps it strictly
+// increasing across every session's queue, so two inputs queued in the same millisecond on
+// different sessions keep their order when a resume merges them.
+let lastCreatedAt = 0
+
+function nextQueueCreatedAt(floor = 0): number {
+  lastCreatedAt = Math.max(Date.now(), lastCreatedAt + 1, floor + 1)
+
+  return lastCreatedAt
+}
+
 // `gw` owns server-queued rows: the authority's pending fanout is rendered
 // after this client's unconfirmed local items, and deleting/editing one goes
 // through `prompt.cancel` — the next fanout, not a local splice, retires it.
@@ -205,7 +216,11 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
     // A queued row reads as main's plain queue line; only an unknown execution keeps its status tag.
     ...serverRows.map(row =>
-      row.status === 'queued' ? String(row.user) : t('canonical.queue.serverRow', String(row.status), String(row.user))
+      row.status === 'queued'
+        ? String(row.user)
+        : row.status === 'unknown'
+          ? t('canonical.queue.lostRow', String(row.user))
+          : t('canonical.queue.serverRow', String(row.status), String(row.user))
     )
   ]
 
@@ -266,7 +281,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
         ...(attachments?.length ? { attachments } : {}),
         submissionId: randomUUID(),
         destination: owner,
-        createdAt: Math.max(Date.now(), (queue.items.at(-1)?.createdAt ?? 0) + 1)
+        createdAt: nextQueueCreatedAt(queue.items.at(-1)?.createdAt)
       }
 
       return { queue, item }

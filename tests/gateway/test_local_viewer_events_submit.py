@@ -239,3 +239,29 @@ def test_a_finite_managed_worker_answers_clarify_headless():
     controls._ask = lambda *a: pytest.fail("a finite viewer can never answer")
     with finite_turn_scope(True):
         assert controls.clarify([{"qid": "q", "question": "?", "choices": [], "multi_select": False}])["outcome"] == "undelivered"
+
+
+def test_a_one_turn_model_never_becomes_the_sessions_stored_model():
+    """``/moa`` and ``/model --once`` run one admission on another route. The turn's post-run sync
+    wrote the executing agent's model to the session row (``default``, the MoA preset), so a /resume
+    right after restored onto the preset. Only a turn on the session's own route records its model."""
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from gateway.session_cli_turn import cli_turn_scope
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    written = []
+    db = SimpleNamespace(get_session=lambda sid: {"model": "session-model", "model_config": "{}"},
+                         update_session_meta=lambda sid, config, model=None: written.append((sid, model)))
+    runner = _gateway_runner()
+    runner._session_db = SimpleNamespace(_db=db)
+    runner._sync_session_model_from_agent = (
+        lambda sid, agent: GatewayTurnPrepareMixin._sync_session_model_from_agent(runner, sid, agent))
+    moa = ModelSwitchResult(success=True, new_model="default", target_provider="moa", api_key="",
+                            base_url="", api_mode="chat_completions")
+    committed = {"model_override": {"model": "default", "provider": "moa"}}
+    with patch("hermes_cli.model_switch.switch_model", return_value=moa), cli_turn_scope("adm-1", committed):
+        _result, agent = _run_turn(runner)
+    assert agent.model == "default" and written == []
+    with cli_turn_scope("adm-1", committed):
+        _run_turn(runner, admission_id="adm-2")
+    assert [model for _sid, model in written] == ["session-model"]

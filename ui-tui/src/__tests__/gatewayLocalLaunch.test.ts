@@ -24,3 +24,23 @@ it('reports failed canonical bootstrap without creating an independent owner or 
   expect(bootstrap).toHaveBeenCalledTimes(1)
   gw.kill()
 })
+
+it('reports a bootstrap that cannot load Hermes once and stops retrying (#138878)', async () => {
+  vi.useFakeTimers()
+  vi.stubEnv('HERMES_HOME', home)
+  vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
+  const bootstrap = vi.fn().mockRejectedValue(new Error(
+    'Command failed: python3 gateway_bootstrap.py --start\ngateway unavailable: bootstrap_dependencies\nNo module named \'ruamel\''))
+  const gw = new GatewayClient(bootstrap)
+  const events: any[] = []
+  gw.on('event', e => events.push(e))
+
+  try {
+    gw.start()
+    gw.drain()
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+    expect(events.filter(e => e.type === 'gateway.start_timeout')).toHaveLength(1)
+    expect(events.some(e => e.type === 'gateway.reconnecting')).toBe(false)
+  } finally { gw.kill(); vi.useRealTimers() }
+})

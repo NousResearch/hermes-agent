@@ -281,41 +281,6 @@ class TestBrowserUseStrictSelection:
 
 
 # ---------------------------------------------------------------------------
-# Camofox: selection over env var
-# ---------------------------------------------------------------------------
-
-
-class TestCamofoxSelection:
-    def test_camofox_selection_activates_mode(self, monkeypatch):
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="camofox"):
-            assert bc.is_camofox_mode() is True
-
-    def test_other_selection_beats_camofox_url_env(self, monkeypatch):
-        """CAMOFOX_URL is the ADDRESS, not the choice: an explicit different
-        browser selection wins."""
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch.object(bc, "get_camofox_url", return_value="http://localhost:9377"), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="local"):
-            assert bc.is_camofox_mode() is False
-
-    def test_never_configured_env_url_still_activates(self, monkeypatch):
-        from tools import browser_camofox as bc
-
-        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-        with patch.object(bc, "_config_cdp_url", return_value=""), \
-             patch.object(bc, "get_camofox_url", return_value="http://localhost:9377"), \
-             patch("tools.tool_backend_helpers.read_selection", return_value=None):
-            assert bc.is_camofox_mode() is True
-
-
-# ---------------------------------------------------------------------------
 # tools_config writers: one provider string per row, no use_gateway writes
 # ---------------------------------------------------------------------------
 

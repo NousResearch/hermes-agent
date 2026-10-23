@@ -5,14 +5,15 @@ import pytest
 
 from pm.lock import Facts
 from pm.packages import Chromium
+from pm.defaults import default_package_names
 from pm.registry import walk
 from scripts.bundles.native import _bundle_package_names
 
 
-def test_browser_closure_and_bundle_ship_full_chromium_only():
-    closure = {package.name for package in walk(["agent-browser"])}
+def test_browser_default_and_bundle_ship_full_chromium_only():
+    closure = {package.name for package in walk(["chromium"])}
     bundled = set(_bundle_package_names())
-    assert "chromium" in closure & bundled
+    assert "chromium" in set(default_package_names()) & bundled
     assert "chromium-headless-shell" not in closure | bundled
 
 
@@ -37,5 +38,5 @@ def test_chromium_binary_and_env_survive_store_relocation(tmp_path, target, rela
     moved = tmp_path / "relocated"
     store.rename(moved)
     env = Facts(moved / "facts.json").env_for("chromium", moved)
-    assert Path(env["AGENT_BROWSER_EXECUTABLE_PATH"]) == moved / entry.name / relative
-    assert env["PLAYWRIGHT_BROWSERS_PATH"] == str(moved)
+    assert package.binary(moved / entry.name, target) == moved / entry.name / relative
+    assert env == {"PLAYWRIGHT_BROWSERS_PATH": str(moved)}

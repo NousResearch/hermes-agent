@@ -375,6 +375,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     tui_server_mod = sys.modules.get("tui_gateway.server")
     if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
         monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())
+    # A classic CLI's gateway-session toolset reader is process-global too (``_ensure_gateway_session``).
+    tools_config_mod = sys.modules.get("hermes_cli.tools_config")
+    if tools_config_mod is not None and hasattr(tools_config_mod, "_gateway_plugin_toolsets"):
+        monkeypatch.setattr(tools_config_mod, "_gateway_plugin_toolsets", None)
 
     hermes_state_mod = sys.modules.get("hermes_state")
     if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
@@ -1480,6 +1484,24 @@ from hermes_cli.gui_uninstall import packaged_gui_app_paths
 _REAL_INSTALLED_GUI_APPS = sorted({
     os.path.normcase(form) for app in packaged_gui_app_paths() if os.path.lexists(app)
     for form in (os.path.abspath(app), os.path.realpath(app))})
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_user_path_writes(monkeypatch):
+    """Fail a test that would add an entry to the real Windows User PATH.
+
+    The registry has no temporary-home equivalent: a test home that reached
+    these writers stayed on the developer's PATH after the run. Tests of the
+    writers' callers inject fakes (``write_user_path=``) or stub them.
+    """
+    if sys.platform != "win32":
+        return
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("TEST BUG: write to the real Windows User PATH (HKCU\\Environment)")
+
+    monkeypatch.setattr("hermes_cli._launchers._register_windows_user_path", refuse)
+    monkeypatch.setattr("hermes_cli._install_repair._write_user_path_raw", refuse)
 
 
 @pytest.fixture(autouse=True)

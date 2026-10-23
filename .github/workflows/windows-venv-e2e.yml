@@ -42,11 +42,11 @@ concurrency:
 jobs:
   venv-holder-e2e:
     name: venv-holder live E2E (windows-latest)
-    runs-on: windows-latest-32-core
+    runs-on: blacksmith-32vcpu-windows-2025
     timeout-minutes: 25
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # The stable caller dispatches on the candidate tag; github.sha is
           # the exact candidate commit there and the head SHA everywhere else.

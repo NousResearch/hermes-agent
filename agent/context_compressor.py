@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from agent.image_eviction_policy import outbound_image_retire_count
+from agent.image_eviction_policy import images_all_within_many_image_limit, latched_retire_count, outbound_image_retire_count, outbound_retired_image_ids
 from agent.compression_marker import (
     ELISION_MARKER_MAX_LEN,
     _elision_marker,
@@ -32,6 +32,7 @@ from agent.auxiliary_client import (
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
+from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id
@@ -1484,33 +1485,32 @@ def _retire_stale_tool_result_images(
     return pruned
 
 
-def _image_payload(msg: dict[str, Any]) -> tuple[int, int]:
-    """``(blocks, bytes)`` of image payload in a message.
+def _image_payload(msg: dict[str, Any]) -> list[str]:
+    """Data URL / base64 string of each image block in a message (``""`` when unmeasurable).
 
-    The provider counts BLOCKS: one ``tool_result`` carrying three screenshots is three against
-    the per-request limit. Bytes are the data-URL / base64 length — the payload is ASCII and the
-    JSON framing around it is noise against a 24 MB budget, so no per-request re-serialization.
+    The provider counts BLOCKS (one ``tool_result`` with three screenshots is three), so the
+    block count is the list length. Bytes are the summed string lengths: the payload is ASCII and
+    the JSON framing around it is noise against a 24 MB budget. The strings also let the caller
+    read dimensions from headers only, without a second walk or a full decode.
     """
     parts = _tool_result_parts(msg.get("content"))
     if not isinstance(parts, list):
-        return 0, 0
-    blocks = payload = 0
+        return []
+    sources: list[str] = []
     for p in parts:
         if not _is_image_part(p):
             continue
-        blocks += 1
         image_url = p.get("image_url")
         source = p.get("source")
         data = (
             (image_url.get("url") if isinstance(image_url, dict) else image_url)
             or (source.get("data") if isinstance(source, dict) else None)
-            or ""
         )
-        payload += len(data) if isinstance(data, str) else 0
-    return blocks, payload
+        sources.append(data if isinstance(data, str) else "")
+    return sources
 
 
-def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]]) -> int:
+def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired_ids: Optional[set[str]] = None) -> int:
     """Drop stale screenshot/vision payloads from the per-call API copy.
 
     Compression's keep-newest pass only runs when prune/compress fires, and the Anthropic
@@ -1520,29 +1520,28 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]]) -> int:
     sanitization (#89296). Do not pass persisted history — the rewrite is send-path only.
 
     Eviction is driven by the provider limit, counted in image BLOCKS, with user uploads
-    reserved against the ceiling but never rewritten — policy and rationale in
-    :mod:`agent.image_eviction_policy`. Returns the number of messages rewritten.
+    reserved against the ceiling but never rewritten; the block ceiling depends on the
+    request's image dimensions — policy and rationale in :mod:`agent.image_eviction_policy`.
+    Returns the number of messages rewritten.
+    ``retired_ids`` latches the frontier per session: see :func:`latched_retire_count`.
     """
-    carriers: list[tuple[int, tuple[int, int]]] = []
-    reserved_blocks = reserved_bytes = 0
+    carriers: list[tuple[int, list[str]]] = []  # (index, image sources), newest first
+    reserved: list[str] = []
     for i in range(len(api_messages) - 1, -1, -1):
         msg = api_messages[i]
-        if not isinstance(msg, dict):
-            continue
-        blocks, size = _image_payload(msg)
-        if not blocks:
-            continue
-        if msg.get("role") == "tool":
-            carriers.append((i, (blocks, size)))
+        sources = _image_payload(msg) if isinstance(msg, dict) else []
+        if sources and msg.get("role") == "tool":
+            carriers.append((i, sources))
         else:
-            reserved_blocks += blocks
-            reserved_bytes += size
+            reserved.extend(sources)
     retire = outbound_image_retire_count(
-        [blocks for _, (blocks, _) in carriers],
-        reserved_blocks,
-        carrier_bytes_newest_first=[size for _, (_, size) in carriers],
-        reserved_bytes=reserved_bytes,
+        [len(sources) for _, sources in carriers],
+        len(reserved),
+        carrier_bytes_newest_first=[sum(map(len, sources)) for _, sources in carriers],
+        reserved_bytes=sum(map(len, reserved)),
+        many_image_safe=images_all_within_many_image_limit([*reserved, *(x for _, ss in carriers for x in ss)]),
     )
+    retire = latched_retire_count(retire, [api_messages[i].get("tool_call_id") for i, _ in carriers], retired_ids)
     pruned = 0
     for i, _ in carriers[len(carriers) - retire:]:
         new_msg = _strip_images_from_tool_msg(api_messages[i])
@@ -2151,7 +2150,8 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 
 class ContextCompressor(
-    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
+    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
+    ProactivePruneMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -3391,87 +3391,6 @@ class ContextCompressor(
             "n/a" if before is None else f"{int(before):,}",
             f"{int(self._proactive_prune_rearm_tokens):,}",
         )
-
-    def prune_tool_results_only(
-        self, messages: list[dict[str, Any]], current_tokens: int | None = None,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """Deterministic, no-LLM tool-result prune gated on ``proactive_prune_tokens``.
-        Protects the tail by message COUNT only. A commit breaks the prompt cache, so it requires
-        ``proactive_prune_min_reclaim_tokens`` and a full regrowth runway; otherwise returns the INPUT
-        object as ``(messages, 0)``. The rearm gate is measured on message bodies only, so it is
-        bypassed (never the reclaim gate) when a provider-billed ``current_tokens`` reading already
-        puts the request over ``threshold_tokens`` (#101889); every no-op taken while over threshold
-        is logged once per distinct reason.
-
-        ``_prune_old_tool_results`` runs all deterministic passes: (1) dedup byte-identical tool results —
-        keeps the newest full copy and back-references older exact duplicates ANYWHERE in the list
-        (including the protected tail), so no unique content is ever lost; (2) summarize non-tail tool
-        results larger than ``min_prune_chars``; (3) truncate oversized tool_call arguments on non-tail
-        assistant messages; (3.5) retire image payloads on all but the newest ``_MAX_KEEP_TOOL_IMAGES``
-        image-bearing tool results, except a pending round that fits the hard share (#92699). Only pass (2)'s floor is
-        raised by ``proactive_prune_min_result_chars``; passes (1) and (3) keep their own fixed floors. The
-        recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
-        dedup is lossless.
-        """
-        if self.proactive_prune_tokens <= 0 or (
-            current_tokens is not None and current_tokens < self.proactive_prune_tokens
-        ):
-            return messages, 0
-        if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
-            self._warn_reclamation_no_op("prune:tail_only", current_tokens)
-            return messages, 0
-        before = sum(_estimate_msg_budget_tokens(m) for m in messages)
-        # Under-threshold runway skip is ordinary hysteresis (silent); above it the lockout is the bug.
-        if before < self._proactive_prune_rearm_tokens and not self._billed_basis_over_threshold(current_tokens):
-            return messages, 0
-        # Capability gate first: a store without archive_and_compact makes every prune a no-op.
-        session_db = getattr(self, "_session_db", None)
-        session_id = getattr(self, "_session_id", "")
-        if session_db and session_id and not callable(getattr(session_db, "archive_and_compact", None)):
-            self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
-            return messages, 0
-        pruned_msgs, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
-        )
-        if not pruned_count:
-            # No-op contract: return the INPUT object so callers can gate on `result is not input`.
-            self._warn_reclamation_no_op("prune:nothing_eligible", current_tokens)
-            return messages, 0
-        # Prompt-cache hysteresis: commit only when the reclaim is meaningful.
-        after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
-        reclaimed = max(0, before - after)
-        if reclaimed < self.proactive_prune_min_reclaim_tokens:
-            self._warn_reclamation_no_op("prune:reclaim_below_minimum", current_tokens, before=before)
-            return messages, 0
-        # Require a full trigger-sized regrowth before the next cache-breaking rewrite.
-        runway = max(reclaimed, self.proactive_prune_tokens, self.proactive_prune_min_reclaim_tokens)
-        next_rearm_tokens = after + runway
-        if session_db and session_id:
-            try:
-                from agent.conversation_compression_archive import coverage_for_commit
-                covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, messages)
-                session_db.archive_and_compact(
-                    session_id, pruned_msgs,
-                    model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
-                    watermark=_archive_watermark_for(session_db, session_id, messages),
-                    covered_ids=covered_ids, unresolved_held=unresolved_held,
-                )
-            except StaleHeldHistory:
-                # Another compaction already committed this session's history; a lease-less prune of the
-                # generation this process holds would publish beside the winner. Leave the input alone.
-                logger.info("Proactive tool-result prune skipped: another compaction already committed this session")
-                self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
-                return messages, 0
-            except Exception as exc:
-                logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)
-                return messages, 0
-            # Shared post-commit stamp site with the in-place commit and micro-compaction sync.
-            # See #98450.
-            stamp_db_persisted_markers(pruned_msgs)
-        self._proactive_prune_rearm_tokens = next_rearm_tokens
-        # Reclamation just ran: let a future lockout warn again.
-        self._last_reclaim_block_warn = None
-        return pruned_msgs, pruned_count
 
     def _compute_summary_budget(self, turns_to_summarize: list[dict[str, Any]]) -> int:
         """Scale the summary token budget with content size and context window."""
@@ -4909,8 +4828,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         last_visible_role = _last_template_visible_role(compressed)
         if self._has_merged_inflight_replay(inflight):
-            # Never copy a summary carrier (metadata would mark the replay
-            # synthetic): restate as a plain user row.
+            # Never copy a summary carrier (its metadata marks it synthetic): restate as a plain user row.
             replay = {"role": "user", "content": task_text}
         else:
             replay = _fresh_compaction_message_copy(inflight)
@@ -4937,7 +4855,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         # occurrence of it. When the original survived in the protected head,
         # retaining it gives the durable transcript two active rows with the
         # same message_uid and renders the request twice after reload.
-        from agent.message_metadata import MESSAGE_UID, message_uid_or_none, record_absorbed_message
+        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message
+        mark_inflight_restatement(replay)  # only the standalone row: the merged layout is already a summary
 
         if replay_uid := message_uid_or_none(replay):
             before = len(compressed)

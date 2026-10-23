@@ -1052,7 +1052,6 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
         resolved = cwd if cwd is not None else (str(sess.get("cwd") or "") if sess is not None else "")
         source = _resolve_session_platform()
         profile = _current_profile_name()
-        browser_control_principal = browser_control_transport_family = ""
         # Live conversation id for subprocess HERMES_SESSION_ID: an explicitly empty contextvar is authoritative
         # (no os.environ fallback), so never leave it "" — agent's durable session_id, then session_key.
         session_id = session_key
@@ -1061,16 +1060,9 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
             # App-global backends multiplex profiles: prefer the live session's own home.
             profile = profile_name_for_home(sess.get("profile_home")) or profile
             session_id = getattr(sess.get("agent"), "session_id", None) or session_key
-            identity = getattr(sess.get("transport"), "auth_identity", None)
-            if _methods_browser_control._is_authenticated_identity(identity):
-                browser_control_principal = _methods_browser_control._principal_digest(identity)
-                browser_control_transport_family = _methods_browser_control._CLOUD_TRANSPORT_FAMILY
         return set_session_vars(
             session_key=session_key, session_id=session_id, source=source,
-            profile=profile,
-            browser_control_principal=browser_control_principal,
-            browser_control_transport_family=browser_control_transport_family, cwd=resolved,
-            ui_session_id=ui_session_id, cron_session="")
+            profile=profile, cwd=resolved, ui_session_id=ui_session_id, cron_session="")
     return []
 
 
@@ -1421,6 +1413,10 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+    # Window plans only: the desktop status bar's allowance (the canonical feed carries the same one).
+    from gateway.session_usage import plan_gauge
+    if (gauge := plan_gauge(agent)) is not None:
+        usage["plan_gauge"] = gauge
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count
@@ -1727,9 +1723,10 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
             if row and _resumable_stored_cwd(row.get("cwd"), profile_home):
-                # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
-                # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
-                remote = _cwd_is_remote(profile_home)
+                # An ssh or sandbox session's stored cwd is its workspace: explicit, so the remote terminal uses it
+                # instead of the backend default (an unpicked launch dir is never persisted for them). Host backends
+                # keep main's semantics (resolved outside the sessions lock: I/O).
+                remote = not _host_cwd_is_terminal_cwd(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
@@ -2156,7 +2153,7 @@ from . import (
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
     session_transports as _session_transports, prompt_turn as _prompt_turn, billing_view as _billing_view,
-    methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
+    methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
@@ -2175,7 +2172,7 @@ for _m in (
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
-    _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
+    _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_tools_plugin_servers, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,

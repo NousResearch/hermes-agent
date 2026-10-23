@@ -68,6 +68,7 @@ import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  currentProfileSelectionRevision,
   normalizeProfileKey,
   refreshActiveProfile
 } from '@/store/profile'
@@ -739,6 +740,7 @@ export function useGatewayBoot({
 
     async function adoptPrimaryProfile(
       connection: HermesConnection,
+      selectionRevision: number,
       shouldPublish: () => boolean = () => true
     ): Promise<boolean> {
       // The resolved descriptor reflects the explicit startup default. The
@@ -753,15 +755,29 @@ export function useGatewayBoot({
         }
 
         const key = normalizeProfileKey(profileKey)
-        $activeGatewayProfile.set(key)
+        // A profile the user picked after this boot/apply started is newer
+        // intent than the primary adoption (T19, #134889): record the primary
+        // socket, but leave the active route and the profile atom — which
+        // scopes the session list refreshed next — on the user's pick.
+        const userPicked = currentProfileSelectionRevision() !== selectionRevision
+
+        if (!userPicked) {
+          $activeGatewayProfile.set(key)
+        }
+
         setPrimaryGateway(gateway, key)
-        void ensureGatewayForProfile(key)
+
+        if (!userPicked) {
+          void ensureGatewayForProfile(key)
+        }
       } catch {
         if (!shouldPublish()) {
           return false
         }
 
-        $activeGatewayProfile.set(normalizeProfileKey(override))
+        if (currentProfileSelectionRevision() === selectionRevision) {
+          $activeGatewayProfile.set(normalizeProfileKey(override))
+        }
       }
 
       return true
@@ -865,7 +881,16 @@ export function useGatewayBoot({
         // list rather than blanking the rail. NOT awaited: refreshProfiles
         // now carries a bounded retry chain (#70679), and switch completion
         // must not wait out backoff timers against an unhealthy backend.
-        if (!(await adoptPrimaryProfile(conn, ownsSwitch)) || !ownsSwitch()) {
+        if (
+          !(await adoptPrimaryProfile(
+            conn,
+            // A connection apply replaces the machine context wholesale, so it
+            // always adopts the new primary; only cold boot defers to a pick.
+            currentProfileSelectionRevision(),
+            ownsSwitch
+          )) ||
+          !ownsSwitch()
+        ) {
           return
         }
 
@@ -1431,6 +1456,7 @@ export function useGatewayBoot({
     })
 
     async function boot() {
+      const selectionRevision = currentProfileSelectionRevision()
       // Where this boot attempt got to — a historical fact, not a late read of
       // gateway.connectionState. A socket can close after a successful dial;
       // later initialization errors must not be reclassified as boot dials.
@@ -1461,7 +1487,15 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.connectingGateway'),
           progress: 95
         })
-        publish(conn)
+
+        // A profile picked while the primary lookup was in flight already
+        // published its own descriptor with its socket (T19, #134889). Record
+        // the primary, but keep $connection on the pick so socket, profile and
+        // connection agree.
+        if (currentProfileSelectionRevision() === selectionRevision) {
+          publish(conn)
+        }
+
         recordPrimaryConnection(conn)
 
         // Seed the workspace BEFORE the gateway opens: every session-restore
@@ -1542,7 +1576,7 @@ export function useGatewayBoot({
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile(conn)
+        await adoptPrimaryProfile(conn, selectionRevision)
 
         setDesktopBootStep({
           phase: 'renderer.config',

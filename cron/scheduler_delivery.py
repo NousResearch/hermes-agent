@@ -24,35 +24,24 @@ logger = logging.getLogger("cron.scheduler")
 
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
-_KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "mattermost", "dingtalk", "feishu",
-    "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao"})
+# Plugin platforms are known through ``PlatformEntry.cron_deliver_env_var``; these rows have none:
+# ``webhook`` is core-only and ``wecom_callback`` (a ``wecom`` plugin sibling) delivers only to its
+# config.yaml ``home_channel``.
+_KNOWN_DELIVERY_PLATFORMS = frozenset({"webhook", "wecom_callback"})
 
 # Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
 # only, ``send()`` is a stub) — a cron report can never reach them, so they are never a
 # deliver=origin destination.
 _NON_PUSH_ORIGIN_PLATFORMS = frozenset({"api_server"})
 
-# Platforms supporting a cron/notification home target -> env var used by gateway config.
-_HOME_TARGET_ENV_VARS = {
-    "matrix": "MATRIX_HOME_ROOM",
-    "telegram": "TELEGRAM_HOME_CHANNEL",
-    "discord": "DISCORD_HOME_CHANNEL",
-    "slack": "SLACK_HOME_CHANNEL",
-    "signal": "SIGNAL_HOME_CHANNEL",
-    "mattermost": "MATTERMOST_HOME_CHANNEL",
-    "sms": "SMS_HOME_CHANNEL",
-    "email": "EMAIL_HOME_ADDRESS",
-    "dingtalk": "DINGTALK_HOME_CHANNEL",
-    "feishu": "FEISHU_HOME_CHANNEL",
-    "wecom": "WECOM_HOME_CHANNEL",
-    "weixin": "WEIXIN_HOME_CHANNEL",
-    "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
-    "qqbot": "QQBOT_HOME_CHANNEL",
-    "whatsapp": "WHATSAPP_HOME_CHANNEL",
-    "whatsapp_cloud": "WHATSAPP_CLOUD_HOME_CHANNEL"}
+# Home-target platforms tried first, in this order, by ``deliver=origin`` with no origin (first
+# platform with a home chat wins) and ``deliver=all``; their env var is the plugin's
+# ``cron_deliver_env_var``. Other plugin platforms follow by name (a fresh process loads deferred
+# entries in name order, so this is the order they had when they trailed a static table).
+_HOME_TARGET_PRIORITY = (
+    "matrix", "telegram", "discord", "slack", "signal", "mattermost", "sms", "email", "dingtalk",
+    "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "whatsapp", "whatsapp_cloud",
+)
 
 # Back-compat: primary env var -> previous name, consulted when the primary is unset.
 _LEGACY_HOME_TARGET_ENV_VARS = {"QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL"}
@@ -421,9 +410,8 @@ def _is_known_delivery_platform(platform_name: str) -> bool:
 
 
 def _resolve_home_env_var(platform_name: str) -> str:
-    """Env var name for a platform's cron home channel (built-in table, then plugin registry)."""
-    name = platform_name.lower()
-    return _HOME_TARGET_ENV_VARS.get(name) or _plugin_cron_env_var(name)
+    """Env var name for a platform's cron home channel (``PlatformEntry.cron_deliver_env_var``)."""
+    return _plugin_cron_env_var(platform_name.lower())
 
 
 def _get_config_home_channel(platform_name: str):
@@ -512,15 +500,14 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
 
 
 def _iter_home_target_platforms():
-    """Iterate built-in + plugin platform names that expose a home channel."""
-    yield from _HOME_TARGET_ENV_VARS
+    """Iterate plugin platform names that expose a home channel, ``_HOME_TARGET_PRIORITY`` first."""
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
-            if entry.cron_deliver_env_var and entry.name not in _HOME_TARGET_ENV_VARS:
-                yield entry.name
+        named = [e.name for e in platform_registry.plugin_entries() if e.cron_deliver_env_var]
+        yield from (n for n in _HOME_TARGET_PRIORITY if n in named)
+        yield from (n for n in named if n not in _HOME_TARGET_PRIORITY)  # registry order, as before
 
 
 def _relay_fronted_delivery_platforms(connected: set) -> set:

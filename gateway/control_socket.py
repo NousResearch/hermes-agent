@@ -91,6 +91,23 @@ def _squat_proof_fallback(bind_path: Path) -> Path:
     return path
 
 
+def _publish_pointer(pointer_file: Path, bind_path: Path) -> None:
+    """Replace ``pointer_file`` with one naming ``bind_path``, atomically: the listener is already
+    accepting, so a client polling for it may read the pointer at any instant, and an empty or
+    partial pointer is ``invalid_control_pointer`` to it, a refusal rather than "still starting".
+    The fresh mkstemp inode is 0600 and the rename replaces a symlink rather than following it,
+    which also heals an older gateway's leftover 0644 pointer."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{pointer_file.name}.", dir=pointer_file.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as pointer:
+            pointer.write(str(bind_path))
+        os.replace(tmp, pointer_file)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
     """Return ``(bind_path, pointer_file)``; pointer_file is set only for the temp-dir fallback."""
     direct = Path(home) / _SOCKET_FILENAME
@@ -128,15 +145,39 @@ def _detect_supervisor() -> str:
     return "external" if "--external-supervisor" in sys.argv else "manual"
 
 
+def _structured_login_subject(value: str) -> bool:
+    """Whether ``value`` is ``authenticated_subject``'s namespaced login form
+    ``auth:v1:[provider, issuer, user]`` (gateway.session_identity) — the only identity
+    a same-user peer may forward a ticket for. Bare labels (``admin``, ``uid:501``) fail:
+    they can collide with another stored owner representation."""
+    from gateway.session_identity import parse_authenticated_subject
+    return parse_authenticated_subject(value) is not None
+
+
+def launch_supervisor(identity: dict[str, Any]) -> Optional[str]:
+    """What launched the gateway behind an ``identify`` answer (``manual``, ``desktop``, ``systemd``, ...).
+
+    The session runtime protocol folds ``manual`` and ``desktop`` into ``supervisor: "none"``, so the
+    launch value rides in ``launch_supervisor``. A gateway that predates that field and answers
+    ``"none"`` is ambiguous: None (unknown), never ``manual``.
+    """
+    for key in ("launch_supervisor", "supervisor"):
+        value = identity.get(key)
+        if isinstance(value, str) and value and value != "none":
+            return value
+    return None
+
+
 def build_identify_payload() -> dict[str, Any]:
     """Default ``identify`` answer, built from gateway.status primitives."""
     from gateway.status import _build_pid_record, _get_code_identity_fields, _profile_label_for_home, read_runtime_status
     record = _build_pid_record()
+    supervisor = _detect_supervisor()
     payload: dict[str, Any] = {
         "protocol": CONTROL_PROTOCOL_VERSION,
         **{k: record.get(k) for k in ("kind", "pid", "start_time", "hermes_home")},
         "profile": _profile_label_for_home(record.get("hermes_home") or ""),
-        "supervisor": _detect_supervisor(), **_get_code_identity_fields()}
+        "supervisor": supervisor, "launch_supervisor": supervisor, **_get_code_identity_fields()}
     with contextlib.suppress(Exception):
         # served_profiles (multiplex mode) is stamped into runtime status by the runner.
         served = (read_runtime_status() or {}).get("served_profiles")
@@ -216,12 +257,7 @@ class GatewayControlServer:
         info = bind_path.lstat()
         self._file_identities[bind_path] = (info.st_dev, info.st_ino)
         if pointer_file is not None:
-            fd = os.open(pointer_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-            # O_CREAT's mode only applies to a NEW file; an older gateway's leftover pointer is 0644
-            # and clients refuse it, so restarting must heal the mode.
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as pointer:
-                pointer.write(str(bind_path))
+            _publish_pointer(pointer_file, bind_path)
             self._pointer_file = pointer_file
         for path in filter(None, (self._bind_path, self._pointer_file)):
             info = path.lstat()
@@ -315,11 +351,22 @@ class GatewayControlServer:
             raise PermissionError("invalid bootstrap envelope")
         params = request.get("params")
         if (not isinstance(params, dict) or not {"profile_id", "instance_id", "purpose"} <= set(params)
-                or set(params) - {"profile_id", "instance_id", "purpose", "scope"}):
+                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject"}):
             raise PermissionError("invalid bootstrap parameters")
         if params["instance_id"] != self.ticket_store.instance_id:
             raise PermissionError("stale runtime instance")
-        ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=peer_subject,
+        # A verified same-user peer may name the principal it acts for (a standalone dashboard
+        # forwarding a mutation for its authenticated user, #138915): the socket's peer gate
+        # stays the trust boundary — the forwarded subject only relabels who that same peer is,
+        # it never admits a less-verified caller. Only a structured login subject is nameable
+        # (``authenticated_subject``'s ``auth:v1:[provider, issuer, user]`` form); a bare label
+        # like ``admin`` could collide with another stored owner representation, so it fails closed.
+        subject = params.get("subject", peer_subject)
+        if not isinstance(subject, str) or not subject or len(subject) > 256:
+            raise PermissionError("invalid bootstrap subject")
+        if subject is not peer_subject and not _structured_login_subject(subject):
+            raise PermissionError("invalid bootstrap subject")
+        ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=subject,
                                        purpose=params["purpose"], scope=params.get("scope", "profile"))
         return {"ticket": ticket, "expires_in_seconds": 30,
                 "instance_id": self.ticket_store.instance_id,

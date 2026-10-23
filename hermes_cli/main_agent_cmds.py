@@ -79,6 +79,17 @@ _ACP_FLAGS = (
 
 def cmd_acp(args):
     """Launch Hermes Agent as an ACP server."""
+    import os
+    # The gateway-backed ACP server forwards launch flags from their documented env equivalents
+    # (main() already exported --yolo / --safe-mode / --ignore-user-config).
+    for attr, name in (("accept_hooks", "HERMES_ACCEPT_HOOKS"), ("ignore_rules", "HERMES_IGNORE_RULES")):
+        if getattr(args, attr, False):
+            os.environ[name] = "1"
+    # -m / --provider: the route a --safe-mode / --ignore-user-config session freezes (it reads no
+    # profile default), carried like the TUI launcher's.
+    for attr, name in (("model", "HERMES_MODEL"), ("provider", "HERMES_INFERENCE_PROVIDER")):
+        if getattr(args, attr, None):
+            os.environ[name] = getattr(args, attr)
     try:
         from acp_adapter.entry import main as acp_main
         acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])

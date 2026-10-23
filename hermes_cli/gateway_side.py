@@ -16,18 +16,20 @@ _POLL_SECONDS = 1.0
 
 
 def connection_for(cli):
-    """The CLI's gateway connection when its session is open, else None (not rewired)."""
+    """The CLI's gateway connection when its session is open, else None (not rewired). A hung-up
+    connection is returned (its next call redials); only a final one is None."""
     from hermes_cli.gateway_tools_notify import gateway_store
     store = gateway_store(cli)
-    if store is None or not getattr(cli, "_gateway_session_open", False) or store.connection.closed:
+    if store is None or not getattr(cli, "_gateway_session_open", False) or store.connection.final:
         return None
     return store.connection
 
 
 def start(connection, session_id, verb, text):
     """Admit the side task on the owner: ``(task_id, wait)``; ``wait()`` -> the answer (raises on failure)."""
-    result = connection.call(f"prompt.{verb}", session_id=session_id, text=text) or {}
-    task_id = result.get("task_id")
+    # The epoch of the socket that admitted it: a redial before the waiter exists must still end it.
+    result, epoch = connection.call_tagged(f"prompt.{verb}", session_id=session_id, text=text)
+    task_id = (result or {}).get("task_id")
     if not task_id:
         raise RuntimeError(f"prompt.{verb} returned no task id")
     inbox = connection.side_waiter(task_id)
@@ -38,7 +40,8 @@ def start(connection, session_id, verb, text):
                 try:
                     payload = inbox.get(timeout=_POLL_SECONDS)
                 except queue.Empty:
-                    if connection.closed:
+                    # The task lived on the socket that admitted it: hung up, or already redialed.
+                    if connection.closed or connection.epoch != epoch:
                         from hermes_cli.gateway_connection import DISCONNECTED
                         raise RuntimeError(DISCONNECTED) from None
                     continue

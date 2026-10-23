@@ -63,6 +63,20 @@ def _newest_mtime_ns(paths) -> int | None:
     return max((m for m in map(_watcher_mtime_ns, paths) if m is not None), default=None)
 
 
+def _files_sig(paths) -> tuple:
+    """Sorted ``(path, mtime_ns, size)`` per stat-able file in ``paths``.
+
+    For multi-file signatures, unlike a newest-mtime max: a file added, removed or rewritten in
+    the same timestamp tick as the current newest one (coarse-mtime filesystems) still moves it.
+    """
+    entries = []
+    for path in paths:
+        with contextlib.suppress(OSError):
+            st = path.stat()
+            entries.append((str(path), st.st_mtime_ns, st.st_size))
+    return tuple(sorted(entries))
+
+
 def _skin_sig() -> tuple[str, float | None]:
     """(active skin name, its user-file mtime). Built-ins have no file, so only
     their name moves; a user skin's mtime lets an in-place color edit repaint too."""
@@ -184,8 +198,8 @@ _SESSION_SIGNATURE_FIELDS = (
 )
 # path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
 # normal 0.5 s watch pass stat-only; SQLite is read only after another process
-# actually commits.
-_sessions_db_sig_cache: dict[str, tuple[int | None, tuple | None]] = {}
+# actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
+_sessions_db_sig_cache: dict[str, tuple[object, tuple | None]] = {}
 
 
 def _session_db_content_sig(db_path: Path):
@@ -241,9 +255,24 @@ def _session_db_content_sig(db_path: Path):
         if conn is not None:
             conn.close()
 
-    _sessions_db_sig_cache[cache_key] = (mtime, signature)
+    _sessions_db_sig_cache[cache_key] = (_settled_mtime(mtime), signature)
 
     return signature
+
+
+# Filesystem timestamps come from a coarse clock (~4 ms ticks; whole seconds on some filesystems) and
+# SQLite commits in place, so a commit landing in the tick of a read leaves the DB/WAL mtime unchanged.
+# A digest read while the mtime is that fresh must not become a cache hit ("racily clean", as in git's
+# index): it is cached under a key no mtime equals, so the next tick re-reads the rows.
+_RACY_MTIME = object()
+
+
+def _settled_mtime(mtime):
+    """``mtime`` when it is old enough to trust as a cache key, else a never-matching sentinel."""
+    from utils import mtime_is_racy  # function-local: bodies are rebound onto server.py's globals
+    if mtime is None or mtime_is_racy(mtime):
+        return _RACY_MTIME
+    return mtime
 
 
 def _sessions_sig():
@@ -261,18 +290,18 @@ def _sessions_sig():
 
 
 def _projects_sig():
-    """Newest mtime across projects.db (+ WAL) for the watcher home and every served
+    """Per-file stat signature of projects.db (+ WAL) for the watcher home and every served
     sibling profile. The CLI and other windows write projects.db directly — nothing in
     their process touches this gateway's transports — so the file is the only shared
     signal, exactly like state.db (#53046, #56757)."""
-    return _newest_mtime_ns(
+    return _files_sig(
         root / name
         for root in (_watcher_home(), *_served_profile_homes)
         for name in ("projects.db", "projects.db-wal"))
 
 
 def _pairing_sig():
-    """Newest mtime across every profile's pairing ledgers (legacy ``pairing/`` and
+    """Per-file stat signature of every profile's pairing ledgers (legacy ``pairing/`` and
     ``platforms/pairing/``): the gateway process writes pending codes, so the files are the only
     shared signal (a pairing request moves nothing in gateway_state.json)."""
     entries = []
@@ -281,7 +310,7 @@ def _pairing_sig():
             # Only the ledgers: _rate_limits.json moves on every unauthorized DM.
             entries += [
                 e for e in root.iterdir() if e.name.endswith(("-pending.json", "-approved.json"))]
-    return _newest_mtime_ns(entries)
+    return _files_sig(entries)
 
 
 # Live-profile pairing roots, cached on (home, ``profiles/`` dir mtime) with a TTL. The liveness
@@ -332,6 +361,16 @@ def _bot_relay_outbox_sig():
     return _bot_relay_outbox_seen or None
 
 
+def _skills_sig():
+    """The skill roots' stat signature for every scope a session resolved commands in (each profile
+    home and session repo, not only the launch one: ``agent.skill_commands.published_scopes_signature``):
+    a skill installed or removed from another terminal (``hermes skills install``, a dropped SKILL.md,
+    nested under a category) moves it, and attached clients refetch ``commands.catalog`` from this
+    gateway instead of rescanning disk."""
+    from agent.skill_commands import published_scopes_signature
+    return published_scopes_signature()
+
+
 # event → (check interval, signature fn, payload fn). Signatures are stat-cheap; the interval
 # keeps pricier probes (pet resolves the sheet off disk) off the 0.5s tick. cron/jobs.json
 # moves on edits AND scheduler ticks; gateway_state.json is where the messaging gateway
@@ -346,6 +385,7 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), dict),
     "projects.changed": (2.0, _projects_sig, dict),
     "pairing.changed": (2.0, _pairing_sig, dict),
+    "skills.changed": (2.0, _skills_sig, dict),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
     "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, dict)}
 

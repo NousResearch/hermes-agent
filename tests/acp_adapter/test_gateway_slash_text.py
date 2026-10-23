@@ -29,11 +29,22 @@ async def test_path_and_unknown_slash_text_is_submitted_as_the_prompt(text):
 
 
 @pytest.mark.asyncio
-async def test_registered_command_this_surface_does_not_carry_is_still_refused_locally():
-    # A Hermes command is never forwarded as text the owner might execute as a control.
+async def test_registered_command_the_owner_refuses_is_a_named_reply_not_a_failed_prompt():
+    # A Hermes command is never forwarded as prompt text: the owner's slash.exec answers or
+    # refuses it, and the refusal is the command's reply (#134889 ACP-17).
+    from hermes_cli.gateway_client import GatewayRPCError
     agent = GatewayACPAgent()
-    agent._gateway = AsyncMock()
+    agent._gateway, agent._conn = AsyncMock(), AsyncMock()
     agent._snapshots["s"] = {}
-    with pytest.raises(GatewayClientError, match="unsupported_command"):
-        await agent.prompt([acp.text_block("/reset")], "s")
-    agent._gateway.rpc.assert_not_awaited()
+    calls = []
+
+    async def rpc(method, **params):
+        calls.append((method, params))
+        raise GatewayRPCError("unsupported_command")
+
+    agent._gateway.rpc.side_effect = rpc
+    response = await agent.prompt([acp.text_block("/rollback")], "s")
+    assert response.stop_reason == "end_turn"
+    assert calls == [("slash.exec", {"session_id": "s", "command": "/rollback"})]
+    shown = agent._conn.session_update.await_args.kwargs["update"].content.text
+    assert "/rollback is not available on the shared gateway" in shown

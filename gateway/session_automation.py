@@ -258,6 +258,16 @@ def _route_owner(authority, entry):
             else authority.logical_owner(entry.session_id))
 
 
+def _delegating_session(db, session_id):
+    """The conversation a (nested) delegate_task child runs under, else ``session_id``. Only the
+    owner mints ``subagent`` rows, with the parent's lineage (gateway/session_worker_child.py)."""
+    lineage = [session_id]
+    while ((row := db.get_session(lineage[-1])) and row.get('source') == 'subagent'
+           and row.get('parent_session_id') not in (None, *lineage)):
+        lineage.append(row['parent_session_id'])
+    return lineage[-1]
+
+
 def _owner(runner, event, authority):
     route = event.metadata.get('gateway_session_key') or runner.session_store._generate_session_key(event.source)
     entry = runner.session_store.lookup_by_session_key(route)
@@ -269,8 +279,10 @@ def _owner(runner, event, authority):
     if not expected:
         raise RuntimeStoreError('admission_conflict')
     if expected != entry.session_id:
-        # A completed child may follow compression, but never /new or an unrelated resume.
-        if authority.db.get_compression_tip(expected) != entry.session_id:
+        # A completed child may follow compression, and a process a subagent started its parent
+        # conversation, but never /new or an unrelated resume.
+        expected = _delegating_session(authority.db, expected)
+        if expected != entry.session_id and authority.db.get_compression_tip(expected) != entry.session_id:
             raise RuntimeStoreError('admission_conflict')
     return entry
 
@@ -326,10 +338,6 @@ def admission_display(payload):
     return card
 
 
-def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
-
-
 def committed_route_envelope(authority, entry):
     """The route's last committed native envelope with connector provenance (what a producer turn
     borrows), or ``None`` while no human message was admitted there."""
@@ -364,15 +372,20 @@ def snapshot_automation(authority, adapter, event, identity):
     # Recheck only the source/provenance: a completed input's retained media is already released.
     restored = restore_native({'text': event.text, 'native_text_v1': {
         key: value for key, value in envelope.items() if key != 'media'}}, runner)
-    # Synthetic wakes clear ``message_id`` (#52694, #123097) while the committed human source keeps
-    # it, so compare the routing/provenance identity, never the platform reply anchor.
-    if (_route_identity(restored.source) != _route_identity(event.source)
+    # The wake runs as the committed human source; the producer's source, rebuilt from the route's
+    # stored origin, only names the route. Its labels, first speaker and stored profile drift from
+    # the latest committed turn, so compare the route both resolve to now (``_owner`` checked it).
+    if (runner.session_store._generate_session_key(restored.source) != entry.session_key
             or runner._adapter_for_source(restored.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
     # Never anchor the wake to the stale human message; ``to_dict`` already omits a null anchor.
     source.pop('message_id', None)
+    if 'relay' in provenance:
+        # The relay seal binds the source; restore_native verified it over the anchored source.
+        from gateway.session_ingress_context import reseal_relay
+        provenance = reseal_relay(adapter, source, provenance)
     # Producer timestamps and platform reply IDs change on retry. Neither belongs
     # in the identity/fingerprint of the same immutable completion.
     envelope = {'source': source, 'route': entry.session_key,

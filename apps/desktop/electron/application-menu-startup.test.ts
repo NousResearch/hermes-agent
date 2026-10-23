@@ -27,6 +27,6 @@ test('macOS installs the application menu only after the first window exists', (
   assert.deepEqual(record(true), ['create-window', 'build-menu', 'set-menu:menu'])
 })
 
-test('other platforms create the window and never build an application menu', () => {
-  assert.deepEqual(record(false), ['create-window'])
+test('Windows and Linux install the menu after the first window for native roles', () => {
+  assert.deepEqual(record(false), ['create-window', 'build-menu', 'set-menu:menu'])
 })

@@ -52,7 +52,7 @@ _FIELDS = {
                        'choice', 'request_id'},
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
-                           'member_id', 'ttl_seconds'},
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds'},
     'groups.peer.revoke': {'grant'},
     'profiles.list': {'include_sessions'},
 }
@@ -166,7 +166,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
                 'room_link': room_link(authority),
-                'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
+                'features': ['room_identity', 'monotonic_log', 'replayable_disband', 'peer_renewal_horizon'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
                 'seatable_profiles': sorted(name for name in homes if name not in refused)}
 

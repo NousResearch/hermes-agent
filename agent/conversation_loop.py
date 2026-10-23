@@ -831,6 +831,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id,
             )
             agent._session_title_hint = "Bot Chat"
+            # Read BEFORE the build: this rebuild also satisfies any pending prompt refresh.
+            refresh_request = requested_epoch(agent)
             # The skills index cache (LRU + disk snapshot) does not watch the skills
             # dir; a capability refresh must rebuild THROUGH it or new skills are lost.
             try:
@@ -852,6 +854,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "(session=%s): %s. The refresh will re-fire next turn.",
                 persist_tools=True,
             )
+            stamp_prompt_epoch(agent, refresh_request)
             return
         refresh_epoch = stored_prompt_refresh_epoch(agent, session_row)
         if refresh_epoch:

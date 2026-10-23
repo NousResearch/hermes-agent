@@ -29,7 +29,7 @@ GITHUB_TAP_PROVIDERS = {
     "openai/skills": "OpenAI", "anthropics/skills": "Anthropic", "huggingface/skills": "HuggingFace",
     "nvidia/skills": "NVIDIA", "voltagent/awesome-agent-skills": "VoltAgent", "garrytan/gstack": "gstack",
     "minimax-ai/cli": "MiniMax",
-    "ericgonzalez/HermesAgent-Callprep": "ericgonzalez", "ericgonzalez/Hermesagent-Hubspot-Updater": "ericgonzalez",
+    "ericgonzalez/hermesagent-callprep": "ericgonzalez", "ericgonzalez/hermesagent-hubspot-updater": "ericgonzalez",
 }
 
 # Accepted ``--source`` provider filters (lowercased). Not real source ids —

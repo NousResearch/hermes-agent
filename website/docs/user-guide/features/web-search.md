@@ -31,6 +31,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Opt-in keyless when selected |
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) | Paid (per-request Search API pricing) |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
+| **MrScraper** (plugin) | `MRSCRAPER_API_TOKEN` | ✔ | ✔ | Paid |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 | **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | — | Requires a ChatGPT/Codex subscription |
 
@@ -332,6 +333,38 @@ PARALLEL_API_KEY=your-parallel-key-here
 ```
 
 Get access at [parallel.ai](https://parallel.ai).
+
+---
+
+### MrScraper (plugin) {#mrscraper-plugin}
+
+[MrScraper](https://mrscraper.com) adds Google SERP search and page retrieval to the standard `web_search` and `web_extract` tools. Its [standalone native plugin](https://github.com/ai-mrscraper/hermes-mrscraper-plugin) calls MrScraper's HTTP API directly and exposes three tools: `mrscraper_scraper_api`, `mrscraper_web_search`, and `mrscraper_account`. No MCP connection is required for the plugin.
+
+```bash
+hermes plugins install mrscraper
+hermes plugins enable mrscraper
+```
+
+The installer prompts for `MRSCRAPER_API_TOKEN` from the [MrScraper dashboard](https://app.mrscraper.com). Start a new Hermes session after enabling the plugin to load its tools. Select MrScraper under **Web Search & Extract** in `hermes tools`, or set the provider explicitly:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "mrscraper"
+  extract_backend: "mrscraper"
+```
+
+For targeted tasks, use the three native tools directly; they do not require selecting MrScraper as the standard web provider.
+
+| Tool | Use |
+| --- | --- |
+| `mrscraper_scraper_api` | Retrieve one URL as HTML, Markdown, or a screenshot with rendering and proxy options. |
+| `mrscraper_web_search` | Search Google with query text or a Google search URL; optionally set region, language, or result page. Returns structured JSON by default. |
+| `mrscraper_account` | Read a filtered account summary with subscription status, token usage, remaining quota, and rate limits. |
+
+Derive structured fields and listings from returned page content. MrScraper API requests may consume account credits and send the target URLs, search queries, and request options you supply to MrScraper. Page retrieval does not provide an interactive browser session; see [Browser Automation](browser.md#mrscraper-rendered-page-extraction) for the distinction.
+
+MrScraper also offers a separate [hosted MCP connection](https://docs.mrscraper.com/docs/getting-started/mcp-server) with OAuth and the server tools `scraperAPI`, `webSearch`, and `status`. That connection uses its own schemas and does not select the native `web_search` or `web_extract` provider.
 
 ---
 

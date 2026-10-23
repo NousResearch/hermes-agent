@@ -159,6 +159,29 @@ class TestPartitionNousModelsByTier:
         del pricing["free/model"]
         assert m.recommended_nous_default_model()["model"] == "openai/gpt-5.4"
 
+    def test_window_plan_default_is_the_plans_first_listed_recommendation(self, monkeypatch):
+        import hermes_cli.models as m
+        from hermes_cli import model_picker_usage as mpu
+        from hermes_cli import models_pricing as mp
+        ids = ["example/model-c", "example/model-b", "example/model-a"]
+        monkeypatch.setattr(m, "get_curated_nous_model_ids", lambda: list(ids))
+        monkeypatch.setattr(m, "check_nous_free_tier", lambda **kw: False)
+        monkeypatch.setattr(m, "union_with_portal_paid_recommendations", lambda i, pr, url="", **kw: (i, pr))
+        monkeypatch.setattr(m, "get_preferred_silent_default_model", lambda provider="": "example/model-b")
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: {})
+        monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: None)
+        usage = mpu.PickerUsage(plan="Window Plan", gauges=(), featured_model_ids=("not/listed", "example/model-a"))
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: usage)
+        assert m.recommended_nous_default_model()["model"] == "example/model-a"
+        # A Large featured pick is never the default: the next listed recommendation is.
+        usage_c = mpu.PickerUsage(plan="Window Plan", gauges=(), featured_model_ids=("example/model-c", "example/model-a"))
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: usage_c)
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: {"example/model-c": {"usage_level": "top_tier"}})
+        assert m.recommended_nous_default_model()["model"] == "example/model-a"
+        # Every other account (no window plan) keeps the silent default.
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
+        assert m.recommended_nous_default_model()["model"] == "example/model-b"
+
     def test_all_paid_models(self):
         """When all models are paid, free-tier users have none selectable."""
         models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]
@@ -750,23 +773,23 @@ class TestLocalOllamaModelDiscovery:
         assert first != second
 
     def test_clear_provider_models_cache_clears_ollama_native_tags_cache(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
-        cache = getattr(models, "_OLLAMA_LOCAL_MODELS_CACHE")
+        cache = models._OLLAMA_LOCAL_MODELS_CACHE
         cache["http://127.0.0.1:11434"] = ("old-model",)
         models.clear_provider_models_cache("ollama")
         assert cache == {}
 
     def test_clear_provider_models_cache_custom_clears_native_tags_cache(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
-        cache = getattr(models, "_OLLAMA_LOCAL_MODELS_CACHE")
+        cache = models._OLLAMA_LOCAL_MODELS_CACHE
         cache["http://127.0.0.1:11434"] = ("old-model",)
         models.clear_provider_models_cache("custom")
         assert cache == {}
 
     def test_clear_provider_models_cache_does_not_remove_custom_disk_cache(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         disk_cache = {
             "custom": {"models": ["custom-model"]},
@@ -1268,7 +1291,7 @@ class TestLocalOllamaModelDiscovery:
         assert _root_for_ollama_native_api("http://ollama.example/api/tags") == "http://ollama.example"
 
     def test_ollama_failed_probe_is_cached_briefly(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         models._OLLAMA_LOCAL_MODELS_CACHE.clear()
         models._OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
@@ -1281,7 +1304,7 @@ class TestLocalOllamaModelDiscovery:
         request.assert_called_once()
 
     def test_empty_ollama_catalog_does_not_resurrect_stale_disk_models(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         base_url = "http://127.0.0.1:11434"
         probe_key = models._ollama_probe_cache_key(base_url, None)
@@ -1301,7 +1324,7 @@ class TestLocalOllamaModelDiscovery:
             models._OLLAMA_LOCAL_PROBE_REACHABLE.pop(probe_key, None)
 
     def test_failed_ollama_catalog_preserves_stale_disk_models(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         base_url = "http://127.0.0.1:11434"
         probe_key = models._ollama_probe_cache_key(base_url, None)
@@ -1321,7 +1344,7 @@ class TestLocalOllamaModelDiscovery:
             models._OLLAMA_LOCAL_PROBE_REACHABLE.pop(probe_key, None)
 
     def test_ollama_native_request_uses_redirect_safe_catalog_helper(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         response = MagicMock()
         response.read.return_value = b'{"models": [{"name": "qwen3:1.7b"}]}'
@@ -1364,7 +1387,7 @@ class TestLocalOllamaModelDiscovery:
 
 
     def test_switch_model_direct_ollama_alias_preserves_matching_origin_api_key(self):
-        import hermes_cli.model_switch as model_switch
+        from hermes_cli import model_switch
 
         base_url = "https://ollama.internal/v1"
         original_aliases = dict(model_switch.DIRECT_ALIASES)
@@ -1398,7 +1421,7 @@ class TestLocalOllamaModelDiscovery:
         assert result.api_key == "secret", result
 
     def test_switch_model_direct_ollama_alias_clears_different_origin_api_key(self):
-        import hermes_cli.model_switch as model_switch
+        from hermes_cli import model_switch
 
         original_aliases = dict(model_switch.DIRECT_ALIASES)
         model_switch.DIRECT_ALIASES.clear()

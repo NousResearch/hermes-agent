@@ -15,7 +15,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+import { registry } from '@/contrib/registry'
 import { queryClient } from '@/lib/query-client'
+import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
 import { setShowModelPricing } from '@/store/model-pricing'
@@ -29,7 +31,8 @@ import {
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
-import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
+import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from './model-catalog-menu'
+import { MODEL_MENU_ROW_AREA, type ModelMenuRowContribution } from './model-menu-row-decorations'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -39,6 +42,7 @@ beforeAll(() => {
 })
 
 const getGlobalModelOptions = vi.fn()
+const closeMenu = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
@@ -62,7 +66,9 @@ vi.mock('@/hermes', () => ({
 beforeEach((): void => {
   queryClient.clear()
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
+  window.localStorage.clear()
   $visibleModels.set(null)
+  $favoriteModels.set([])
   queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
@@ -82,6 +88,48 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+describe('model menu row decorations (MODEL_MENU_ROW_AREA)', () => {
+  it('paints a contributed icon and badge in the row slots, skipping a throwing decorator', async () => {
+    const dispose = [
+      registry.register({
+        area: MODEL_MENU_ROW_AREA,
+        data: {
+          decorate: () => {
+            throw new Error('broken plugin')
+          }
+        } satisfies ModelMenuRowContribution,
+        id: 'broken'
+      }),
+      registry.register({
+        area: MODEL_MENU_ROW_AREA,
+        data: {
+          decorate: ({ model, provider }) =>
+            model === 'gemini-3.1-pro' ? { badge: 'new', icon: <img alt="" data-testid={`mark-${provider}`} /> } : null
+        } satisfies ModelMenuRowContribution,
+        id: 'marks'
+      })
+    ]
+
+    try {
+      renderMenu()
+
+      const row = (await screen.findByText('Gemini 3.1 Pro')).closest('[role="menuitem"]')!
+      const icon = row.querySelector('[data-slot="model-menu-row-icon"]')
+
+      expect(icon?.querySelector('[data-testid="mark-google"]')).toBeTruthy()
+      expect(row.querySelector('[data-model-menu-row-badge]')?.textContent).toBe('new')
+
+      // A decorator returning null leaves its row bare.
+      const bare = screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
+
+      expect(bare.querySelector('[data-slot="model-menu-row-icon"]')).toBeNull()
+      expect(bare.querySelector('[data-model-menu-row-badge]')).toBeNull()
+    } finally {
+      dispose.forEach(release => release())
+    }
+  })
+})
+
 describe('the current row effort', () => {
   it('does not label the current model with the profile default before its session reports one (#79807)', async () => {
     $defaultReasoningEffort.set('ultra')
@@ -97,6 +145,96 @@ describe('the current row effort', () => {
     const settled = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
 
     expect(settled.textContent).toContain('Ultra')
+  })
+})
+
+describe('usage-window plan rows', () => {
+  it('says a spent all-model allowance once, never as a note on every row', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['example/model-b', 'example/model-free:free'],
+          name: 'Nous',
+          plan_usage: {
+            gauges: [{ label: 'day', left_fraction: 0, scope: 'all', style: 'red' }],
+            kind: 'usage_window'
+          },
+          slug: 'nous',
+          usage_levels: { 'example/model-free:free': 'free', 'example/model-b': 'medium' }
+        }
+      ]
+    })
+    renderMenu({ model: 'example/model-free:free', provider: 'nous' })
+
+    await screen.findByText('Free')
+    // Only Large / Free carry a tag. A spent all-model allowance shows once under the provider, not on each row.
+    expect(screen.queryByText('Medium')).toBeNull()
+    expect(screen.getByText('Daily limit reached', { exact: false })).toBeTruthy()
+    expect(screen.queryByText('used up')).toBeNull()
+  })
+
+  it('marks only Large rows when the large-model limit is spent; pay as you go is said once, not per row', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['example/model-b', 'example/model-a', 'example/model-free:free'],
+          name: 'Nous',
+          plan_usage: {
+            credits_pay: true,
+            gauges: [
+              { label: 'day', left_fraction: 0.5, scope: 'all', style: 'green' },
+              { label: 'top_tier', left_fraction: 0, scope: 'top_tier', style: 'red' }
+            ],
+            kind: 'usage_window'
+          },
+          slug: 'nous',
+          usage_levels: {
+            'example/model-a': 'low',
+            'example/model-free:free': 'free',
+            'example/model-b': 'top_tier'
+          }
+        }
+      ]
+    })
+    renderMenu({ model: 'example/model-free:free', provider: 'nous' })
+
+    await screen.findByText('Large')
+    expect(screen.queryByText('Small')).toBeNull()
+    expect(screen.queryByText('uses credits')).toBeNull()
+    expect(screen.getByText('· Large models now use your credits (pay as you go)', { exact: false })).toBeTruthy()
+  })
+})
+
+describe('usage-window plan sections', () => {
+  it('a pinned current model the catalog omits goes under Other models, never under Recommended', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['example/model-a', 'example/model-b'],
+          name: 'Nous',
+          plan_usage: {
+            featured_model_ids: ['example/model-a'],
+            gauges: [{ label: 'day', left_fraction: 0.5, scope: 'all', style: 'green' }],
+            kind: 'usage_window'
+          },
+          slug: 'nous'
+        }
+      ]
+    })
+    renderMenu({ model: 'custom/model-x', provider: 'nous' })
+
+    const recommended = await screen.findByText('Recommended')
+    const other = screen.getByText('Other models')
+    const pick = screen.getByText(/model[- ]a/i)
+    const pinned = screen.getByText(/model[- ]x/i)
+    const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+    expect(follows(recommended, pick)).toBe(true)
+    expect(follows(pick, other)).toBe(true)
+    expect(follows(other, pinned)).toBe(true)
   })
 })
 
@@ -162,11 +300,13 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
 
   render(
     <QueryClientProvider client={client}>
-      <DropdownMenu open>
-        <DropdownMenuContent>
-          <ModelCatalogMenu controller={controller} />
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <ModelMenuCloseContext.Provider value={closeMenu}>
+        <DropdownMenu open>
+          <DropdownMenuContent>
+            <ModelCatalogMenu controller={controller} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </ModelMenuCloseContext.Provider>
     </QueryClientProvider>
   )
 
@@ -211,6 +351,167 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+})
+
+// A star is a promise about the LIST: "keep this one where I can always reach
+// it". That promise is what decides where a favorite paints — its own section
+// at the top, and nowhere twice.
+describe('the catalog owns favorite models', () => {
+  it('lifts a favorite into the Favorites section above the provider groups', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 2\.5/i)
+
+    const label = screen.getByText('Favorites')
+    const googleHeading = screen.getByText('Google')
+
+    expect(label.compareDocumentPosition(googleHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('names each provider once over its favorites when the section mixes providers', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['gemini-3.1-pro', 'gemini-2.5-flash'], name: 'Google', slug: 'google' },
+        { models: ['gemini-3.1-pro'], name: 'OpenRouter', slug: 'openrouter' }
+      ]
+    })
+    // Starred out of provider order: the section still gathers each
+    // provider's favorites under one label, in the order they were starred.
+    toggleFavoriteModel('google', 'gemini-3.1-pro')
+    toggleFavoriteModel('openrouter', 'gemini-3.1-pro')
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+
+    await screen.findByText('Favorites')
+
+    const rows = screen.getAllByText(/Gemini (3\.1|2\.5)/).map(node => node.textContent)
+
+    // One label per provider, never one per row, and each provider's
+    // favorites sit together under it.
+    expect(screen.getAllByText('Google')).toHaveLength(1)
+    expect(screen.getAllByText('OpenRouter')).toHaveLength(1)
+    expect(rows).toEqual(['Gemini 3.1 Pro', 'Gemini 2.5', 'Gemini 3.1 Pro'])
+  })
+
+  it('does not label the provider when every favorite shares one', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+
+    await screen.findByText('Favorites')
+
+    // Only Google's own group heading, never a label inside Favorites.
+    expect(screen.getAllByText('Google')).toHaveLength(1)
+  })
+
+  it('does not also list a favorite under its provider', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+
+    await screen.findByText('Favorites')
+
+    // Listed once, under Favorites — not also down in Google's group.
+    expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+  })
+
+  it('keeps a favorite whose provider is not connected without painting an empty section', async () => {
+    $favoriteModels.set([favoriteModelKey('anthropic', 'claude-sonnet-4.6')])
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.queryByText('Favorites')).toBeNull()
+  })
+
+  // Curation and favorites are different questions: "which models do I
+  // usually want listed" vs "which one do I want first". A star wins.
+  it('shows a favorite the Edit Models shortlist hides', async () => {
+    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-3.1-pro')]))
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+
+    await screen.findByText('Favorites')
+    expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+  })
+
+  it('folds the section away while searching and lists the match in its provider place', async () => {
+    toggleFavoriteModel('google', 'gemini-2.5-flash')
+
+    renderMenu()
+    await screen.findByText('Favorites')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini-2.5' } })
+
+    // A query means "show me every match": the section folds and the match
+    // paints in its provider's place. Still exactly once, still starred.
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Favorites')).toBeNull()
+    })
+
+    expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Remove from favorites' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  // Starring is never a pick: the star, a shift-click on the row (the
+  // sidebar's pin gesture) and Shift+Enter all toggle in place, the menu stays
+  // open, and the same gesture on the moved row undoes it.
+  it('the star, shift-click and Shift+Enter toggle a favorite without selecting or closing', async () => {
+    const select = renderMenu()
+    const key = favoriteModelKey('google', 'gemini-2.5-flash')
+    const row = () => screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
+    const star = () => row().querySelector('button[aria-pressed]')!
+
+    await screen.findByText('Gemini 2.5')
+    fireEvent.click(star())
+    expect($favoriteModels.get()).toEqual([key])
+    await screen.findByText('Favorites')
+
+    fireEvent.click(row(), { shiftKey: true })
+    expect($favoriteModels.get()).toEqual([])
+
+    const search = screen.getByRole('textbox', { name: 'Search models' })
+
+    fireEvent.change(search, { target: { value: 'gemini-2.5' } })
+    await vi.waitFor(() => expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1))
+    fireEvent.keyDown(search, { key: 'Enter', shiftKey: true })
+    expect($favoriteModels.get()).toEqual([key])
+
+    expect(select).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+})
+
+describe('the current model the catalog omits (#57534)', () => {
+  it('renders the current model as a selectable row when the provider catalog lacks it', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['openai/gpt-4o-mini'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+
+    renderMenu({ model: 'qwen/qwen-2.5-72b-instruct', provider: 'openrouter' })
+
+    // The current model paints as its own family row (humanized name), ahead
+    // of the catalog's families, and stays selectable.
+    const row = (await screen.findByText('Qwen 2.5 72B Instruct')).closest('[role="menuitem"]')!
+
+    expect(row.textContent).toContain('Qwen 2.5 72B Instruct')
+  })
+
+  it('does not inject the current model into a provider that is not the current one', async () => {
+    // current.provider has no row; the model must not leak into another group.
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['openai/gpt-4o-mini'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+
+    renderMenu({ model: 'qwen/qwen-2.5-72b-instruct', provider: 'nous' })
+
+    await screen.findByText('GPT-4o-mini')
+    expect(screen.queryByText('Qwen 2.5 72B Instruct')).toBeNull()
   })
 })
 

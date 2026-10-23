@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import type { DesktopBootProgress } from '@/global'
+import type { DesktopBootProgress, UpdateHoldWire } from '@/global'
 import { translateNow } from '@/i18n'
 
 export interface DesktopBootState extends DesktopBootProgress {
@@ -44,6 +44,11 @@ export function applyDesktopBootProgress(progress: DesktopBootProgress) {
     progress: mergedProgress,
     visible: progress.running || mergedProgress < 100 || Boolean(error)
   })
+}
+
+/** The blocked-update screen's hold alone, outside the boot steps (R8 M6). */
+export function applyDesktopUpdateHold(hold: UpdateHoldWire | null) {
+  $desktopBoot.set({ ...$desktopBoot.get(), updateHold: hold })
 }
 
 export function setDesktopBootStep(step: {

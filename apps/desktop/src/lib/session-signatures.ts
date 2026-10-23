@@ -52,6 +52,16 @@ function hashString(hash: number, value: string): number {
   return next >>> 0
 }
 
+/** Cheap sidebar-row fingerprint. Used to skip a 120-row transcript fetch
+ *  when message_count, last_active, and preview have not moved (#95767). */
+export function sessionListFingerprint(session: {
+  last_active?: number
+  message_count?: number
+  preview?: null | string
+}): string {
+  return `${session.message_count ?? 0}:${session.last_active ?? 0}:${session.preview ?? ''}`
+}
+
 /** Transcript fingerprint for the active-messaging-session poll. */
 export function sessionMessagesSignature(messages: SessionMessage[]): string {
   let hash = 2166136261

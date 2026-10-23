@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from agent.browser_provider import BrowserProvider
+from agent.ssl_verify import requests_verify
 
 _CLOSE_OK = {200, 201, 204}
 
@@ -27,7 +28,7 @@ class CloudBrowserProvider(BrowserProvider):
     release_path: str
     missing_credentials_error: str = ""
     setup_tag: Optional[str] = None  # ``None`` hides the provider from the setup picker
-    setup_env_vars: List[Dict[str, str]] = []
+    setup_env_vars: list[dict[str, str]] = []
     create_label_suffix: str = ""  # "Failed to create <label><suffix> session"; Firecrawl: " browser"
     close_fail_fmt: Optional[str] = None  # Browserbase's close warning historically omits the vendor
 
@@ -46,26 +47,32 @@ class CloudBrowserProvider(BrowserProvider):
     def is_available(self) -> bool:
         return self._get_config_or_none() is not None
 
-    def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
+    def _get_config_or_none(self) -> Optional[dict[str, Any]]:
         raise NotImplementedError
 
-    def _get_config(self) -> Dict[str, Any]:
+    def _get_config(self) -> dict[str, Any]:
         config = self._get_config_or_none()
         if config is None:
             raise ValueError(self.missing_credentials_error)
         return config
 
-    def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+    def _headers(self, config: dict[str, Any]) -> dict[str, str]:
         raise NotImplementedError
 
-    def _release_headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+    def _release_headers(self, config: dict[str, Any]) -> dict[str, str]:
         return self._headers(config)
 
-    def _release_body(self, config: Dict[str, Any]) -> Optional[Dict[str, object]]:
+    def _release_body(self, config: dict[str, Any]) -> Optional[dict[str, object]]:
         return None
 
-    def _release(self, config: Dict[str, Any], session_id: str, timeout: int) -> requests.Response:
-        kwargs: Dict[str, Any] = {"headers": self._release_headers(config), "timeout": timeout}
+    def _release(self, config: dict[str, Any], session_id: str, timeout: int) -> requests.Response:
+        # requests resolves verify=True through a bundle path frozen at its own import,
+        # which a replaced install environment leaves dangling; hand it a live one.
+        kwargs: dict[str, Any] = {
+            "headers": self._release_headers(config),
+            "timeout": timeout,
+            "verify": requests_verify(),
+        }
         body = self._release_body(config)
         if body is not None:
             kwargs["json"] = body
@@ -77,12 +84,12 @@ class CloudBrowserProvider(BrowserProvider):
         return f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
 
     def _post_create(
-        self, url: str, headers: Dict[str, str], payload: Dict[str, object], *, wrap_errors: bool = True
+        self, url: str, headers: dict[str, str], payload: dict[str, object], *, wrap_errors: bool = True
     ) -> requests.Response:
         """POST the create request; network failures → RuntimeError unless the managed gateway
         caller needs the raw exception to retry."""
         try:
-            return requests.post(url, headers=headers, json=payload, timeout=30)
+            return requests.post(url, headers=headers, json=payload, timeout=30, verify=requests_verify())
         except requests.RequestException as exc:
             if not wrap_errors:
                 raise
@@ -125,7 +132,7 @@ class CloudBrowserProvider(BrowserProvider):
         except Exception as e:
             self._log.debug("Emergency cleanup failed for %s session %s: %s", self.label, session_id, e)
 
-    def get_setup_schema(self) -> Optional[Dict[str, Any]]:
+    def get_setup_schema(self) -> Optional[dict[str, Any]]:
         if self.setup_tag is None:
             return None
         return {
@@ -133,6 +140,4 @@ class CloudBrowserProvider(BrowserProvider):
             "badge": "paid",
             "tag": self.setup_tag,
             "env_vars": [dict(v) for v in self.setup_env_vars],
-            # Cloud-scoped hook: installs the agent-browser CLI only (the vendor hosts Chromium).
-            "post_setup": "browserbase",
         }

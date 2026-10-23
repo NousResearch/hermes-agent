@@ -11,7 +11,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
 import { RightSidebarPane } from '@/app/right-sidebar'
 import { ReviewPane } from '@/app/right-sidebar/review'
@@ -26,7 +26,7 @@ import { getLogs } from '@/hermes'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { openPreview } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 // ---------------------------------------------------------------------------
 // Logs — live agent-log tail. ⌘K-only chrome: the pane contribution exists
@@ -34,12 +34,42 @@ import { $currentCwd } from '@/store/session'
 // the controller) — never in a default layout, never a standing tab.
 // ---------------------------------------------------------------------------
 
+const LOGS_BOTTOM_THRESHOLD = 48
+
 export function LogsPane() {
   const { data, error } = useQuery({
     queryKey: ['contrib-logs-tail'],
     queryFn: () => getLogs({ lines: 300 }),
     refetchInterval: 5000
   })
+
+  const preRef = useRef<HTMLPreElement>(null)
+  const shouldStickRef = useRef(true)
+
+  // Stick-to-bottom: auto-scroll when the user is already near the bottom.
+  useEffect(() => {
+    const el = preRef.current
+
+    if (!el || !shouldStickRef.current) {
+      return
+    }
+
+    const raf = requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight })
+    })
+
+    return () => cancelAnimationFrame(raf)
+  }, [data])
+
+  function handleScroll() {
+    const el = preRef.current
+
+    if (!el) {
+      return
+    }
+
+    shouldStickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= LOGS_BOTTOM_THRESHOLD
+  }
 
   if (error) {
     return <div className="p-3 text-xs text-(--ui-text-quaternary)">log unavailable: {String(error)}</div>
@@ -56,7 +86,12 @@ export function LogsPane() {
   // No chrome of its own — the zone header (when the user summons it) is the
   // pane's only label. Just the tail.
   return (
-    <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)">
+    <pre
+      className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)"
+      data-selectable-text="true"
+      onScroll={handleScroll}
+      ref={preRef}
+    >
       {data.lines.join('\n')}
     </pre>
   )
@@ -72,7 +107,7 @@ export const $restartPreviewServer = atom<((url: string, context?: string) => Pr
 
 /** Open a file from the tree in the real preview pipeline. */
 function previewFile(path: string) {
-  void normalizeOrLocalPreviewTarget(path, $currentCwd.get() || undefined)
+  void normalizeOrLocalPreviewTarget(path, $focusedWorkspaceCwd.get() || undefined)
     .then(target => {
       if (target) {
         openPreview(target)
@@ -99,7 +134,7 @@ export function FilesPane() {
 // ---------------------------------------------------------------------------
 
 export function ReviewPaneContent() {
-  const cwd = useStore($currentCwd)
+  const cwd = useStore($focusedWorkspaceCwd)
 
   // Keyed by cwd like DesktopController so switching projects rebuilds the
   // diff state instead of showing the previous repo's files.

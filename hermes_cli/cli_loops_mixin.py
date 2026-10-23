@@ -4,12 +4,11 @@ Mixin on ``HermesCLI``; cli.py symbols are imported lazily inside methods (impor
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 import threading
 import time
 
 from agent.i18n import t
+from hermes_cli.gateway_client import GatewayClientError
 from rich.markup import escape as _escape
 
 
@@ -26,8 +25,25 @@ def _queue_usage() -> str:
     return t("cli.queue.usage")
 
 
+def _parse_queue_index(token: str) -> int | None:
+    """1-based queue index from one whitespace-free token, or None when it isn't one.
+
+    ``str.isdigit()`` alone is not enough: it accepts characters ``int()`` rejects
+    (``²``, ``②``), and ``int()`` also refuses digit strings past Python's
+    conversion limit. A ValueError here would escape the slash handler and take
+    down the prompt_toolkit app, so every queue index goes through this.
+    """
+    if not token.isdigit():
+        return None
+    try:
+        return int(token)
+    except ValueError:
+        return None
+
+
 # management verb -> (handler, takes a leading item index). Verbs without an index are
-# only management when they stand alone; index verbs only when a number follows.
+# only management when they stand alone; index verbs when a number follows or when the
+# verb stands alone (the handler then prints its usage line).
 _QUEUE_VERBS: dict[str, tuple[str, bool]] = {
     "list": ("_queue_list", False), "ls": ("_queue_list", False), "show": ("_queue_list", False),
     "clear": ("_queue_clear", False),
@@ -45,6 +61,15 @@ def _print_decision_message(decision: dict) -> bool:
     if msg:
         _cprint(f"  {msg}")
     return bool(msg)
+
+
+def _goal_blocks_loop_tick(mgr) -> bool:
+    """``loops.goal_blocks_loop_tick`` for this loop's session: asked of the gateway when the manager
+    is the gateway's (it reads the goal row and its barrier where they live)."""
+    if hasattr(mgr, "goal_blocks_tick"):
+        return mgr.goal_blocks_tick()
+    from hermes_cli.loops import goal_blocks_loop_tick
+    return goal_blocks_loop_tick(mgr.session_id)
 
 
 class CLILoopsMixin:
@@ -99,21 +124,19 @@ class CLILoopsMixin:
         out.cursor_goto(0, 0)
         out.flush()
         cc = ChatConsole()
-        if self.compact or shutil.get_terminal_size().columns < 80:
+        # The banner plan startup uses (show_banner): a gateway session's banner is the new
+        # session's snapshot (its tools, MCP included, and main's short label), never this
+        # process's registry.
+        from hermes_cli.cli_info_mixin import banner_plan
+        plan = banner_plan(self, cc)
+        if plan.banner_kw is None:
             cc.print(_build_compact_banner())
+        elif plan.inventory is not None:
+            self._show_gateway_banner(build_welcome_banner, plan.inventory, plan.banner_kw)
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
                                          disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
-            agent = getattr(self, "agent", None)
-            ctx_len = None
-            if agent and hasattr(agent, "context_compressor"):
-                ctx_len = agent.context_compressor.context_length
-            from agent.context_pin import is_context_pinned
-            build_welcome_banner(
-                console=cc, model=self.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
-                tools=tools, enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider,
-                context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None)))
+            build_welcome_banner(tools=tools, **plan.banner_kw)
         _cprint(_fresh_start())
         self._print_random_tip()
 
@@ -278,11 +301,14 @@ class CLILoopsMixin:
                 if bundled_count:
                     print(f"  {t('cli.plugins.bundled_available', count=bundled_count)}")
                 return
-            try:  # loaded-plugin details (tools/hooks/commands counts, errors) by name
-                from hermes_cli.plugins import get_plugin_manager
-                loaded = {p["name"]: p for p in get_plugin_manager().list_plugins()}
-            except Exception:
-                loaded = {}
+            from hermes_cli import gateway_plugin_commands
+            loaded = gateway_plugin_commands.loaded(self)  # the gateway's; None off the gateway
+            if loaded is None:
+                try:  # loaded-plugin details (tools/hooks/commands counts, errors) by name
+                    from hermes_cli.plugins import get_plugin_manager
+                    loaded = {p["name"]: p for p in get_plugin_manager().list_plugins()}
+                except Exception:
+                    loaded = {}
             print(t("cli.plugins.user_plugins_header", count=len(user_entries)))
             for name, version, _desc, source, _dir, key in sorted(user_entries):
                 state = _plugin_status(name, enabled, disabled, key=key)
@@ -323,71 +349,155 @@ class CLILoopsMixin:
                 q.not_empty.notify_all()
         return before, after
 
+    def _gateway_queue_store(self):
+        """The gateway session store when this CLI is a viewer of the gateway's session, else None."""
+        from hermes_cli.gateway_tools_notify import gateway_store
+        return gateway_store(self) if getattr(self, "session_id", None) else None
+
+    def _queue_items(self) -> list:
+        """``[(admission_id | None, item)]``: the owner's queued admissions (run first, in its FIFO
+        order), then the turns still waiting in ``_pending_input``."""
+        items: list = []
+        store = self._gateway_queue_store()
+        if store is not None:
+            from hermes_cli import gateway_queue
+            items = list(gateway_queue.queued_rows(self, store))
+        return items + [(None, item) for item in self._pending_input_items()]
+
     def _queue_enqueue(self, text: str) -> None:
         from cli import _cprint
         payload = self._expand_paste_references(text)
-        self._pending_input.put(payload)
+        store = self._gateway_queue_store() if self._agent_running else None
+        if store is not None:
+            # #134889 N5: the gateway's durable FIFO holds it (committed at accept, kept across an owner
+            # restart, run once after the current turn), never this process.
+            from hermes_cli import gateway_queue
+            try:
+                gateway_queue.submit_queued(self, store, payload)
+            except gateway_queue.QueueOutcomeUnknown as exc:  # sent, no answer: it may be queued
+                _cprint(f"  {t('cli.queue.submit_unknown', error=exc)}")
+                return
+            except GatewayClientError as exc:  # the owner refused, or it was never sent: nothing is held here
+                _cprint(f"  {t('cli.queue.gateway_refused', error=exc)}")
+                return
+        else:
+            self._pending_input.put(payload)
         key = "cli.queue.queued_next_turn" if self._agent_running else "cli.queue.queued"
         _cprint(f"  {t(key, preview=_preview(payload))}")
 
     def _queue_list(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
-        items = self._pending_input_items()
+        items = self._queue_items()
         if not items:
             _cprint(f"  {t('cli.queue.empty')}" + ("" if rest else "  " + _queue_usage()))
             return
         _cprint(f"  {t('cli.queue.pending_header', count=len(items))}")
-        for idx, item in enumerate(items, 1):
+        for idx, (_, item) in enumerate(items, 1):
             tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
             _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
 
+    def _queue_gateway_call(self, verb, index, *args):
+        """One owner verb on queued item ``index``; its refusal is printed (in its own words), never raised."""
+        from cli import _cprint
+        from hermes_cli import gateway_queue
+        from hermes_cli.gateway_client import GatewayRPCError
+        try:
+            return getattr(gateway_queue, verb)(self, self._gateway_queue_store(), *args)
+        except GatewayRPCError as exc:
+            if str(exc) in gateway_queue.STARTED_REFUSALS:  # the drain claimed it first: it runs as sent
+                _cprint(f"  {t('cli.queue.already_started', index=index)}")
+            else:
+                key = "cli.queue.edit_refused" if verb == "replace" else "cli.queue.remove_refused"
+                _cprint(f"  {t(key, index=index, error=exc)}")
+        except GatewayClientError as exc:  # no answer: the owner may have applied it
+            _cprint(f"  {t('cli.queue.change_unknown', index=index, error=exc)}")
+        return None
+
     def _queue_clear(self, rest: str) -> None:
         from cli import _cprint
+        owned = [admission for admission, _ in self._queue_items() if admission]
+        cleared = sum(1 for idx, admission in enumerate(owned, 1)
+                      if self._queue_gateway_call("cancel", idx, admission) == "cancelled")
         before, _ = self._mutate_pending_input(lambda items: [])
-        key = "cli.queue.cleared_one" if len(before) == 1 else "cli.queue.cleared_other"
-        _cprint(f"  {t(key, count=len(before))}")
+        cleared += len(before)
+        key = "cli.queue.cleared_one" if cleared == 1 else "cli.queue.cleared_other"
+        _cprint(f"  {t(key, count=cleared)}")
 
     def _queue_remove(self, rest: str) -> None:
         from cli import _cprint
-        idx = int(rest)
+        bits = rest.split()
+        idx = _parse_queue_index(bits[0]) if len(bits) == 1 else None
+        if idx is None:
+            _cprint(f"  {t('cli.queue.usage_remove')}")
+            return
+        items = self._queue_items()
+        owned = sum(1 for admission, _ in items if admission)
+        if 1 <= idx <= owned:
+            admission, text = items[idx - 1]
+            verdict = self._queue_gateway_call("cancel", idx, admission)
+            if verdict == "cancelled":
+                _cprint(f"  {t('cli.queue.removed', index=idx, preview=_preview(str(text)))}")
+            elif verdict == "stopped":  # claimed between the list and the cancel: the owner interrupted it
+                _cprint(f"  {t('cli.queue.started_stopped', index=idx)}")
+            elif verdict == "started":
+                _cprint(f"  {t('cli.queue.already_started', index=idx)}")
+            return
+        local = idx - owned
         removed: list = []
         before, _ = self._mutate_pending_input(
-            lambda items: (removed.append(items.pop(idx - 1)) or items) if 1 <= idx <= len(items) else items)
+            lambda items: (removed.append(items.pop(local - 1)) or items) if 1 <= local <= len(items) else items)
         if removed:
             _cprint(f"  {t('cli.queue.removed', index=idx, preview=_preview(str(removed[0])))}")
         else:
-            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=len(before))}")
+            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=owned + len(before))}")
 
     def _queue_edit(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
-        idx_text, _, new_prompt = rest.partition(" ")
-        if not new_prompt.strip():
+        # Split on any whitespace, like ``_cmd_queue``'s routing check, so
+        # ``edit 1<TAB>text`` doesn't leave "1\ttext" as the index token.
+        bits = rest.split(None, 1)
+        idx = _parse_queue_index(bits[0]) if len(bits) == 2 else None
+        if idx is None:
             _cprint(f"  {t('cli.queue.usage_edit')}")
             return
-        idx = int(idx_text)
+        new_prompt = bits[1]
         new_text = self._expand_paste_references(new_prompt.strip())
+        items = self._queue_items()
+        owned = sum(1 for admission, _ in items if admission)
+        if 1 <= idx <= owned:
+            # The owner admits the edit as a new admission at the back of its FIFO.
+            if self._queue_gateway_call("replace", idx, items[idx - 1][0], new_text):
+                _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
+            return
+        local = idx - owned
 
         def _edit(items: list) -> list:
-            if 1 <= idx <= len(items):
+            if 1 <= local <= len(items):
                 # A voice-queued item keeps its sentinel so the concise voice-response
                 # prefix still applies (#65827).
-                voice = isinstance(items[idx - 1], _VoiceInputMessage)
-                items[idx - 1] = _VoiceInputMessage(new_text) if voice else new_text
+                voice = isinstance(items[local - 1], _VoiceInputMessage)
+                items[local - 1] = _VoiceInputMessage(new_text) if voice else new_text
             return items
 
         before, after = self._mutate_pending_input(_edit)
         if before == after:
-            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=len(before))}")
+            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=owned + len(before))}")
         else:
             _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
 
     def _queue_move(self, rest: str) -> None:
         from cli import _cprint
         bits = rest.split()
-        if len(bits) != 2 or not bits[1].isdigit():
+        src, dst = (_parse_queue_index(b) for b in bits) if len(bits) == 2 else (None, None)
+        if src is None or dst is None:
             _cprint(f"  {t('cli.queue.usage_move')}")
             return
-        src, dst = int(bits[0]), int(bits[1])
+        owned = sum(1 for admission, _ in self._queue_items() if admission)
+        if owned and min(src, dst) <= owned and src != dst:
+            # The owner's FIFO runs admissions in the order they were sent; it has no reorder verb.
+            _cprint(f"  {t('cli.queue.move_gateway_fifo')}")
+            return
+        src, dst = src - owned, dst - owned
 
         def _move(items: list) -> list:
             if 1 <= src <= len(items) and 1 <= dst <= len(items):
@@ -396,9 +506,9 @@ class CLILoopsMixin:
 
         before, after = self._mutate_pending_input(_move)
         if before == after and src != dst:
-            _cprint(f"  {t('cli.queue.move_out_of_range', size=len(before))}")
+            _cprint(f"  {t('cli.queue.move_out_of_range', size=owned + len(before))}")
         else:
-            _cprint(f"  {t('cli.queue.moved', source=src, destination=dst)}")
+            _cprint(f"  {t('cli.queue.moved', source=src + owned, destination=dst + owned)}")
 
     def _cmd_queue(self, cmd_original: str):
         """``/queue <prompt>`` enqueues; a leading management verb whose arguments fit
@@ -441,7 +551,9 @@ class CLILoopsMixin:
             except Exception as exc:
                 _cprint(f"  {t('cli.steer.failed', error=exc)}")
             else:
-                if accepted:
+                if accepted == "voice_stopped":  # TUI-26: the owner ended the voice chat; consumed
+                    pass
+                elif accepted:
                     _cprint(f"  {t('cli.steer.queued', preview=_preview(payload))}")
                 else:
                     _cprint(f"  {t('cli.steer.rejected_empty')}")
@@ -474,35 +586,69 @@ class CLILoopsMixin:
         setattr(self, attr, mgr)
         return mgr
 
+    def _automation_connection(self):
+        """``(gateway, connection)``: on a gateway session store the managers are the gateway's
+        (``hermes_cli.gateway_automation``), and none exists until the gateway session is open, so this
+        process never opens state.db read-write nor calls the goal judge. Off the gateway (tests, the
+        TUI slash worker's shadow CLI) main's in-process managers apply."""
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        store = getattr(self, "_session_db", None)
+        if not isinstance(store, GatewaySessionStore):
+            return False, None
+        return True, store.connection if getattr(self, "_gateway_session_open", False) else None
+
+    def _automation_manager(self, attr, label, local, remote):
+        gateway, connection = self._automation_connection()
+        if gateway and connection is None:
+            return None
+        return self._session_bound_manager(
+            attr, label, (lambda: lambda sid: remote(sid, connection)) if gateway else local)
+
+    def _mark_automation_stale(self) -> None:
+        """Agent thread: the gateway published this session's goal/loop state mid-turn (a tool moved it).
+        The dock re-reads the mirrored managers on its next spinner-thread poll (``cli_session_dock``)."""
+        self._automation_stale = True
+
     def _get_goal_manager(self):
         """GoalManager bound to the current session_id (see ``_session_bound_manager``)."""
+        def max_turns():
+            from hermes_cli.config import load_config
+            try:
+                goals_cfg = (load_config() or {}).get("goals") or {}
+                return int(goals_cfg.get("max_turns", 20) or 20)
+            except Exception:  # health: allow BLE001 -- main's fallback: an unreadable goals config is the 20-turn default
+                return 20
+
         def load():
             from hermes_cli.goals import GoalManager
-            from hermes_cli.config import load_config
+            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns())
 
-            def make(sid):
-                try:
-                    goals_cfg = (load_config() or {}).get("goals") or {}
-                    max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-                except Exception:
-                    max_turns = 20
-                return GoalManager(session_id=sid, default_max_turns=max_turns)
-            return make
-        return self._session_bound_manager("_goal_manager", "goal manager", load)
+        def remote(sid, connection):
+            from hermes_cli.gateway_automation import GatewayGoalManager
+            return GatewayGoalManager(sid, connection)
+        return self._automation_manager("_goal_manager", "goal manager", load, remote)
 
     def _get_heartbeat_manager(self):
         """HeartbeatManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
             from hermes_cli.heartbeat import HeartbeatManager
             return lambda sid: HeartbeatManager(session_id=sid)
-        return self._session_bound_manager("_heartbeat_manager", "heartbeat manager", load)
+
+        def remote(sid, connection):
+            from hermes_cli.gateway_automation import GatewayHeartbeatManager
+            return GatewayHeartbeatManager(sid, connection)
+        return self._automation_manager("_heartbeat_manager", "heartbeat manager", load, remote)
 
     def _get_loop_manager(self):
         """LoopManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
             from hermes_cli.loops import LoopManager
             return lambda sid: LoopManager(session_id=sid)
-        return self._session_bound_manager("_loop_manager", "loop manager", load)
+
+        def remote(sid, connection):
+            from hermes_cli.gateway_automation import GatewayLoopManager
+            return GatewayLoopManager(sid, connection)
+        return self._automation_manager("_loop_manager", "loop manager", load, remote)
 
     def _start_heartbeat_watchdog(self):
         """Start the idle-poll daemon that injects a due heartbeat prompt into
@@ -590,8 +736,7 @@ class CLILoopsMixin:
         except Exception:
             return
         try:
-            from hermes_cli.loops import goal_blocks_loop_tick
-            if goal_blocks_loop_tick(mgr.session_id):
+            if _goal_blocks_loop_tick(mgr):
                 return
         except Exception:
             pass
@@ -661,9 +806,11 @@ class CLILoopsMixin:
                 pass
             _cprint(f"  {_DIM}{t('cli.loop.paused_interrupted')}{_RST}")
             return
-        decision = mgr.complete_tick(self._last_assistant_response_text())
+        decision = mgr.complete_tick("" if getattr(self, "_last_turn_failed", False)
+                                     else self._last_assistant_response_text())
+        # With the live-work dock up its loop row carries the countdown; the one-shot line would go stale.
         if (not _print_decision_message(decision) and decision.get("status") == "active"
-                and mgr.state is not None):
+                and mgr.state is not None and getattr(self, "_subagent_monitor", None) is None):
             _cprint(f"  {_DIM}{t('cli.loop.remaining', label=mgr.state.remaining_label())}{_RST}")
 
     def _maybe_continue_goal_after_turn(self) -> None:
@@ -705,6 +852,10 @@ class CLILoopsMixin:
 
         # Empty/whitespace responses are almost always transient failures (API error,
         # empty stream): judging would say "continue" and trip the parse-failure backstop.
+        # A failed turn (a refused one: its folder is gone) never reached the model, so the judge
+        # would grade the previous reply and burn the whole budget; same rule as the TUI's hook.
+        if getattr(self, "_last_turn_failed", False):
+            return
         last_response = self._last_assistant_response_text()
         if not last_response.strip():
             return

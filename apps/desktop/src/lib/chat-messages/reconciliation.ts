@@ -330,6 +330,109 @@ function hydratedIdResolver(mergedNextMessages: ChatMessage[]): (message: ChatMe
         : hydratedIdByRowId.get(message.rowId)
 }
 
+// A failed turn whose only user row is hidden (a scripted onboarding beat) has
+// no visible turn to anchor on, but its bubble still holds the tool calls the
+// store already has: the stored assistant sharing one is the bubble's copy.
+function toolCallTwinIndex(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+  localIndex: number
+): number {
+  const visibleUser = (message: ChatMessage) => message.role === 'user' && !message.hidden
+
+  const callIds = new Set(
+    currentMessages[localIndex].parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+  )
+
+  if (
+    !callIds.size ||
+    currentMessages.slice(localIndex + 1).some(visibleUser) ||
+    currentMessages.slice(0, localIndex).filter(visibleUser).length !== mergedNextMessages.filter(visibleUser).length
+  ) {
+    return -1
+  }
+
+  const turnStart = mergedNextMessages.findLastIndex(visibleUser) + 1
+
+  const twin = mergedNextMessages
+    .slice(turnStart)
+    .findLastIndex(
+      message =>
+        message.role === 'assistant' &&
+        !message.hidden &&
+        message.parts.some(part => part.type === 'tool-call' && callIds.has(part.toolCallId))
+    )
+
+  return twin === -1 ? -1 : turnStart + twin
+}
+
+// The refresh already carries this tail turn's error card, rebuilt from its
+// failed-turn boundary row (see hydration `failedTurnError`).
+function persistedTailErrorMatches(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+  localIndex: number
+): boolean {
+  const local = currentMessages[localIndex]
+  const visibleUser = (message: ChatMessage) => message.role === 'user' && !message.hidden
+
+  if (currentMessages.slice(localIndex + 1).some(visibleUser)) {
+    return false
+  }
+
+  const storedUserIndex = mergedNextMessages.findLastIndex(visibleUser)
+
+  return mergedNextMessages
+    .slice(storedUserIndex + 1)
+    .some(
+      message =>
+        message.role === 'assistant' &&
+        !message.hidden &&
+        Boolean(message.error) &&
+        message.errorSurface?.code === local.errorSurface?.code
+    )
+}
+
+/**
+ * Where the refresh already holds a local failed assistant: the index of the
+ * stored assistant to fold its error onto, `represented` when the refresh
+ * carries the error card itself, or -1 when the turn is not stored.
+ */
+function storedFailedTurnIndex(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+  index: number,
+  hydratedId: string | undefined
+): number | 'represented' {
+  const hydratedIndex =
+    hydratedId === undefined
+      ? tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+      : mergedNextMessages.findIndex(candidate => candidate.id === hydratedId && candidate.role === 'assistant')
+
+  if (hydratedIndex !== -1) {
+    return hydratedIndex
+  }
+
+  // #120978: a rowId-less errored attachment turn cannot be matched by rowId
+  // and the tail-anchor match bails when newer turns already committed. The
+  // preceding local user row's caption, compared tolerantly against every
+  // hydrated user row, still names the turn: fold the error onto the first
+  // settled assistant reply after that row.
+  const attachmentIndex = attachmentTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+
+  if (attachmentIndex !== -1) {
+    return attachmentIndex
+  }
+
+  // #124379: the refresh already carries this tail turn's error card, rebuilt
+  // from its failed-turn boundary row — the local card is redundant, not missing.
+  if (persistedTailErrorMatches(mergedNextMessages, currentMessages, index)) {
+    return 'represented'
+  }
+
+  return toolCallTwinIndex(mergedNextMessages, currentMessages, index)
+}
+
 function localAssistantErrorIdsToPreserve(
   mergedNextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
@@ -382,33 +485,15 @@ function localAssistantErrorIdsToPreserve(
 
     const hydratedId = hydratedIdFor(message)
 
-    const hydratedAssistantIndex =
-      hydratedId === undefined
-        ? tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
-        : mergedNextMessages.findIndex(candidate => candidate.id === hydratedId && candidate.role === 'assistant')
+    const twinIndex = storedFailedTurnIndex(mergedNextMessages, currentMessages, index, hydratedId)
 
-    // #120978: a rowId-less errored attachment turn cannot be matched by rowId
-    // and the tail-anchor match bails when newer turns already committed. The
-    // preceding local user row's caption, compared tolerantly against every
-    // hydrated user row, still names the turn: fold the error onto the first
-    // settled assistant reply after that row.
-    const hydratedAttachmentAssistantIndex =
-      hydratedAssistantIndex === -1 ? attachmentTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index) : -1
-
-    if (hydratedAttachmentAssistantIndex !== -1) {
-      mergedNextMessages[hydratedAttachmentAssistantIndex] = {
-        ...mergedNextMessages[hydratedAttachmentAssistantIndex],
-        error: message.error,
-        ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
-        pending: false
-      }
-
+    if (twinIndex === 'represented') {
       continue
     }
 
-    if (hydratedAssistantIndex !== -1) {
-      mergedNextMessages[hydratedAssistantIndex] = {
-        ...mergedNextMessages[hydratedAssistantIndex],
+    if (twinIndex !== -1) {
+      mergedNextMessages[twinIndex] = {
+        ...mergedNextMessages[twinIndex],
         error: message.error,
         ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
         pending: false

@@ -258,7 +258,15 @@ function baseSshOptions(controlPath, connectTimeoutMs?) {
     '-o',
     'ExitOnForwardFailure=yes',
     '-o',
-    `ConnectTimeout=${connectSecs}`
+    `ConnectTimeout=${connectSecs}`,
+    // Keepalive: send a message every 15s, drop after 3 missed replies (45s)
+    // so NAT/firewall timeouts don't silently kill an idle connection.
+    '-o',
+    'ServerAliveInterval=15',
+    '-o',
+    'ServerAliveCountMax=3',
+    '-o',
+    'TCPKeepAlive=yes'
   ]
 }
 
@@ -280,6 +288,12 @@ function hostArgs({ port, keyPath }: { port?: number | string; keyPath?: string 
 
 function target(user, host) {
   return user ? `${user}@${host}` : host
+}
+
+// Quote for the login shell sshd invokes. fish treats `\` inside `'…'`; POSIX
+// does not. Close the quote and escape outside it so both decode identically.
+function loginShellQuote(value: string) {
+  return `'${String(value).replace(/['\\]/g, ch => (ch === `'` ? `'\\''` : `'\\\\'`))}'`
 }
 
 function buildExecArgs(conn, remoteCommand, connectTimeoutMs?) {
@@ -486,8 +500,9 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Resolves { code, signal, stdout, stderr }. `signal` is Node's close signal
 // (null on a normal exit). On timeout the child is SIGKILLed and the promise
-// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
-function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
+// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests; `command`
+// is the ssh client binary (resolveSshBinary; bare `ssh` by default).
+function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ignore', stdinData, signal }: any = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const error: any = new Error('SSH operation was cancelled.')
@@ -501,7 +516,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
     let child
 
     try {
-      child = spawnFn('ssh', args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
+      child = spawnFn(command, args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
     } catch (error) {
       reject(error)
 
@@ -663,6 +678,8 @@ class SshConnection {
   port: number
   keyPath: string
   controlPath: string
+  /** ssh client binary every spawn uses (resolveSshBinary; bare `ssh` by default). */
+  sshBinary: string
   _spawnFn: any
   _log: (msg: string) => void
   _connectTimeoutMs: number
@@ -672,6 +689,7 @@ class SshConnection {
   _tunnelRestartDelayMs: number
   _opened: boolean
   _mux: boolean
+  _posixRemote: boolean | null = null
   _tunnels: Map<string, any>
   _controlMasters: ControlMasterHolders
   _forwardedSpecs: Set<string>
@@ -711,6 +729,7 @@ class SshConnection {
     this._forwardedSpecs = new Set()
 
     this._spawnFn = opts.spawnFn || spawn
+    this.sshBinary = opts.sshBinary || 'ssh'
 
     this._log = typeof opts.rememberLog === 'function' ? opts.rememberLog : () => {}
     this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
@@ -854,6 +873,7 @@ class SshConnection {
         result = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
           timeoutMs: this._connectTimeoutMs,
           spawnFn: this._spawnFn,
+          command: this.sshBinary,
           signal
         })
       } catch (error) {
@@ -875,7 +895,12 @@ class SshConnection {
     let result
 
     try {
-      result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
+      result = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary,
+        signal
+      })
     } catch (error) {
       throw this._connectFailed(error)
     }
@@ -900,7 +925,12 @@ class SshConnection {
       : buildExecArgs(this, 'exit 0', this._connectTimeoutMs)
 
     try {
-      const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
+      const result: any = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary,
+        signal
+      })
 
       return sshCloseOk(result)
     } catch (error: any) {
@@ -945,6 +975,7 @@ class SshConnection {
       const result: any = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
         timeoutMs: this._connectTimeoutMs,
         spawnFn: this._spawnFn,
+        command: this.sshBinary,
         signal
       })
 
@@ -966,7 +997,8 @@ class SshConnection {
     try {
       await runSsh(buildControlArgs(this, 'exit', [], this._connectTimeoutMs), {
         timeoutMs: this._connectTimeoutMs,
-        spawnFn: this._spawnFn
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
       })
     } catch {
       void 0
@@ -983,14 +1015,35 @@ class SshConnection {
 
   // One-shot remote command over the control connection. Resolves stdout;
   // rejects with a classified error on non-zero exit or timeout.
+  //
+  // sshd hands the command to the user's LOGIN shell. Payloads are POSIX sh, so
+  // fish rejects `help="$(…)"`. On Linux/Darwin wrap in `sh -c`; Windows stays raw.
   async exec(remoteCommand, { timeoutMs, stdinData }: any = {}) {
-    const args = buildExecArgs(this, remoteCommand, this._connectTimeoutMs)
+    if (this._posixRemote === null) {
+      try {
+        const probe: any = await runSsh(buildExecArgs(this, 'uname -s', this._connectTimeoutMs), {
+          timeoutMs: timeoutMs ?? this._execTimeoutMs,
+          spawnFn: this._spawnFn,
+          command: this.sshBinary
+        })
+
+        if (probe.code !== 255) {
+          this._posixRemote = probe.code === 0 && /^(Linux|Darwin)$/.test(String(probe.stdout || '').trim())
+        }
+      } catch {
+        // transport failure: leave uncached, send this payload raw
+      }
+    }
+
+    const command = this._posixRemote ? `sh -c ${loginShellQuote(remoteCommand)}` : remoteCommand
+    const args = buildExecArgs(this, command, this._connectTimeoutMs)
     let result
 
     try {
       result = await runSsh(args, {
         timeoutMs: timeoutMs ?? this._execTimeoutMs,
         spawnFn: this._spawnFn,
+        command: this.sshBinary,
         ...(stdinData != null ? { stdinData } : {})
       })
     } catch (error) {
@@ -1014,7 +1067,7 @@ class SshConnection {
   // cascaded into SIGTERM of a healthy backend (#96266).
   _startNoMuxTunnelChild(tunnel: any, spec: string, args: string[], localPort: number | string) {
     return new Promise<void>((resolve, reject) => {
-      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = this._spawnFn(this.sshBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] })
       tunnel.child = child
       let stderr = ''
       let readyConfirmed = false
@@ -1186,7 +1239,11 @@ class SshConnection {
     let result
 
     try {
-      result = await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
+      result = await runSsh(args, {
+        timeoutMs: this._forwardTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
+      })
     } catch (error) {
       throw this._fail(error)
     }
@@ -1227,7 +1284,7 @@ class SshConnection {
     const args = buildControlArgs(this, 'cancel', ['-L', spec], this._connectTimeoutMs)
 
     try {
-      await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
+      await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn, command: this.sshBinary })
       this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
     } catch (error: any) {
       this._logLine(`cancelForward failed (ignored): ${error.message}`)
@@ -1285,7 +1342,11 @@ class SshConnection {
     const args = buildControlArgs(this, 'exit', [], this._connectTimeoutMs)
 
     try {
-      const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
+      const result: any = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
+      })
 
       if (!sshCloseOk(result)) {
         throw this._fail(result)

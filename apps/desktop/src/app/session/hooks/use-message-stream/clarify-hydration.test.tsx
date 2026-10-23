@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
+import { resetServerRequestsForTests } from '@/store/server-requests'
 import { onScrollToBottomRequest } from '@/store/thread-scroll'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
@@ -58,6 +59,7 @@ function seedHydratedMessages(messages: ChatMessage[]) {
 describe('clarify request stream hydration', () => {
   beforeEach(() => {
     clearClarifyRequest()
+    resetServerRequestsForTests()
     scrollToBottom.mockClear()
     stopScrollListener = onScrollToBottomRequest(scrollToBottom, SID)
   })
@@ -65,6 +67,7 @@ describe('clarify request stream hydration', () => {
   afterEach(() => {
     cleanup()
     clearClarifyRequest()
+    resetServerRequestsForTests()
     stopScrollListener?.()
     stopScrollListener = null
     vi.restoreAllMocks()
@@ -161,6 +164,43 @@ describe('clarify request stream hydration', () => {
     expect(clarifyParts()).toHaveLength(1)
     expect(messages[1]).toMatchObject({ id: 'assistant-codex', pending: true })
     expect(stream.state().streamId).toBe('assistant-codex')
+  })
+
+  it('hydrates an already-pending sparse clarify row from the live request', () => {
+    mountStream()
+
+    seedHydratedMessages([
+      { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+      {
+        id: 'assistant-pending',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider',
+            toolName: 'clarify',
+            args: {},
+            argsText: '{}'
+          }
+        ]
+      }
+    ])
+
+    clarifyRequest({
+      questions: [{ choices: ['Approve', 'Reject'], qid: 'q0', question: 'Continue?' }],
+      request_id: 'req-pending'
+    })
+
+    const messages = stream.state().messages
+    const part = clarifyParts()[0]
+    expect(messages).toHaveLength(2)
+    expect(messages[1]).toMatchObject({ id: 'assistant-pending', pending: true })
+    expect(part).toMatchObject({
+      toolCallId: 'call-provider',
+      args: { questions: [{ choices: ['Approve', 'Reject'], question: 'Continue?' }] }
+    })
+    expect(stream.state().streamId).toBe('assistant-pending')
   })
 
   it('keeps a hydrated DeepSeek text-plus-clarify row in its original position', () => {
@@ -272,6 +312,47 @@ describe('clarify request stream hydration', () => {
     expect(clarifyParts()).toHaveLength(1)
     expect(clarifyParts()[0]).toHaveProperty('result')
     expect(stream.state().needsInput).toBe(false)
+  })
+
+  it.each(['message.complete', 'error'] as const)('keeps a live clarify card through a spurious %s', type => {
+    mountStream()
+    clarifyRequest({ questions: [{ choices: ['a', 'b'], qid: 'q0', question: 'Pick' }], request_id: 'req-live' })
+
+    act(() =>
+      stream.handleEvent({
+        payload: type === 'error' ? { message: 'spurious error' } : { text: '' },
+        session_id: SID,
+        type
+      })
+    )
+
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-live')
+
+    clarifyExpire('req-live')
+    expect($clarifyRequests.get()[SID]).toBeUndefined()
+  })
+
+  it('keeps a live clarify card through a stale session.info running=false snapshot (#83319)', () => {
+    mountStream()
+
+    // The state a reconnect replays from: the turn was live (busy) when the
+    // backend parked the clarify request. The session.info snapshot riding
+    // the reconnect predates the clarify, so its running=false is stale —
+    // the same wipe class as the spurious turn-end/error clears.
+    const state = createClientSessionState()
+    state.busy = true
+    state.awaitingResponse = true
+    stream.states.set(SID, state)
+
+    clarifyRequest({ questions: [{ choices: ['a', 'b'], qid: 'q0', question: 'Pick' }], request_id: 'req-live' })
+
+    act(() => stream.handleEvent({ payload: { running: false }, session_id: SID, type: 'session.info' }))
+
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-live')
+
+    // And the clear still fires once the request truly settles.
+    clarifyExpire('req-live')
+    expect($clarifyRequests.get()[SID]).toBeUndefined()
   })
 
   it('merges a BATCH tool.start row with its clarify.request (no top-level question)', () => {

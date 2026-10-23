@@ -36,6 +36,7 @@
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
 import { readStatusCode } from './api-transport'
 import { sharesHostBackend } from './host-backend-singleton'
+import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
@@ -110,6 +111,39 @@ function isGatewayAuthRejection(error) {
 /** True when the rejected credential is the app's saved bearer, not the server session. */
 function isStaleAppTokenRejection(error: unknown) {
   return Boolean(error && typeof error === 'object' && (error as any).appTokenRejected === true)
+}
+
+/**
+ * User-facing copy for a ticket mint that failed as a TRANSPORT fault (the
+ * gateway never answered with a usable HTTP status — timeout, refused
+ * connection, DNS). Distinguishing these lets the user act on the real
+ * problem instead of a blanket "could not reach" (#98647's diagnostic-cost
+ * complaint): a timeout suggests a network/VPN path issue, a refused
+ * connection a stopped gateway, DNS a wrong hostname.
+ */
+export function gatewayTicketTransportMessage(error: unknown): string {
+  const code =
+    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : ''
+
+  if (['ETIMEDOUT', 'ETIMEOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)) {
+    return (
+      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket: ' +
+      'the connection timed out or the host could not be resolved. ' +
+      'Check your network/VPN path and the gateway URL, then reconnect.'
+    )
+  }
+
+  if (code === 'ECONNREFUSED') {
+    return (
+      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket: ' +
+      'the connection was refused. The gateway process is likely down or listening on another port. ' +
+      'Start the gateway (or fix its URL), then reconnect.'
+    )
+  }
+
+  return 'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
 }
 
 function gatewayTicketFailure(error, authMessage, transportMessage) {
@@ -275,8 +309,8 @@ function connectionScopeKey(profile) {
 function resolveRemoteSshDashboardProfile(configuredRemoteProfile, poolOrProfileKey) {
   const configured = String(configuredRemoteProfile || '').trim()
 
-  if (configured && configured !== 'default') {
-    return configured
+  if (configured) {
+    return configured === 'default' ? '' : configured
   }
 
   const key = String(poolOrProfileKey || '').trim()
@@ -974,7 +1008,7 @@ function translateSelfProfileQuery(path, profile, backendProfile) {
  * gateway host serving every profile, scoped per request). An explicit
  * `?profile=` already on the path wins; an empty profile is a no-op.
  */
-function pathWithProfileScope(path, profile) {
+function pathWithProfileScope(path, profile, method?: string) {
   const scopedProfile = connectionScopeKey(profile)
 
   if (!scopedProfile) {
@@ -995,7 +1029,10 @@ function pathWithProfileScope(path, profile) {
     return path
   }
 
-  if (parsed.searchParams.has('profile')) {
+  // A path that already names its profile never also carries the ambient one: the two disagree
+  // whenever the sidebar is on another profile or "All profiles", and the gateway refuses the pair.
+  if (parsed.searchParams.has('profile')
+      || (profileRouteSuffix(parsed.pathname) && !profileCollectionRoute(parsed.pathname, method))) {
     return path
   }
 
@@ -1018,9 +1055,9 @@ export interface RegistryBackendRequestScope {
  * isolated SSH backends already own one profile but may translate a Desktop
  * alias in an existing self-profile filter.
  */
-function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
+function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope, method?: string) {
   return backend.sharedRemote || backend.sharedPrimary || backend.mode === 'local'
-    ? pathWithProfileScope(path, profile)
+    ? pathWithProfileScope(path, profile, method)
     : translateSelfProfileQuery(path, profile, backend.remoteProfile)
 }
 

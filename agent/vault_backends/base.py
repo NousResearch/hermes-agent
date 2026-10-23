@@ -1,7 +1,7 @@
 """Login-backend contract + registry for the browser credential vault.
 
 A ``LoginBackend`` lists login metadata (never secrets) and resolves ONE
-password at fill time. External managers (1Password, Bitwarden) additionally
+password at fill time. External managers (1Password, Bitwarden, KeePass) additionally
 need a per-session unlock; ``resolve_password`` raises ``UnlockRequired``
 while locked so the tool can ask the surface to prompt. Handles are
 namespaced by ``prefix`` so ``backend_for_handle`` needs no lookup table.
@@ -26,9 +26,9 @@ class UnlockRequired(Exception):
 
 
 class LoginBackend(ABC):
-    name: str                # config key: local | onepassword | bitwarden
+    name: str                # config key: local | onepassword | bitwarden | keepass
     display_name: str        # user-facing
-    prefix: str              # handle prefix ("vault_", "op:", "bw:")
+    prefix: str              # handle prefix ("vault_", "op:", "bw:", "kp:")
     needs_unlock: bool = False
 
     def owns(self, handle: str) -> bool:
@@ -96,13 +96,18 @@ def _cfg() -> dict:
 
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
+    from agent.vault_backends.keepass import KeepassLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+    return (OnePasswordLoginBackend, BitwardenLoginBackend, KeepassLoginBackend)
 
 
 def is_installed(name: str) -> bool:
-    """Is the manager CLI reachable — honouring a configured ``binary_path`` over PATH."""
+    """Is the manager CLI reachable — honouring a configured ``binary_path`` over PATH. KeePass has no
+    CLI: it is installed when the optional ``keepass`` extra (pykeepass) is importable."""
     import shutil
+    if name == "keepass":
+        import importlib.util
+        return importlib.util.find_spec("pykeepass") is not None
     section = _cfg().get(name) or {}
     explicit = str(section.get("binary_path") or "") if isinstance(section, dict) else ""
     if explicit:
@@ -115,9 +120,12 @@ def is_installed(name: str) -> bool:
 
 def is_enabled(name: str) -> bool:
     """An installed manager is a login source unless the user opted out (``vault.<name>.enabled: false``).
-    Zero-config on purpose: a user with ``bw``/``op`` on PATH should never have to discover a toggle."""
+    Zero-config on purpose: a user with ``bw``/``op`` on PATH should never have to discover a toggle.
+    KeePass has no default database to detect, so it is a source only once ``vault.keepass.database`` is set."""
     section = _cfg().get(name) or {}
     if isinstance(section, dict) and section.get("enabled") is False:
+        return False
+    if name == "keepass" and not (isinstance(section, dict) and section.get("database")):
         return False
     return is_installed(name)
 

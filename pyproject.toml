@@ -371,6 +371,9 @@ google-chat = [
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
 trace-upload = ["huggingface-hub==1.24.0"]
+# KeePass (.kdbx) login source for the browser vault (agent/vault_backends/keepass.py,
+# imported lazily). Opt-in like the other backends, so it stays out of [all].
+keepass = ["pykeepass>=4.0.3,<5"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
@@ -552,6 +555,9 @@ dev = [
 test = [
   "distlib==0.4.3; sys_platform == 'win32'",
   "anthropic==0.87.0",
+  # The KeePass backend's tests import pykeepass and skip the whole module without it, which would
+  # make the suite green here while never exercising the unlock wrapper end to end.
+  "pykeepass==4.2.0",
 ]
 
 [build-system]

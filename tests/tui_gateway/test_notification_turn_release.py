@@ -77,7 +77,7 @@ def test_a_completion_batch_that_cannot_be_prepared_hands_the_turn_back(monkeypa
     session = {"history_lock": threading.RLock(), "running": False, "history": []}
 
     server._notif_dispatch_completions("sid", session, [(e, "t") for e in events],
-                                       SimpleNamespace(completion_queue=queue.Queue()), None)
+                                       SimpleNamespace(completion_queue=queue.Queue(), settle_notification=lambda evt: None), None)
 
     assert session["running"] is False and started == []
     # Claims already taken go back too, or those completions are lost to every consumer for 300 s.

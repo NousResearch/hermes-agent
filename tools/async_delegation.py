@@ -606,6 +606,9 @@ def requeue_admitted_completion(delegation_id: str, target_queue) -> bool:
 
 def complete_event_delivery(evt: dict[str, Any], claim_id: str) -> None:
     _event_delivery(complete_completion_delivery, evt, claim_id)
+    if evt.get("type") != "async_delegation":
+        from tools.process_registry import process_registry
+        process_registry.settle_notification(evt)
 
 
 def release_event_delivery(evt: dict[str, Any], claim_id: str) -> None:

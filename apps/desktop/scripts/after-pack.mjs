@@ -17,6 +17,7 @@ import { copyFile, mkdir, readdir } from 'node:fs/promises'
 import { runPython } from '../../../scripts/build/python.mjs'
 
 import { assertPackagedBackendReadyArtifact, resolvePackagedAsarPath } from './backend-ready-artifact.mjs'
+import { assertUnpackedComplete } from './assert-unpacked-complete.mjs'
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
 import { rehashPayloadDigests } from './payload-digests.mjs'
 import { resolveSigningIdentity, signNestedChromium } from './sign-nested-chromium.mjs'
@@ -69,6 +70,7 @@ export default async function afterPack(context) {
   const asarPath = resolvePackagedAsarPath(context)
   assertPackagedBackendReadyArtifact(asarPath)
   console.log(`[after-pack] verified backend readiness parser in ${asarPath}`)
+  assertUnpackedComplete(context)
   const resources = platform === 'darwin'
     ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
     : path.join(context.appOutDir, 'resources')

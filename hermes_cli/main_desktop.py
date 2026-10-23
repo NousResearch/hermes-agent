@@ -102,13 +102,47 @@ def _packaged_node_pty_missing(dist_dir: Path) -> bool:
     return not any(next(d.rglob("*.node"), None) for d in native_dirs if d.is_dir())
 
 
+def _unpacked_tree_error(executable: Path) -> Optional[str]:
+    """Why the Electron tree around ``executable`` cannot start, or None when it is complete (#102013).
+
+    electron-builder interrupted by a locked file (EBUSY) can leave the product exe in place with the
+    Chromium payload or the renderer bundle missing: the PE check passes, then the app dies on launch
+    ("Invalid file descriptor to ICU data", "Failed to fetch dynamically imported module"). macOS
+    bundles use a framework layout and are judged by ``_renderer_bundle_torn`` / codesign instead.
+    """
+    if sys.platform == "darwin":
+        return None
+
+    root = executable.parent
+    missing = [name for name in ("icudtl.dat", "resources.pak", "resources/app.asar") if not (root / name).is_file()]
+    locales = root / "locales"
+    if not locales.is_dir() or next(locales.glob("*.pak"), None) is None:
+        missing.append("locales/*.pak")
+
+    dist = root / "resources" / "app.asar.unpacked" / "dist"
+    if not (dist / "index.html").is_file():
+        missing.append("resources/app.asar.unpacked/dist/index.html")
+    elif _renderer_bundle_torn(dist):
+        missing.append("resources/app.asar.unpacked/dist (renderer chunks)")
+    elif _packaged_node_pty_missing(dist):
+        missing.append("node-pty native binary")
+
+    return f"incomplete Electron tree, missing: {', '.join(missing)}" if missing else None
+
+
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """True when the desktop build output is stale, missing, torn, or built in the other mode."""
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
-    elif _desktop_packaged_executable(desktop_dir) is None:
-        return True
+    else:
+        packaged = _desktop_packaged_executable(desktop_dir)
+        if packaged is None:
+            return True
+        tree_error = _unpacked_tree_error(packaged)
+        if tree_error is not None:
+            print(f"  ⚠ A previous update left the desktop app incomplete ({tree_error}); rebuilding it")
+            return True
 
     # A torn bundle is stale no matter what the stamp says: the hash describes
     # the intact SOURCE tree, not the half-replaced output.
@@ -1395,6 +1429,8 @@ def _promote_staged_desktop_app(
         integrity_check(staged_executable)
         if staged_executable is not None and integrity_check is not None else None
     )
+    if error is None and staged_executable is not None:
+        error = _unpacked_tree_error(staged_executable)
     if staged_executable is None or error is not None:
         _discard_desktop_staging(staging_dir)
         if staged_executable is None:

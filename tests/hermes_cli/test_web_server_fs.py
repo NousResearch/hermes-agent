@@ -441,7 +441,7 @@ def test_fs_reads_translate_after_binding_profile_terminal_scope(client, tmp_pat
 
     from tools.terminal_scope import get_terminal_scope
 
-    def translate(path, session_key="", *, quiet=False):
+    def translate(path, session_key="", workspace_key="", *, quiet=False):
         if path == Path("/workspace/isolated report.txt") and get_terminal_scope() is not None:
             return target
         return None
@@ -641,7 +641,7 @@ def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_pat
     mapped = tmp_path / "x.txt"
     seen = []
 
-    def translate(candidate, session_key="", *, quiet=False):
+    def translate(candidate, session_key="", workspace_key="", *, quiet=False):
         seen.append(candidate.as_posix())
         return mapped
 

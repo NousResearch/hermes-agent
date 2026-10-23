@@ -2297,6 +2297,12 @@ def _prepare_job_prompt(
             cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
+        if _ran_ok:
+            from cron.scheduler_prompt import content_gate_failure
+
+            blocked = content_gate_failure(_script_output)
+            if blocked is not None:
+                return blocked, None
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
             note_cron_skipped(job)
@@ -2846,8 +2852,15 @@ def run_one_job(
             if post_handoff:
                 from cron.scheduler_worker_failure import record_unknown_worker_outcome
 
-                if record_unknown_worker_outcome(job, error=str(handoff_error), adapters=adapters, loop=loop):
-                    return True
+                try:
+                    record_unknown_worker_outcome(job, error=str(handoff_error), adapters=adapters, loop=loop)
+                except Exception:
+                    logger.exception("Job '%s': unable to observe adopted worker outcome", job["id"])
+                # An observer failure is NOT proof the adopted worker died. Only
+                # dead-owner recovery may retire its claim; never clear a live
+                # worker's lease or write a false terminal row from the waiter.
+                logger.error("Job '%s': %s; worker ownership preserved", job["id"], error)
+                return True
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -3515,7 +3528,9 @@ def _wait_for_external_cron_worker_body(
     worker or change its ledger ownership.
     """
     def _is_terminal() -> bool:
-        current = get_execution(execution_id)
+        from cron.scheduler_worker_failure import observe_worker_execution
+
+        current = observe_worker_execution(execution_id)
         return bool(current and current.get("status") in _TERMINAL_STATES)
 
     # The worker commits its terminal row before its process exits, so exit is

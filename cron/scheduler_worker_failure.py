@@ -1,6 +1,27 @@
 """Job-level visibility for a recovered, acknowledged worker death."""
 
 
+def observe_worker_execution(execution_id: str):
+    """An unavailable observation is not a terminal worker outcome.
+
+    The live waiter retries on its next process wait. Unexpected failures still
+    surface; the post-handoff caller must preserve ownership in either case.
+    """
+    import sqlite3
+    from cron import scheduler
+
+    try:
+        return scheduler.get_execution(execution_id)
+    except sqlite3.OperationalError as exc:
+        code = getattr(exc, 'sqlite_errorcode', None)
+        if ((code is not None and (code & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
+                or str(exc).lower() in ('database is locked', 'database table is locked')):
+            scheduler.logger.warning("Cron worker %s: execution observation busy; retaining ownership", execution_id)
+            return None
+        raise
+
+
+
 def record_unknown_worker_outcome(
     job: dict, *, error=None, adapters=None, loop=None
 ) -> bool:

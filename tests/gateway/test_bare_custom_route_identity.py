@@ -44,6 +44,13 @@ def test_a_bare_custom_launch_pick_freezes_the_configured_entry(tmp_path, pick, 
     assert (model['provider'], model.get('base_url')) == (provider, RELAY)
 
 
+def test_a_disabled_sibling_serving_the_model_never_names_the_route():
+    from hermes_cli.runtime_provider_custom import routed_custom_identity
+    config = {'providers': {**SIBLINGS['providers'],
+                            'deepseek': {**SIBLINGS['providers']['deepseek'], 'enabled': False}}}
+    assert routed_custom_identity(RELAY, 'deepseek-v4.1-flash', config) == 'custom:glm'
+
+
 def test_a_bare_custom_route_is_persisted_as_its_entry(home):
     from gateway.run_turn_prepare import GatewayTurnPrepareMixin
     from hermes_state import SessionDB

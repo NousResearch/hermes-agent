@@ -13,7 +13,7 @@ JSON.
 > are adapted from alt-glitch's original multi-agent video pipeline:
 > [NousResearch/kanban-video-pipeline](https://github.com/NousResearch/kanban-video-pipeline).
 > This skill generalizes those patterns across video styles and replaces the
-> string-replacement config patcher with a PyYAML-based one.
+> string-replacement config patcher with a ruamel.yaml-based one.
 
 ## Project workspace structure
 
@@ -94,7 +94,7 @@ modify `terminal.cwd` — the kanban dispatcher overrides cwd per-task via
 `--workspace dir:<path>`, so the profile's cwd is irrelevant to the kanban
 work and changing it could break the user's interactive use of the profile.
 
-Use **PyYAML**, not string replacement, so the patch is robust against
+Use **ruamel.yaml**, not string replacement, so the patch is robust against
 default-config schema drift:
 
 ```bash
@@ -103,21 +103,26 @@ configure_profile() {
     local toolsets_json="$2"     # JSON array, e.g. '["kanban","terminal","file"]'
     local skills_json="$3"       # JSON array, e.g. '["ascii-video"]'
     python3 - "$profile" "$toolsets_json" "$skills_json" <<'PY'
-import json, os, sys, yaml
+import json, os, sys
+from ruamel.yaml import YAML
+yaml = YAML(typ="safe", pure=True)
+yaml.version = (1, 1)
+yaml.default_flow_style = False
+yaml.sort_base_mapping_type_on_output = False
 profile, ts_json, sk_json = sys.argv[1:4]
 p = os.path.expanduser(f"~/.hermes/profiles/{profile}/config.yaml")
 with open(p) as f:
-    cfg = yaml.safe_load(f) or {}
+    cfg = yaml.load(f) or {}
 cfg["toolsets"] = json.loads(ts_json)
 cfg.setdefault("skills", {})["always_load"] = json.loads(sk_json)
 with open(p, "w") as f:
-    yaml.safe_dump(cfg, f, sort_keys=False)
+    yaml.dump(cfg, f)
 PY
 }
 ```
 
-PyYAML must be installed in the user's Python (it ships with most Hermes
-installs). If absent: `pip install pyyaml`.
+ruamel.yaml must be installed in the user's Python (it ships with Hermes).
+If absent: `pip install ruamel.yaml==0.18.17`.
 
 The setup script should also **validate** the patch by re-reading the file
 and comparing — see `assets/setup.sh.tmpl` for the validation pattern.

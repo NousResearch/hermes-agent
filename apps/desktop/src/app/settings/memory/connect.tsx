@@ -12,7 +12,7 @@ const POLL_TIMEOUT_MS = 120_000
 // Small connect affordance rendered under the provider dropdown. Capability is
 // backend-driven: the status route 404s for providers without an oauth_flow
 // module, so non-OAuth providers render nothing.
-export function MemoryConnect({ provider }: { provider: string }) {
+export function MemoryConnect({ profile, provider }: { profile?: string; provider: string }) {
   const [capable, setCapable] = useState<'no' | 'unknown' | 'yes'>('unknown')
   const [connected, setConnected] = useState(false)
   const [auth, setAuth] = useState<MemoryProviderOAuthStatus['auth']>(null)
@@ -31,7 +31,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
   useEffect(() => {
     let active = true
     setCapable('unknown')
-    getMemoryProviderOAuthStatus(provider)
+    getMemoryProviderOAuthStatus(provider, profile)
       .then(s => {
         if (!active) {
           return
@@ -51,7 +51,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
       active = false
       stop()
     }
-  }, [provider, stop])
+  }, [profile, provider, stop])
 
   // An error message isn't sticky — it clears back to the steady state
   // (Connect link, plus the connected badge if a credential is stored).
@@ -72,7 +72,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
     setPhase('pending')
 
     try {
-      await startMemoryProviderOAuth(provider)
+      await startMemoryProviderOAuth(provider, profile)
     } catch (err) {
       setPhase('error')
       setDetail('Could not start the connection.')
@@ -86,7 +86,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
     timer.current = setInterval(() => {
       void (async () => {
         try {
-          const next = await getMemoryProviderOAuthStatus(provider)
+          const next = await getMemoryProviderOAuthStatus(provider, profile)
 
           if (next.state === 'pending') {
             if (Date.now() > deadline.current) {
@@ -113,7 +113,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
         }
       })()
     }, POLL_MS)
-  }, [provider, stop])
+  }, [profile, provider, stop])
 
   const cancel = useCallback(() => {
     stop()

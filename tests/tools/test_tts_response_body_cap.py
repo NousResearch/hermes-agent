@@ -30,7 +30,7 @@ class StreamingResponse:
 
 @pytest.fixture(autouse=True)
 def small_tts_body_cap(monkeypatch):
-    monkeypatch.setattr(tts_tool, "TTS_RESPONSE_BODY_LIMIT_BYTES", 8)
+    monkeypatch.setattr("tools.tts_tool_providers.TTS_RESPONSE_BODY_LIMIT_BYTES", 8)
 
 
 def test_xai_tts_rejects_oversized_audio_response(tmp_path, monkeypatch):

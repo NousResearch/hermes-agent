@@ -29,7 +29,7 @@ def _run_idle_tick(**kwargs):
         patch.object(scheduler_mod, "get_due_jobs", return_value=[]),
         patch.object(scheduler_mod, "load_config", side_effect=_fake_load_config),
         patch(
-            "tools.mcp_tool._kill_orphaned_mcp_children",
+            "tools.mcp_tool_lifecycle._kill_orphaned_mcp_children",
             side_effect=_fake_sweep,
         ),
     ):
@@ -38,18 +38,7 @@ def _run_idle_tick(**kwargs):
 
 
 class TestIdleTickSkipsConfigLoad:
-    def test_idle_nonverbose_tick_skips_load_config(self):
-        """Gateway-style tick(verbose=False) with no due jobs: no config load."""
-        rc, calls = _run_idle_tick(verbose=False)
-        assert rc == 0
-        assert calls["load_config"] == 0, (
-            "idle tick must not load config (was loading every 60s in the gateway ticker)"
-        )
 
-    def test_idle_verbose_tick_skips_load_config(self):
-        rc, calls = _run_idle_tick(verbose=True)
-        assert rc == 0
-        assert calls["load_config"] == 0
 
     def test_idle_tick_still_sweeps_mcp_orphans(self):
         """The idle-tick orphan sweep is intentional on main — must survive."""

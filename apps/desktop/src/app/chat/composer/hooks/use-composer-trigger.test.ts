@@ -1,11 +1,26 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { act, renderHook } from '@testing-library/react'
 import { createRef } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
 import { useComposerTrigger } from './use-composer-trigger'
+
+beforeEach(() => {
+  rememberDesktopCommandsCatalog({
+    commands: {
+      '/goal': { argument_mode: 'mixed', desktop: null },
+      '/personality': { argument_mode: 'options', desktop: null }
+    }
+  })
+})
+
+afterEach(() => {
+  rememberDesktopCommandsCatalog(undefined)
+})
 
 /** A live contentEditable seeded with `text`, caret parked at the end. */
 function mountEditor(text: string) {

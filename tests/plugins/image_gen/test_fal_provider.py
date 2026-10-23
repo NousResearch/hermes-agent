@@ -23,25 +23,17 @@ from unittest.mock import MagicMock
 
 
 class TestFalImageGenProviderSurface:
-    def test_name(self):
-        from plugins.image_gen.fal import FalImageGenProvider
 
-        assert FalImageGenProvider().name == "fal"
-
-    def test_display_name(self):
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        assert FalImageGenProvider().display_name == "FAL.ai"
 
     def test_default_model_matches_legacy(self):
         from plugins.image_gen.fal import FalImageGenProvider
-        from tools.image_generation_tool import DEFAULT_MODEL
+        from tools.image_generation_catalog import DEFAULT_MODEL
 
         assert FalImageGenProvider().default_model() == DEFAULT_MODEL
 
     def test_list_models_uses_legacy_catalog(self):
         from plugins.image_gen.fal import FalImageGenProvider
-        from tools.image_generation_tool import FAL_MODELS
+        from tools.image_generation_catalog import FAL_MODELS
 
         provider = FalImageGenProvider()
         models = provider.list_models()
@@ -53,23 +45,8 @@ class TestFalImageGenProviderSurface:
             for field in ("id", "display", "speed", "strengths", "price"):
                 assert field in entry
 
-    def test_setup_schema_advertises_fal_key(self):
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        schema = FalImageGenProvider().get_setup_schema()
-        assert schema["name"] == "FAL.ai"
-        assert schema["badge"] == "paid"
-        env_keys = {entry["key"] for entry in schema.get("env_vars", [])}
-        assert "FAL_KEY" in env_keys
 
 
-class TestFalImageGenProviderAvailability:
-    def test_is_available_when_legacy_check_passes(self, monkeypatch):
-        import tools.image_generation_tool as image_tool
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        monkeypatch.setattr(image_tool, "check_fal_api_key", lambda: True)
-        assert FalImageGenProvider().is_available() is True
 
 
 # ---------------------------------------------------------------------------

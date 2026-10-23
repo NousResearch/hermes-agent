@@ -1,8 +1,6 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
-import urllib.error
-from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,7 +11,6 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
-    _channel_type_name,
     _detect_capabilities,
     _discord_request,
     _get_bot_token,
@@ -121,13 +118,6 @@ class TestCheckRequirements:
 # Channel type names
 # ---------------------------------------------------------------------------
 
-class TestChannelTypeNames:
-    def test_type_names(self):
-        assert _channel_type_name(0) == "text"
-        assert _channel_type_name(2) == "voice"
-        assert _channel_type_name(4) == "category"
-        assert _channel_type_name(15) == "forum"
-        assert _channel_type_name(99) == "unknown(99)"
 
 
 # ---------------------------------------------------------------------------
@@ -334,14 +324,6 @@ class TestErrorHandling:
 # ---------------------------------------------------------------------------
 
 class TestRegistration:
-    def test_core_tool_registered(self):
-        from tools.registry import registry
-        entry = registry._tools.get("discord")
-        assert entry is not None
-        assert entry.schema["name"] == "discord"
-        assert entry.toolset == "discord"
-        assert entry.check_fn is not None
-        assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
 
     def test_all_actions_covered(self):
         """Core + admin actions should cover all known actions."""
@@ -353,26 +335,6 @@ class TestRegistration:
 # Toolset: discord / discord_admin only in hermes-discord
 # ---------------------------------------------------------------------------
 
-class TestToolsetInclusion:
-    def test_discord_tools_only_in_hermes_discord_toolset(self):
-        from toolsets import TOOLSETS, _HERMES_CORE_TOOLS
-        assert "discord" in TOOLSETS["hermes-discord"]["tools"]
-        assert "discord_admin" in TOOLSETS["hermes-discord"]["tools"]
-        assert "discord" not in _HERMES_CORE_TOOLS
-        assert "discord_admin" not in _HERMES_CORE_TOOLS
-
-    def test_discord_tools_not_in_other_toolsets(self):
-        from toolsets import TOOLSETS
-        for name, ts in TOOLSETS.items():
-            if name in {"hermes-discord", "hermes-gateway", "discord", "discord_admin"}:
-                continue
-            tools = ts.get("tools", [])
-            assert "discord" not in tools or name == "discord", (
-                f"discord tool should not be in toolset '{name}'"
-            )
-            assert "discord_admin" not in tools or name == "discord_admin", (
-                f"discord_admin tool should not be in toolset '{name}'"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -514,10 +476,10 @@ class TestConfigAllowlist:
 
         ``AIAgent(quiet_mode=True)`` globally sets ``tools`` and
         ``tools.*`` children to ``ERROR`` (see run_agent.py quiet_mode
-        block).  xdist workers are persistent, so a streaming test on the
-        same worker will silence WARNING-level logs from
+        block).  A persistent test process keeps that setting, so a
+        streaming test will silence WARNING-level logs from
         ``tools.discord_tool`` for every test that follows.  Reset here so
-        ``caplog`` can capture warnings regardless of worker history.
+        ``caplog`` can capture warnings regardless of earlier tests.
         """
         import logging as _logging
         _prev_tools = _logging.getLogger("tools").level

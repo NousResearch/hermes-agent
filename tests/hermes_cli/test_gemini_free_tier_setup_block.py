@@ -34,7 +34,7 @@ class TestGeminiSetupFreeTierBlock:
         """Free-tier probe result -> provider is NOT saved, message is printed."""
         monkeypatch.setenv("GOOGLE_API_KEY", "fake-free-tier-key")
 
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.model_setup_flows import _model_flow_api_key_provider
         from hermes_cli.config import load_config
 
         # Mock the probe to claim this is a free-tier key
@@ -55,7 +55,7 @@ class TestGeminiSetupFreeTierBlock:
         assert "Not saving Gemini as the default provider" in output
 
         # Config must NOT show gemini as the provider
-        import yaml
+        import hermes_yaml as yaml
         cfg = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = cfg.get("model")
         if isinstance(model, dict):
@@ -68,7 +68,7 @@ class TestGeminiSetupFreeTierBlock:
         """Paid-tier probe result -> provider IS saved normally."""
         monkeypatch.setenv("GOOGLE_API_KEY", "fake-paid-tier-key")
 
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.model_setup_flows import _model_flow_api_key_provider
         from hermes_cli.config import load_config
 
         with patch(
@@ -86,7 +86,7 @@ class TestGeminiSetupFreeTierBlock:
         assert "paid" in output.lower()
         assert "Not saving Gemini" not in output
 
-        import yaml
+        import hermes_yaml as yaml
         cfg = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = cfg.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
@@ -98,7 +98,7 @@ class TestGeminiSetupFreeTierBlock:
         """Probe must only run for provider_id == 'gemini', not for other providers."""
         monkeypatch.setenv("DEEPSEEK_API_KEY", "fake-key")
 
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.model_setup_flows import _model_flow_api_key_provider
         from hermes_cli.config import load_config
 
         with patch(

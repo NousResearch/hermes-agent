@@ -8,7 +8,7 @@ cluster to OpenCode as a custom OpenAI-compatible provider.
 OpenCode auto-injects a credential when the provider **id** in `opencode.json`
 matches a credential **id** in `~/.local/share/opencode/auth.json`. So put the
 key in auth.json and NOTHING sensitive goes in opencode.json. This is more robust
-than `options.apiKey: "{env:ACTUAL_API_KEY}"`, because `{env:...}` only resolves
+than `options.apiKey: "{env:...}"` with the var name, because `{env:...}` only resolves
 if the var is exported in the shell OpenCode launches from — and the Actual key
 is typically only in `~/.hermes/.env`, not a shell profile, so the env form
 breaks outside an inheriting terminal.

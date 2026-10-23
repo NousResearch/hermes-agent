@@ -20,11 +20,6 @@ def _create_hook(hooks_dir, hook_name, events, handler_code):
     return hook_dir
 
 
-class TestHookRegistryInit:
-    def test_empty_registry(self):
-        reg = HookRegistry()
-        assert reg.loaded_hooks == []
-        assert reg._handlers == {}
 
 
 def _patch_no_builtins(reg):

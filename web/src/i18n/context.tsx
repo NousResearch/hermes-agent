@@ -1,3 +1,4 @@
+import { applyDocumentLocale, LOCALE_ENDONYMS } from "@hermes/shared/i18n";
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
@@ -38,40 +39,14 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   ar,
 };
 
-// Locales whose script flows right-to-left. Consumed by the provider to set the
-// document direction so Tailwind's logical utilities (ms-/me-, ps-/pe-) flip.
-const RTL_LOCALES = new Set<Locale>(["ar"]);
-
-// Display metadata for the language picker — endonym (native name) so users
-// recognize their language even if they don't speak the current UI language.
-// Exposed as a constant so the LanguageSwitcher and any future settings page
-// can share the same list.
-//
-// We intentionally do NOT pair locales with country flags. Languages are not
-// countries (English ≠ GB, Portuguese ≠ PT, Spanish ≠ ES, Chinese variants ≠
-// any single jurisdiction). Endonyms are unambiguous and avoid the political
-// mismapping that flag pairings inevitably create.
-export const LOCALE_META: Record<Locale, { name: string }> = {
-  en: { name: "English" },
-  zh: { name: "简体中文" },
-  "zh-hant": { name: "繁體中文" },
-  ja: { name: "日本語" },
-  de: { name: "Deutsch" },
-  es: { name: "Español" },
-  fr: { name: "Français" },
-  tr: { name: "Türkçe" },
-  uk: { name: "Українська" },
-  af: { name: "Afrikaans" },
-  ko: { name: "한국어" },
-  it: { name: "Italiano" },
-  ga: { name: "Gaeilge" },
-  pt: { name: "Português" },
-  ru: { name: "Русский" },
-  hu: { name: "Magyar" },
-  ar: { name: "العربية" },
-};
-
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
+
+// Display metadata for the language picker — endonyms from @hermes/shared so the
+// desktop and web pickers can never disagree on a language's native name.
+export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
+  SUPPORTED_LOCALES.map((id) => [id, { name: LOCALE_ENDONYMS[id] }]),
+) as Record<Locale, { name: string }>;
+
 const STORAGE_KEY = "hermes-locale";
 
 function isLocale(value: string): value is Locale {
@@ -113,9 +88,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.documentElement.lang = locale;
-    document.documentElement.dir = RTL_LOCALES.has(locale) ? "rtl" : "ltr";
+    applyDocumentLocale(locale);
   }, [locale]);
 
   const value: I18nContextValue = {

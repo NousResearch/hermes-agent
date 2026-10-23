@@ -52,24 +52,36 @@ def test_a_disabled_sibling_serving_the_model_never_names_the_route():
     assert routed_custom_identity(RELAY, 'deepseek-v4.1-flash', config) == 'custom:glm'
 
 
-def test_a_bare_custom_route_is_persisted_as_its_entry(home):
+SPLIT_KEYS = {'providers': {name: {**entry, 'key_env': f'{name.upper()}_KEY'}
+                            for name, entry in SIBLINGS['providers'].items()}}
+
+
+def test_a_bare_custom_switch_resumes_on_the_key_that_served_it(home, monkeypatch):
     from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_cli.model_switch import switch_model
     from hermes_state import SessionDB
-    (home / 'config.yaml').write_text(json.dumps(SIBLINGS))
+    from tui_gateway import server
+    monkeypatch.setenv('GLM_KEY', 'glm-key')
+    monkeypatch.setenv('DEEPSEEK_KEY', 'deepseek-key')
+    (home / 'config.yaml').write_text(json.dumps(SPLIT_KEYS))
+    # A glm session (the adapter reports bare ``custom``) runs /model deepseek-v4.1-flash --provider custom.
+    switched = switch_model('deepseek-v4.1-flash', 'custom', 'glm-5.3', RELAY, 'glm-key',
+                            explicit_provider='custom', user_providers=SPLIT_KEYS['providers'])
+    assert switched.success and switched.api_key == 'glm-key', switched
     db = SessionDB(db_path=home / 'state.db')
     try:
-        for sid in ('switched', 'synced'):
-            db.create_session(sid, source='cli', model='glm-5.3')
-        # A /model switch on the gateway persists the resolved provider it got back.
-        db.update_session_model('switched', 'deepseek-v4.1-flash', 'custom', base_url=RELAY)
-        # A turn syncs the route its agent ran on, whose provider is the adapter's label.
-        agent = SimpleNamespace(model='deepseek-v4.1-flash', provider='custom', base_url=RELAY,
-                                api_mode='chat_completions')
-        runner = SimpleNamespace(_session_db=SimpleNamespace(_db=db))
-        GatewayTurnPrepareMixin._sync_session_model_from_agent(runner, 'synced', agent)
-        stored = {sid: json.loads(db.get_session(sid)['model_config']) for sid in ('switched', 'synced')}
-        assert stored['switched']['provider'] == stored['switched']['gateway_runtime']['provider'] == 'custom:deepseek'
-        assert stored['synced']['gateway_runtime']['provider'] == 'custom:deepseek'
+        db.create_session('s', source='cli', model='glm-5.3')
+        db.update_session_model('s', switched.new_model, switched.target_provider, base_url=switched.base_url)
+        # The next turn syncs the switched agent, whose requested provider is bare ``custom`` too.
+        agent = SimpleNamespace(model=switched.new_model, provider='custom', requested_provider='custom',
+                                base_url=RELAY, api_mode='chat_completions')
+        GatewayTurnPrepareMixin._sync_session_model_from_agent(
+            SimpleNamespace(_session_db=SimpleNamespace(_db=db)), 's', agent)
+        # Resume reads the stored route back and resolves its credentials.
+        overrides = server._stored_session_runtime_overrides(db.get_session('s'))
+        _model, runtime = server._resolve_agent_model_runtime(
+            overrides['model_override'], overrides.get('provider_override'))
+        assert runtime['api_key'] == 'glm-key'
     finally:
         db.close()
 
@@ -90,6 +102,21 @@ def test_a_turn_on_a_named_entry_persists_that_entry_not_the_sibling_listing_its
         assert json.loads(db.get_session('s')['model_config'])['gateway_runtime']['provider'] == requested
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested, model', [('custom:glm', 'deepseek-v4.1-flash'), ('custom:deepseek', 'glm-5.3')],
+                         ids=['glm-running-the-siblings-model', 'deepseek-running-the-siblings-model'])
+async def test_the_model_picker_marks_the_entry_a_session_runs_on_current(home, monkeypatch, requested, model):
+    from gateway import session_config
+    (home / 'config.yaml').write_text(json.dumps(SIBLINGS))
+    agent = SimpleNamespace(model=model, provider='custom', requested_provider=requested, base_url=RELAY)
+    connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(home), agent=lambda ref: agent))
+    monkeypatch.setattr(session_config, '_authorize', lambda connection, ref, params: None)
+    monkeypatch.setattr('hermes_cli.inventory.build_model_options_payload',
+                        lambda ctx, **kwargs: {'provider': ctx.current_provider})
+    result = await session_config.model_options(connection, SimpleNamespace(session_id='s'), {})
+    assert result == {'provider': requested}
 
 
 @pytest.mark.asyncio

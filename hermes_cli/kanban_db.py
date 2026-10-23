@@ -613,6 +613,7 @@ class Task:
     project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
+    auto_decompose: bool = True
     # Column semantics: see SCHEMA_SQL.
     consecutive_failures: int = 0
     worker_pid: Optional[int] = None
@@ -652,6 +653,7 @@ class Task:
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
+            auto_decompose=bool(int(g("auto_decompose", 1) or 0)),
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
@@ -873,7 +875,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    auto_decompose       INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1167,6 +1170,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    auto_decompose: bool = True,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1266,8 +1270,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract, auto_decompose
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1277,6 +1281,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        1 if auto_decompose else 0,
                     ),
                 )
                 for pid in parents:
@@ -1291,6 +1296,7 @@ def create_task(
                         "parents": list(parents),
                         "creator_task_id": creator_task_id,
                         "tenant": tenant,
+                        "auto_decompose": bool(auto_decompose),
                         "workspace_kind": workspace_kind,
                         "workspace_path": workspace_path,
                         "branch_name": branch_name,
@@ -3240,6 +3246,7 @@ def _route_block(
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
+        set_sql += ",\n                       auto_decompose = 0"
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
 

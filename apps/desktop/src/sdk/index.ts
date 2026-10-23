@@ -1761,14 +1761,13 @@ export {
   DialogTitle,
   DialogTrigger
 } from '@/components/ui/dialog'
-/** The caret every collapsible section in core uses — points right when closed
- *  and rotates down when open, so the motion matches the rest of the app. Swap
- *  a hand-written `chevron-down`/`chevron-right` ternary for this. */
+/** Shared collapsible caret: points right when closed and rotates down when open. */
 export { DisclosureCaret } from '@/components/ui/disclosure-caret'
 export {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSearch,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'

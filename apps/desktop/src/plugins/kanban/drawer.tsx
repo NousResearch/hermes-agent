@@ -18,6 +18,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSearch,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   ErrorState,
@@ -40,12 +41,15 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import {
   $boardSlug,
   addComment,
+  boardKey,
   boardKeyPrefix,
   deleteTask,
   estimateTask,
+  fetchBoard,
   fetchLog,
   fetchProfiles,
   fetchTask,
+  linkTasks,
   logKey,
   patchTask,
   profilesKey,
@@ -53,6 +57,7 @@ import {
   reclaimTask,
   routedToScope,
   taskKey,
+  unlinkTasks,
   uploadAttachment,
   useKanbanScope
 } from './api'
@@ -62,6 +67,7 @@ import {
   type DiagnosticAction,
   type KanbanAttachment,
   type KanbanEvent,
+  type KanbanTask,
   type KanbanTaskDetail,
   SEVERITY_TONE,
   type TaskEstimate,
@@ -681,6 +687,91 @@ function LinkChips({
   )
 }
 
+/** The dependency edge is editable in both directions: a parent blocks this
+ * card, while a child is blocked by it. The existing backend link endpoints
+ * validate cycles and workflow state. */
+function DependencyEditor({
+  candidates,
+  links,
+  linkTitles,
+  onAdd,
+  onOpen,
+  onRemove,
+  taskId
+}: {
+  candidates: KanbanTask[]
+  links: { children: string[]; parents: string[] }
+  linkTitles: Map<string, string>
+  onAdd: (side: 'children' | 'parents', id: string) => void
+  onOpen: (id: string) => void
+  onRemove: (side: 'children' | 'parents', id: string) => void
+  taskId: string
+}) {
+  const k = useKanban()
+  const [search, setSearch] = useState('')
+  const linked = new Set([...links.parents, ...links.children, taskId])
+  const query = search.trim().toLowerCase()
+  const available = candidates.filter(candidate => !linked.has(candidate.id))
+
+  const options = available.filter(candidate =>
+    `${candidate.title} ${candidate.body ?? ''} ${candidate.id}`.toLowerCase().includes(query)
+  )
+
+  return (
+    <Section label={k.dependencies}>
+      <div className="flex flex-col gap-3">
+        {(['parents', 'children'] as const).map(side => (
+          <div className="flex flex-col gap-1" key={side}>
+            <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{side === 'parents' ? k.blockedBy : k.blocks}</span>
+            <div className="flex flex-wrap items-center gap-1">
+              <LinkChips ids={links[side]} linkTitles={linkTitles} onOpen={onOpen} />
+              <DropdownMenu onOpenChange={() => setSearch('')}>
+                <DropdownMenuTrigger asChild>
+                  <Button aria-label={side === 'parents' ? k.addBlockedBy : k.addBlocks} size="icon-xs" variant="ghost">
+                    <Codicon name="add" size="0.75rem" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuSearch
+                    aria-label={k.filterCards}
+                    onValueChange={setSearch}
+                    placeholder={k.filterCards}
+                    value={search}
+                  />
+                  {options.length > 0 ? (
+                    options.map(candidate => (
+                      <DropdownMenuItem key={candidate.id} onSelect={() => onAdd(side, candidate.id)}>
+                        {candidate.title || shortId(candidate.id)}
+                      </DropdownMenuItem>
+                    ))
+                  ) : (
+                    <DropdownMenuItem disabled>{available.length > 0 ? k.noMatch : k.noDependencyCandidates}</DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            {links[side].length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {links[side].map(linkedId => (
+                  <Button
+                    aria-label={k.removeDependency(linkTitles.get(linkedId) || shortId(linkedId))}
+                    key={linkedId}
+                    onClick={() => onRemove(side, linkedId)}
+                    size="icon-xs"
+                    variant="ghost"
+                  >
+                    <Codicon name="close" size="0.7rem" />
+                  </Button>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Section>
+  )
+}
+
 /** The main column's feed: Comments (default) / Activity / Runs / Worker log,
  *  selected Jira-style with a segmented control ("Activity ▸ Show: …"). The
  *  control hides itself when only comments exist — nothing to switch to. */
@@ -863,6 +954,11 @@ export function TaskDrawer({
     queryFn: () => fetchLog(id!),
     queryKey: logKey(scope, slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000
+  })
+
+  const { data: board } = useQuery({
+    queryFn: () => fetchBoard(false),
+    queryKey: boardKey(scope, slug, false)
   })
 
   const invalidate = () => {
@@ -1153,14 +1249,17 @@ export function TaskDrawer({
                     }}
                   />
                 </MetaRow>
-                {(detail.links.parents.length > 0 || detail.links.children.length > 0) &&
-                  (['parents', 'children'] as const).map(side =>
-                    detail.links[side].length > 0 ? (
-                      <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
-                        <LinkChips ids={detail.links[side]} linkTitles={linkTitles} onOpen={onOpen} />
-                      </MetaRow>
-                    ) : null
-                  )}
+                <DependencyEditor
+                  candidates={board?.columns.flatMap(column => column.tasks) ?? []}
+                  links={detail.links}
+                  linkTitles={linkTitles}
+                  onAdd={(side, linkedId) =>
+                    void mutate(() => linkTasks(side === 'parents' ? linkedId : task.id, side === 'parents' ? task.id : linkedId))()}
+                  onOpen={onOpen}
+                  onRemove={(side, linkedId) =>
+                    void mutate(() => unlinkTasks(side === 'parents' ? linkedId : task.id, side === 'parents' ? task.id : linkedId))()}
+                  taskId={task.id}
+                />
                 {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
                 {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
                 {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}

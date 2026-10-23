@@ -13,8 +13,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import yaml
-
+import hermes_yaml as yaml
 from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
 from hermes_cli.web_routers.models import set_moa_models

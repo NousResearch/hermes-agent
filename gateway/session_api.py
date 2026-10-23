@@ -269,6 +269,15 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
     return restore_api_session(authority, session_id)
 
 
+def reopen_api_session(authority, ref):
+    """The drain's admitted turn reopens a finalized API row, as ``reopen_local_session`` does a
+    local one: the binding keeps the route on it (``SessionStore._api_bound``)."""
+    target = authority.physical_target(ref)
+    row = authority.db.get_session(target)
+    if row is not None and row.get('end_reason') is not None:
+        authority.db.reopen_session(target)
+
+
 def api_storage_source(db, session_id, fallback):
     if fallback != 'api_server':
         return fallback

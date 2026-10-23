@@ -9,7 +9,8 @@ from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
-async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch):
+@pytest.mark.parametrize('settles_mid_reset', [False, True])
+async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch, settles_mid_reset):
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     from gateway.platforms.base import SendResult
     from gateway.platforms.event import MessageEvent
@@ -51,6 +52,16 @@ async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch):
             captured['result'] = {'final_response': 'reply', 'messages': []}
         return 'reply'
     monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    if settles_mid_reset:
+        # The old turn settles after the rotation, before the wake moves: its drain wakes up there.
+        reset = runner.async_session_store.reset_session
+
+        async def reset_then_settle(session_key):
+            entry = await reset(session_key)
+            finish.set()
+            await asyncio.sleep(0.5)  # health: allow HX013 -- the window the old drain must NOT claim in
+            return entry
+        monkeypatch.setattr(runner.async_session_store, 'reset_session', reset_then_settle)
 
     await adapter.handle_message(MessageEvent(text='A', source=source, message_id='A'))
     await asyncio.wait_for(running.wait(), 10)

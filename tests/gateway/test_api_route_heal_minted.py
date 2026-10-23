@@ -40,6 +40,43 @@ def test_bind_takes_the_route_back_from_an_empty_minted_session(owner, bound_bef
         assert owner.runner.session_store._entries[route].session_id == 'api-stable'
 
 
+def test_a_finalized_bound_row_keeps_its_route_across_later_runs(owner):
+    """The live #54878 shape: the bound row is finalized, then its caller runs twice more."""
+    ref = bind_api_session(owner, 'api-stable')
+    source = owner.sessions['api-stable'].source
+    owner.db.end_session('api-stable', 'cli_close')
+
+    for turn in ('two', 'three'):
+        assert bind_api_session(owner, 'api-stable') == ref
+        assert owner.runner.session_store.get_or_create_session(source).session_id == 'api-stable'
+        owner.db.append_message('api-stable', 'user', turn)
+
+
+@pytest.mark.asyncio
+async def test_the_next_admitted_turn_reopens_a_finalized_api_row(tmp_path, monkeypatch):
+    from gateway import session_api_turn, session_finite
+    from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
+
+    db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
+    monkeypatch.setattr(session_api_turn, 'check_api_turn', lambda authority, ref, payload: None)
+    ended = []
+
+    async def execute(authority, ref, row):
+        ended.append(db.get_session('s')['end_reason'])
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    db.end_session('s', 'cli_close')
+
+    with db:
+        authority._schedule = lambda ref: None
+        await _submit(authority, 'turn')
+        del authority._schedule
+        authority._schedule(REF)
+        await authority.sessions['s'].task
+
+    assert ended == [None]
+
+
 def test_bind_still_refuses_a_route_held_by_a_used_session(owner):
     _mint_on_route(owner, 'api-stable')
     owner.db.append_message('minted', 'user', 'a conversation of its own')

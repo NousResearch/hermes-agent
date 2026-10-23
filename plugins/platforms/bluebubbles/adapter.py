@@ -108,6 +108,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     serves_profile_prefix: bool = True
     platform = Platform.BLUEBUBBLES
     SUPPORTS_MESSAGE_EDITING = False
+    # No-op previews at the edit cap still need the reserved final edit.
+    REQUIRES_EDIT_FINALIZE = True
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
@@ -132,6 +134,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._edit_counts: OrderedDict[str, int] = OrderedDict()
 
     # --- API helpers ---
 
@@ -208,6 +211,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             server_data = (info or {}).get("data", {})
             self._private_api_enabled = bool(server_data.get("private_api"))
             self._helper_connected = bool(server_data.get("helper_connected"))
+            self.SUPPORTS_MESSAGE_EDITING = bool(self._private_api_enabled and self._helper_connected)
             logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
                         self.server_url, self._private_api_enabled, self._helper_connected)
         except Exception as exc:
@@ -450,6 +454,130 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     async def mark_read(self, chat_id: str) -> bool:
         return await self._private_api_chat_call(chat_id, "read", "post")
+
+    # --- Message editing (Private API) ---
+
+    # Apple caps iMessage edits at 5 per message within a 15-minute window.
+    _EDIT_BUDGET = 5
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Edit a previously sent iMessage via the BlueBubbles Private API.
+
+        Preview (non-finalize) edits stop one short of Apple's 5-edit cap so
+        the final answer always has an edit slot left; over-budget preview
+        edits succeed as no-ops (the bubble stops updating until finalize).
+        A finalize call with no budget left delivers the answer as a fresh
+        message instead of being dropped.
+        """
+        if not (self._private_api_enabled and self._helper_connected and self.client):
+            return SendResult(
+                success=False,
+                error="BlueBubbles message editing requires the Private API helper",
+            )
+        if not message_id:
+            return SendResult(success=False, error="edit_message: missing message_id")
+
+        text = self.format_message(content)
+        if not text:
+            return SendResult(success=False, error="BlueBubbles edit requires text")
+        used = self._edit_counts.get(message_id, 0)
+        if not finalize and used >= self._EDIT_BUDGET - 1:
+            return SendResult(success=True, message_id=message_id)
+
+        # iMessage is plain text. Exact slices preserve the delivered-prefix
+        # contract; the Markdown splitter drops whitespace at split points.
+        chunks = [text[i:i + MAX_TEXT_LENGTH] for i in range(0, len(text), MAX_TEXT_LENGTH)]
+        first, rest = chunks[0], chunks[1:]
+        fresh_final = finalize and used >= self._EDIT_BUDGET
+        if fresh_final:
+            initial = await self._send_edit_continuation(chat_id, first)
+            if not (initial.success and initial.message_id):
+                return initial
+            res = initial.raw_response
+            new_id = str(initial.message_id)
+        else:
+            payload = {
+                "editedMessage": first,
+                "backwardsCompatibilityMessage": first,
+                "partIndex": 0,
+            }
+            encoded = quote(message_id, safe="")
+            edited = await self._post_message(f"/api/v1/message/{encoded}/edit", payload)
+            if not edited.success:
+                return edited
+            res = edited.raw_response
+            data = (res or {}).get("data") or {}
+            new_id = str(data.get("guid") or message_id)
+            self._edit_counts.pop(message_id, None)
+            self._edit_counts[new_id] = used + 1
+            while len(self._edit_counts) > _GUID_CACHE_SIZE:
+                self._edit_counts.popitem(last=False)
+        # Overflow past MAX_TEXT_LENGTH: edit holds the first chunk and the
+        # tail goes out as follow-up messages, mirroring the Telegram
+        # adapter's split-and-deliver contract (subsequent edits then target
+        # the returned last message id).
+        continuation_ids: list[str] = [new_id] if fresh_final else []
+        delivered_chunks: list[str] = [first]
+        prev_id = new_id
+        for chunk in rest:
+            tail = await self._send_edit_continuation(chat_id, chunk)
+            if not (tail.success and tail.message_id):
+                # Continuation failed — the user has the edited first chunk
+                # plus however many tails landed, but NOT the full response.
+                # Reporting success here would let the stream consumer mark a
+                # clipped answer as delivered and suppress fallback delivery,
+                # so surface the partial-delivery contract instead.
+                logger.warning(
+                    "[bluebubbles] Overflow split: stopped at %d/%d chunks delivered",
+                    len(delivered_chunks),
+                    len(chunks),
+                )
+                return SendResult(
+                    success=False,
+                    message_id=prev_id,
+                    error="overflow_continuation_failed",
+                    retryable=True,
+                    raw_response={
+                        "partial_overflow": True,
+                        "delivered_chunks": len(delivered_chunks),
+                        "total_chunks": len(chunks),
+                        "last_message_id": prev_id,
+                        "delivered_prefix": "".join(delivered_chunks),
+                        "continuation_message_ids": tuple(continuation_ids),
+                    },
+                    continuation_message_ids=tuple(continuation_ids),
+                )
+            tail_id = str(tail.message_id)
+            continuation_ids.append(tail_id)
+            delivered_chunks.append(chunk)
+            prev_id = tail_id
+
+        # ``message_id`` is the LAST visible bubble so subsequent edits target
+        # the most recent chunk; the consumer only adopts it when
+        # ``continuation_message_ids`` is populated.
+        return SendResult(
+            success=True,
+            message_id=prev_id,
+            raw_response=res,
+            continuation_message_ids=tuple(continuation_ids),
+        )
+
+    async def _send_edit_continuation(self, chat_id: str, content: str) -> SendResult:
+        """Send one formatted edit fragment without paragraph splitting."""
+        guid = await self._resolve_chat_guid(chat_id)
+        if not guid:
+            return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
+        return await self._post_message("/api/v1/message/text", {
+            "chatGuid": guid, "tempGuid": _temp_guid(), "message": content,
+        })
 
     # --- Chat info ---
 

@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 class ChannelClaimBlocked(RuntimeStoreError):
     """Raised when the channel claim is held by another gateway instance."""
-    pass
 
 
 # -- PII redaction helpers --------------------------------------------------------------------
@@ -993,8 +992,18 @@ class SessionStore(
             if channel_scope_key != session_key:
                 with self._lock:
                     self._ensure_loaded_locked()
-                    if session_key not in self._entries and channel_scope_key in self._entries:
-                        session_key = channel_scope_key
+                    fold_live = (session_key not in self._entries
+                                 and channel_scope_key in self._entries)
+                if fold_live and monitor:
+                    # Monitor is observation only (release §13): log the fold in
+                    # enforce, then admit with pre-claim keying. Zero routing delta.
+                    logger.warning(
+                        "Channel claim monitor for %s/%s: enforce would fold this thread "
+                        "reply onto the live channel session (%s); admitting with "
+                        "pre-claim keying",
+                        source.platform.value, source.chat_id, channel_scope_key)
+                elif fold_live:
+                    session_key = channel_scope_key
         scope = claim_channel_scope(source, session_key)
         db = self._db_for_key(session_key) if scope is not None else None
         if scope is None or db is None:
@@ -1047,13 +1056,13 @@ class SessionStore(
             # minting the channel session inside the gate→finish window.
             # shortcut: stand down rather than wait on the millisecond window; a retry
             # then lands in case C. Upgrade if concurrent first-message bursts regress.
-            logger.warning("Channel claim stand-down for %s/%s: a concurrent admission of "
-                           "this gateway is minting the channel session", scope[0], scope[2])
             if monitor:
                 logger.warning(
                     "Channel claim monitor for %s/%s: would refuse to double-admit "
                     "(channel_claim_inflight; enforce stands down)", scope[0], scope[2])
                 return session_key
+            logger.warning("Channel claim stand-down for %s/%s: a concurrent admission of "
+                           "this gateway is minting the channel session", scope[0], scope[2])
             raise RuntimeStoreError("channel_claim_inflight")
         # Foreign instance (§6 cases E/F): F is stolen inside acquire; a live foreign claim
         # whose session is known here serves this event through it (shared state.db);
@@ -1147,6 +1156,21 @@ class SessionStore(
             except Exception:
                 logger.exception("Channel claim release failed for %s", entry.session_key)
 
+    def _release_orphan_claim_placeholder(self, source: SessionSource, session_key: str) -> None:
+        """Drop the unbound claim placeholder (session_id="") this admission minted
+        before a stand-down. Fail-open: a release failure must not mask the
+        stand-down error that the caller re-raises."""
+        try:
+            scope = claim_channel_scope(source, session_key)
+            db = self._db_for_key(session_key) if scope is not None else None
+            if scope is None or db is None:
+                return
+            from hermes_state_runtime import release_channel_claim
+            release_channel_claim(db, platform=scope[0], scope_id=scope[1],
+                chat_id=scope[2], profile=scope[3], session_id="")
+        except Exception:
+            logger.debug("orphan claim placeholder release failed for %s", session_key, exc_info=True)
+
     def _get_or_create_session_impl(
         self, source: SessionSource, force_new: bool = False, touch_activity: bool = True,
     ) -> SessionEntry:
@@ -1196,7 +1220,15 @@ class SessionStore(
         if decision.entry is None:
             candidate_sid = _new_session_id(now)
             if not force_new:
-                self._check_relay_claim_gate(source, session_key, candidate_sid, now)
+                try:
+                    self._check_relay_claim_gate(source, session_key, candidate_sid, now)
+                except ChannelClaimBlocked:
+                    # The SQLite gate minted a placeholder claim (session_id="") for
+                    # this candidate before the relay gate stood us down. Unbind it,
+                    # or the next admission is refused with channel_claim_inflight
+                    # for the rest of the lease (pass-1 Major 1).
+                    self._release_orphan_claim_placeholder(source, session_key)
+                    raise
             create_kwargs = self._route_create(
                 decision, session_key, source, now, force_new, observed,
                 session_id=candidate_sid,

@@ -220,7 +220,7 @@ Atomic acquire uses the same rename pattern as `tools/bot_relay.py::claim_pendin
    - If expired, overwrite in place (last writer wins; the relay file system is best-effort).
    - If not expired, return `(False, existing)`.
 
-Because the relay file tree is shared only between gateways on the same machine that share the same `relay_root`, and `rename` is atomic within one host, two gateways on the same machine race safely. A remote gateway writes claims via a different mechanism; read the file, check expiry, and overwrite if stale.
+The fresh create uses `O_CREAT | O_EXCL`: two gateways that try to admit the same first message cannot both win. The peer that created the claim file keeps the claim; the loser re-reads the file and stands down. The expired-claim steal stays a bounded last-writer-wins window inside `os.replace`; the lease limits how long a stolen claim stays authoritative. A tree shared across hosts through a sync layer that does not preserve exclusive-create semantics needs a distributed guard. That is a known limitation: the lease bounds the damage, and the sanctioned topology is one bot token on one gateway.
 
 ### 5.3 Transfer (session reset)
 
@@ -287,6 +287,8 @@ if not claim_acquired and claim:
 **Important invariant:** The exact `session_key` check for existing sessions stays in place. The claim lock is a coarse gate *above* that. A thread reply that matches an existing thread-keyed session still routes to that session (thread match via `_entries.get(session_key)` happening before the claim gate). The claim gate only prevents a *new* session from being created for the same channel when another claims it.
 
 ### 6.1 Thread-reply routing detail
+
+The fold acts in enforce mode only. In monitor mode it logs the would-be fold and admits with pre-claim keying: monitor changes no routing (release §13).
 
 When a thread reply arrives and the channel is claimed by session S:
 - If the thread reply's `session_key` (which includes `thread_id`) already exists in `_entries`, route to that session (existing thread session). This preserves the existing behavior for already-opened thread sessions.
@@ -489,7 +491,7 @@ gateway:
 ```
 
 - `enabled: false` is the kill switch: no claim acquire, no thread fold, no renewal, no stand-down. This is the pre-claim-lock behavior exactly.
-- `mode: monitor` (the default) keeps both claim stores maintained (intra-host SQLite, the cross-instance relay surface) and logs each would-have-blocked admission. It refuses no one. A mode value that is not one of `monitor`, `enforce` fails open to monitor with a warning, so a config typo cannot arm enforcement.
+- `mode: monitor` (the default) keeps both claim stores maintained (intra-host SQLite, the cross-instance relay surface) and logs each would-have-blocked admission. It refuses no one and it changes no routing: the thread fold, the route-into-holder move and the queue/stand-down acts run in enforce only. A mode value that is not one of `monitor`, `enforce` fails open to monitor with a warning, so a config typo cannot arm enforcement.
 - `mode: enforce` acts on live claim conflicts as sections 5 and 6 describe: route into the holder, stand down to the owning gateway, refuse the double-admit.
 
 `scope` and `lease_s` stay with the cross-instance claim ops (`tools/bot_relay.py`) and are not read from this block yet.

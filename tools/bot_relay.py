@@ -689,20 +689,26 @@ def _normalize_profile_for_claim(profile: Optional[str]) -> str:
     return "main~" if profile == "main" else profile
 
 
+def _claim_path_segment(segment: str) -> str:
+    if not segment or "/" in segment or "\\" in segment or ".." in segment or "\0" in segment:
+        raise ValueError(f"unsafe relay claim path segment: {segment!r}")
+    return segment
+
+
 def _channel_claim_path(root: Any, platform: str, scope_id: str, chat_id: str, profile: str) -> Path:
     base = relay_root(root) / CHANNEL_CLAIMS_DIR
-    parts: list[str] = [platform]
+    parts: list[str] = [_claim_path_segment(platform)]
     if scope_id:
-        parts.append(scope_id)
-    parts.append(chat_id)
-    return base / "/".join(parts) / f"{profile}.json"
+        parts.append(_claim_path_segment(scope_id))
+    parts.append(_claim_path_segment(chat_id))
+    return base / "/".join(parts) / f"{_claim_path_segment(profile)}.json"
 
 
 def _read_relay_claim(path: Path) -> Optional[dict[str, Any]]:
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else None
     except Exception:
         logger.debug("read relay claim %s failed", path, exc_info=True)
@@ -741,7 +747,21 @@ def acquire_relay_claim(
             return False, existing
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        if existing is None:
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                # Lost the fresh-create race to a peer gateway: their claim stands.
+                # os.replace is last-writer-wins, so a plain write here would let
+                # both gateways admit the same first message (pass-1 Major 3).
+                return False, _read_relay_claim(path)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(candidate))
+            return True, candidate
         _atomic_write_json(path, candidate)
+        conceded = _read_relay_claim(path)
+        if conceded is not None and str(conceded.get("instance_id", "")) != instance_id:
+            return False, conceded
         return True, candidate
     except Exception:
         logger.warning("acquire_relay_claim write failed for %s", path, exc_info=True)

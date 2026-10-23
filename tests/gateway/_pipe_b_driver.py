@@ -72,7 +72,7 @@ def patch_model_transport() -> None:
 
     async def async_create(self, **kwargs):
         if SLOW_TOKEN.strip() in (_last_user_content(kwargs) or ""):
-            await asyncio.sleep(3.2)
+            await asyncio.sleep(3.2)  # health: allow HX013 -- the slow model IS the behavior under test: it keeps gateway B's turn in flight while A stands down
         return _completion(answer_for(_last_user_content(kwargs) or ""),
                            kwargs.get("model", ""))
 
@@ -154,7 +154,7 @@ async def run(job: dict) -> dict:
     adapter.gateway_runner = runner
     runner.adapters = {Platform.MATTERMOST: adapter}
 
-    authority = await initialize_session_authority(
+    await initialize_session_authority(
         runner, profile_id="default", instance_id=job["instance_id"])
     runner.session_store._routing_home = Path(job["relay_root"])
     runner._wire_adapter_handlers(adapter, busy_text_mode="queue")
@@ -183,9 +183,9 @@ async def run(job: dict) -> dict:
     while time.monotonic() - _t0 < 40:
         await asyncio.sleep(0.5)
         if _settled():
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1.0)  # health: allow HX013 -- absence window: elapsed time after settle proves gateway B posted nothing (zero sends IS the assertion)
             break
-    await asyncio.sleep(1.5)   # let any admitted turn settle fully
+    await asyncio.sleep(1.5)  # health: allow HX013 -- absence window: admitted-turn drain before state.db inspection; elapsed time with no posts IS the assertion
 
     state_db = Path(home) / "state.db"
     sessions = []

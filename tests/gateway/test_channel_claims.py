@@ -288,17 +288,20 @@ def test_monitor_admits_a_second_lane_where_enforce_would_join(tmp_path, monkeyp
     assert claim["session_id"] == holder.session_id  # the holder lane keeps the claim
 
 
-def test_monitor_keeps_the_claim_store_maintained(tmp_path, monkeypatch):
-    """Monitor is observability, not a no-op: acquisitions, the §6.1 fold and the
-    thread-root tag all still run, so arming enforce later flips behavior with no
-    warm-up."""
+def test_monitor_keeps_the_claim_store_maintained(tmp_path, monkeypatch, caplog):
+    """Monitor is observation only (release §13): acquisitions still run so the
+    store stays warm for enforce, but the §6.1 fold does not act — a thread reply
+    admits with pre-claim keying and logs the fold enforce would have made."""
     store = _store(tmp_path, monkeypatch, mode="monitor")
     parent = store.get_or_create_session(_dm("chat-mo3"))
-    reply = store.get_or_create_session(_dm("chat-mo3", thread_id="t1"))
-    assert reply is parent  # the fold stays active in monitor
+    with caplog.at_level("WARNING"):
+        reply = store.get_or_create_session(_dm("chat-mo3", thread_id="t1"))
+    assert reply is not parent  # monitor does not fold: zero routing delta
+    assert reply.session_key != parent.session_key
+    assert "would fold this thread reply" in caplog.text
     claim = get_channel_claim(_db(store, parent.session_key), **_claim_key(store, parent))
-    assert claim["session_id"] == parent.session_id
-    assert claim["thread_root_id"] == "t1"
+    assert claim is not None
+    assert claim["session_id"] == parent.session_id  # the holder keeps its claim
 
 
 def test_disabled_gate_is_fully_off(tmp_path, monkeypatch):
@@ -399,7 +402,7 @@ def test_relay_gate_monitor_admits_behind_a_foreign_instance(tmp_path, monkeypat
 
 def test_relay_gate_enforce_stands_down_to_the_foreign_instance(tmp_path, monkeypatch):
     """Enforce: a live foreign relay claim refuses the double-admit (ChannelClaimBlocked)."""
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     from gateway.session import ChannelClaimBlocked
     from tools.bot_relay import _normalize_profile_for_claim, acquire_relay_claim
@@ -413,4 +416,27 @@ def test_relay_gate_enforce_stands_down_to_the_foreign_instance(tmp_path, monkey
     with pytest.raises(ChannelClaimBlocked):
         store._check_relay_claim_gate(
             source, store._generate_session_key(source), "sid-cand",
-            datetime.now(timezone.utc))
+            datetime.now(UTC))
+
+
+def test_relay_standdown_releases_the_sqlite_placeholder(tmp_path, monkeypatch):
+    """Pass-1 Major 1: the SQLite gate minted a claim placeholder (session_id="")
+    during the admission that the relay gate then refused. The stand-down must
+    unbind it, or the next admission is refused with channel_claim_inflight for
+    the rest of the lease."""
+    import time
+
+    from gateway.session import ChannelClaimBlocked
+    from tools.bot_relay import _normalize_profile_for_claim, acquire_relay_claim
+
+    store, relay_root = _relay_gated_store(tmp_path, monkeypatch)
+    acquired, _ = acquire_relay_claim(
+        relay_root, "mattermost", "", "chat-orf1",
+        _normalize_profile_for_claim("main"), "inst-mac", "sid-mac", lease_seconds=1)
+    assert acquired
+    with pytest.raises(ChannelClaimBlocked):
+        store.get_or_create_session(_dm("chat-orf1"))
+    time.sleep(1.1)  # health: allow HX013 -- lease expiry IS the behavior under test: the claim was minted with a 1 s lease and the steal must not happen early
+    entry = store.get_or_create_session(_dm("chat-orf1"))
+    assert entry is not None
+    assert entry.origin.chat_id == "chat-orf1"

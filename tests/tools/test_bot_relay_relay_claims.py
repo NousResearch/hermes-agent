@@ -189,3 +189,38 @@ def test_release_refused_for_wrong_session(root):
     )
     assert claim is not None
     assert claim["session_id"] == "sid-1"
+
+
+def test_acquire_concedes_a_lost_create_race(root, monkeypatch):
+    """A gateway that read the tree before a peer's create landed must lose via
+    O_EXCL, not overwrite the peer and admit both (pass-1 Major 3)."""
+    won, _ = bot_relay.acquire_relay_claim(
+        root, "mattermost", "", "chat-race", "main", "gw-a", "sid-a")
+    assert won
+    real_read = bot_relay._read_relay_claim
+    reads = {"n": 0}
+
+    def stale_read(path):
+        reads["n"] += 1
+        if reads["n"] == 1:
+            return None  # gw-b's read ran before gw-a's file landed
+        return real_read(path)
+
+    monkeypatch.setattr(bot_relay, "_read_relay_claim", stale_read)
+    lost, seen = bot_relay.acquire_relay_claim(
+        root, "mattermost", "", "chat-race", "main", "gw-b", "sid-b")
+    assert not lost
+    assert seen is not None
+    assert seen["instance_id"] == "gw-a"
+    claim = bot_relay.read_relay_claim(root, "mattermost", "", "chat-race", "main")
+    assert claim is not None
+    assert claim["instance_id"] == "gw-a"
+
+
+def test_claim_path_rejects_traversal_segments(root):
+    """Hostile or corrupted relay data must not turn a segment into a path
+    traversal for an arbitrary JSON write (pass-1 Minor)."""
+    with pytest.raises(ValueError):
+        bot_relay.acquire_relay_claim(
+            root, "mattermost", "", "../../escape", "main", "gw-a", "sid-a")
+    assert list(root.rglob("*.json")) == []

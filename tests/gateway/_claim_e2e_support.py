@@ -271,7 +271,7 @@ def patch_model_transport(monkeypatch, *, slow_seconds: float = 3.2) -> dict:
     async def async_create(self, **kwargs):
         counters["async"] += 1
         if SLOW_TOKEN.strip() in (_last_user_content(kwargs) or ""):
-            await asyncio.sleep(slow_seconds)
+            await asyncio.sleep(slow_seconds)  # health: allow HX013 -- the slow model IS the behavior under test: it keeps the turn in flight to expose the double-admit
         # Always return a full completion: hermes detects "stream request returned
         # a final response object" and switches the session to non-streaming
         # (agent/chat_completion_helpers.py); the harness then reads its answers
@@ -281,7 +281,7 @@ def patch_model_transport(monkeypatch, *, slow_seconds: float = 3.2) -> dict:
     def sync_create(self, **kwargs):
         counters["sync"] += 1
         if SLOW_TOKEN.strip() in (_last_user_content(kwargs) or ""):
-            time.sleep(slow_seconds)
+            time.sleep(slow_seconds)  # health: allow HX013 -- the slow model IS the behavior under test: it keeps the turn in flight to expose the double-admit
         return _completion_payload(_answer(kwargs), kwargs.get("model", ""))
 
     from openai.resources.chat.completions import AsyncCompletions, Completions
@@ -336,7 +336,7 @@ def db_rows(table: str, where: str = "1=1", params: tuple = ()) -> list[dict]:
         conn.row_factory = sqlite3.Row
         try:
             try:
-                cur = conn.execute(f"SELECT * FROM {table} WHERE {where}", params)  # noqa: S608
+                cur = conn.execute(f"SELECT * FROM {table} WHERE {where}", params)
             except sqlite3.OperationalError:
                 continue
             return [dict(r) for r in cur.fetchall()]
@@ -373,4 +373,6 @@ def compression_block_lines(journal) -> list[str]:
 
 
 async def settle(seconds: float = 0.25) -> None:
-    await asyncio.sleep(seconds)
+    """Drain window: the elapsed-quiet delay IS the assertion for callers that
+    verify no stray sends/sessions appeared."""
+    await asyncio.sleep(seconds)  # health: allow HX013 -- absence window: elapsed-quiet with no new sends IS the assertion of settle() callers

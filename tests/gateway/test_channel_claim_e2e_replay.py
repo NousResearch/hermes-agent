@@ -81,7 +81,6 @@ class World:
         from hermes_constants import get_hermes_home
 
         from gateway.config import GatewayConfig, Platform, PlatformConfig
-        from gateway.platforms.base import SendResult  # noqa: F401  (contract reference)
         from gateway.run import GatewayRunner
         from gateway.session_authority import initialize_session_authority
         from plugins.platforms.mattermost.adapter import MattermostAdapter
@@ -222,7 +221,7 @@ async def test_replay_double_delivery_single_answer(world, tmp_path):
     await world.wait_answered(p2_text)
     world.trace("p2-answered")
     world.record_channel_sessions()
-    await asyncio.sleep(0.5)   # let any stray duplicate surface
+    await asyncio.sleep(0.5)  # health: allow HX013 -- absence window: elapsed time with no second answer IS the duplicate-detection assertion
 
     world.record_channel_sessions()
     assert world.max_channel_sessions_seen == 1, \
@@ -304,7 +303,7 @@ async def test_queued_event_drains_after_turn_end(world):
     await task2
     await world.wait_answered(p2_text)
     world.record_channel_sessions()
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.5)  # health: allow HX013 -- absence window: elapsed time after the queued answer proves no stray second turn surfaced
 
     assert world.max_channel_sessions_seen == 1
     assert len(world.sendlog.answers_for(p2_text)) == 1
@@ -379,19 +378,18 @@ async def test_lease_expiry_releases_claim_and_waiting_event_admits(world, monke
         await task1
 
     # claim still held for up to the lease window (holder named, not released)
-    await asyncio.sleep(0.3)
+    await async_wait_until(lambda: bool(channel_claim_rows()), timeout=2)
     rows = channel_claim_rows()
     assert rows, "no channel claim row after kill"
-    holder_sid = rows[0]["session_id"]
-    lease_expire = rows[0]["lease_expire"]
+    lease_expire = float(rows[0]["lease_expire"])
 
     # let the lease expire (kill semantics: nothing renews), then a waiting event
-    await asyncio.sleep(2.7)
+    await async_wait_until(lambda: time.time() >= lease_expire + 0.3, timeout=6)
     p2_text = "Waiting event after the crash window"
     task2 = await w.deliver(mm_ws_event("post-x2", p2_text))
     await task2
     await w.wait_answered(p2_text)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.5)  # health: allow HX013 -- absence window: elapsed time with no stand-down proves the crashed claim is fully superseded
 
     # claim re-acquired (release-on-expiry + fresh admission), single lane, one answer
     rows_after = channel_claim_rows()

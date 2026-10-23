@@ -543,3 +543,107 @@ async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(mo
     assert len(warnings) == 1
     assert "['alice']" in warnings[0]
     assert "bob" not in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# 7b. MEDIA tag handling — phantom paths must not fail a delivered send
+# ---------------------------------------------------------------------------
+
+_PHANTOM_REGRESSION_DOC = """A ``MEDIA:`` tag is model-authored text, so a reply can carry one
+whose path does not exist — most often the literal ``MEDIA:<image>``, which is the form Hermes
+itself renders when replaying an image from history and which a model therefore reproduces
+verbatim. Passing that to ``send_document`` returned ``File not found``, and because that failure
+was returned from ``send_text`` *even though the accompanying text had already been delivered*,
+the platform reported the whole turn as failed. The gateway then sent a plain-text fallback and
+the delivery ledger redelivered the message: the user received the same text up to five times,
+spread over several minutes. Filtering non-files before the send, and refusing to fail a send
+that already delivered text, removes the cascade at its source."""
+
+
+def test_partition_media_paths_splits_real_from_phantom(tmp_path):
+    real = tmp_path / "photo.png"
+    real.write_bytes(b"\x89PNG\r\n\x1a\n")
+    real_paths, phantom = _simplex._partition_media_paths(
+        [str(real), "<image>", "/nonexistent/also-missing.png"]
+    )
+    assert real_paths == [str(real)]
+    assert phantom == ["<image>", "/nonexistent/also-missing.png"]
+
+
+def test_partition_media_paths_all_real():
+    """No phantoms means no behaviour change for the ordinary path."""
+    from pathlib import Path
+    here = str(Path(__file__).resolve())
+    real_paths, phantom = _simplex._partition_media_paths([here])
+    assert real_paths == [here]
+    assert phantom == []
+
+
+@pytest.mark.asyncio
+async def test_phantom_media_tag_does_not_fail_or_duplicate_the_text(tmp_path):
+    """★ THE REGRESSION. A phantom tag alongside real text: text goes once, send succeeds."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+    adapter.send_document = AsyncMock()  # must never be reached for a phantom
+
+    result = await adapter.send("contact-42", "Here is the render.\nMEDIA:<image>")
+
+    # The text was delivered exactly once, and only the text.
+    assert mock_ws.send.call_count == 1
+    payload = json.loads(mock_ws.send.call_args[0][0])
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0]["msgContent"]
+    assert msg_content == {"type": "text", "text": "Here is the render."}
+
+    # The phantom never reached the document sender, and the turn is NOT reported as failed —
+    # reporting failure here is what arms the plain-text fallback and the redelivery.
+    adapter.send_document.assert_not_called()
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_text_already_delivered_survives_a_failing_attachment(tmp_path):
+    """Text + a real file whose send fails: text arrived, so the turn succeeds and logs it."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+
+    doc = tmp_path / "photo.png"
+    doc.write_bytes(b"\x89PNG\r\n\x1a\n")
+    adapter.send_document = AsyncMock(
+        return_value=_simplex.SendResult(success=False, error="boom")
+    )
+
+    result = await adapter.send("contact-42", f"Caption here.\nMEDIA:{doc}")
+
+    assert mock_ws.send.call_count == 1          # text delivered
+    adapter.send_document.assert_awaited_once()  # attachment genuinely attempted
+    assert result.success is True                # but the delivered text is what counts
+
+
+@pytest.mark.asyncio
+async def test_nothing_delivered_still_reports_failure(tmp_path):
+    """No text and a failing attachment: this must still fail, and keep the real error."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+
+    doc = tmp_path / "photo.png"
+    doc.write_bytes(b"\x89PNG\r\n\x1a\n")
+    adapter.send_document = AsyncMock(
+        return_value=_simplex.SendResult(success=False, error="File not found")
+    )
+
+    result = await adapter.send("contact-42", f"MEDIA:{doc}")
+
+    assert result.success is False
+    assert "File not found" in (result.error or "")

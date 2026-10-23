@@ -2,7 +2,7 @@
   "$comment": "GENERATED — do not hand-edit. Regenerate with hermes-agent scripts/generate_conformance_vectors.py; the native renderers are the oracle (executable spec).",
   "oracle": {
     "repo": "NousResearch/hermes-agent",
-    "commit": "40eebc7d70f3d8e95c429c8aa482f31ba6c867f6",
+    "commit": "7fba44a074b4695b0948f6857b470d835b2cad46",
     "generator": "scripts/generate_conformance_vectors.py",
     "generator_version": 1
   },
@@ -275,7 +275,7 @@
       "category": "adversarial",
       "expect": "semantic",
       "input": "**bold *italic ~~struck `code` struck~~ italic* bold**",
-      "native_output": "*bold \\*italic \\~\\~struck `code` struck\\~\\~ italic\\* bold*"
+      "native_output": "*bold _italic \\~\\~struck `code` struck\\~\\~ italic_ bold*"
     },
     {
       "id": "placeholder-injection",
@@ -290,7 +290,7 @@
       "category": "adversarial",
       "expect": "semantic",
       "input": "***what is this*** and ____that____",
-      "native_output": "*\\*what is this*\\* and \\_\\_\\_\\_that\\_\\_\\_\\_"
+      "native_output": "_*what is this*_ and \\_\\_\\_\\_that\\_\\_\\_\\_"
     },
     {
       "id": "empty-string",

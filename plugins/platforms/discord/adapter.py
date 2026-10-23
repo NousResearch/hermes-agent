@@ -300,7 +300,12 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
-from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
+from gateway.config import (
+    Platform,
+    PlatformConfig,
+    _coerce_reply_to_mode,
+    discord_channel_id_from_link,
+)
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
@@ -1329,7 +1334,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Dedup cache: Discord RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
-        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        # PlatformConfig.from_dict normalises legacy gateway.json bools. A residual
+        # bool False is falsy and must become "off", not the "first" fallback.
+        _rtm = _coerce_reply_to_mode(getattr(config, 'reply_to_mode', 'first'))
+        self._reply_to_mode: str = _rtm or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: dict[str, str] = {}

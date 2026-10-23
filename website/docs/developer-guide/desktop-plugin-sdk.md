@@ -1093,10 +1093,31 @@ ctx.register({
   area: TRANSCRIPT_DIRECTIVE_AREA,
   data: {
     name: 'task', // the model writes ::task{id="BB-12"}
-    render: ({ attrs, streaming }) => jsx(TaskCard, { taskId: attrs.id, streaming })
+    render: ({ attrs, sessionId, streaming }) => jsx(TaskCard, { taskId: attrs.id, sessionId, streaming })
   }
 })
 ```
+
+`render` receives `{ attrs, source, streaming, sessionId }`. `sessionId` names
+the chat whose transcript shows the card (its stored id, else its runtime id;
+`null` while that chat has no session yet). Pass it to the `host.composer`
+verbs so a card action lands in **that** chat, even when another chat open
+side by side holds the active composer:
+
+```javascript
+function TaskCard({ taskId, sessionId }) {
+  const next = () => {
+    // Older hosts don't pass sessionId (undefined): fall back to the active
+    // composer, which is what `null` addresses.
+    const sent = host.composer.submit(sessionId ?? null, `Continue task ${taskId}`)
+    if (!sent) host.notify({ kind: 'warning', message: 'Open that chat to continue' })
+  }
+  return jsx('button', { onClick: next, children: 'Next' })
+}
+```
+
+Addressed verbs fail closed: when the card's chat has no visible composer,
+`submit` returns `false` and nothing is sent anywhere else.
 
 Rules the host enforces so the surface stays safe:
 

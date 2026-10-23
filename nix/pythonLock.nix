@@ -37,4 +37,11 @@ in
   inherit family;
 
   interpreter = selectPython family pkgs;
+
+  # The interpreter the lock itself installs. uv2nix cannot build a venv
+  # against it (a tarball interpreter has no `pkgs`), so the venv keeps
+  # `interpreter` while a shell that must match a real runtime takes this.
+  # Derived here, not passed in: every caller of this file reads `interpreter`
+  # and nothing else should have to know about the pinned build.
+  pinned = (pkgs.callPackage ./pm-packages.nix { }).python;
 }

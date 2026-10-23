@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -5,11 +6,13 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
+import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
 import { esPluginUpdate } from './es_plugin_update'
 import { esProjects } from './es_projects'
@@ -924,53 +927,7 @@ export const esOverrides = {
         masterPasswordPlaceholder: 'Contraseña maestra'
       }
     },
-    notifications: {
-      title: 'Notificaciones',
-      intro: 'Notificaciones del sistema operativo (no avisos dentro de la app). Por dispositivo.',
-      enableAll: 'Activar notificaciones',
-      enableAllDesc: 'Desactivado silencia todas las notificaciones siguientes.',
-      focusedHint: 'Los avisos de finalización solo se activan cuando Hermes está en segundo plano.',
-      kinds: {
-        approval: {
-          label: 'Se necesita aprobación',
-          description: 'Un comando espera que lo apruebes o rechaces.'
-        },
-        input: {
-          label: 'Se necesita información',
-          description: 'Hermes hizo una pregunta o necesita una contraseña o un secreto.'
-        },
-        turnDone: {
-          label: 'Respuesta lista',
-          description: 'Terminó un turno mientras Hermes estaba en segundo plano.'
-        },
-        turnError: {
-          label: 'El turno falló',
-          description: 'Errores de turnos en segundo plano.'
-        },
-        backgroundDone: {
-          label: 'Tarea en segundo plano finalizada',
-          description: 'Se completó un comando de terminal en segundo plano.'
-        },
-        credits: {
-          label: 'Avisos de crédito',
-          description: 'El acceso a los créditos se pausa o se restablece.'
-        },
-        plugin: {
-          label: 'Notificaciones de complementos',
-          description: 'Un complemento de escritorio envió una notificación mientras Hermes estaba en segundo plano.'
-        }
-      },
-      test: 'Enviar notificación de prueba',
-      testTitle: 'Hermes',
-      testBody: 'Las notificaciones funcionan.',
-      testSent:
-        'Prueba enviada. Si no aparece nada, revisa los permisos de notificaciones del sistema operativo y el modo Concentración o No molestar.',
-      testUnsupported: 'Este sistema no admite notificaciones nativas.',
-      completionSoundTitle: 'Sonido de finalización',
-      completionSoundDesc:
-        'Reproduce un sonido cuando termina el turno de un agente. Elige un ajuste predefinido y pruébalo aquí.',
-      completionSoundPreview: 'Vista previa'
-    },
+    notifications: esNotifications,
     sections: {
       model: 'Modelo',
       chat: 'Chat',
@@ -2032,6 +1989,15 @@ export const esOverrides = {
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta?: string) =>
           `Cambio a ${targetName}: entra en vigor ${effectiveAt}. No se cobra nada ahora; conservas tu plan actual hasta entonces.${creditsDelta ? ` Cambio de créditos mensuales: ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Seguir con créditos',
+        description: 'Usa tus créditos cuando se agote el uso incluido. Desactivado: Hermes espera al reinicio.',
+        approveInBrowser: 'Aprueba Remote Spending en tu navegador para cambiar esto. Se aplica en cuanto lo apruebes.',
+        openAgain: 'Abrir de nuevo',
+        cancel: 'Cancelar',
+        approvedRetry: 'Remote Spending está aprobado, pero el cambio no se guardó.',
+        tryAgain: 'Reintentar'
+      },
       autoReload: {
         threshold: 'Umbral',
         thresholdAria: 'Umbral de recarga automática',
@@ -2111,6 +2077,20 @@ export const esOverrides = {
             captionDefault: 'Límite predeterminado',
             captionSpending: 'Gasto remoto mensual',
             valueUsed: (spent: string, limit: string) => `${spent} de ${limit} usados`
+          },
+          window: {
+            today: 'Hoy',
+            week: 'Esta semana',
+            month: 'Este mes',
+            topTier: 'Modelos grandes (mensual)',
+            barLabel: (title: string) => `${title}: uso incluido consumido`,
+            captionPaused: 'En pausa: falló el pago de la suscripción',
+            captionPausedOther: 'En pausa: consulta Facturación en el Portal',
+            captionTopTierUsedUp: 'Cuota mensual agotada, los créditos cubren el resto',
+            captionTopTierUsedUpKeepGoingOff: 'Cuota mensual agotada, los demás modelos incluidos siguen funcionando',
+            captionResetsIn: (duration: string) => `Se restablece en ${duration}`,
+            captionIncluded: 'Uso incluido',
+            valueUsed: (percent: string) => `${percent} usado`
           }
         },
         planCard: {
@@ -4354,29 +4334,25 @@ export const esOverrides = {
     signIn: 'Iniciar sesión',
     signInHeading: 'Inicia sesión con una cuenta de Nous para desbloquear más modelos y herramientas.',
     settingUp: 'Configurando la inferencia gratuita…',
-    codeBody: 'Introduce este código en tu navegador para terminar de iniciar sesión.',
-    copyLink: 'Copiar enlace',
+    finishInBrowser: 'Termina en tu navegador',
     doNotShare: 'No compartas este código.',
+    openPageAgain: 'Abrir la página de nuevo',
     waiting: 'Esperando el inicio de sesión…',
     finishingHeading: 'Terminando el inicio de sesión…',
     finishingBody: 'Aprobado en el navegador. Obteniendo los tokens de tu cuenta.',
-    signedInAs: (email: string) => `Sesión iniciada como ${email}`,
+    signedInAsLabel: 'Sesión iniciada como',
     signedIn: 'Sesión iniciada.',
     completedBody: 'Tu cuenta ya incluye inferencia y herramientas.',
+    reconnect: 'Reconectar',
+    openConnectors: 'Abrir Conectores',
     defaultModel: 'Modelo predeterminado',
     change: 'Cambiar',
     done: 'Listo',
     notNow: 'Ahora no',
     tryAgain: 'Reintentar',
-    startAgain: 'Empezar de nuevo',
     didNotComplete: 'No se completó el inicio de sesión',
-    rejectedBody: 'No pasa nada, sigues en el servicio gratuito de Nous. Inicia sesión cuando quieras.',
-    supersededBody:
-      'Un código de inicio de sesión más reciente sustituyó a este. Usa el más reciente o empieza de nuevo.',
     timedOutHeading: 'Ese enlace de inicio de sesión caducó',
     timedOutBody: 'Empieza de nuevo cuando quieras. Sigues en el servicio gratuito de Nous.',
-    retiredBody:
-      'Tu sesión terminó antes de completar el inicio de sesión. Hermes iniciará una nueva; luego vuelve a iniciar sesión cuando quieras.',
     errorBody: 'No se completó el inicio de sesión. Vuelve a intentarlo cuando quieras.',
     busyHeading: 'Ya casi está',
     busyBody: (wait: string) =>
@@ -4433,7 +4409,27 @@ export const esOverrides = {
     wasPrice: 'antes',
     customModel: 'Modelo personalizado',
     addCustomModelAction: 'Añadir modelo personalizado…',
-    customModelPlaceholder: 'Escribe un ID de modelo, p. ej., openai/gpt-5'
+    customModelPlaceholder: 'Escribe un ID de modelo, p. ej., openai/gpt-5',
+    today: 'Hoy',
+    week: 'Semana',
+    month: 'Mes',
+    topTier: 'Modelos grandes (mensual)',
+    included: 'Todos los modelos de abajo están incluidos',
+    pausedRenewal: 'en pausa: renovación impagada',
+    pausedOther: 'en pausa',
+    includedUsedUp: 'Uso incluido agotado',
+    limitReached: (name: string) => `Límite ${name} alcanzado`,
+    limitNames: { day: 'diario', month: 'mensual', top_tier: 'mensual de modelos grandes', week: 'semanal' },
+    limitThenCredits: 'los modelos de pago ahora usan tus créditos (pago por uso)',
+    limitThenCreditsLarge: 'los modelos grandes ahora usan tus créditos (pago por uso)',
+    limitThenWait: 'solo modelos gratuitos hasta entonces',
+    limitThenWaitLarge: 'modelos grandes en pausa hasta entonces',
+    percentUsed: (percent: string) => `${percent} usado`,
+    resetsIn: (duration: string) => `se restablece en ${duration}`,
+    usageLevels: { free: 'Gratis', top_tier: 'Grande' },
+    sectionRecommended: 'Recomendados',
+    sectionOther: 'Otros modelos',
+    largeFootnote: 'Los modelos grandes también cuentan para tu límite mensual de modelos grandes.'
   },
   modelVisibility: {
     title: 'Modelos',
@@ -4873,32 +4869,7 @@ export const esOverrides = {
       react: 'Reaccionar',
       dismissError: 'Descartar error',
       responseStopped: 'Respuesta detenida',
-      errorLayers: {
-        auth: 'Problema de inicio de sesión',
-        billing: 'Créditos agotados',
-        disk: 'Disco lleno',
-        endpoint: 'No se puede conectar con tu servidor de modelos',
-        gateway: 'Hermes tuvo un problema',
-        generic: 'Hermes no pudo terminar esta respuesta',
-        provider: 'El servicio de IA devolvió un error',
-        runtime: 'Hermes tuvo un problema',
-        streaming: 'La respuesta se cortó'
-      },
-      errorLayerBodies: {
-        auth: 'El servicio de IA rechazó tu inicio de sesión. Revisa las credenciales de este proveedor y vuelve a enviar el mensaje.',
-        billing: 'Tu cuenta no tiene créditos para este proveedor. Recarga o cambia de proveedor y vuelve a enviarlo.',
-        disk: 'Tu disco está lleno, así que Hermes no pudo guardar esta conversación. Libera espacio y reinténtalo.',
-        endpoint:
-          'Hermes no puede conectar con tu servidor de modelos personalizado. Comprueba que esté en ejecución y vuelve a enviar el mensaje.',
-        gateway:
-          'Hermes tuvo un problema interno al iniciar esta respuesta. Vuelve a enviar el mensaje; si sigue ocurriendo, envía un diagnóstico.',
-        generic: 'Algo salió mal mientras Hermes respondía. Reinténtalo o copia los detalles si sigue ocurriendo.',
-        provider:
-          'El servicio de IA no pudo completar esta solicitud. Reinténtalo en un momento o cambia de proveedor.',
-        runtime:
-          'Hermes tuvo un problema interno al iniciar esta respuesta. Vuelve a enviar el mensaje; si sigue ocurriendo, envía un diagnóstico.',
-        streaming: 'La conexión se cortó antes de que terminara la respuesta. Reinténtalo para enviarla de nuevo.'
-      },
+      ...esErrorLayers,
       errorCodes: {
         auth: {
           title: (provider: string) => `${provider} rechazó tu inicio de sesión`,
@@ -5005,6 +4976,10 @@ export const esOverrides = {
           title: 'Este chat pertenece a una tarea programada',
           body: 'Solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
         },
+        workspace_unavailable: {
+          title: 'La carpeta de este chat ya no existe',
+          body: 'La carpeta en la que trabaja este chat se movió o se eliminó, así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o usa «Mover a proyecto» para darle otra al chat, y vuelve a intentarlo.'
+        },
         SESSION_NOT_OWNED: {
           title: 'Este chat está abierto en otro sitio',
           body: 'Este chat está abierto en otra ventana de Hermes o en un terminal. Ciérralo allí y vuelve a enviar el mensaje, o empieza un chat nuevo aquí.'
@@ -5040,6 +5015,10 @@ export const esOverrides = {
         free_tier_refused: {
           title: 'Hermes no pudo enviarlo sin iniciar sesión',
           body: 'Iniciar sesión con una cuenta de Nous es gratis.'
+        },
+        usage_window: {
+          title: 'Uso incluido agotado',
+          body: 'El uso incluido de tu plan está agotado hasta el reinicio. Añade créditos en /topup para seguir.'
         }
       },
       errorAuthKinds: {
@@ -5056,6 +5035,12 @@ export const esOverrides = {
       errorGenericProvider: 'El servicio de IA',
       errorToastTitle: 'Hermes no pudo terminar la respuesta',
       errorRetry: 'Reintentar',
+      errorSwitchToModel: (model, note) => (note ? `Cambiar a ${model} (${note})` : `Cambiar a ${model}`),
+      errorSwitchModelFailed: 'No se pudo cambiar de modelo',
+      errorUseCredits: 'Activar Seguir con créditos',
+      errorUseCreditsFailed: 'No se pudo activar Seguir con créditos',
+      errorAddCredits: 'Añadir créditos',
+      errorOpenBillingSettings: 'Abrir ajustes de facturación',
       errorLimitResets: (time: string) => `El límite se restablece a las ${time}`,
       errorRetryAtReset: (time: string) => `Reintentar cuando se restablezca el límite (${time})`,
       errorRetryScheduled: (time: string, wait: string) => `Reintentando a las ${time}, dentro de ${wait}`,

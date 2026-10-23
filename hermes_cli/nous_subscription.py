@@ -708,17 +708,23 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
             auth_state = auth._try_import_shared_nous_state(timeout_seconds=15.0)
         if auth_state is None:
             auth_state = auth._nous_device_code_login()
-        with auth._auth_store_lock():
-            auth_store = auth._load_auth_store()
-            auth._save_provider_state(auth_store, "nous", auth_state)
-            if prior_active_provider:
-                auth_store["active_provider"] = prior_active_provider
-            else:
-                auth_store.pop("active_provider", None)
-            auth._save_auth_store(auth_store)
-        auth._write_shared_nous_state(auth_state)
+        from hermes_cli.anon_auth import settle_after_upgrade
+        from hermes_cli.guest_handoff import deferred, result_lines
+        with deferred() as handoff:  # a replaced free tier hands its apps over once both saves land
+            with auth._auth_store_lock():
+                auth_store = auth._load_auth_store()
+                auth._save_provider_state(auth_store, "nous", auth_state)
+                if prior_active_provider:
+                    auth_store["active_provider"] = prior_active_provider
+                else:
+                    auth_store.pop("active_provider", None)
+                auth._save_auth_store(auth_store)
+            auth._write_shared_nous_state(auth_state)
         auth._sync_nous_pool_from_auth_store()
+        settle_after_upgrade(auth_state)  # a config left on the free tier's route moves to the account
         print("  Nous Portal login successful.")
+        for line in (line for view in handoff.results for line in result_lines(view)):
+            print(f"  {line}")
         return True
     except KeyboardInterrupt:
         print("\n  Login cancelled.")

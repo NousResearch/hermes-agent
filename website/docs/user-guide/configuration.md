@@ -222,11 +222,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes ships six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Vercel Sandbox. Plugins add more, such as the official [Singularity/Apptainer](#singularityapptainer-backend) backend.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | <plugin backend>
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
@@ -235,7 +235,6 @@ terminal:
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell
   sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
-  singularity_image: "docker://nousresearch/hermes-sandbox:desktop"  # Container image for Singularity backend
   modal_image: "nousresearch/hermes-sandbox:desktop"                 # Container image for Modal backend
   daytona_image: "nousresearch/hermes-sandbox:desktop"               # Container image for Daytona backend
 ```
@@ -297,7 +296,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
-| **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| **singularity** (plugin) | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
 
@@ -603,7 +602,11 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 ### Singularity/Apptainer Backend
 
-Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
+Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available. It is the official [`singularity` plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity) (formerly built into core; `hermes update` installs it for profiles that already use it):
+
+```bash
+hermes plugins install singularity
+```
 
 ```yaml
 terminal:
@@ -614,11 +617,11 @@ terminal:
   container_persistent: true       # Writable overlay persists across sessions
 ```
 
-**Requirements:** `apptainer` or `singularity` binary in `$PATH`.
+**Requirements:** the `singularity` plugin and an `apptainer` or `singularity` binary in `$PATH`.
 
 **Image handling:** Docker URLs (`docker://...`) are automatically converted to SIF files and cached. Existing `.sif` files are used directly.
 
-**Scratch directory:** Resolved in order: `TERMINAL_SCRATCH_DIR` → `TERMINAL_SANDBOX_DIR/singularity` → `/scratch/$USER/hermes-agent` (HPC convention) → `~/.hermes/sandboxes/singularity`.
+**Scratch directory:** Resolved in order: `TERMINAL_SCRATCH_DIR` → `/scratch/$USER/hermes-agent` when `/scratch` is writable (HPC convention) → `TERMINAL_SANDBOX_DIR/singularity` (default `~/.hermes/sandboxes/singularity`).
 
 **Isolation:** Uses `--containall --no-home` for full namespace isolation without mounting the host home directory.
 
@@ -631,7 +634,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
-- **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
+- **Singularity** — Needs the `singularity` plugin (`hermes plugins install singularity`) and `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
@@ -786,7 +789,7 @@ export TERMINAL_LOCAL_PERSISTENT=false              # local
 | SSH | `TERMINAL_SSH_PERSISTENT`, else `terminal.persistent_shell` (`TERMINAL_PERSISTENT_SHELL`) | `true` |
 | Local | `TERMINAL_LOCAL_PERSISTENT` | `true` |
 
-Docker, Singularity, Modal, Daytona, Vercel Sandbox and plugin backends ignore these settings.
+Docker, Modal, Daytona, Vercel Sandbox and plugin backends (Singularity included) ignore these settings.
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 
@@ -2991,6 +2994,10 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
+  backend: default                          # Delegation strategy routing each task: "default" = the keys below, or a plugin backend (model_map, profile_routes, ...)
+  # backends:                               # Each plugin backend's own settings, keyed by its backend name
+  #   model_map:
+  #     options: [...]
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
@@ -3007,6 +3014,8 @@ delegation:
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
   oneshot_max_children: 2                   # Total subagents a one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited. Interactive and gateway sessions are never capped by this.
 ```
+
+**Delegation strategy (`backend`):** `delegation.backend` picks the strategy plugin that decides each subagent's route. `default` follows the keys below (or the parent's route when they are empty). Plugin strategies such as `model_map` (a named model per task) and `profile_routes` (a Hermes profile per task) read their settings from `delegation.backends.<backend name>`. A backend whose plugin is missing or disabled fails closed: `delegate_task` returns a tool error naming it and the fix (`/delegation default`, or `hermes config set delegation.backend default`) instead of running children on another route. A backend route without its own `fallback_providers` uses `delegation.fallback_providers`. See [Subagent Delegation → Delegation strategies](features/delegation.md#delegation-strategies-delegationbackend).
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 

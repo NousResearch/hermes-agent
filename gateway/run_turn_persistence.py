@@ -12,7 +12,9 @@ import queue
 import threading
 import time
 from agent.i18n import t
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+from agent.turn_failure_copy import (
+    FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, OPEN_TURN_TAIL_ROLES, PARTIAL_FAILED_TURN_NOTICE,
+)
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -271,13 +273,14 @@ class GatewayTurnPersistenceMixin:
         return FAILED_TURN_NOTICE
 
     async def _hmwa_close_failed_turn(self, session_id, notice):
-        """Append the gateway-owned assistant boundary iff the durable tail is an open user row.
+        """Append the gateway-owned assistant boundary iff the durable tail is open (a user row, or the
+        tool row of a call that ran before the failure).
 
         The tail, not "did the gateway write the user row", is the key: on the primary path the
         agent's turn-start flush already persisted the row (so the platform-id dedupe skips the
         gateway write), and a platform redelivery of an already-closed turn must not stack a
         second assistant row."""
-        if await self.async_session_store.transcript_tail_role(session_id) != "user":
+        if await self.async_session_store.transcript_tail_role(session_id) not in OPEN_TURN_TAIL_ROLES:
             return
         await self.async_session_store.append_to_transcript(session_id, {
             "role": "assistant", "content": notice, "timestamp": time.time(), "display_kind": FAILED_TURN_DISPLAY_KIND,
@@ -523,6 +526,31 @@ class GatewayTurnPersistenceMixin:
         # the coherence guard snapshots at agent-BUILD time, so our own writes would otherwise
         # trigger a rebuild next turn (destroying prompt caching).
         await self._refresh_agent_cache_message_count(session_key, sid)
+
+    @staticmethod
+    def _usage_window_chat_wording(agent_result: dict, response: str) -> str:
+        """A usage-window refusal sent to a chat: credits steps point at the Portal (a chat's /topup has no
+        Keep going control) and the reset reads as a duration (the gateway's clock is not the reader's).
+        Every other reply is returned unchanged."""
+        if not (agent_result.get("usage_window_message") and response):
+            return response
+        from agent.plan_limits import chat_refusal_wording
+        return chat_refusal_wording(response, agent_result.get("failure_resets_at"))
+
+    async def _deliver_turn_response_then_limit_offer(
+        self, event, source, session_entry, session_key, run_generation,
+        agent_result, agent_messages, response, footer_line, intentional_silence,
+    ):
+        """``_hmwa_deliver_turn_response``, then, for a usage-window refusal, the limit offer: the limit
+        sentence is the reply, and the button follows it once it lands."""
+        delivered = await self._hmwa_deliver_turn_response(
+            event, source, session_entry, session_key, run_generation,
+            agent_result, agent_messages, response, footer_line, intentional_silence,
+        )
+        if isinstance(agent_result.get("usage_limit"), dict):
+            self._schedule_usage_limit_offer(event, agent_result["usage_limit"], session_key=session_key,
+                                             generation=run_generation)
+        return delivered
 
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,

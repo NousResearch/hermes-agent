@@ -550,9 +550,8 @@ def recommended_nous_default_model() -> dict[str, Any]:
     is selectable (callers degrade). Shared by ``GET /api/model/recommended-default`` and the
     sign-in completion in ``hermes_cli.anon_auth`` so both land on the same model.
     """
-    from hermes_cli import models_pricing as mp
+    from hermes_cli import model_picker_usage, models_pricing as mp
     from hermes_cli.auth import get_provider_auth_state
-
     model_ids = get_curated_nous_model_ids()
     pricing = mp.get_pricing_for_provider("nous") or {}
     free_tier = check_nous_free_tier(force_fresh=True)
@@ -569,7 +568,8 @@ def recommended_nous_default_model() -> dict[str, Any]:
         model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
         # Never default onto a subscription-billed row: spending that plan is the user's call.
         model_ids = [mid for mid in model_ids if not _is_subscription_billed(pricing.get(mid))] or model_ids
-    return {"provider": "nous", "model": pick_silent_default_model(model_ids, provider="nous"),
+    model = "" if free_tier else model_picker_usage.window_plan_default(model_ids, pricing)
+    return {"provider": "nous", "model": model or pick_silent_default_model(model_ids, provider="nous"),
             "free_tier": bool(free_tier)}
 
 

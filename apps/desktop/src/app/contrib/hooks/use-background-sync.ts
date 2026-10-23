@@ -44,7 +44,6 @@ import {
   $sessionTiles,
   confirmReconnectSettlesExcept,
   noteSessionEvent,
-
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setLiveTurnBackend,

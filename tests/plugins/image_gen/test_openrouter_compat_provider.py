@@ -795,6 +795,34 @@ class TestImageApiSurface:
 
 
 
+    # -- gpt-image-2.5 ---------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "model", ["openai/gpt-image-2.5-sunburst", "openai/gpt-image-2.5-flare"])
+    def test_gpt_image_25_is_curated_with_full_knobs(self, model):
+        from plugins.image_gen.openrouter import _IMAGE_API_MODELS, _build_image_api_payload
+
+        assert model in _IMAGE_API_MODELS
+        payload, notes = _build_image_api_payload(
+            model_id=model, prompt="p", semantic_aspect="portrait", references=[],
+            config_key="openrouter",
+            kwargs={"quality": "max", "background": "transparent", "output_compression": 70, "n": 20},
+        )
+        assert payload["aspect_ratio"] == "9:16"
+        assert payload["quality"] == "max"  # xhigh/max exist only on 2.5
+        assert payload["background"] == "transparent"
+        assert payload["output_compression"] == 70
+        assert payload["n"] == 10
+        assert any("cap of 10" in n for n in notes)
+
+    @pytest.mark.parametrize(
+        "model", ["openai/gpt-image-2.5-sunburst", "openai/gpt-image-2.5-flare"])
+    def test_gpt_image_25_routes_to_image_api_without_a_probe(self, model):
+        from plugins.image_gen.openrouter import _select_surface
+
+        with patch("requests.get", side_effect=AssertionError("must not probe")):
+            assert _select_surface(model, "https://x/api/v1", "k", "openrouter") == "images"
+
 class TestRegistration:
     def test_register_both(self):
         from plugins.image_gen.openrouter import register

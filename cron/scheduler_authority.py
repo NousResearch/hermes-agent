@@ -102,6 +102,12 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 receipt = {'session_id': state['session_id'], 'admission_id': state['admission_id']}
             else:
                 raise
+        if receipt.get('status') == 'terminal':
+            job.update(receipt.get('job_flags') or {})
+            record['refusal'] = receipt['result']
+            record['job'] = job
+            save()
+            return tuple(receipt['result'])
         record['receipt'] = receipt
         save()
         delay, progress = .1, None

@@ -44,6 +44,63 @@ def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
         db.close()
 
 
+def test_wake_agent_false_gate_does_not_persist_session(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    from cron import jobs, scheduler
+    from gateway import run, session_cron
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import Principal
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(
+        jobs, 'get_job',
+        lambda jid: {
+            'id': jid, 'name': 'gated', 'prompt': 'unused', 'script': 'gate.py',
+            'model': 'test-model',
+        },
+    )
+    monkeypatch.setattr(
+        scheduler, '_run_job_script_with_claim_heartbeat',
+        lambda *args, **kwargs: (True, '{"wakeAgent": false}'),
+    )
+    monkeypatch.setattr(scheduler, 'note_cron_skipped', lambda job: None)
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
+    monkeypatch.setattr(run, '_profile_runtime_scope', lambda home: nullcontext())
+
+    db = SessionDB(tmp_path / 'state.db')
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(_draining=False, session_store=store, adapters={})
+    authority = SessionAuthority(
+        runner, profile_id=str(tmp_path), instance_id='test', db=db,
+        epoch=begin_runtime_epoch(db, instance_id='test'),
+    )
+    runner.session_authority = authority
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    actor = Principal(
+        'owner', str(tmp_path),
+        frozenset({'session:create', 'session:submit', 'session:control'}), 'viewer',
+    )
+
+    async def probe():
+        result = await session_cron.operation(
+            authority, 'submit',
+            {'job_id': 'job', 'request_id': 'fire', 'extra_prompt': None}, actor,
+        )
+        assert result['status'] == 'terminal'
+        assert result['result'][0] is True
+        assert db._conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0] == 0
+
+    try:
+        asyncio.run(probe())
+    finally:
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_cron_cancel_between_claim_and_execution_registration_stops_the_job(tmp_path, monkeypatch):
     """A started admission whose execute() has not registered its event yet still honours cancel."""

@@ -37,11 +37,19 @@ _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stoppi
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
 
 
-def _hosted_room_turn_timeout_seconds() -> float:
+def _hosted_room_turn_timeout_seconds() -> float | None:
+    """Derive the hosted-room turn deadline from ``HERMES_AGENT_TIMEOUT``.
+
+    ``0`` disables the deadline, matching the documented gateway-wide
+    "``0`` to disable" semantics of the variable; unset, invalid, or
+    negative values keep the 1800s default rather than disabling anything.
+    """
     try:
         agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "1800"))
     except (TypeError, ValueError):
-        agent_timeout = 0.0
+        return 1800.0 + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS
+    if agent_timeout == 0.0:
+        return None
     return (agent_timeout if agent_timeout > 0 else 1800.0) + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS
 
 

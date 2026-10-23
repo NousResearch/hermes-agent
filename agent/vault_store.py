@@ -26,7 +26,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 from urllib.parse import urlsplit
 from hermes_dir_acl import make_user_dir
 
@@ -294,6 +294,10 @@ class VaultStore:
         return items if isinstance(items, list) else []
 
     def _write_all(self, items: list[dict[str, Any]]) -> None:
+        # Called under _locked(): even a writer that selected Fernet before migration must
+        # observe the config flip before it can commit or recreate deleted legacy files.
+        if configured_store_name(self._base.parent / "config.yaml") != "fernet":
+            raise VaultError("Fernet vault is no longer active; retry using the selected vault store")
         self._ensure_dir()
         payload = json.dumps({"version": 1, "items": items}).encode("utf-8")
         blob = self._fernet().encrypt(payload)
@@ -425,8 +429,47 @@ class VaultStore:
         )
 
 
-def get_vault_store() -> VaultStore:
-    """Default profile-scoped vault store."""
+VAULT_STORES = ("fernet", "floorvault")
+
+
+def configured_store_name(config_path: Optional[Path] = None) -> str:
+    """``vault.store`` from config.yaml: ``fernet`` (default) or ``floorvault``."""
+    if config_path is None:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+    else:
+        from hermes_cli.config_effective import load_user_config_effective
+        # Write routing belongs to the current disk state, even in a worker whose session
+        # policy intentionally remains frozen at its pre-migration configuration.
+        config = load_user_config_effective(config_path, fail_closed=True, use_worker_snapshot=False)
+    section = config.get("vault") or {}
+    name = str(section.get("store") or "fernet").strip().lower() if isinstance(section, dict) else "fernet"
+    if name not in VAULT_STORES:
+        raise VaultError(f"unknown vault.store {name!r} (expected one of {VAULT_STORES})")
+    return name
+
+
+class VaultStoreLike(Protocol):
+    """Structural contract shared by ``VaultStore`` and the FloorVault store
+    (``agent/vault_store_floorvault.FloorVaultStore``). Both answer the same six
+    methods; callers of ``get_vault_store()`` depend on this surface only."""
+
+    def add_item(self, kind: str, label: str, secret: dict[str, Any],
+                 origin: Optional[str] = None) -> VaultItemMeta: ...
+    def list_items(self) -> list[VaultItemMeta]: ...
+    def has_items(self) -> bool: ...
+    def remove_item(self, item_id: str) -> bool: ...
+    def get_meta(self, item_id: str) -> Optional[VaultItemMeta]: ...
+    def resolve_secret(self, item_id: str) -> dict[str, Any]: ...
+
+
+def get_vault_store() -> VaultStoreLike:
+    """Default profile-scoped vault store. ``vault.store: floorvault`` selects the
+    OS-key-custody store in ``agent/vault_store_floorvault.py`` (same public API)."""
+    if configured_store_name() == "floorvault":
+        from agent.vault_store_floorvault import get_floorvault_store
+
+        return get_floorvault_store(Path(get_hermes_home()) / "vault")
     return VaultStore()
 
 

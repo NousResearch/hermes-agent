@@ -49,7 +49,8 @@ def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> dict[
     return copy.deepcopy(raw) if raw is not None else {}
 
 
-def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False) -> dict[str, Any]:
+def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False,
+                               use_worker_snapshot: bool = True) -> dict[str, Any]:
     """User ``config.yaml`` → ``${VAR}`` expansion → managed overlay → model-key canonicalization.
     NO ``DEFAULT_CONFIG`` merge: a key absent from the file (and from the managed layer) is absent
     here, so ``{}`` sentinels and presence-sensitive bridges keep working. An absent file is an
@@ -59,12 +60,14 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     last-good state); otherwise the last successfully parsed user file — in-process first, then
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
-    Cached on the user + managed file signatures and the values of every referenced env var."""
+    Cached on the user + managed file signatures and the values of every referenced env var.
+    Filesystem write barriers may set ``use_worker_snapshot=False`` to check current persisted
+    routing; ordinary runtime readers keep the worker's immutable session policy."""
     from agent.safe_worker_policy import worker_config_snapshot
 
     # A frozen-policy worker is detached from the profile's files: the owner-supplied
     # snapshot IS the user layer (same seam load_config / read_raw_config honour).
-    snapshot = worker_config_snapshot()
+    snapshot = worker_config_snapshot() if use_worker_snapshot else None
     if snapshot is not None:
         return _effective(snapshot)
     if config_path is None:

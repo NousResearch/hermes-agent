@@ -21,6 +21,10 @@ export function useCanonicalGroupLabels() {
     renameLabel: t.fileMenu.renameLabel,
     save: t.common.save,
     disband: group.disbandAction,
+    disbanding: group.disbanding,
+    disbandDone: group.disbandDone,
+    disbandDescPrefix: group.disbandDescPrefix,
+    disbandDescSuffix: group.disbandDescSuffix,
     disbandTitle: group.disbandTitle
   }
 }

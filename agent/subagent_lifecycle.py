@@ -51,6 +51,7 @@ class SubagentLaunchRequest:
     context: Optional[str] = None
     role: str = "leaf"
     model: Optional[str] = None
+    provider: Optional[str] = None
     allowed_toolsets: Optional[tuple[str, ...]] = None
     blocked_tools: tuple[str, ...] = ()
     working_directory: Optional[str] = None
@@ -222,6 +223,8 @@ _REQUEST_REJECTIONS: tuple[tuple[Callable[[Any], bool], str], ...] = (
     (lambda r: r.context is not None and (not isinstance(r.context, str) or len(r.context) > _MAX_CONTEXT_CHARS),
      "context must be a string of at most 32000 characters."),
     (lambda r: r.role not in {"leaf", "orchestrator"}, "role must be 'leaf' or 'orchestrator'."),
+    (lambda r: r.provider is not None and (not isinstance(r.provider, str) or not r.provider.strip() or len(r.provider) > 64),
+     "provider must be a non-empty string of at most 64 characters."),
     (lambda r: r.timeout_seconds is not None, "Per-launch timeout is not supported; configure delegation timeout explicitly."),
     (lambda r: r.working_directory is not None,
      "working_directory is not supported because Hermes delegates use isolated task environments."),
@@ -234,6 +237,35 @@ def _handle_is_well_formed(handle: Any) -> bool:
     return isinstance(handle, SubagentHandle) and all(check(getattr(handle, field)) for field, check in _HANDLE_FIELD_CHECKS)
 
 
+def _coerce_request(request: Any) -> SubagentLaunchRequest:
+    if isinstance(request, SubagentLaunchRequest):
+        return request
+    if not isinstance(request, Mapping):
+        raise SubagentLifecycleError("request must be a SubagentLaunchRequest or a mapping of its fields.")
+    values = dict(request)
+    unknown = set(values) - {field.name for field in dataclasses.fields(SubagentLaunchRequest)}
+    if unknown:
+        raise SubagentLifecycleError(f"Unknown request fields: {', '.join(sorted(map(str, unknown)))}.")
+    for name in ("allowed_toolsets", "blocked_tools"):
+        if isinstance(values.get(name), list):
+            values[name] = tuple(values[name])
+    try:
+        return SubagentLaunchRequest(**values)
+    except TypeError as exc:
+        raise SubagentLifecycleError(f"Malformed subagent launch request: {exc}") from exc
+
+
+def _coerce_handle(handle: Any) -> Optional[SubagentHandle]:
+    if isinstance(handle, SubagentHandle):
+        return handle
+    if isinstance(handle, Mapping):
+        try:
+            return SubagentHandle.from_dict(handle)
+        except SubagentLifecycleError:
+            return None
+    return None
+
+
 class SubagentLifecycleService:
     """Stable public service behind :attr:`PluginContext.subagent_lifecycle`. Children run in-process only;
     completed results stay until process exit; ``reconnect`` reports that a serialized handle cannot
@@ -242,10 +274,11 @@ class SubagentLifecycleService:
     def __init__(self, parent_agent_resolver: Callable[[], Any]) -> None:
         self._parent_agent_resolver = parent_agent_resolver
 
-    def launch(self, request: SubagentLaunchRequest) -> SubagentHandle:
+    def launch(self, request: SubagentLaunchRequest | Mapping[str, Any]) -> SubagentHandle:
         parent = self._parent_agent_resolver()
         if parent is None:
             raise SubagentLifecycleError("No active Hermes parent session is available.")
+        request = _coerce_request(request)
         self._validate_request(request, parent)
         parent_session_id = _session_id_of(parent)
         if request.parent_session_id and request.parent_session_id != parent_session_id:
@@ -256,11 +289,21 @@ class SubagentLifecycleService:
             if request.correlation_id and correlation_key in _REGISTRY.correlations:
                 raise SubagentLifecycleError("Duplicate correlation_id for this parent session.")
         # Lazy: delegate construction stays internal, plugins never import private delegation helpers.
-        from tools.delegate_tool import _build_child_preserving_parent_tools, DEFAULT_MAX_ITERATIONS
+        from tools.delegate_tool import (
+            _build_child_preserving_parent_tools, _credential_overrides, _load_config, _resolve_delegation_credentials,
+            DEFAULT_MAX_ITERATIONS,
+        )
+        # Routing precedence: request.provider > delegation config > parent.
+        routing_cfg = {"provider": request.provider, "model": request.model or ""} if request.provider is not None else _load_config()
+        try:
+            creds = _resolve_delegation_credentials(routing_cfg, parent)
+        except ValueError as exc:
+            raise SubagentLifecycleError(str(exc)) from exc
         child = _build_child_preserving_parent_tools(
             task_index=0, goal=request.goal, context=request.context,
             toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
-            model=request.model, max_iterations=DEFAULT_MAX_ITERATIONS, task_count=1, parent_agent=parent, role=request.role,
+            model=request.model or creds["model"], max_iterations=DEFAULT_MAX_ITERATIONS,
+            task_count=1, parent_agent=parent, role=request.role, **_credential_overrides(creds, routing_cfg),
         )
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
@@ -279,14 +322,14 @@ class SubagentLifecycleService:
         record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
         return handle
 
-    def status(self, handle: SubagentHandle) -> SubagentStatus:
+    def status(self, handle: SubagentHandle | Mapping[str, Any]) -> SubagentStatus:
         record = self._record(handle)
         if record is None:
             return SubagentStatus(handle, SubagentState.UNKNOWN, time.time(), "UNKNOWN_HANDLE")
         with _REGISTRY.lock:
             return SubagentStatus(record.handle, record.state, record.updated_at)
 
-    def wait(self, handle: SubagentHandle, *, timeout_seconds: Optional[float] = None) -> SubagentTerminalState:
+    def wait(self, handle: SubagentHandle | Mapping[str, Any], *, timeout_seconds: Optional[float] = None) -> SubagentTerminalState:
         record = self._record(handle)
         if record is None:
             return SubagentTerminalState(handle, SubagentState.UNKNOWN, True, diagnostic="UNKNOWN_HANDLE")
@@ -300,7 +343,7 @@ class SubagentLifecycleService:
         with _REGISTRY.lock:
             return SubagentTerminalState(record.handle, record.state, record.result is not None)
 
-    def cancel(self, handle: SubagentHandle, *, reason: str) -> SubagentCancelResult:
+    def cancel(self, handle: SubagentHandle | Mapping[str, Any], *, reason: str) -> SubagentCancelResult:
         record = self._record(handle)
         if record is None:
             return SubagentCancelResult(False, unknown_handle=True)
@@ -318,22 +361,34 @@ class SubagentLifecycleService:
                 )
         return SubagentCancelResult(bool(accepted), unsupported=not accepted, state=SubagentState.CANCEL_REQUESTED)
 
-    def result(self, handle: SubagentHandle) -> SubagentResult:
+    def result(self, handle: SubagentHandle | Mapping[str, Any]) -> SubagentResult:
         record = self._record(handle)
         if record is None:
             return SubagentResult(handle, SubagentState.UNKNOWN, False, error_classification="UNKNOWN_HANDLE")
         with _REGISTRY.lock:
             return record.result or SubagentResult(record.handle, record.state, False, error_classification="NOT_READY")
 
-    def reconnect(self, handle: SubagentHandle) -> SubagentReconnectResult:
+    def reconnect(self, handle: SubagentHandle | Mapping[str, Any]) -> SubagentReconnectResult:
         record = self._record(handle)
         if record is None:
             return SubagentReconnectResult(False, SubagentState.UNKNOWN, "RECONNECT_UNAVAILABLE")
         with _REGISTRY.lock:
             return SubagentReconnectResult(True, record.state)
 
-    def _record(self, handle: SubagentHandle) -> Optional[_Record]:
+    def steer(self, handle: SubagentHandle | Mapping[str, Any], text: str) -> bool:
+        """Queue text for the child's next iteration boundary while it accepts steering."""
+        record = self._record(handle)
+        if record is None or not isinstance(text, str) or not text.strip():
+            return False
+        with _REGISTRY.lock:
+            if record.result is not None:
+                return False
+        from tools.delegate_tool_registry import steer_subagent
+        return steer_subagent(record.handle.subagent_id, text.strip())
+
+    def _record(self, handle: SubagentHandle | Mapping[str, Any]) -> Optional[_Record]:
         """Registry record for a well-formed, capability-verified handle owned by the active parent."""
+        handle = _coerce_handle(handle)
         if not _handle_is_well_formed(handle):
             return None
         expected = self._capability(handle.subagent_id, handle.parent_session_id, handle.created_at)
@@ -407,8 +462,9 @@ class SubagentLifecycleService:
             raise SubagentLifecycleError("metadata exceeds 8192 bytes.")
         if not request.allowed_toolsets:
             return
-        from toolsets import TOOLSETS
-        unknown = set(request.allowed_toolsets) - set(TOOLSETS)
+        # Plugin and registry-alias toolsets count as known, as they do for delegate_task.
+        from toolsets import validate_toolset
+        unknown = {name for name in request.allowed_toolsets if not validate_toolset(name)}
         if unknown:
             raise SubagentLifecycleError(f"Unknown toolsets: {', '.join(sorted(unknown))}.")
         enabled = getattr(parent, "enabled_toolsets", None)

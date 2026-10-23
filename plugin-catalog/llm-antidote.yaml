@@ -1,0 +1,21 @@
+name: llm-antidote
+repo: https://github.com/GroveMinting/llmAntidote
+sha: c7f6a5428abbdba2b48f8b5fd3494b7ae2e3c5e8
+description: "Runtime guardrails, behavioral evaluation, and signed fleet admission for Hermes Agent: a versioned capability policy that blocks or requires approval for model tool calls, paired synthetic behavioral evaluation with no real side effects, and a signed local promotion gate that refuses a model whose evidence does not satisfy signed fleet policy. Hooks-only (no agent tools). Disclosure — Adds approval prompts to tool calls by default (balanced mode): every MCP, connector or other-plugin tool, memory and skill writes, file reads outside the working and temp directories, and network-capable terminal/code commands go to Hermes's approval prompt; strict mode blocks them instead, and opt-in enforced fleet mode blocks all tool calls until the served model name matches the admitted one. The user-run `hermes antidote eval run` command sends synthetic prompts (and the API key you name) to the OpenAI-compatible endpoint you pass, as billed model calls (default suite up to ~170 requests); `model inspect hf:` queries huggingface.co; `fleet keygen` writes unencrypted Ed25519 private keys (mode 0600) to paths you choose."
+maintainer: GroveMinting
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "3.2.4"
+docs_url: https://github.com/GroveMinting/llmAntidote#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_api_request
+    - on_session_start
+    - on_session_reset
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

@@ -120,8 +120,6 @@ class MattermostAdapter(BasePlatformAdapter):
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
-        self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
-        self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
 
     # --- HTTP helpers ---
@@ -132,16 +130,17 @@ class MattermostAdapter(BasePlatformAdapter):
     def _auth_header(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
 
-    async def _api(self, method: str, path: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        """{method} /api/v4/{path}; POST also records _last_post_status/_last_post_error."""
+    async def _api(self, method: str, path: str,
+                   payload: Optional[dict[str, Any]] = None) -> tuple[dict[str, Any], int, str]:
+        """{method} /api/v4/{path} → (data, HTTP status or 0 without a response, error body).
+
+        The status travels with the result, not on the adapter: concurrent sends would overwrite it mid-await.
+        """
         import aiohttp
         if ".." in path:
             logger.error("MM API path traversal blocked: %s", path)
-            return {}
+            return {}, 0, ""
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
-        is_post = method == "POST"
-        if is_post:
-            self._last_post_status, self._last_post_error = None, ""
         kwargs: dict[str, Any] = {"headers": self._headers()}
         if payload is not None:
             kwargs["json"] = payload
@@ -149,48 +148,43 @@ class MattermostAdapter(BasePlatformAdapter):
             kwargs["timeout"] = aiohttp.ClientTimeout(total=30)
         try:
             async with getattr(self._session, method.lower())(url, **kwargs) as resp:
-                if is_post:
-                    self._last_post_status = resp.status
                 if resp.status >= 400:
                     body = await resp.text()
-                    if is_post:
-                        self._last_post_error = body or ""
                     logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
-        except aiohttp.ClientError as exc:
-            if is_post:
-                self._last_post_error = str(exc)
+                    return {}, resp.status, body or ""
+                return await resp.json(), resp.status, ""
+        except (aiohttp.ClientError, TimeoutError) as exc:
             logger.error("MM API %s %s network error: %s", method, path, exc)
-            return {}
+            return {}, 0, str(exc)
 
     async def _api_get(self, path: str) -> dict[str, Any]:
-        return await self._api("GET", path)
+        return (await self._api("GET", path))[0]
 
-    async def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _api_post(self, path: str, payload: dict[str, Any]) -> tuple[dict[str, Any], int, str]:
         return await self._api("POST", path, payload)
 
-    def _last_post_failure_is_broken_thread_root(self) -> bool:
+    @staticmethod
+    def _is_broken_thread_root_error(status: int, error: str) -> bool:
         """Return True only for clear invalid/missing Mattermost thread roots."""
-        body = (self._last_post_error or "").lower()
-        if self._last_post_status not in {400, 404} or not body:
+        body = (error or "").lower()
+        if status not in {400, 404} or not body:
             return False
-        return (any(marker in body for marker in ("root_id", "rootid", "root id", "thread", "post"))
+        return (any(marker in body for marker in ("root_id", "rootid", "root id", "root post", "thread"))
                 and any(marker in body for marker in ("invalid", "not found", "does not exist", "missing")))
 
     async def _post_preserving_thread(
         self, chat_id: str, payload: dict[str, Any], metadata: _Metadata) -> dict[str, Any]:
         """Post once, optionally falling back flat for final notify content."""
-        data = await self._api_post("posts", payload)
+        data, status, error = await self._api_post("posts", payload)
         if (data or "root_id" not in payload or not (isinstance(metadata, dict) and metadata.get("notify"))
-                or not self._last_post_failure_is_broken_thread_root()):
+                or not self._is_broken_thread_root_error(status, error)):
             return data
         flat_payload = {k: v for k, v in payload.items() if k != "root_id"}
         body = str(flat_payload.get("message") or "")
         flat_payload["message"] = self.warning_text(
             ("⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n" + body).strip(), body)
         logger.warning("Mattermost: falling back to flat channel delivery for notify-worthy post in %s", chat_id)
-        return await self._api_post("posts", flat_payload)
+        return (await self._api_post("posts", flat_payload))[0]
 
     async def _post_message(self, chat_id: str, message: str, reply_to: Optional[str], metadata: _Metadata,
                             file_ids: Optional[list[str]] = None) -> dict[str, Any]:
@@ -296,7 +290,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         payload = _with_mentions_disabled({"message": self.format_message(content)})
-        return _post_result(await self._api("PUT", f"posts/{message_id}/patch", payload), "Failed to edit post")
+        return _post_result((await self._api("PUT", f"posts/{message_id}/patch", payload))[0], "Failed to edit post")
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:

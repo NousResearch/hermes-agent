@@ -27,6 +27,36 @@ class TestTokenValidation:
 class TestResolveToken:
     """Token resolution with env var priority."""
 
+    def test_multiplexed_profile_scope_wins_over_launch_environment(self, monkeypatch):
+        """A routed Copilot turn must use its own profile credential (#138553)."""
+        from agent import secret_scope
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_default_profile")
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope({"COPILOT_GITHUB_TOKEN": "gho_work_profile"})
+        try:
+            assert resolve_copilot_token() == ("gho_work_profile", "COPILOT_GITHUB_TOKEN")
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_multiplexed_profile_does_not_borrow_launch_credential(self, monkeypatch):
+        """A scoped miss must not resolve the default profile's Copilot token (#138553)."""
+        from agent import secret_scope
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_default_profile")
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope({})
+        try:
+            with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="gho_global_cli") as cli_token:
+                assert resolve_copilot_token() == ("", "")
+            cli_token.assert_not_called()
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
 
     def test_gh_token_second_priority(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token

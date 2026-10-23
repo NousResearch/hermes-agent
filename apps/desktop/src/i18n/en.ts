@@ -1651,12 +1651,11 @@ export const en: Translations = {
       },
       keepGoingOnCredits: {
         title: 'Keep going on credits',
-        description:
-          'Use your credits when included usage runs out. Off: Hermes waits for the reset.',
+        description: 'Use your credits when included usage runs out. Off: Hermes waits for the reset.',
         approveInBrowser: 'Approve Remote Spending in your browser to change this. It applies as soon as you approve.',
         openAgain: 'Open again',
         cancel: 'Cancel',
-        approvedRetry: 'Remote Spending is approved, but the change didn\'t save.',
+        approvedRetry: "Remote Spending is approved, but the change didn't save.",
         tryAgain: 'Try again'
       },
       autoReload: {
@@ -1750,7 +1749,7 @@ export const en: Translations = {
             captionResetsIn: duration => `Resets in ${duration}`,
             captionIncluded: 'Included usage',
             valueUsed: percent => `${percent} used`
-          },
+          }
         },
         planCard: {
           freeTier: 'Free',

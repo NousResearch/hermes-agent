@@ -219,7 +219,10 @@ describe('refreshOnboarding', () => {
       }
 
       if (method === 'setup.runtime_check') {
-        return { ok: false, error: 'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one.' } as never
+        return {
+          ok: false,
+          error: 'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one.'
+        } as never
       }
 
       throw new Error(`unexpected gateway method: ${method}`)

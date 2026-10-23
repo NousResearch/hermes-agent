@@ -2298,21 +2298,21 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
-    """Resolve provider credentials for gateway-created AIAgent instances.
-    ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only.
-    An ``AuthError`` from the primary walks the configured fallback chain through the shared
-    ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own)."""
+    """Provider credentials for gateway-created AIAgents (env-var fallback allowed; behaviour is config.yaml
+    only). A primary ``AuthError`` walks the fallback chain via the shared ``resolve_runtime_with_fallback``."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_with_fallback, format_runtime_provider_error, _get_model_config)
-
-    # Capture primary provider/model from config before the try block so we
-    # can include it in the fallback notice if the primary fails (#74349).
+    # Primary provider/model from config, named in the fallback notice if the primary fails (#74349).
     _model_cfg = _get_model_config()
     _primary_model = (_model_cfg.get("default") or "").strip()
     _primary_provider = (_model_cfg.get("provider") or "").strip()
 
     try:
         runtime, fallback_entry = resolve_runtime_with_fallback(_load_gateway_config())
+        # "auto" turns a pending free-tier browser check into a keyless fallback that dies at agent init as
+        # "no provider configured"; raise it so the reply can say where the check is finished.
+        if getattr(runtime.get("auth_error"), "code", None) == "anon_challenge_required":
+            raise runtime["auth_error"]
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 

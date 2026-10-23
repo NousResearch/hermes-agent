@@ -27,7 +27,7 @@ In the [Bitwarden web app](https://vault.bitwarden.com) (or [vault.bitwarden.eu]
 
 1. Switch to **Secrets Manager** from the product switcher.
 2. Create or pick a **Project** (e.g. "Hermes keys").
-3. Add your provider keys as secrets. The secret **Name** becomes the environment variable name — use `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc.
+3. Add your provider keys as secrets. The secret **Name** becomes the environment variable name — use `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc. Any name matching `[A-Za-z_][A-Za-z0-9_]*` is applied, so a per-scope key (`OPENCODE_ZEN_WORK_API_KEY`) works too — it must match the `key_env` of the entry that uses it, exactly. Secrets whose name is not a valid environment variable name are skipped.
 4. **Machine accounts → New machine account → My Hermes machine** → **Projects** tab → grant Read access to your project.
 5. **Access tokens** tab → **Create access token** → **Never** expires (or pick a date) → copy the token (starts with `0.`). Bitwarden cannot retrieve it again — keep the copy.
 

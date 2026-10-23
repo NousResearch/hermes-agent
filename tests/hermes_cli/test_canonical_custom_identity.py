@@ -81,6 +81,121 @@ def test_unconfigured_candidate_still_returns_none(keyed_provider_config):
     assert rp.canonical_custom_identity(config_provider="not-a-configured-entry") is None
 
 
+SHARED_URL = "https://opencode.ai/zen/v1"
+
+
+@pytest.fixture
+def two_scopes_one_url(monkeypatch):
+    """Two ``providers:`` scopes of one endpoint — the URL alone cannot tell them apart."""
+    config = {
+        "providers": {
+            "opencode-zen-work": {
+                "name": "OpenCode Zen (work)",
+                "api": SHARED_URL,
+                "key_env": "OPENCODE_ZEN_WORK_API_KEY",
+                "models": [MODEL],
+            },
+            "opencode-zen-personal": {
+                "name": "OpenCode Zen (personal)",
+                "api": SHARED_URL,
+                "key_env": "OPENCODE_ZEN_PERSONAL_API_KEY",
+                "models": [MODEL],
+            },
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    return config
+
+
+def test_named_scope_wins_over_the_shared_url(two_scopes_one_url):
+    """The regression: the URL lookup returned the FIRST entry on that URL, so a session
+    resumed on one scope healed to the other scope's identity — and its key."""
+    assert rp.canonical_custom_identity(
+        base_url=SHARED_URL, config_provider="opencode-zen-personal") == "custom:opencode-zen-personal"
+    assert rp.canonical_custom_identity(
+        base_url=SHARED_URL, config_provider="opencode-zen-work") == "custom:opencode-zen-work"
+
+
+def test_display_name_wins_over_the_shared_url_too(two_scopes_one_url):
+    """Callers pass the entry's display name; it must reach the same scope."""
+    assert rp.canonical_custom_identity(
+        base_url=SHARED_URL, config_provider="OpenCode Zen (personal)") == "custom:opencode-zen-personal"
+
+
+def test_url_only_recovery_keeps_its_contract(two_scopes_one_url):
+    """Without a name the URL is all there is: the first configured entry still answers —
+    ambiguous, documented, and unchanged by this fix."""
+    assert rp.canonical_custom_identity(base_url=SHARED_URL) == "custom:opencode-zen-work"
+
+
+def test_model_leg_is_ambiguous_when_two_scopes_serve_it(two_scopes_one_url):
+    """A model id that both scopes serve cannot pick one of them. Answering the first entry billed
+    the other scope's key — the #118285 wrong-key class one layer down, in the path where no
+    base_url survives the round-trip (the session row stores bare ``custom`` + the model name)."""
+    assert rp.find_custom_provider_identity_by_model(MODEL) is None
+
+
+def test_ambiguous_model_falls_through_to_the_requested_scope(two_scopes_one_url):
+    """The weak signal going silent must not short-circuit the strong one: the provider the session
+    was actually built on still decides, whichever scope it is."""
+    assert rp.canonical_custom_identity(
+        model=MODEL, config_provider="opencode-zen-personal") == "custom:opencode-zen-personal"
+    assert rp.canonical_custom_identity(
+        model=MODEL, config_provider="opencode-zen-work") == "custom:opencode-zen-work"
+
+
+RELAY_A = "http://127.0.0.1:8081/v1"
+RELAY_B = "http://127.0.0.1:8082/v1"
+
+
+@pytest.fixture
+def two_relays_one_model(monkeypatch):
+    """Two local relays serving one model from *different* endpoints. The model id is still shared,
+    so the ambiguity lives in the signal itself rather than in a shared URL — and the URL chain
+    cannot break the tie either, because neither endpoint is shared."""
+    config = {
+        "providers": {
+            "relay-primary": {
+                "name": "Relay Primary",
+                "api": RELAY_A,
+                "key_env": "RELAY_PRIMARY_API_KEY",
+                "models": [MODEL],
+            },
+            "relay-echo": {
+                "name": "Relay Echo",
+                "api": RELAY_B,
+                "key_env": "RELAY_ECHO_API_KEY",
+                "models": [MODEL],
+            },
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    return config
+
+
+def test_model_leg_is_ambiguous_across_distinct_endpoints_too(two_relays_one_model):
+    """Topology reported on the PR by an outside contributor: same model, one key_env per relay,
+    distinct base_urls. The model leg must go silent here as well (it is the signal that is
+    ambiguous, not the endpoint), the requested scope still decides, and each endpoint keeps
+    resolving on its own once the URL survives — the two recovery paths must agree."""
+    assert rp.find_custom_provider_identity_by_model(MODEL) is None
+    assert rp.canonical_custom_identity(
+        model=MODEL, config_provider="relay-echo") == "custom:relay-echo"
+    assert rp.canonical_custom_identity(base_url=RELAY_B) == "custom:relay-echo"
+    assert rp.canonical_custom_identity(base_url=RELAY_A) == "custom:relay-primary"
+
+
+def test_unconfigured_candidate_does_not_cancel_the_url_match(two_scopes_one_url):
+    """Fail-closed means "never invent an identity", not "abandon one already recovered from
+    the endpoint" — a stale/unknown name must not blank out a resolvable session."""
+    assert rp.canonical_custom_identity(
+        base_url=SHARED_URL, config_provider="not-a-configured-entry") == "custom:opencode-zen-work"
+
+
 def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     """``custom_providers:`` entries have no key, so the name stays the identity."""
     config = {

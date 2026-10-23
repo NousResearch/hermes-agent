@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool
@@ -292,6 +292,34 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
+def _all_custom_identities(matches: Callable[[dict[str, Any]], bool]) -> list[str]:
+    """Every configured entry where ``matches(entry)`` holds, as canonical ``custom:<name>`` slugs.
+
+    Order-preserving and de-duplicated: an entry reachable through both ``providers:`` and the
+    legacy ``custom_providers:`` view must not count twice when the caller asks *how many* entries
+    a signal selects."""
+    rp = _rp()
+    try:
+        config = rp.load_config()
+    except Exception:
+        return []
+    found: list[str] = []
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for ep_name, entry in providers.items():
+            if isinstance(entry, dict) and matches(entry):
+                found.append(custom_provider_slug(str(ep_name), str(ep_name)))
+    try:
+        custom_providers = rp.get_compatible_custom_providers(config)
+    except Exception:
+        custom_providers = None
+    for entry in custom_providers or []:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if isinstance(name, str) and name.strip() and matches(entry):
+            found.append(custom_provider_slug(name, str(entry.get("provider_key", "") or "")))
+    return list(dict.fromkeys(found))
+
+
 def _find_custom_identity(matches: Callable[[dict[str, Any]], bool]) -> Optional[str]:
     """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
     holds, as its canonical ``custom:<name>`` slug."""
@@ -333,7 +361,14 @@ def _model_id_matches(value: Any, target: str) -> bool:
 def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     """Map a model id back to the ``custom:<name>`` entry that serves it — companion to
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
-    round-trip (the session row always stores the model name)."""
+    round-trip (the session row always stores the model name).
+
+    A model id is a *weak* signal: two scopes of one relay routinely offer the same model per
+    account, and several entries then serve it. Answering the first one would bill whichever entry
+    happens to sit first in ``providers:`` — the same wrong-key failure as #118285, one layer down.
+    Ambiguity therefore answers ``None``, letting the caller fall through to a stronger signal (the
+    provider the session was actually built on) instead of inventing a scope the evidence cannot
+    pick."""
     target = str(model or "").strip().lower()
     if not target:
         return None
@@ -349,16 +384,41 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
                        for item in models)
         return False
 
-    return _find_custom_identity(_entry_serves_model)
+    identities = _all_custom_identities(_entry_serves_model)
+    return identities[0] if len(identities) == 1 else None
+
+
+def _configured_custom_identity(candidate: str) -> tuple[Optional[str], str]:
+    """``(identity, normalized entry URL)`` for a provider name that resolves to a configured entry,
+    else ``(None, "")``. Uses the entry's OWN identity (its ``providers:`` config key, or the
+    normalized display name for legacy entries) — never a base_url reverse lookup, which cannot
+    tell two scopes of one endpoint apart."""
+    rp = _rp()
+    try:
+        entry = rp._get_named_custom_provider(candidate)
+    except Exception:
+        return None, ""
+    if not entry:
+        return None, ""
+    identity = custom_provider_slug(str(entry.get("name") or ""), str(entry.get("provider_key") or ""))
+    return identity or None, _normalize_base_url_for_match(_entry_url(entry))
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None) -> Optional[str]:
-    """Recover the durable menu identity for a bare custom provider. Match a configured
-    endpoint first, then the ownership-checked managed server, then a configured model or
-    provider. Every session persistence/restore path shares this lookup."""
+    """Recover the durable menu identity for a bare custom provider. An explicitly named configured
+    provider wins over the URL match **when both name the same endpoint**: with N scopes sharing one
+    base_url the URL lookup is indiferenciable — it returns whichever entry comes first in
+    ``providers:`` and would bill the wrong scope's key (#118285). Otherwise match a configured
+    endpoint first, then the ownership-checked managed server, then a configured model, then the
+    configured provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
+    candidate = str(config_provider or "").strip()
+    candidate_identity, candidate_url = _configured_custom_identity(candidate) if candidate else (None, "")
     if base_url:
+        target = _normalize_base_url_for_match(base_url)
+        if candidate_identity and candidate_url == target:
+            return candidate_identity
         identity = find_custom_provider_identity(base_url)
         if identity:
             return identity
@@ -366,12 +426,11 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
         # from the ownership-checked endpoint, never from a model name or a fixed port.
         from hermes_cli.local_runtime.endpoint import _state_endpoint
         endpoint = _state_endpoint()
-        if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
+        if endpoint and target == _normalize_base_url_for_match(endpoint["base_url"]):
             return "llamacpp"
     identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:
         return identity
-    candidate = str(config_provider or "").strip()
     if not candidate:
         try:
             candidate = str(rp._get_model_config().get("provider") or "").strip()
@@ -384,20 +443,11 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
     if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
         return None
     # Only when it resolves to a configured entry — never invent a ``custom:<x>`` resolution
-    # can't honor. ``candidate`` may be the entry's DISPLAY NAME, not the durable identity of a
-    # keyed ``providers:`` entry — re-resolve via its endpoint so every path returns the same
-    # config-key slug.
-    try:
-        entry = rp._get_named_custom_provider(candidate)
-    except Exception:
-        return None
-    if entry is None:
-        return None
-    try:
-        identity = find_custom_provider_identity(str(entry.get("base_url") or ""))
-    except Exception:
-        return None
-    return identity or custom_provider_slug(candidate_norm)
+    # can't honor. A candidate that resolves to nothing falls through to None (fail closed)
+    # rather than short-circuiting the chain above.
+    if candidate_identity is None:
+        candidate_identity, _ = _configured_custom_identity(candidate)
+    return candidate_identity
 
 
 def is_routable_provider(provider: Optional[str]) -> bool:

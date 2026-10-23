@@ -12,6 +12,7 @@ import re
 import asyncio
 import os
 import sys
+import threading
 import time
 from fastapi import APIRouter
 from hermes_cli.web_deps import LateState, late
@@ -248,20 +249,47 @@ def _merge_profile_gateway_platforms(gateway_platforms: dict, profile_platforms:
 # module-level probe references are handed to the resolver so the long-standing
 # `monkeypatch.setattr(gateway.status, "get_running_pid_cached", ...)` seam used across the test-suite still
 # intercepts them.
+# The health probe's worker is single-flight and belongs to the process, not to the request: opening a
+# pool per request made the route pay ``Executor.__exit__`` -> ``shutdown(wait=True)`` when the callee
+# outlived the route budget (a blocked probe returned ~0.35 s late with a 1.0 s budget), and abandoning a
+# pool per poll instead would accumulate one worker per timed-out poll. Submitting to the reusable worker
+# keeps the wait bounded at the deadline and leaves a running call owning its slot until it really exits;
+# later polls queue behind it and still return at their own deadline.
+_HEALTH_PROBE_WORKER_LOCK = threading.Lock()
+_HEALTH_PROBE_WORKER: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
+
+def _health_probe_worker() -> concurrent.futures.ThreadPoolExecutor:
+    global _HEALTH_PROBE_WORKER
+    with _HEALTH_PROBE_WORKER_LOCK:
+        if _HEALTH_PROBE_WORKER is None:
+            _HEALTH_PROBE_WORKER = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="hermes-status-health")
+        return _HEALTH_PROBE_WORKER
+
+
+def _reset_health_probe_worker() -> None:
+    """Drop the probe worker without joining a call that is still running (shutdown/test seam)."""
+    global _HEALTH_PROBE_WORKER
+    with _HEALTH_PROBE_WORKER_LOCK:
+        worker, _HEALTH_PROBE_WORKER = _HEALTH_PROBE_WORKER, None
+    if worker is not None:
+        worker.shutdown(wait=False)
+
+
 def _bounded_health_probe():
     """Health probe with the route's blocking-call budget preserved. The resolver only
     reaches this rung when the local PID probe came up empty, so the timeout is paid at
     most once per request and only in the cross-container case that needs it."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_probe_gateway_health)
-        try:
-            return future.result(timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT)
-        except concurrent.futures.TimeoutError:
-            _log.warning("/api/status gateway health probe exceeded %.2fs; using local status",
-                         _GATEWAY_HEALTH_ROUTE_TIMEOUT)
-            return False, None
-        except Exception:
-            return False, None
+    try:
+        return _health_probe_worker().submit(_probe_gateway_health).result(
+            timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT)
+    except concurrent.futures.TimeoutError:
+        _log.warning("/api/status gateway health probe exceeded %.2fs; using local status",
+                     _GATEWAY_HEALTH_ROUTE_TIMEOUT)
+        return False, None
+    except Exception:
+        return False, None
 
 
 def _project_gateway_platforms(gateway_platforms: dict, configured: set[str] | None,

@@ -76,7 +76,8 @@ def _discord_request(
                 e, _DISCORD_ERROR_BODY_MAX_BYTES, label="error body").decode("utf-8", errors="replace")
         except DiscordAPIError as too_large:
             error_body = too_large.body
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to read Discord error body: %s", exc, exc_info=True)
             error_body = ""
         raise DiscordAPIError(e.code, error_body) from e
 

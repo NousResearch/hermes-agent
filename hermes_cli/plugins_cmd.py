@@ -410,6 +410,9 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
     never overwriting an existing file so reinstall keeps user config."""
     for example_file in plugin_dir.glob("*.example"):
         real_name = example_file.stem
+        # Manifests must stay identical to the declarations reviewed before preparation.
+        if real_name.casefold() in {"plugin.yaml", "plugin.yml", "plugin.json"}:
+            continue
         real_path = plugin_dir / real_name
         if real_path.exists():
             continue

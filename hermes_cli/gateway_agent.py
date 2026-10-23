@@ -70,6 +70,8 @@ class _Turn:
         # Parts, joined on read: ``+=`` on an attribute copies the whole segment per delta (quadratic).
         self._shown, self._spoken = [], []
         self.seen, self.answered, self.gapped = set(), set(), False
+        # The gateway runs this admission (its ``message.start``): an owner request is this turn's from then on.
+        self.started = False
 
     @property
     def shown(self):
@@ -753,7 +755,7 @@ class GatewayAgent:
             # A turn the gateway already admitted and is running (its frames are queued). A recovered
             # ``/queue`` turn missed some frames: its reply is completed from the receipt.
             receipt = adopted
-            turn.gapped = bool(adopted.get("recovered"))
+            turn.gapped, turn.started = bool(adopted.get("recovered")), True
         else:
             self._drain_stale()
             self._taken_turn_route = None
@@ -863,7 +865,10 @@ class GatewayAgent:
             if not isinstance(params, dict) or params.get("session_id") != self.session_id:
                 continue
             if frame.get("method") in _SERVER_REQUESTS and "id" in frame:
-                self._answer_request(frame)
+                # A finite client (``-q``/``-Q``) answers with no human. Before its own admission runs, a
+                # request is the running turn's, left to the viewers that can show it (#143565).
+                if turn.started or not getattr(self, "_finite", False):
+                    self._answer_request(frame)
                 continue
             kind, payload = params.get("type"), params.get("payload") or {}
             admission = params.get("admission_id") or (payload.get("admission_id") if isinstance(payload, dict) else None)
@@ -871,6 +876,8 @@ class GatewayAgent:
                 from hermes_cli.gateway_tools_notify import missed_start
                 missed_start(self._state(), params)  # a /queue turn run ahead of this one: painted after it
                 continue
+            if admission and admission == self._admission:
+                turn.started = True
             if params.get("execution_generation") is not None:
                 self._generation = params["execution_generation"]
                 self._state().execution_generation = params["execution_generation"]
@@ -898,6 +905,7 @@ class GatewayAgent:
             if row.get("status") == "unknown":
                 return lost  # its completion was the one the hole lost: no other is owed
             turn.gapped |= row.get("status") != "queued"  # one still queued lost nothing
+            turn.started |= row.get("status") == "started"  # the hole may have eaten its message.start
             self._restore_connection_card(snapshot.get("pending_connection"))
             for prompt in snapshot.get("prompts") or []:
                 if row.get("status") == "started" and prompt.get("execution_generation") == row.get("execution_generation") \

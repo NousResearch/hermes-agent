@@ -582,6 +582,50 @@ def test_gateway_clarify_batch_request_opens_mains_batch_panel(make_agent):
     assert dict(client.calls)["prompt.submit"]["clarify_batch"] is True
 
 
+_SUDO_REQUEST = {"jsonrpc": "2.0", "id": "srq-sudo", "method": "sudo",
+                 "params": {"session_id": SID, "command": "sudo true"}}
+
+
+def test_a_finite_client_leaves_the_running_turns_requests_to_the_viewers_that_show_them(make_agent):
+    """``hermes chat --resume <id> -Q`` queued behind a Desktop turn (#143565): that turn's batch clarify and
+    sudo prompt reach every attached viewer. The headless -Q answer settled them blank at once, before the
+    human on Desktop saw the card."""
+    from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
+    from tools.terminal_tool import set_sudo_password_callback
+    clarify = {"jsonrpc": "2.0", "id": "srq-clr", "method": "clarify", "params": {"session_id": SID, "questions": [
+        {"qid": "q0", "question": "colour?", "choices": ["red", "blue"]}]}}
+    asked = []
+    agent, _ = make_agent(
+        [frame("message.delta", {"text": "theirs"}, admission="adm-0"), clarify, _SUDO_REQUEST,
+         frame("message.complete", {"text": "theirs", "outcome": "completed"}, admission="adm-0"),
+         frame("message.start", {}), frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        clarify_callback=lambda questions: asked.append(questions) or _single_query_clarify_callback(questions))
+    agent._finite = True
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    set_sudo_password_callback(lambda: asked.append("sudo") or "")
+    try:
+        agent.run_conversation("note")
+    finally:
+        set_sudo_password_callback(None)
+    assert (asked, replies) == ([], [])
+
+
+def test_a_finite_client_answers_its_own_turns_requests(make_agent):
+    from tools.terminal_tool import set_sudo_password_callback
+    agent, _ = make_agent([frame("message.start", {}), _SUDO_REQUEST,
+                           frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    agent._finite = True
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    set_sudo_password_callback(lambda: "pw")
+    try:
+        agent.run_conversation("run sudo")
+    finally:
+        set_sudo_password_callback(None)
+    assert replies == [("srq-sudo", {"value": "pw"})]
+
+
 def test_a_mid_turn_steer_row_is_estimated_delta_like_main(make_agent):
     """Main anchors the bar on the turn's first response priced over the history through the turn's
     own ask; a /steer delivered mid-turn is a later user-role row, so it is delta and the bar shows `~`."""

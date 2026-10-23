@@ -73,7 +73,9 @@ _STATIC_FEATURE_FLAGS = {
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
-    "session_key_header": "X-Hermes-Session-Key"}
+    "session_key_header": "X-Hermes-Session-Key",
+    "workspace_header": "X-Hermes-Workspace",
+    "runs_cwd": True}
 # /v1/capabilities "endpoints" table: name -> (method, path[, feature]). An entry naming a
 # feature is advertised only while that "features" flag is truthy on this listener.
 _CAPABILITY_ENDPOINTS = (
@@ -696,7 +698,10 @@ def check_api_server_requirements() -> bool:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Hermes-Session-Id, X-Hermes-Workspace")}
+_MAX_WORKSPACE_HEADER_LEN = 4096
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -4061,11 +4066,70 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 code="rate_limit_exceeded", headers={"Retry-After": "1"})
         return None
 
+    def _parse_workspace_header(self, request: "web.Request"):
+        """Extract ``X-Hermes-Workspace`` as an existing absolute directory.
+
+        Returns ``(cwd, None)`` on success/omission, or ``(None, error_response)`` on
+        invalid input. Omitted/blank headers yield ``("", None)``.
+        """
+        raw = request.headers.get("X-Hermes-Workspace", "").strip()
+        if not raw:
+            return "", None
+        return self._validate_workspace_cwd(raw, source="X-Hermes-Workspace")
+
+    def _validate_workspace_cwd(self, raw: str, *, source: str):
+        """Validate a client-supplied workspace path; *source* names the field in errors."""
+        if re.search(r"[\r\n\x00]", raw) or len(raw) > _MAX_WORKSPACE_HEADER_LEN:
+            return None, _error_response(
+                f"Invalid workspace path from {source}", code="invalid_workspace", status=400)
+        try:
+            workspace = Path(raw).expanduser()
+            if not workspace.is_absolute():
+                return None, _error_response(
+                    f"{source} must be an existing absolute directory",
+                    code="invalid_workspace", status=400)
+            workspace = workspace.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return None, _error_response(
+                f"{source} must be an existing absolute directory",
+                code="invalid_workspace", status=400)
+        if not workspace.is_dir():
+            return None, _error_response(
+                f"{source} must be a directory", code="invalid_workspace", status=400)
+        return str(workspace), None
+
+    def _resolve_run_workspace(self, request: "web.Request", body: dict):
+        """Resolve per-run workspace from header and/or body ``cwd``.
+
+        Both may be omitted (legacy shared ``terminal.cwd``). When both are
+        present they must resolve to the same directory; conflicts are 400.
+        """
+        header_cwd, header_err = self._parse_workspace_header(request)
+        if header_err is not None:
+            return None, header_err
+        raw_body = body.get("cwd") if isinstance(body, dict) else None
+        body_cwd = ""
+        if raw_body is not None:
+            if not isinstance(raw_body, str):
+                return None, _error_response(
+                    "cwd must be a string absolute directory",
+                    code="invalid_workspace", status=400)
+            body_cwd = raw_body.strip()
+            if body_cwd:
+                body_cwd, body_err = self._validate_workspace_cwd(body_cwd, source="cwd")
+                if body_err is not None:
+                    return None, body_err
+        if header_cwd and body_cwd and header_cwd != body_cwd:
+            return None, _error_response(
+                "X-Hermes-Workspace and body cwd disagree",
+                code="invalid_workspace", status=400)
+        return (header_cwd or body_cwd or ""), None
+
     @staticmethod
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "", cwd: str = "") -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
@@ -4073,13 +4137,30 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         ``profile`` is the ``/p/<profile>/`` prefix serving the request (``""`` = default). It must
         reach ``HERMES_SESSION_PROFILE``: the persistent-Docker container key is derived from it, so an
-        unbound profile collapses every profile's turns onto the default sandbox (#96370)."""
+        unbound profile collapses every profile's turns onto the default sandbox (#96370).
+
+        ``cwd`` pins the logical working directory for this turn (system prompt / context
+        discovery). When both ``cwd`` and ``session_id`` are set, the path is also recorded as
+        the session's terminal cwd via ``record_session_cwd`` — without mutating a live shared
+        ``default`` environment (cwd-only ``register_task_env_overrides`` can collapse there).
+        """
         from gateway.session_context import set_session_vars
-        return set_session_vars(
+        session_cwd = (cwd or "").strip()
+        tokens = set_session_vars(
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             profile=profile, browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            cwd=session_cwd, async_delivery=False, cron_session="",
+            session_history_delivery=session_history_delivery)
+        if session_cwd and session_id:
+            try:
+                from tools.terminal_tool import record_session_cwd
+                record_session_cwd(session_id, session_cwd)
+            except Exception:
+                logger.debug(
+                    "[api_server] failed to record session cwd for %s",
+                    session_id, exc_info=True)
+        return tokens
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[dict[str, Any]], requested_runtime: Optional[dict[str, Any]],

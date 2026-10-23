@@ -129,8 +129,11 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         import tomli_w
 
         document = tomllib.loads(core_text)
-        _trust_core_lock(document, source / "uv.lock")
-        document.setdefault("tool", {}).setdefault("uv", {})["workspace"] = {"members": sorted(members)}
+        uv_policy = document.setdefault("tool", {}).setdefault("uv", {})
+        # Release age is checked when Hermes locks; users trust that lock (#135589).
+        uv_policy.pop("exclude-newer", None)
+        uv_policy.pop("exclude-newer-package", None)
+        uv_policy["workspace"] = {"members": sorted(members)}
         text = tomli_w.dumps(document)
     else:
         # A member-less generation syncs frozen against core's own lock.
@@ -154,36 +157,8 @@ def _without_release_age(text: str) -> str:
     return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
 
 
-def _trust_core_lock(document: dict, core_lock: Path) -> None:
-    """Hold core's packages at the versions core's lock already vetted.
-
-    Release age is checked when Hermes locks (``exclude-newer`` in pyproject.toml, which
-    CI's lock check enforces), not on the user's machine: many package mirrors publish no
-    upload times, and uv rejects a file it cannot date ("X==V has no publish time",
-    #135589). So the generated root drops the cutoff and constrains every core-locked
-    registry package to its locked version instead; a plugin cannot drag one to an
-    unvetted release, and plugin-only packages follow the plugin's own policy. A package
-    the lock forks by platform (psutil: PyPI everywhere, git on Android) is left to the
-    resolver, which the seed lock already steers.
-    """
-    import tomllib
-    from collections import defaultdict
-
-    settings = document.setdefault("tool", {}).setdefault("uv", {})
-    settings.pop("exclude-newer", None)
-    settings.pop("exclude-newer-package", None)
-    if not core_lock.is_file():
-        return  # nothing vetted to hold; the resolver keeps core's declared ranges
-    entries = defaultdict(list)
-    for package in tomllib.loads(core_lock.read_text(encoding="utf-8-sig")).get("package", []):
-        entries[package["name"]].append(package)
-    pins = [f"{name}=={rows[0]['version']}" for name, rows in sorted(entries.items())
-            if len(rows) == 1 and "registry" in rows[0].get("source", {})]
-    settings["constraint-dependencies"] = [*settings.get("constraint-dependencies", []), *pins]
-
-
 def _is_member_candidate(plugin_dir: Path) -> bool:
-    return read_python_declaration(plugin_dir).is_member
+    return read_python_declaration(plugin_dir).installs_packages
 
 
 def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
@@ -243,7 +218,7 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
             raise InstallError("venv", reason)
-        if declaration.is_member:
+        if declaration.installs_packages:
             members.append(path)
     return members
 
@@ -297,6 +272,15 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 changed = True
         if virtual:
             document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+        project = document.get("project")
+        # uv rejects any [project] table whose version is neither set nor dynamic, at
+        # parse time and for buildable members too, so a version-less member would abort
+        # every `uv lock` of the workspace. Give it the same inert version plugin-deps use.
+        # PEP 621 forbids a static version while "version" is listed under
+        # project.dynamic, so an explicitly dynamic version is left alone.
+        if project is not None and "version" not in project and "version" not in project.get("dynamic", ()):
+            project["version"] = "0.0.0"
+            changed = True
         if virtual or changed:
             import tomli_w
 

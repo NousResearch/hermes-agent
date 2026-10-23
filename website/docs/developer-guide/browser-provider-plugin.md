@@ -6,7 +6,7 @@ description: "How to build a cloud browser backend plugin for Hermes Agent"
 
 # Building a Browser Provider Plugin
 
-Browser provider plugins register a **cloud browser backend** that services cloud-mode `browser_*` tool calls (navigate, click, screenshot, …). Built-in providers — Browserbase, Browser Use, and Firecrawl — all ship as plugins under `plugins/browser/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
+Browser provider plugins register a **cloud browser backend**: when `browser.cloud_provider` selects it, `browser_exec` (and the CDP tools `browser_cdp`, `browser_dialog`, `browser_vault`) drive a remote browser session it creates instead of a local Chromium. Built-in providers — Browserbase, Browser Use, and Firecrawl — all ship as plugins under `plugins/browser/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
 
 :::tip
 Browser backends are one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Web Search Provider Plugins](./web-search-provider-plugin.md) (which this ABC deliberately mirrors), [Image Generation](./image-gen-provider-plugin.md), [Video Generation](./video-gen-provider-plugin.md), [Memory Providers](./memory-provider-plugin.md), [Context Engines](./context-engine-plugin.md), [Secret Sources](./secret-source-plugin.md), and [Model Providers](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Hermes Plugin](./plugins/index.md).
@@ -14,9 +14,9 @@ Browser backends are one of several **backend plugins** Hermes supports. The oth
 
 ## How it fits together
 
-A browser provider does **not** implement browsing. It implements **session lifecycle**: create a remote browser session, hand back a CDP websocket URL, and tear the session down. Hermes' own browser stack (`agent-browser` + `tools/browser_tool.py`) connects to whatever CDP URL you return and drives the page from there — every provider gets the full `browser_*` toolset for free.
+A browser provider does **not** implement browsing. It implements **session lifecycle**: create a remote browser session, hand back a CDP websocket URL, and tear the session down. Hermes hands the CDP URL you return to `browser_exec`, which drives the page from there — every provider gets the full browser toolset (`browser_exec`, `browser_cdp`, `browser_dialog`, `browser_vault`) for free.
 
-The active provider is selected by `browser.cloud_provider` in `config.yaml`; the dispatcher in `tools/browser_tool.py` is a pure registry lookup with no per-provider conditionals.
+The active provider is selected by `browser.cloud_provider` in `config.yaml`; the resolver in `tools/browser_session_cloud.py` is a pure registry lookup with no per-provider conditionals.
 
 ## Discovery
 
@@ -86,7 +86,7 @@ class MyBackendProvider(BrowserProvider):
         """Create a remote browser session; return the session-metadata contract."""
         session = my_api.create_browser(...)
         return {
-            "session_name": f"my-backend-{task_id}",  # unique agent-browser session name
+            "session_name": f"my-backend-{task_id}",  # unique session name
             "bb_session_id": session.id,              # provider session ID (for cleanup)
             "cdp_url": session.cdp_ws_url,            # CDP websocket URL
             "features": {"stealth": True},            # feature flags you enabled
@@ -106,14 +106,14 @@ class MyBackendProvider(BrowserProvider):
 
 `create_session()` must return at least `session_name`, `bb_session_id`, `cdp_url`, and `features`. Two quirks worth knowing:
 
-- **`bb_session_id` is a legacy key name** kept verbatim for backward compatibility with `tools/browser_tool.py` — it holds *your* provider's session ID regardless of vendor. Don't rename it.
+- **`bb_session_id` is a legacy key name** kept verbatim for backward compatibility with the browser session code — it holds *your* provider's session ID regardless of vendor. Don't rename it.
 - `create_session()` **may raise** — `ValueError` for missing credentials, `RuntimeError` for network/API failures. The dispatcher surfaces these to the user. This differs from `close_session`/`emergency_cleanup`, which must never raise.
 
 An optional `external_call_id` key supports managed-gateway billing.
 
 ### `get_setup_schema()` — the `hermes tools` picker row
 
-Override this to appear as a first-class option in the Browser Automation picker with API-key prompts and an install hook:
+Override this to appear as a first-class option in the Browser Automation picker with API-key prompts (an optional `post_setup` key names an install hook to run after selection):
 
 ```python
 def get_setup_schema(self) -> dict:
@@ -126,7 +126,6 @@ def get_setup_schema(self) -> dict:
              "prompt": "My Backend API key",
              "url": "https://mybackend.example"},
         ],
-        "post_setup": "agent_browser",   # ensures local Chromium is installed (agent-browser itself resolves via npx)
     }
 ```
 

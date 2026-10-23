@@ -25,8 +25,8 @@ def _post_setup_keys_text() -> str:
             return ", ".join(keys)
     except Exception:
         pass
-    return ("agent_browser, browser_use_cli, browserbase, camofox, cua_driver, ddgs, faster_whisper, "
-            "kittentts, lightpanda, openai_codex, piper, xai_grok")
+    return ("browserbase, chromium, cua_driver, ddgs, faster_whisper, kittentts, lightpanda, "
+            "openai_codex, piper, xai_grok")
 
 
 class _PostSetupHelpFormatter(argparse.HelpFormatter):
@@ -77,11 +77,11 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
         formatter_class=_PostSetupHelpFormatter,
         description="Run the install/bootstrap hook a tool backend declares — the\n"
             "same step `hermes tools` runs after you pick a provider that\n"
-            "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
+            "needs extra dependencies (browser Chromium, Lightpanda, cua-driver,\n"
             "KittenTTS/Piper, ddgs, xAI, Codex). Stable,\n"
             "non-interactive target the dashboard spawns to drive backend\n"
             f"setup. Keys: {_POST_SETUP_KEYS_TOKEN}.")
     tools_postsetup_p.add_argument(
         "post_setup_key", metavar="KEY",
-        help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)")
+        help="Post-setup hook key (e.g. chromium, cua_driver, kittentts)")
     tools_parser.set_defaults(func=cmd_tools)

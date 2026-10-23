@@ -1,10 +1,8 @@
 """``hermes tools post-setup --help`` must list every valid key, without taxing every CLI start.
 
 The help text used to hardcode a key list that drifted from the hook registry — runnable keys
-(browser_use_cli, browserbase, lightpanda, faster_whisper) were missing, while the in-product
-downgrade notice points users at exactly this command for the browser-use CLI. The key list is
-rendered from the registry when the help is printed; the parser build (every CLI invocation)
-must not import it.
+(browserbase, chromium, lightpanda, faster_whisper) were missing. The key list is rendered from
+the registry when the help is printed; the parser build (every CLI invocation) must not import it.
 """
 
 import argparse
@@ -56,4 +54,4 @@ def test_help_imports_the_hook_registry_only_when_rendered(capsys, monkeypatch):
 
     out = _render_post_setup_help(parser, capsys)
     assert "_POST_SETUP_HOOKS" in accessed  # rendered help reads the registry
-    assert "browser_use_cli" in out  # and a broken registry degrades to the static list
+    assert "chromium" in out  # and a broken registry degrades to the static list

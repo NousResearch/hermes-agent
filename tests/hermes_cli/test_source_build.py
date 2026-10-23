@@ -145,7 +145,7 @@ def source_checkout(tmp_path, monkeypatch):
     scripts = root / "scripts" / "build"
     scripts.mkdir(parents=True)
     repository = Path(__file__).resolve().parents[2]
-    for name in ("node-deps.mjs", "freshness.mjs", "frontend-common.mjs"):
+    for name in ("node-deps.mjs", "electron-runtime.mjs", "freshness.mjs", "frontend-common.mjs"):
         shutil.copy2(repository / "scripts/build" / name, scripts / name)
     (root / ".gitignore").write_text("node_modules/\n**/dist/\n", encoding="utf-8")
     return root, acquired

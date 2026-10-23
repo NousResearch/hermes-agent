@@ -455,3 +455,69 @@ it('preserveLocalSystemNotices does not duplicate a notice the page already carr
   const preserved = preserveLocalSystemNotices(refreshed, [...refreshed, { ...notice, id: 'other' }])
   expect(preserved).toBe(refreshed)
 })
+
+it.each([
+  ['no failed-turn boundary row', false],
+  ['the failed-turn boundary row', true]
+])('a failed onboarding beat shows its answer and error card once when the refresh carries %s', (_label, boundary) => {
+  const callId = 'call_setup_beat_name'
+  const answer = { beat: 'name', answer: { name: 'Austin' }, next: 'theme' }
+  const errorSurface = { code: 'rate_limit', layer: 'provider', retryable: true } as const
+
+  const stored = toChatMessages([
+    { role: 'user', content: 'opening', timestamp: 1, display_kind: 'hidden' },
+    {
+      role: 'assistant',
+      content: 'Hi!',
+      timestamp: 2,
+      tool_calls: [{ id: callId, function: { name: 'setup_beat', arguments: '{"beat":"name"}' } }]
+    },
+    { role: 'tool', tool_call_id: callId, tool_name: 'setup_beat', content: JSON.stringify(answer), timestamp: 3 },
+    ...(boundary
+      ? [
+          {
+            role: 'assistant' as const,
+            content: 'This turn did not complete.',
+            timestamp: 4,
+            display_kind: 'failed_turn',
+            display_metadata: { error: 'rate limited', error_surface: errorSurface }
+          }
+        ]
+      : [])
+  ])
+
+  const local: ChatMessage[] = [
+    row('user-opening', 'user', 'opening', { hidden: true, timestamp: 1 }),
+    row('assistant-interim', 'assistant', 'Hi!', { interim: true, timestamp: 2 }),
+    {
+      id: 'assistant-stream',
+      role: 'assistant',
+      error: 'rate limited',
+      errorSurface,
+      timestamp: 3,
+      parts: [
+        {
+          type: 'tool-call',
+          toolCallId: callId,
+          toolName: 'setup_beat',
+          args: { beat: 'name' },
+          argsText: '{"beat":"name"}',
+          result: answer
+        }
+      ]
+    }
+  ]
+
+  const merged = preserveLocalAssistantErrors(stored, local)
+
+  const beatRows = merged.filter(message =>
+    message.parts.some(part => part.type === 'tool-call' && part.toolCallId === callId)
+  )
+
+  const errorCards = merged.filter(message => message.error)
+
+  expect(beatRows).toHaveLength(1)
+  expect(chatMessageText(beatRows[0])).toBe('Hi!')
+  expect(errorCards).toHaveLength(1)
+  expect(errorCards[0]).toMatchObject({ error: 'rate limited', errorSurface: { code: 'rate_limit' } })
+})

@@ -449,6 +449,14 @@ def _reset_foreground_exit_fence():
 
 
 @pytest.fixture(autouse=True)
+def _reset_browser_extension_lane_pins():
+    """A session lane the browser extension registered for stays pinned for the process; forget it after."""
+    yield
+    if (router := sys.modules.get("tools.browser_extension_router")) is not None:
+        router.reset_pinned_lanes()
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_kanban_memory_guard(request, monkeypatch):
     """Pin the kanban dispatcher's memory guard to "no data" for every test.
 

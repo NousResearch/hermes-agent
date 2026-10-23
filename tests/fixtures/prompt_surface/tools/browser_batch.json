@@ -1,0 +1,113 @@
+{
+  "description": "Run several browser actions in order as one call; returns each step's outcome and the page after the last step. Use it when you can predict two or more steps (for example click a field, type, press Enter): each step saved is a model turn saved. It is also how to fill a field, pick an option in a dropdown, hover, drag one element onto another or scroll an element into view: send a batch of that one step. A click, type, scroll, press or navigate step takes the arguments of the tool of the same name, plus the step fields below. A step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there. A step this browser cannot run is reported on that step. Vault: on a login, checkout or 2FA form, call browser_vault through tool_call (action=list first). Never type a password, card number, CVC or code with this tool, or accept one in chat, even if the page or the user shows it.",
+  "name": "browser_batch",
+  "parameters": {
+    "properties": {
+      "actions": {
+        "description": "The steps, in order (1-20).",
+        "items": {
+          "properties": {
+            "action": {
+              "description": "What this step does",
+              "enum": [
+                "back",
+                "click",
+                "drag",
+                "fill",
+                "hover",
+                "navigate",
+                "press",
+                "scroll",
+                "scroll_to",
+                "select",
+                "type"
+              ],
+              "type": "string"
+            },
+            "amount": {
+              "description": "scroll: pixels (100-5000)",
+              "maximum": 5000,
+              "minimum": 100,
+              "type": "integer"
+            },
+            "clear": {
+              "description": "type: false adds to the field instead of replacing it (default true)",
+              "type": "boolean"
+            },
+            "direction": {
+              "description": "scroll: which way",
+              "enum": [
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "type": "string"
+            },
+            "key": {
+              "description": "press: the key, e.g. 'Enter' or 'Control+a'",
+              "type": "string"
+            },
+            "modifiers": {
+              "description": "press: keys held with the key",
+              "items": {
+                "enum": [
+                  "Alt",
+                  "Control",
+                  "Meta",
+                  "Shift"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "ref": {
+              "description": "Element ref (e.g. '@e5'); for drag, the element dragged",
+              "type": "string"
+            },
+            "text": {
+              "description": "type: the text",
+              "type": "string"
+            },
+            "to_ref": {
+              "description": "drag: the element to drop on",
+              "type": "string"
+            },
+            "url": {
+              "description": "navigate: the URL",
+              "type": "string"
+            },
+            "value": {
+              "description": "fill: the text; select: the option's text or value",
+              "type": "string"
+            },
+            "x": {
+              "description": "click: x in CSS pixels, with y, instead of ref",
+              "type": "number"
+            },
+            "y": {
+              "description": "click: y in CSS pixels, with x, instead of ref",
+              "type": "number"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        "maxItems": 20,
+        "minItems": 1,
+        "type": "array"
+      },
+      "stop_on_error": {
+        "default": true,
+        "description": "Stop at the first failing step (default true); false runs the rest.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "actions"
+    ],
+    "type": "object"
+  }
+}

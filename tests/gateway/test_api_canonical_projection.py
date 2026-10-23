@@ -414,7 +414,7 @@ async def test_api_turn_selects_the_requests_registered_browser_controller(api, 
     from gateway.run import GatewayRunner
     from gateway.session import SessionContext
     from gateway.session_context import clear_session_vars
-    from tools.browser_extension_router import extension_controller_available
+    from tools.browser_extension_router import extension_lane_configured
     monkeypatch.setattr(broker_mod, 'browser_control_enabled', lambda *a: True)
     adapter = api if path == 'canonical' else _api_server.APIServerAdapter(PlatformConfig(enabled=True))
     adapter._api_key = 'controller-selection-key'
@@ -431,7 +431,7 @@ async def test_api_turn_selects_the_requests_registered_browser_controller(api, 
                                      session_key='k', session_id=event.source.chat_id)
             tokens = GatewayRunner._set_session_env(owner.runner, context)
             try:
-                selected.append(extension_controller_available('browser_navigate'))
+                selected.append(extension_lane_configured())
             finally:
                 clear_session_vars(tokens)
             execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
@@ -439,7 +439,7 @@ async def test_api_turn_selects_the_requests_registered_browser_controller(api, 
         owner.runner._handle_message = handle
     else:
         def run_conversation(**kwargs):
-            selected.append(extension_controller_available('browser_navigate'))
+            selected.append(extension_lane_configured())
             return {'final_response': 'ok', 'messages': []}
         monkeypatch.setattr(adapter, '_create_agent', lambda **kw: SimpleNamespace(run_conversation=run_conversation))
     app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])

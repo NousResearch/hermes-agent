@@ -120,8 +120,10 @@ tools:
       - manage_catalog
 ```
 
-The default `defer` list also includes the selected desktop GUI helpers listed
-in `hermes_cli/config_defaults.py`. It is the single source of truth for the
+The default `defer` list also includes the selected desktop GUI helpers and the
+browser extension's rarely used tools (`browser_drag`, `browser_tab_activate`,
+`browser_tab_group`, `browser_tab_ungroup`) listed in
+`hermes_cli/config_defaults.py`. It is the single source of truth for the
 shipped curated set; the runtime fallback uses the same value.
 
 | Key | Default | Meaning |

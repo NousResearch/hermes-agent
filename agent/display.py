@@ -346,13 +346,28 @@ def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
     return value
 
 
+# Browser tools that put model-typed text into a page, and the argument carrying it. ``browser_batch`` carries
+# the same fields in each of its steps.
+_BROWSER_TYPED_TEXT_ARGS = {"browser_type": ("text",), "browser_fill": ("value",), "browser_batch": ("text", "value")}
+
+
+def _mask_typed_text(args: dict, keys: tuple[str, ...]) -> dict:
+    masked = {key: redact_sensitive_text(args[key], force=True) for key in keys if isinstance(args.get(key), str)}
+    return {**args, **masked} if masked else args
+
+
 def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
-    """Return a copy of tool args safe for logs/progress UI (masks ``browser_type`` secrets)."""
-    if not isinstance(args, dict):
+    """Return a copy of tool args safe for logs/progress UI: masks the text the browser tools type into a page
+    (``browser_type.text``, ``browser_fill.value`` and every ``browser_batch`` step's ``text`` and ``value``)."""
+    keys = _BROWSER_TYPED_TEXT_ARGS.get(tool_name)
+    if not isinstance(args, dict) or keys is None:
         return args
-    if tool_name == "browser_type" and isinstance(args.get("text"), str):
-        return {**args, "text": redact_sensitive_text(args["text"], force=True)}
-    return args
+    if tool_name == "browser_batch":
+        steps = args.get("actions")
+        if not isinstance(steps, list):
+            return args
+        return {**args, "actions": [_mask_typed_text(step, keys) if isinstance(step, dict) else step for step in steps]}
+    return _mask_typed_text(args, keys)
 
 
 def _delegate_task_goals(tasks: Any, *, per_goal_len: int) -> list[str]:

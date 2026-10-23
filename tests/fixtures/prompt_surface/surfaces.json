@@ -5,9 +5,10 @@
       "stable": 1935,
       "volatile": 1813
     },
-    "tool_tokens": 13277,
+    "tool_tokens": 13962,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",
@@ -48,9 +49,10 @@
       "stable": 1445,
       "volatile": 1813
     },
-    "tool_tokens": 13277,
+    "tool_tokens": 13962,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",
@@ -91,9 +93,10 @@
       "stable": 1866,
       "volatile": 1811
     },
-    "tool_tokens": 13277,
+    "tool_tokens": 13962,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",
@@ -134,9 +137,10 @@
       "stable": 2640,
       "volatile": 1809
     },
-    "tool_tokens": 13433,
+    "tool_tokens": 14118,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",
@@ -177,9 +181,10 @@
       "stable": 1445,
       "volatile": 1813
     },
-    "tool_tokens": 13277,
+    "tool_tokens": 13962,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",
@@ -220,9 +225,10 @@
       "stable": 1317,
       "volatile": 1813
     },
-    "tool_tokens": 13277,
+    "tool_tokens": 13962,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",
@@ -263,9 +269,10 @@
       "stable": 1579,
       "volatile": 1814
     },
-    "tool_tokens": 13912,
+    "tool_tokens": 14597,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",
@@ -307,9 +314,10 @@
       "stable": 1349,
       "volatile": 1814
     },
-    "tool_tokens": 13277,
+    "tool_tokens": 13962,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",
@@ -350,9 +358,10 @@
       "stable": 1382,
       "volatile": 1814
     },
-    "tool_tokens": 13277,
+    "tool_tokens": 13962,
     "tools": [
       "browser_back",
+      "browser_batch",
       "browser_cdp",
       "browser_click",
       "browser_console",

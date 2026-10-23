@@ -79,6 +79,60 @@ class TestBuildToolPreview:
         assert safe_args["ref"] == "@e3"
         assert safe_args["text"].startswith("ghp_AB")
 
+    def test_browser_fill_display_args_redact_api_key(self):
+        secret = "sk-ant-api03-" + "A" * 40
+        args = {"ref": "@e3", "value": secret}
+
+        safe_args = redact_tool_args_for_display("browser_fill", args)
+
+        assert secret not in str(safe_args)
+        assert safe_args["ref"] == "@e3"
+        assert safe_args["value"].startswith("sk-ant")
+        assert args["value"] == secret  # the call itself is not altered
+
+    def test_browser_fill_display_args_keep_normal_text(self):
+        args = {"ref": "@e3", "value": "hello world"}
+
+        assert redact_tool_args_for_display("browser_fill", args) == args
+
+    def test_browser_batch_display_args_redact_every_steps_typed_text(self):
+        secret = "sk-ant-api03-" + "A" * 40
+        other = "ghp_ABCDEFGHIJ1234567890"
+        args = {
+            "actions": [
+                {"action": "click", "ref": "@e1"},
+                {"action": "type", "ref": "@e1", "text": secret},
+                {"action": "fill", "ref": "@e2", "value": other},
+                {"action": "select", "ref": "@e3", "value": "Two"},
+                {"action": "type", "ref": "@e4", "text": "hello world"},
+            ],
+            "stop_on_error": False,
+        }
+
+        safe_args = redact_tool_args_for_display("browser_batch", args)
+
+        assert secret not in str(safe_args) and other not in str(safe_args)
+        steps = safe_args["actions"]
+        assert steps[0] == args["actions"][0]
+        assert steps[1]["text"].startswith("sk-ant") and steps[1]["ref"] == "@e1" and steps[1]["action"] == "type"
+        assert steps[2]["value"].startswith("ghp_AB") and steps[2]["action"] == "fill"
+        assert steps[3] == args["actions"][3]
+        assert steps[4]["text"] == "hello world"
+        assert safe_args["stop_on_error"] is False
+        assert args["actions"][1]["text"] == secret  # the call itself is not altered
+
+    @pytest.mark.parametrize("actions", [None, "click", 3, [], ["click", None, 4]])
+    def test_browser_batch_display_args_pass_malformed_steps_through(self, actions):
+        args = {"actions": actions}
+
+        assert redact_tool_args_for_display("browser_batch", args) == args
+
+    def test_browser_batch_secret_stays_out_of_the_preview(self):
+        secret = "sk-ant-api03-" + "A" * 40
+        args = {"actions": [{"action": "fill", "ref": "@e2", "value": secret}]}
+
+        assert secret not in str(build_tool_preview("browser_batch", args))
+
 
 
 

@@ -402,20 +402,80 @@ protocol version, transport names, and the exact capability allowlist:
 ```text
 controller.noop
 browser_back
+browser_batch
 browser_click
+browser_drag
+browser_fill
+browser_hover
 browser_navigate
 browser_press
 browser_screenshot
 browser_scroll
+browser_scroll_to
+browser_select
 browser_snapshot
 browser_tab_activate
+browser_tab_close
+browser_tab_create
+browser_tab_group
+browser_tab_ungroup
 browser_tabs
 browser_type
 ```
 
-Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
-script evaluation, console access, uploads, image extraction, and vision are not
-part of the controller protocol.
+Requested capabilities outside that list are filtered out. A controller is only
+sent what it advertised: an older extension that does not list a capability
+(for example `browser_batch`) never receives that command, and a model call that
+needs it fails closed with an error naming the capability, never falling back to
+another browser.
+
+The model-facing `browser_*` tools use these capability names one to one, and
+a tool's arguments travel in the command frame's `arguments` object as the
+model gave them (a URL is sent in its normalized form). An optional `arguments.tab_id` picks one of the tabs
+attached to the controller for any action other than the tab tools themselves;
+the extension refuses an id it does not own with `lease_not_owned`.
+
+The model is offered this extended surface (the tools above, `tab_id`, the extension
+wording on the long-standing tools and on `browser_batch`, and the six tab tools that
+only an extension can run) only in a browser extension session (`browser_batch` itself,
+in a form without `tab_id` or approval wording, goes to every browser session): `browser.extension_control.enabled` is on, the
+request carries its server-bound principal and transport family, and the extension has
+registered a controller for that session (with Hermes Control on, the side panel does
+this before the session's first turn). Another API client of the same profile that never
+registers one, such as a chat UI, keeps the stock tools (`browser_batch` in its stock form
+included) and none of the extension surface. Once
+a session has the surface it keeps it: pausing Hermes Control, turning it off or an
+extension reconnecting never changes the tool block and costs the conversation its prompt
+cache. A chat that started before Hermes Control was turned on gains the surface once, at
+that moment. With no controller attached, a call fails closed with an error that asks the
+person to turn on Hermes Control and attach a tab; it never falls back to the built-in
+browser. `browser_drag`, `browser_tab_activate`, `browser_tab_group` and
+`browser_tab_ungroup` are deferred behind [tool search](tool-search.md) by default.
+Without the setting, and for every CLI and messaging session, the browser tools are
+the ones documented for the built-in browser, `browser_batch` in its stock form among
+them, with no `tab_id` and none of the other tools above that are new. Before a
+`browser_navigate`, `browser_tab_create` or `browser_batch` navigate step is sent,
+Hermes refuses a URL that carries a secret or targets a cloud metadata address or a
+host the operator's website blocklist rules out; the controller never sees it.
+A redirect, a clicked link or a submitted form can land somewhere else, so Hermes also
+checks the address the controller reports back: for `browser_navigate`, `browser_back`,
+`browser_snapshot`, every action that can change the page (click, type, fill, select, press,
+hover, scroll), the page a `browser_batch` ended on, a new tab from `browser_tab_create`
+(read back until it has an address) and each tab in `browser_tabs`. If it is a cloud
+metadata address or a host the blocklist rules out, the result is replaced by an error that
+says the page landed on a blocked address and names the host, and the page's snapshot,
+title and text never reach the model. The extension cannot blank a tab, so the tab stays on
+that page: Hermes takes it back one step when the call moved it there, and otherwise
+refuses every later call on that tab (`tab_withheld`) until it goes to another page or is
+closed. The tab is remembered by its id however the call named it (results do not carry the
+tab, so Hermes reads the tab list to find it), so `tab_id` and a call without one are judged
+the same; a call without `tab_id` is also refused while it could be acting on a withheld
+tab, which with several tabs under control is whenever one is withheld. A `browser_batch` is checked once, on the page it ends on, not after each step.
+This check does not apply the private-address rule, which the extension lane skips on
+purpose.
+
+Raw CDP, arbitrary script evaluation, console access, uploads, image extraction,
+and vision are not part of the controller protocol.
 
 When a request has no bound controller identity, or when the feature is disabled,
 Hermes preserves the existing browser backend. Once the gateway binds a

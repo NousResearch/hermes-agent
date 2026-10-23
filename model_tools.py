@@ -21,6 +21,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
+from tools import browser_tool_extension_schemas as _extension_lane
 from tools.arg_coercion import coerce_tool_args
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 from utils import file_signature
@@ -451,6 +452,26 @@ def _rewrite_input_tool_for_vault(td: dict[str, Any], available: set) -> Optiona
     return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
 
 
+def _rewrite_for_extension_lane(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """The browser extension lane's tool surface, for browser extension sessions.
+
+    Such a session (``browser.extension_control.enabled``, a server-bound principal and transport, and a
+    controller the extension registered for it: ``extension_lane_configured``) is offered the tab and action
+    tools only the extension runs and the extension form of the long-standing browser tools and of
+    browser_batch (``tab_id``, approval and background-tab wording, no "navigate first" advice). Every other
+    session keeps the stock browser schemas and browser_batch's stock form, with none of the extension tools.
+    Once a session has the lane it keeps it, so the tool block does not change between requests of one
+    conversation and the provider's prompt cache survives Hermes Control being paused, turned off or
+    reconnected. The bound-identity path bypasses the definition memo and the check_fn cache, so one process
+    serves both."""
+    from tools.browser_extension_router import extension_lane_configured
+
+    configured = extension_lane_configured()
+    if td["function"]["name"] in _extension_lane.EXTENSION_ONLY_TOOLS:
+        return td if configured else None
+    return _fn_def(_extension_lane.lane_schema(td["function"])) if configured else td
+
+
 def _compose_rewriters(*fns):
     def run(td, available):
         for fn in fns:
@@ -465,10 +486,18 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "execute_code": _rewrite_execute_code,
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
-    "browser_navigate": _rewrite_browser_navigate,
+    "browser_navigate": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_browser_navigate),
+    "browser_snapshot": _rewrite_for_extension_lane,
+    "browser_click": _rewrite_for_extension_lane,
+    "browser_scroll": _rewrite_for_extension_lane,
+    "browser_back": _rewrite_for_extension_lane,
+    "browser_press": _rewrite_for_extension_lane,
+    **dict.fromkeys(_extension_lane.EXTENSION_ONLY_TOOLS, _rewrite_for_extension_lane),
     "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
-    "browser_type": _rewrite_input_tool_for_vault,
+    "browser_type": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_input_tool_for_vault),
+    "browser_fill": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_input_tool_for_vault),
+    "browser_batch": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_input_tool_for_vault),
     "browser_vault": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }

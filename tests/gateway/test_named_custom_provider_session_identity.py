@@ -159,7 +159,7 @@ OLD_URL = "https://old.example/v1"
 NEW_URL = "https://new.example/v1"
 
 
-def _edited_entry_agent(*, old_owner=True):
+def _edited_entry_agent(*, old_owner=True, old_url=OLD_URL, new_url=NEW_URL):
     """A live session on ``custom:alpha`` whose entry was then moved to another endpoint and key; with
     ``old_owner`` another entry still serves the old endpoint, without it nothing does."""
     from hermes_cli import runtime_provider
@@ -168,15 +168,15 @@ def _edited_entry_agent(*, old_owner=True):
     config = {
         "model": {"default": "m", "provider": "custom:alpha"},
         "custom_providers": [
-            {"name": "alpha", "base_url": OLD_URL, "api_key": "sk-old", "model": "m"},
-            {"name": "old-owner", "base_url": OLD_URL, "api_key": "sk-old", "model": "m"},
+            {"name": "alpha", "base_url": old_url, "api_key": "sk-old", "model": "m"},
+            {"name": "old-owner", "base_url": old_url, "api_key": "sk-old", "model": "m"},
         ][:2 if old_owner else 1],
     }
     atomic_config_write(get_config_path(), config)
     runtime = runtime_provider.resolve_runtime_provider(requested="custom:alpha", target_model="m")
     agent = SimpleNamespace(model="m", provider=runtime["provider"], requested_provider=runtime["requested_provider"],
                             base_url=runtime["base_url"], api_mode=runtime["api_mode"], _fallback_activated=False)
-    config["custom_providers"][0].update(base_url=NEW_URL, api_key="sk-new")
+    config["custom_providers"][0].update(base_url=new_url, api_key="sk-new")
     atomic_config_write(get_config_path(), config)
     return agent
 
@@ -208,22 +208,25 @@ def test_tui_runtime_config_does_not_pair_an_edited_entry_key_with_the_old_endpo
     assert _resumed_route(row) == (OLD_URL, "sk-old")
 
 
-def test_moved_entry_with_no_old_owner_is_not_saved_beside_the_old_endpoint(tmp_path):
-    """The model-name fallback must not hand the moved entry's name back for an endpoint it left."""
+@pytest.mark.parametrize("old_url,new_url", [(OLD_URL, NEW_URL), ("https://relay.example/TenantA/v1", "https://relay.example/tenanta/v1")],
+                         ids=["new-host", "path-case-only"])
+def test_moved_entry_with_no_old_owner_is_not_saved_beside_the_old_endpoint(tmp_path, old_url, new_url):
+    """Neither the requested-entry check nor the endpoint-owner and model fallbacks hand the moved
+    entry's name back for an endpoint it left; a path differing only in case is another endpoint."""
     import json
 
-    agent = _edited_entry_agent(old_owner=False)
+    agent = _edited_entry_agent(old_owner=False, old_url=old_url, new_url=new_url)
     assert _runtime_model_config(agent)["provider"] == "custom"
     db = SessionDB(tmp_path / "state.db")
     try:
         db.create_session("s1", source="telegram", model="m")
         GatewayTurnPrepareMixin._sync_session_model_from_agent(_runner(db), "s1", agent)
         assert SessionDB.session_gateway_runtime(db.get_session("s1"))["provider"] == "custom"
-        assert _resumed_route(db.get_session("s1")) != (OLD_URL, "sk-new")
+        assert _resumed_route(db.get_session("s1")) != (old_url, "sk-new")
     finally:
         db.close()
     row = {"model": "m", "model_config": json.dumps(_runtime_model_config(agent))}
-    assert _resumed_route(row) != (OLD_URL, "sk-new")
+    assert _resumed_route(row) != (old_url, "sk-new")
 
 
 def test_live_unpersisted_session_reports_the_requested_entry(monkeypatch):

@@ -35,6 +35,12 @@ def _normalize_base_url_for_match(value) -> str:
     return str(value or "").strip().rstrip("/").lower()
 
 
+def _route_key(value) -> str:
+    """An endpoint compared for identity: scheme and host fold case, the path does not."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    return normalize_route_base_url(_clean(value))
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
 
@@ -320,10 +326,10 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
     """Map an endpoint URL back to its canonical ``custom:<name>`` menu key. Session persistence
     stores the agent's *resolved* provider, which for every named custom endpoint is the literal
     string ``"custom"`` — the entry name is lost, and the api_key is deliberately never persisted."""
-    target = _normalize_base_url_for_match(base_url)
+    target = _route_key(base_url)
     if not target:
         return None
-    return _find_custom_identity(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
+    return _find_custom_identity(lambda entry: _route_key(_entry_url(entry)) == target)
 
 
 def _model_id_matches(value: Any, target: str) -> bool:
@@ -361,7 +367,7 @@ def _endpoint_identity(base_url: str) -> Optional[str]:
     # from the ownership-checked endpoint, never from a model name or a fixed port.
     from hermes_cli.local_runtime.endpoint import _state_endpoint
     endpoint = _state_endpoint()
-    if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
+    if endpoint and _route_key(base_url) == _route_key(endpoint["base_url"]):
         return "llamacpp"
     return None
 
@@ -416,10 +422,10 @@ def session_provider_identity(provider: Any, requested_provider: Any, base_url: 
     if adapter.lower() != "custom":
         return adapter
     requested = _clean(requested_provider)
-    url = _normalize_base_url_for_match(base_url)
+    url = _route_key(base_url)
     if url and requested.lower() not in {"", "custom", "auto"}:
         entry = _get_named_custom_provider(requested, config=config, resolve_credentials=False)
-        if entry and _normalize_base_url_for_match(_entry_url(entry)) == url:
+        if entry and _route_key(_entry_url(entry)) == url:
             return requested
     if url:
         return _endpoint_identity(_clean(base_url)) or adapter

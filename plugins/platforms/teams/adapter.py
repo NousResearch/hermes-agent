@@ -845,6 +845,9 @@ def register(ctx) -> None:
         ensure_deps_fn=check_teams_requirements,  # ACTIVE lazy-installer, run by create_adapter()
         validate_config=validate_config, is_connected=is_connected,
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
+        # The opt-in Playground target's settings ride the Teams card; the production
+        # credentials above stay required and are never reused by the local target.
+        dashboard_env_vars=("TEAMS_PLAYGROUND_URL", "TEAMS_PLAYGROUND_ALLOW_PRIVATE"),
         install_hint=_install_hint(), setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,  # env-only setups show up in gateway status
         cron_deliver_env_var="TEAMS_HOME_CHANNEL",  # deliver=teams cron home-channel routing

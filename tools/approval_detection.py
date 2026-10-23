@@ -101,7 +101,7 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 def _hardline_home_paths() -> str:
     """Absolute home/HERMES_HOME paths added to the rm hardline floor at import time.
 
-    The static ~/$HOME rules only cover tilde spellings; ``rm -rf /home/john`` (absolute) and
+    The static ~/$HOME rules only cover tilde spellings; ``rm -rf /home/<user>`` (absolute) and
     ``rm -rf "$HERMES_HOME"`` fell past the floor (verified by probe 2026-10-22). We resolve the
     real home directory and the HERMES_HOME data dir and add their absolute, trailing-slash,
     and glob-suffixed forms. Leading-Tilde expansion and quoting are handled by the caller-side

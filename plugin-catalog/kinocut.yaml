@@ -1,17 +1,20 @@
 name: kinocut
 title: Kinocut
 repo: https://github.com/KyaniteLabs/kinocut
-sha: d5c29523948d1c10079bc371876ddd9d01571b49
+sha: 32d5696cd8b31f75c3e8076aad04e710790c0f27
 subdir: plugins/kinocut
-version: "1.16.2"
+version: "1.16.6"
 description: >-
   Guardrailed local video editing: Kinocut's MCP server plus two workflow skills
   (editing and short-form repurposing). Trim, caption, reformat for Shorts and run
   quality checks with FFmpeg on your own machine. Portable Agent Plugins v1 package
   (plugin.json + mcp.json + skills/), no plugin code. Requires uv and FFmpeg on PATH;
-  the server launches as uvx kinocut==1.16.2 over stdio. Disclosure: on first launch
-  uv downloads kinocut from PyPI; the server runs FFmpeg/ffprobe on files the user
-  names and writes outputs locally. No account, API key or telemetry.
+  the server launches as uvx kinocut==1.16.3 over stdio. First launch downloads
+  Kinocut and dependencies from PyPI. Local FFmpeg editing needs no account or
+  API key. URL inputs download the requested media; font and model-weight features
+  fetch assets from GitHub; Revideo dependency installation runs npm ci.
+  AI color grading sends a frame to Anthropic only with use_ai enabled and
+  ANTHROPIC_API_KEY set. Optional network use is documented in the plugin README.
 maintainer: KyaniteLabs
 tier: community
 category: tools

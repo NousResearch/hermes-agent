@@ -675,6 +675,8 @@ class GatewayTopicThreadsMixin:
                 return already_linked
             raise
         title = await db.get_session_title(session_id) or session_id
+        # Restored titles bypass auto-titling, so rename the newly bound topic here.
+        await self._rename_telegram_topic_for_session_title(source, session_id, title)
         last_assistant = None
         with suppress(Exception):
             for message in reversed(await db.get_messages(session_id)):

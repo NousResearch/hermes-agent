@@ -261,9 +261,13 @@ def _route_owner(authority, entry):
 def _delegating_session(db, session_id):
     """The conversation a (nested) delegate_task child runs under, else ``session_id``. As in the
     completion pre-flight (``_lookup_completion_owner``), only ``model_config._delegate_from`` leads
-    out of an execution transcript: ``parent_session_id`` also records compression and branches."""
+    out of an execution transcript: ``parent_session_id`` also records compression and branches.
+    Likewise a session closed at a user boundary (/new, a resume away) leads nowhere."""
+    from gateway.run import _USER_BOUNDARY_END_REASONS
     lineage = [session_id]
-    while (parent := db.get_session_model_config_value(lineage[-1], '_delegate_from')) not in (None, *lineage):
+    while (not ((row := db.get_session(lineage[-1]) or {}).get('ended_at')
+                and row.get('end_reason') in _USER_BOUNDARY_END_REASONS)
+           and (parent := db.get_session_model_config_value(lineage[-1], '_delegate_from')) not in (None, *lineage)):
         lineage.append(parent)
     return lineage[-1]
 

@@ -90,6 +90,22 @@ async def test_subagent_row_without_delegate_provenance_owns_no_route(tmp_path, 
     assert len(list_session_admissions(authority.db, session_id=root, pending_only=False)) == 1
 
 
+@pytest.mark.asyncio
+async def test_subagent_notice_is_dropped_after_its_resumed_child_was_switched_away(tmp_path, monkeypatch):
+    runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
+    root = (await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='human'))).ref.session_id
+    key = runner.session_store._generate_session_key(source)
+    worker = root + '-worker'
+    authority.db.create_session(worker, source='subagent', parent_session_id=root, model_config={'_delegate_from': root})
+    # /resume the child, then /resume its parent: the child ends at a user boundary (session_switch).
+    runner.session_store.switch_session(key, worker)
+    runner.session_store.switch_session(key, root)
+    event = {'type': 'completion', 'session_id': 'proc-worker', 'started_at': 1,
+             'session_key': key, 'parent_session_id': worker}
+    assert await runner._inject_watch_notification('worker-finished', event) is None
+    assert len(list_session_admissions(authority.db, session_id=root, pending_only=False)) == 1
+
+
 def _relay_adapter():
     from gateway.relay.adapter import RelayAdapter
     from gateway.relay.descriptor import CapabilityDescriptor

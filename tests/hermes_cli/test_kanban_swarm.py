@@ -1,3 +1,4 @@
+from hermes_cli.kanban_swarm import parse_worker_arg
 import pytest
 
 from hermes_cli import kanban_db as kb
@@ -260,3 +261,20 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert synthesizer.status == "ready"
     finally:
         conn.close()
+
+
+
+def test_worker_title_can_contain_colon():
+    worker = parse_worker_arg("planner:Plan: compare two options")
+
+    assert worker.profile == "planner"
+    assert worker.title == "Plan: compare two options"
+    assert worker.body == worker.title
+    assert worker.skills == []
+
+
+def test_worker_skill_suffix_remains_supported():
+    worker = parse_worker_arg("planner:Plan:research,writing")
+
+    assert worker.title == "Plan"
+    assert worker.skills == ["research", "writing"]

@@ -1957,10 +1957,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     # ---- persisted display toggles: /approvals, /footer, /timestamps ----------------------
     def _handle_approvals_command(self, cmd_original: str) -> None:
         """Show or persist the profile-wide dangerous-command approval mode."""
-        from hermes_cli.approval_mode import run_approval_mode_command
-        parts = (cmd_original or "").strip().split(None, 1)
-        result = run_approval_mode_command(parts[1] if len(parts) > 1 else None)
-        _cp(f"  {result.message}")
+        from hermes_cli.approval_mode import handle_repl_approvals_command
+        handle_repl_approvals_command(cmd_original, _cp)
 
     def _toggle_setting(self, arg: str, current: bool, *, usage: str, status_line: str,
                         config_key: str, label: str, failed: str):

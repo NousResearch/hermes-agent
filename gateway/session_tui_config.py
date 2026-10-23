@@ -301,8 +301,16 @@ def _set_approval_mode(connection, value):
     """``/approvals <mode>``'s own write (``hermes_cli.approval_mode``) for this profile."""
     from gateway.run import _profile_runtime_scope
     from hermes_cli.approval_mode import run_approval_mode_command
+    from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
     with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
-        result = run_approval_mode_command(_word(value) or None)
+        # The writer refuses security-policy keys without the one-shot operator grant;
+        # this handler is the configured-admin renderer RPC for a slash command's own
+        # setting, so it stamps the grant for the single write and consumes it here.
+        token = grant_operator_policy_write()
+        try:
+            result = run_approval_mode_command(_word(value) or None)
+        finally:
+            reset_operator_policy_write(token)
     if not result.ok:
         raise RuntimeStoreError('invalid_params' if _word(value) not in ('manual', 'smart', 'off')
                                 else 'storage_unavailable')

@@ -377,8 +377,10 @@ class TestListNavigation:
 
 class TestStringTypedConfigValues:
     @pytest.mark.parametrize("value", ["off", "true", "01"])
-    def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, value):
+    def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, operator_write_scope, value):
         """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
+        # approvals.mode is security-sensitive; the fixture enters the sanctioned
+        # operator write scope (#104697 review boundary).
         set_config_value("approvals.mode", value)
 
         import hermes_yaml as yaml
@@ -391,7 +393,7 @@ class TestStringTypedConfigValues:
         ("approvals.timeout", "30", 30),
     ])
     def test_non_string_defaults_keep_existing_coercion(
-        self, _isolated_hermes_home, key, value, expected
+        self, _isolated_hermes_home, operator_write_scope, key, value, expected
     ):
         set_config_value(key, value)
 
@@ -1134,3 +1136,210 @@ class TestProviderSwitchClearsBaseUrl:
         assert "Cleared" not in out
         # Unknown host: kept, but the user is told the old route still applies (from #113725).
         assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])
+# ---------------------------------------------------------------------------
+# Security-policy guard (#81101)
+# ---------------------------------------------------------------------------
+
+class TestSensitiveConfigKeyGuard:
+    """`hermes config set` must refuse security-policy keys at every CLI form.
+
+    config.yaml IS the security policy (approvals.mode, command_allowlist,
+    security.*); the config cache is mtime-keyed so a write takes effect
+    mid-session. The file tools already hard-deny agent writes to config.yaml
+    (tools/file_tools.py), so the sanctioned CLI must not be the one-command
+    bypass for an agent to disable the approval gate — with or without
+    --force. The writer honors force=True only for the in-process
+    user-mediated canonical path (the /approvals slash command, gateway
+    /approvals, TUI policy RPC); the CLI never forwards it for sensitive keys.
+    See review on #81108.
+    """
+
+    @pytest.mark.parametrize("key", [
+        "approvals.mode",
+        "approvals.cron_mode",
+        "approvals.deny",
+        "approvals",
+        "security.redact_secrets",
+        "security.tirith_enabled",
+        "security",
+        "command_allowlist",
+        "hooks_auto_accept",
+        "hooks.pre_tool_call",
+        "hooks",
+    ])
+    def test_sensitive_key_refused_without_force(self, _isolated_hermes_home, capsys, key):
+        with pytest.raises(SystemExit):
+            set_config_value(key, "off")
+
+        captured = capsys.readouterr()
+        assert "security policy" in captured.err
+        assert key in captured.err
+
+        # Nothing was written to config.yaml.
+        raw = _read_config(_isolated_hermes_home)
+        assert "approvals" not in raw
+        assert "security" not in raw
+        assert "command_allowlist" not in raw
+        assert "hooks" not in raw
+
+    @pytest.mark.parametrize("key, value, expected", [
+        ("approvals.mode", "off", "off"),           # string-typed default → stays string
+        ("approvals.cron_mode", "off", "off"),      # string-typed default → stays string
+        ("security.redact_secrets", "off", False),  # bool default → "off" coerces to False
+        # List-typed key: main refuses a bare string (#114471) — write a list literal.
+        ("command_allowlist", '["git push --force"]', ["git push --force"]),
+        ("hooks_auto_accept", "true", True),  # executable-policy consent flag
+    ])
+    def test_sensitive_key_allowed_for_operator_scope(self, _isolated_hermes_home, operator_write_scope, key, value, expected):
+        """The sanctioned operator path (operator scope + human present) may write."""
+        set_config_value(key, value)
+
+        import hermes_yaml as yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        node = saved
+        for part in key.split("."):
+            node = node[part]
+        assert node == expected
+
+    @pytest.mark.parametrize("key", [
+        "approvals.mode",
+        "approvals.cron_mode",
+        "approvals",
+        "security.redact_secrets",
+        "security",
+        "command_allowlist",
+        "hooks_auto_accept",
+        "hooks.pre_tool_call",
+    ])
+    def test_cli_set_refuses_sensitive_key_even_with_force(
+        self, _isolated_hermes_home, capsys, key
+    ):
+        """`hermes config set --force <sensitive-key>` is still refused.
+
+        --force is a non-sensitive-key escape hatch (unknown-key notice /
+        scalar-over-mapping). If it also bypassed the security guard, an
+        agent typing the command into the terminal could persist
+        ``approvals.mode: off`` and disable approval checks — the alternate
+        entrypoint reported in the #81108 review. The refusal must fire at
+        the CLI layer regardless of the flag.
+        """
+        from types import SimpleNamespace
+
+        args = SimpleNamespace(config_command="set", key=key, value="off", force=True)
+        with pytest.raises(SystemExit):
+            config_command(args)
+
+        captured = capsys.readouterr()
+        assert "security policy" in captured.err
+
+        # Nothing was written to config.yaml.
+        raw = _read_config(_isolated_hermes_home)
+        assert "approvals" not in raw
+        assert "security" not in raw
+        assert "command_allowlist" not in raw
+
+    @pytest.mark.parametrize("key", [
+        "approvals.mode",
+        "approvals.cron_mode",
+        "security.redact_secrets",
+        "command_allowlist",
+        "hooks_auto_accept",
+        "hooks.pre_tool_call",
+    ])
+    def test_sensitive_key_refused_with_generic_force(self, _isolated_hermes_home, capsys, key):
+        """Generic ``force=True`` must NOT authorize a security-policy write
+        at the writer layer either: an alternate CLI entrypoint reaching
+        set_config_value with force would otherwise bypass the approval gate
+        (#81108). Only the conjunctive operator-scope + human-presence check
+        counts."""
+        with pytest.raises(SystemExit):
+            set_config_value(key, "off", force=True)
+
+        captured = capsys.readouterr()
+        assert "security policy" in captured.err
+
+        raw = _read_config(_isolated_hermes_home)
+        assert "approvals" not in raw
+        assert "security" not in raw
+        assert "command_allowlist" not in raw
+
+    def test_cli_set_force_still_works_for_non_sensitive_key(self, _isolated_hermes_home):
+        """--force keeps its documented meaning for non-sensitive keys."""
+        from types import SimpleNamespace
+
+        args = SimpleNamespace(config_command="set", key="model", value="gpt-5.6-sol", force=True)
+        config_command(args)
+
+        import hermes_yaml as yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["model"] == "gpt-5.6-sol"
+
+    def test_approvals_mode_refusal_mentions_canonical_command(self, _isolated_hermes_home, capsys):
+        with pytest.raises(SystemExit):
+            set_config_value("approvals.mode", "off")
+
+        captured = capsys.readouterr()
+        assert "/approvals" in captured.err
+
+    def test_non_sensitive_keys_still_work(self, _isolated_hermes_home):
+        """Ordinary config keys are unaffected by the guard."""
+        set_config_value("terminal.backend", "docker")
+        set_config_value("display.skin", "mono")
+
+        import hermes_yaml as yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["backend"] == "docker"
+        assert saved["display"]["skin"] == "mono"
+
+    @pytest.mark.parametrize("key", ["approvals.mode", "hooks_auto_accept", "hooks.pre_tool_call"])
+    def test_unset_sensitive_key_refused(self, _isolated_hermes_home, capsys, key):
+        from hermes_cli.config import unset_config_value
+
+        with pytest.raises(SystemExit):
+            unset_config_value(key)
+
+        captured = capsys.readouterr()
+        assert "security policy" in captured.err
+
+    @pytest.mark.parametrize("key, value", [
+        ("hooks_auto_accept", "true"),
+        ("hooks.pre_tool_call", '[{"command": "/bin/true"}]'),
+    ])
+    def test_public_cli_child_cannot_persist_executable_policy(
+        self, _isolated_hermes_home, key, value
+    ):
+        """An unattended child running the REAL public CLI entrypoint must not
+        persist executable-policy values (review round 7, F2: "public-CLI
+        regressions proving an unattended child cannot persist them").
+
+        This is the exact #104059 attack shape — a worker subprocess invoking
+        `hermes config set` — run end to end against an isolated HERMES_HOME:
+        the process must exit non-zero and leave config.yaml unchanged.
+        """
+        import os
+        import subprocess
+        import sys
+
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(_isolated_hermes_home)
+        env["PYTHONPATH"] = os.getcwd() + os.pathsep + env.get("PYTHONPATH", "")
+        env.pop("HERMES_YOLO_MODE", None)
+        proc = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "config", "set", key, value],
+            env=env, capture_output=True, text=True, timeout=300, check=False,
+        )
+        assert proc.returncode != 0
+        assert "security policy" in proc.stderr
+
+        raw = _read_config(_isolated_hermes_home)
+        assert "hooks" not in raw
+
+    def test_sensitive_guard_runs_before_yaml_parse(self, _isolated_hermes_home, capsys):
+        """Even a broken config.yaml must not block the security refusal."""
+        (_isolated_hermes_home / "config.yaml").write_text("model: gpt-4o\n  broken: [oops")
+
+        with pytest.raises(SystemExit):
+            set_config_value("approvals.mode", "off")
+
+        captured = capsys.readouterr()
+        assert "security policy" in captured.err

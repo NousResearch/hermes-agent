@@ -273,6 +273,50 @@ def _set_focus(rid, params, key, value, session):
     return _kv(rid, key, "on" if target else "off", tool_progress=effective)
 
 
+def _tui_policy_write(key: str, value: str) -> None:
+    """Persist a security-policy key via the canonical set_config_value chokepoint.
+
+    The TUI RPC originates from the human's renderer (Ink / Desktop over the gateway
+    socket; agent processes hold no RPC token and cannot open the socket). Stamps
+    the operator grant and provides the sanctioned marker frame required by the
+    writer.
+
+    The stamp requires PROVENANCE, not just a bound transport: the transport bound
+    in THIS process must be registered in ``tui_gateway.transport``'s live-transport
+    set, which only ``entry.main()`` (stdio RPC) and ``ws.handle_ws()`` (a real
+    ``ws.accept()``) populate. ``bind_transport()`` is a public ContextVar setter and
+    accepts any object, so ``current_transport() is not None`` alone was
+    caller-mintable (#104697 round-6 review): a worker doing
+    ``bind_transport(object())`` satisfied it. A fresh agent-kernel or terminal
+    subprocess starts with an EMPTY live set, so binding an arbitrary object there
+    is refused. Deliberate in-process mutation of the set itself remains possible
+    and is the disclosed residual — the same capability as writing config.yaml
+    directly with raw file I/O. The file-tools deny covers only the agent's own
+    file tools; the raw-I/O route is open (#49578) and the execute_code
+    config-integrity guard (#113459) is not in this tree, so neither is cited
+    here as an enforceable boundary. Pinned inverse:
+    tests/tui_gateway/test_approvals_policy_chokepoint.py.
+    """
+    from tui_gateway.transport import _POLICY_WRITE_TRANSPORTS, current_transport
+    if current_transport() not in _POLICY_WRITE_TRANSPORTS:
+        raise RuntimeError(
+            "TUI policy write requires the live gateway RPC transport; "
+            "direct calls are not sanctioned")
+    from hermes_cli.approval_mode import run_approval_mode_command
+    from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+
+    token = grant_operator_policy_write()
+    try:
+        # Both callers pass approvals.mode; run_approval_mode_command also catches the
+        # SystemExit a pinned/managed key raises, so a refusal here becomes an RPC error
+        # rather than a silent no-op reported as success.
+        res = run_approval_mode_command(value)
+        if not res.ok:
+            raise RuntimeError(res.message)
+    finally:
+        reset_operator_policy_write(token)
+
+
 def _set_approval_mode(rid, params, key, value, session):
     return _set_word(rid, params, "approvals.mode", value, session)  # legacy alias reports the real key
 
@@ -288,7 +332,7 @@ def _set_yolo(rid, params, key, value, session):
         appr = _load_cfg().get("approvals")
         appr = appr if isinstance(appr, dict) else {}
         enable = _BOOL_WORDS.get(raw, _normalize_approval_mode(appr.get("mode", "manual")) != "off")
-        _write_config_key("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
+        _tui_policy_write("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
         _emit_all_session_info()  # reflect the flip in every live indicator
     elif session:
         from tools.approval_yolo import toggle_session_yolo
@@ -358,7 +402,7 @@ def _word_setters() -> dict:
         "busy": (_word, {"queue", "steer", "interrupt"}, "unknown busy mode: {value}",
                  lambda w: _write_config_key("display.busy_input_mode", w)),
         "approvals.mode": (_word, _APPROVAL_MODES, "unknown approval mode: {value}; pick one of manual|smart|off",
-                           lambda w: (_write_config_key("approvals.mode", w), _emit_all_session_info())),
+                           lambda w: (_tui_policy_write("approvals.mode", w), _emit_all_session_info())),
         "details_mode": (_word, _DETAIL_MODES, "unknown details_mode: {value}", lambda w: _write_display_sections(
             sections={section: w for section in _DETAIL_SECTION_NAMES}, details_mode=w)),
         # thinking_mode also keeps details_mode aligned (compat bridge).
@@ -376,6 +420,7 @@ def _word_setters() -> dict:
                                   lambda w: _write_config_key("voice.voice_chat_mode", w))}
 
 
+@_cfgset_guarded
 def _set_word(rid, params, key, value, session):
     norm, allowed, err, apply = _word_setters()[key]
     raw = norm(value)

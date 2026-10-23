@@ -373,6 +373,44 @@ DANGEROUS_PATTERNS = [
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
     (r'\bhermes\s+' + _GLOBAL_FLAGS + r'gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # `hermes config set` on a security-policy key. config.yaml IS the security
+    # policy and the cache is mtime-keyed, so a write takes effect mid-session
+    # (#81101); config.py refuses these keys without an explicit operator
+    # override, and this pattern additionally gates the terminal path the same
+    # way sed/tee on config.yaml are gated, so even an explicit --force variant
+    # is surfaced to the operator for approval. `hooks.*` / `hooks_auto_accept`
+    # are executable policy (the hook runner executes configured commands via
+    # subprocess.Popen and treats hooks_auto_accept as consent) and belong to
+    # the same class (#104697 review round 7, F2).
+    # ``["']?`` covers the quoted key form the shell strips before the CLI sees
+    # it (``--force "approvals.mode" off``), so quoting cannot slip past the gate.
+    (r'\bhermes\s+' + _GLOBAL_FLAGS + r'config\s+(?:set|unset)\s+(?:--f(?:o(?:r(?:c(?:e)?)?)?)?\s+)?["\']?(?:approvals|security|command_allowlist|hooks_auto_accept|hooks)\b',
+     "hermes config set/unset on a security-policy key (approvals/security/command_allowlist/hooks)"),
+    # Alternate supported entrypoint: ``python -m hermes_cli.main`` reaches the
+    # same config CLI as ``hermes`` (main.py exposes ``if __name__ ==
+    # "__main__"``), so an agent typing the module form must hit the same gate.
+    (r'\bpython(?:3|3\.\d+)?\s+-m\s+hermes_cli\.main\s+' + _GLOBAL_FLAGS + r'config\s+(?:set|unset)\s+(?:--f(?:o(?:r(?:c(?:e)?)?)?)?\s+)?["\']?(?:approvals|security|command_allowlist|hooks_auto_accept|hooks)\b',
+     "python -m hermes_cli.main config set/unset on a security-policy key (approvals/security/command_allowlist/hooks)"),
+    # Prophylactic: the shell spelling agents reach for when they mean the
+    # `/approvals` slash command is `hermes approvals <mode>`. No such argv
+    # subcommand exists today (`hermes approvals` has only `suggest`/`test`;
+    # argparse rejects the form and nothing is written), so this gates the
+    # spelling up front — if a mode-changing argv form is ever added, it must
+    # surface to the operator first, like the config-set forms (#104059).
+    (r'\bhermes\s+' + _GLOBAL_FLAGS + r'approvals\s+(?:manual|smart|off)\b',
+     "hermes approvals mode change (manual/smart/off)"),
+    # `hermes approvals suggest --apply` merges entries into command_allowlist
+    # via tools/approval.save_permanent_allowlist() — direct config.yaml
+    # persistence outside the set_config_value guard — so the terminal gate is
+    # the only surface: an unattended child must not silently grow the
+    # allowlist (#104697 review round 7, F2 inventory).
+    (r'\bhermes\s+' + _GLOBAL_FLAGS + r'approvals\s+suggest\b[^|;&]*--(?:a|ap|app|appl|apply)\b',
+     "hermes approvals suggest --apply on a security-policy key (command_allowlist)"),
+    # Same gate for the alternate entrypoint — the writer cannot block this
+    # write path at all (save_permanent_allowlist persists config.yaml
+    # directly), so a spelling miss here is a silent policy mutation.
+    (r'\bpython(?:3|3\.\d+)?\s+-m\s+hermes_cli\.main\s+' + _GLOBAL_FLAGS + r'approvals\s+suggest\b[^|;&]*--(?:a|ap|app|appl|apply)\b',
+     "python -m hermes_cli.main approvals suggest --apply on a security-policy key (command_allowlist)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context

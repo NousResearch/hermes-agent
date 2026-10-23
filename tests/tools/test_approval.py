@@ -1229,8 +1229,6 @@ class TestQuotedCommandWordVariants:
         variants = list(approval_detection._command_detection_variants('echo `$("echo" rm) -rf ~/.ssh`'))
         assert any("echo `rm -rf ~/.ssh`" in v for v in variants), variants
         assert any("echo `$(echo rm) -rf ~/.ssh`" in v for v in variants), variants
-
-
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy
     work and rewrite shared history. Not covered by rm/chmod patterns.

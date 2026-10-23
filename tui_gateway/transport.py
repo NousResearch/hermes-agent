@@ -59,6 +59,20 @@ def bind_transport(transport: Optional[Transport]):
     return _current_transport.set(transport)
 
 
+# Transports whose provenance is the LIVE gateway process: ``entry.main()`` adds the stdio
+# (possibly sidecar-wrapped) transport after startup, ``ws.handle_ws()`` adds each WSTransport
+# only after a real ``ws.accept()``. Neither entry point exposes a helper — they ``.add()``
+# directly — so a fresh process that merely imports this module (an agent kernel child,
+# `python -c`, a terminal subprocess) starts with an EMPTY set: ``bind_transport(object())``,
+# a hand-constructed ``StdioTransport`` and the importable ``server._stdio_transport`` singleton
+# are all refused by ``_tui_policy_write``'s provenance check (#104697, pinned inverse in
+# tests/tui_gateway/test_approvals_policy_chokepoint.py). Deliberate in-process mutation of
+# this set remains possible and is the disclosed residual — it is the same capability as
+# writing config.yaml directly, which the file-tools deny and execute_code integrity
+# (#113459) guard at the file layer instead.
+_POLICY_WRITE_TRANSPORTS: set = set()
+
+
 def reset_transport(token) -> None:
     _current_transport.reset(token)
 

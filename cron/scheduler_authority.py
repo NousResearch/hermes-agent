@@ -54,7 +54,6 @@ def _lift_pause(job_id, pause):
 
 def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
     from gateway.session_cron import owner_for_home, operation
-    from hermes_cli.gateway_client import connect_gateway
     from hermes_constants import get_hermes_home
     from utils import atomic_json_write
 
@@ -125,8 +124,10 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             delay = min(delay * 2, 2.0)
 
     async def remote():
-        async with connect_gateway() as client:
-            return await observe(lambda op, data: client.rpc('cron.' + op, **data))
+        from cron.scheduler_owner_handover import dial_owner
+        return await dial_owner(lambda client: observe(lambda op, data: client.rpc('cron.' + op, **data)),
+                                job_id=job['id'], request_id=request_id, cancel_event=cancel_event,
+                                submitted=lambda: attempted)
 
     try:
         if owner is not None:

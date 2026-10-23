@@ -1,7 +1,72 @@
 import path from 'path';
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync, appendFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { format } from 'util';
+
+const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
+
+/** ``WHATSAPP_OBSERVER`` → boolean. Opt-in: anything but an affirmative value leaves it off. */
+export function observerEnabled(raw) {
+  return TRUTHY.has(String(raw ?? '').trim().toLowerCase());
+}
+
+/**
+ * One observed message as a single JSON line. Pure: no fs, no clock of its own
+ * (``now`` is injectable so tests pin it).
+ */
+export function observedLine({
+  direction = 'in', chatId, senderId, messageId, text, hasMedia, mediaType,
+}, now = new Date()) {
+  return `${JSON.stringify({
+    ts: now.toISOString(),
+    direction,
+    chatId: chatId || '',
+    sender: senderId || '',
+    messageId: messageId || '',
+    text: text || '',
+    hasMedia: !!hasMedia,
+    mediaType: mediaType || '',
+  })}\n`;
+}
+
+/**
+ * Append a line to the observation log. Creates the directory when missing and
+ * never throws: a logging failure must not take the intake path down with it.
+ */
+export function appendObservedLine(file, line) {
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    appendFileSync(file, line);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Text and media shape of a raw Baileys message, read straight off the payload.
+ *
+ * Deliberately shallow: this runs before the intake gates, on messages the
+ * gates are about to drop, so it must not download media or duplicate
+ * ``extractBridgeEvent``'s full decode. Uncaptioned attachments report their
+ * type with empty text.
+ */
+export function observedContent(messageContent) {
+  const c = messageContent || {};
+  const text = c.conversation
+    || c.extendedTextMessage?.text
+    || c.imageMessage?.caption
+    || c.videoMessage?.caption
+    || c.documentMessage?.caption
+    || '';
+  let mediaType = '';
+  if (c.imageMessage) mediaType = 'image';
+  else if (c.videoMessage) mediaType = c.videoMessage.gifPlayback ? 'gif' : 'video';
+  else if (c.audioMessage || c.pttMessage) mediaType = 'audio';
+  else if (c.documentMessage) mediaType = 'document';
+  else if (c.stickerMessage) mediaType = 'sticker';
+  return { text, hasMedia: !!mediaType, mediaType };
+}
 
 export const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',

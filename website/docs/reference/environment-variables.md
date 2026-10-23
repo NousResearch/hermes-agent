@@ -397,6 +397,8 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `WHATSAPP_HOME_CHANNEL` | Default chat ID for cron / notification delivery. |
 | `WHATSAPP_HOME_CHANNEL_NAME` | Display name for the WhatsApp home channel. |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
+| `WHATSAPP_OBSERVER` | Append one JSON line per inbound/outbound message to an observation log (`true`/`false`, default `false`). Records messages the intake gates **reject** too, because it writes before they run. Writes message text to disk; see [WhatsApp → Message observation](../user-guide/messaging/whatsapp.md#message-observation) |
+| `WHATSAPP_OBSERVER_FILE` | Path of the observation log. Defaults to `observed.jsonl` next to the bridge session dir, so a multiplexed profile writes under its own home |
 | `WHATSAPP_CLOUD_PHONE_NUMBER_ID` | Meta Phone Number ID from the WhatsApp Business Cloud API (15–17 digits; **not** the phone number itself) |
 | `WHATSAPP_CLOUD_ACCESS_TOKEN` | Meta access token (starts with `EAA`); temporary tokens expire after 24h, System User tokens are permanent |
 | `WHATSAPP_CLOUD_APP_SECRET` | 32-char hex app secret used to verify inbound webhook signatures |

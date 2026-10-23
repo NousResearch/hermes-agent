@@ -205,6 +205,43 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ---
 
+## Message observation
+
+The bridge keeps no message archive: the poll queue drains on every request and its
+in-memory store is a bounded cache of 512 recent messages used only for quoted replies
+and polls. A message the intake gates reject leaves even less behind — the `ignored`
+event records the chat, the sender, and a reason, but never the text that was dropped.
+
+Set `WHATSAPP_OBSERVER=true` (or `whatsapp.observer: true` in `config.yaml`) to append one
+JSON line per message to `observed.jsonl`, next to the bridge session:
+
+```json
+{"ts":"2026-10-14T17:06:49.712Z","direction":"in","chatId":"120363001234567890@g.us","sender":"51940397467","messageId":"3EB0...","text":"hello group","hasMedia":false,"mediaType":""}
+```
+
+The line is written **before** the intake gates, so rejected traffic — a non-allowlisted
+group, an unknown DM — is recorded alongside accepted traffic. The observer never replies
+and never dispatches a turn; it is a log, not a channel.
+
+This is opt-in because it writes message content to disk. Only text, captions, and media
+type are recorded; attachments are never downloaded, and the log has no retention policy
+of its own, so rotate `WHATSAPP_OBSERVER_FILE` per your own requirements.
+
+`GET /health` reports where it writes:
+
+```json
+{"gate":{"mode":"bot","dmPolicy":"pairing","groupPolicy":"allowlist",
+  "allowedUsers":["51940397467"],"groupAllowedUsers":["120363001234567890@g.us"],
+  "observer":{"enabled":true,"file":"<session dir>/observed.jsonl"}}}
+```
+
+The `gate` object reports the policy the **running** bridge resolved, which is worth
+comparing against `config.yaml`: the bridge applies `dm_policy` and `group_policy` before
+Python sees a message, so a bridge running a different policy than the config implies
+would otherwise be invisible from outside.
+
+---
+
 ## Session Persistence
 
 The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:

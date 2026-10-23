@@ -156,16 +156,20 @@ export const composerHost = {
    *  Fail-closed like the rest of this surface: an address that resolves to
    *  no live composer returns false and changes nothing. Addressing is the
    *  same as every other verb -- `null` for the active composer, a session
-   *  id for a specific one, `'new'` for the fresh draft. */
-  setSpellcheck: (sessionId: null | string, enabled: boolean): boolean => {
+   *  id for a specific one, `'new'` for the fresh draft.
+   *
+   *  Asynchronous, because the answer depends on whether a mounted composer
+   *  actually claimed the request: a session whose tile is closed resolves to
+   *  a target with no subscriber, and the setting is dropped rather than
+   *  applied. Resolves false in that case, so a plugin can tell "on" from
+   *  "never arrived" -- which a fire-and-forget call could not. */
+  setSpellcheck: (sessionId: null | string, enabled: boolean): Promise<boolean> => {
     const { target } = resolveComposerAddress(sessionId)
 
     if (target === null) {
-      return false
+      return Promise.resolve(false)
     }
 
-    requestComposerSpellcheck(enabled, target)
-
-    return true
+    return requestComposerSpellcheck(enabled, target)
   }
 }

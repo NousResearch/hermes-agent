@@ -64,6 +64,19 @@ const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
 const SPELLCHECK_EVENT = 'hermes:composer-spellcheck'
+const SPELLCHECK_REPLY_EVENT = 'hermes:composer-spellcheck-reply'
+
+interface SpellcheckDetail {
+  enabled: boolean
+  target: ComposerTarget
+  /** Token the addressed surface echoes on {@link SPELLCHECK_REPLY_EVENT}. */
+  token: number
+}
+
+interface SpellcheckReplyDetail {
+  ok: boolean
+  token: number
+}
 const DICTATION_EVENT = 'hermes:composer-dictation'
 const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
 
@@ -698,17 +711,111 @@ export const onComposerDictationRequest = (handler: (target: ComposerTarget) => 
  *
  * The setting is per-surface, like the other verbs on this bus: it addresses
  * ONE composer, so a plugin can spell check the primary composer and leave a
- * tile alone. A request addressed to a surface that is not mounted is
- * dropped.
+ * tile alone.
+ *
+ * ACKED, unlike the other mutations on this bus: the request carries a token
+ * and the addressed surface echoes it, so the caller learns whether the
+ * setting was actually applied. A fire-and-forget dispatch cannot say that --
+ * the event is simply dropped when no surface is subscribed for the target,
+ * so the requester would be told "on" for a composer that never received it.
+ * That matters more here than for the other verbs: the setting is a standing
+ * preference, and a plugin that painted "spell check on" for a composer that
+ * is not mounted has no way to learn the setting was never applied.
+ *
+ * Resolves false when no mounted surface claims the address, or when none
+ * answers within the settle window -- the same fail-closed signal
+ * `setDraft`/`insertText` give.
  */
 export const requestComposerSpellcheck = (
   enabled: boolean,
   target: ComposerTarget | 'active' = 'active'
-) => dispatch<{ enabled: boolean; target: ComposerTarget }>(SPELLCHECK_EVENT, { enabled, target: resolve(target) })
+): Promise<boolean> => {
+  const pending = spellcheckReplies
 
-export const onComposerSpellcheckRequest = (
-  handler: (detail: { enabled: boolean; target: ComposerTarget }) => void
-) => subscribe<{ enabled: boolean; target: ComposerTarget }>(SPELLCHECK_EVENT, handler)
+  if (!pending) {
+    return Promise.resolve(false)
+  }
+
+  const token = ++spellcheckToken
+  const resolvedTarget = resolve(target)
+
+  // The setting is a STANDING PREFERENCE for the surface, not a one-shot
+  // event. A plugin turns spell check on for a session; that session's
+  // composer may not be open yet, and the user may open it later. Recording
+  // the preference against the surface is what makes the setting land then,
+  // instead of being lost with the dropped event.
+  spellcheckDesired.set(resolvedTarget, enabled)
+
+  return new Promise<boolean>(settle => {
+    pending.set(token, settle)
+
+    dispatch<SpellcheckDetail>(SPELLCHECK_EVENT, { enabled, target: resolvedTarget, token })
+
+    // No claimant (unmounted address, mid-teardown) must not strand the
+    // promise: settle false and drop the slot.
+    window.setTimeout(() => {
+      if (pending.get(token) === settle) {
+        pending.delete(token)
+        settle(false)
+      }
+    }, SPELLCHECK_REPLY_TIMEOUT_MS)
+  })
+}
+
+export const onComposerSpellcheckRequest = (handler: (detail: SpellcheckDetail) => void) =>
+  subscribe<SpellcheckDetail>(SPELLCHECK_EVENT, handler)
+
+/**
+ * Subscriber-side ack for {@link requestComposerSpellcheck}: the surface that
+ * applied the setting reports back so the requester's promise settles.
+ */
+export const ackComposerSpellcheck = (token: number | undefined, ok: boolean) => {
+  if (token === undefined || typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(
+    new CustomEvent<SpellcheckReplyDetail>(SPELLCHECK_REPLY_EVENT, { detail: { ok, token } })
+  )
+}
+
+const SPELLCHECK_REPLY_TIMEOUT_MS = 50
+
+let spellcheckToken = 0
+
+/**
+ * The spell-check preference per surface, as last requested.
+ *
+ * Keyed by the RESOLVED target, so `'active'` and an explicit `'main'` land
+ * on the same entry. A surface reads its entry when it mounts, which is how
+ * a request made before the surface existed is not lost.
+ *
+ * This is the composer's own standing setting rather than a plugin's: the
+ * composer keeps spell check on once it has been asked for, the same way it
+ * keeps any other per-surface preference.
+ */
+const spellcheckDesired = new Map<ComposerTarget, boolean>()
+
+/** The spell-check preference last requested for a surface, if any. */
+export const getComposerSpellcheckDesired = (target: ComposerTarget): boolean | undefined =>
+  spellcheckDesired.get(target)
+
+
+
+const spellcheckReplies =
+  typeof window === 'undefined' ? null : new Map<number, (ok: boolean) => void>()
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(SPELLCHECK_REPLY_EVENT, event => {
+    const reply = (event as CustomEvent<SpellcheckReplyDetail>).detail
+    const settle = reply && spellcheckReplies?.get(reply.token)
+
+    if (settle) {
+      spellcheckReplies?.delete(reply.token)
+      settle(reply.ok === true)
+    }
+  })
+}
 
 /** The chat surface inside the zone the pointer is over, if any. Mirrors the
  *  tab verbs' hover-first targeting (`tabTargetGroupId`, #74447): the model

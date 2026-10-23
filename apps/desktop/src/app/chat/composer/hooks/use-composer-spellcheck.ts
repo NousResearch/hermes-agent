@@ -1,6 +1,11 @@
 import { type RefObject, useCallback, useEffect, useRef } from 'react'
 
-import { type ComposerTarget, onComposerSpellcheckRequest } from '../focus'
+import {
+  ackComposerSpellcheck,
+  type ComposerTarget,
+  getComposerSpellcheckDesired,
+  onComposerSpellcheckRequest
+} from '../focus'
 
 interface UseComposerSpellcheckOptions {
   /** This composer's focus-bus target. Only requests addressed to it apply. */
@@ -30,8 +35,8 @@ interface UseComposerSpellcheckOptions {
  * DOM attribute survives re-renders, so this stays correct without a render.
  */
 export function useComposerSpellcheck({ target, editorRef }: UseComposerSpellcheckOptions) {
-  // The last requested state, kept so a request that arrives before the
-  // editable is mounted still applies once it is.
+  // The state last requested for THIS surface. Held in a ref rather than
+  // state because it is applied to the DOM directly, not rendered.
   const enabledRef = useRef(false)
 
   const apply = useCallback(
@@ -49,21 +54,36 @@ export function useComposerSpellcheck({ target, editorRef }: UseComposerSpellche
 
   useEffect(() => {
     const off = onComposerSpellcheckRequest(detail => {
-      if (detail.target === target) {
-        apply(detail.enabled)
+      if (detail.target !== target) {
+        return
       }
+
+      apply(detail.enabled)
+
+      // Acknowledge so the requester learns the setting was applied rather
+      // than dropped. A request for a surface with no mounted subscriber is
+      // never acknowledged, and the requester settles false on its timeout.
+      ackComposerSpellcheck(detail.token, true)
     })
 
     return off
   }, [apply, target])
 
-  // The editable may mount AFTER the request fired (a tile that opens later).
-  // Apply the last requested state whenever the element identity changes.
+  // Apply the requested state when this surface mounts.
+  //
+  // A request can arrive BEFORE the surface exists -- a plugin asks for a
+  // session whose tile is not open yet, and the user opens it later. The
+  // preference is recorded against the surface, so reading it back here is
+  // what makes the setting land rather than being lost.
+  //
+  // This effect runs once per mount: the ref object is stable, so the
+  // dependency never changes, and the state it reads only matters at mount.
+  // A request that arrives after mount is applied by the handler above.
   useEffect(() => {
-    const editor = editorRef.current
+    const desired = getComposerSpellcheckDesired(target)
 
-    if (editor) {
-      editor.spellcheck = enabledRef.current
+    if (desired !== undefined) {
+      apply(desired)
     }
-  }, [editorRef, target])
+  }, [apply, target])
 }

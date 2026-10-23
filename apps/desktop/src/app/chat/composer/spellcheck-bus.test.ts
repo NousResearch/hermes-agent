@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { onComposerSpellcheckRequest, requestComposerSpellcheck } from './focus'
+import {
+  ackComposerSpellcheck,
+  getComposerSpellcheckDesired,
+  onComposerSpellcheckRequest,
+  requestComposerSpellcheck
+} from './focus'
+
+/** Let the bus's deferred dispatch run. */
+const tick = () => new Promise(resolve => setTimeout(resolve, 0))
 
 describe('composer spellcheck bus', () => {
   it('delivers the request to the addressed surface', async () => {
@@ -12,9 +20,7 @@ describe('composer spellcheck bus', () => {
 
     requestComposerSpellcheck(true, 'main')
 
-    // `dispatch` defers to a macrotask so click/keydown handlers settle
-    // first -- the request lands on the next tick.
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await tick()
 
     expect(seen).toHaveLength(1)
     expect(seen[0].enabled).toBe(true)
@@ -32,9 +38,57 @@ describe('composer spellcheck bus', () => {
 
     requestComposerSpellcheck(false, 'main')
 
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await tick()
 
     expect(seen).toEqual([false])
+
+    off()
+  })
+
+  it('resolves true when a surface acknowledges the request', async () => {
+    const off = onComposerSpellcheckRequest(detail => {
+      ackComposerSpellcheck(detail.token, true)
+    })
+
+    await expect(requestComposerSpellcheck(true, 'main')).resolves.toBe(true)
+
+    off()
+  })
+
+  it('resolves false when nothing claims the request', async () => {
+    // No subscriber at all: the request is dropped, and the promise settles
+    // false on its timeout rather than reporting a silent success.
+    await expect(requestComposerSpellcheck(true, 'main')).resolves.toBe(false)
+  })
+
+  it('records the requested state for the surface, so a late mount can read it', async () => {
+    const off = onComposerSpellcheckRequest(() => {})
+
+    await requestComposerSpellcheck(true, 'tile:recorded')
+
+    expect(getComposerSpellcheckDesired('tile:recorded')).toBe(true)
+
+    off()
+  })
+
+  it('records the disabled state as readily as the enabled one', async () => {
+    const off = onComposerSpellcheckRequest(() => {})
+
+    await requestComposerSpellcheck(false, 'tile:disabled')
+
+    expect(getComposerSpellcheckDesired('tile:disabled')).toBe(false)
+
+    off()
+  })
+
+  it('keeps each surface\'s recorded state to itself', async () => {
+    const off = onComposerSpellcheckRequest(() => {})
+
+    await requestComposerSpellcheck(true, 'tile:one')
+    await requestComposerSpellcheck(false, 'tile:two')
+
+    expect(getComposerSpellcheckDesired('tile:one')).toBe(true)
+    expect(getComposerSpellcheckDesired('tile:two')).toBe(false)
 
     off()
   })

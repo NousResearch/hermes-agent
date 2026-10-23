@@ -624,7 +624,7 @@ host.composer: {
   insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
   submit(sessionId: string | null, text: string): boolean
   focus(sessionId: string | null): void
-  setSpellcheck(sessionId: string | null, enabled: boolean): boolean
+  setSpellcheck(sessionId: string | null, enabled: boolean): Promise<boolean>
 }
 ```
 
@@ -675,14 +675,21 @@ inputs cannot, having no dictionary of their own.
 
 ```ts
 // Turn spell check on for the active composer.
-const applied = host.composer.setSpellcheck(null, true)
+const applied = await host.composer.setSpellcheck(null, true)
 ```
 
 Addressing matches the other composer verbs: `null` for the active composer,
 a session id for a specific one, `'new'` for the fresh draft. The setting is
 per-surface, so a plugin can spell check the primary composer and leave a
-tile alone. It returns `false` when no live composer answers for the address
-— fail-closed, like the rest of `host.composer`.
+tile alone.
+
+It resolves `false` when no live composer answers for the address —
+fail-closed, like the rest of `host.composer`. The promise is the point: the
+setting is a standing preference, so a plugin needs to know whether it was
+applied. A session whose tile is closed resolves to a surface with no
+subscriber; the request is dropped and the promise settles `false` rather
+than reporting success for a composer that never received it. A surface that
+is not mounted yet still picks the setting up when it does mount.
 
  
 ### Session rows — decorations + the session list API

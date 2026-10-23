@@ -20,6 +20,7 @@ from dataclasses import field
 from pathlib import Path
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Iterable
 from typing import Mapping
 from typing import Optional
@@ -1689,6 +1690,10 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
             return False
         return canon in allowlist and bool(profile_exists(name))
 
+    # An empty allowlist is a policy misconfiguration, not a foreign/control
+    # plane lane. Keep the health predicate alive so the gateway can report
+    # ready work that this home is refusing to claim.
+    cast(Any, _gated)._dispatch_policy_claims_nothing = not allowlist
     return _gated
 
 
@@ -1726,19 +1731,25 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
         return None
     raw = kanban["dispatch_profiles"]
     if raw is None or (isinstance(raw, str) and not raw.strip()):
-        _kb._log.warning(
-            "kanban: kanban.dispatch_profiles is present but empty — this home "
-            "claims no cards; omit the key to allow any existing profile"
-        )
-        return frozenset()
-    names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
+        names = []
+    elif isinstance(raw, (list, tuple)):
+        names = [str(n) for n in raw]
+    else:
+        names = str(raw).split(",")
     allowed = set()
     for n in names:
         try:
             allowed.add(normalize_profile_name(n))
         except ValueError:
             continue
-    return frozenset(allowed)
+    resolved = frozenset(allowed)
+    if not resolved:
+        _kb._log.warning(
+            "kanban: kanban.dispatch_profiles resolved to [] (present but empty) — "
+            "this home will claim no cards; fix with `hermes config unset "
+            "kanban.dispatch_profiles`"
+        )
+    return resolved
 
 
 def dispatch_profile_allowlist_summary() -> str:
@@ -1772,6 +1783,8 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     profile_exists = _profile_exists_fn()
     if profile_exists is None:
         # Can't introspect — assume spawnable, preserve legacy behavior.
+        return True
+    if getattr(profile_exists, "_dispatch_policy_claims_nothing", False):
         return True
     return any(profile_exists(row["assignee"]) for row in rows)
 

@@ -1266,6 +1266,83 @@ class GatewaySlashCommandsMixin(
 
         return await self._run_in_executor_with_context(_run)
 
+    async def _handle_purge_command(self, event: MessageEvent) -> str:
+        """Handle /purge (alias /wipe) — delete recent Telegram messages in this chat.
+
+        Bot API rules:
+          - deleteMessage only works for messages whose id we know AND that
+            are within the last 48 hours. The Telegram adapter buffers every
+            incoming/outgoing message id it sees from this point on, so we
+            can only delete ids we've captured (no retroactive cleanup).
+          - Telegram rate-limits deleteMessage (~30 deletes/sec across chats,
+            ~1/sec per chat). We add a small sleep between calls so a long
+            purge doesn't trip flood control.
+
+        Returns a status string the gateway renders to the chat.
+        """
+        from gateway.config import Platform
+
+        if event.source.platform != Platform.TELEGRAM:
+            return "🧹 /purge es solo para Telegram (deleteMessage del Bot API)."
+
+        chat_id = str(event.source.chat_id)
+        adapter = self._adapter_for_source(event.source)
+        buf = getattr(adapter, "_purge_buffer", None) if adapter else None
+        if buf is None:
+            return "🧹 /purge no encontró el buffer de Telegram (adapter no soporta esta función)."
+
+        entries = buf.snapshot(chat_id)
+        if not entries:
+            return "🧹 Nada para borrar: el buffer está vacío o todos los mensajes tienen más de 48h."
+
+        # Use the adapter's delete_message (non-fatal on failure).
+        if not hasattr(adapter, "delete_message"):
+            return "🧹 El adapter de Telegram no expone delete_message; no puedo continuar."
+
+        ok = 0
+        failed = 0
+        # Throttle to ~25 deletes/sec to stay well under Bot API flood limits.
+        # Telegram's global cap is ~30/sec for bulk operations; per-chat
+        # limits are tighter but this is a conservative middle ground.
+        throttle_seconds = float(os.getenv("HERMES_PURGE_THROTTLE_SECONDS", "0.04"))
+        for entry in entries:
+            mid = entry.get("message_id")
+            if not mid:
+                continue
+            try:
+                deleted = await adapter.delete_message(chat_id, mid)
+                if deleted:
+                    ok += 1
+                else:
+                    # False can mean "too old" or "no permission"; both are
+                    # non-fatal. Count as failed so the user sees the gap.
+                    failed += 1
+            except Exception as exc:
+                failed += 1
+                logger.debug(
+                    "[%s] /purge delete_message(%s, %s) failed: %s",
+                    getattr(adapter, "name", "telegram"),
+                    chat_id,
+                    mid,
+                    exc,
+                )
+            if throttle_seconds > 0 and (ok + failed) < len(entries):
+                await asyncio.sleep(throttle_seconds)
+
+        # Drop the buffer for this chat so the next /purge starts clean.
+        # (We deliberately keep ids that failed to delete in case the user
+        # wants to retry; ``clear`` only happens when nothing failed.)
+        if failed == 0:
+            buf.clear(chat_id)
+            verdict = f"🧹 Borré {ok} mensaje{'s' if ok != 1 else ''} de este chat."
+        else:
+            verdict = (
+                f"🧹 Borré {ok} mensaje{'s' if ok != 1 else ''}. "
+                f"{failed} fallaron (probablemente fuera de la ventana de 48h "
+                f"o sin permiso); quedan en el buffer para reintentar."
+            )
+        return verdict
+
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
         protect privacy; ``hermes debug share`` from the CLI does full uploads."""

@@ -93,7 +93,7 @@ jobs:
           ref: ${{ inputs.commit || github.sha }}
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes

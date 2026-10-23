@@ -48,6 +48,19 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_STATE_KINDS = TERMINAL_KINDS + ("claimed", "reclaimed", "promoted", "promoted_manual", "specified", "review_reopened", "scheduled")
+
+# Model guidance supplements the sender's superseded-event check. Actions
+# still require inspecting the live task; notification text cannot grant them.
+_KANBAN_WAKE_DECISION_CONTRACT = (
+    "Treat this event as a notification, not authoritative current state. "
+    "Read the exact task's authoritative current state once (re-read only on "
+    "read failure or observed change); do not poll or rerun unchanged checks. "
+    "If a newer transition supersedes this event, discard it. Act only if "
+    "the live task requires a decision from its creator, and reuse evidence "
+    "only while the task and reviewed work are unchanged. Otherwise make no mutation, "
+    "comment, or follow-up task and stop."
+)
 
 
 def diagnostic_event(ev) -> bool:
@@ -538,6 +551,23 @@ class _KanbanNotification:
     async def unsub(self) -> None:
         await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
 
+    async def _current_events(self, events: list) -> list:
+        """Drop attention superseded by a later task transition, even in the same second."""
+        def read():
+            with _pin_first():
+                conn = _kbc().connect(board=self.board_slug)
+                try:
+                    placeholders = ",".join("?" for _ in _STATE_KINDS)
+                    row = conn.execute(
+                        f"SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind IN ({placeholders})",
+                        (self.task_id, *_STATE_KINDS),
+                    ).fetchone()
+                    latest = row[0] or 0
+                    return [ev for ev in events if ev.kind not in _WAKE_KINDS or ev.id >= latest]
+                finally:
+                    conn.close()
+        return await _to_thread_process_service(read)
+
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
 
@@ -599,7 +629,7 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
-        self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
+        self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance") + "\n" + _KANBAN_WAKE_DECISION_CONTRACT
 
     def _log_woke(self) -> None:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
@@ -681,10 +711,16 @@ class _KanbanNotification:
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
         _send_res = None
+        superseded = False
         async def send_ping():
-            nonlocal _send_res
+            nonlocal _send_res, superseded
+            if not await self._current_events([ev]):
+                superseded = True
+                return
             _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
         if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
+            return False
+        if superseded:
             return False
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the
@@ -778,25 +814,24 @@ class _KanbanNotification:
                 [ev for ev in original_events if diagnostic_event(ev)],
                 [ev for ev in original_events if not diagnostic_event(ev)],
             ])
-            wake_payloads = []
-            for events in wake_groups:
-                if not events:
-                    continue
-                self.d = {**self.d, "events": events}
-                self.wake_handoff = self.wake_review_detail = ""
-                for ev in events:
-                    self.format_event(ev)
-                self.build_wake_text()
-                if self.wake_kinds:
-                    wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
-            self.d = {**self.d, "events": original_events}
+            wake_payloads = [events for events in wake_groups if self.wake_agent and any(ev.kind in _WAKE_KINDS for ev in events)]
         is_push = self.is_push_adapter
         from gateway.wake import WakeNotAccepted
 
         # A requested wake is required even when its passive ping already landed.
         if wake_payloads:
             try:
-                for self.synth, self.wake_diagnostic, self.wake_kinds in wake_payloads:
+                for events in wake_payloads:
+                    events = await self._current_events([ev for ev in events if ev.kind in _WAKE_KINDS])
+                    if not events:
+                        continue
+                    async with self._owner_scope():
+                        self.d = {**self.d, "events": events}
+                        self.wake_handoff = self.wake_review_detail = ""
+                        for ev in events:
+                            self.format_event(ev)
+                        self.build_wake_text()
+                        self.d = {**self.d, "events": original_events}
                     await self.wake()
                 self.clear_failures()
             except WakeNotAccepted:

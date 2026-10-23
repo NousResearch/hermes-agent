@@ -17,13 +17,61 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 
 const ID = 'ai-usage-meter'
 const ALERT_THRESHOLD = 90
 const ALERT_STORAGE_KEY = `${ID}:active-alerts`
 const ORDER_STORAGE_KEY = `${ID}:provider-order`
 const EXPECTED_BACKEND_VERSION = '0.2.0'
+const MAX_RESTART_WAIT_MS = 20_000
+const POLL_REQUEST_TIMEOUT_MS = 4_000
+
+const COMPACT_FORMATTER = new Intl.NumberFormat(undefined, {
+  notation: 'compact',
+  maximumFractionDigits: 1
+})
+
+const MONEY_FORMATTER = new Intl.NumberFormat(undefined, {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 4
+})
+
+const FALLBACK_STORE = {
+  get: () => undefined,
+  getValue: () => undefined,
+  subscribe: () => () => {}
+}
+
+let rest
+let sharedRefreshRevision = 0
+let cachedUsageData = null
+const cacheListeners = new Set()
+
+function publishUsageData(nextData) {
+  if (!nextData || typeof nextData !== 'object') return
+  cachedUsageData = nextData
+  cacheListeners.forEach(listener => {
+    try {
+      listener(nextData)
+    } catch (err) {
+      console.warn('Cache listener error', err)
+    }
+  })
+}
+
+function useCachedUsageData() {
+  const [snapshot, setSnapshot] = useState(() => cachedUsageData)
+  useEffect(() => {
+    setSnapshot(cachedUsageData)
+    cacheListeners.add(setSnapshot)
+    return () => {
+      cacheListeners.delete(setSnapshot)
+    }
+  }, [])
+  return snapshot
+}
 
 const palette = {
   card: 'linear-gradient(135deg, #25262c 0%, #1c1d22 55%, #18191d 100%)',
@@ -45,17 +93,110 @@ const palette = {
   purple: 'linear-gradient(90deg, #a78bfa 0%, #c084fc 52%, #e879f9 100%)'
 }
 
-let rest
+function safeRest(path) {
+  if (typeof rest !== 'function') {
+    return Promise.reject(new Error('Plugin REST client is not initialized yet.'))
+  }
+  return rest(path)
+}
+
+function withTimeout(promise, ms) {
+  let timerId
+  const timeout = new Promise((_, reject) => {
+    timerId = setTimeout(() => reject(new Error(`Request timed out after ${ms}ms`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timerId))
+}
+
+function safeNotify(payload) {
+  try {
+    host?.notify?.(payload)
+  } catch (err) {
+    console.warn('Notification failed', err)
+  }
+}
+
+function safeNavigate(path) {
+  try {
+    host?.navigate?.(path)
+  } catch (err) {
+    console.warn('Navigation failed', err)
+  }
+}
 
 function backendNeedsRestart(data) {
-  return data?.backend_version !== EXPECTED_BACKEND_VERSION
+  return Boolean(
+    typeof data?.backend_version === 'string' &&
+    data.backend_version.trim() !== '' &&
+    data.backend_version !== EXPECTED_BACKEND_VERSION
+  )
+}
+
+function toFiniteNumber(value) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
+    return null
+  }
+  const num = Number(value)
+  return Number.isFinite(num) ? num : null
+}
+
+function toArray(value) {
+  if (Array.isArray(value)) return value
+  if (typeof value === 'string' && value.trim()) return [value]
+  return []
+}
+
+function toDisplayString(value) {
+  if (typeof value === 'string') return value
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'object') {
+    return String(value.message || value.detail || value.error || JSON.stringify(value))
+  }
+  return String(value)
+}
+
+function truncateText(value, maxLength = 240) {
+  const str = toDisplayString(value)
+  return str.length > maxLength ? `${str.slice(0, maxLength)}…` : str
+}
+
+function getProviderId(provider) {
+  const raw = provider?.id ?? provider?.name
+  if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
+    return String(raw).trim()
+  }
+  return `provider:${toDisplayString(provider?.source || 'unknown')}:${toDisplayString(provider?.plan || 'default')}`
+}
+
+function loadSavedOrder() {
+  try {
+    const saved = globalThis.localStorage?.getItem(ORDER_STORAGE_KEY)
+    if (!saved) return []
+    const parsed = JSON.parse(saved)
+    if (!Array.isArray(parsed)) return []
+    return [...new Set(parsed.filter(item => typeof item === 'string' && item.trim() !== ''))]
+  } catch (err) {
+    console.warn('Failed to parse provider order', err)
+    return []
+  }
+}
+
+function saveOrderToStorage(order) {
+  try {
+    globalThis.localStorage?.setItem(ORDER_STORAGE_KEY, JSON.stringify(order))
+  } catch (err) {
+    console.warn('Failed to save provider order', err)
+  }
 }
 
 const styles = {
   page: {
     height: '100%',
-    overflow: 'hidden',
+    maxHeight: 'calc(100vh - 24px)',
+    overflowY: 'auto',
+    overflowX: 'hidden',
     padding: '12px',
+    boxSizing: 'border-box',
     color: palette.text
   },
   shell: {
@@ -63,18 +204,25 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     gap: '10px',
-    maxHeight: 'calc(100vh - 32px)',
-    overflow: 'hidden'
+    paddingBottom: '20px'
   },
   header: {
     display: 'flex',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: '10px',
-    flexWrap: 'wrap'
+    flexWrap: 'wrap',
+    flexShrink: 0
   },
   title: { margin: 0, fontSize: '20px', lineHeight: 1.2, fontWeight: 700, letterSpacing: '-0.02em' },
   controls: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
+  statusPanel: {
+    padding: '10px 14px',
+    borderRadius: '12px',
+    background: palette.panel,
+    border: `1px solid ${palette.border}`,
+    flexShrink: 0
+  },
   card: {
     border: `1px solid ${palette.border}`,
     borderRadius: '18px',
@@ -99,7 +247,7 @@ const styles = {
   muted: { color: palette.muted, fontSize: '11px' },
   grid: {
     display: 'grid',
-    gridAutoRows: '1fr',
+    gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
     gap: '10px',
     alignItems: 'stretch'
   },
@@ -107,7 +255,8 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     gap: '8px',
-    minHeight: '160px'
+    minHeight: '160px',
+    flex: 1
   },
   window: {
     display: 'flex',
@@ -134,7 +283,7 @@ const styles = {
     flexDirection: 'column',
     gap: '2px',
     paddingTop: '6px',
-    borderTop: `1px solid rgba(255,255,255,0.06)`,
+    borderTop: '1px solid rgba(255,255,255,0.06)',
     marginTop: 'auto'
   },
   modelRows: {
@@ -155,6 +304,7 @@ const styles = {
   },
   unavailable: {
     minHeight: '146px',
+    flex: 1,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -163,40 +313,46 @@ const styles = {
     borderRadius: '14px',
     color: palette.muted,
     fontSize: '11px',
-    textAlign: 'center'
+    textAlign: 'center',
+    boxSizing: 'border-box'
   },
   error: {
     border: '1px solid rgba(244, 63, 94, 0.55)',
     borderRadius: '10px',
     padding: '10px 12px',
     color: '#fb7185',
-    fontSize: '12px'
+    fontSize: '12px',
+    wordBreak: 'break-word',
+    flexShrink: 0
   }
 }
 
 function compactNumber(value) {
-  const number = Number(value || 0)
-  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(number)
+  const safe = toFiniteNumber(value) ?? 0
+  return COMPACT_FORMATTER.format(safe)
 }
 
 function money(value) {
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 4
-  }).format(Number(value || 0))
+  const safe = toFiniteNumber(value) ?? 0
+  return MONEY_FORMATTER.format(safe)
 }
 
 function localTime(value) {
-  if (!value) return 'No reset reported'
-  const date = new Date(value)
+  if (value === null || value === undefined || value === '') return 'No reset reported'
+  let parsedInput = value
+  if (typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()))) {
+    const num = Number(value)
+    if (Number.isFinite(num)) {
+      parsedInput = num > 1e9 && num < 1e11 ? num * 1000 : num
+    }
+  }
+  const date = new Date(parsedInput)
   return Number.isNaN(date.getTime()) ? 'Reset time unavailable' : date.toLocaleString()
 }
 
 function Gauge({ percent, scheme = 'limeCyan' }) {
-  const safe = typeof percent === 'number' && Number.isFinite(percent)
-    ? Math.max(0, Math.min(100, percent))
-    : 0
+  const numeric = toFiniteNumber(percent)
+  const safe = numeric !== null ? Math.max(0, Math.min(100, numeric)) : 0
   const resolvedScheme = safe >= ALERT_THRESHOLD ? 'rose' : scheme
   const glow = resolvedScheme === 'rose'
     ? '0 0 12px rgba(244, 63, 94, 0.55)'
@@ -214,7 +370,7 @@ function Gauge({ percent, scheme = 'limeCyan' }) {
         width: `${safe}%`,
         height: '100%',
         borderRadius: '999px',
-        background: palette[resolvedScheme],
+        background: palette[resolvedScheme] || palette.limeCyan,
         boxShadow: glow,
         transition: 'width 240ms ease'
       }
@@ -223,7 +379,8 @@ function Gauge({ percent, scheme = 'limeCyan' }) {
 }
 
 function SourceBadge({ value }) {
-  const unavailable = value === 'UNAVAILABLE'
+  const label = truncateText(value, 32) || 'UNKNOWN'
+  const unavailable = label === 'UNAVAILABLE'
   return jsx(Badge, {
     variant: 'secondary',
     style: {
@@ -231,13 +388,21 @@ function SourceBadge({ value }) {
       background: unavailable ? 'rgba(244, 63, 94, 0.12)' : palette.panel,
       border: `1px solid ${unavailable ? 'rgba(244, 63, 94, 0.24)' : palette.border}`
     },
-    children: value
+    children: label
   })
 }
 
 function UsageWindow({ window, scheme }) {
-  const used = window.used_percent
-  const remaining = window.remaining_percent
+  if (!window) return null
+  const label = truncateText(window.label, 80) || 'Quota'
+  const used = toFiniteNumber(window.used_percent)
+  const rawRemaining = toFiniteNumber(window.remaining_percent)
+  const remaining = rawRemaining !== null
+    ? rawRemaining
+    : used !== null
+      ? Math.max(0, Math.min(100, 100 - used))
+      : null
+
   return jsxs('div', {
     style: styles.window,
     children: [
@@ -246,12 +411,12 @@ function UsageWindow({ window, scheme }) {
         children: [
           jsx('strong', {
             style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12px' },
-            title: window.label,
-            children: window.label
+            title: label,
+            children: label
           }),
           jsx('span', {
             style: { ...styles.muted, flexShrink: 0, whiteSpace: 'nowrap' },
-            children: typeof used === 'number' ? `${used.toFixed(1)}% used` : 'Usage unavailable'
+            children: used !== null ? `${used.toFixed(1)}% used` : 'Usage unavailable'
           })
         ]
       }),
@@ -259,35 +424,44 @@ function UsageWindow({ window, scheme }) {
       jsx('div', {
         style: { ...styles.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
         title: [
-          typeof remaining === 'number' ? `${remaining.toFixed(1)}% remaining` : 'Remaining unavailable',
+          remaining !== null ? `${remaining.toFixed(1)}% remaining` : 'Remaining unavailable',
           localTime(window.reset_at),
-          window.detail,
-          `Scope: ${window.scope}`
+          truncateText(window.detail, 160),
+          window.scope ? `Scope: ${truncateText(window.scope, 40)}` : null
         ].filter(Boolean).join(' • '),
-        children: `${typeof remaining === 'number' ? `${remaining.toFixed(1)}% left` : 'Remaining unavailable'} • ${localTime(window.reset_at)}`
+        children: `${remaining !== null ? `${remaining.toFixed(1)}% left` : 'Remaining unavailable'} • ${localTime(window.reset_at)}`
       })
     ]
   })
 }
 
 function ModelRow({ model }) {
-  const costLabel = model.cost_source === 'UNAVAILABLE'
+  if (!model) return null
+  const modelName = truncateText(model.name, 120) || 'Unknown model'
+  const costSource = typeof model.cost_source === 'string' && model.cost_source.trim()
+    ? model.cost_source.trim()
+    : 'UNAVAILABLE'
+  const costLabel = costSource === 'UNAVAILABLE'
     ? 'No cost recorded'
-    : `${money(model.display_cost)} ${model.cost_source.toLowerCase()}`
+    : `${money(model.display_cost)} ${costSource.toLowerCase()}`
   const metadata = model.api_metadata
-  const metadataLabel = metadata
-    ? `${compactNumber(metadata.input_token_limit)} input • ${compactNumber(metadata.output_token_limit)} output`
+  const inputLimit = toFiniteNumber(metadata?.input_token_limit)
+  const outputLimit = toFiniteNumber(metadata?.output_token_limit)
+  const metadataLabel = (inputLimit !== null && inputLimit > 0) || (outputLimit !== null && outputLimit > 0)
+    ? `${compactNumber(inputLimit)} input • ${compactNumber(outputLimit)} output`
     : null
+  const matchedModels = toArray(model.matched_models).map(item => truncateText(item, 80)).filter(Boolean)
+
   return jsxs('div', {
-    style: { ...styles.modelRow, minHeight: metadata ? '52px' : styles.modelRow.minHeight },
+    style: { ...styles.modelRow, minHeight: metadataLabel ? '52px' : styles.modelRow.minHeight },
     children: [
       jsxs('div', {
         style: { minWidth: 0, overflow: 'hidden' },
-        title: [model.name, metadata?.display_name, ...model.matched_models].filter(Boolean).join(' • '),
+        title: [modelName, truncateText(metadata?.display_name, 80), ...matchedModels].filter(Boolean).join(' • '),
         children: [
           jsx('div', {
             style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 },
-            children: model.name
+            children: modelName
           }),
           metadataLabel
             ? jsx('div', {
@@ -306,16 +480,21 @@ function ModelRow({ model }) {
   })
 }
 
-function ProviderCard({ provider, onMoveLeft, onMoveRight }) {
+function ProviderCard({ provider, onMoveLeft, onMoveRight, isFirst, isLast }) {
   if (!provider) return null
   const scheme = provider.id === 'openai-codex' ? 'purple' : 'limeCyan'
-  const visibleModels = [...(provider?.models || [])]
-    .filter(model => Number(model.total_tokens || 0) > 0)
+  const visibleModels = toArray(provider.models)
+    .filter(model => model && (toFiniteNumber(model.total_tokens) ?? 0) > 0)
     .sort((left, right) =>
-      Number(right.total_tokens || 0) - Number(left.total_tokens || 0) ||
+      ((toFiniteNumber(right.total_tokens) ?? 0) - (toFiniteNumber(left.total_tokens) ?? 0)) ||
       String(left.name || '').localeCompare(String(right.name || ''))
     )
     .slice(0, 3)
+
+  const windows = toArray(provider.windows).filter(Boolean)
+  const details = toArray(provider.details).map(item => truncateText(item, 160)).filter(Boolean)
+  const providerName = truncateText(provider.name || provider.id, 80) || 'Unknown Provider'
+
   return jsxs('section', {
     style: styles.card,
     children: [
@@ -328,21 +507,39 @@ function ProviderCard({ provider, onMoveLeft, onMoveRight }) {
               jsx(Button, {
                 size: 'sm',
                 variant: 'ghost',
-                style: { padding: '2px 4px', fontSize: '10px', color: palette.muted },
+                disabled: isFirst,
+                style: {
+                  padding: '2px 4px',
+                  fontSize: '10px',
+                  color: palette.muted,
+                  opacity: isFirst ? 0.35 : 1
+                },
                 onClick: onMoveLeft,
                 children: '←'
               }),
               jsxs('div', {
                 style: { display: 'flex', flexDirection: 'column', minWidth: 0 },
                 children: [
-                  jsx('h2', { style: { ...styles.cardTitle, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: provider.name }),
-                  provider.plan ? jsx('div', { style: styles.muted, children: `Provider plan: ${provider.plan}` }) : null
+                  jsx('h2', {
+                    style: { ...styles.cardTitle, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                    title: providerName,
+                    children: providerName
+                  }),
+                  provider.plan
+                    ? jsx('div', { style: styles.muted, children: `Provider plan: ${truncateText(provider.plan, 60)}` })
+                    : null
                 ]
               }),
               jsx(Button, {
                 size: 'sm',
                 variant: 'ghost',
-                style: { padding: '2px 4px', fontSize: '10px', color: palette.muted },
+                disabled: isLast,
+                style: {
+                  padding: '2px 4px',
+                  fontSize: '10px',
+                  color: palette.muted,
+                  opacity: isLast ? 0.35 : 1
+                },
                 onClick: onMoveRight,
                 children: '→'
               })
@@ -354,8 +551,14 @@ function ProviderCard({ provider, onMoveLeft, onMoveRight }) {
       jsxs('div', {
         style: styles.quotaSection,
         children: [
-          provider?.windows?.length
-            ? (provider.windows || []).map((window, index) => jsx(UsageWindow, { window, scheme, key: `${window.label}-${index}` }))
+          windows.length
+            ? windows.map((window, index) =>
+                jsx(UsageWindow, {
+                  window,
+                  scheme,
+                  key: `${toDisplayString(window.label) || 'window'}-${index}`
+                })
+              )
             : jsx('div', {
                 style: provider.available
                   ? {
@@ -365,13 +568,13 @@ function ProviderCard({ provider, onMoveLeft, onMoveRight }) {
                       border: '1px solid rgba(45, 212, 191, 0.22)'
                     }
                   : styles.unavailable,
-                children: provider.unavailable_reason || 'No account limit was returned by this provider.'
+                children: truncateText(provider.unavailable_reason, 200) || 'No account limit was returned by this provider.'
               }),
-          provider.details?.length
+          details.length
             ? jsx('div', {
                 style: { ...styles.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-                title: provider.details.join(' • '),
-                children: provider.details.join(' • ')
+                title: details.join(' • '),
+                children: details.join(' • ')
               })
             : null
         ]
@@ -386,7 +589,12 @@ function ProviderCard({ provider, onMoveLeft, onMoveRight }) {
           jsx('div', {
             style: styles.modelRows,
             children: visibleModels.length
-              ? visibleModels.map(model => jsx(ModelRow, { model, key: model.name }))
+              ? visibleModels.map((model, index) =>
+                  jsx(ModelRow, {
+                    model,
+                    key: `${toDisplayString(model.name) || 'model'}-${index}`
+                  })
+                )
               : jsx('div', {
                   style: { ...styles.muted, padding: '6px 0 2px', fontSize: '9px' },
                   children: 'No token usage in the last 7 days.'
@@ -399,45 +607,66 @@ function ProviderCard({ provider, onMoveLeft, onMoveRight }) {
 }
 
 function UsagePage() {
-  const [refreshRevision, setRefreshRevision] = useState(0)
-  const [providerOrder, setProviderOrder] = useState([])
+  const [refreshRevision, setRefreshRevision] = useState(() => sharedRefreshRevision)
+  const [providerOrder, setProviderOrder] = useState(() => loadSavedOrder())
   const [isRestarting, setIsRestarting] = useState(false)
   const [restartWarningOpen, setRestartWarningOpen] = useState(false)
-  const query = useQuery({
-    queryKey: [ID, 'usage', 30, refreshRevision],
-    queryFn: () => rest(`/usage?days=30&refresh=${refreshRevision > 0 ? 'true' : 'false'}`)
-  })
+  const sharedCache = useCachedUsageData()
+  const pollRef = useRef(null)
+  const mountedRef = useRef(true)
 
-  const data = query.data || { providers: [], errors: [], windows: [] }
+  const stopPolling = () => {
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
 
   useEffect(() => {
-    if (query.data && (data.providers || []).length > 0) {
-      try {
-        const saved = globalThis.localStorage?.getItem(ORDER_STORAGE_KEY)
-        if (saved) {
-          setProviderOrder(JSON.parse(saved))
-        }
-      } catch (e) {
-        console.error('Failed to parse provider order', e)
-      }
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      stopPolling()
+    }
+  }, [])
+
+  const query = useQuery({
+    queryKey: [ID, 'usage', 30, refreshRevision],
+    queryFn: async () => {
+      const result = await safeRest(`/usage?days=30&refresh=${refreshRevision > 0 ? 'true' : 'false'}`)
+      publishUsageData(result)
+      return result
+    }
+  })
+
+  useEffect(() => {
+    if (query.data && typeof query.data === 'object') {
+      publishUsageData(query.data)
     }
   }, [query.data])
 
-  const sortedProviders = useMemo(() => {
-    const providers = data.providers || []
-    if (!providers.length) return []
-    if (!providerOrder || !providerOrder.length) return providers
+  const activeCache = query.data || sharedCache
+  const data = activeCache || { providers: [], errors: [], windows: [] }
+  const rawProviders = useMemo(
+    () => toArray(data.providers).filter(Boolean),
+    [data.providers]
+  )
 
-    return [...providers].sort((a, b) => {
-      if (!a || !b) return 0
-      const idxA = providerOrder.indexOf(a.id)
-      const idxB = providerOrder.indexOf(b.id)
+  const sortedProviders = useMemo(() => {
+    if (!rawProviders.length) return []
+    if (!Array.isArray(providerOrder) || !providerOrder.length) return rawProviders
+
+    return [...rawProviders].sort((a, b) => {
+      const idA = getProviderId(a)
+      const idB = getProviderId(b)
+      const idxA = providerOrder.indexOf(idA)
+      const idxB = providerOrder.indexOf(idB)
       if (idxA === -1 && idxB === -1) return 0
       if (idxA === -1) return 1
       if (idxB === -1) return -1
       return idxA - idxB
     })
-  }, [data.providers, providerOrder])
+  }, [rawProviders, providerOrder])
 
   useEffect(() => {
     if (isRestarting && query.data && !query.isLoading) {
@@ -445,10 +674,10 @@ function UsagePage() {
     }
   }, [isRestarting, query.data, query.isLoading])
 
-  if (query.isLoading) {
+  if (query.isLoading && !activeCache) {
     return jsx('div', { style: styles.page, children: jsx(EmptyState, { title: 'Loading usage data' }) })
   }
-  if (query.isError) {
+  if (query.isError && !activeCache) {
     return jsx('div', {
       style: styles.page,
       children: jsx(ErrorState, {
@@ -458,30 +687,22 @@ function UsagePage() {
     })
   }
 
+  const bumpRefreshRevision = () => {
+    sharedRefreshRevision += 1
+    setRefreshRevision(sharedRefreshRevision)
+  }
+
   const updateOrder = (newOrder) => {
-    setProviderOrder(newOrder)
-    globalThis.localStorage?.setItem(ORDER_STORAGE_KEY, JSON.stringify(newOrder))
+    const cleanOrder = [...new Set(newOrder.filter(Boolean))]
+    setProviderOrder(cleanOrder)
+    saveOrderToStorage(cleanOrder)
   }
-  const moveLeft = (id) => {
-    const order = providerOrder.length ? [...providerOrder] : sortedProviders.map(p => p.id)
-    const idx = order.indexOf(id)
-    if (idx === -1) {
-      updateOrder([id, ...order])
-      return
-    }
-    if (idx <= 0) return
-    ;[order[idx], order[idx - 1]] = [order[idx - 1], order[idx]]
-    updateOrder(order)
-  }
-  const moveRight = (id) => {
-    const order = providerOrder.length ? [...providerOrder] : sortedProviders.map(p => p.id)
-    const idx = order.indexOf(id)
-    if (idx === -1) {
-      updateOrder([...order, id])
-      return
-    }
-    if (idx >= order.length - 1) return
-    ;[order[idx], order[idx + 1]] = [order[idx + 1], order[idx]]
+
+  const moveByIndex = (fromIndex, delta) => {
+    const order = sortedProviders.map(p => getProviderId(p))
+    const toIndex = fromIndex + delta
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= order.length) return
+    ;[order[fromIndex], order[toIndex]] = [order[toIndex], order[fromIndex]]
     updateOrder(order)
   }
 
@@ -490,41 +711,74 @@ function UsagePage() {
       setRestartWarningOpen(true)
       return
     }
-    setRefreshRevision(value => value + 1)
+    bumpRefreshRevision()
   }
+
   const restartGatewayAndRefresh = async () => {
-    if (typeof host.restartGateway !== 'function') {
-      throw new Error('Gateway restart is unavailable in this Hermes Desktop version.')
-    }
-    setIsRestarting(true)
-    setRestartWarningOpen(false)
-    try {
-      await host.restartGateway()
-    } catch (e) {
-      console.log('Gateway is restarting...')
+    if (typeof host?.restartGateway !== 'function') {
+      safeNotify({
+        kind: 'error',
+        title: 'Gateway restart unavailable',
+        message: 'Gateway restart is unavailable in this Hermes Desktop version.'
+      })
+      setRestartWarningOpen(false)
+      return
     }
 
-    let attempts = 0
-    const poll = setInterval(async () => {
-      attempts++
+    stopPolling()
+    setIsRestarting(true)
+    setRestartWarningOpen(false)
+
+    try {
+      await host.restartGateway()
+    } catch (err) {
+      console.info('Gateway restart initiated', err)
+    }
+
+    if (!mountedRef.current) return
+
+    const startedAt = Date.now()
+    let inFlight = false
+
+    pollRef.current = setInterval(async () => {
+      if (!mountedRef.current) return
+      if (Date.now() - startedAt >= MAX_RESTART_WAIT_MS) {
+        stopPolling()
+        setIsRestarting(false)
+        safeNotify({
+          kind: 'error',
+          title: 'Gateway reconnect timed out',
+          message: 'Hermes Gateway did not respond in time. Please try refreshing again.'
+        })
+        return
+      }
+      if (inFlight) return
+      inFlight = true
+
       try {
-        const res = await rest('/usage?days=30&refresh=true')
-        if (res) {
-          clearInterval(poll)
-          setRefreshRevision(value => value + 1)
+        const res = await withTimeout(safeRest('/usage?days=30&refresh=false'), POLL_REQUEST_TIMEOUT_MS)
+        if (!mountedRef.current) return
+        if (res && (!res.backend_version || res.backend_version === EXPECTED_BACKEND_VERSION)) {
+          stopPolling()
+          publishUsageData(res)
+          setIsRestarting(false)
+          bumpRefreshRevision()
         }
-      } catch (e) {
-        if (attempts > 10) {
-          clearInterval(poll)
-          console.error('Gateway failed to reconnect in time.')
-        }
+      } catch {
+        // Expected while gateway is restarting
+      } finally {
+        inFlight = false
       }
     }, 1000)
   }
 
+  const errorList = toArray(data.errors).map(item => truncateText(item, 300)).filter(Boolean)
+  const isScanning = query.isFetching || query.isLoading || isRestarting
+
   return jsxs('div', {
     style: styles.page,
     children: [
+      jsx('style', { children: palette.keyframes }),
       jsxs('main', {
         style: styles.shell,
         children: [
@@ -532,31 +786,71 @@ function UsagePage() {
             style: styles.header,
             children: [
               jsx('h1', { style: styles.title, children: 'AI Usage Meter' }),
-              jsxs('div', {
+              jsx('div', {
                 style: styles.controls,
-                children: [
-                  jsx(Button, {
-                    size: 'sm',
-                    variant: 'outline',
-                    style: {
-                      color: '#d4d4d8',
-                      background: palette.panel,
-                      borderColor: palette.border,
-                      fontSize: '11px',
-                      padding: '3px 8px'
-                    },
-                    disabled: query.isFetching,
-                    onClick: refreshProviders,
-                    children: query.isFetching ? 'Scanning...' : 'Refresh'
-                  })
-                ]
+                children: jsx(Button, {
+                  size: 'sm',
+                  variant: 'outline',
+                  style: {
+                    color: '#d4d4d8',
+                    background: palette.panel,
+                    borderColor: palette.border,
+                    fontSize: '11px',
+                    padding: '3px 8px'
+                  },
+                  disabled: isScanning,
+                  onClick: refreshProviders,
+                  children: isScanning ? 'Scanning...' : 'Refresh'
+                })
               })
             ]
           }),
-          data.errors?.length
+          jsxs('div', {
+            style: styles.statusPanel,
+            children: [
+              jsx('div', {
+                style: {
+                  fontSize: '10px',
+                  fontWeight: 700,
+                  color: '#d4d4d8',
+                  letterSpacing: '0.04em',
+                  marginBottom: '8px',
+                  whiteSpace: 'nowrap'
+                },
+                children: 'PROVIDER CONNECTION STATUS'
+              }),
+              jsx('div', {
+                style: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
+                children: sortedProviders.map((provider, index) => {
+                  const providerId = getProviderId(provider)
+                  const providerName = truncateText(provider.name || provider.id, 80) || providerId
+                  return jsx('span', {
+                    key: `status-${providerId}-${index}`,
+                    title: providerName,
+                    style: {
+                      padding: '4px 9px',
+                      borderRadius: '999px',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      maxWidth: '260px',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      display: 'inline-block',
+                      border: '1px solid ' + (provider.available ? 'rgba(45, 212, 191, 0.35)' : palette.border),
+                      background: provider.available ? 'rgba(45, 212, 191, 0.08)' : palette.panel,
+                      color: provider.available ? '#34d399' : '#a1a1aa'
+                    },
+                    children: `${provider.available ? '●' : '○'} ${providerName}`
+                  })
+                })
+              })
+            ]
+          }),
+          errorList.length
             ? jsx('div', {
                 style: styles.error,
-                children: data.errors.map((message, index) => jsx('div', { key: index, children: message }))
+                children: errorList.map((message, index) => jsx('div', { key: `err-${index}`, children: message }))
               })
             : null,
           isRestarting
@@ -589,50 +883,19 @@ function UsagePage() {
                 ]
               })
             : jsx('div', {
-                style: {
-                  ...styles.grid,
-                  gridTemplateColumns: `repeat(5, minmax(0, 1fr))`
-                },
-                children: sortedProviders.map(provider => jsx(ProviderCard, {
-                  provider,
-                  key: provider.id,
-                  onMoveLeft: () => moveLeft(provider.id),
-                  onMoveRight: () => moveRight(provider.id)
-                }))
-              }),
-          jsxs('div', {
-            style: {
-              marginTop: '10px',
-              padding: '10px 14px',
-              borderRadius: '12px',
-              background: palette.panel,
-              border: '1px solid ' + palette.border
-            },
-            children: [
-              jsx('div', { style: { fontSize: '10px', fontWeight: 700, color: '#d4d4d8', letterSpacing: '0.04em', marginBottom: '8px', whiteSpace: 'nowrap' }, children: 'PROVIDER CONNECTION STATUS' }),
-              jsx('div', {
-                style: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
-                children: [
-                  ...(data.providers || []).map(provider => jsxs('span', {
-                    key: provider.id,
-                    style: {
-                      padding: '4px 9px',
-                      borderRadius: '999px',
-                      fontSize: '10px',
-                      fontWeight: 600,
-                      border: '1px solid ' + (provider.available ? 'rgba(45, 212, 191, 0.35)' : palette.border),
-                      background: provider.available ? 'rgba(45, 212, 191, 0.08)' : palette.panel,
-                      color: provider.available ? '#34d399' : '#a1a1aa'
-                    },
-                    children: [
-                      provider.available ? '●' : '○',
-                      ' ' + provider.name
-                    ]
-                  }))
-                ]
+                style: styles.grid,
+                children: sortedProviders.map((provider, index) => {
+                  const providerId = getProviderId(provider)
+                  return jsx(ProviderCard, {
+                    provider,
+                    key: `card-${providerId}-${index}`,
+                    isFirst: index === 0,
+                    isLast: index === sortedProviders.length - 1,
+                    onMoveLeft: () => moveByIndex(index, -1),
+                    onMoveRight: () => moveByIndex(index, 1)
+                  })
+                })
               })
-            ]
-          })
         ]
       }),
       jsx(ConfirmDialog, {
@@ -652,67 +915,116 @@ function UsagePage() {
 }
 
 function UsageChip() {
-  const focusedSessionId = useValue(host.state.focusedSessionId)
-  const focusedUsage = useValue(host.state.focusedUsage)
+  const focusedSessionId = useValue(host?.state?.focusedSessionId ?? FALLBACK_STORE)
+  const focusedUsage = useValue(host?.state?.focusedUsage ?? FALLBACK_STORE)
+  const sharedCache = useCachedUsageData()
   const query = useQuery({
     queryKey: [ID, 'usage', 30],
-    queryFn: () => rest('/usage?days=30'),
+    queryFn: async () => {
+      const result = await safeRest('/usage?days=30')
+      publishUsageData(result)
+      return result
+    },
     refetchInterval: 60_000
   })
-  const values = (query.data?.providers || []).flatMap(provider =>
-    (provider.windows || []).filter(window => window.scope === 'account' && typeof window.used_percent === 'number')
-      .map(window => window.used_percent)
-  )
-  const highest = values.length ? Math.max(...values) : null
-
-  const providerAlerts = (query.data?.providers || []).flatMap(provider =>
-    (provider.windows || [])
-      .filter(window => window.scope === 'account' && typeof window.used_percent === 'number' && window.used_percent >= ALERT_THRESHOLD)
-      .map(window => ({
-        key: `provider:${provider.id}:${window.label}`,
-        message: `${provider.name} — ${window.label}: ${window.used_percent.toFixed(1)}% used`
-      }))
-  )
-  const contextMax = Number(focusedUsage?.context_max || 0)
-  const contextUsed = Number(focusedUsage?.context_used || 0)
-  const contextPercent = contextMax > 0
-    ? Math.max(0, Math.min(100, Number(focusedUsage?.context_percent ?? (contextUsed / contextMax) * 100)))
-    : null
-  const alertSignature = JSON.stringify([
-    ...providerAlerts,
-    contextPercent !== null && contextPercent >= ALERT_THRESHOLD
-      ? { key: `context:${focusedSessionId || 'unknown'}`, message: `Current session context: ${contextPercent.toFixed(1)}% used` }
-      : null
-  ].filter(Boolean))
 
   useEffect(() => {
-    const current = JSON.parse(alertSignature)
+    if (query.data && typeof query.data === 'object') {
+      publishUsageData(query.data)
+    }
+  }, [query.data])
+
+  const activeData = sharedCache || query.data
+  const providers = useMemo(
+    () => toArray(activeData?.providers).filter(Boolean),
+    [activeData]
+  )
+
+  const highest = useMemo(() => {
+    const values = providers.flatMap(provider =>
+      toArray(provider.windows)
+        .filter(window => window && window.scope === 'account')
+        .map(window => toFiniteNumber(window.used_percent))
+        .filter(val => val !== null)
+    )
+    return values.length ? Math.max(...values) : null
+  }, [providers])
+
+  const providerAlerts = useMemo(() => {
+    return providers.flatMap(provider => {
+      const providerId = truncateText(getProviderId(provider), 64)
+      const providerName = truncateText(provider.name || provider.id, 64) || providerId
+      return toArray(provider.windows)
+        .filter(window => window && window.scope === 'account')
+        .map(window => {
+          const used = toFiniteNumber(window.used_percent)
+          if (used === null || used < ALERT_THRESHOLD) return null
+          const label = truncateText(window.label, 64) || 'Quota'
+          return {
+            key: `provider:${providerId}:${label}`,
+            message: `${providerName} — ${label}: ${used.toFixed(1)}% used`
+          }
+        })
+        .filter(Boolean)
+    })
+  }, [providers])
+
+  const contextMax = toFiniteNumber(focusedUsage?.context_max) ?? 0
+  const contextUsed = toFiniteNumber(focusedUsage?.context_used) ?? 0
+  const rawContextPercent = toFiniteNumber(focusedUsage?.context_percent)
+  const computedContextPercent = contextMax > 0
+    ? rawContextPercent ?? (contextUsed / contextMax) * 100
+    : null
+  const contextPercent = computedContextPercent !== null
+    ? Math.max(0, Math.min(100, computedContextPercent))
+    : null
+
+  const hasLoadedData = Boolean(activeData)
+  const activeAlerts = useMemo(() => {
+    const list = [...providerAlerts]
+    if (contextPercent !== null && contextPercent >= ALERT_THRESHOLD) {
+      list.push({
+        key: `context:${truncateText(focusedSessionId || 'unknown', 64)}`,
+        message: `Current session context: ${contextPercent.toFixed(1)}% used`
+      })
+    }
+    return list
+  }, [providerAlerts, contextPercent, focusedSessionId])
+
+  const alertKeySignature = useMemo(
+    () => JSON.stringify(activeAlerts.map(alert => alert.key)),
+    [activeAlerts]
+  )
+
+  useEffect(() => {
+    if (!hasLoadedData) return
     let previous = []
     try {
-      previous = JSON.parse(globalThis.localStorage?.getItem(ALERT_STORAGE_KEY) || '[]')
+      const parsed = JSON.parse(globalThis.localStorage?.getItem(ALERT_STORAGE_KEY) || '[]')
+      previous = Array.isArray(parsed) ? parsed : []
     } catch {
       previous = []
     }
-    const previousKeys = new Set(Array.isArray(previous) ? previous : [])
-    const fresh = current.filter(alert => !previousKeys.has(alert.key))
+    const previousKeys = new Set(previous.filter(item => typeof item === 'string'))
+    const fresh = activeAlerts.filter(alert => !previousKeys.has(alert.key))
     if (fresh.length) {
-      host.notify({
+      safeNotify({
         kind: 'warning',
         title: 'AI usage reached 90%',
         message: fresh.map(alert => alert.message).join(' • ')
       })
     }
     try {
-      globalThis.localStorage?.setItem(ALERT_STORAGE_KEY, JSON.stringify(current.map(alert => alert.key)))
-    } catch {
-      // Notification still works when persistent browser storage is unavailable.
+      globalThis.localStorage?.setItem(ALERT_STORAGE_KEY, alertKeySignature)
+    } catch (err) {
+      console.warn('Unable to persist alert state', err)
     }
-  }, [alertSignature])
+  }, [alertKeySignature, hasLoadedData])
 
   return jsx(Button, {
     size: 'sm',
     variant: 'ghost',
-    onClick: () => host.navigate('/ai-usage-meter'),
+    onClick: () => safeNavigate('/ai-usage-meter'),
     children: highest === null ? 'Usage unavailable' : `Usage ${Math.round(highest)}%`
   })
 }
@@ -723,7 +1035,7 @@ export default {
   description: 'Live provider quota, focused-session context, and per-provider model usage.',
   defaultEnabled: true,
   register(ctx) {
-    rest = ctx.rest
+    rest = ctx?.rest
     ctx.registerMany([
       {
         id: 'page',
@@ -751,7 +1063,7 @@ export default {
           id: 'ai-usage-meter.open',
           label: 'AI Usage Meter: Open',
           keywords: ['usage', 'quota', 'tokens', 'anthropic', 'codex', 'openrouter'],
-          run: () => host.navigate('/ai-usage-meter')
+          run: () => safeNavigate('/ai-usage-meter')
         }
       }
     ])

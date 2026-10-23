@@ -342,19 +342,23 @@ def test_the_canary_controller_custody_is_the_stable_pipeline_after_its_accepted
     green = {**env, "REQUIRE_GREEN": "true",
              "RELEASE_NEEDS": json.dumps({**needs, "acceptance": {"result": "success"}})}
     assert channel_releases.admit_transaction("canary-release", green, run=_custody_run()) == (CANARY, COMMIT)
-    assert channel_releases.canary_from_controller(env)
     failed = {**needs, "candidate-manifest": {"result": "failure"}}
     with pytest.raises(ValueError, match="candidate-manifest=failure"):
         channel_releases.admit_transaction("canary-release", {**env, "RELEASE_NEEDS": json.dumps(failed)},
                                            run=_custody_run())
-    # The controller ref of another branch is neither the controller nor the legacy workflow.
+    # The controller ref of another branch is not the controller.
     with pytest.raises(ChannelError, match="existing release workflow"):
         channel_releases.admit_transaction("canary-release", env, run=_custody_run(default="develop"))
-    # The legacy direct dispatch keeps its own native-leg requirements.
-    legacy = {**env, "GITHUB_WORKFLOW_REF": env["GITHUB_WORKFLOW_REF"].replace(
-        "stable-release", "desktop-bundled-release")}
-    assert not channel_releases.canary_from_controller(legacy)
-    with pytest.raises(ValueError, match="build-win32-x64=missing"):
+    # Nor is any other workflow: the direct desktop-bundled-release dispatch once published canaries
+    # from its native legs alone, and must not even with every one of those legs green.
+    legacy_needs = {name: {"result": "success"} for name in (
+        "validate", "build-win32-x64", "build-win32-arm64", "build-darwin-arm64",
+        "build-linux-x64", "build-linux-arm64", "builds-table", "assemble-win32-bundle",
+        "smoke-darwin-arm64", "smoke-win32-arm64", "smoke-win32-x64",
+        "publish-win32-updater", "publish-darwin-updater")}
+    legacy = {**env, "RELEASE_NEEDS": json.dumps(legacy_needs),
+              "GITHUB_WORKFLOW_REF": env["GITHUB_WORKFLOW_REF"].replace("stable-release", "desktop-bundled-release")}
+    with pytest.raises(ChannelError, match="existing release workflow"):
         channel_releases.admit_transaction("canary-release", legacy, run=_custody_run())
     # A stable tag can never ride the canary policy.
     with pytest.raises(ChannelError, match="policy/tag mismatch"):

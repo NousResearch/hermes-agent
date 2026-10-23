@@ -146,15 +146,9 @@ def commit_summary(jobs: dict) -> str:
 
 
 def tag_summary(jobs: dict) -> str:
-    """The tag build table, which the canary publisher waits on."""
-    canary = jobs[canary_publisher(jobs)]
-    return _only([name for name in needs_of(canary) if _renders(jobs[name], "--tag")], "tag build summary")
-
-
-def canary_publisher(jobs: dict) -> str:
+    """The tag build table (the final one, not the pending placeholder posted before the builds)."""
     return _only([name for name, job in jobs.items()
-                  if any("scripts.releases.channel_releases canary" in step.get("run", "")
-                         for step in job.get("steps", []))], "canary publisher")
+                  if _renders(job, "--tag") and not _renders(job, "--pending-run-url")], "tag build summary")
 
 
 def phase_result(jobs: dict) -> str:

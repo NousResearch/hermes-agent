@@ -8,7 +8,7 @@ import pytest
 from scripts.releases import r2
 from scripts.releases.job_groups import DIAGNOSTIC_JOBS, parse_jobs
 from tests.ci.desktop_release_roles import (
-    CANARY_TAG, DOWNLOADABLE_DISPATCHES, admitted, canary_publisher, evaluate, gate, needs_of, selection_gates, tag_summary,
+    CANARY_TAG, DOWNLOADABLE_DISPATCHES, admitted, evaluate, gate, needs_of, selection_gates, tag_summary,
     termux_builder, updater_publishers,
 )
 from tests.ci.test_commit_build_staging import shell_step
@@ -115,8 +115,8 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
 
 def test_canary_publication_does_not_wait_for_diagnostic_builds():
     jobs = _workflow()["jobs"]
-    required = ancestors(jobs, canary_publisher(jobs))
-    assert {tag_summary(jobs), termux_builder(jobs)} <= required
+    required = ancestors(jobs, tag_summary(jobs))
+    assert termux_builder(jobs) in required
     assert not DIAGNOSTIC_JOBS.intersection(required)
 
 

@@ -79,8 +79,14 @@ if [ -n "$COMMIT_MODE" ] || [ -n "$RELEASE_COMMIT" ]; then
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from scripts.releases.commit_build import version_at
-version = sys.argv[4][1:] if sys.argv[4] else version_at(Path(sys.argv[2]), sys.argv[3])
+from scripts.termux.deb_version import release_version_for_tag
+# A release tag names its version (X.Y.Z or X.Y.Z+canary.<stamp>); never strip the
+# leading v, a canary tag starts with its kind. A tagless build reads the checkout.
+if sys.argv[4]:
+    version = release_version_for_tag(sys.argv[4])
+else:
+    from scripts.releases.commit_build import version_at
+    version = version_at(Path(sys.argv[2]), sys.argv[3])
 print(version)
 PY
     )" || fail "commit version admission failed"

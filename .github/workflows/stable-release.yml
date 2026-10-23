@@ -617,7 +617,7 @@ jobs:
     name: Stable release is green
     if: always()
     needs: [admit, ci, docker, acceptance, candidate-manifest, publication, publish-docker,
-            windows-packaged, macos-packaged-arm64]
+            publish-canary, windows-packaged, macos-packaged-arm64]
     # imagetools needs no BuildKit, but it reads the current builder's buildkitd.toml
     # registry config. Not useblacksmith/setup-docker-builder: its no-cache-key fallback marks
     # docker.io `http = true`, Docker Hub 301s the plain-HTTP manifest PUT to HTTPS, Go replays
@@ -644,19 +644,27 @@ jobs:
       # A canary's image is public once publish-docker pushed it; its moving aliases follow
       # whatever the gate below says, exactly like its bundles (publish-canary).
       - name: Set up Docker Buildx for the canary aliases
-        if: ${{ !cancelled() && needs.admit.outputs.policy == 'canary' && needs.publish-docker.result == 'success' }}
+        if: >-
+          ${{ !cancelled() && needs.admit.outputs.policy == 'canary'
+          && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
         with:
           # the action's default buildx (v0.23.0) fails to push manifest lists to Docker Hub
           buildx-version: 0dbe87f36ed472fe36b6796c3f70b4210a731fc5 # v0.38.1
       - name: Log in to Docker Hub for the canary aliases
-        if: ${{ !cancelled() && needs.admit.outputs.policy == 'canary' && needs.publish-docker.result == 'success' }}
+        if: >-
+          ${{ !cancelled() && needs.admit.outputs.policy == 'canary'
+          && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Point the canary Docker aliases at this canary
-        if: ${{ !cancelled() && needs.admit.outputs.policy == 'canary' && needs.publish-docker.result == 'success' }}
+        # Only once the canary itself published: publish-canary already applies the claim's
+        # green policy and lanes, so :canary never names an image whose canary was held back.
+        if: >-
+          ${{ !cancelled() && needs.admit.outputs.policy == 'canary'
+          && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
         run: python -m scripts.releases.docker promote-canary --tag "$DOCKER_TAG"
         env:
           DOCKER_TAG: ${{ needs.admit.outputs.docker-tag }}

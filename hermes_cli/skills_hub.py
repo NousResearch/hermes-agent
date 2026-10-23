@@ -799,8 +799,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     A first install is recorded once as an extension install; updates and ``--force`` reinstalls
     of an installed skill run through here too and are not installs, nor is a cancelled prompt.
 
-    Returns True when the skill was installed, False when the install failed (unresolved name,
-    fetch, scan block, bad path), None for a no-op the user owns (already installed, declined).
+    Returns True when the skill was installed or an existing hub skill was left alone, False
+    when the install failed (unresolved name, fetch, scan block, bad path), None when the user
+    declined or a built-in skill was already available. Snapshot imports count a decline as
+    unrestored without changing the ordinary install command's cancellation exit status.
     The CLI router turns False into a non-zero exit — the Desktop Hub toasts failures off that
     exit code, so an exit-0 failure reads as "the button did nothing" (only the action log).
     """
@@ -881,7 +883,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
-            return bundle, None, None
+            return bundle, None, True
     failed = None if existing else "failed"
 
     extra_metadata = {**(getattr(meta, "extra", {}) or {}), **bundle.metadata}
@@ -1471,9 +1473,10 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
 
 
 def do_snapshot_import(input_path: str, force: bool = False,
-                       console: Optional[Console] = None) -> Optional[bool]:
-    """Re-install skills from a snapshot file. Returns False when the file is unreadable or any
-    entry failed to install (e.g. refused by the scan gate), else None — as ``do_update`` does."""
+                       console: Optional[Console] = None) -> bool:
+    """Re-install skills from a snapshot file. Returns whether every identified skill is
+    installed afterwards; a cancelled prompt (unattended stdin answers "no"), a blocked scan or
+    a fetch failure leaves the snapshot unrestored and must not read as success (#107640)."""
     from tools.skills_hub import TapsManager
     c = console or _console
     inp = Path(input_path)
@@ -1497,23 +1500,28 @@ def do_snapshot_import(input_path: str, force: bool = False,
     skills = snapshot.get("skills", [])
     if not skills:
         c.print("[dim]No skills in snapshot to install.[/]\n")
-        return
+        return True
     c.print(f"[bold]Importing {len(skills)} skill(s) from snapshot...[/]\n")
-    failed: list[str] = []
+    identified = 0
+    not_restored: List[str] = []
     for entry in skills:
         identifier = entry.get("identifier", "")
         if not identifier:
             c.print(f"[yellow]Skipping entry with no identifier: {entry.get('name', '?')}[/]")
             continue
+        identified += 1
         c.print(f"[bold]--- {entry.get('name', identifier)} ---[/]")
-        if do_install(identifier, category=entry.get("category", ""), force=force, console=c) is False:
-            failed.append(entry.get("name", identifier))
-    if failed:
-        c.print(f"[bold red]Snapshot import incomplete.[/] Not installed: {', '.join(failed)} "
-                "(see the messages above).\n")
+        if not do_install(identifier, category=entry.get("category", ""), force=force, console=c):
+            not_restored.append(identifier)
+    if not_restored:
+        c.print(f"[bold red]Snapshot import failed:[/] {identified - len(not_restored)} of {identified} "
+                f"skill(s) restored. Not installed (cancelled, blocked or unavailable): "
+                f"{', '.join(not_restored)}\n"
+                "[dim]An unattended import answers every install prompt with no; run it from an "
+                "interactive terminal to confirm each skill.[/]\n")
         return False
-    c.print("[bold green]Snapshot import complete.[/]\n")
-    return None
+    c.print(f"[bold green]Snapshot import complete.[/] {identified} skill(s) restored.\n")
+    return True
 
 
 # --- CLI argparse entry point ---
@@ -1523,7 +1531,9 @@ def _snapshot_cli(args) -> Optional[bool]:
     if snap_action == "export":
         do_snapshot_export(args.output)
     elif snap_action == "import":
-        return do_snapshot_import(args.input, force=getattr(args, "force", False))
+        # A recovery script reads the exit status: a snapshot that restored nothing is a failure.
+        if not do_snapshot_import(args.input, force=getattr(args, "force", False)):
+            raise SystemExit(1)
     else:
         _console.print("Usage: hermes skills snapshot [export|import]\n")
     return None

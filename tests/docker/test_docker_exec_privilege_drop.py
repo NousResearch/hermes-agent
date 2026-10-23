@@ -68,6 +68,7 @@ def _wait_for_cont_init(container: str) -> None:
             ["docker", "exec", container,
              "cat", "/opt/data/logs/container-boot.log"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if r.returncode == 0:
             last = r.stdout
@@ -91,6 +92,7 @@ def sleep_container(built_image: str, container_name: str) -> Iterator[str]:
         ["docker", "run", "-d", "--name", container_name, built_image,
          "sleep", "infinity"],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert r.returncode == 0, f"docker run failed: {r.stderr}"
     try:
@@ -130,6 +132,7 @@ def test_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
         ["docker", "exec", sleep_container,
          "hermes", "config", "set", "_test.shim_marker", "1"],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert r.returncode == 0, f"config set failed: stdout={r.stdout!r} stderr={r.stderr!r}"
 
@@ -138,6 +141,7 @@ def test_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
         ["docker", "exec", sleep_container,
          "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
         capture_output=True, text=True, timeout=10,
+        check=False,
     )
     assert r.returncode == 0, f"stat failed: {r.stderr}"
     assert r.stdout.strip() == "hermes:hermes", (
@@ -186,6 +190,7 @@ def test_e2e_login_then_supervised_gateway_can_read_auth(
         ["docker", "exec", sleep_container,
          "hermes", "config", "set", "_test.e2e_marker", "1"],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert r.returncode == 0, f"config set failed: {r.stderr}"
 
@@ -196,6 +201,7 @@ def test_e2e_login_then_supervised_gateway_can_read_auth(
          "find", "/opt/data", "-maxdepth", "2", "-type", "f",
          "!", "-readable", "-print"],
         capture_output=True, text=True, timeout=15,
+        check=False,
     )
     assert r.returncode == 0, f"find failed: {r.stderr}"
     unreadable = [ln for ln in r.stdout.splitlines() if ln.strip()]

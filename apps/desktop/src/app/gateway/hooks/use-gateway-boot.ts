@@ -9,7 +9,9 @@ import {
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
+import { reportStartupLatency } from '@/app/gateway/report-startup-latency'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
@@ -25,12 +27,14 @@ import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout
 import {
   $desktopBoot,
   applyDesktopBootProgress,
+  applyDesktopUpdateHold,
   completeDesktopBoot,
   failDesktopBoot,
   resumeDesktopBootForRetry,
   setDesktopBootStep
 } from '@/store/boot'
 import { resetBackgroundPollingGuard } from '@/store/composer-status'
+import { noteBackendDrop, noteBackendExited } from '@/store/desktop-metrics'
 import {
   $gateway,
   activeGateway,
@@ -45,16 +49,14 @@ import {
   gatewayActivationEpoch,
   isActivePrimary,
   liveSecondaryConnectionIds,
-  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
   type ScopedServerRequest,
   setPrimaryGateway,
-  setPrimaryGatewayConnection,
-  touchSecondaryGateways
+  setPrimaryGatewayConnection
 } from '@/store/gateway'
-import { reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
+import { type GatewayReconnectOptions, reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -64,12 +66,11 @@ import {
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
-import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
+  currentProfileSelectionRevision,
   normalizeProfileKey,
-  refreshActiveProfile,
-  touchActiveGatewayBackend
+  refreshActiveProfile
 } from '@/store/profile'
 import { requestBackendRestart } from '@/store/recovery-requests'
 import {
@@ -313,6 +314,17 @@ export function useGatewayBoot({
     // reconnect with backoff, and we nudge a reconnect on the OS/browser
     // signals that fire around wake (power resume, network online, the window
     // becoming visible).
+    let primaryConnection: HermesConnection | null = null
+    // Bumped whenever the primary route is recorded, so a reconnect whose
+    // lookup started before a boot/connection apply cannot re-own the primary.
+    let primaryRouteRevision = 0
+
+    const recordPrimaryConnection = (connection: HermesConnection) => {
+      primaryConnection = connection
+      primaryRouteRevision += 1
+      setPrimaryGatewayConnection(connection)
+    }
+
     let bootCompleted = false
     // The other way a cold boot concludes. Main keeps startHermes() available
     // after the renderer gave up, and every later getConnection() caller
@@ -329,6 +341,9 @@ export function useGatewayBoot({
     // reconnectAttempt, reconnectFailingSince and escalated reset only once an
     // open proves stable (isStableOpen), judged when the socket closes.
     let openedAt: number | null = null
+    // Why the next post-open close happens, when this hook closes the socket itself
+    // (friction telemetry): a liveness timeout is a real drop, a manual reconnect is not.
+    let ownCloseReason: 'manual' | 'timeout' | null = null
     // Consecutive unanswered liveness probes (#95327): a busy-but-healthy
     // backend can fail one probe; only a STREAK proves a genuinely dead
     // socket while turns are in flight. Reset on any successful probe or a
@@ -452,21 +467,32 @@ export function useGatewayBoot({
           'Timed out revalidating the gateway connection'
         ).catch(() => undefined)
 
-        // Primary sleep/wake reconnect must dial the WINDOW-owned primary backend
-        // (same as boot/softSwitch). Passing $activeGatewayProfile would retarget
-        // this primary socket at a secondary profile's backend after a live swap.
-        // Secondaries reconnect via reconnectSecondaryGateways().
+        // Reconnect the socket's own route, not main's mutable foreground route.
+        // Profile-less resolution remains intentional for boot/connection apply.
+        // A registry primary needs both identity fields; a legacy primary uses
+        // its explicit profile so a foreground secondary cannot retarget it.
+        const lookupRevision = primaryRouteRevision
+
         const conn = await withTimeout(
-          desktop.getConnection(),
+          primaryConnection?.registryScoped && primaryConnection.connectionId
+            ? (desktop.getConnectionFor?.({
+                connectionId: primaryConnection.connectionId,
+                profile: primaryConnection.profile
+              }) ?? Promise.reject(new Error('Registry gateway connection is unavailable')))
+            : desktop.getConnection(primaryConnection?.profile),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
 
-        setPrimaryGatewayConnection(conn)
-
-        if (cancelled) {
+        // A boot/connection apply that recorded a newer primary route during
+        // the lookup owns the socket; recording, publishing or dialing the old
+        // route would undo it and pin later reconnects to the old gateway.
+        if (cancelled || lookupRevision !== primaryRouteRevision) {
           return
         }
+
+        recordPrimaryConnection(conn)
+        const dialRevision = primaryRouteRevision
 
         // Only publish the primary descriptor when the primary is active.
         // Otherwise a background-profile view would inherit the primary's
@@ -488,6 +514,12 @@ export function useGatewayBoot({
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )
+
+        // Same fence after the mint: an apply that landed while the ticket was
+        // in flight owns the socket, and its socket may already have dropped.
+        if (cancelled || dialRevision !== primaryRouteRevision) {
+          return
+        }
 
         await gateway.connect(wsUrl)
 
@@ -671,6 +703,7 @@ export function useGatewayBoot({
         }
 
         livenessProbeFailures = 0
+        ownCloseReason = 'timeout'
         gateway.close()
       }
     }
@@ -691,7 +724,7 @@ export function useGatewayBoot({
       const peer = isPeerInstanceWindow()
 
       const route = profile
-        ? { profile, connectionId: peer ? new URLSearchParams(window.location.search).get('connectionId') : null }
+        ? { profile, connectionId: new URLSearchParams(window.location.search).get('connectionId') }
         : startup && !peer
           ? await desktop.profile?.getDefault?.()
           : null
@@ -707,6 +740,7 @@ export function useGatewayBoot({
 
     async function adoptPrimaryProfile(
       connection: HermesConnection,
+      selectionRevision: number,
       shouldPublish: () => boolean = () => true
     ): Promise<boolean> {
       // The resolved descriptor reflects the explicit startup default. The
@@ -721,15 +755,29 @@ export function useGatewayBoot({
         }
 
         const key = normalizeProfileKey(profileKey)
-        $activeGatewayProfile.set(key)
+        // A profile the user picked after this boot/apply started is newer
+        // intent than the primary adoption (T19, #134889): record the primary
+        // socket, but leave the active route and the profile atom — which
+        // scopes the session list refreshed next — on the user's pick.
+        const userPicked = currentProfileSelectionRevision() !== selectionRevision
+
+        if (!userPicked) {
+          $activeGatewayProfile.set(key)
+        }
+
         setPrimaryGateway(gateway, key)
-        void ensureGatewayForProfile(key)
+
+        if (!userPicked) {
+          void ensureGatewayForProfile(key)
+        }
       } catch {
         if (!shouldPublish()) {
           return false
         }
 
-        $activeGatewayProfile.set(normalizeProfileKey(override))
+        if (currentProfileSelectionRevision() === selectionRevision) {
+          $activeGatewayProfile.set(normalizeProfileKey(override))
+        }
       }
 
       return true
@@ -803,7 +851,7 @@ export function useGatewayBoot({
         }
 
         publish(conn)
-        setPrimaryGatewayConnection(conn)
+        recordPrimaryConnection(conn)
 
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // ticket mint would otherwise hang the gateway switch forever.
@@ -833,7 +881,16 @@ export function useGatewayBoot({
         // list rather than blanking the rail. NOT awaited: refreshProfiles
         // now carries a bounded retry chain (#70679), and switch completion
         // must not wait out backoff timers against an unhealthy backend.
-        if (!(await adoptPrimaryProfile(conn, ownsSwitch)) || !ownsSwitch()) {
+        if (
+          !(await adoptPrimaryProfile(
+            conn,
+            // A connection apply replaces the machine context wholesale, so it
+            // always adopts the new primary; only cold boot defers to a pick.
+            currentProfileSelectionRevision(),
+            ownsSwitch
+          )) ||
+          !ownsSwitch()
+        ) {
           return
         }
 
@@ -897,6 +954,12 @@ export function useGatewayBoot({
       // ticket-mint / host-unreachable failures must stay in the reconnect loop
       // (otherwise a 1–3 min blip bricks reading/drafting behind "couldn't start").
       if ($gatewaySwitching.get() || bootCompleted || bootFailed) {
+        // The blocked-update screen is not a boot step: a pool/profile backend
+        // can meet a hold after the primary booted (R8 M6).
+        if (payload.updateHold !== undefined) {
+          applyDesktopUpdateHold(payload.updateHold)
+        }
+
         if (payload.error && shouldApplyPostBootProgressError(payload.error)) {
           primaryReauthError = payload.error
 
@@ -998,7 +1061,7 @@ export function useGatewayBoot({
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
       // of which profile the active socket serves. The registry is the only
-      // party that sees eviction fallbacks (idle reap, connection removal,
+      // party that sees eviction fallbacks (connection removal,
       // profile delete → primary); before this mirror those fallbacks moved
       // the SOCKET back to the primary while the profile atom kept naming the
       // evicted bot. ensureGatewayProfile's "already active" fast path then
@@ -1017,7 +1080,7 @@ export function useGatewayBoot({
       onActiveConnectionInvalidated: (fallbackProfile, invalidationEpoch) => {
         $activeGatewayProfile.set(fallbackProfile)
         // Bounded like every other getConnection() call in this file (#93454):
-        // an eviction fallback (idle reap, connection removal, profile delete)
+        // an eviction fallback (connection removal, profile delete)
         // must not latch the profile atom to a connection that never resolves
         // if the main-process IPC round-trip wedges.
         void withTimeout(
@@ -1068,6 +1131,12 @@ export function useGatewayBoot({
           resetReconnectBackoff()
         }
 
+        // The connected→disconnected edge after a healthy boot, not a switch or our own manual close.
+        if (openedAt !== null && bootCompleted && !$gatewaySwitching.get() && ownCloseReason !== 'manual') {
+          noteBackendDrop(ownCloseReason === 'timeout' ? 'timeout' : null)
+        }
+
+        ownCloseReason = null
         openedAt = null
 
         if (bootCompleted && !$gatewaySwitching.get()) {
@@ -1086,7 +1155,7 @@ export function useGatewayBoot({
 
     const offEvent = gateway.onEvent(event => {
       const connectionId = activeGatewayConnectionId()
-      const sourceProfile = sourceProfileNow()
+      const sourceProfile = canonicalOwnerProfile(event) ?? sourceProfileNow()
 
       const scopedEvent = {
         ...event,
@@ -1152,7 +1221,7 @@ export function useGatewayBoot({
     const offPowerResume = desktop.onPowerResume?.(() => void forceReconnectNow())
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
 
-    const offGatewayReconnect = registerGatewayReconnect(async () => {
+    const offGatewayReconnect = registerGatewayReconnect(async (options?: GatewayReconnectOptions) => {
       if (cancelled || !bootCompleted || $gatewaySwitching.get()) {
         return
       }
@@ -1169,9 +1238,66 @@ export function useGatewayBoot({
         return
       }
 
-      // Only explicit recovery may retry a credential that requires sign-in.
-      primaryReauthError = null
-      reauthNotified = false
+      // Only MANUAL recovery may retry a credential that requires sign-in;
+      // it keeps the unconditional re-dial as the escape hatch for a socket
+      // the probe path cannot certify.
+      if (options?.source !== 'restart-followthrough') {
+        primaryReauthError = null
+        reauthNotified = false
+        ownCloseReason = 'manual'
+        gateway.close()
+        clearReconnectTimer()
+        resetReconnectBackoff()
+
+        await attemptReconnect({
+          profile: normalizeProfileKey($activeGatewayProfile.get()),
+          activationEpoch: gatewayActivationEpoch()
+        })
+
+        return
+      }
+
+      // A restart follow-through does not automatically need a teardown.
+      // `serve` dies with the app but the messaging gateway survives it
+      // (apps/desktop/AGENTS.md), so in the common case this socket is still
+      // healthy — force-closing it would reject every in-flight RPC and
+      // self-inflict the reconnect the follow-through is meant to perform.
+      // Probe first: a provably-alive transport is left alone, and while a
+      // turn is in flight an inconclusive probe defers behind the same
+      // bounded re-probe the wake path uses (#95327) instead of
+      // deterministically killing it. A probe that stays unanswered with no
+      // work in flight still closes and re-dials, so a restart that DID take
+      // this socket down is recovered here and now.
+      try {
+        await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
+        livenessProbeFailures = 0
+
+        return
+      } catch (probeErr) {
+        // A version-skewed backend that predates the ping method answers
+        // -32601 (method not found) — a HEALTHY response, not a dead socket.
+        if (probeErr instanceof JsonRpcGatewayError && probeErr.code === -32601) {
+          livenessProbeFailures = 0
+
+          return
+        }
+
+        const decision = decideLivenessForceClose({
+          workingSessionCount: $workingSessionIds.get().length,
+          consecutiveFailures: livenessProbeFailures + 1
+        })
+
+        if (!decision.close) {
+          livenessProbeFailures += 1
+          scheduleLivenessReprobe()
+
+          return
+        }
+
+        livenessProbeFailures = 0
+      }
+
+      ownCloseReason = 'manual'
       gateway.close()
       clearReconnectTimer()
       resetReconnectBackoff()
@@ -1207,17 +1333,6 @@ export function useGatewayBoot({
       }
     })
 
-    // Cooperative pool retirement: main is stopping a pooled backend so a
-    // foreground open elsewhere gets its slot. Park the scopes riding it now,
-    // before the socket drops, so neither the 'closed' state nor the next
-    // focus/wake nudge redials into the slot it vacated. The tile keeps its
-    // card; the next click on it re-arms the scope.
-    const offPoolRetiring = desktop.onPoolBackendRetiring?.(payload => {
-      if (payload && typeof payload.poolKey === 'string') {
-        parkSecondariesForRetiredBackend(payload.poolKey)
-      }
-    })
-
     const onOnline = () => void forceReconnectNow()
 
     const onVisible = () => {
@@ -1235,26 +1350,11 @@ export function useGatewayBoot({
     // this a socket dropped during sleep sits closed until the user clicks.
     window.addEventListener('focus', onFocus)
 
-    // Pool limits are main-process state; mirror them once for the Settings
-    // rows and prewarmProfileBackend's saturation guard.
-    void loadPoolLimits()
-
-    // Keep live pool backends alive while this window is open (the main process
-    // can't observe the direct renderer↔backend WS). No-op for the primary.
-    const keepaliveTimer = setInterval(() => {
-      touchActiveGatewayBackend()
-      touchSecondaryGateways()
-      // The pruner is otherwise event-driven: a socket spared by the
-      // min-lifetime grace with no store change afterwards would hold its
-      // pool slot forever.
-      recomputeKeptGateways()
-    }, 60_000)
-
     // Bound concurrency cost to consumers: keep a background socket while its
     // profile has a running (working) or blocked (needs-input) session, OR an
     // open owner-routed tile (Bot chats stay on a secondary while chrome stays
     // on the launch profile). Once the last consumer leaves, the socket drops
-    // and its backend is free to idle-reap. The active profile is always spared.
+    // (the gateway behind it keeps running). The active profile is always spared.
     // Do not key this off `entry.retained` — that flag only skips dispose-after-
     // RPC; idle prune is what reclaims hover-warmed sockets after you leave.
     // Scopes with a running or needs-input session: registry-scoped
@@ -1291,6 +1391,12 @@ export function useGatewayBoot({
       pruneSecondaryGateways(keep)
     }
 
+    // The pruner is otherwise event-driven: a socket spared by the
+    // min-lifetime grace with no store change afterwards would stay open
+    // forever. Pool keepalive touches are gone (the canonical gateway outlives
+    // its viewers); only this recompute tick remains.
+    const pruneTimer = setInterval(() => recomputeKeptGateways(), 60_000)
+
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveSession = $activeSessionId.subscribe(() => recomputeKeptGateways())
@@ -1314,6 +1420,8 @@ export function useGatewayBoot({
       if ($gatewaySwitching.get()) {
         return
       }
+
+      noteBackendExited()
 
       // While the boot overlay is up it already shows the failure with its own
       // Retry, and the reconnect handler below is a no-op before boot completes
@@ -1348,6 +1456,7 @@ export function useGatewayBoot({
     })
 
     async function boot() {
+      const selectionRevision = currentProfileSelectionRevision()
       // Where this boot attempt got to — a historical fact, not a late read of
       // gateway.connectionState. A socket can close after a successful dial;
       // later initialization errors must not be reclassified as boot dials.
@@ -1378,8 +1487,16 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.connectingGateway'),
           progress: 95
         })
-        publish(conn)
-        setPrimaryGatewayConnection(conn)
+
+        // A profile picked while the primary lookup was in flight already
+        // published its own descriptor with its socket (T19, #134889). Record
+        // the primary, but keep $connection on the pick so socket, profile and
+        // connection agree.
+        if (currentProfileSelectionRevision() === selectionRevision) {
+          publish(conn)
+        }
+
+        recordPrimaryConnection(conn)
 
         // Seed the workspace BEFORE the gateway opens: every session-restore
         // path is gated on gatewayState === 'open', so nothing can be active yet
@@ -1452,12 +1569,14 @@ export function useGatewayBoot({
           return
         }
 
+        void reportStartupLatency(desktop, (method, params) => gateway.request(method, params))
+
         // Profile adoption must land first: refreshSessions scopes its fetch by
         // $profileScope ← $activeGatewayProfile. The remaining three fetches
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile(conn)
+        await adoptPrimaryProfile(conn, selectionRevision)
 
         setDesktopBootStep({
           phase: 'renderer.config',
@@ -1540,7 +1659,7 @@ export function useGatewayBoot({
 
       if (survivor?.connection) {
         publish(survivor.connection)
-        setPrimaryGatewayConnection(survivor.connection)
+        recordPrimaryConnection(survivor.connection)
       }
 
       const profile = survivor?.profile ?? $activeGatewayProfile.get()
@@ -1579,7 +1698,7 @@ export function useGatewayBoot({
       clearReconnectTimer()
       clearBootRetryTimer()
       clearLivenessReprobeTimer()
-      clearInterval(keepaliveTimer)
+      clearInterval(pruneTimer)
       offWorking()
       offAttention()
       offActiveSession()
@@ -1594,7 +1713,6 @@ export function useGatewayBoot({
       offPowerResume?.()
       offConnectionApplied?.()
       offConnectionsChanged?.()
-      offPoolRetiring?.()
       offGatewayReconnect()
       offActiveGatewayReauth()
       offActiveStateReauth()

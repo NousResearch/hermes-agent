@@ -73,7 +73,8 @@ def _required_path(arguments: dict[str, Any]) -> str:
     path = str(arguments.get("path") or "")
     if not path:
         raise ValueError("path required")
-    return path
+    from tools.file_tools_paths import _resolve_path_for_task
+    return str(_resolve_path_for_task(path))
 
 
 def _proposal_for_write_file(arguments: dict[str, Any]) -> EditProposal:
@@ -113,7 +114,7 @@ def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     patch_body = arguments.get("patch")
     if not isinstance(patch_body, str) or not patch_body:
         raise ValueError("patch content required")
-    paths = _extract_v4a_patch_paths(patch_body)
+    paths = [_required_path({'path': path}) for path in _extract_v4a_patch_paths(patch_body)]
     if not paths:
         raise ValueError("no file paths found in V4A patch")
     single = len(paths) == 1
@@ -238,19 +239,3 @@ def make_acp_edit_approval_requester(
         return getattr(outcome, "outcome", None) == "selected" and getattr(outcome, "option_id", None) == "allow_once"
 
     return _requester
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from concurrent.futures import TimeoutError as FutureTimeout  # noqa: F401,E402
-
-def clear_edit_approval_requester() -> None:
-    """Clear the current requester; primarily used by tests."""
-
-    _EDIT_APPROVAL_REQUESTER.set(None)
-
-def get_edit_approval_requester() -> EditApprovalRequester | None:
-    return _EDIT_APPROVAL_REQUESTER.get()
-# ---- END PLUGIN-COMPAT ----

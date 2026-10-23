@@ -74,7 +74,7 @@ def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(platform, environ, 
     """End to end from the process environment to the stop drain: the reader sizes the drain to the
     live ExitTimeOut only for an ``ai.hermes`` job on darwin, seen directly or through the wrapper's
     re-export. Platform is data, not the host (the launchctl call is faked)."""
-    fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
+    fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")
     budget = read_launchd_exit_timeout_s(environ=environ, uid=501, run=fake_run, platform=platform)
     assert resolve_launchd_capped_drain(180.0, budget) == expected
 
@@ -111,7 +111,7 @@ def test_effective_drain_capped_only_for_signal_stops_under_launchd():
 def test_sigterm_handler_marks_stop_as_signal_driven_unless_planned_takeover(monkeypatch, takeover):
     import gateway.run as run_mod
     import gateway.shutdown_forensics as forensics
-    import gateway.status as status
+    from gateway import status
 
     monkeypatch.setattr(status, "consume_takeover_marker_for_self", lambda: takeover)
     monkeypatch.setattr(status, "consume_planned_stop_marker_for_self", lambda: False)

@@ -1,0 +1,33 @@
+{
+  "description": "Invoke deferred tools: `calls` is an array of {name, arguments}, one entry per invocation (batch independent calls; results come back in order). Arguments match the schema from `tool_describe`; approvals and hooks apply as usual.",
+  "name": "tool_call",
+  "parameters": {
+    "properties": {
+      "calls": {
+        "description": "One or more independent deferred tool invocations.",
+        "items": {
+          "properties": {
+            "arguments": {
+              "description": "Arguments matching the tool schema.",
+              "type": "object"
+            },
+            "name": {
+              "description": "Exact tool name to invoke.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "calls"
+    ],
+    "type": "object"
+  }
+}

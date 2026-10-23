@@ -58,7 +58,7 @@ def _append_env(ph: ParityHome, values: dict[str, str]) -> None:
 
 def _spawn(ph: ParityHome, argv: list[str], log_name: str, extra_env: dict[str, str] | None = None):
     log_path = ph.root / log_name
-    log = open(log_path, "wb")  # noqa: SIM115 - closed by _stop
+    log = open(log_path, "wb")
     proc = subprocess.Popen(
         argv, cwd=ph.project, env=ph.env(extra_env), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1,
@@ -68,7 +68,7 @@ def _spawn(ph: ParityHome, argv: list[str], log_name: str, extra_env: dict[str, 
     return proc
 
 
-def _stdout_pump(proc: subprocess.Popen) -> "queue.Queue[str | None]":
+def _stdout_pump(proc: subprocess.Popen) -> queue.Queue[str | None]:
     lines: queue.Queue[str | None] = queue.Queue()
 
     def pump() -> None:
@@ -108,6 +108,7 @@ def _stop(ph: ParityHome, proc: subprocess.Popen) -> bool:
                  str(proc.pid)],
                 cwd=ph.project, env=ph.env(), capture_output=True, text=True, timeout=60,
                 stdin=subprocess.DEVNULL,
+                check=False,
             )
             assert marker.returncode == 0, f"planned-stop marker write failed: {marker.stderr[-1000:]}"
             marker_path = Path(marker.stdout.strip().splitlines()[-1])

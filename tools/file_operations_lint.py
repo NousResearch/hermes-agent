@@ -6,11 +6,14 @@ linters are pure functions importable from this module.
 
 import ast
 import json
+import logging
 import os
 import tomllib
 from typing import Callable, Dict, Optional
 
 from tools.file_operations_common import ExecuteResult, LintResult
+
+logger = logging.getLogger(__name__)
 
 # Shell linters by extension (external toolchain). ``.tsx`` is deliberately absent:
 # it hits the "No linter" skip and LSP covers it when enabled.
@@ -32,6 +35,11 @@ _MANAGED_NODE_LINTERS = {'.js': ('node', '--check'), '.ts': ('npx', 'tsc', '--no
 # is style-only): skipped when an LSP server claims the file. py_compile /
 # node --check are file-local and correct so always run.
 _SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.go', '.rs'})
+
+# Shell linters that resolve the toolchain from the checkout they run in: ``npx tsc`` runs the
+# repo's ``node_modules/.bin/tsc`` (or installs from the registry its ``.npmrc`` names) and
+# rustup honours its ``rust-toolchain.toml``.  Skipped on a local backend in an untrusted workspace.
+_SHELL_LINTER_RUNS_PROJECT_TOOLCHAIN = frozenset({'.ts', '.rs'})
 
 # Output substrings (case-insensitive) meaning the linter binary exists but could
 # not run → ``skipped`` so the write isn't flagged and the LSP tier still runs.
@@ -68,7 +76,7 @@ def _lint_json_inproc(content: str) -> tuple[bool, str]:
         return True, ""
     except json.JSONDecodeError as e:
         return False, f"JSONDecodeError: {e.msg} (line {e.lineno}, column {e.colno})"
-    except Exception as e:  # noqa: BLE001 — any parse failure is a lint failure
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
@@ -87,7 +95,7 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
         return True, ""
     except YAMLError as e:
         return False, f"YAMLError: {e}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
@@ -110,13 +118,13 @@ def _lint_python_inproc(content: str) -> tuple[bool, str]:
     except SyntaxError as e:
         loc = f" (line {e.lineno}, column {e.offset})" if e.lineno else ""
         return False, f"{type(e).__name__}: {e.msg}{loc}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
 # In-process linters, preferred over shell linters (no subprocess). Each returns
 # (ok, error); error ``"__SKIP__"`` = unavailable dependency, counts as "no linter".
-LINTERS_INPROC: Dict[str, Callable[[str], tuple[bool, str]]] = {
+LINTERS_INPROC: dict[str, Callable[[str], tuple[bool, str]]] = {
     '.py': _lint_python_inproc,
     '.json': _lint_json_inproc,
     '.yaml': _lint_yaml_inproc,
@@ -163,6 +171,9 @@ class LintMixin:
             ))
         if ext in _SHELL_LINTER_LSP_REDUNDANT and self._lsp_will_handle(path):
             return LintResult(skipped=True, message=f"LSP server handles {ext} — shell linter skipped")
+        if ext in _SHELL_LINTER_RUNS_PROJECT_TOOLCHAIN and self._local_workspace_untrusted():
+            return LintResult(skipped=True, message=(
+                f"{LINTERS[ext].split()[0]} skipped: untrusted workspace (add it to lsp.trusted_workspaces to lint {ext} here)"))
         if ext in _MANAGED_NODE_LINTERS and self._lsp_local_only():
             base_cmd = _MANAGED_NODE_LINTERS[ext][0]
             result = self._run_managed_node_linter(ext, path)
@@ -203,7 +214,7 @@ class LintMixin:
             proc = subprocess.run(
                 [executable, *args, path], cwd=cwd or None, env=with_hermes_node_path(hermes_subprocess_env()),
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=windows_hide_flags())
+                text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=windows_hide_flags(), check=False)
         except subprocess.TimeoutExpired:
             return ExecuteResult(stdout=f"{tool} timed out after 30s", exit_code=124)
         return ExecuteResult(stdout=proc.stdout or "", exit_code=proc.returncode)
@@ -239,9 +250,22 @@ class LintMixin:
             return False
         try:
             from tools.environments.local import LocalEnvironment
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         return isinstance(env, LocalEnvironment)
+
+    def _local_workspace_untrusted(self) -> bool:
+        """True iff on a local backend the linter's cwd lies outside every trusted workspace
+        (``workspace.is_trusted_workspace``): ``npx`` and rustup resolve the toolchain from there, not
+        from the linted file's directory.  Sandboxed backends answer False: their toolchain is not the host's."""
+        if not self._lsp_local_only():
+            return False
+        from agent.lsp.manager import parse_trusted_workspaces
+        from agent.lsp.workspace import is_trusted_workspace, operator_workspace_roots
+        from hermes_cli.config import load_config_readonly
+        lsp_cfg = load_config_readonly().get("lsp")
+        trusted = parse_trusted_workspaces(lsp_cfg.get("trusted_workspaces") if isinstance(lsp_cfg, dict) else None)
+        return not is_trusted_workspace(getattr(self.env, "cwd", None) or self.cwd, trusted, operator_workspace_roots())
 
     def _lsp_service(self):
         """The active LSPService, or None on a non-local backend / any failure.
@@ -251,7 +275,7 @@ class LintMixin:
         try:
             from agent.lsp import get_service
             return get_service()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     def _lsp_handles_extension(self, ext: str) -> bool:
@@ -265,7 +289,7 @@ class LintMixin:
             if svc is not None:
                 return svc.handles_extension(ext)
             from agent.lsp.servers import SERVERS
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         return any(ext.lower() in srv.extensions for srv in SERVERS)
 
@@ -283,7 +307,7 @@ class LintMixin:
                     return False
                 d = parent
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     def _lsp_call(self, method: str, path: str, default):
@@ -294,7 +318,7 @@ class LintMixin:
             return default
         try:
             return getattr(svc, method)(path)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return default
 
     def _lsp_will_handle(self, path: str) -> bool:
@@ -303,35 +327,96 @@ class LintMixin:
         False so the shell linter still runs."""
         return bool(self._lsp_call("enabled_for", path, False))
 
-    def _snapshot_lsp_baseline(self, path: str) -> None:
-        """Capture pre-edit LSP diagnostics so the post-write delta is correct. Silent on failure."""
-        self._lsp_call("snapshot_baseline", path, None)
-
     def _maybe_lsp_diagnostics(self, path: str, *, pre_content: Optional[str] = None,
-                               post_content: Optional[str] = None) -> str:
-        """Formatted LSP diagnostics introduced by this edit, or "" when LSP is
-        unavailable/disabled/clean. With both pre and post content a line-shift map
-        remaps baseline diagnostics into post-edit coordinates; otherwise every
-        pre-existing diagnostic below an inserted line would look new."""
+                               post_content: Optional[str] = None, started: Optional[float] = None) -> str:
+        """Formatted LSP diagnostics this edit introduced, or "" when LSP is unavailable/disabled/clean
+        OR the verdict is not ready yet.  Never blocks the write on the language server: the check
+        (``agent.lsp.edit_check``) diagnoses ``post_content`` (the bytes this write produced) against
+        ``pre_content`` (None = new file) on the LSP loop: those snapshots, not a later read of the
+        file, which another session may already have rewritten.  The write waits for the verdict only until ``inline_deadline(started)`` (what is
+        left of the write's latency budget; ``started`` = ``time.monotonic()`` at write entry); a slower
+        verdict reaches the model with a later tool result of the same session (``agent.lsp.deferred``)."""
         svc = self._lsp_service()
         if svc is None or not self._lsp_will_handle(path):
             return ""
-        line_shift = None
-        if pre_content is not None and post_content is not None and pre_content != post_content:
-            try:
-                from agent.lsp.range_shift import build_line_shift
-                line_shift = build_line_shift(pre_content, post_content)
-            except Exception:  # noqa: BLE001
-                line_shift = None
         try:
-            diagnostics = svc.get_diagnostics_sync(path, delta=True, line_shift=line_shift)
-        except Exception:  # noqa: BLE001
+            from agent.lsp import deferred
+            from agent.lsp.edit_check import inline_wait
+            abs_path = os.path.abspath(path)
+            owner = deferred.current_owner()
+            # This session's undelivered verdict for the file: the new check takes it over (diffs
+            # against its baseline) and hands it back in ``result.carry`` only if it gets no verdict.
+            older = deferred.take(owner, abs_path)
+            carry = (older,) if older is not None else ()
+            future = svc.start_edit_check(path, pre_text=pre_content, post_text=post_content, owner=owner,
+                                          carry=carry)
+        except Exception:
             return ""
-        if not diagnostics:
+        if future is None:
+            deferred.restore(owner, abs_path, carry)
             return ""
+        import concurrent.futures
         try:
-            from agent.lsp.reporter import report_for_file, truncate
-            block = report_for_file(path, diagnostics)
-            return truncate("LSP diagnostics introduced by this edit:\n" + block) if block else ""
-        except Exception:  # noqa: BLE001
+            result = future.result(timeout=inline_wait(started))
+        except concurrent.futures.TimeoutError:
+            if owner:
+                token = deferred.track_pending(owner)
+                future.add_done_callback(lambda f: _post_deferred(owner, abs_path, f, carry, token))
             return ""
+        except Exception:  # LSP never breaks a write
+            logger.debug("LSP edit check failed for %s", path, exc_info=True)
+            deferred.restore(owner, abs_path, carry)
+            return ""
+        if result.superseded:
+            return ""
+        if result.diagnostics is None:
+            deferred.restore(owner, abs_path, result.carry)
+            return ""
+        return _format_lsp_block(path, result.diagnostics, "LSP diagnostics introduced by this edit:\n")
+
+
+def _format_lsp_block(path: str, diagnostics, header: str) -> str:
+    if not diagnostics:
+        return ""
+    try:
+        from agent.lsp.reporter import report_for_file, truncate
+        block = report_for_file(path, diagnostics)
+        return truncate(header + block) if block else ""
+    except Exception:  # LSP never breaks a write
+        logger.debug("formatting LSP diagnostics for %s failed", path, exc_info=True)
+        return ""
+
+
+def _post_deferred(owner: str, abs_path: str, future, carry, token) -> None:
+    """Done-callback (LSP loop thread): queue a late verdict for the session that made the edit, then
+    release a turn end waiting on it (``agent.lsp.deferred.settle_for_agent``)."""
+    from agent.lsp import deferred
+    try:
+        _queue_late_verdict(owner, abs_path, future, carry)
+    finally:
+        deferred.settled(owner, token)
+
+
+def _queue_late_verdict(owner: str, abs_path: str, future, carry) -> None:
+    """A superseded check posts nothing: the newer check owns its verdict AND the notes it carried.
+    No verdict hands back only what the check still holds (``result.carry``), never the caller's copy."""
+    from agent.lsp import deferred
+    try:
+        result = None if future.cancelled() else future.result()
+    except Exception:  # a failed check reports nothing; the older note goes back
+        logger.debug("deferred LSP edit check failed for %s", abs_path, exc_info=True)
+        deferred.restore(owner, abs_path, carry)
+        return
+    if result is None:
+        deferred.restore(owner, abs_path, carry)
+        return
+    if result.superseded:
+        return
+    if result.diagnostics is None:
+        deferred.restore(owner, abs_path, result.carry)
+        return
+    text = _format_lsp_block(abs_path, result.diagnostics, (
+        f"LSP diagnostics introduced by your earlier edit of {abs_path} "
+        "(the language server answered after that tool result returned):\n"))
+    if text:
+        deferred.post(owner, abs_path, text, result.baseline_text)

@@ -1111,3 +1111,273 @@ class TestVisionCpuBurstCap:
             f"analyses were serialized to the cap (peak={calls_peak}); only the "
             "encode burst should be bounded, not the whole call"
         )
+
+
+class TestVisionOcrTool:
+    @pytest.mark.asyncio
+    async def test_ocr_routes_to_auxiliary_ocr_task_with_configured_model(self):
+        from tools.vision_tools import _handle_vision_ocr
+
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0fakejpeg").decode()
+        data_url = f"data:image/jpeg;base64,{jpeg_b64}"
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "text [1,2,3,4]hello"
+        mock_response.choices = [mock_choice]
+
+        fake_cfg = {"auxiliary": {"ocr": {"model": "unlimited-test", "timeout": 300}}}
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/jpeg;base64,abc",
+            ),
+            patch("hermes_cli.config.load_config", return_value=fake_cfg),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = await _handle_vision_ocr({"image_url": data_url, "question": "total"})
+
+        assert "hello" in result
+        kwargs = mock_llm.call_args.kwargs
+        assert kwargs["task"] == "ocr"
+        assert kwargs["model"] == "unlimited-test"
+        assert kwargs["max_tokens"] == 4000
+        assert kwargs["timeout"] == 300.0
+        prompt_text = kwargs["messages"][0]["content"][0]["text"]
+        assert "verbatim" in prompt_text.lower()
+        assert "total" in prompt_text
+
+    @pytest.mark.asyncio
+    async def test_ocr_without_configured_model_fails_closed_with_guidance(self, monkeypatch):
+        from tools.vision_tools import _handle_vision_ocr
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with patch("hermes_cli.config.load_config", return_value={}):
+            result = await _handle_vision_ocr({"image_url": "data:image/png;base64,aaaa"})
+        assert "not configured" in result
+        assert "vision_analyze" in result
+
+
+class TestVisionOcrContext:
+    @pytest.mark.asyncio
+    async def test_vision_analyze_prepends_ocr_transcript(self):
+        from tools.vision_tools import _handle_vision_analyze
+
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0fakejpeg").decode()
+        data_url = f"data:image/jpeg;base64,{jpeg_b64}"
+
+        def _resp(text):
+            r = MagicMock()
+            ch = MagicMock()
+            ch.message.content = text
+            r.choices = [ch]
+            return r
+
+        fake_cfg = {
+            "auxiliary": {
+                "ocr": {"model": "unlimited-test"},
+                "vision": {"model": "scene-test", "ocr_context": True},
+            }
+        }
+        calls = []
+
+        async def fake_llm(**kwargs):
+            calls.append(kwargs)
+            if kwargs["task"] == "ocr":
+                return _resp("text [1,2,3,4]TOTAL: 42.00 GEL")
+            return _resp("A receipt on a table")
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/jpeg;base64,abc",
+            ),
+            patch("hermes_cli.config.load_config", return_value=fake_cfg),
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+            patch("tools.vision_tools.async_call_llm", side_effect=fake_llm),
+        ):
+            result = await _handle_vision_analyze(
+                {"image_url": data_url, "question": "what is this"}
+            )
+
+        assert "receipt" in result
+        assert [c["task"] for c in calls] == ["ocr", "vision"]
+        vision_prompt = calls[1]["messages"][0]["content"][0]["text"]
+        assert "TOTAL: 42.00 GEL" in vision_prompt
+        assert "Verbatim OCR transcript" in vision_prompt
+        assert calls[1]["model"] == "scene-test"
+
+    @pytest.mark.asyncio
+    async def test_vision_analyze_fails_open_when_ocr_errors(self):
+        from tools.vision_tools import _handle_vision_analyze
+
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0fakejpeg").decode()
+        data_url = f"data:image/jpeg;base64,{jpeg_b64}"
+
+        fake_cfg = {
+            "auxiliary": {
+                "ocr": {"model": "unlimited-test"},
+                "vision": {"model": "scene-test", "ocr_context": True},
+            }
+        }
+        calls = []
+
+        async def fake_llm(**kwargs):
+            calls.append(kwargs)
+            if kwargs["task"] == "ocr":
+                raise RuntimeError("ocr backend down")
+            r = MagicMock()
+            ch = MagicMock()
+            ch.message.content = "A cat"
+            r.choices = [ch]
+            return r
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/jpeg;base64,abc",
+            ),
+            patch("hermes_cli.config.load_config", return_value=fake_cfg),
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+            patch("tools.vision_tools.async_call_llm", side_effect=fake_llm),
+        ):
+            result = await _handle_vision_analyze({"image_url": data_url, "question": "who"})
+
+        assert "cat" in result
+        vision_prompt = calls[-1]["messages"][0]["content"][0]["text"]
+        assert "Verbatim OCR transcript" not in vision_prompt
+
+    @pytest.mark.asyncio
+    async def test_vision_analyze_ocr_context_opt_out(self):
+        from tools.vision_tools import _maybe_ocr_context
+
+        fake_cfg = {
+            "auxiliary": {
+                "ocr": {"model": "unlimited-test"},
+                "vision": {"ocr_context": False},
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
+            assert await _maybe_ocr_context("data:image/png;base64,aaaa") == ""
+
+    @pytest.mark.asyncio
+    async def test_ocr_context_is_off_by_default(self):
+        from tools.vision_tools import _maybe_ocr_context
+
+        fake_cfg = {"auxiliary": {"ocr": {"model": "unlimited-test"}, "vision": {"model": "scene-test"}}}
+        with (
+            patch("hermes_cli.config.load_config", return_value=fake_cfg),
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_vision,
+        ):
+            assert await _maybe_ocr_context("data:image/png;base64,aaaa") == ""
+        mock_vision.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ocr_transcript_is_truncated_to_bound(self):
+        import json
+
+        from tools.vision_tools import _OCR_CONTEXT_MAX_CHARS, _maybe_ocr_context
+
+        fake_cfg = {
+            "auxiliary": {
+                "ocr": {"model": "unlimited-test"},
+                "vision": {"ocr_context": True},
+            }
+        }
+        huge = "word " * 10000
+        raw = json.dumps({"success": True, "analysis": huge})
+        with (
+            patch("hermes_cli.config.load_config", return_value=fake_cfg),
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock, return_value=raw),
+        ):
+            result = await _maybe_ocr_context("data:image/png;base64,aaaa")
+        assert result.endswith("[OCR transcript truncated]")
+        assert len(result) <= _OCR_CONTEXT_MAX_CHARS + 300
+
+
+class TestVisionOcrGating:
+    def test_vision_ocr_gate_requires_configured_ocr_model(self, monkeypatch):
+        from tools.vision_tools import check_vision_ocr_requirements
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {"model": "x"}}}):
+            assert check_vision_ocr_requirements() is False
+
+    def test_vision_ocr_gate_passes_on_ocr_route_without_vision(self, monkeypatch):
+        from tools.vision_tools import check_vision_ocr_requirements
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with (
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"ocr": {"model": "unlimited-test"}}}),
+            patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(object(), "unlimited-test")) as probe,
+        ):
+            assert check_vision_ocr_requirements() is True
+        assert probe.call_args.args == ("ocr",)
+
+    def test_vision_ocr_gate_fails_when_ocr_route_unreachable(self, monkeypatch):
+        from tools.vision_tools import check_vision_ocr_requirements
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with (
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"ocr": {"model": "unlimited-test"}}}),
+            patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)),
+        ):
+            assert check_vision_ocr_requirements() is False
+
+    def test_vision_ocr_gate_passes_on_configured_ocr_fallback_chain(self, monkeypatch):
+        from tools.vision_tools import check_vision_ocr_requirements
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with (
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"ocr": {"model": "unlimited-test"}}}),
+            patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(object(), "fb-ocr", "fallback_chain[0](x)")) as fb,
+        ):
+            assert check_vision_ocr_requirements() is True
+        assert fb.call_args.args[0] == "ocr"
+
+    def test_ocr_env_override_does_not_leak_into_served_profile(self, monkeypatch):
+        """A served profile with no OCR config must not inherit the launch profile's AUXILIARY_OCR_MODEL:
+        no launch model is selected and OCR is not advertised (no route probe)."""
+        from agent import secret_scope
+        from tools.vision_tools import _configured_aux_model, check_vision_ocr_requirements
+
+        monkeypatch.setenv("AUXILIARY_OCR_MODEL", "launch-profile-ocr")
+        token_mux = secret_scope.set_multiplex_context(True)
+        token_scope = secret_scope.set_secret_scope({}, profile_home="/tmp/served-profile")
+        try:
+            with (
+                patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}),
+                patch("agent.auxiliary_client.get_text_auxiliary_client", side_effect=AssertionError("probed")),
+            ):
+                assert _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) is None
+                assert check_vision_ocr_requirements() is False
+        finally:
+            secret_scope.reset_secret_scope(token_scope)
+            secret_scope.reset_multiplex_context(token_mux)
+
+    def test_ocr_env_override_uses_served_profile_own_value(self, monkeypatch):
+        from agent import secret_scope
+        from tools.vision_tools import _configured_aux_model
+
+        monkeypatch.setenv("AUXILIARY_OCR_MODEL", "launch-profile-ocr")
+        token_mux = secret_scope.set_multiplex_context(True)
+        token_scope = secret_scope.set_secret_scope(
+            {"AUXILIARY_OCR_MODEL": "served-profile-ocr"}, profile_home="/tmp/served-profile")
+        try:
+            with patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+                assert _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) == "served-profile-ocr"
+        finally:
+            secret_scope.reset_secret_scope(token_scope)
+            secret_scope.reset_multiplex_context(token_mux)
+
+    def test_ocr_env_override_still_applies_to_launch_profile(self, monkeypatch):
+        from tools.vision_tools import _configured_aux_model
+
+        monkeypatch.setenv("AUXILIARY_OCR_MODEL", "launch-ocr")
+        with patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+            assert _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) == "launch-ocr"

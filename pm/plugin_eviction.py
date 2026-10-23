@@ -74,6 +74,58 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
     return reasons, waiting
 
 
+def _colliding_members(entries: list[Entry]) -> dict[Path, str]:
+    """Buildable members that would declare one [project].name twice in this selection.
+
+    Each home keeps its OWN copy of a plugin, so one plugin enabled in several profiles
+    puts two buildable workspace members with a single [project].name into one
+    generation, and uv lock refuses the WHOLE workspace.
+
+    A collision is a fact about the SELECTION, never about one plugin, so none of the
+    colliding members is evictable: they stay enabled, the reason names the homes to
+    reconcile, and they rejoin the build once one copy is gone.
+    """
+    import tomllib
+
+    from pm.plugin_declarations import read_python_declaration
+
+    by_name: dict[str, list[tuple[Path, Path]]] = {}
+    for plugins_dir, _name, plugin_dir in entries:
+        key = plugin_dir.resolve()
+        try:
+            declaration = read_python_declaration(plugin_dir)
+        except (OSError, ValueError, TypeError):
+            continue
+        # The collision sweep needs "a real pyproject on a non-external plugin":
+        # the same set enabled_plugin_dirs selects, minus metadata-only members.
+        if declaration.external or declaration.pyproject is None:
+            continue
+        try:
+            document = tomllib.loads(declaration.pyproject.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            continue
+        # Mirrors the virtual verdict in _workspace_member exactly: a member with no
+        # build backend is metadata-only and gets renamed to its unique key, so only a
+        # BUILDABLE member keeps its declared name and only it can collide.
+        virtual = ("build-system" not in document
+                   and document.get("tool", {}).get("uv", {}).get("package") is not True)
+        if virtual:
+            continue
+        declared = (document.get("project") or {}).get("name")
+        if declared:
+            by_name.setdefault(str(declared), []).append((key, plugins_dir.parent.resolve()))
+    collisions: dict[Path, str] = {}
+    for declared, rows in by_name.items():
+        if len({key for key, _home in rows}) < 2:
+            continue
+        for key, _home in rows:
+            others = ", ".join(sorted(str(home) for other, home in rows if other != key))
+            collisions[key] = (f"it shares the build-metadata name {declared!r} with the copy in "
+                               f"{others}, and uv refuses a workspace holding two members of one "
+                               f"name; disable the duplicate in all but one profile")
+    return collisions
+
+
 class PluginEviction:
     """Config edits disabling the plugins in *reasons*; published like a plugin selection."""
 

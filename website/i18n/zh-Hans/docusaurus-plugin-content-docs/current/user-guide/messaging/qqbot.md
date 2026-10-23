@@ -73,6 +73,7 @@ platforms:
       app_id: "your-app-id"
       client_secret: "your-secret"
       markdown_support: true       # enable QQ markdown (msg_type 2). Config-only; no env-var equivalent.
+      at_sender: true              # 在群聊回复中自动提及提问者 (<qqbot-at-user id="..." />)，默认 true
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"

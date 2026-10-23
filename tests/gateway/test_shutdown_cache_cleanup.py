@@ -74,6 +74,8 @@ class _FakeGateway:
         # This fake runs no executor turns, so it is always idle.
         return 0
 
+    _teardown_all_adapters = gw_mod.GatewayRunner._teardown_all_adapters
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 

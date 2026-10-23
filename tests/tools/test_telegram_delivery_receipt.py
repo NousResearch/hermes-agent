@@ -12,8 +12,14 @@ from tools import send_message_senders as senders
 
 @pytest.mark.parametrize("media", [False, True], ids=["text", "photo"])
 @pytest.mark.parametrize("returned_topic", [67890, 78901], ids=["matching", "different"])
-def test_receipt_reports_server_topic(monkeypatch, tmp_path, capsys, media, returned_topic):
-    message = SimpleNamespace(message_id=42, message_thread_id=returned_topic)
+@pytest.mark.parametrize("topic_field", ["thread", "direct", "direct_with_null_thread"])
+def test_receipt_reports_server_topic(monkeypatch, tmp_path, capsys, media, returned_topic, topic_field):
+    fields = {"message_thread_id": returned_topic}
+    if topic_field != "thread":
+        fields = {"direct_messages_topic": SimpleNamespace(topic_id=returned_topic)}
+        if topic_field == "direct_with_null_thread":
+            fields["message_thread_id"] = None
+    message = SimpleNamespace(message_id=42, **fields)
     bot = SimpleNamespace(
         send_message=AsyncMock(return_value=message),
         send_photo=AsyncMock(return_value=message),
@@ -47,6 +53,8 @@ def test_receipt_reports_server_topic(monkeypatch, tmp_path, capsys, media, retu
     ("67890", {}, False),
     (None, {"message_thread_id": None}, False),
     ("67890", {"message_thread_id": None}, False),
+    ("67890", {"message_thread_id": None, "direct_messages_topic": None}, False),
+    ("67890", {"direct_messages_topic": SimpleNamespace(topic_id=None)}, False),
     ("67890", {"message_thread_id": None}, True),
 ])
 def test_missing_server_topic_is_not_invented(monkeypatch, requested_topic, returned_fields, fallback):

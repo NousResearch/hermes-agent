@@ -6792,12 +6792,11 @@ function installContextMenuBridge(window: BrowserWindow) {
   })
 }
 
-// Chromium-initiated downloads (renderer anchor/blob downloads, drag-outs)
-// land here. Without a handler the OS save dialog opens with the process cwd
-// as the default directory (win-unpacked in packaged installs) and whatever
-// extensionless name the anchor carried. Route every download to the user's
-// Downloads directory and guarantee a MIME-derived extension. A media player's
-// own Download (⋮ menu) saves a hermes-media:// URL: offer the file's real name.
+// Chromium-initiated downloads (renderer anchor/blob downloads, drag-outs, a
+// media player's ⋮ Download) land here. Without a handler the OS save dialog
+// opens in the process cwd (win-unpacked in packaged installs) with whatever name
+// the URL carried. Route every download to Downloads, name hermes-media:// saves
+// after the file, and guarantee a MIME-derived extension.
 function installDownloadHandling() {
   session.defaultSession.on('will-download', (_event, item) => {
     const suggested = mediaProtocolDownloadName(item.getURL()) || item.getFilename() || 'download'

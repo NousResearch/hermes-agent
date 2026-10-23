@@ -238,18 +238,34 @@ def test_review_input_token_budget_resolution(config_value, expected):
 
 
 def test_review_input_token_budget_default_tracks_forks_context_window():
-    """Unset or malformed ``max_input_tokens`` → 75% of the fork's RESOLVED window (a 65k local
-    model gets ~49k, not the cloud-scale 600k), capped at 600k; unknown window → 120k fallback."""
+    """Unset or malformed ``max_input_tokens`` → several windows of the fork's RESOLVED context
+    (a 65k local model gets 327,680, not the cloud-scale 600k), capped at 600k; unknown window →
+    120k fallback."""
     from agent.background_review import _review_input_token_budget
 
     def fork(window):
         return SimpleNamespace(context_compressor=SimpleNamespace(context_length=window))
 
-    assert _review_input_token_budget({}, fork(65_536)) == 49_152
-    assert _review_input_token_budget({"max_input_tokens": "not-a-number"}, fork(65_536)) == 49_152
+    assert _review_input_token_budget({}, fork(65_536)) == 327_680
+    assert _review_input_token_budget({"max_input_tokens": "not-a-number"}, fork(65_536)) == 327_680
     assert _review_input_token_budget({}, fork(2_000_000)) == 600_000
     assert _review_input_token_budget({}, fork(None)) == 120_000
     assert _review_input_token_budget({}, None) == 120_000
+
+
+def test_derived_review_budget_covers_a_routed_forks_read_loop():
+    """#136889 regression: the budget is an AGGREGATE across the fork's requests while a context
+    window bounds ONE request. A routed 98,304-token local model spends ~37-40k input tokens on
+    its first request alone (digest + tool schemas), so the derived default must cover several
+    such requests — the old 0.75×-window default (73,728) cut reviews off after 2-3 of the 16
+    allowed iterations, mid-way through the read-before-write sequence."""
+    from agent.background_review import _context_derived_review_input_budget
+
+    budget = _context_derived_review_input_budget(
+        SimpleNamespace(context_compressor=SimpleNamespace(context_length=98_304))
+    )
+    assert budget == 491_520  # 5 × 98,304, under the 600k cap
+    assert budget // 40_000 >= 8  # several first-request-sized replays, vs 1-2 before
 
 
 def test_background_review_config_does_not_freeze_a_fixed_input_budget():

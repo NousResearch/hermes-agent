@@ -85,6 +85,19 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+# Editor fingerprint sent on every Copilot API request and the token exchange. The backend gates
+# features on it, and the primary (copilot_auth) and ImportError-fallback (models) header builders
+# must present the same one — a single source here makes drift structurally impossible.
+COPILOT_EDITOR_VERSION = "vscode/1.104.1"
+# X-GitHub-Api-Version pinned to the current Copilot API generation: without it, /models serves
+# legacy default-tier limits (claude-opus-5.5 as 200K, no billing tiers), so Hermes resolves
+# long-context models ~5x too small (#135168). GitHub REST (api.github.com) and the Copilot
+# backend use SEPARATE version namespaces that reject each other's dates — REST 400s on this
+# value, and the Copilot backend 400s "invalid apiVersion" on REST-supported dates such as
+# 2026-03-10 (both directions verified live in #126897) — so never send it to api.github.com and
+# never "fix" the date to a REST-supported value. Copilot exposes no version/deprecation headers
+# and no versions endpoint, so the date cannot be discovered at runtime.
+COPILOT_API_VERSION = "2026-08-01"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
 DEFAULT_ACTUAL_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"

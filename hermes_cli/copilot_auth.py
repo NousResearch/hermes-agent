@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from hermes_cli.auth_constants import COPILOT_API_VERSION, COPILOT_EDITOR_VERSION
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -218,8 +219,37 @@ _jwt_cache: dict[str, tuple[str, float, Optional[str]]] = {}
 _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 # Exchange endpoint and headers (matching VS Code / Copilot CLI)
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
-_EDITOR_VERSION = "vscode/1.104.1"
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
+
+# Escape hatch: if GitHub retires or advances the pinned date (COPILOT_API_VERSION in
+# auth_constants — the version-namespace caveat lives there), point at another version via
+# ``model.copilot_api_version`` in config.yaml (``hermes config set model.copilot_api_version
+# <date>``) — no release needed, and profile-scoped under the multiplex gateway. The override
+# applies to newly built Copilot clients (client construction bakes default_headers); a
+# running gateway picks it up fully on restart. Values must be a YYYY-MM-DD date: the Copilot
+# backend 400s "invalid apiVersion" on anything else, so a malformed value warns and falls
+# back to the pin instead of poisoning every request.
+_API_VERSION_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _copilot_api_version() -> str:
+    override = ""
+    try:
+        from hermes_cli.config import load_config_readonly
+        model_cfg = load_config_readonly().get("model")
+        if isinstance(model_cfg, dict):
+            override = str(model_cfg.get("copilot_api_version") or "").strip()
+    except Exception:
+        # Fail open to the pinned date: an auth-path header builder must not crash because
+        # config.yaml is unreadable (the loader has its own last-good recovery for that).
+        logger.debug("model.copilot_api_version: config read failed; using pinned date",
+                     exc_info=True)
+        override = ""
+    if override and not _API_VERSION_DATE_RE.fullmatch(override):
+        logger.warning("model.copilot_api_version=%r is not a YYYY-MM-DD date; using pinned %s",
+                       override, COPILOT_API_VERSION)
+        return COPILOT_API_VERSION
+    return override or COPILOT_API_VERSION
 
 # Transient-failure hardening: gateway startup races network readiness, and a single-shot
 # exchange failing there silently degrades to the RAW GitHub token, whose integrator allowlist
@@ -458,7 +488,7 @@ def _exchange_copilot_token_locked(
     req = urllib.request.Request(
         _TOKEN_EXCHANGE_URL, method="GET",
         headers={"Authorization": f"token {raw_token}", "User-Agent": _EXCHANGE_USER_AGENT,
-                 "Accept": "application/json", "Editor-Version": _EDITOR_VERSION})
+                 "Accept": "application/json", "Editor-Version": COPILOT_EDITOR_VERSION})
     data = _fetch_exchange_with_retry(req, timeout, fp)
     api_token = data.get("token", "")
     if not api_token:
@@ -502,7 +532,8 @@ def get_copilot_api_token(raw_token: str) -> tuple[str, Optional[str]]:
 def copilot_request_headers(
     *, is_agent_turn: bool = True, is_vision: bool = False) -> dict[str, str]:
     """Build the standard headers for Copilot API requests."""
-    headers: dict[str, str] = {"Editor-Version": _EDITOR_VERSION, "User-Agent": "HermesAgent/1.0",
+    headers: dict[str, str] = {"Editor-Version": COPILOT_EDITOR_VERSION, "User-Agent": "HermesAgent/1.0",
+                               "X-GitHub-Api-Version": _copilot_api_version(),
                                "Copilot-Integration-Id": "vscode-chat",
                                "Openai-Intent": "conversation-edits",
                                "x-initiator": "agent" if is_agent_turn else "user"}

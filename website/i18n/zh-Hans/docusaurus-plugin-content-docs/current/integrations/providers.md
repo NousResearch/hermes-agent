@@ -179,7 +179,7 @@ Copilot API **不**支持经典个人访问 token（`ghp_*`）。支持的 token
 :::
 
 :::info Hermes 中的 Copilot 认证行为
-Hermes 将支持的 GitHub token（`gho_*`、`github_pat_*` 或 `ghu_*`）直接发送到 `api.githubcopilot.com`，并附带 Copilot 专用请求头（`Editor-Version`、`Copilot-Integration-Id`、`Openai-Intent`、`x-initiator`）。
+Hermes 将支持的 GitHub token（`gho_*`、`github_pat_*` 或 `ghu_*`）直接发送到 `api.githubcopilot.com`，并附带 Copilot 专用请求头（`Editor-Version`、`Copilot-Integration-Id`、`Openai-Intent`、`x-initiator`、`X-GitHub-Api-Version`）。
 
 收到 HTTP 401 时，Hermes 在回退前会执行一次性凭据恢复：
 

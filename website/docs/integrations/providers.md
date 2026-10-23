@@ -239,7 +239,7 @@ If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authentic
 :::
 
 :::info Copilot auth behavior in Hermes
-Hermes sends a supported GitHub token (`gho_*`, `github_pat_*`, or `ghu_*`) directly to `api.githubcopilot.com` and includes Copilot-specific headers (`Editor-Version`, `Copilot-Integration-Id`, `Openai-Intent`, `x-initiator`).
+Hermes sends a supported GitHub token (`gho_*`, `github_pat_*`, or `ghu_*`) directly to `api.githubcopilot.com` and includes Copilot-specific headers (`Editor-Version`, `Copilot-Integration-Id`, `Openai-Intent`, `x-initiator`, `X-GitHub-Api-Version`).
 
 On HTTP 401, Hermes now performs a one-shot credential recovery before fallback:
 

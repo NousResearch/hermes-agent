@@ -623,6 +623,46 @@ class TestImageApiSurface:
         assert "aspect_ratio" not in payload
         assert any("catalog" in n for n in notes)
 
+    # -- edits keep the source shape ----------------------------------------
+
+    def test_edit_uses_auto_when_model_offers_it(self):
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, notes = _build_image_api_payload(
+            model_id="openai/gpt-image-2", prompt="p", semantic_aspect="portrait",
+            references=["data:image/png;base64,AA=="], config_key="openrouter", kwargs={},
+        )
+        assert payload["aspect_ratio"] == "auto"
+        assert any("'auto'" in n for n in notes)
+
+    def test_forced_ratio_beats_auto_on_edits(self):
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, _ = _build_image_api_payload(
+            model_id="openai/gpt-image-2", prompt="p", semantic_aspect="portrait",
+            references=["data:image/png;base64,AA=="], config_key="openrouter",
+            kwargs={"aspect_ratio_exact": "9:16"},
+        )
+        assert payload["aspect_ratio"] == "9:16"
+
+    def test_edit_on_model_without_auto_keeps_the_mapping(self):
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, _ = _build_image_api_payload(
+            model_id="google/gemini-3.1-flash-image", prompt="p", semantic_aspect="portrait",
+            references=["data:image/png;base64,AA=="], config_key="openrouter", kwargs={},
+        )
+        assert payload["aspect_ratio"] == "9:16"
+
+    def test_new_image_keeps_the_mapping_even_when_auto_exists(self):
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, _ = _build_image_api_payload(
+            model_id="openai/gpt-image-2", prompt="p", semantic_aspect="portrait",
+            references=[], config_key="openrouter", kwargs={},
+        )
+        assert payload["aspect_ratio"] == "9:16"
+
     def test_env_knob_applies(self, monkeypatch):
         from plugins.image_gen.openrouter import _build_image_api_payload
 

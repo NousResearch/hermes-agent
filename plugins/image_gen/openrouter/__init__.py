@@ -337,10 +337,13 @@ def _coerce_int(value: Any) -> Optional[int]:
 
 
 def _pick_exact_aspect_ratio(
-    semantic: str, meta: dict[str, Any], forced: Optional[str], notes: list[str]
+    semantic: str, meta: dict[str, Any], forced: Optional[str], notes: list[str], *,
+    has_references: bool = False,
 ) -> Optional[str]:
     """Exact ``aspect_ratio`` or ``None`` to omit. *forced* wins when supported; otherwise the
-    downgrade is noted and the per-model mapping of *semantic* applies."""
+    downgrade is noted and the per-model mapping of *semantic* applies. With *has_references*
+    (an edit) a model that offers ``auto`` gets it: *semantic* defaults to landscape even when
+    nobody chose it, and a fixed ratio makes the model recompose the reference to fit."""
     supported: tuple[str, ...] = tuple(meta.get("aspect_ratios") or ())
     if isinstance(forced, str) and forced.strip():
         value = forced.strip()
@@ -355,6 +358,9 @@ def _pick_exact_aspect_ratio(
             "model is not in this backend's catalog, so its aspect_ratio enum is "
             f"unknown; the field was omitted and '{semantic}' was not applied")
         return None
+    if has_references and "auto" in supported:
+        notes.append(f"reference image(s) supplied; used aspect_ratio 'auto' instead of the '{semantic}' mapping")
+        return "auto"
     for candidate in _ASPECT_PREFERENCES.get(semantic, ()):
         if candidate in supported:
             return candidate
@@ -392,7 +398,7 @@ def _build_image_api_payload(
     payload: dict[str, Any] = {"model": model_id, "prompt": prompt}
 
     forced_ratio = _image_api_setting("aspect_ratio", kwargs.get("aspect_ratio_exact"), config_key)
-    ratio = _pick_exact_aspect_ratio(semantic_aspect, meta, forced_ratio, notes)
+    ratio = _pick_exact_aspect_ratio(semantic_aspect, meta, forced_ratio, notes, has_references=bool(references))
     if ratio:
         payload["aspect_ratio"] = ratio
     for enum_name, meta_key in _IMAGE_API_ENUMS:

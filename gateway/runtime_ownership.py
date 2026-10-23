@@ -138,6 +138,25 @@ def _still_names(path: Path, fd: int) -> bool:
         return False
 
 
+def _holder_description(home: Path) -> str:
+    """Name the process holding *home*'s ``gateway.lock``, for the refusal text.
+
+    The refusal is what a crash-looping supervisor and the dashboard's status strip report, so it has
+    to say who holds the lock: an unattributed "already owns" leaves the operator guessing between a
+    running gateway, a maintenance reservation, and a stale record, with nothing to stop or clean.
+    Advisory only — it reads the holder's own record and never grants the lock.
+    """
+    from gateway.status import _live_pid_from_record, _read_gateway_lock_record
+    record = _read_gateway_lock_record(Path(home) / 'gateway.lock')
+    if not record:
+        return 'unidentified — the lock record is empty or unreadable (the holder is mid-acquire)'
+    pid = _live_pid_from_record(record)
+    if pid is None:
+        return 'unidentified — the lock record names no live holder (stale record, or mid-acquire)'
+    purpose = record.get('purpose')
+    return f'pid {pid}' + (f', purpose {purpose}' if purpose else '')
+
+
 class ProfileOwnership:
     def __init__(self):
         self._handles: dict[Path, object] = {}
@@ -165,7 +184,9 @@ class ProfileOwnership:
                     handle = os.fdopen(fd, 'r+', encoding='utf-8')  # windows-footgun: ok — write-only
                     try:
                         if not _try_acquire_file_lock(handle) or not _still_names(path, handle.fileno()):
-                            raise OwnershipConflict(f'Gateway runtime already owns profile {home}')
+                            raise OwnershipConflict(
+                                f'Gateway runtime already owns profile {home} '
+                                f'(holder: {_holder_description(home)})')
                         record = {**_build_pid_record(), 'hermes_home': str(home)}
                         if purpose:
                             record['purpose'] = purpose

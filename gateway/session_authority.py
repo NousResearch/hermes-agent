@@ -1115,17 +1115,25 @@ class SessionAuthority:
         """Settle the queued head a preclaim check refused as cancelled: its waiters get *reason* (the
         ingress notice, the API's refusal) and its successors revalidate on their own merits."""
         from gateway.session_runtime_workers import tracked_write
+        before = get_session_admission(self.db, admission_id=admission_id)
+        if before is not None and before['status'] == 'queued':
+            # Owed from before the write, as in _commit_cancel: storage failing after the commit leaves
+            # it for the drain's retry of this exact refusal (or an explicit cancel) to pay.
+            self.cancel_obligations.add(admission_id)
         try:
             row = await tracked_write(self, partial(cancel_session_input, self.db, epoch=self.epoch,
                                                     admission_id=admission_id))
         except RuntimeStoreError:
+            self.cancel_obligations.discard(admission_id)
             return False
         if (row['status'], row['outcome']) != ('terminal', 'cancelled'):
+            self.cancel_obligations.discard(admission_id)
             return False
-        waiter = self.waiters.pop(admission_id, None)
-        if waiter is not None and not waiter.done():
-            waiter.set_exception(RuntimeStoreError(reason))
-        self._settle_cancelled(ref, admission_id)
+        if admission_id in self.cancel_obligations:
+            waiter = self.waiters.pop(admission_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.set_exception(RuntimeStoreError(reason))
+            self._settle_cancelled(ref, admission_id)
         from gateway.session_ingress_media import release_admission_media
         await asyncio.to_thread(release_admission_media, self.db, admission_id)
         return True
@@ -1133,11 +1141,14 @@ class SessionAuthority:
     async def _claim_with_retry(self, ref, live):
         """The drain's next ``(row, first)``, waiting out transient storage and a classic turn on the
         route; None when the drain must exit (paused, or stopping with committed rows left queued)."""
-        backoff, conflicted = 0.0, None
+        backoff, conflicted, refusing = 0.0, None, None
         while True:
-            # The refusal handling's own reads and writes share the claim's storage retry: the retry's
-            # claim conflicts on the same head again (``conflicted`` kept) and refuses that exact row.
+            # The refusal handling's own reads and writes share the claim's storage retry, which finishes
+            # that exact refusal first: once its cancellation commits, the claim no longer sees the row.
             try:
+                if refusing is not None:
+                    await self._refuse_head(ref, *refusing)
+                    refusing = None
                 try:
                     row, first = await self._claim_next(ref, live)
                 except RuntimeStoreError as exc:
@@ -1156,8 +1167,12 @@ class SessionAuthority:
                         if head is not None and head != conflicted:
                             conflicted = head
                             continue
-                        if head is not None and await self._refuse_head(ref, head, exc.reason):
-                            continue
+                        if head is not None:
+                            refusing = head, exc.reason
+                            refused = await self._refuse_head(ref, *refusing)
+                            refusing = None
+                            if refused:
+                                continue
                     import logging
                     logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                     self._pause(ref, exc.reason)

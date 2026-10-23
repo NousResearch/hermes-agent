@@ -120,4 +120,18 @@ describe('handleMouseEvent right-click selection behavior', () => {
     expect(app.props.onCopySelectionNoClear).not.toHaveBeenCalled()
     expect(app.props.onMouseDownAt).toHaveBeenCalledWith(2, 0, 2)
   })
+
+  // #79204: some terminals (observed: Ghostty) report repeated right-button
+  // MOTION frames (bit 0x20 set) while the pointer merely moves, with no
+  // real click. Without a selection these used to fall through to
+  // onMouseDownAt — which the composer's right-click handler treats as a
+  // paste request — so every such motion frame re-fired a clipboard paste.
+  it('does not treat right-button motion as a press when there is no selection', () => {
+    const app = makeApp()
+
+    handleMouseEvent(app, { action: 'press', button: 0x20 | 2, col: 3, kind: 'mouse', row: 1 })
+
+    expect(app.props.onCopySelectionNoClear).not.toHaveBeenCalled()
+    expect(app.props.onMouseDownAt).not.toHaveBeenCalled()
+  })
 })

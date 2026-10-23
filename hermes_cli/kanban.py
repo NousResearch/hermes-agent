@@ -356,10 +356,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
         return _err(f"kanban: --max-runtime: {exc}", 2)
-    max_retries = getattr(args, "max_retries", None)
-    if max_retries is not None and max_retries < 1:
-        return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
-                    "use 1 to trip on the first failure.", 2)
+    try:
+        max_retries = kb.normalize_task_budget(getattr(args, "max_retries", None), "--max-retries")
+        max_iterations = kb.normalize_task_budget(getattr(args, "max_iterations", None), "--max-iterations")
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -369,7 +370,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries, model_override=getattr(args, "model_override", None),
+            max_retries=max_retries, max_iterations=max_iterations,
+            model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
@@ -525,6 +527,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
             print(f"  max-retries: {int(cfg_val)} (config kanban.failure_limit)")
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
+    if task.max_iterations is not None:
+        field("max-iterations", f"{task.max_iterations} (task)")
+    else:
+        field("max-iterations", "profile/global default")
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
@@ -595,6 +601,41 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
         print(f"Set model override on {args.task_id}: {label} (applies on next dispatch)")
     else:
         print(f"Cleared model override on {args.task_id} (worker uses its profile default)")
+    return 0
+
+
+def _limit_arg(raw: Optional[str], name: str) -> Optional[int]:
+    if raw is None or raw.strip().lower() in {"none", "-", "null", ""}:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer or 'none'") from exc
+    return value
+
+
+def _cmd_set_limits(args: argparse.Namespace) -> int:
+    if args.max_retries is None and args.max_iterations is None:
+        return _err("kanban: provide --max-retries and/or --max-iterations", 2)
+    try:
+        retries = kb.normalize_task_budget(_limit_arg(args.max_retries, "--max-retries"), "--max-retries")
+        iterations = kb.normalize_task_budget(_limit_arg(args.max_iterations, "--max-iterations"), "--max-iterations")
+        with kbc.connect_closing() as conn:
+            task = kb.get_task(conn, args.task_id)
+            if not task:
+                return _err(f"no such task: {args.task_id}")
+            # Omitted option preserves its current value; explicit 'none' clears it.
+            ok = kb.set_task_limits(
+                conn, args.task_id,
+                max_retries=task.max_retries if args.max_retries is None else retries,
+                max_iterations=task.max_iterations if args.max_iterations is None else iterations,
+            )
+    except (ValueError, RuntimeError) as exc:
+        return _err(f"kanban: {exc}", 2)
+    if not ok:
+        return _err(f"no such task: {args.task_id}")
+    print(f"Set limits on {args.task_id}: max-retries={retries if args.max_retries is not None else task.max_retries or 'default'}, "
+          f"max-iterations={iterations if args.max_iterations is not None else task.max_iterations or 'default'} (next dispatch)")
     return 0
 
 
@@ -1320,7 +1361,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
-    "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "assign": _cmd_assign, "set-model": _cmd_set_model, "set-limits": _cmd_set_limits,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,

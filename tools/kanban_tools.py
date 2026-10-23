@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SCHEDULE_SCHEMA, KANBAN_SET_LIMITS_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -420,14 +420,14 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
-    "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "created_at started_at completed_at result current_run_id model_override max_retries max_iterations "
+    "provider_override goal_mode goal_max_turns completion_contract last_failure_error".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
-_RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
-_COMMENT_FIELDS = ("author", "body", "created_at")
-_EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
+_RUN_FIELDS = tuple("id profile status outcome summary error metadata max_iterations started_at ended_at".split())
+_COMMENT_FIELDS = ("id", "author", "body", "created_at")
+_EVENT_FIELDS = ("id", "kind", "payload", "created_at", "run_id")
 _ATTACHMENT_FIELDS = tuple(
     "id filename content_type size uploaded_by stored_path created_at".split())
 _CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
@@ -661,7 +661,9 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
-    """Full task state: row, parents, children, comments, runs, last 50 events."""
+    """Bounded task read with structural pagination; full history is opt-in."""
+    detail = args.get("detail") or "compact"
+    _check(detail in {"compact", "full"}, "detail must be 'compact' or 'full'")
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         # No dispatcher task in scope and no explicit id: the caller asked "what
@@ -674,8 +676,52 @@ def _handle_show(args: dict, **kw) -> str:
                 "task to show by default. Call kanban_list to see task ids on "
                 "the board, then kanban_show(task_id=<id>) for full state."),
         })
+    def limit(name: str, default: int, maximum: int) -> int:
+        value = default if args.get(name) is None else _opt_int(args.get(name))
+        _check(value is not None and 1 <= value <= maximum,
+               f"{name} must be between 1 and {maximum}")
+        return value
+
+    def cursor(name: str) -> Optional[int]:
+        value = args.get(name)
+        if value is None:
+            return None
+        value = _opt_int(value)
+        _check(value is not None and value > 0, f"{name} must be a positive integer")
+        return value
+
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
+        cursors = {
+            "comments": cursor("before_comment_id"),
+            "runs": cursor("before_run_id"),
+            "events": cursor("before_event_id"),
+        }
+        limits = ({
+            "comments": limit("comment_limit", 5, 20),
+            "runs": limit("run_limit", 5, 20),
+            "events": limit("event_limit", 10, 50),
+        } if detail == "compact" else None)
+        comments, comment_page = kb.list_task_history_page(
+            conn, tid, kind="comments", before_id=cursors["comments"],
+            limit=limits["comments"] if limits else None,
+        )
+        runs, run_page = kb.list_task_history_page(
+            conn, tid, kind="runs", before_id=cursors["runs"],
+            limit=limits["runs"] if limits else None,
+        )
+        events, event_page = kb.list_task_history_page(
+            conn, tid, kind="events", before_id=cursors["events"],
+            limit=limits["events"] if limits else None,
+        )
+        goal_turns = task.goal_max_turns
+        if task.goal_mode and not goal_turns:
+            from hermes_cli.goals import DEFAULT_MAX_TURNS
+            goal_turns = DEFAULT_MAX_TURNS
+        effective_max_calls = (
+            task.max_iterations * goal_turns
+            if task.max_iterations is not None and task.goal_mode else task.max_iterations
+        )
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
@@ -684,12 +730,45 @@ def _handle_show(args: dict, **kw) -> str:
             "unsatisfied_parents": [
                 {"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, tid)],
             "children": kb.child_ids(conn, tid),
-            "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
-            # Capped; full log via CLI.
-            "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
-            "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
-            # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+            "comments": [_fields(c, _COMMENT_FIELDS) for c in comments],
+            "events": [_fields(e, _EVENT_FIELDS) for e in events],
+            "runs": [_fields(r, _RUN_FIELDS) for r in runs],
+            "execution_budget": {
+                "max_iterations_per_turn": task.max_iterations,
+                "goal_turns": goal_turns if task.goal_mode else None,
+                "max_api_calls_per_run": effective_max_calls,
+            },
+            "history": {
+                "detail": detail, "limits": limits,
+                "comments": comment_page, "runs": run_page, "events": event_page,
+            },
+        })
+
+
+@_kanban_handler("kanban_set_limits")
+def _handle_set_limits(args: dict, **kw) -> str:
+    _require_orchestrator_tool("kanban_set_limits")
+    tid = _require_task_id(args)
+    _check("max_retries" in args or "max_iterations" in args,
+           "set max_retries and/or max_iterations")
+
+    def positive_or_none(name: str, current: Optional[int]) -> Optional[int]:
+        if name not in args:
+            return current
+        value = args.get(name)
+        if value is None:
+            return None
+        try:
+            return kb.normalize_task_budget(value, name)
+        except ValueError as exc:
+            raise _Reject(str(exc)) from exc
+
+    with _board(args.get("board")) as (kb, conn):
+        task = _existing_task(kb, conn, tid)
+        retries = positive_or_none("max_retries", task.max_retries)
+        iterations = positive_or_none("max_iterations", task.max_iterations)
+        kb.set_task_limits(conn, tid, max_retries=retries, max_iterations=iterations)
+        return _ok(task_id=tid, max_retries=retries, max_iterations=iterations)
 
 
 @_kanban_handler("kanban_list")
@@ -834,7 +913,10 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        ok = kb.block_task(
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
+            input_request=args.get("input_request"),
+        )
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
@@ -1114,6 +1196,11 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
+        try:
+            max_retries = kb.normalize_task_budget(args.get("max_retries"), "max_retries")
+            max_iterations = kb.normalize_task_budget(args.get("max_iterations"), "max_iterations")
+        except ValueError as exc:
+            raise _Reject(str(exc)) from exc
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
@@ -1142,6 +1229,7 @@ def _handle_create(args: dict, **kw) -> str:
             creator_task_id=self_tid,
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
+            max_retries=max_retries, max_iterations=max_iterations,
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
@@ -1290,10 +1378,11 @@ def _handle_link(args: dict, **kw) -> str:
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# Board-routing and task-budget tools are hidden from task workers.
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_set_limits"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
+    ("kanban_set_limits", KANBAN_SET_LIMITS_SCHEMA, _handle_set_limits, "⚙"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),

@@ -171,11 +171,11 @@ def get_paper_abstract(doi):
     paper = sch.get_paper(f"DOI:{doi}")
     return paper.abstract if paper else None
 
-# Verify claim appears in abstract
+# A keyword match is a retrieval hint, not proof that the paper supports a claim.
 abstract = get_paper_abstract("10.48550/arXiv.1706.03762")
 claim = "attention mechanism"
 if claim.lower() in abstract.lower():
-    print("Claim appears in paper")
+    print("Keyword found; read the paper to verify claim support")
 ```
 
 ### Step 5: Add to Bibliography
@@ -345,7 +345,7 @@ class CitationManager:
         return bibtex
 
     def cite(self, query: str) -> Optional[str]:
-        """Full workflow: search, verify, return BibTeX."""
+        """Return BibTeX only after the paper has been verified."""
         # Search
         papers = self.search(query, limit=5)
         if not papers:
@@ -358,6 +358,7 @@ class CitationManager:
         verified, sources = self.verify(paper)
         if not verified:
             print(f"Warning: Could only verify in {sources}")
+            return None
 
         # Get BibTeX
         bibtex = self.get_bibtex(paper)

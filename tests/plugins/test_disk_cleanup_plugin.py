@@ -709,3 +709,73 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
+
+
+class TestProtectedPathsNeverDeleted:
+    """Regression tests for #135891 — ``quick()`` must revalidate scope and protected
+    files for a stored entry regardless of the category it claims.
+
+    A hand-edited or pre-fix ``tracked.json`` can carry a ``temp``/``test`` entry for a durable
+    top-level file (``config.yaml``, ``.env``, ``auth.json``, ...), a path that now resolves
+    outside HERMES_HOME, or a symlink. ``_is_protected_dir`` guarded directories only, so a
+    stored *file* entry reached ``_delete_item`` and was unlinked once it aged out.
+    """
+
+    PROTECTED_FILES = ("config.yaml", ".env", "auth.json", "USER.md", "MEMORY.md", "SOUL.md")
+
+    @pytest.mark.parametrize("name", PROTECTED_FILES)
+    def test_track_refuses_a_protected_top_level_file(self, _isolate_env, name):
+        dg = _load_lib()
+        protected = _isolate_env / name
+        protected.write_text("x")
+        assert dg.track(str(protected), "temp", silent=True) is False
+        assert dg.load_tracked() == [], "a protected top-level file must never be registered"
+
+    @pytest.mark.parametrize("name", PROTECTED_FILES)
+    def test_quick_spares_a_protected_file_from_a_stale_entry(self, _isolate_env, name):
+        dg = _load_lib()
+        protected = _isolate_env / name
+        protected.write_text("x")
+        old_ts = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+        dg.save_tracked([{"path": str(protected), "category": "temp",
+                          "timestamp": old_ts, "size": 1}])
+        summary = dg.quick()
+        assert protected.exists(), "a stale temp entry must never delete a protected file"
+        assert summary["deleted"] == 0
+        assert dg.load_tracked() == [], "the stale entry is dropped, not retried"
+
+    def test_quick_spares_a_symlinked_entry(self, _isolate_env, tmp_path):
+        dg = _load_lib()
+        target = tmp_path / "outside.txt"
+        target.write_text("keep me")
+        link = _isolate_env / "link.tmp"
+        link.symlink_to(target)
+        old_ts = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+        dg.save_tracked([{"path": str(link), "category": "temp", "timestamp": old_ts, "size": 1}])
+        summary = dg.quick()
+        assert target.exists(), "a symlinked entry must never delete through the link"
+        assert summary["deleted"] == 0
+        assert dg.load_tracked() == []
+
+    def test_quick_spares_an_out_of_scope_entry(self, _isolate_env, tmp_path):
+        dg = _load_lib()
+        outside = tmp_path / "outside-scratch.tmp"
+        outside.write_text("keep me")
+        old_ts = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+        dg.save_tracked([{"path": str(outside), "category": "temp", "timestamp": old_ts, "size": 1}])
+        summary = dg.quick()
+        assert outside.exists(), "a stored path outside HERMES_HOME is never deleted"
+        assert summary["deleted"] == 0
+
+    def test_control_temp_file_under_cache_still_pruned(self, _isolate_env):
+        """Control: the scope guard must not spare ordinary disposable temp files."""
+        dg = _load_lib()
+        cache = _isolate_env / "cache"
+        cache.mkdir()
+        old_file = cache / "scratch.txt"
+        old_file.write_text("x")
+        old_ts = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+        dg.save_tracked([{"path": str(old_file), "category": "temp", "timestamp": old_ts, "size": 1}])
+        summary = dg.quick()
+        assert not old_file.exists()
+        assert summary["deleted"] == 1

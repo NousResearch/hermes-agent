@@ -52,12 +52,18 @@ def is_history_mount(live):
 
 
 def require_history_leaf(authority, sid):
-    """A delete takes a row's delegate subtree and detaches its other children, and a history mount
-    shows the owner neither, so it deletes only a leaf (as #140692 by @pnpwin did for subagents)."""
+    """A delete takes its whole compression chain, every chain row's delegate subtree, and detaches
+    their other children, and a history mount shows the owner only the chain, so it deletes only a
+    chain nothing else hangs off (as #140692 by @pnpwin did for subagents)."""
     if not is_history_mount(authority.sessions[sid]):
         return
+    from hermes_state_mutation_guards import delete_targets
+    chain = set(authority.db.get_compression_lineage(sid))
     with authority.db._read_ctx() as conn:
-        if conn.execute('SELECT 1 FROM sessions WHERE parent_session_id=? LIMIT 1', (sid,)).fetchone():
+        targets = delete_targets(conn, sid)
+        children = conn.execute(f"SELECT id FROM sessions WHERE parent_session_id IN ({','.join('?' * len(targets))})",
+                                targets).fetchall()
+        if not chain.issuperset([*targets, *(row[0] for row in children)]):
             raise RuntimeStoreError('session_has_children', field='session_id',
                                     detail='this stored conversation has child sessions a delete would take with it')
 

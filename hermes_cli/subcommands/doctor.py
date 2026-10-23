@@ -18,6 +18,13 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
             "configured tool backend (Firecrawl/FAL/browser/MCP/TTS/STT) "
             "after the static checks. Makes real network calls.")
     doctor_parser.add_argument(
+        "--runtime", action="store_true",
+        help="Opt-in: diagnose the selected profile's resolved agent startup and "
+            "first-chunk path with at most one minimal inference request.")
+    doctor_parser.add_argument(
+        "--json", action="store_true",
+        help="Emit the --runtime report as machine-readable JSON (requires --runtime).")
+    doctor_parser.add_argument(
         "--ack", metavar="ADVISORY_ID", default=None,
         help="Acknowledge a security advisory by ID and exit. After ack, the "
             "advisory will no longer trigger startup banners. Run `hermes "

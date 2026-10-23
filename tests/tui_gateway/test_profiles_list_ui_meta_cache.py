@@ -10,6 +10,7 @@ still appears.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -63,3 +64,28 @@ def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     (assets / "avatar.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     assert _row()["has_avatar"] is True
+
+
+def test_an_id_like_yaml_scalar_stays_json_safe_on_the_wire(home):
+    """A profile.yaml written by an older build must not make the roster frame undecodable.
+
+    YAML 1.1 reads an unquoted id-like scalar as a float (``20260817_213628_e20138`` → ``inf``),
+    which is what an older desktop wrote into ``ui_meta['hermes-bots'].chat``. ``json.dumps`` then
+    emits the bare ``Infinity`` token — rejected by strict parsers, which is what the desktop's
+    transport uses — and since the response carries every profile in one frame, one such value
+    blanked the roster for every profile.
+    """
+    (home / "profiles" / "bob" / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    chat: 20260817_213628_e20138\n    title: Bob\n",
+        encoding="utf-8")
+
+    row = _row()
+    assert row["ui_meta"]["hermes-bots"]["title"] == "Bob"  # the rest of the block still arrives
+
+    frame = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"profiles": [row]}})
+
+    def _reject(constant):  # JSON.parse has no Infinity/NaN token
+        raise AssertionError(f"frame is not strict JSON: bare {constant} token")
+
+    decoded = json.loads(frame, parse_constant=_reject)
+    assert decoded["result"]["profiles"][0]["name"] == "bob"

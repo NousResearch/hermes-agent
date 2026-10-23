@@ -92,13 +92,18 @@ def _fake_remote_backend(monkeypatch, remote_root: Path) -> list:
     import subprocess
 
     import tools.terminal_tool as terminal_tool_mod
+    from tools.environments.local import _find_bash
 
     calls = []
+    is_windows = os.name == "nt"
 
     def fake_terminal_tool(command, **kwargs):
         calls.append((command, kwargs.get("task_id")))
+        # The backend runs POSIX sh. On a Windows host shell=True would hand the command to cmd.exe,
+        # which ignores its single quotes, so run it through Git Bash as LocalEnvironment does.
         proc = subprocess.run(
-            command, shell=True, cwd=remote_root, capture_output=True, text=True,
+            [_find_bash(), "-c", command] if is_windows else command, shell=not is_windows,
+            cwd=remote_root, capture_output=True, text=True,
             env={"PATH": os.environ.get("PATH", ""), "HOME": str(remote_root)}, check=False)
         return json.dumps({"output": proc.stdout, "exit_code": proc.returncode})
 

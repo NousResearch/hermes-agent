@@ -30,7 +30,7 @@ _cached_policy_path: Optional[str] = None
 _cached_policy_time: float = 0.0
 
 
-def _fresh_cached_policy(resolved_path: str, now: float) -> Optional[Dict[str, Any]]:
+def _fresh_cached_policy(resolved_path: str, now: float) -> Optional[dict[str, Any]]:
     """Return the cached policy only when it belongs to this config path and is still within TTL."""
     with _cache_lock:
         if (

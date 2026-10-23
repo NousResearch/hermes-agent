@@ -6,9 +6,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-import yaml
 
-import tools.website_policy as website_policy
+import hermes_yaml as yaml
+from tools import website_policy
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 

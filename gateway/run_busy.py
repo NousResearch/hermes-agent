@@ -1422,19 +1422,14 @@ class GatewayBusySessionMixin:
         ]
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
-        """True if this /restart is a Telegram re-delivery we already handled.
+        """True if this /restart or agent turn is a redelivery we already handled.
 
-        The previous gateway wrote ``.restart_last_processed.json`` (platform + update_id). A
-        /restart with update_id <= that value is a redelivery when this process booted from that
-        restart; otherwise the marker must be < 5 minutes old. Telegram only (numeric ordering).
+        The previous gateway wrote ``.restart_last_processed.json``. For Telegram /restart,
+        a message with update_id <= recorded is suppressed. For agent_tool turns, matching
+        chat_id + thread_id + message_id is suppressed.
         """
         from gateway.run import _hermes_home
-        if event is None or event.source is None or event.platform_update_id is None:
-            return False
-        try:
-            if event.source.platform.value != "telegram":
-                return False
-        except Exception:
+        if event is None or event.source is None:
             return False
 
         try:
@@ -1444,17 +1439,44 @@ class GatewayBusySessionMixin:
                 # ONLY when this process booted from a chat /restart AND is within a short post-boot
                 # window; consume the flag one-shot so a later legitimate /restart is honored.
                 if (
-                    # Belt-and-suspenders for when the dedup marker goes missing (manually cleaned up, or
-                    # the previous cycle's write failed). Without a marker the update_id comparison below
-                    # can't run, so a redelivered /restart would sail through and re-restart the gateway —
-                    # an infinite loop (issue #18528).
                     getattr(self, "_booted_from_restart", False)
                     and time.time() - getattr(self, "_startup_time", 0.0) < 60
+                    and event.platform_update_id is not None
                 ):
                     self._booted_from_restart = False
                     return True
                 return False
             data = json.loads(marker_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return False
+
+        origin = data.get("origin", "slash_command")
+        if origin == "agent_tool":
+            recorded_chat_id = data.get("chat_id")
+            recorded_thread_id = data.get("thread_id")
+            recorded_msg_id = data.get("message_id")
+
+            evt_chat_id = event.source.chat_id
+            evt_thread_id = event.source.thread_id or None
+            evt_msg_id = str(event.message_id) if event.message_id is not None else None
+
+            if (
+                evt_chat_id == recorded_chat_id
+                and evt_thread_id == (recorded_thread_id or None)
+                and evt_msg_id is not None
+                and recorded_msg_id is not None
+                and evt_msg_id == str(recorded_msg_id)
+            ):
+                if getattr(self, "_booted_from_restart", False):
+                    self._booted_from_restart = False
+                return True
+            return False
+
+        if event.platform_update_id is None:
+            return False
+        try:
+            if event.source.platform.value != "telegram":
+                return False
         except Exception:
             return False
 

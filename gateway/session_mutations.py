@@ -129,7 +129,8 @@ async def _owned_mutation(authority, actor, ref, params):
                 result = await _mutate_session(authority, actor, ref, params, owner=owner)
             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
                 # A pick on a running session is for the next turn (the running turn keeps its route).
-                if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
+                if (params.get('operation') not in {'model', 'reasoning'}
+                        or getattr(exc, 'reason', 'session_busy') != 'session_busy'):
                     raise
                 from gateway.session_deferred_pick import defer_pick
                 # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.

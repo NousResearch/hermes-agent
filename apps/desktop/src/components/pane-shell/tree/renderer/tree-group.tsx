@@ -238,6 +238,15 @@ function ZoneMenu({
   )
 }
 
+// RTL (#136275): the panel header row's spacers reserve PHYSICAL room — the
+// first child takes `--panel-titlebar-left` for the window controls, the last
+// one `--panel-titlebar-right` for the right-side titlebar tools. A plain
+// `flex` row mirrors under dir="rtl", so the left spacer and the drag region
+// land on the tools and swallow their clicks; reversing the row back for RTL
+// keeps each reservation on its physical end.
+const PANEL_HEADER_ROW =
+  'relative flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background) rtl:flex-row-reverse'
+
 export function TreeGroup({
   node,
   parentAxis,
@@ -563,7 +572,7 @@ export function TreeGroup({
           bounds, strip refs, focus ownership and split geometry as the body. */}
       {(headerVisible || (topEdge && !verticalCollapse)) && (
         <div
-          className="relative flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
+          className={PANEL_HEADER_ROW}
           data-panel-header=""
           style={topEdge ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) } : undefined}
         >

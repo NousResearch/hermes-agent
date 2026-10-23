@@ -9,7 +9,8 @@ import {
   KANBAN_CARD_BADGE_HUES,
   KANBAN_CARD_BADGE_LIMITS,
   type KanbanCard,
-  type KanbanCardBadgeContribution
+  type KanbanCardBadgeContribution,
+  type KanbanCardBoard
 } from '@hermes/plugin-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -37,8 +38,8 @@ function loadPlugin(id: string, contributions: Record<string, KanbanCardBadgeCon
   return unload
 }
 
-const badgesFor = (target: KanbanCard = card) =>
-  resolveKanbanCardBadges(registry.getArea(KANBAN_CARD_AREAS.badges), target)
+const badgesFor = (target: KanbanCard = card, board: KanbanCardBoard = { tenants: [] }) =>
+  resolveKanbanCardBadges(registry.getArea(KANBAN_CARD_AREAS.badges), target, board)
 
 afterEach(() => {
   loaded.splice(0).forEach(unload => unload())
@@ -84,20 +85,23 @@ describe('kanban card badges: ordering and arbitration', () => {
     expect(badgesFor().map(b => b.label)).toEqual(['ok'])
   })
 
-  it('passes each decorator a frozen, minimal view of the card the host renders', () => {
-    let seen: unknown
+  it('passes each decorator a frozen, minimal view of the card and its board', () => {
+    const seen: unknown[] = []
     loadPlugin('peek', {
-      tag: c => {
-        seen = c
+      tag: (c, board) => {
+        seen.push(c, board)
 
         return null
       }
     })
 
-    badgesFor({ ...card, title: 'secret prose', body: 'more prose' } as unknown as KanbanCard)
+    badgesFor({ ...card, body: 'more prose', title: 'secret prose' } as unknown as KanbanCard, {
+      tenants: ['acme', 'globex']
+    })
 
-    expect(seen).toEqual(card)
-    expect(Object.isFrozen(seen)).toBe(true)
+    expect(seen).toEqual([card, { tenants: ['acme', 'globex'] }])
+    expect(seen.every(view => Object.isFrozen(view))).toBe(true)
+    expect(Object.isFrozen((seen[1] as { tenants: string[] }).tenants)).toBe(true)
   })
 })
 

@@ -58,6 +58,13 @@ export interface KanbanCard {
   readonly tenant: null | string
 }
 
+/** Board-level facts every card on the board shares. Frozen. */
+export interface KanbanCardBoard {
+  /** Every tenant on the board (the list its filter menu offers), so a plugin
+   *  can give each one a distinct color instead of hashing blind. */
+  readonly tenants: readonly string[]
+}
+
 export interface KanbanCardBadge {
   /** Plain text, shown as-is (no markup). Trimmed; control and bidi
    *  characters removed; shortened past `labelChars`. */
@@ -73,7 +80,10 @@ export interface KanbanCardBadge {
  *  badges, or `null` for cards you have nothing to say about. Keep it a pure
  *  lookup: it runs while the board renders. */
 export interface KanbanCardBadgeContribution {
-  decorate: (card: KanbanCard) => KanbanCardBadge | null | readonly KanbanCardBadge[] | undefined
+  decorate: (
+    card: KanbanCard,
+    board: KanbanCardBoard
+  ) => KanbanCardBadge | null | readonly KanbanCardBadge[] | undefined
 }
 
 export interface ResolvedKanbanCardBadge {
@@ -146,7 +156,8 @@ const warned = new Set<string>()
  *  and a decorator that throws or answers garbage simply contributes nothing. */
 export function resolveKanbanCardBadges(
   contributions: readonly Contribution[],
-  card: KanbanCard
+  card: KanbanCard,
+  board: KanbanCardBoard
 ): ResolvedKanbanCardBadge[] {
   const view: KanbanCard = Object.freeze({
     assignee: card.assignee ?? null,
@@ -154,6 +165,8 @@ export function resolveKanbanCardBadges(
     status: card.status,
     tenant: card.tenant ?? null
   })
+
+  const boardView: KanbanCardBoard = Object.freeze({ tenants: Object.freeze([...board.tenants]) })
 
   const used = new Map<string, number>()
   const badges: ResolvedKanbanCardBadge[] = []
@@ -167,7 +180,11 @@ export function resolveKanbanCardBadges(
     }
 
     try {
-      const answer = (contribution.data as Partial<KanbanCardBadgeContribution> | undefined)?.decorate?.(view)
+      const answer = (contribution.data as Partial<KanbanCardBadgeContribution> | undefined)?.decorate?.(
+        view,
+        boardView
+      )
+
       const list: readonly unknown[] = Array.isArray(answer) ? answer : answer ? [answer] : []
 
       for (let index = 0; index < list.length && count < KANBAN_CARD_BADGE_LIMITS.perPlugin; index += 1) {
@@ -191,9 +208,10 @@ export function resolveKanbanCardBadges(
   return badges
 }
 
-/** The fields of a board task the badge row reads. */
+/** The fields of a board task the badge row reads, and the board's tenants. */
 export interface KanbanCardBadgesProps {
   card: { assignee?: null | string; id: string; status: string; tenant?: null | string }
+  tenants: readonly string[]
 }
 
 const HUE_STYLE =
@@ -214,14 +232,14 @@ const pluginName = (source: string, records: ReturnType<typeof $pluginRecords.ge
 
 /** The badge row a Kanban card renders above its title. Renders nothing when
  *  no plugin has a badge for this card, so an unused area costs no space. */
-export function KanbanCardBadges({ card }: KanbanCardBadgesProps): null | ReactElement {
+export function KanbanCardBadges({ card, tenants }: KanbanCardBadgesProps): null | ReactElement {
   const contributions = useContributions(KANBAN_CARD_AREAS.badges)
   const records = useStore($pluginRecords)
   const { assignee = null, id, status, tenant = null } = card
 
   const badges = useMemo(
-    () => resolveKanbanCardBadges(contributions, { assignee, id, status, tenant }),
-    [assignee, contributions, id, status, tenant]
+    () => resolveKanbanCardBadges(contributions, { assignee, id, status, tenant }, { tenants }),
+    [assignee, contributions, id, status, tenant, tenants]
   )
 
   if (badges.length === 0) {

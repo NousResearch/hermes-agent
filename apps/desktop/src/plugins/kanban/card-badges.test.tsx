@@ -39,7 +39,7 @@ vi.mock('./api', async importOriginal => ({
     ],
     latest_event_id: 0,
     now: 0,
-    tenants: ['acme']
+    tenants: ['acme', 'globex']
   })),
   fetchOrchestration: vi.fn(async () => ({ default_assignee: '' })),
   fetchProfiles: vi.fn(async () => ({ profiles: [] }))
@@ -47,6 +47,7 @@ vi.mock('./api', async importOriginal => ({
 
 let disposeLocales: () => void = () => undefined
 let unloadPlugin: () => void = () => undefined
+let seenTenants: string[] = []
 
 beforeEach(() => {
   disposeLocales = registerPluginLocales('kanban', KANBAN_LOCALES)
@@ -57,8 +58,16 @@ beforeEach(() => {
   ctx.register({
     area: KANBAN_CARD_AREAS.badges,
     data: {
-      decorate: ({ tenant }) =>
-        tenant ? [{ label: tenant, tone: 'blue', tooltip: `Tenant ${tenant}` }, { label: '<b>bold</b>' }] : null
+      decorate: ({ tenant }, { tenants }) => {
+        seenTenants = [...tenants]
+
+        return tenant
+          ? [
+              { label: tenant, tone: 'blue', tooltip: `Tenant ${tenant} of ${tenants.length}` },
+              { label: '<b>bold</b>' }
+            ]
+          : null
+      }
     } satisfies KanbanCardBadgeContribution,
     id: 'tenant'
   })
@@ -90,6 +99,8 @@ describe('kanban board: plugin card badges', () => {
     const badge = acme.getByText('acme')
 
     expect(badge.closest('[data-slot="kanban-card-badge"]')?.getAttribute('data-tone')).toBe('blue')
+    // The board's tenant list reaches the decorator (collision-free colors need it).
+    expect(seenTenants).toEqual(['acme', 'globex'])
     // Markup-looking text stays text: no element is created from a label.
     expect(acme.getByText('<b>bold</b>').querySelector('b')).toBeNull()
     expect(tileOf('Untenanted chore').querySelector('[data-slot="kanban-card-badges"]')).toBeNull()

@@ -781,6 +781,9 @@ interface KanbanCard {            // frozen; identity and routing fields only
   tenant: string | null
   assignee: string | null
 }
+interface KanbanCardBoard {       // frozen; shared by every card on the board
+  tenants: readonly string[]      // every tenant on the board (its filter menu's list)
+}
 interface KanbanCardBadge {
   label: string                   // plain text
   tone?: KanbanCardBadgeTone      // 'neutral' (default) or one of KANBAN_CARD_BADGE_HUES
@@ -791,16 +794,20 @@ ctx.register({
   area: KANBAN_CARD_AREAS.badges,
   id: 'tenant',
   data: {
-    decorate: ({ tenant }) =>
-      tenant ? { label: tenant, tone: KANBAN_CARD_BADGE_HUES[hash(tenant) % 12], tooltip: `Tenant: ${tenant}` } : null
+    // `tenants` lets you give each tenant on the board its own hue instead of
+    // hashing blind (two tenants can hash to the same one).
+    decorate: ({ tenant }, { tenants }) =>
+      tenant
+        ? { label: tenant, tone: KANBAN_CARD_BADGE_HUES[distinctIndex(tenant, tenants) % 12], tooltip: `Tenant: ${tenant}` }
+        : null
   } satisfies KanbanCardBadgeContribution
 })
 ```
 
-`decorate` may return one badge, an array, or `null` for cards it has nothing
-to say about. The card view carries no prose (title, body, summaries,
+`decorate(card, board)` may return one badge, an array, or `null` for cards it
+has nothing to say about. The card view carries no prose (title, body, summaries,
 comments, run output); look up anything else you need by `id` in your own data
-(`ctx.rest` to your backend, `ctx.storage`).
+(`ctx.rest` to your backend, `ctx.storage`). Both views are frozen.
 
 **What the board accepts** (`KANBAN_CARD_BADGE_LIMITS`):
 
@@ -826,9 +833,9 @@ contribution id, then the order `decorate` returned them. A contribution's
 A decorator that **throws** contributes nothing (logged once) and the rest of
 the row still paints.
 
-**Updates and teardown.** `decorate()` re-runs when the registry changes or
-when the card's id, status, tenant or assignee changes, so keep it a pure
-lookup. When your own data changes (a user pins a new color in your settings
+**Updates and teardown.** `decorate()` re-runs when the registry changes,
+when the card's id, status, tenant or assignee changes, or when the board's
+tenant list changes, so keep it a pure lookup. When your own data changes (a user pins a new color in your settings
 page), call `ctx.register` again with the same `id`: the new registration
 replaces the old one and the board repaints. Keep the latest disposer; the
 first one would remove the replacement. On disable, reload or unload, the
@@ -838,7 +845,8 @@ nothing to undo in `ctx.onDispose`.
 **Migrating a DOM-decorating plugin** (kanban-tenant-labels): delete the route
 poll, the `MutationObserver`, the tile matching, the inserted `<span>` and the
 reads of the Kanban plugin's query cache. The whole decoration becomes the
-`ctx.register` call above, with the plugin's color pins mapped to
+`ctx.register` call above. Its collision-free assignment runs on
+`board.tenants` instead of the query-cache snapshot, and its color pins map to
 `KANBAN_CARD_BADGE_HUES` (its twelve hues are the same `hsl(n×30 68% 58%)`
 set, in the same order).
 
@@ -2117,7 +2125,7 @@ pipeline as a trust boundary.
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

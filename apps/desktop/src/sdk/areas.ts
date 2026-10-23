@@ -10,8 +10,8 @@ export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right
  *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 /** Per-card labels on Kanban tiles: register a `KANBAN_CARD_AREAS.badges`
- *  data contribution whose `decorate({ id, status, tenant, assignee })`
- *  returns `{ label, tone?, tooltip? }` (or a few, or `null`). Core paints
+ *  data contribution whose `decorate({ id, status, tenant, assignee },
+ *  { tenants })` returns `{ label, tone?, tooltip? }` (or a few, or `null`). Core paints
  *  them as text chips in the card's badge row, ordered by plugin id, capped
  *  per plugin, removed with the plugin. Never touch the board's markup.
  *  `KanbanCardBadges` is the row the board itself renders. */
@@ -24,5 +24,6 @@ export {
   type KanbanCardBadgeContribution,
   type KanbanCardBadgeHue,
   KanbanCardBadges,
-  type KanbanCardBadgeTone
+  type KanbanCardBadgeTone,
+  type KanbanCardBoard
 } from '@/contrib/kanban-card-badges'

@@ -3523,7 +3523,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # one — silence before it is prompt build, silence after it is the summary provider.
         logger.info(
             "Compression summary call dispatched: model=%s prompt_chars=%s prompt_build_ms=%s",
-            self.summary_model or self.model, f"{sum(len(m.get('content') or '') for m in messages):,}",
+            call_kwargs.get("model") or "auto", f"{sum(len(m.get('content') or '') for m in messages):,}",
             _latency_info["prompt_build_ms"],
         )
         try:

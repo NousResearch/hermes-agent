@@ -477,6 +477,11 @@ export function useComposerSubmit({
       if (!activeQueueSessionKey) {
         loadIntoComposer(frozen.displayText, [])
         stashAt(submittedScope, frozen.displayText, [])
+        notify({
+          kind: 'warning',
+          title: translateNow('composer.steerRefusedTitle'),
+          message: translateNow('composer.steerRefusedRestoredBody')
+        })
       } else if (canonical) {
         // `fromQueue` skips the submit-side freeze, so hand it the frozen transport.
         dispatchSubmit(frozen.transportText, [], undefined, {
@@ -485,11 +490,21 @@ export function useComposerSubmit({
           sessionId: sessionId ?? null,
           storedSessionId: activeQueueSessionKey
         })
+        notify({
+          kind: 'warning',
+          title: translateNow('composer.steerRefusedTitle'),
+          message: translateNow('composer.steerRefusedQueuedBody')
+        })
       } else {
         enqueueQueuedPrompt(activeQueueSessionKey, {
           text: frozen.displayText,
           attachments: [],
           ...(hasTerminalTransport ? { displayText: frozen.displayText, frozenTransport: frozen.transportText } : {})
+        })
+        notify({
+          kind: 'warning',
+          title: translateNow('composer.steerRefusedTitle'),
+          message: translateNow('composer.steerRefusedQueuedBody')
         })
       }
     }

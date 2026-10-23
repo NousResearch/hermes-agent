@@ -8,6 +8,8 @@ approval:
   prompt_smart_deny: "      Choice [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
+  guardian_unavailable: "⚠️  Guardian check unavailable — fail-closed to you: {reason}"
+  guardian_uncertain: "🤖  Guardian check was uncertain — your judgment is needed."
   timeout: "      ⏱ No answer in {waited} — the command was not run. Ask again to retry, or raise the limit: hermes config set approvals.timeout {suggested}"
   allowed_once: "      ✓ Allowed once"
   allowed_session: "      ✓ Allowed for this session"

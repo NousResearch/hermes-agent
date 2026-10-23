@@ -14,13 +14,15 @@ from pm import install_hint
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from hermes_cli._subprocess_compat import windows_hide_flags
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 # The engine classes are re-exported on purpose: _build_engine resolves the
 # _PROVIDERS names on THIS module so a test (or plugin) can swap one engine.
@@ -296,6 +298,84 @@ def _build_engine(cfg: dict[str, Any]) -> _Engine:
     return globals()[_PROVIDERS[provider][0]](cfg)
 
 
+#: Native modules whose *import* can kill the process (an access violation /
+#: SIGSEGV bypasses every ``except``), keyed by pm extra. Probed in a
+#: throwaway interpreter — never imported in-process here. Background: on
+#: some Windows hosts a broken native wheel dies at import with a fatal
+#: signal, so arming the engine crash-loops the backend; the original
+#: report (#109982) traced to an outdated VC++ runtime, but any unloadable
+#: wheel reaches the same death — the probe guards the class, not one host.
+_NATIVE_SMOKE_MODULES = {
+    "wake-sherpa": ("sentencepiece",),
+}
+
+#: A native import needing longer than this is pathological (cold FS / AV
+#: scan aside, a healthy wheel loads in well under a second) — and the probe
+#: runs synchronously on the status/arm thread, so fail closed fast instead
+#: of stalling it.
+_NATIVE_SMOKE_TIMEOUT_SECONDS = 10
+
+#: Successes AND failures are memoized per process for this long: the verdict
+#: can only change via a reinstall (which restarts the backend or flips the
+#: toggle), so re-spawning an interpreter per status poll is pure cost.
+_NATIVE_SMOKE_TTL_SECONDS = 30.0
+
+#: Shared remediation tail for both refusal sites (requirements hint +
+#: engine RuntimeError) — one wording, no drift.
+_NATIVE_DEP_FIX = "reinstall the wake dependencies or set wake_word.enabled false."
+
+_native_smoke_cache: Dict[Tuple[str, ...], Tuple[float, bool, str]] = {}
+
+
+def _native_deps_loadable(modules: Tuple[str, ...]) -> Tuple[bool, str]:
+    """Import ``modules`` in a throwaway interpreter; ``(ok, detail)``.
+
+    A crashing wheel dies with a fatal signal instead of raising, so the
+    verdict must come from the exit code — importing here would take this
+    process down with it.
+    """
+    key = tuple(modules)
+    now = time.monotonic()
+    hit = _native_smoke_cache.get(key)
+    if hit is not None and now - hit[0] < _NATIVE_SMOKE_TTL_SECONDS:
+        return hit[1], hit[2]
+    script = "; ".join(f"import {m}" for m in modules) + "; print('ok')"
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL, timeout=_NATIVE_SMOKE_TIMEOUT_SECONDS,
+            creationflags=windows_hide_flags())
+    except subprocess.TimeoutExpired:
+        ok, detail = False, f"{', '.join(modules)} import hung past {_NATIVE_SMOKE_TIMEOUT_SECONDS}s"
+    except (OSError, subprocess.SubprocessError) as exc:
+        ok, detail = False, f"native dependency probe failed to launch: {exc}"
+    else:
+        if proc.returncode != 0:
+            tail = (proc.stderr or "").strip().splitlines()
+            tail_detail = tail[-1] if tail else f"exit {proc.returncode}"
+            ok, detail = False, f"{', '.join(modules)} failed to load in a clean interpreter ({tail_detail})"
+        else:
+            ok, detail = True, "ok"
+    _native_smoke_cache[key] = (now, ok, detail)
+    return ok, detail
+
+
+def _refuse_unloadable_native_deps(feature: str) -> None:
+    """Raise a catchable RuntimeError when the feature's native modules die
+    on import. Runs post-``ensure`` (see ``_Engine.__init__``) so a fresh
+    install still reaches the lazy installer; guards every arm path,
+    including direct ``start_listening`` callers that bypass
+    :func:`check_wake_word_requirements`."""
+    modules = _NATIVE_SMOKE_MODULES.get(feature, ())
+    if not modules:
+        return
+    ok, detail = _native_deps_loadable(modules)
+    if not ok:
+        raise RuntimeError(
+            f"wake-word native dependencies unloadable: {detail}. {_NATIVE_DEP_FIX}")
+
+
 # ── Requirements probe (for /wake status + enable path) ──
 
 def _stt_ready() -> bool:
@@ -407,6 +487,19 @@ def check_wake_word_requirements(cfg: Optional[dict[str, Any]] = None, *,
         hint = (f"Wake word needs {missing} configured — run `hermes tools` "
                 f"(Voice section) or see the voice-mode docs.")
 
+    # Native-import smoke: a wheel that dies with an access violation on
+    # import bypasses every try/except, so probe it in a throwaway
+    # interpreter and refuse to arm here instead of green-lighting a crash.
+    # Runs only once deps claim installed — the install ladder above owns
+    # the missing-deps case, and fresh installs must still reach ensure().
+    smoke_modules = _NATIVE_SMOKE_MODULES.get(feature, ())
+    if deps_ok and smoke_modules:
+        native_ok, native_detail = _native_deps_loadable(smoke_modules)
+        if not native_ok and not hint:
+            hint = (f"Wake-word engine can't load here ({native_detail}): {_NATIVE_DEP_FIX}")
+    else:
+        native_ok = True
+
     capture_mode = resolve_capture_mode(cfg)
 
     # Client capture needs deps (engine) but not a server-side PortAudio device.
@@ -420,8 +513,8 @@ def check_wake_word_requirements(cfg: Optional[dict[str, Any]] = None, *,
                     "build with client-capture wake support.")
 
     return {
-        "available": platform_ok and key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
-        "deps_available": deps_ok, "audio_available": audio_ok,
+        "available": platform_ok and key_ok and stt_ok and tts_ok and mic_ok and native_ok, "provider": provider,
+        "deps_available": deps_ok, "audio_available": audio_ok, "native_ok": native_ok,
         "local_input_available": _local_input_device_ready() if deps_ok else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,
         "phrase": wake_phrase(cfg), "hint": hint,

@@ -308,13 +308,13 @@ def _render_sessions(ctx):
             active_session_registry_snapshot, current_repo_root, format_age,
             resolve_max_concurrent_sessions)
         cap = resolve_max_concurrent_sessions(ctx.config)
-        try:
-            held = active_session_registry_snapshot()
-        except Exception:
-            held = []
-        here = current_repo_root()
     except Exception:
-        cap, held, here = None, [], None
+        cap = None
+    try:
+        # A failed import above leaves this name unbound; the NameError lands here too.
+        held = active_session_registry_snapshot()
+    except Exception:
+        held = []
     if cap:
         _kv("Slots:", color(f"{len(held)}/{cap} in use", Colors.YELLOW if len(held) >= cap else Colors.GREEN))
     elif held:
@@ -323,6 +323,7 @@ def _render_sessions(ctx):
         _kv("Live:", color(f"{len(held)} session(s)", Colors.GREEN))
     if held:
         now = time.time()
+        here = current_repo_root()
         for entry in sorted(held, key=lambda e: e.get("started_at") or 0):
             age = format_age(now - float(entry.get("started_at") or now))
             meta = entry.get("metadata")

@@ -34,9 +34,21 @@ YouTube 视频转文字摘要、推文、博客。
 
 ## 安装
 
+通过 `terminal` 使用 PM 准备的 Hermes 源码检出中的 Python。`youtube` extra
+声明了此辅助脚本的依赖；不要用 pip 或会自动发现项目的 `uv run` 修改 Hermes 环境。
+先按照[包管理](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+选择独立开发数据目录，再准备依赖并重新激活：
+
 ```bash
-pip install youtube-transcript-api
+source ./activate
+python -c "import pm; pm.sync_venv(['youtube'], explicit=True)"
+source ./activate
+python -c "import youtube_transcript_api; print(youtube_transcript_api.__file__)"
 ```
+
+Windows 使用 `. .\activate.ps1` 激活。终端在另一台主机或沙箱中时，
+请在该环境内准备独立的辅助脚本环境，不要修改 agent 的生产环境。
+下面所有命令都使用导入检查成功的 Python。
 
 ## 辅助脚本
 
@@ -44,16 +56,16 @@ pip install youtube-transcript-api
 
 ```bash
 # JSON 输出（含元数据）
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
+python SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
 
 # 纯文本输出（适合管道传递给后续处理）
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
 
 # 带时间戳
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
 
 # 指定语言并设置回退链
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
 ```
 
 ## 输出格式
@@ -90,4 +102,4 @@ python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
 - **文字稿已禁用**：告知用户；建议其在视频页面检查字幕是否可用。
 - **视频不可用或为私密视频**：转达错误信息，请用户核实 URL。
 - **无匹配语言**：去掉 `--language` 参数重试以获取任意可用文字稿，并向用户说明实际语言。
-- **缺少依赖**：执行 `pip install youtube-transcript-api` 后重试。
+- **缺少依赖**：重复上述 PM 准备和激活步骤，确认辅助脚本使用该 Python。不要用 pip 修复选中的环境。

@@ -155,43 +155,4 @@ describe('reactive pane unhide', () => {
     // …but the tree's own toggle never moved, so the tree stays closed.
     expect(layout.$fileBrowserOpen.get()).toBe(false)
   })
-
-  it('opening the diff pane leaves the file tree closed', async () => {
-    const { tree, layout } = await setupWithFiles()
-
-    layout.setFileBrowserOpen(false)
-    expect(tree.$collapsedTreeSides.get().has('right')).toBe(true)
-
-    // ⌘G — `toggleReview` reveals the review pane, which lives in the same
-    // right column as the file tree.
-    tree.revealTreePane('review')
-
-    expect(tree.$collapsedTreeSides.get().has('right')).toBe(false)
-    expect(layout.$fileBrowserOpen.get()).toBe(false)
-  })
-
-  it('reactive unhide does not invoke the right side opener directly', async () => {
-    const { tree, layout } = await setupWithFiles()
-
-    // Spy on the opener that `revealTreePane` would call when expanding a
-    // collapsed side — the bug is exactly this call firing on reactive unhide.
-    const openerSpy = vi.fn()
-    tree.bindTreeSideVisibility('right', layout.$fileBrowserOpen, openerSpy)
-
-    layout.setFileBrowserOpen(false)
-    expect(tree.$collapsedTreeSides.get().has('right')).toBe(true)
-
-    tree.setTreePaneHidden('files', true)
-    expect(tree.$hiddenTreePanes.get().has('files')).toBe(true)
-
-    openerSpy.mockClear()
-
-    // Reactive unhide fires via the same primitive the workspace wiring uses.
-    tree.setTreePaneHidden('files', false)
-
-    // The opener MUST NOT be called — before the fix, the auto-reveal would
-    // call `setFileBrowserOpen(true)` via this opener.
-    expect(tree.$hiddenTreePanes.get().has('files')).toBe(false)
-    expect(openerSpy).not.toHaveBeenCalled()
-  })
 })

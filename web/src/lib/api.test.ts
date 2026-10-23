@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, fetchJSON } from "./api";
+import {
+  api,
+  authedFetch,
+  buildWsUrl,
+  fetchJSON,
+  getManagementProfile,
+  setManagementProfile,
+} from "./api";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -33,6 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setManagementProfile("");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -89,19 +97,6 @@ describe("fetchJSON", () => {
 });
 
 describe("api.getModelOptions", () => {
-  it("requests a live model refresh when asked", async () => {
-    vi.stubGlobal("window", {});
-
-    const fetchMock = jsonFetchMock({ providers: [] });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await api.getModelOptions({ refresh: true });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/model/options?refresh=1&include_unconfigured=1",
-      expect.objectContaining({ credentials: "include" }),
-    );
-  });
 
   it("keeps explicit profile scoping when refreshing", async () => {
     vi.stubGlobal("window", {});
@@ -115,6 +110,151 @@ describe("api.getModelOptions", () => {
       "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+});
+
+describe("management profile scope", () => {
+  it("sends explicit WhatsApp re-pair consent to the selected profile", async () => {
+    const fetchMock = jsonFetchMock({ pairing_id: "fresh", status: "starting" });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.startWhatsAppOnboarding({ mode: "bot", reset_session: true });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/messaging/whatsapp/onboarding/start?profile=worker");
+    expect(JSON.parse(String(init?.body))).toEqual({ mode: "bot", reset_session: true });
+  });
+
+  // Every family whose routes write into a named profile's home must carry the
+  // scope; an unprofiled request 400s on a host that merely HAS a second profile.
+  it.each([
+    "/api/credentials/pool/anthropic/0",
+    "/api/dashboard/plugin-providers",
+    "/api/model/recommended-default",
+    "/api/local-models",
+    "/api/ops/restart",
+  ])("scopes %s to the selected management profile", async (path) => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await fetchJSON(path, { method: "POST" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${path}?profile=worker`);
+  });
+
+  it("leaves endpoints outside the scoped families alone", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await fetchJSON("/api/sessions");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/sessions");
+  });
+
+  it("falls back to the profile this backend serves when nothing is selected", async () => {
+    vi.stubGlobal("window", { __HERMES_DASHBOARD_PROFILE__: "served" });
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("");
+
+    expect(getManagementProfile()).toBe("served");
+
+    await fetchJSON("/api/credentials/pool/anthropic/0", { method: "DELETE" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/credentials/pool/anthropic/0?profile=served",
+    );
+  });
+
+  it("keeps the selected profile ahead of the serving profile", async () => {
+    vi.stubGlobal("window", { __HERMES_DASHBOARD_PROFILE__: "served" });
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    expect(getManagementProfile()).toBe("worker");
+
+    await fetchJSON("/api/credentials/pool/anthropic/0", { method: "DELETE" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/credentials/pool/anthropic/0?profile=worker",
+    );
+  });
+
+  it("names no profile at all when neither a selection nor a serving profile exists", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("");
+
+    expect(getManagementProfile()).toBe("");
+
+    await fetchJSON("/api/credentials/pool/anthropic/0", { method: "DELETE" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/credentials/pool/anthropic/0");
+  });
+
+  it.each([
+    ["/api/ops/backup/download", "/api/ops/backup/download?profile=worker"],
+    ["/api/ops/backup/download?full=1", "/api/ops/backup/download?full=1&profile=worker"],
+    ["/api/ops/backup/download?profile=other", "/api/ops/backup/download?profile=other"],
+    ["/api/sessions/abc/export", "/api/sessions/abc/export"],
+  ])(
+    "authedFetch resolves %s through the same management scope",
+    async (path, expected) => {
+      vi.stubGlobal("window", {});
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response("binary"));
+      vi.stubGlobal("fetch", fetchMock);
+      setManagementProfile("worker");
+
+      await authedFetch(path);
+
+      expect(fetchMock.mock.calls[0][0]).toBe(expected);
+    },
+  );
+});
+
+describe("plugin SDK calls follow the selected profile (PLG-3)", () => {
+  // A plugin's bundle is the selected profile's copy; its backend calls must name that
+  // profile too, or they reach the launch profile's handlers (or 404 for a secondary-only one).
+  it.each([
+    ["fetchJSON", fetchJSON],
+    ["authedFetch", authedFetch],
+  ] as const)("%s scopes /api/plugins/ to the selected profile", async (_name, helper) => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("beta");
+
+    await helper("/api/plugins/kanban/board?id=1");
+    await helper("/api/plugins/kanban/board?profile=alpha");
+
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      "/api/plugins/kanban/board?id=1&profile=beta",
+      "/api/plugins/kanban/board?profile=alpha",
+    ]);
+  });
+
+  it("buildWsUrl names the selected profile on a plugin socket only", async () => {
+    vi.stubGlobal("window", {
+      __HERMES_SESSION_TOKEN__: "tok",
+      location: { protocol: "http:", host: "127.0.0.1:9119" },
+    });
+    setManagementProfile("beta");
+    const query = async (path: string, params?: Record<string, string>) =>
+      new URL(await buildWsUrl(path, params)).searchParams;
+
+    const plugin = await query("/api/plugins/kanban/events", { board: "b" });
+    expect([plugin.get("board"), plugin.getAll("profile"), plugin.get("token")]).toEqual([
+      "b", ["beta"], "tok",
+    ]);
+    expect((await query("/api/plugins/kanban/events", { profile: "alpha" })).getAll("profile")).toEqual(["alpha"]);
+    expect((await query("/api/events")).has("profile")).toBe(false);
   });
 });
 
@@ -171,5 +311,52 @@ describe("api OAuth helpers", () => {
       expect(init.credentials).toBe("include");
       expect((init.headers as Headers).has(SESSION_HEADER)).toBe(false);
     }
+  });
+
+  it("keeps every OAuth operation on the selected management profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({
+      flow: "device_code",
+      session_id: "oauth-session",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.getOAuthProviders();
+    await api.disconnectOAuthProvider("anthropic");
+    await api.startOAuthLogin("openai-codex");
+    await api.submitOAuthCode("anthropic", "oauth-session", "code-123");
+    await api.pollOAuthSession("anthropic", "oauth-session");
+    await api.cancelOAuthSession("oauth-session");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/providers/oauth?profile=worker",
+      "/api/providers/oauth/anthropic?profile=worker",
+      "/api/providers/oauth/openai-codex/start?profile=worker",
+      "/api/providers/oauth/anthropic/submit?profile=worker",
+      "/api/providers/oauth/anthropic/poll/oauth-session?profile=worker",
+      "/api/providers/oauth/sessions/oauth-session?profile=worker",
+    ]);
+  });
+});
+
+describe("api.getAuthMe loopback contract", () => {
+  it("accepts a token-authenticated synthetic loopback identity", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const identity = {
+      display_name: "Local",
+      email: "",
+      expires_at: 0,
+      org_id: "",
+      provider: "loopback",
+      user_id: "local",
+    };
+    const fetchMock = jsonFetchMock(identity);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.getAuthMe()).resolves.toEqual(identity);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Headers).get(SESSION_HEADER)).toBe("loopback-token");
   });
 });

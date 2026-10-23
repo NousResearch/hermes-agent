@@ -148,7 +148,8 @@ export function useVirtualHistory(
     onHeightsChange,
     overscan = OVERSCAN,
     maxMounted = MAX_MOUNTED,
-    coldStartCount = COLD_START
+    coldStartCount = COLD_START,
+    nativeMode = false
   }: VirtualHistoryOptions = {}
 ) {
   const nodes = useRef(new Map<string, unknown>())
@@ -325,7 +326,13 @@ export function useVirtualHistory(
   let start = 0
   let end = n
 
-  if (frozenRange) {
+  if (nativeMode) {
+    // Native mode deliberately leaves the transcript in ordinary document
+    // flow. The terminal owns scrollback; there is no viewport window to
+    // virtualize or reconcile against.
+    start = 0
+    end = n
+  } else if (frozenRange) {
     start = frozenRange[0]
     end = Math.min(frozenRange[1], n)
   } else if (n > 0) {
@@ -360,7 +367,7 @@ export function useVirtualHistory(
     }
   }
 
-  if (end - start > maxMounted) {
+  if (!nativeMode && end - start > maxMounted) {
     sticky ? (start = Math.max(0, end - maxMounted)) : (end = Math.min(n, start + maxMounted))
   }
 
@@ -368,7 +375,7 @@ export function useVirtualHistory(
   // viewportH + 2*overscan so the viewport is physically covered even when
   // items are tiny. Pessimistic because uncached items use a floor of 1 —
   // over-mounts when items are large, never leaves blank spacer showing.
-  if (n > 0 && vp > 0 && !frozenRange) {
+  if (!nativeMode && n > 0 && vp > 0 && !frozenRange) {
     const needed = vp + 2 * overscan
     let coverage = 0
 
@@ -400,7 +407,7 @@ export function useVirtualHistory(
   // PageUp skips this; the clamp holds the viewport at the mounted edge
   // during catch-up so there's no blank screen. Only caps range GROWTH;
   // shrinking is unbounded.
-  if (!frozenRange && prevRange.current && vp > 0) {
+  if (!nativeMode && !frozenRange && prevRange.current && vp > 0) {
     const velocity = Math.abs(top - lastScrollTopRef.current) + Math.abs(pendingDelta)
 
     if (velocity > vp * 2) {
@@ -435,8 +442,8 @@ export function useVirtualHistory(
   // is cheap (unmount = remove fiber, no parse).
   const dStart = useDeferredValue(start)
   const dEnd = useDeferredValue(end)
-  let effStart = start < dStart ? dStart : start
-  let effEnd = end > dEnd ? dEnd : end
+  let effStart = nativeMode ? 0 : start < dStart ? dStart : start
+  let effEnd = nativeMode ? n : end > dEnd ? dEnd : end
 
   // Inverted range (large jump with deferred value lagging) or sticky snap
   // (scrollToBottom needs the tail mounted NOW so maxScroll lands on content,
@@ -460,7 +467,7 @@ export function useVirtualHistory(
   // wider than either bound alone. Trim the far edge by viewport position
   // (not pendingDelta direction — that flips mid-settle under concurrent
   // scheduling and yanks scrollTop).
-  if (effEnd - effStart > maxMounted && vp > 0) {
+  if (!nativeMode && effEnd - effStart > maxMounted && vp > 0) {
     const mid = (offsets[effStart]! + offsets[effEnd]!) / 2
 
     if (top < mid) {
@@ -554,6 +561,10 @@ export function useVirtualHistory(
     let dirty = false
     let heightDirty = false
     let anchorDelta = 0
+
+    if (nativeMode) {
+      return
+    }
 
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Clamp MUST use the EFFECTIVE (deferred) range, not the immediate one.
@@ -660,7 +671,21 @@ export function useVirtualHistory(
     if (heightDirty) {
       bumpMeasuredHeightVersion(n => n + 1)
     }
-  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, top, total, vp])
+  }, [
+    effEnd,
+    effStart,
+    items,
+    liveTailActive,
+    measuredHeightVersion,
+    n,
+    nativeMode,
+    offsets,
+    scrollRef,
+    sticky,
+    top,
+    total,
+    vp
+  ])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[effEnd] ?? total)),
@@ -686,4 +711,5 @@ interface VirtualHistoryOptions {
   maxMounted?: number
   onHeightsChange?: (heights: ReadonlyMap<string, number>) => void
   overscan?: number
+  nativeMode?: boolean
 }

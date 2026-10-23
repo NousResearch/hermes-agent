@@ -1,17 +1,10 @@
-"""Tests for the desktop-gated ``read_preview`` tool."""
+"""Tests for the GUI-surface ``read_preview`` tool."""
 
 import json
 
 from tools import read_preview_tool as rp
 
 
-def test_gated_on_desktop(monkeypatch):
-    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal)."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert rp.check_read_preview_requirements() is False
-
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert rp.check_read_preview_requirements() is True
 
 
 def test_requires_callback():
@@ -61,3 +54,13 @@ def test_callback_failure_is_reported():
 
     result = json.loads(rp.read_preview_tool(callback=_boom))
     assert "renderer went away" in result["error"]
+
+
+def test_empty_answer_names_both_cases_and_the_remedy():
+    """Nothing-open and bridge-timeout arrive as the same empty answer; the
+    error must tell them apart (open a page vs update an older app, #94272)."""
+    result = json.loads(rp.read_preview_tool(callback=lambda **_: ""))
+
+    assert "call open_preview first" in result["error"]
+    assert "timed out" in result["error"]
+    assert "older than this backend" in result["error"]

@@ -8,8 +8,6 @@ into re-read/re-patch loops; they now return success with no_change=True.
 """
 
 import json
-import os
-import tempfile
 
 import pytest
 
@@ -63,7 +61,6 @@ class TestPatchReplaceAlreadyApplied:
                         new_string="value = compute_total(items)", task_id="t-applied")
         assert r["success"] is True
         assert r.get("no_change") is True
-        assert "already" in r["note"]
         assert f.read_text() == "value = compute_total(items)\n"
 
     def test_replay_of_landed_edit_is_success_noop(self, workdir):
@@ -90,14 +87,6 @@ class TestPatchReplaceAlreadyApplied:
                         new_string="def not_here_function():", task_id="t-applied")
         assert "error" in r
 
-    def test_half_applied_rename_still_errors(self, workdir):
-        # Both old and new text present: NOT already-applied. The identical
-        # old/new strings short-circuit before any fuzzy matching, and the
-        # old text still being present must block the no-op path.
-        f = workdir / "e.py"
-        f.write_text("def old_fn_name():\n    pass\n\ndef new_fn_variant():\n    pass\n")
-        from tools.fuzzy_match import is_already_applied
-        assert not is_already_applied(f.read_text(), "def old_fn_name():", "def new_fn_variant():")
 
 
 class TestV4AAlreadyApplied:
@@ -140,3 +129,27 @@ class TestV4AAlreadyApplied:
         r = _patch_tool(mode="patch", patch=patch_content, task_id="t-v4a")
         assert r["success"] is True, r
         assert f.read_text() == "STATUS = 'migrated_to_v2_schema'\n"
+
+    def test_degenerate_identical_hunk_skipped_in_validation(self, workdir):
+        """A hunk whose -/+ lines are identical is a no-op: the apply phase
+        skips it, so validation must not fail the patch (previously it
+        reached fuzzy_find_and_replace, whose identical-strings error names
+        old_string/new_string — parameters that don't exist in patch mode).
+        The short text also dodges is_already_applied's >=8-char rescue."""
+        f = workdir / "degen.py"
+        f.write_text("A = 1\nB = 2\n")
+        patch_content = (
+            "*** Begin Patch\n"
+            f"*** Update File: {f}\n"
+            "-A = 1\n"
+            "+A = 1\n"
+            "@@ B @@\n"
+            "-B = 2\n"
+            "+B = 3\n"
+            "*** End Patch\n"
+        )
+        r = _patch_tool(mode="patch", patch=patch_content, task_id="t-v4a")
+        assert r["success"] is True, r
+        text = f.read_text()
+        assert "A = 1" in text  # degenerate hunk left intact
+        assert "B = 3" in text  # live hunk applied

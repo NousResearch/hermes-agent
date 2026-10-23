@@ -21,7 +21,7 @@ Query and edit a SiYuan knowledge base via its API.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `SiYuan`, `Notes`, `Knowledge Base`, `PKM`, `API` |
-| Related skills | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian), [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) |
+| Related skills | [`obsidian`](../../bundled/note-taking/note-taking-obsidian.md), [`notion`](../../bundled/productivity/productivity-notion.md) |
 
 ## Reference: full SKILL.md
 

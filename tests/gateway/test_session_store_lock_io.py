@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, SessionResetPolicy
+from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
@@ -70,7 +70,7 @@ def _db_with_rows(rows: dict) -> MagicMock:
 
 def _make_store(tmp_path, db_mock=None) -> SessionStore:
     """Build a SessionStore with a ``_TrackedLock``, bypassing disk load."""
-    config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
+    config = GatewayConfig()
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
     if db_mock is not None:
@@ -252,5 +252,3 @@ def test_auto_reset_does_not_recover_session_being_ended(tmp_path):
         old.session_id, "suspended"
     )
     db.end_session.assert_not_called()
-
-

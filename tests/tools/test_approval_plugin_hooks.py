@@ -11,12 +11,12 @@ from unittest.mock import patch
 import pytest
 
 import tools.approval as approval_module
-from tools.approval import (
-    check_all_command_guards,
-    check_execute_code_guard,
-    set_current_session_key,
-    clear_session,
-)
+from tools import approval_context
+from tools import approval_smart
+from tools.approval import check_all_command_guards, check_execute_code_guard, clear_session
+from tools.approval_context import set_current_session_key
+from tools.approval_prompt import request_elicitation_consent
+from tools.file_tools_write_guards import _request_protected_instruction_approval
 
 
 @pytest.fixture
@@ -24,6 +24,7 @@ def isolated_session(monkeypatch, tmp_path):
     """Give each test a fresh session_key, clean approval-state, and isolated
     HERMES_HOME so the real user's command_allowlist doesn't leak in."""
     import tools.approval as _am
+    from tools import approval_context
 
     session_key = "test:session:approval_hooks"
     token = set_current_session_key(session_key)
@@ -41,7 +42,7 @@ def isolated_session(monkeypatch, tmp_path):
         _am._permanent_approved.update(_saved_permanent)
         _am._session_approved.update(_saved_session)
         try:
-            _am._approval_session_key.reset(token)
+            approval_context._approval_session_key.reset(token)
         except Exception:
             pass
         clear_session(session_key)
@@ -58,7 +59,7 @@ class TestCliPathFiresHooks:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         # approvals.mode=manual so we actually reach the prompt site
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
         captured = []
 
@@ -98,7 +99,7 @@ class TestCliPathFiresHooks:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
         captured = []
 
@@ -127,7 +128,7 @@ class TestCliPathFiresHooks:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
         def boom(hook_name, **kwargs):
             raise RuntimeError("plugin crashed")
@@ -144,13 +145,6 @@ class TestCliPathFiresHooks:
         assert result["approved"] is True
 
 
-class TestGatewayPathFiresHooks:
-    """Async gateway approval path: HERMES_GATEWAY_SESSION is set and a
-    gateway notify callback is registered. The agent thread blocks on the
-    approval event until resolve_gateway_approval() is called from another
-    thread."""
-
-
 class TestSmartModeFiresHooks:
     def _configure(self, monkeypatch, verdict):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
@@ -158,12 +152,8 @@ class TestSmartModeFiresHooks:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
-        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: verdict)
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _: {"action": "allow", "findings": [], "summary": ""},
-        )
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: verdict)
 
     @pytest.mark.parametrize(
         ("guard", "value", "verdict", "approved", "choice", "pattern_key"),
@@ -221,7 +211,7 @@ class TestSmartModeFiresHooks:
             events.append("smart_approve")
             return "approve"
 
-        monkeypatch.setattr(approval_module, "_smart_approve", decide)
+        monkeypatch.setattr(approval_smart, "_smart_approve", decide)
         with patch(
             "hermes_cli.plugins.invoke_hook",
             side_effect=lambda name, **kwargs: events.append(name),
@@ -321,12 +311,8 @@ class TestSmartModeFiresHooks:
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
-        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: next(verdicts))
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _: {"action": "allow", "findings": [], "summary": ""},
-        )
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: next(verdicts))
         captured = []
         with patch(
             "hermes_cli.plugins.invoke_hook",
@@ -343,3 +329,67 @@ class TestSmartModeFiresHooks:
         ]
 
 
+def _capture_hooks(run):
+    """Run ``run()`` with the approval hook dispatch captured; drop the per-turn ids
+    every surface adds, so only the prompt payload is compared."""
+    captured = []
+    with patch("hermes_cli.plugins.invoke_hook",
+               side_effect=lambda name, **kw: captured.append((name, kw)) or []):
+        result = run()
+    # on_human_input_* fire around the same prompts with their own payload contract
+    # (tests/tools/test_human_input_hooks.py); this helper compares the approval pair.
+    captured = [(name, kw) for name, kw in captured if not name.startswith("on_human_input_")]
+    for _, kw in captured:
+        for key in ("turn_id", "tool_call_id", "session_id"):
+            kw.pop(key, None)
+    return result, captured
+
+
+_PROTECTED_WRITE = (lambda: _request_protected_instruction_approval(["AGENTS.md"]), None, "cli")
+_ELICITATION = (lambda: request_elicitation_consent("Allow server access?", "an MCP server asks",
+                                                    surface="mcp-trust/test-server"),
+                "accept", "mcp-trust/test-server")
+
+
+class TestClassicCliPromptsFireGatewayTwinHooks:
+    """The protected agent-instruction write prompt and MCP/vault consent prompt fire the
+    same pre/post observer hooks in the classic CLI as their gateway twins (#131876)."""
+
+    @pytest.mark.parametrize("run, approved, cli_surface", [_PROTECTED_WRITE, _ELICITATION],
+                             ids=["protected_write", "elicitation"])
+    def test_cli_branch_fires_the_gateway_payload(self, isolated_session, monkeypatch,
+                                                  run, approved, cli_surface):
+        from tools.terminal_tool import set_approval_callback
+
+        monkeypatch.setattr(approval_context, "_get_approval_config",
+                            lambda: {"mode": "manual", "timeout": 60})
+        # Gateway twin: the notifier answers "once" as soon as the card is sent.
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        approval_module.register_gateway_notify(
+            isolated_session, lambda _data: approval_module.resolve_gateway_approval(isolated_session, "once"))
+        try:
+            result, gateway_hooks = _capture_hooks(run)
+        finally:
+            approval_module.unregister_gateway_notify(isolated_session)
+        assert result == approved
+
+        # Classic CLI: the prompt_toolkit panel callback registered on the agent thread answers "once".
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION")
+        set_approval_callback(lambda *_a, **_kw: "once")
+        try:
+            result, cli_hooks = _capture_hooks(run)
+        finally:
+            set_approval_callback(None)
+
+        assert result == approved
+        assert [name for name, _ in cli_hooks] == ["pre_approval_request", "post_approval_response"]
+        expected = [(name, {**kw, "surface": cli_surface}) for name, kw in gateway_hooks]
+        assert cli_hooks == expected
+
+    def test_protected_write_without_a_human_channel_fires_no_hooks(self, isolated_session, monkeypatch):
+        """Fail-closed with no panel callback: nobody is waiting, so observers hear nothing."""
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.setattr("tools.terminal_tool._get_approval_callback", lambda: None)
+        result, captured = _capture_hooks(lambda: _request_protected_instruction_approval(["AGENTS.md"]))
+        assert result is not None and "has NOT consented" in result
+        assert captured == []

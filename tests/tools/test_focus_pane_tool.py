@@ -1,4 +1,4 @@
-"""Tests for the desktop-gated ``focus_pane`` tool."""
+"""Tests for the GUI-surface ``focus_pane`` tool."""
 
 import json
 
@@ -14,12 +14,6 @@ def _reset_emitter():
     desktop_ui.set_emitter(None)
 
 
-def test_gated_on_desktop(monkeypatch):
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert fp.check_focus_pane_requirements() is False
-
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert fp.check_focus_pane_requirements() is True
 
 
 @pytest.mark.parametrize("pane", fp.PANES)

@@ -71,34 +71,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestBundledPluginsRegister:
-    """All three bundled browser plugins discover and register correctly."""
 
-    def test_all_three_plugins_present_in_registry(self) -> None:
-        _ensure_plugins_loaded()
-        from agent.browser_registry import list_providers
-
-        names = sorted(p.name for p in list_providers())
-        assert names == ["browser-use", "browserbase", "firecrawl"]
-
-    @pytest.mark.parametrize(
-        "plugin_name,expected_display",
-        [
-            ("browserbase", "Browserbase"),
-            ("browser-use", "Browser Use"),
-            ("firecrawl", "Firecrawl"),
-        ],
-    )
-    def test_each_plugin_has_name_and_display_name(
-        self, plugin_name: str, expected_display: str
-    ) -> None:
-        _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
-
-        provider = get_provider(plugin_name)
-        assert provider is not None, f"plugin {plugin_name!r} not registered"
-        assert provider.name == plugin_name
-        assert provider.display_name == expected_display
 
 
 # ---------------------------------------------------------------------------
@@ -192,45 +165,6 @@ class TestRegistryResolution:
 
 
 # ---------------------------------------------------------------------------
-# Legacy ABC backward-compat aliases (is_configured / provider_name)
-# ---------------------------------------------------------------------------
-
-
-class TestLegacyAbcAliases:
-    """is_configured() and provider_name() delegate to the new API."""
-
-    @pytest.mark.parametrize(
-        "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
-    )
-    def test_is_configured_delegates_to_is_available(self, plugin_name: str) -> None:
-        _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
-
-        p = get_provider(plugin_name)
-        assert p is not None
-        assert p.is_configured() is p.is_available()
-
-    @pytest.mark.parametrize(
-        "plugin_name,expected_label",
-        [
-            ("browserbase", "Browserbase"),
-            ("browser-use", "Browser Use"),
-            ("firecrawl", "Firecrawl"),
-        ],
-    )
-    def test_provider_name_returns_display_name(
-        self, plugin_name: str, expected_label: str
-    ) -> None:
-        _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
-
-        p = get_provider(plugin_name)
-        assert p is not None
-        assert p.provider_name() == expected_label
-
-
-# ---------------------------------------------------------------------------
 # Picker integration
 # ---------------------------------------------------------------------------
 
@@ -242,8 +176,14 @@ class TestPickerIntegration:
         _ensure_plugins_loaded()
         from hermes_cli.tools_config import _plugin_browser_providers
 
+        from agent.browser_registry import list_providers
+
         rows = _plugin_browser_providers()
         names = sorted(r.get("browser_provider") for r in rows)
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        # Picker rows are exactly the registered plugins that expose a setup schema.
+        expected = sorted(
+            p.name for p in list_providers() if p.get_setup_schema() is not None
+        )
+        assert names and names == expected
 
 

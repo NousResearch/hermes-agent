@@ -1,5 +1,7 @@
 const EMPTY_ATTACHMENT_REFS: string[] = []
 
+export const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
+
 export function partText(part: unknown): string {
   if (typeof part === 'string') {
     return part

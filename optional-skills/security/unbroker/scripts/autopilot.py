@@ -48,7 +48,7 @@ def cache_age_days(now: float | None = None) -> float | None:
 
 
 def _now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _min_future_recheck(ledger: dict, at: str) -> str | None:
@@ -136,7 +136,7 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
         kind = request_kind(dossier, deletion.get("kinds"))
         via = "browser" if email_mode == "browser" else "smtp"
         then = ("send-email records it + returns a recipient-locked payload; compose and send it in "
-                "the operator's webmail via browser_*, then `verify-link` on the reply and open the link"
+                "the operator's webmail via browser_exec, then `verify-link` on the reply and open the link"
                 if via == "browser" else
                 "state auto-records as submitted; poll-verification picks up their verification reply, "
                 "open its link, then record")
@@ -282,15 +282,15 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                     "type": "poll_verification", "via": "imap",
                     "broker_id": bid,
                     "command": f"python3 scripts/pdd.py poll-verification {subject_id} --broker {bid}",
-                    "then": "browser_navigate the returned link IN THE SAME AGENT BROWSER (sessions are "
+                    "then": "open the returned link with browser_exec IN THE SAME AGENT BROWSER (sessions are "
                             "browser-bound), complete the flow, then record: awaiting_processing",
                 })
             elif email_mode == "browser":
                 actions.append({
                     "type": "poll_verification", "via": "browser", "broker_id": bid,
                     "how": "open the broker's confirmation email in the operator's logged-in webmail "
-                           f"(browser_*), then `python3 scripts/pdd.py verify-link {subject_id} {bid} "
-                           "--text '<email body>'` to score the link, browser_navigate it in the SAME "
+                           f"(browser_exec), then `python3 scripts/pdd.py verify-link {subject_id} {bid} "
+                           "--text '<email body>'` to score the link, open it with browser_exec in the SAME "
                            "browser, then record awaiting_processing",
                 })
             else:
@@ -335,7 +335,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                 "type": "indirect_web_form",
                 "broker_id": bid, "confirm_first": confirm_first,
                 "optout_url": row.get("optout_url"),
-                "steps": [f"browser_navigate {row.get('optout_url')}",
+                "steps": [f"browser_exec: new_tab({row.get('optout_url')!r}) + wait_for_load()",
                           "submit ONLY the subject's own identifiers (the fields the form requires) to "
                           "remove them from the third party's record; disclose nothing extra",
                           "confirm the success state, screenshot into evidence/"],

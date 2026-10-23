@@ -12,6 +12,7 @@ import sqlite3
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 class _FakeConn:
@@ -33,7 +34,6 @@ class _FakeConn:
             outcome = outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
-        return None
 
     def count(self, prefix):
         prefix = prefix.upper()
@@ -51,7 +51,7 @@ def _other():
 @pytest.fixture(autouse=True)
 def _no_file_check(monkeypatch):
     # Isolate the boundary behaviour from the post-commit invariant.
-    monkeypatch.setattr(kb, "_check_file_length_invariant", lambda conn: None)
+    monkeypatch.setattr(kbc, "_check_file_length_invariant", lambda conn: None)
 
 
 def test_retry_sleep_respects_floor(monkeypatch):
@@ -62,8 +62,8 @@ def test_retry_sleep_respects_floor(monkeypatch):
     with kb.write_txn(conn):
         pass
     assert slept
-    assert all(s >= kb._BUSY_RETRY_MIN_S for s in slept)
-    assert all(s <= kb._BUSY_RETRY_MAX_S for s in slept)
+    assert all(s >= kbc._BUSY_RETRY_MIN_S for s in slept)
+    assert all(s <= kbc._BUSY_RETRY_MAX_S for s in slept)
 
 
 def test_transient_busy_at_begin_is_absorbed():

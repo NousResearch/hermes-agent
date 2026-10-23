@@ -299,6 +299,24 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     # supported level, never escalate, never invert the ladder) replaces the per-backend hand maps that
     # repeatedly leaked internal levels like "ultra" to the wire (#89503 class) or clamped one rung below a
     # model's real ceiling (#87279).
+    supported = _reasoning_efforts_for_request(model, params)
+    if not supported:
+        return None, False
+    if not reasoning_enabled:
+        has_none = any(str(level).strip().lower() == "none" for level in supported)
+        if not has_none and model not in _UNPROJECTABLE_DISABLE_WARNED:
+            _UNPROJECTABLE_DISABLE_WARNED.add(model)
+            logger.warning(
+                "reasoning_effort: none cannot be sent for %s — its route accepts only %s, so the model's "
+                "default effort stays on (an omitted reasoning field does not disable it).",
+                model, ", ".join(str(level) for level in supported),
+            )
+        return ("none" if has_none else None), False
+    return clamp_effort(reasoning_effort, supported), reasoning_enabled
+
+
+def _reasoning_efforts_for_request(model: str, params: dict[str, Any]) -> tuple:
+    """Use the same route vocabulary for ordinary reasoning and in-band updates."""
     if params.get("is_xai_responses", False):
         from agent.model_metadata import is_grok_46_family
 
@@ -315,20 +333,7 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
             declared = _profile_declared_efforts(params.get("provider"), model, base_url)
         supported = declared if declared is not None else _codex_efforts_for_route(
             model, base_url, is_codex_backend=is_codex_backend)
-        if not supported:
-            return None, False
-    if not reasoning_enabled:
-        has_none = any(str(level).strip().lower() == "none" for level in supported)
-        if not has_none and model not in _UNPROJECTABLE_DISABLE_WARNED:
-            # #75227: report the unsupported configuration instead of silently falling back.
-            _UNPROJECTABLE_DISABLE_WARNED.add(model)
-            logger.warning(
-                "reasoning_effort: none cannot be sent for %s — its route accepts only %s, so the model's "
-                "default effort stays on (an omitted reasoning field does not disable it).",
-                model, ", ".join(str(level) for level in supported),
-            )
-        return ("none" if has_none else None), False
-    return clamp_effort(reasoning_effort, supported), reasoning_enabled
+    return supported
 
 
 _EXTENDED_PROMPT_CACHE_MODELS = (
@@ -445,9 +450,7 @@ def _prepare_reasoning_effort_updates(
     selected, baseline = resolve_effort_updates(messages, current)
     if baseline is None:
         return selected, None, False
-    supported = _codex_efforts_for_route(
-        model, params.get("base_url"), is_codex_backend=params.get("is_codex_backend") is True,
-    )
+    supported = _reasoning_efforts_for_request(model, params)
     if not supported:
         return strip_effort_updates(selected), None, False
 

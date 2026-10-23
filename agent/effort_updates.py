@@ -15,6 +15,8 @@ which is exactly today's behaviour.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -149,6 +151,16 @@ def _write_baseline_record(agent: Any, record: dict[str, Any]) -> None:
             logger.debug("effort baseline: session model_config write failed", exc_info=True)
 
 
+def _summary_fingerprints(messages: list[dict[str, Any]]) -> list[str]:
+    """Identify tagged summary replacements across resume without storing summary text."""
+    return sorted({
+        hashlib.sha256(json.dumps(
+            [message.get("role"), message.get("content")], sort_keys=True,
+        ).encode()).hexdigest()
+        for message in messages if message.get("_compressed_summary")
+    })
+
+
 def record_effort_switch(agent: Any, messages: list[dict[str, Any]]) -> bool:
     """Append a marker to ``messages`` when this turn's effort differs from the effort the history
     was sent with. Called right before the new user message lands so the marker sits at a fixed
@@ -181,16 +193,36 @@ def record_effort_switch(agent: Any, messages: list[dict[str, Any]]) -> bool:
         return False
 
     lineage = str(baseline.get("lineage") or uuid.uuid4())
-    previous = baseline.get("effort")
-    for message in reversed(messages):
-        update = effort_update(message)
-        if update is not None and update.get("lineage") == lineage:
-            previous = update["effort"]
-            break
+    active_updates = [
+        update for message in messages
+        if (update := effort_update(message)) is not None and update.get("lineage") == lineage
+    ]
+    previous = active_updates[-1]["effort"] if active_updates else baseline.get("effort")
+    summaries = _summary_fingerprints(messages)
+    if active_updates:
+        if (baseline.get("history_effort") != previous or not baseline.get("has_updates")
+                or baseline.get("summary_fingerprints") != summaries):
+            baseline.update(history_effort=previous, has_updates=True,
+                            summary_fingerprints=summaries)
+            _write_baseline_record(agent, baseline)
+    elif (baseline.get("has_updates") and "summary_fingerprints" in baseline
+          and any(summary not in baseline["summary_fingerprints"] for summary in summaries)):
+        # Marker absence alone also means rollback. Only a new/rewritten tagged
+        # summary identifies a replacement prefix; identical or untagged summaries
+        # remain ambiguous. Keep the last effective effort, not a new requested one.
+        previous = baseline.get("history_effort", previous)
+        lineage = str(uuid.uuid4())
+        baseline = {"route": route, "effort": previous, "lineage": lineage,
+                    "history_effort": previous, "has_updates": False,
+                    "summary_fingerprints": summaries}
+        _write_baseline_record(agent, baseline)
     if not can_mark or not isinstance(previous, str) or previous == requested:
         return False
     messages.append(make_effort_update_message(
         requested, previous, route=route, lineage=lineage,
     ))
+    baseline.update(history_effort=requested, has_updates=True,
+                    summary_fingerprints=summaries)
+    _write_baseline_record(agent, baseline)
     logger.info("reasoning effort switched %s -> %s; recorded mid-conversation marker", previous, requested)
     return True

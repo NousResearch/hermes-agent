@@ -673,8 +673,9 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
 
 def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     """``hermes update`` hook: every profile home sharing this venv. Grouped by plugin and each home's
-    unattended consent like the memory migration: homes of one group share dependency answers, and a
-    failure names the rest of its group in one line instead of failing them one by one."""
+    unattended consent like the memory migration: homes of one group share dependency answers.
+    A failure does not skip the rest of the group — each home is migrated on its own, and
+    ``_install_one`` already names that home's cause and retry command."""
     from hermes_cli.plugins_cmd_install import shared_dependency_answers
     from pm.plugins_state import dependency_homes
 
@@ -700,16 +701,9 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
                     f"({', '.join(_home_label(h) for h in homes)}); your answers to its dependency "
                     f"questions apply to all of them.")
             with shared_dependency_answers():
-                for index, home in enumerate(homes):
+                for home in homes:
                     if _install_one(home, feature, install=_install_into(home), say=labelled(home)):
                         installed.append(feature.plugin)
-                        continue
-                    rest = homes[index + 1:]
-                    if rest:
-                        say(f"  ⚠ The '{feature.plugin}' plugin was not installed for "
-                            f"{', '.join(_home_label(h) for h in rest)} either. Run "
-                            + ", ".join(f"`{_install_command(feature.plugin, h)}`" for h in rest) + ".")
-                    break
     except KeyboardInterrupt:
         say("  ⚠ Plugin migration cancelled. Profiles already migrated keep their plugin; run "
             "`hermes plugins install <name>` (with `-p <profile>`) for the rest.")

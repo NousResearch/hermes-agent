@@ -38,8 +38,10 @@
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/react": "19.3.0",
+    "chalk": "5.6.2",
     "esbuild": "0.28.2",
     "prettier": "3.9.9",
+    "strip-ansi": "7.2.0",
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "vitest": "4.1.12"

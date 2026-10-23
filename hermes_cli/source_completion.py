@@ -35,6 +35,7 @@ def complete_source_checkout(
     pre_update_snapshot_id: str | None = None,
     pre_update_version: str | None = None,
     completion_message: str | None = None,
+    incomplete_message: str | None = None,
     announce: str | None = None,
     followups: list[tuple[str, str]] | None = None,
     before_build=None,
@@ -46,7 +47,9 @@ def complete_source_checkout(
 
     Every step runs even when an earlier one failed; each failure is printed as ``⚠``,
     recorded on the open update receipt and appended to ``followups`` as ``(step, reason)``.
-    Returns True only when every step finished and the SQLite runtime is not unsafe.
+    ``incomplete_message`` (an install, which has no commit point) replaces the completion line
+    while a step is owed. Returns True only when every step finished and the SQLite runtime is
+    not unsafe.
     """
     from hermes_cli.update_lock import UpdateLock, describe_holder
 
@@ -73,8 +76,8 @@ def complete_source_checkout(
             root, desktop=desktop, assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
             pre_update_version=pre_update_version,
-            completion_message=completion_message, announce=announce, followups=followups,
-            before_build=before_build,
+            completion_message=completion_message, incomplete_message=incomplete_message,
+            announce=announce, followups=followups, before_build=before_build,
         )
     finally:
         lock.release()
@@ -90,6 +93,7 @@ def _complete_locked(
     pre_update_version: str | None,
     completion_message: str | None,
     announce: str | None,
+    incomplete_message: str | None = None,
     followups: list[tuple[str, str]] | None = None,
     before_build=None,
 ) -> bool:
@@ -134,6 +138,7 @@ def _complete_locked(
         had_desktop_app_before_update=desktop,
         pre_update_version=pre_update_version,
         completion_message=completion_message,
+        incomplete_message=incomplete_message,
         followups=owed,
     )))
     tail_done = not owed
@@ -201,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             ok = complete_source_checkout(
                 root, desktop=args.desktop, assume_yes=not args.interactive,
                 completion_message="✓ Install complete!",
+                incomplete_message="⚠ Install did not finish",
             )
         return 0 if ok else 1
 

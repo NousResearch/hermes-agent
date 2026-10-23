@@ -776,6 +776,37 @@ Everything below follows this same pattern — just change the URL, key, and mod
 
 ---
 
+### Rapid-MLX — Apple Silicon
+
+[Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) serves models locally on
+Apple Silicon Macs through an OpenAI-compatible endpoint. Install it and start
+a model in one terminal:
+
+```bash
+pip install rapid-mlx
+rapid-mlx serve qwen3.5-9b-4bit --port 8000
+```
+
+With the server running, configure Hermes in another terminal:
+
+```bash
+rapid-mlx agents hermes --setup --model qwen3.5-9b-4bit
+```
+
+This writes the custom endpoint to `~/.hermes/config.yaml`. To configure it
+manually instead, use the model ID returned by `http://localhost:8000/v1/models`:
+
+```yaml
+model:
+  provider: custom
+  default: mlx-community/Qwen3.5-9B-4bit
+  base_url: http://localhost:8000/v1
+  context_length: 262144
+```
+
+Use a model whose configured context window meets Hermes's 64,000-token
+minimum for agent use.
+
 ### Ollama — Local Models, Zero Config
 
 [Ollama](https://ollama.com/) runs open-weight models locally with one command. Best for: quick local experimentation, privacy-sensitive work, offline use. Supports tool calling via the OpenAI-compatible API.

@@ -109,6 +109,63 @@ describe('session-control store', () => {
     expect(parsed!.goal!.wait_barrier).toEqual({ reason: 'waiting for deploy', type: 'until', until_at: 1_700_000_200 })
   })
 
+  it('accepts a legacy snapshot without loop_min_interval_seconds', () => {
+    const legacy = { ...FULL_SNAPSHOT }
+    delete (legacy as Record<string, unknown>).loop_min_interval_seconds
+
+    const parsed = parseSessionControlSnapshot(legacy)
+
+    expect(parsed).not.toBeNull()
+    expect(parsed!.loop_min_interval_seconds).toBeUndefined()
+    expect(parsed!.revision).toBe(FULL_SNAPSHOT.revision)
+    expect(parsed!.loop!.interval_seconds).toBe(300)
+  })
+
+  it('accepts a snapshot with loop_min_interval_seconds and preserves the value', () => {
+    const withMin = { ...FULL_SNAPSHOT, loop_min_interval_seconds: 15 }
+
+    const parsed = parseSessionControlSnapshot(withMin)
+
+    expect(parsed).not.toBeNull()
+    expect(parsed!.loop_min_interval_seconds).toBe(15)
+  })
+
+  it('rejects a snapshot with a non-integer loop_min_interval_seconds', () => {
+    const bad = { ...FULL_SNAPSHOT, loop_min_interval_seconds: 29.5 }
+
+    expect(parseSessionControlSnapshot(bad)).toBeNull()
+  })
+
+  it('rejects a snapshot below the backend minimum floor', () => {
+    const bad = { ...FULL_SNAPSHOT, loop_min_interval_seconds: 4 }
+
+    expect(parseSessionControlSnapshot(bad)).toBeNull()
+  })
+
+  it('keeps an opted-in loop minimum through a legacy-shaped event and replaces it after a refreshed configuration change', () => {
+    applySessionControlSnapshot('s1', { ...FULL_SNAPSHOT, loop_min_interval_seconds: 30 })
+    applySessionControlUpdate('s1', FULL_SNAPSHOT)
+
+    expect($sessionControlBySession.get().s1!.snapshot!.loop_min_interval_seconds).toBe(30)
+
+    applySessionControlSnapshot('s1', { ...FULL_SNAPSHOT, loop_min_interval_seconds: 10 })
+
+    expect($sessionControlBySession.get().s1!.snapshot!.loop_min_interval_seconds).toBe(10)
+  })
+
+  it('opts into the live loop minimum on control reads without requiring it from an older backend', async () => {
+    const request = vi.fn(async () => ({ control: FULL_SNAPSHOT }))
+    useGateway(request)
+
+    await refreshSessionControl('s1')
+
+    expect(request).toHaveBeenCalledWith('session.control.read', {
+      include_loop_min_interval: true,
+      session_id: 's1'
+    })
+    expect($sessionControlBySession.get().s1!.snapshot!.loop_min_interval_seconds).toBeUndefined()
+  })
+
   it.each([
     ['unknown goal status', { ...FULL_SNAPSHOT, goal: { ...FULL_SNAPSHOT.goal!, status: 'waiting' } }],
     ['non-finite top-level timestamp', { ...FULL_SNAPSHOT, updated_at: Number.NaN }],
@@ -167,6 +224,43 @@ describe('session-control store', () => {
     expect(entry.capability).toBe('supported')
     expect(entry.error).toHaveLength(240)
     expect(entry.loading).toBe(false)
+  })
+
+  it('keeps a reachable busy mutation rejection retryable rather than marking the control unavailable', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+    useGateway(vi.fn(async () => { throw new JsonRpcGatewayError('Goal is busy with a live session.', { code: 4004 }) }))
+
+    await expect(runSessionControlAction('s1', 'goal.update', { prompt: 'new objective' })).rejects.toThrow('Goal is busy')
+
+    expect($sessionControlBySession.get().s1).toMatchObject({
+      capability: 'supported',
+      error: null,
+      actionError: 'Goal is busy with a live session.',
+      loading: false,
+      pendingAction: null,
+      snapshot: { revision: FULL_SNAPSHOT.revision }
+    })
+  })
+
+  it('keeps a post-mutation snapshot failure unavailable because completion is uncertain', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+    useGateway(vi.fn(async () => { throw new JsonRpcGatewayError('snapshot failed', { code: 5031 }) }))
+
+    await expect(runSessionControlAction('s1', 'goal.update', { prompt: 'new objective' })).rejects.toThrow('snapshot failed')
+    expect($sessionControlBySession.get().s1).toMatchObject({ error: 'snapshot failed', actionError: null })
+  })
+
+  it('keeps a transport action failure unavailable after a prior busy rejection', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+    useGateway(
+      vi.fn()
+        .mockRejectedValueOnce(new JsonRpcGatewayError('Goal is busy with a live session.', { code: 4004 }))
+        .mockRejectedValueOnce(new Error('connection reset'))
+    )
+
+    await expect(runSessionControlAction('s1', 'goal.pause')).rejects.toThrow('Goal is busy')
+    await expect(runSessionControlAction('s1', 'goal.pause')).rejects.toThrow('connection reset')
+    expect($sessionControlBySession.get().s1).toMatchObject({ error: 'connection reset', actionError: null })
   })
 
   it('downgrades a current action method-not-found once, preserves its snapshot, and still rejects', async () => {
@@ -262,6 +356,7 @@ describe('session-control store', () => {
     expect(request).toHaveBeenCalledWith('session.control', {
       action: 'subgoal.add',
       args: { text: 'verify hydration' },
+      include_loop_min_interval: true,
       session_id: 's1'
     })
 

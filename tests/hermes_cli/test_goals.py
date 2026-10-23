@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import json
+import threading
 import time
+import weakref
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -138,6 +141,33 @@ class TestGoalManager:
         assert "port goal command to hermes" in prompt
         assert prompt.strip()  # non-empty
 
+    def test_expired_wait_accounts_against_fresh_turn_state(self, hermes_home):
+        """An expired wait must not continue accounting from the pre-reconciliation object."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, GoalState, load_goal, save_goal
+
+        mgr = GoalManager(session_id="expired-wait-fresh-state")
+        mgr.set("finish the work", max_turns=2)
+        mgr._state.waiting_until = time.time() - 1
+        mgr._state.waiting_since = time.time() - 2
+
+        fresh = load_goal("expired-wait-fresh-state")
+        fresh.turns_used = 1
+        fresh.waiting_until = time.time() - 1
+        save_goal("expired-wait-fresh-state", fresh)
+
+        def reconcile_expired_wait():
+            mgr._state = GoalState.from_json(load_goal("expired-wait-fresh-state").to_json())
+            return True
+
+        with patch.object(mgr, "stop_waiting", side_effect=reconcile_expired_wait), patch.object(
+            goals, "judge_goal", return_value=("continue", "more work", False, None, False)
+        ):
+            decision = mgr.evaluate_after_turn("another step")
+
+        assert decision["status"] == "paused"
+        assert load_goal("expired-wait-fresh-state").turns_used == 2
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Smoke: CommandDef is wired
@@ -146,6 +176,36 @@ class TestGoalManager:
 
 
 
+
+
+def test_goal_admission_locks_are_weak_and_same_key_is_identity_stable():
+    from hermes_cli import goals
+
+    key = "concurrent-goal-lock"
+    barrier = threading.Barrier(8)
+    locks = []
+
+    def get_lock():
+        barrier.wait()
+        locks.append(goals.goal_admission_lock(key))
+
+    threads = [threading.Thread(target=get_lock) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len({id(lock) for lock in locks}) == 1
+    assert isinstance(goals._GOAL_ADMISSION_LOCKS, weakref.WeakValueDictionary)
+
+    locks.clear()
+    gc.collect()
+    assert key not in goals._GOAL_ADMISSION_LOCKS
+
+    for index in range(100):
+        goals.goal_admission_lock(f"short-lived-goal-{index}")
+    gc.collect()
+    assert len(goals._GOAL_ADMISSION_LOCKS) == 0
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -532,17 +592,16 @@ class TestJudgeDrivenWait:
         assert mgr.is_waiting() is False
 
     def test_judge_wait_on_pid_dying_between_check_and_park_continues(self, hermes_home):
-        """The pid may exit between the judge path's liveness probe and ``wait_on``'s own
-        re-check; that race must land on the same continue decision, not raise out of
-        ``evaluate_after_turn`` (callers swallow the error and the continuation is lost)."""
+        """The pid may exit between the judge path's liveness probe and the park; the park step
+        re-checks inside its persisting transaction, so that race must land on the same continue
+        decision, not raise out of ``evaluate_after_turn`` (callers swallow the error and the
+        continuation is lost)."""
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="jw-toctou-pid", default_max_turns=10)
         mgr.set("ship the PR")
-        with patch.object(goals, "_pid_alive", return_value=True), patch.object(
-            GoalManager, "wait_on", side_effect=ValueError("pid is not alive on this host"),
-        ), patch.object(
+        with patch.object(goals, "_pid_alive", side_effect=[True, False]), patch.object(
             goals, "judge_goal",
             return_value=("wait", "job still running", False, {"pid": 4242}, False),
         ):

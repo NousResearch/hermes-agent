@@ -13,6 +13,15 @@ from agent import coding_context as cc
 
 
 
+def test_coding_guidance_separates_local_checkpoint_from_remote_git_effects():
+    guidance = cc.CODING_AGENT_GUIDANCE
+
+    assert "Project instructions may authorize a local checkpoint commit" in guidance
+    assert "Treat push separately according to destination and downstream effects" in guidance
+    assert "Never force-push or rewrite history without explicit authorization" in guidance
+    assert "don't commit, push, or rewrite history unless asked" not in guidance
+
+
 def _git_init(path):
     env = {
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",

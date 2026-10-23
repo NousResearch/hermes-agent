@@ -405,14 +405,16 @@ def _shrink_data_url(url: str, budget: int) -> str:
     """Re-encode a ``data:`` image (JPEG unless it has alpha), shrinking the long edge until it fits."""
     import base64
     import io
-    from PIL import Image
+    from PIL import Image, ImageOps
     try:
         img = Image.open(io.BytesIO(base64.b64decode(url.partition(",")[2])))
         img.load()
     except (OSError, ValueError, Image.DecompressionBombError):
         return url  # not a raster Pillow reads (e.g. SVG): send as-is and let FAL report it
-    fmt, mime = ("PNG", "image/png") if "A" in img.getbands() else ("JPEG", "image/jpeg")
-    img = img if fmt == "PNG" else img.convert("RGB")
+    img = ImageOps.exif_transpose(img)  # re-encoding drops EXIF, so bake the orientation into the pixels
+    has_alpha = "A" in img.getbands() or "transparency" in img.info  # palette PNGs carry alpha in info
+    fmt, mime = ("PNG", "image/png") if has_alpha else ("JPEG", "image/jpeg")
+    img = img.convert("RGBA") if has_alpha else img.convert("RGB")
     side = max(img.size)
     while True:
         frame = img.copy()

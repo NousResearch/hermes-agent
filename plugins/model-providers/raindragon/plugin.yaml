@@ -1,0 +1,5 @@
+name: raindragon-provider
+kind: model-provider
+version: 1.0.0
+description: RainDragon (Gemma 4, OpenAI-compatible)
+author: RainDragon

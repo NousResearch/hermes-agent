@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.conversation_compression import (
     STALL_INTERRUPTED_FAILURE_CLASS,
@@ -106,9 +108,16 @@ class TestStallClassificationIsFenceIdle:
 
 
 class TestEarlyStopStaysNeutral:
+    @pytest.mark.parametrize(("user_stop", "outcome"), [(True, "skipped"), (False, "failed")])
     def test_explicit_interrupt_before_stall_does_not_arm_cooldown(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch, user_stop, outcome
     ):
+        """Only the user's stop counts ``skipped``; a host timeout that cancels the fence (gateway hygiene
+        budget, total ceiling) without the stop event is a real failure even before the stall window."""
+        from hermes_cli.observability import shared_metrics_events
+
+        recorded = []
+        monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: recorded.append(kw["outcome"]))
         db, agent = _build_agent(tmp_path, "EARLY_STOP_96775")
         original = _messages()
         live = copy.deepcopy(original)
@@ -116,6 +125,9 @@ class TestEarlyStopStaysNeutral:
 
         def _early_stop(messages, **_kwargs):
             messages[0]["content"] = "must be rolled back"
+            if user_stop:
+                agent._hard_interrupt_requested.set()
+            fence.cancel_before_commit()
             raise AuxiliaryExplicitCancellation()
 
         agent.context_compressor.compress = _early_stop
@@ -133,6 +145,7 @@ class TestEarlyStopStaysNeutral:
         assert db.get_compression_lock_holder("EARLY_STOP_96775") is None
         assert db.get_compression_failure_cooldown("EARLY_STOP_96775") is None
         assert agent.context_compressor.should_compress(50_000) is True
+        assert recorded == [outcome]
         db.append_message("EARLY_STOP_96775", "assistant", "still writable")
 
 
@@ -267,7 +280,7 @@ class TestStallInterruptedBackoff:
             "agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (1.0, 10.0),
         )
-        db, agent = _build_agent(tmp_path, "FORCE_BYPASS_STALL")
+        _db, agent = _build_agent(tmp_path, "FORCE_BYPASS_STALL")
         original = _messages()
         fence = CompressionCommitFence()
 

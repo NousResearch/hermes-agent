@@ -130,7 +130,7 @@ def test_mcp_server_death_mid_call_fails_fast_and_the_turn_completes(tmp_path: P
 
 
 def test_host_crash_still_reaps_the_mcp_server_and_its_grandchild(tmp_path: Path) -> None:
-    with tui_host(tmp_path) as (ph, srv, proc, cap, rpc):
+    with tui_host(tmp_path) as (ph, _srv, proc, _cap, rpc):
         text = _turn(rpc, timeout=READY_TIMEOUT)
         assert FINAL_ANSWER in text, text[-300:]
         pids = mcp_pids(ph)

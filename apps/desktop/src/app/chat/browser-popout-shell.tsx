@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { type CSSProperties, useEffect } from 'react'
 
 import { PanelEmpty } from '@/app/overlays/panel'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
@@ -6,6 +6,7 @@ import { useI18n } from '@/i18n'
 import { windowBrowserTabId } from '@/store/windows'
 
 import { PreviewTilePane } from './right-rail/preview'
+import { installPopoutPreviewResponder } from './right-rail/preview-popout-bridge'
 
 /**
  * Dedicated shell for `?win=browser`: the in-app Browser, full-window, no
@@ -15,6 +16,10 @@ import { PreviewTilePane } from './right-rail/preview'
 export function BrowserPopoutShell() {
   const { t } = useI18n()
   const tabId = windowBrowserTabId()
+
+  // Serve drive_preview / read_preview for the chat window that still owns the
+  // active-session gate after this pane left the main renderer.
+  useEffect(() => installPopoutPreviewResponder(), [])
 
   return (
     <div

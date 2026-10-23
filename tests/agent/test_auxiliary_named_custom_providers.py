@@ -65,7 +65,7 @@ class TestResolveProviderClientMainAlias:
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
-        client, model = resolve_provider_client("main", "test")
+        client, _model = resolve_provider_client("main", "test")
         assert client is not None
         assert "beans.local" in str(client.base_url)
 
@@ -427,7 +427,7 @@ class TestResolveProviderClientMainRuntimeCustom:
 
         from agent.auxiliary_client import resolve_provider_client
         # main_runtime with key but no base_url → must fall through
-        client, model = resolve_provider_client(
+        client, _model = resolve_provider_client(
             "custom",
             main_runtime={"api_key": "k", "base_url": ""},
         )
@@ -557,3 +557,67 @@ class TestKeyedCustomProviderReasoningWire:
             reasoning_config={"enabled": True, "effort": "medium"},
         )
         assert kwargs["extra_body"] == nested and "reasoning_effort" not in kwargs
+
+
+class TestAuxInheritsCustomProviderExtraBody:
+    """#103738 hole 3: an aux request routed to a custom provider carries that entry's ``extra_body`` the
+    way the main agent's requests do — a proxy that 400s without a ``user`` field must not break smart
+    approval just because ``auxiliary.approval.extra_body`` is empty. Task/caller keys still win, and a
+    request to any other endpoint never inherits it."""
+
+    _PROXY = "https://proxy.example/v1"
+
+    def _config(self, **auxiliary):
+        return {
+            "model": {"default": "some-model", "provider": "custom:my-proxy"},
+            "custom_providers": [
+                {"name": "my-proxy", "base_url": self._PROXY, "model": "some-model", "api_key": "sk-x",
+                 "extra_body": {"user": "proxy-user", "metadata": {"tier": "entry"}}},
+                {"name": "other-proxy", "base_url": "https://other.example/v1", "api_key": "sk-y",
+                 "extra_body": {"user": "other-user"}},
+            ],
+            "auxiliary": auxiliary,
+        }
+
+    def _sent_extra_body(self, main_runtime=None, **call):
+        from agent.auxiliary_client import call_llm
+        sent = {}
+
+        def fake_create(**kwargs):
+            sent.update(kwargs)
+            return MagicMock()
+
+        with patch("openai.resources.chat.completions.Completions.create", side_effect=fake_create), \
+                patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _t, **_kw: resp):
+            call_llm(task="approval", messages=[{"role": "user", "content": "hi"}], main_runtime=main_runtime, **call)
+        assert sent, "request never reached the transport"
+        return sent.get("extra_body") or {}
+
+    @pytest.mark.parametrize("main_runtime", [
+        None,
+        {"provider": "custom", "model": "some-model", "base_url": _PROXY, "api_key": "sk-x"},
+    ], ids=["config-main", "live-runtime"])
+    def test_approval_with_empty_task_extra_body_inherits_entry_body(self, tmp_path, main_runtime):
+        _write_config(tmp_path, self._config(approval={"extra_body": {}}))
+        body = self._sent_extra_body(main_runtime=main_runtime)
+        assert body["user"] == "proxy-user"
+
+    def test_task_and_caller_keys_win_over_entry(self, tmp_path):
+        _write_config(tmp_path, self._config(approval={"extra_body": {"metadata": {"tier": "task"}}}))
+        body = self._sent_extra_body(extra_body={"user": "caller-user"})
+        assert body["user"] == "caller-user"
+        assert body["metadata"] == {"tier": "task"}
+
+    def test_other_destinations_do_not_inherit(self, tmp_path):
+        _write_config(tmp_path, self._config())
+        from agent.auxiliary_client import _build_call_kwargs
+        msgs = [{"role": "user", "content": "hi"}]
+        # A fallback to a built-in never carries the custom entry's body.
+        openrouter = _build_call_kwargs("openrouter", "vendor/model", msgs, base_url="https://openrouter.ai/api/v1")
+        assert "user" not in (openrouter.get("extra_body") or {})
+        # A fallback to another named entry carries ITS body, not the primary's.
+        other = _build_call_kwargs("custom:other-proxy", "m", msgs, base_url="https://other.example/v1/")
+        assert other["extra_body"]["user"] == "other-user"
+        # A custom endpoint no entry describes gets nothing.
+        stray = _build_call_kwargs("custom", "some-model", msgs, base_url="https://stray.example/v1")
+        assert "user" not in (stray.get("extra_body") or {})

@@ -37,6 +37,7 @@ LAYER_DISK = "disk"
 _REASON_TO_LAYER = {
     "auth": LAYER_AUTH, "auth_permanent": LAYER_AUTH, "billing": LAYER_BILLING, "billing_unverified": LAYER_BILLING,
     "loop_error": LAYER_GATEWAY, "interpreter_shutdown": LAYER_GATEWAY, "session_busy": LAYER_GATEWAY,
+    "gateway_connection": LAYER_GATEWAY, "host_error": LAYER_GATEWAY, "workspace_unavailable": LAYER_GATEWAY,
     "truncated": LAYER_PROVIDER, "empty_response": LAYER_PROVIDER, "invalid_response": LAYER_PROVIDER,
     "context_overflow": LAYER_PROVIDER,  # a bigger-window model IS the fix, so Switch provider applies
 }
@@ -53,7 +54,7 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 # Kept in sync with ``classify_api_error``'s retryable=False verdicts.
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
-    "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
+    "provider_policy_blocked", "data_policy_denied", "model_not_found", "format_error", "ssl_cert_verification",
     "context_overflow", "interpreter_shutdown", "upstream_blocked",
 }
 
@@ -90,13 +91,28 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
     # that actually failed — not whatever the composer points at later.
     identity = {k: v for k, v in (("provider", provider), ("model", model)) if v}
     surface = {"layer": layer, "code": code, "retryable": bool(retryable), **identity}
+    if provider:
+        # Clients name the failing provider in the card copy ("OpenCode Go did
+        # not answer…"), not by its config slug.
+        surface["provider_label"] = _provider_label(provider)
     if layer == LAYER_AUTH and provider:
         # OAuth providers are fixed by signing in again; API-key providers by
-        # replacing the key. The client's one-click recovery needs to know which
-        # and how to name the account it re-opens.
+        # replacing the key. The client's one-click recovery needs to know which.
         surface["auth_kind"] = auth_kind(provider)
-        surface["provider_label"] = _provider_label(provider)
+        if surface["auth_kind"] == "api_key" and (env_var := _api_key_env(provider)):
+            surface["api_key_env"] = env_var
     return surface
+
+
+def _api_key_env(provider: str) -> str:
+    """The env var holding ``provider``'s API key, so the client can open that row."""
+    try:
+        from hermes_cli.provider_catalog import provider_catalog_by_slug
+
+        descriptor = provider_catalog_by_slug().get(provider.strip().lower())
+        return descriptor.api_key_env_vars[0] if descriptor and descriptor.api_key_env_vars else ""
+    except Exception:  # pragma: no cover — advisory only
+        return ""
 
 
 def _provider_label(provider: str) -> str:
@@ -155,6 +171,18 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         if error_text and _disk_full(error_text):
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
+            if window_message := str(result.get("usage_window_message") or ""):
+                # A window plan's limit, not an empty account: the card shows the stop-line sentence.
+                # Retry is the natural next click once Keep going / a top-up is on, and at the reset.
+                surface = _surface(LAYER_BILLING, "usage_window", True, provider, model)
+                surface["message"] = window_message
+                if isinstance(resets_at := result.get("failure_resets_at"), (int, float)) and not isinstance(resets_at, bool):
+                    surface["resets_at"] = float(resets_at)
+                if isinstance(limit := result.get("usage_limit"), dict):
+                    # What ran out, the plan's recommended models that still work, and the credits
+                    # option: the card's one-click buttons (agent/plan_limits.py).
+                    surface["usage_limit"] = limit
+                return surface
             return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
         # The Nous free tier refused or could not serve the turn (``agent/turn_recovery.py``
         # stamps ``free_tier``): its own code, so a client offers the free sign-in rather than an
@@ -217,12 +245,3 @@ def build_error_surface_from_exception(
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: exception classification failed", exc_info=True)
         return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-LAYER_RUNTIME = "runtime"
-# ---- END PLUGIN-COMPAT ----

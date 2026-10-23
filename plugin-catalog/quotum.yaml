@@ -1,0 +1,19 @@
+name: quotum
+repo: https://github.com/qvotvm/hermes-quotum
+sha: b27d42ea995567a66e64b2389b14a665c5a17611
+description: "A quotum seat's Venice key as a provider. Private and anonymized models, with the seat's daily cap, spend and the 20:00 UTC bell in /usage, and a Seals tab in hermes dashboard with the seat's record. Disclosure — prompts and QUOTUM_SEAT_KEY go to api.venice.ai; /usage, Desktop usage and the Seals tab send a 16-hex sha256 handle of the key to quotum.org, then the Seals tab reads the seat's public record from quotum.org (the key itself is never sent there); QUOTUM_X_SEARCH=1 swaps in its own client that drops Hermes web_search for Venice-side web and X search (billed per search); seats are funded by the QUOTUM crypto token"
+maintainer: quotum
+tier: community
+category: models
+version: "0.2.0"
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/qvotvm/hermes-quotum#readme
+known_issues:
+  - The optional QUOTUM_X_SEARCH mode supplies its own client through create_client, so it works with plugins.isolation in_process (the default) only; under host isolation leave it off.
+  - Hermes' bundled Achievements page has no hook for outside achievements, so the seat's seals live in the plugin's own Seals tab.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - QUOTUM_SEAT_KEY

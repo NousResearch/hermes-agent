@@ -102,6 +102,13 @@ export interface RemoteBootRetryContext {
    * ssh-agent or fixes the connection settings: terminal, not connectivity.
    */
   isSshAuthFailed?: boolean
+  /**
+   * True when the LOCAL ssh client failed (`ssh -G` could not run or exited
+   * non-zero). `-G` never touches the network, so a retry re-runs the same
+   * doomed probe: terminal until the user fixes the client or sets
+   * `desktop.ssh_path` (#103288).
+   */
+  isSshClientFailed?: boolean
 }
 
 /**
@@ -141,6 +148,46 @@ export function isSshAuthFailedBootFailure(error: unknown): boolean {
   return /SSH authentication to .+ failed|Permission denied \((?:publickey|password|keyboard-interactive)/i.test(
     message
   )
+}
+
+export const SSH_CLIENT_FAILED = 'ssh-client-failed'
+
+/**
+ * Wrap a failed local `ssh -G` probe as a terminal, tagged boot failure that
+ * names the client binary. On Windows the message points at
+ * `desktop.ssh_path`, the only way past a broken in-box OpenSSH (#103288).
+ */
+export function sshClientFailedError(sshBinary: string, cause: unknown, platform: string = process.platform): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause ?? '')
+
+  const hint =
+    platform === 'win32'
+      ? " Set desktop.ssh_path in config.yaml to a working ssh.exe (for example Git for Windows' usr\\bin\\ssh.exe) and retry."
+      : ''
+
+  const error = new Error(
+    `The local SSH client (${sshBinary}) failed to resolve the connection config: ${detail}.${hint}`
+  ) as Error & {
+    kind: string
+  }
+
+  error.kind = SSH_CLIENT_FAILED
+
+  return error
+}
+
+/** A failed local ssh client probe, tagged by sshClientFailedError. */
+export function isSshClientFailedBootFailure(error: unknown): boolean {
+  return (error as { kind?: string } | null | undefined)?.kind === SSH_CLIENT_FAILED
+}
+
+/**
+ * Whether a failed remote boot should latch because the local ssh client
+ * itself failed. Same rationale as the credential latch: unlatched, every
+ * api call re-drives boot and the overlay never holds still (#103288).
+ */
+export function shouldLatchSshClientFailure(context: RemoteBootRetryContext): boolean {
+  return context.attemptedRemote && context.isSshClientFailed === true
 }
 
 /**
@@ -188,7 +235,8 @@ export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): b
     context.attemptedRemote &&
     !context.isReauth &&
     context.isHostKeyChanged !== true &&
-    context.isSshAuthFailed !== true
+    context.isSshAuthFailed !== true &&
+    context.isSshClientFailed !== true
   )
 }
 

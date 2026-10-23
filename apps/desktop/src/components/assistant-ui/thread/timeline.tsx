@@ -19,6 +19,7 @@ import {
   type TimelineRevealRequest,
   type TimelineSourceMessage
 } from './timeline-data'
+import { createTimelinePositionReader } from './timeline-position'
 import { TimelineRail } from './timeline-rail'
 import { useTranscriptWindow } from './transcript-window'
 import { useTimelineHistory } from './use-timeline-history'
@@ -247,6 +248,7 @@ const ActiveThreadTimeline: FC = () => {
 
     let frame = 0
     const indexes = new Map(railEntries.map((entry, index) => [entry.id, index]))
+    const position = createTimelinePositionReader(viewport, indexes)
 
     const compute = () => {
       frame = 0
@@ -257,30 +259,7 @@ const ActiveThreadTimeline: FC = () => {
         return
       }
 
-      const top = viewport.getBoundingClientRect().top
-      let first = -1
-      let active = -1
-
-      // Walk only mounted messages, never every archived prompt in the rail.
-      for (const node of viewport.querySelectorAll<HTMLElement>('[data-message-id]')) {
-        const index = indexes.get(node.dataset.messageId!)
-
-        if (index === undefined) {
-          continue
-        }
-
-        if (first === -1) {
-          first = index
-        }
-
-        const turn = node.closest<HTMLElement>('[data-slot="aui_turn-pair"]') ?? node
-
-        if (turn.getBoundingClientRect().top - top <= 8) {
-          active = index
-        }
-      }
-
-      setActiveIndex(active === -1 ? Math.max(0, first) : active)
+      setActiveIndex(position.read())
     }
 
     const schedule = () => {
@@ -289,13 +268,25 @@ const ActiveThreadTimeline: FC = () => {
       }
     }
 
-    const observer = new MutationObserver(schedule)
+    const observer = new MutationObserver(records => {
+      position.invalidate(records)
+      schedule()
+    })
+
     const content = viewport.querySelector('[data-slot="aui_thread-content"]')
+    const resize = new ResizeObserver(schedule)
 
     if (content) {
-      observer.observe(content, { childList: true })
+      observer.observe(content, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-message-id']
+      })
+      resize.observe(content)
     }
 
+    resize.observe(viewport)
     viewport.addEventListener('scroll', schedule, { passive: true })
     viewport.addEventListener('wheel', cancelJump, { passive: true })
     schedule()
@@ -303,6 +294,7 @@ const ActiveThreadTimeline: FC = () => {
     return () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
+      resize.disconnect()
       viewport.removeEventListener('scroll', schedule)
       viewport.removeEventListener('wheel', cancelJump)
     }

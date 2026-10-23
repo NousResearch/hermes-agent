@@ -379,10 +379,17 @@ def _cmd_create(args: argparse.Namespace) -> int:
                              if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
+        deferral = kb.ceiling_deferral(conn, task_id)
     if getattr(args, "json", False):
-        _print_json(_task_to_dict(task))
+        _print_json({**_task_to_dict(task), "deferred": deferral})
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        if deferral:
+            print(
+                f"Deferred: board at kanban.max_active_per_board "
+                f"({deferral.get('active')}/{deferral.get('ceiling')} active); parked in 'todo', "
+                "promoted automatically when a slot frees."
+            )
         # Warn only for ready+assigned tasks that would sit without a dispatcher (triage/todo idle
         # by design, unassigned can't dispatch); skipped under --json so stdout stays parseable.
         if task.status == "ready" and task.assignee:
@@ -1149,6 +1156,13 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+    ceiling = stats.get("max_active_per_board")
+    print(f"\nActive (ready+running+review+scheduled+triage): {stats.get('active', 0)}"
+          + (f" / ceiling {ceiling}" if ceiling else " (no ceiling)"))
+    for who, q in sorted((stats.get("quota") or {}).items()):
+        state = "IN COOLDOWN" if q.get("in_cooldown") else "cooled down, awaiting a completed run"
+        print(f"Quota exhausted: {who}  since {_fmt_ts(q.get('since'))}  "
+              f"last {_fmt_ts(q.get('last_seen'))}  x{q.get('count')}  ({state}; last task {q.get('last_task')})")
     return 0
 
 

@@ -441,6 +441,10 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         body: dict[str, Any] = {"task": _task_dict(
             task, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
         ) if task else None}
+        # A create parked by kanban.max_active_per_board is reported, never silently 'todo'.
+        deferral = kanban_db.ceiling_deferral(conn, task_id)
+        if deferral:
+            body["deferred"] = deferral
         # Dispatcher-presence warning so the UI can banner a ready+assigned task that would
         # otherwise sit idle (no gateway / dispatch_in_gateway=false); triage/todo are expected
         # to wait, unassigned tasks can't dispatch anyway. Probe the request's active home: the

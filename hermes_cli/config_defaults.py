@@ -1912,24 +1912,24 @@ DEFAULT_CONFIG = {
         # Assignee when the orchestrator can't match one to an installed profile; "" = default
         # profile. A task never ends up with assignee=None.
         "default_assignee": "",
-        # Global cap: positive int = the HOST never has more than N tasks 'running' across all
-        # boards and both dispatch lanes. None = ~MemTotal / 512 MiB clamped to [2, 8]; where
-        # MemTotal is unreadable (macOS/Windows) None means no cap.
-        # Global concurrency cap (#33488): when set to a positive int, the HOST never has more than N tasks
-        # in 'running' at once — counted across every active board and across both the ready and review
-        # dispatch lanes (workers are OS processes sharing one machine's memory, so the cap bounds the
-        # machine, not each board; OOF-30). Unset (None) means "derive from system memory" (OOF-30/OOF-77):
-        # the dispatcher caps concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] — e.g. 2 workers
-        # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
-        # cap. Set an explicit value to override the derived default in either direction.
+        # Global concurrency cap (#33488): positive int = the HOST never has more than N tasks
+        # 'running' at once, counted across every active board and both dispatch lanes (workers
+        # are OS processes sharing one machine's memory, so the cap bounds the machine, not each
+        # board; OOF-30). None = ~MemTotal / 512 MiB clamped to [2, 8] (e.g. 2 workers on a 1 GiB
+        # VM); where MemTotal is unreadable (macOS/Windows) None means no cap.
         "max_in_progress": None,
-        # Per-profile cap: positive int = no single profile runs more than N workers even if the
-        # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful
-        # when fan-out would saturate one profile's model/API quota/browser pool.
-        # Unset (None) means "no per-profile cap" — backward-compatible with existing installs. Useful for
-        # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
-        # pool while leaving other profiles idle. See #21582.
+        # Per-profile live concurrency cap (#21582): positive int = no single profile runs more
+        # than N workers even if the global caps allow; excess defers to a later tick. None = no
+        # per-profile cap. For fan-outs that would saturate one profile's model/API quota/browser pool.
         "max_in_progress_per_profile": None,
+        # Per-board ACTIVE-card ceiling: positive int = a board never holds more than N cards in
+        # ready/running/review/scheduled/triage ("blocked" is cap-invisible). Enforced at every
+        # admission point: a create against a full board lands in "todo" with a "ceiling_wait"
+        # event (deferred, never dropped, visible in the create result), promotion stops at the
+        # ceiling, and running never exceeds it. Composes with max_spawn, max_in_progress and
+        # max_in_progress_per_profile: the spawn budget is the minimum of whatever is set.
+        # None = uncapped (backward-compatible).
+        "max_active_per_board": None,
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

@@ -69,6 +69,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = kbd._positive_int(
             _kanban_cfg.get("max_in_progress_per_profile"), None
         )
+        max_active_per_board = kbd._positive_int(_kanban_cfg.get("max_active_per_board"), None)
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
             kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
@@ -80,6 +81,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
+        max_active_per_board = None
         max_spawn = getattr(args, "max", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
@@ -90,6 +92,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_active_per_board=max_active_per_board,
         )
     if getattr(args, "json", False):
         _print_json({
@@ -111,6 +114,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, reason) in res.respawn_guarded
             ],
             "rate_limited": res.rate_limited,
+            "skipped_quota_cooldown": [
+                {"task_id": tid, "assignee": who} for (tid, who) in res.skipped_quota_cooldown
+            ],
+            "active_ceiling_held": (
+                {"running": res.active_ceiling_held[0], "ceiling": res.active_ceiling_held[1]}
+                if res.active_ceiling_held else None
+            ),
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
@@ -150,6 +160,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Guarded ({reason}): {tid}")
     if res.rate_limited:
         print(f"Rate-limited (released to ready, no failure counted): {', '.join(res.rate_limited)}")
+    for tid, who in res.skipped_quota_cooldown:
+        print(f"Held ({who} quota exhausted on this board, cooling down): {tid}")
+    if res.active_ceiling_held:
+        running, ceiling = res.active_ceiling_held
+        print(f"Held: board at kanban.max_active_per_board ({running} running / ceiling {ceiling})")
     if res.skipped_locked:
         print("Skipped: another dispatcher holds this board's lock (no writes this tick)")
     if res.memory_pressure:

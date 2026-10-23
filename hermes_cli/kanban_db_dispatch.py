@@ -25,6 +25,15 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_db_dispatch_reclaim import (
+    detect_stale_running,
+    reconcile_orphaned_running,
+)
+from hermes_cli.kanban_db_admission import (
+    configured_max_active_per_board,
+    note_quota_exhausted,
+    profiles_in_quota_cooldown,
+)
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -152,6 +161,14 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    active_ceiling_held: Optional[tuple[int, int]] = None
+    """``(running, ceiling)`` when ``kanban.max_active_per_board`` left no spawn
+    budget this tick (running cards already fill the ceiling). Deferred, not
+    dropped."""
+    skipped_quota_cooldown: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, assignee)`` held because the assignee's provider quota is
+    exhausted on this board (a worker exited rate-limited within the cooldown).
+    The whole profile waits, not just the card that died."""
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
@@ -173,6 +190,10 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_quota_cooldown:
+            counts["quota_cooldown"] = counts.get("quota_cooldown", 0) + len(res.skipped_quota_cooldown)
+        if res.active_ceiling_held:
+            counts["active_ceiling"] = counts.get("active_ceiling", 0) + 1
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -694,6 +715,11 @@ def heartbeat_worker(
     return True
 
 
+# A running task with no heartbeat for this long is inactive regardless of
+# ``dispatch_stale_timeout_seconds`` (spec: ">4h started + no commits in 1h").
+_STALE_HEARTBEAT_GAP_SECONDS = 3600
+
+
 def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
@@ -790,174 +816,6 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
             )
     return timed_out
-
-
-# A running task with no heartbeat for this long is inactive regardless of
-# ``dispatch_stale_timeout_seconds`` (spec: ">4h started + no commits in 1h").
-_STALE_HEARTBEAT_GAP_SECONDS = 3600
-
-
-def detect_stale_running(
-    conn: sqlite3.Connection,
-    *,
-    stale_timeout_seconds: int = 0,
-    signal_fn=None,
-) -> list[str]:
-    """Reclaim ``running`` tasks with no heartbeat progress; returns their ids.
-
-    Stale = running longer than ``stale_timeout_seconds`` (active run's
-    ``started_at``, else ``tasks.started_at``) AND ``last_heartbeat_at`` NULL or
-    older than ``_STALE_HEARTBEAT_GAP_SECONDS``. Task returns to its source
-    phase, run closes ``outcome='stale'``, a live host-local worker is killed.
-    ``0`` disables the check; ``signal_fn`` is a test hook. Deliberately NOT
-    counted via ``_record_task_failure``: an absent heartbeat is not a worker
-    failure, and counting it would let long-running tasks trip the breaker.
-    """
-    if stale_timeout_seconds <= 0:
-        return []
-
-    now = int(time.time())
-    reclaimed: list[str] = []
-
-    rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_started_at, t.last_heartbeat_at, t.claim_lock, "
-        "       COALESCE(r.started_at, t.started_at) AS active_started_at "
-        "FROM tasks t "
-        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
-        "WHERE t.status = 'running'"
-    ).fetchall()
-
-    for row in rows:
-        if row["active_started_at"] is None:
-            continue
-        elapsed = now - int(row["active_started_at"])
-        if elapsed < stale_timeout_seconds:
-            continue
-
-        last_hb = row["last_heartbeat_at"]
-        hb_age = (now - int(last_hb)) if last_hb is not None else None
-        if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
-            continue
-
-        pid = row["worker_pid"]
-        tid = row["id"]
-        lock = row["claim_lock"] or ""
-
-        termination = _kb._terminate_reclaimed_worker(
-            pid, lock, signal_fn=signal_fn, started_at=_kb._row_get(row, "worker_started_at"))
-
-        # Never release a claim while our own worker is still alive: that would
-        # spawn a duplicate beside it. Hold the claim and retry next tick.
-        if _worker_survived_termination(termination):
-            _defer_reclaim_for_live_worker(
-                conn, tid, lock, now, termination,
-                reason="heartbeat_stale_worker_alive",
-            )
-            continue
-
-        with _kb.write_txn(conn):
-            retry_status = _kb._retry_status_for_run(conn, tid)
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ?",
-                (retry_status, tid, row["claim_lock"]),
-            )
-            if cur.rowcount != 1:
-                continue
-
-            payload = {
-                "elapsed_seconds": int(elapsed),
-                "last_heartbeat_at": _kb._opt_int(last_hb),
-                "heartbeat_age_seconds": _kb._opt_int(hb_age),
-                "timeout_seconds": stale_timeout_seconds,
-                "pid": int(pid) if pid else None,
-                "retry_status": retry_status,
-            }
-            payload.update(termination)
-
-            run_id = _kb._end_run(
-                conn, tid,
-                outcome="stale", status="stale",
-                error=(
-                    f"no heartbeat for {int(hb_age)}s "
-                    if hb_age is not None
-                    else "no heartbeat ever"
-                ) + f" after {int(elapsed)}s running",
-                metadata=payload,
-            )
-            _kb._append_event(conn, tid, "stale", payload, run_id=run_id)
-            reclaimed.append(tid)
-
-    return reclaimed
-
-
-def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
-    """Requeue ``running`` cards with broken claim bookkeeping; returns their ids.
-
-    A task ``running`` with NULL ``claim_lock``/``claim_expires`` (crash
-    mid-claim, manual SQL, DB restore) is a zombie forever: ``release_stale_claims``
-    needs ``claim_expires``, ``detect_crashed_workers`` needs a host-local lock +
-    pid, ``detect_stale_running`` is off by default. Orphans go back to ``ready``
-    with a comment, leaked run closed, ``reconciled`` event; a row with a live
-    host-local PID is deferred so no duplicate spawns beside it.
-    """
-    now = int(time.time())
-    reconciled: list[str] = []
-    rows = conn.execute(
-        "SELECT id, claim_lock, claim_expires, worker_pid, worker_started_at FROM tasks "
-        "WHERE status = 'running' "
-        "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
-    ).fetchall()
-    for row in rows:
-        tid = row["id"]
-        pid = row["worker_pid"]
-        if pid and _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
-            # Never requeue beside a live process. Retry next tick.
-            _kb._log.debug(
-                "kanban reconcile: task %s has broken claim bookkeeping but "
-                "pid %s is alive on this host — deferring", tid, pid,
-            )
-            continue
-        with _kb.write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ? AND claim_expires IS ?",
-                (tid, row["claim_lock"], row["claim_expires"]),
-            )
-            if cur.rowcount != 1:
-                continue
-            payload = {
-                "reason": "orphaned_running",
-                "claim_lock": row["claim_lock"],
-                "claim_expires": _kb._opt_int(row["claim_expires"]),
-                "worker_pid": int(pid) if pid else None,
-                "now": now,
-            }
-            run_id = _kb._end_run(
-                conn, tid,
-                outcome="reclaimed", status="reclaimed",
-                error="orphaned running card (broken claim bookkeeping)",
-                metadata=payload,
-            )
-            _kb._insert_comment(
-                conn, tid, "dispatcher",
-                "reconciliation: card was 'running' with no valid claim "
-                "(dead/gone worker) — requeued to ready",
-                now,
-            )
-            _kb._append_event(conn, tid, "reconciled", payload, run_id=run_id)
-            reconciled.append(tid)
-        _kb._log.info(
-            "kanban reconcile: requeued orphaned running task %s "
-            "(claim_lock=%r, worker_pid=%r)", tid, row["claim_lock"], pid,
-        )
-    return reconciled
 
 
 def _error_fingerprint(error_text: str) -> str:
@@ -1259,6 +1117,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+                # Board-level fact: the whole profile is quota-starved, not
+                # just this card (see ``note_quota_exhausted``).
+                note_quota_exhausted(conn, row["assignee"], row["id"])
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
@@ -2016,8 +1877,14 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    max_active_per_board: Any = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
+
+    ``max_active_per_board``: the ACTIVE-card ceiling for this tick; ``None``
+    reads ``kanban.max_active_per_board`` live (an int pins it, ``0`` means
+    uncapped). It bounds promotion (todo -> active) and composes with the
+    running caps: running cards can never exceed it.
 
     Wraps :func:`_dispatch_once_locked` in the non-blocking :func:`_dispatch_tick_lock`
     so two dispatchers on one ``kanban.db`` never race a write tick on WAL
@@ -2039,6 +1906,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            max_active_per_board=max_active_per_board,
         )
 
     try:
@@ -2088,6 +1956,7 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    quota_cooled: frozenset[str] = frozenset(),
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2114,6 +1983,12 @@ def _dispatch_lane_task(
                 if (last is None or last["kind"] != "skipped_nonspawnable"
                         or last["payload"] != _kb._json_or_null({"assignee": assignee})):
                     _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
+        return False
+    # Profile-wide quota hold: a worker of this assignee exited rate-limited
+    # within the cooldown, so every further spawn for it would burn the same
+    # exhausted pool (spawn -> 429 -> cooldown -> respawn). Hold the profile.
+    if assignee in quota_cooled:
+        result.skipped_quota_cooldown.append((task_id, assignee))
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
@@ -2240,8 +2115,10 @@ def _run_reclaim_phase(
     failure_limit: int,
     reconcile_orphans: bool,
     board: Optional[str] = None,
+    max_active: Optional[int] = None,
 ) -> None:
-    """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
+    """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote
+    (promotion honours the ACTIVE ceiling ``max_active``; None = uncapped)."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
@@ -2254,7 +2131,7 @@ def _run_reclaim_phase(
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
-    result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+    result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit, max_active=max_active)
 
 
 def _tick_spawn_budget(
@@ -2264,6 +2141,7 @@ def _tick_spawn_budget(
     max_spawn: Optional[int],
     max_in_progress: Optional[int],
     board: Optional[str],
+    max_active: Optional[int] = None,
 ) -> tuple[bool, Optional[int]]:
     """``(may_spawn, spawn_budget)`` for this tick; ``budget None`` = uncapped.
 
@@ -2272,13 +2150,16 @@ def _tick_spawn_budget(
     by N every tick. ``max_in_progress`` is a HOST-level cap: running workers on
     every other board count against the same budget, else N boards multiply the
     cap by N — exactly the fan-out the memory-derived default exists to prevent.
+    ``max_active`` (``kanban.max_active_per_board``) is the ACTIVE-card ceiling;
+    running is a subset of active, so it is also a per-board running cap. The
+    three compose: the budget is the minimum of whatever is set.
     """
     # Count already-running tasks so max_spawn enforces concurrency, not a
     # per-tick budget: "running" tasks stay running until the worker makes a terminal
     # board call (kanban_complete/kanban_block/kanban_request_review) or the TTL reclaims them.
     running_count = 0
     spawn_budget: Optional[int] = None
-    if max_spawn is not None or max_in_progress is not None:
+    if max_spawn is not None or max_in_progress is not None or max_active is not None:
         running_count = count_running_tasks(conn)
 
     # Both ready and review loops consume from the same budget.
@@ -2286,6 +2167,14 @@ def _tick_spawn_budget(
         if running_count >= max_spawn:
             return False, None
         spawn_budget = max_spawn - running_count
+
+    if max_active is not None:
+        if running_count >= max_active:
+            result.active_ceiling_held = (running_count, max_active)
+            return False, None
+        remaining = max_active - running_count
+        if spawn_budget is None or spawn_budget > remaining:
+            spawn_budget = remaining
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
@@ -2391,6 +2280,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    max_active_per_board: Any = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2398,12 +2288,15 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    max_active = _resolve_tick_max_active(max_active_per_board)
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
+        max_active=max_active,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
+        max_active=max_active,
     )
     if not may_spawn:
         return result
@@ -2446,6 +2339,7 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        quota_cooled=frozenset(profiles_in_quota_cooldown(conn)),
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2479,6 +2373,18 @@ def _dispatch_once_locked(
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
     return result
+
+
+def _resolve_tick_max_active(value: Any) -> Optional[int]:
+    """Tick-level ceiling: ``None`` -> live config, ``0``/negative -> uncapped,
+    positive int -> pinned (tests, CLI)."""
+    if value is None:
+        return configured_max_active_per_board()
+    try:
+        ival = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ival if ival >= 1 else None
 
 
 def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:

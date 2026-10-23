@@ -1148,10 +1148,29 @@ def _handle_create(args: dict, **kw) -> str:
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
-        wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
+        events = kb.list_events(conn, new_tid)
+        wait = [e for e in events if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
+        # ACTIVE-card ceiling deferral is a visible result, never a silent drop.
+        held = [e for e in events if e.kind == "ceiling_wait"]
+        gate.update(_ceiling_deferral(held[-1].payload) if held else {"deferred": False})
         return _ok(task_id=new_tid, **landed, **gate,
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
+
+
+def _ceiling_deferral(payload: dict) -> dict:
+    """Create-result fields for a card parked in ``todo`` by ``kanban.max_active_per_board``."""
+    ceiling, active = payload.get("ceiling"), payload.get("active")
+    return {
+        "deferred": True,
+        "deferred_reason": "board_active_ceiling",
+        "ceiling": ceiling,
+        "active": active,
+        "note": (
+            f"Board is at its ACTIVE-card ceiling ({active}/{ceiling}); the task is parked in "
+            "'todo' and will be promoted automatically when a slot frees."
+        ),
+    }
 
 
 def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:

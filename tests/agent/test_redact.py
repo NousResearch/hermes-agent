@@ -451,6 +451,18 @@ class TestPythonReprFields:
         assert secret not in result
         assert f"'{key}': '***'" in result
 
+    @pytest.mark.parametrize("key", ["secretValue", "accessToken", "rawSecret", "keyMaterial"])
+    def test_camelcase_json_field_in_prefixed_text_is_masked(self, key):
+        """MCP servers often return ``"Secret retrieved successfully: {json}"`` — not parseable as
+        JSON, so only the text pass sees the field."""
+        secret = f"opaque-{key.lower()}-value-1234567890"
+        text = f'Secret retrieved successfully: {{"secretKey": "DEMO", "{key}": "{secret}"}}'
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert secret not in result
+        assert '"secretKey": "DEMO"' in result
+
     @pytest.mark.parametrize("key", ["secretValue", "privateKey", "client-secret", "keyMaterial"])
     def test_is_secret_field_name_matches_camelcase_spellings(self, key):
         assert is_secret_field_name(key)

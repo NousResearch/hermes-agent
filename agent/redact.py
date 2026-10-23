@@ -426,7 +426,9 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
 
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+# Separators are optional so camelCase spellings (``secretValue``, ``accessToken``) match too;
+# the field is IGNORECASE and anchored to the whole quoted key, so ``"secretKey"`` (a name) is left alone.
+_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_?token|refresh_?token|auth_?token|bearer|secret_?value|raw_?secret|secret_?input|key_?material)"
 _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
 # The same field inside a JSON-encoded string (``{"output": "{\\"api_key\\": \\"…\\"}"}``): every tool result
 # that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).

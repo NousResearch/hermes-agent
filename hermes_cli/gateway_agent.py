@@ -1167,21 +1167,7 @@ class GatewayAgent:
             logger.debug("modal withdraw for %s failed", current[1], exc_info=True)
 
     def _ask_clarify(self, params):
-        """Main's batch clarify panel (``clarify_callback(questions)``) for the whole question set."""
-        questions = [{"qid": q.get("qid"), "question": q.get("question") or "",
-                      "choices": list(q.get("choices") or []), "multi_select": bool(q.get("multi_select"))}
-                     for q in params.get("questions") or [] if isinstance(q, dict) and q.get("qid")]
-        if self.clarify_callback is None or not questions:
-            return {"outcome": "cancelled"}
-        reply = self.clarify_callback(questions)
-        if not isinstance(reply, dict):
-            return {"outcome": "cancelled"}
-        answers = {qid: (value if isinstance(value, str) or value is None else json.dumps(value))
-                   for qid, value in (reply.get("answers") or {}).items()}
-        out = {"answers": answers}
-        if reply.get("outcome") in ("submitted", "timed_out", "cancelled"):
-            out["outcome"] = reply["outcome"]
-        return out
+        return clarify_reply(self.clarify_callback, params)
 
     def _ask_sudo(self, params):
         from tools.terminal_tool import _get_sudo_password_callback
@@ -1411,6 +1397,25 @@ def _moa_handler(kind):
         agent.tool_progress_callback(kind, payload.get("label") or payload.get("name"),
                                      payload.get("text") or payload.get("preview"), None, **extra)
     return handler
+
+
+def clarify_reply(callback, params) -> dict:
+    """Main's batch clarify panel (``callback(questions)``, ``HermesCLI._clarify_callback``) answering a
+    ``clarify`` server request's whole question set: its ``ClarifyResult``."""
+    questions = [{"qid": q.get("qid"), "question": q.get("question") or "",
+                  "choices": list(q.get("choices") or []), "multi_select": bool(q.get("multi_select"))}
+                 for q in params.get("questions") or [] if isinstance(q, dict) and q.get("qid")]
+    if callback is None or not questions:
+        return {"outcome": "cancelled"}
+    reply = callback(questions)
+    if not isinstance(reply, dict):
+        return {"outcome": "cancelled"}
+    answers = {qid: (value if isinstance(value, str) or value is None else json.dumps(value))
+               for qid, value in (reply.get("answers") or {}).items()}
+    out = {"answers": answers}
+    if reply.get("outcome") in ("submitted", "timed_out", "cancelled"):
+        out["outcome"] = reply["outcome"]
+    return out
 
 
 _SECRET_LOCK = threading.Lock()

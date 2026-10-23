@@ -1,4 +1,4 @@
-"""Bot Desktop hosted INSIDE the configured terminal backend (docker / ssh / singularity).
+"""Bot Desktop hosted INSIDE the configured terminal backend (docker / ssh / a plugin backend with streams).
 
 Same launcher, same lease, same pane: only WHERE Xvnc + Xfce run changes. ``runtime`` decides between the
 gateway host and this module via ``placement()``; callers keep using ``runtime.start/stop/status/desktop_env``.
@@ -235,7 +235,7 @@ def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
     if missing:
         advice = plugin_image_advice(getattr(env, "_hermes_backend_name", None)) or (
             f"use {SANDBOX_IMAGE_HINT} (the default sandbox base plus the desktop stack) as "
-            f"terminal.docker_image / modal_image / singularity_image")
+            f"terminal.docker_image / modal_image")
         raise RuntimeError(
             f"Bot Desktop needs {', '.join(missing)} inside the terminal backend's sandbox. The configured image "
             f"does not have them; {advice}, or set bot_desktop.placement: gateway.")

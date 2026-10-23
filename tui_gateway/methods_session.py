@@ -1451,10 +1451,8 @@ def _(rid, params: dict, session: dict) -> dict:
     if session.get("agent") is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
     # Nous credits are agent-independent (portal fetch); fail-open when absent.
-    with contextlib.suppress(Exception):
-        from agent.account_usage import nous_credits_lines
-        if credits := nous_credits_lines():
-            usage["credits_lines"] = credits
+    from agent.account_usage import nous_credits_usage_fields  # never raises (fail-open inside)
+    usage.update(nous_credits_usage_fields(session.get("agent")))
     return _ok(rid, usage)
 
 
@@ -1913,6 +1911,8 @@ def _auto_reload(nb, p: dict, _key) -> dict:
 
 _billing_route("billing.auto_reload", _auto_reload, message="threshold and top_up_amount are required",
                invalid=lambda p: p.get("threshold") is None or p.get("top_up_amount") is None)
+_billing_route("billing.keep_going_on_credits", lambda nb, p, _k: _billing_pick(nb.patch_keep_going_on_credits(enabled=p["enabled"])),
+               invalid=lambda p: not isinstance(p.get("enabled"), bool), message="enabled (bool) is required")  # window plans
 
 
 @method("billing.step_up")

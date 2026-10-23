@@ -40,6 +40,7 @@ export const zhHantOverrides = {
     installing: '正在安裝…',
     installComplete: (name: string) => `已安裝「${name}」`,
     destinationChanged: '安裝目標已變更。請關閉此對話框並重新開啟安裝連結。',
+    install: '安裝',
     installed: '已安裝',
     searchSkills: '搜尋技能',
     searchPlugins: '搜尋外掛',

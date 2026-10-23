@@ -7,15 +7,11 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
-import glob
 import logging
 import inspect
-import shutil
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional
-from tools.environments.singularity import _get_scratch_dir
 from tools.terminal_tool_backends import (
     _container_config_from_config,
     _local_config_from_config,
@@ -25,43 +21,6 @@ from tools.terminal_tool_config import _quiet
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
-
-
-# Advisory disk-usage check; cached so the recursive scan doesn't run on
-# every command (a result up to 5 minutes stale is harmless).
-_disk_usage_cache: dict = {"timestamp": 0.0, "result": False}
-
-_DISK_USAGE_CACHE_TTL = 300.0  # seconds
-
-
-def _scratch_paths():
-    return glob.glob(str(_get_scratch_dir() / "hermes-*"))
-
-
-def _check_disk_usage_warning():
-    """True when hermes scratch dirs exceed the warning threshold (cached, advisory)."""
-    from tools.terminal_tool import DISK_USAGE_WARNING_THRESHOLD_GB
-    if time.monotonic() - _disk_usage_cache["timestamp"] < _DISK_USAGE_CACHE_TTL:
-        return _disk_usage_cache["result"]
-    try:
-        total_bytes = 0
-        for path in _scratch_paths():
-            for f in Path(path).rglob('*'):
-                if f.is_file():
-                    with _quiet("Could not stat file %s", f, exc=OSError):
-                        total_bytes += f.stat().st_size
-        total_gb = total_bytes / (1024 ** 3)
-        exceeded = total_gb > DISK_USAGE_WARNING_THRESHOLD_GB
-        if exceeded:
-            logger.warning("Disk usage (%.1fGB) exceeds threshold (%.0fGB). Consider running cleanup_all_environments().",
-                           total_gb, DISK_USAGE_WARNING_THRESHOLD_GB)
-        _disk_usage_cache["timestamp"] = time.monotonic()
-        _disk_usage_cache["result"] = exceeded
-        return exceeded
-    except Exception:
-        # Don't update cache on error so the next call retries.
-        logger.debug("Disk usage warning check failed", exc_info=True)
-        return False
 
 
 def _create_configured_env(
@@ -294,12 +253,6 @@ def cleanup_all_environments():
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
-
-    # Also clean any orphaned directories
-    for path in _scratch_paths():
-        with _quiet("Failed to remove orphaned path %s", path, exc=OSError):
-            shutil.rmtree(path, ignore_errors=True)
-            logger.info("Removed orphaned: %s", path)
 
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)

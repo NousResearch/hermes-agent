@@ -30,6 +30,7 @@ def application(root: Path, requirements: Path, python: Path) -> None:
     build_requirements_environment(
         requirements.read_text(encoding="utf-8-sig").splitlines(), out=root / "venv",
         python=python, wheelhouse=root / "wheelhouse", offline=True, sealed=True, explicit=True,
+        lock=root / "app" / "uv.lock",
     )
 
 

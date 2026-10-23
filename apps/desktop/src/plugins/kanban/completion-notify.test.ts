@@ -8,7 +8,8 @@
  */
 
 import type { PluginRestOptions } from '@hermes/plugin-sdk'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ReadableAtom, WritableAtom } from 'nanostores'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CompletionEvent } from './completion-notify'
 
@@ -21,19 +22,41 @@ interface OsDoor {
 }
 interface Mod {
   bindCompletionNotify(r: Rest, t?: Translate, os?: OsDoor): void
-  onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean>
+  onKanbanEventsFrame(slug: string, events?: CompletionEvent[], scope?: string): Promise<boolean>
+  $unseenByBoard: ReadableAtom<Record<string, number>>
+  $kanbanUnseen: ReadableAtom<number>
+  cursorKey(scope: string, slug: string): string
+  markBoardViewing(scope: string, slug: string): () => void
+  resetCompletionNotify(): void
+}
+interface ModeMod {
+  $alertsMode: WritableAtom<'badge' | 'quiet' | 'toast'>
 }
 
-const { hostMock } = vi.hoisted(() => ({
-  hostMock: { notify: vi.fn(), navigate: vi.fn() }
+const { hostMock, soundMock } = vi.hoisted(() => ({
+  hostMock: {
+    notify: vi.fn(),
+    navigate: vi.fn(),
+    // Replaced with a real nanostores atom each time the mock factory runs.
+    state: {} as { connectionId: WritableAtom<null | string> }
+  },
+  soundMock: vi.fn()
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({
-  host: hostMock,
-  // Pulled in transitively via ./i18n (the module reads its `en` bundle for
-  // fallback titles); never called in these tests.
-  usePluginI18n: () => (key: string) => key
-}))
+vi.mock('@hermes/plugin-sdk', async () => {
+  const nano = await import('nanostores')
+  hostMock.state.connectionId = nano.atom<null | string>(null)
+
+  return {
+    atom: nano.atom,
+    computed: nano.computed,
+    host: hostMock,
+    playCompletionSound: soundMock,
+    // Pulled in transitively via ./i18n (the module reads its `en` bundle for
+    // fallback titles); never called in these tests.
+    usePluginI18n: () => (key: string) => key
+  }
+})
 
 type NotifyInput = {
   message: string
@@ -62,6 +85,9 @@ async function loadModule(): Promise<Mod> {
 
   return import('./completion-notify')
 }
+
+/** The mode leaf from the SAME module graph as the last `loadModule()`. */
+const loadMode = (): Promise<ModeMod> => import('./alerts-mode')
 
 const ev = (
   id: number,
@@ -549,5 +575,299 @@ describe('i18n routing', () => {
 
     expect(lastNotify().title).toBeTruthy()
     expect(lastNotify().title).not.toMatch(/^notify\./)
+  })
+})
+
+// ── Alerts mode (#123596) ───────────────────────────────────────────────────
+
+/** A minimal `document` for the node test env: visibility + its event. */
+function stubDocument(visibilityState: 'hidden' | 'visible' = 'visible') {
+  const doc = Object.assign(new EventTarget(), { visibilityState })
+  vi.stubGlobal('document', doc)
+
+  return {
+    set(state: 'hidden' | 'visible') {
+      doc.visibilityState = state
+      doc.dispatchEvent(new Event('visibilitychange'))
+    }
+  }
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('alerts mode: toast (default)', () => {
+  it('is today: same toast payload with no placement/duration keys, OS door fired, no sound', async () => {
+    const os = { notify: vi.fn() }
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never, undefined, os)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'needs API key' })])
+
+    expect(hostMock.notify).toHaveBeenCalledTimes(1)
+    expect(lastNotify()).toEqual({
+      kind: 'warning',
+      title: 'Task blocked — needs your input',
+      message: 'needs API key',
+      detail: 't101',
+      action: { label: 'Open Kanban', onClick: expect.any(Function) }
+    })
+    expect(Object.keys(lastNotify()).sort()).toEqual(['action', 'detail', 'kind', 'message', 'title'])
+    expect(os.notify).toHaveBeenCalledTimes(1)
+    expect(soundMock).not.toHaveBeenCalled()
+  })
+
+  it('still counts toward the unseen badge', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+
+    expect(m.$unseenByBoard.get()[m.cursorKey('local', 'smoke')]).toBe(1)
+    expect(m.$kanbanUnseen.get()).toBe(1)
+  })
+})
+
+describe('alerts mode: quiet', () => {
+  it('bottom-right, auto-dismissing toasts for every kind, one chime per frame, OS door unchanged', async () => {
+    const os = { notify: vi.fn() }
+
+    const m = await loadModule()
+
+    ;(await loadMode()).$alertsMode.set('quiet')
+    m.bindCompletionNotify(makeRest(() => 100) as never, undefined, os)
+
+    const emitted = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked'), ev(102, 'crashed')])
+
+    expect(emitted).toBe(true)
+    expect(hostMock.notify).toHaveBeenCalledTimes(2)
+
+    for (const [input] of hostMock.notify.mock.calls) {
+      expect(input).toMatchObject({
+        placement: 'bottom-right',
+        durationMs: 5000,
+        action: { label: 'Open Kanban', onClick: expect.any(Function) }
+      })
+    }
+
+    expect(soundMock).toHaveBeenCalledTimes(1)
+    expect(soundMock).toHaveBeenCalledWith('kanban:local:smoke:102')
+    expect(os.notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('a frame with nothing emitted never chimes', async () => {
+    const m = await loadModule()
+
+    ;(await loadMode()).$alertsMode.set('quiet')
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'created'), ev(90, 'completed')])
+
+    expect(soundMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('alerts mode: badge', () => {
+  it('no toast, no OS notification, no sound — only the count', async () => {
+    const os = { notify: vi.fn() }
+
+    const m = await loadModule()
+
+    ;(await loadMode()).$alertsMode.set('badge')
+    m.bindCompletionNotify(makeRest(() => 100) as never, undefined, os)
+
+    const emitted = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked'), ev(102, 'completed')])
+
+    expect(emitted).toBe(true)
+    expect(hostMock.notify).not.toHaveBeenCalled()
+    expect(os.notify).not.toHaveBeenCalled()
+    expect(soundMock).not.toHaveBeenCalled()
+    expect(m.$kanbanUnseen.get()).toBe(2)
+  })
+})
+
+describe('unseen badge', () => {
+  it('never counts replayed or historical events', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(50, 'completed'), ev(101, 'completed'), ev(102, 'blocked')])
+    expect(m.$kanbanUnseen.get()).toBe(2)
+
+    // Reconnect replay.
+    await m.onKanbanEventsFrame('smoke', [ev(99, 'completed'), ev(101, 'completed'), ev(102, 'blocked')])
+    expect(m.$kanbanUnseen.get()).toBe(2)
+  })
+
+  it('opening the board clears it; looking (mounted AND visible) suppresses counting and the chime', async () => {
+    const doc = stubDocument('visible')
+    const m = await loadModule()
+    const mode = await loadMode()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+    const key = m.cursorKey('local', 'smoke')
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed'), ev(102, 'completed')])
+    expect(m.$unseenByBoard.get()[key]).toBe(2)
+
+    const unmark = m.markBoardViewing('local', 'smoke')
+    expect(m.$unseenByBoard.get()[key] ?? 0).toBe(0)
+
+    mode.$alertsMode.set('quiet')
+    await m.onKanbanEventsFrame('smoke', [ev(103, 'completed')])
+    expect(m.$unseenByBoard.get()[key] ?? 0).toBe(0)
+    expect(soundMock).not.toHaveBeenCalled()
+
+    // Minimized/backgrounded on /kanban: still counts.
+    doc.set('hidden')
+    await m.onKanbanEventsFrame('smoke', [ev(104, 'completed')])
+    expect(m.$unseenByBoard.get()[key]).toBe(1)
+
+    // Coming back into view clears it.
+    doc.set('visible')
+    expect(m.$unseenByBoard.get()[key] ?? 0).toBe(0)
+
+    // Page left: counts again.
+    unmark()
+    await m.onKanbanEventsFrame('smoke', [ev(105, 'completed')])
+    expect(m.$unseenByBoard.get()[key]).toBe(1)
+  })
+
+  it('a stale unmark (board switched) does not clear the newer viewing mark', async () => {
+    stubDocument('visible')
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const unmarkA = m.markBoardViewing('local', 'a')
+    m.markBoardViewing('local', 'smoke')
+    unmarkA()
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    expect(m.$kanbanUnseen.get()).toBe(0)
+  })
+
+  it('the same board mounted twice (split tile): closing one mount keeps the board looked-at', async () => {
+    stubDocument('visible')
+    const m = await loadModule()
+    const mode = await loadMode()
+    mode.$alertsMode.set('quiet')
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const unmarkMain = m.markBoardViewing('local', 'smoke')
+    const unmarkTile = m.markBoardViewing('local', 'smoke')
+    unmarkTile()
+    unmarkTile() // a repeated unmark (effect cleanup) must not release the other mount
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    expect(m.$kanbanUnseen.get()).toBe(0)
+    expect(soundMock).not.toHaveBeenCalled()
+
+    unmarkMain()
+    await m.onKanbanEventsFrame('smoke', [ev(102, 'completed')])
+    expect(m.$kanbanUnseen.get()).toBe(1)
+  })
+
+  it('opening a board while the window is hidden does not clear its count', async () => {
+    const doc = stubDocument('hidden')
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    m.markBoardViewing('local', 'smoke')
+    expect(m.$kanbanUnseen.get()).toBe(1)
+
+    doc.set('visible')
+    expect(m.$kanbanUnseen.get()).toBe(0)
+  })
+
+  it('returning to a visible window clears every viewed board', async () => {
+    const doc = stubDocument('hidden')
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    m.markBoardViewing('local', 'a')
+    m.markBoardViewing('local', 'b')
+    await m.onKanbanEventsFrame('a', [ev(101, 'completed')])
+    await m.onKanbanEventsFrame('b', [ev(101, 'completed')])
+    expect(m.$kanbanUnseen.get()).toBe(2)
+
+    doc.set('visible')
+    expect(m.$unseenByBoard.get()).toEqual({})
+  })
+
+  it('scope isolation: cursor and counts are per (connection, board)', async () => {
+    let latest = 100
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => latest) as never)
+
+    await m.onKanbanEventsFrame('ops', [ev(101, 'completed')], 'local')
+
+    // Same slug on another gateway with a lower event space.
+    latest = 5
+    await m.onKanbanEventsFrame('ops', [ev(6, 'completed'), ev(7, 'blocked')], 'spark')
+
+    expect(hostMock.notify).toHaveBeenCalledTimes(3)
+    expect(m.$unseenByBoard.get()[m.cursorKey('local', 'ops')]).toBe(1)
+    expect(m.$unseenByBoard.get()[m.cursorKey('spark', 'ops')]).toBe(2)
+
+    // The nav total follows the active connection.
+    expect(m.$kanbanUnseen.get()).toBe(1)
+    hostMock.state.connectionId.set('spark')
+    expect(m.$kanbanUnseen.get()).toBe(2)
+    hostMock.state.connectionId.set(null)
+    expect(m.$kanbanUnseen.get()).toBe(1)
+  })
+
+  it('reset during a pending baseline: the late frame counts and notifies nothing; re-bind starts at 0', async () => {
+    let resolveBoard!: (value: { latest_event_id: number }) => void
+
+    const rest = vi.fn(
+      async () =>
+        new Promise<{ latest_event_id: number }>(resolve => {
+          resolveBoard = resolve
+        })
+    )
+
+    const m = await loadModule()
+    m.bindCompletionNotify(rest as never)
+
+    const pending = m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    m.resetCompletionNotify()
+    resolveBoard({ latest_event_id: 100 })
+
+    await expect(pending).resolves.toBe(false)
+    expect(hostMock.notify).not.toHaveBeenCalled()
+    expect(m.$unseenByBoard.get()).toEqual({})
+
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+    expect(m.$kanbanUnseen.get()).toBe(0)
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    expect(m.$kanbanUnseen.get()).toBe(1)
+  })
+
+  it('a frame from before reset stays dropped even after a re-bound frame re-establishes the baseline', async () => {
+    const resolvers: Array<(value: { latest_event_id: number }) => void> = []
+
+    const rest = vi.fn(
+      async () =>
+        new Promise<{ latest_event_id: number }>(resolve => {
+          resolvers.push(resolve)
+        })
+    )
+
+    const m = await loadModule()
+    m.bindCompletionNotify(rest as never)
+    const stale = m.onKanbanEventsFrame('smoke', [ev(102, 'completed')])
+
+    m.resetCompletionNotify()
+    m.bindCompletionNotify(rest as never)
+    const fresh = m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    resolvers[1]({ latest_event_id: 100 })
+    await expect(fresh).resolves.toBe(true)
+
+    resolvers[0]({ latest_event_id: 100 })
+    await expect(stale).resolves.toBe(false)
+    expect(hostMock.notify).toHaveBeenCalledTimes(1)
+    expect(m.$kanbanUnseen.get()).toBe(1)
   })
 })

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Test harness supplies the host's locale registration, as plugin loading does.
@@ -9,12 +9,16 @@ import { registerPluginLocales } from '@/i18n/plugin-i18n'
 import type * as KanbanApi from './api'
 import { $boardSlug } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { $unseenByBoard, cursorKey } from './completion-notify'
 import { KANBAN_LOCALES } from './i18n'
 
 vi.mock('./api', async importOriginal => ({
   ...(await importOriginal<typeof KanbanApi>()),
   fetchBoards: vi.fn(async () => ({
-    boards: [{ name: 'Shipping', project_id: null, slug: 'shipping', total: 3 }],
+    boards: [
+      { name: 'Shipping', project_id: null, slug: 'shipping', total: 3 },
+      { name: 'Research', project_id: null, slug: 'research', total: 9 }
+    ],
     current: 'shipping'
   }))
 }))
@@ -29,6 +33,7 @@ afterEach(() => {
   cleanup()
   disposeLocales()
   $boardSlug.set('')
+  $unseenByBoard.set({})
 })
 
 const mount = () =>
@@ -47,5 +52,22 @@ describe('board switcher', () => {
     mount()
 
     expect(await screen.findByText('Shipping')).toBeTruthy()
+  })
+
+  // #123596: per-board unseen terminal events, in the board list.
+  it('shows an unseen count for a board with unseen events and none at zero', async () => {
+    $unseenByBoard.set({ [cursorKey('local', 'research')]: 4, [cursorKey('local', 'shipping')]: 0 })
+    mount()
+
+    const trigger = await screen.findByRole('button', { name: /Shipping/ })
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+
+    const research = await screen.findByRole('menuitem', { name: /Research/ })
+    const shipping = screen.getByRole('menuitem', { name: /Shipping/ })
+
+    expect(within(research).getByText('4')).toBeTruthy()
+    // Only the card total, no unseen badge.
+    expect(within(shipping).queryByText('0')).toBeNull()
+    expect(shipping.querySelector('[data-slot="badge"]')).toBeNull()
   })
 })

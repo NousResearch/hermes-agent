@@ -1,0 +1,5 @@
+name: claude-code-acp-provider
+kind: model-provider
+version: 1.0.0
+description: Claude Code via ACP subprocess
+author: Nous Research

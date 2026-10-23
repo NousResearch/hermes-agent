@@ -29,6 +29,7 @@ import json
 import secrets
 import logging
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -100,15 +101,21 @@ def _ensure_supervisor(task_id: str):
         return supervisor
     from tools.browser_tool import _last_session_key
     from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
-    from tools.browser_tool_session import _run_browser_command
+    from tools.browser_tool_session import _browser_in_sandbox, _run_browser_command
+    from tools.browser_use_cli import _reach_sandbox_cdp
 
     res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
     cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp_url:
         return None
+    reachable = _reach_sandbox_cdp(cdp_url)
+    # A failed forward hands back the sandbox's own loopback URL. On this host that port may
+    # belong to a different browser, so the vault must not attach to it.
+    if reachable == cdp_url and _browser_in_sandbox() and urlsplit(cdp_url).hostname in ("127.0.0.1", "localhost"):
+        return None
     policy, timeout_s = _get_dialog_policy_config()
     try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
+        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(reachable),
                                                 dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)

@@ -42,7 +42,13 @@ def plugin_row_is_expiring(entry: PooledCredential) -> bool:
     The token endpoint's ``expires_in`` is the only clock: many providers issue opaque bearers (Google's
     ``ya29.*``) with no JWT ``exp`` to decode, so without this a long session sends the dead bearer.
     """
-    return entry.expires_at_ms is not None and int(entry.expires_at_ms) <= int(time.time() * 1000) + _EXPIRY_SKEW_MS
+    if entry.expires_at_ms is None:
+        return False
+    try:
+        expiry = int(entry.expires_at_ms)
+    except (TypeError, ValueError):
+        return True
+    return expiry <= int(time.time() * 1000) + _EXPIRY_SKEW_MS
 
 
 def apply_plugin_refresh_result(entry: PooledCredential, result: Any) -> PooledCredential:

@@ -865,7 +865,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
         # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
         self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
-        self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
+        self._dm_auto_thread: bool = self._extra_truthy(config, "dm_auto_thread", "MATRIX_DM_AUTO_THREAD", "false")
         self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
         raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"

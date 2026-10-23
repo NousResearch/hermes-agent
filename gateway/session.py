@@ -978,6 +978,12 @@ class SessionStore(
         ``RuntimeStoreError``) only when a live claim names no session this store can serve."""
         from hermes_state_runtime import (RuntimeStoreError, acquire_channel_claim,
             renew_channel_claim, transfer_channel_claim)
+        gate = getattr(self.config, "claim_lock", None)
+        if gate is None or not gate.enabled:
+            return session_key  # claim_lock.enabled=false: the gate is off — no fold, no claim, no stand-down
+        # Fail-open rollout phase (design §5): any mode other than "enforce" keeps the
+        # claim store maintained but logs each would-be stand-down instead of acting.
+        monitor = getattr(gate, "mode", "monitor") != "enforce"
         # §6.1: an exact thread route (live or recoverable) keeps its thread key; a thread
         # reply folds onto the channel-level route only when that session is live in the
         # store — minting a channel key here would strand recoverable thread sessions.
@@ -1026,6 +1032,12 @@ class SessionStore(
                 return session_key
             if holder is not None:
                 # §6 case C: one channel, one lane — join the live holder.
+                if monitor:
+                    logger.warning(
+                        "Channel claim monitor for %s/%s: would route this event into "
+                        "session %s (enforce stands down); admitting on the incoming key",
+                        scope[0], scope[2], claim_sid)
+                    return session_key
                 logger.warning(
                     "Channel claim stand-down for %s/%s: session %s owns the channel; "
                     "routing this event into it instead of admitting a new session",
@@ -1037,11 +1049,23 @@ class SessionStore(
             # then lands in case C. Upgrade if concurrent first-message bursts regress.
             logger.warning("Channel claim stand-down for %s/%s: a concurrent admission of "
                            "this gateway is minting the channel session", scope[0], scope[2])
+            if monitor:
+                logger.warning(
+                    "Channel claim monitor for %s/%s: would refuse to double-admit "
+                    "(channel_claim_inflight; enforce stands down)", scope[0], scope[2])
+                return session_key
             raise RuntimeStoreError("channel_claim_inflight")
         # Foreign instance (§6 cases E/F): F is stolen inside acquire; a live foreign claim
         # whose session is known here serves this event through it (shared state.db);
         # otherwise the event stands down so the owning gateway keeps the channel.
         if holder is not None:
+            if monitor:
+                logger.warning(
+                    "Channel claim monitor for %s/%s: would route this event into session "
+                    "%s of gateway instance %s (enforce stands down); admitting on the "
+                    "incoming key",
+                    scope[0], scope[2], claim_sid, claim["instance_id"])
+                return session_key
             logger.warning(
                 "Channel claim stand-down for %s/%s: gateway instance %s owns the channel "
                 "with session %s here; routing this event into that session",
@@ -1055,6 +1079,13 @@ class SessionStore(
                 "Channel claim for %s/%s: gateway instance %s owns session %s in the shared "
                 "store; this admission recovers and joins that lane",
                 scope[0], scope[2], claim["instance_id"], claim_sid)
+            return session_key
+        if monitor:
+            logger.warning(
+                "Channel claim monitor for %s/%s: would refuse to double-admit (gateway "
+                "instance %s holds a live claim, session %s unknown here, lease %.0fs; "
+                "enforce would refuse with channel_claimed_elsewhere)",
+                scope[0], scope[2], claim["instance_id"], claim_sid or "unbound", remaining)
             return session_key
         logger.warning(
             "Channel claim stand-down for %s/%s: gateway instance %s holds a live claim "
@@ -1077,6 +1108,8 @@ class SessionStore(
         Best-effort — the lease covers a missed write."""
         from hermes_state_runtime import (acquire_channel_claim, release_channel_claim,
             transfer_channel_claim)
+        if not getattr(getattr(self.config, "claim_lock", None), "enabled", False):
+            return  # claim_lock off: the gate acquired nothing, so nothing binds or moves
         db = self._db_for_key(session_key) if origin is not None else None
         scope = claim_channel_scope(origin, session_key) if db is not None else None
         if scope is None:

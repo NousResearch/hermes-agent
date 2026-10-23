@@ -1138,6 +1138,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         try:
             ctx = self._ctx
             store = self._runner.session_store
+            lock = getattr(getattr(store, "config", None), "claim_lock", None)
+            if lock is None or not lock.enabled:
+                return  # claim_lock off: the gate acquired nothing, so nothing renews or moves
             entry = store._entries.get(ctx.session_key) if ctx.session_key else None
             origin = getattr(entry, "origin", None) if entry is not None else None
             db = store._db_for_key(ctx.session_key) if origin is not None else None

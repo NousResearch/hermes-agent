@@ -469,6 +469,36 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_keeps_zero_retry_rate_limited_card_parked(
+    kanban_home, monkeypatch,
+):
+    """A no-retry card must not repeat external work after a quota-wall exit."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="one-shot rl guard", assignee="a", max_retries=0)
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kbd.check_respawn_guard(conn, tid) == "zero_retry_rate_limit"
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

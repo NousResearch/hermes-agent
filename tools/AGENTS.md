@@ -76,9 +76,10 @@ fixed at the mount, not by adding a tool.
 
 ## Delegation (`tools/delegate_tool.py`)
 
-Spawns a subagent with isolated context + terminal session; a top-level call always runs detached —
+Spawns a subagent with isolated context + terminal session; a top-level call normally runs detached —
 it returns a delegation id immediately and the result re-enters via the async-delegation
-completion queue (there is no `background` argument; an orchestrator child's calls wait inline
+completion queue (there is no `background` argument; finite turns, sessions with no later-result
+consumer, an async-capacity refusal, and an orchestrator child's calls instead wait inline
 for its workers). Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
 concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch returns as ONE
 completion by default; with `delegation.independent_completions` it is split into completion **units**

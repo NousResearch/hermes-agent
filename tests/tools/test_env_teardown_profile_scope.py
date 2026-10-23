@@ -2,8 +2,8 @@
 
 Teardown runs on the inactive-env reaper thread, at exit, or on eviction after an
 infrastructure failure, none of which carry the owning profile's scope. Unscoped, the
-persistent snapshot stores (``modal_snapshots.json``, ``vercel_sandbox_snapshots.json``,
-``singularity_snapshots.json``) resolve the launch profile's home, so a secondary
+persistent snapshot stores (``modal_snapshots.json``, ``vercel_sandbox_snapshots.json``, and
+those of catalog-plugin backends) resolve the launch profile's home, so a secondary
 profile's next session finds no snapshot to restore and starts from a fresh filesystem.
 """
 
@@ -14,7 +14,6 @@ import types
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
-from tools.environments import singularity as singularity_env
 from tools.environments.base import BaseEnvironment
 from tools.environments.modal import ModalEnvironment
 from tools.environments.vercel_sandbox import VercelSandboxEnvironment
@@ -106,19 +105,26 @@ def _assert_store_in_owner(owner: Path, name: str, task_id: str, value: str):
     assert not (get_hermes_home() / name).exists()
 
 
-def test_singularity_snapshot_store_lands_in_owning_profile(tmp_path, monkeypatch):
-    monkeypatch.setattr(singularity_env, "_ensure_singularity_available", lambda: "/usr/bin/apptainer")
-    monkeypatch.setattr(singularity_env, "_get_or_build_sif", lambda image, executable="apptainer": str(tmp_path / "image.sif"))
-    monkeypatch.setattr(singularity_env, "_get_scratch_dir", lambda: tmp_path / "scratch")
-    monkeypatch.setattr(singularity_env.SingularityEnvironment, "_start_instance", lambda self: None)
-    monkeypatch.setattr(singularity_env.SingularityEnvironment, "init_session", lambda self: None)
+class _PluginBackendEnv(BaseEnvironment):
+    """Stand-in for a catalog-plugin backend (e.g. singularity): it subclasses
+    BaseEnvironment and records its snapshot in a per-call get_hermes_home() store."""
+
+    def __init__(self, task_id: str):
+        super().__init__(cwd="/", timeout=1)
+        self.task_id = task_id
+
+    def cleanup(self):
+        store = get_hermes_home() / "plugin_snapshots.json"
+        store.write_text(json.dumps({self.task_id: "snap-1"}))
+
+
+def test_plugin_backend_snapshot_store_lands_in_owning_profile(tmp_path):
     owner = _profile_home(tmp_path)
-    env = _in_owner(owner, lambda: singularity_env.SingularityEnvironment(
-        image="python:3.11", persistent_filesystem=True, task_id="task-1"))
+    env = _in_owner(owner, lambda: _PluginBackendEnv("task-1"))
 
     _in_fresh_thread(lambda: _cleanup_env(env))
 
-    _assert_store_in_owner(owner, "singularity_snapshots.json", "task-1", str(env._overlay_dir))
+    _assert_store_in_owner(owner, "plugin_snapshots.json", "task-1", "snap-1")
 
 
 def _bare(cls, owner: Path, **attrs):

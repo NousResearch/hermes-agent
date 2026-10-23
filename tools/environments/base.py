@@ -260,7 +260,7 @@ def owner_scope(env):
 
     Teardown runs on the idle reaper thread, at exit or under GC, none of which carry the
     owning profile's scope. Unscoped, sync-back and the persistent snapshot stores
-    (modal/vercel/singularity) resolve the launch profile's home instead.
+    (modal, vercel and catalog-plugin backends) resolve the launch profile's home instead.
     """
     home = getattr(env, "_owner_hermes_home", None)
     if home is None:

@@ -1,4 +1,4 @@
-import { Button } from '@hermes/plugin-sdk'
+import { Button, host } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
 import { type CanonicalDriverActivity, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
@@ -6,6 +6,7 @@ import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canoni
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { forgetCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
@@ -170,6 +171,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: crypto.randomUUID() })
 
     if (alive.current) {onBack?.()}
+    forgetCanonicalGroup(binding)
+    host.notify({ kind: 'success', message: labels.disbanded(state?.room.name || binding.roomName || '') })
   }
 
   const composerLocked = !restored || busy || !!pending
@@ -183,7 +186,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     if (!files.length) {return}
     event.preventDefault()
 
-    if (!composerLocked && !uploading) {uploader.current?.upload(files)}
+    if (!composerLocked) {uploader.current?.upload(files)}
   }
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">

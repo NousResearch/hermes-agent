@@ -23,6 +23,7 @@ export function useCanonicalGroupLabels() {
     disband: group.disbandAction,
     disbanding: group.disbanding,
     disbandDone: group.disbandDone,
+    disbanded: group.disbanded,
     disbandDescPrefix: group.disbandDescPrefix,
     disbandDescSuffix: group.disbandDescSuffix,
     disbandTitle: group.disbandTitle

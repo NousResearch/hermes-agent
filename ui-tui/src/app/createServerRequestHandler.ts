@@ -81,6 +81,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
             choices: strList(p.choices) ?? undefined,
             command: str(p.command),
             description: str(p.description) || t('session.request.dangerousCommand'),
+            purpose: str(p.purpose) || undefined,
             requestId: request.id,
             smartDenied: p.smart_denied === true
           }

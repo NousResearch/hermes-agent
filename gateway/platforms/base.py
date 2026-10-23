@@ -2798,17 +2798,17 @@ class BasePlatformAdapter(ABC):
         return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
 
     def _format_exec_approval(
-        self, command: str, description: Optional[str] = None, smart_denied: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
-        flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local. ``description=None`` renders the localized default reason."""
+        self, command: str, description: Optional[str] = None, smart_denied: bool = False, purpose: str = "") -> str:
+        """Shared exec-approval text: header, truncated command, reason, deadline, and smart-deny line.
+        Buttons/trailing instructions stay platform-local; ``description=None`` uses the localized default."""
         if description is None:
             description = ea_default_reason_text()
         if self._EA_REASON_BUDGET:
             description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
-        cmd_preview = self._ea_fit(
-            str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
-        text = (f"{self._EA_HEADER}"
+        purpose_line = f"Purpose: {self._ea_escape(str(purpose))}\n" if purpose else ""
+        cmd_preview = self._ea_fit(str(command or ""), max(0, self._exec_approval_cmd_budget(description, smart_denied)
+                                                        - self.message_len_fn(purpose_line)))
+        text = (f"{self._EA_HEADER}{purpose_line}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
                 f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
                 f"{self._ea_deadline_line()}")
@@ -2844,7 +2844,7 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, purpose: str = "",
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
@@ -2854,7 +2854,7 @@ class BasePlatformAdapter(ABC):
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
             description=description, smart_denied=smart_denied,
-            text=self._format_exec_approval(command, description, smart_denied),
+            text=self._format_exec_approval(command, description, smart_denied, purpose),
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
         return await self._send_exec_approval_prompt(prompt)

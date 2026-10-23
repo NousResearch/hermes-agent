@@ -104,6 +104,7 @@ export interface ApprovalReq {
   choices?: string[]
   command: string
   description: string
+  purpose?: string
   /** Server→client request id; the answer is the response frame for it. */
   requestId: string
   smartDenied?: boolean

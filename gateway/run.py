@@ -588,7 +588,7 @@ def _redact_approval_command(cmd: str | None) -> str:
 
 
 def _format_exec_approval_fallback(
-    command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
+    command: str, description: str, command_prefix: str, *, purpose: str = "", allow_permanent: bool = True,
     allow_session: bool = True, smart_denied: bool = False) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
@@ -606,7 +606,7 @@ def _format_exec_approval_fallback(
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
     return (
-        t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
+        t("gateway.exec_approval.text_body", heading=heading + (f"\nPurpose: {purpose}" if purpose else ""), command=cmd_preview,
           reason_label=ea_reason_label_text(), reason=description)
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])

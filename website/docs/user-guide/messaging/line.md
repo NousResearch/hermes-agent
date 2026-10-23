@@ -196,7 +196,7 @@ gateway:
       require_mention: true
 ```
 
-Hermes will then relay only group or room messages whose LINE mention metadata includes the bot user ID. Direct messages are unaffected.
+Hermes will then relay only group or room messages whose LINE mention metadata (`message.mention.mentionees[].isSelf`, or the bot user ID) marks the bot as mentioned. Direct messages are unaffected. The bot's own mention is cut from the text before the agent sees it (with or without `require_mention`), so `@Bot /new` runs `/new`. `@All` does not count, and images, stickers and files in a gated group are ignored because LINE only attaches mention metadata to text. Pick the bot from LINE's mention list — hand-typed `@Name` text carries no mention metadata — and note that LINE for iOS/Android can mention a bot from version 14.17.0.
 
 **`send_image` fails with "LINE_PUBLIC_URL must be set".** LINE's Messaging API does not accept binary uploads — images, audio, and video must be reachable HTTPS URLs. Set `LINE_PUBLIC_URL` to the tunnel's public hostname and the adapter will serve files from `/line/media/<token>/<filename>` automatically.
 

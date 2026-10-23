@@ -194,7 +194,7 @@ gateway:
       require_mention: true
 ```
 
-Hermes 将只转发其 LINE 提及元数据中包含机器人用户 ID 的群聊/房间消息。私信不受影响。
+Hermes 将只转发 LINE 提及元数据（`message.mention.mentionees[].isSelf` 或机器人用户 ID）标明提及了机器人的群聊/房间消息。私信不受影响。无论是否开启 `require_mention`，机器人自身的提及文字都会在交给 agent 前被移除，因此 `@Bot /new` 会执行 `/new`。`@All` 不算提及；由于 LINE 只在文字消息上附带提及元数据，受限群组中的图片、贴图和文件都会被忽略。请从 LINE 的提及列表中选择机器人——手动输入的 `@名称` 不带提及元数据；iOS/Android 版 LINE 自 14.17.0 起才能提及机器人。
 
 **`send_image` 报错"LINE_PUBLIC_URL must be set"。** LINE Messaging API 不接受二进制上传 — 图片、音频和视频必须是可访问的 HTTPS URL。将 `LINE_PUBLIC_URL` 设置为隧道的公网主机名，适配器会自动从 `/line/media/<token>/<filename>` 提供文件服务。
 

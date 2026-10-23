@@ -147,6 +147,19 @@ class DashboardAuthProvider(ABC):
             f"{type(self).__name__} does not support token auth "
             "(set supports_token = True and override verify_token)")
 
+    def attests_login_user(self, *, user_id: str, issuer: str = "") -> bool:
+        """Whether THIS LIVE provider instance is the configured login that authenticates
+        ``user_id`` (under ``issuer`` for federated providers). Used to recognise a row's
+        ``<provider>:<user>`` creation stamp as a local login when the host's own native viewer
+        adopts an unrouted Desktop row after its serving process is gone (#139818).
+
+        Unlike a name match against config text, attestation is against the registered, live
+        provider: an uninstalled, disabled or spoofed provider name cannot attest, and a
+        single-username provider can only attest its one user. The default fails closed so a
+        provider that cannot positively prove the user is never treated as its owner.
+        """
+        return False
+
 
 def assert_protocol_compliance(cls: type) -> None:
     """Raise ``TypeError`` if ``cls`` doesn't fully implement the protocol (call it from every

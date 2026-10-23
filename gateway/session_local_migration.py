@@ -33,6 +33,47 @@ def unbind_native_transport(authority, actor):
     getattr(authority, '_native_legacy_transports', {}).pop(actor.transport_id, None)
 
 
+def served_login_attests(label, *, profile_home=None):
+    """Whether a live, registered dashboard-auth provider in THIS home authenticates the login
+    named by a row's ``<provider>:<user>`` stamp (e.g. ``basic:wweic``).
+
+    This is the narrow fact the host's own native viewer needs to adopt an unrouted Desktop row a
+    served remote backend stamped and then left behind after a restart (#139818). It is strictly
+    stronger than the string-prefix match that was reverted for a cross-login ownership hole: the
+    provider must be registered right now (uninstalled/disabled/renamed configs attest nothing),
+    and the provider itself positively attests the user — basic auth is single-username, so a row
+    stamped by a login this backend no longer serves cannot be claimed. Issuer-bearing labels never
+    match an issuer-less stamp, so federated identities can't be downgraded. Fail-closed throughout:
+    any lookup error or missing provider returns False.
+    """
+    if not isinstance(label, str) or ':' not in label:
+        return False
+    provider_name, _, user = label.partition(':')
+    provider_name, user = provider_name.strip(), user.strip()
+    if not provider_name or not user:
+        return False
+    # A messaging-platform prefix is that platform's real foreign identity, never a login label.
+    try:
+        platform = Platform(provider_name)
+    except ValueError:
+        platform = None
+    if platform is not None:
+        return False
+    try:
+        from hermes_cli.dashboard_auth.registry import get_provider
+        provider = get_provider(provider_name, scope=profile_home)
+        if provider is None:
+            return False
+        attest = getattr(provider, 'attests_login_user', None)
+        if not callable(attest):
+            return False
+        # The label form ``<provider>:<user>`` has no issuer slot; never let an issuer-qualified
+        # identity be proven by an issuer-less comparison.
+        return bool(attest(user_id=user, issuer=''))
+    except Exception:
+        return False
+
+
 def require_history_claim(authority, conn, actor, sid):
     """Import receipts confer ownership; merely knowing an old ID does not."""
     from gateway.owner_identity import same_owner
@@ -242,7 +283,31 @@ def adopt_legacy_session(authority, actor, row):
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
     from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
-    validate_legacy_row(authority.db, row, subject=actor.subject)
+    # The host's own native peer may adopt a row stamped with a login THIS backend still serves,
+    # attested against the live per-home provider registry (#139818). Reaching this function already
+    # proved native provenance (the peer is in ``_native_legacy_transports``: provider == 'local'
+    # with matching profile+instance). The attestor closes the cross-login hole — a configured single
+    # user, or a removed/renamed login, cannot claim another's row. A dashboard-login peer (basic/oidc
+    # subject) never takes it: ``login_owned_by`` already decides that case by exact subject match.
+    def _host_login_attestor(label):
+        from gateway.session_local_migration import served_login_attests
+        return served_login_attests(label, profile_home=authority.profile_id)
+
+    is_native_peer = False
+    if actor.subject:
+        from gateway.session_identity import parse_authenticated_subject
+        parsed = parse_authenticated_subject(actor.subject)
+        # provider 'local' + no issuer is the native bootstrap receipt; a plain (non-namespaced)
+        # subject is native too. Any real dashboard login (basic/oidc/...) is not a host peer.
+        is_native_peer = parsed is None or (parsed[0] == 'local' and not parsed[1])
+    # The attestor is built ONLY for the host's own native peer (reaching this function already
+    # proved native provenance via ``_native_legacy_transports``). It is threaded as an in-process
+    # callable into the commit transaction, where bind_legacy_target re-attests the same row, so a
+    # change between this check and the commit cannot ride a stale decision. A dashboard-login peer
+    # (basic/oidc subject) gets None: ``login_owned_by`` decides that case by exact subject match.
+    attestor = _host_login_attestor if is_native_peer else None
+    validate_legacy_row(
+        authority.db, row, subject=actor.subject, host_login_attestor=attestor)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from gateway.session_policy import build_policy, bind_launch_key
@@ -316,7 +381,8 @@ def adopt_legacy_session(authority, actor, row):
         with active_session_liveness_guard(row['id'], registry_home=Path(authority.db.db_path).parent) as active:
             if active:
                 raise RuntimeStoreError('runtime_coordination_required')
-            commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+            commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt,
+                                 legacy_attestor=attestor)
     except ActiveSessionRegistryError as exc:
         raise RuntimeStoreError('runtime_coordination_required') from exc
     return restore_local_session(authority, sid)

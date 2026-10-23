@@ -360,10 +360,12 @@ def _entry_serves_model(entry: dict[str, Any], target: str) -> bool:
 
 
 def routed_custom_identity(base_url: Optional[str] = None, model: Optional[str] = None,
-                           config: Optional[dict[str, Any]] = None) -> Optional[str]:
+                           config: Optional[dict[str, Any]] = None, requested: Optional[str] = None) -> Optional[str]:
     """The configured ``custom:<name>`` entry a bare ``custom`` route (the billing class every named
-    endpoint reports) ran on. Entries may share one relay base_url, so the entry also serving
-    *model* beats the first one on that URL; without a URL the model alone names it."""
+    endpoint reports) ran on. The entry the runtime resolved (*requested*) is that route when it
+    sits on *base_url*: entries sharing one relay may list each other's models, so (URL, model) is
+    only a guess for when no entry is known. Then the entry also serving *model* beats the first one
+    on that URL; without a URL the model alone names it."""
     url = _route_key(base_url)
     target = str(model or "").strip().lower()
     if not url:
@@ -371,21 +373,25 @@ def routed_custom_identity(base_url: Optional[str] = None, model: Optional[str] 
 
     def on_url(entry: dict[str, Any]) -> bool:
         return _route_key(_entry_url(entry)) == url
+    named = (_get_named_custom_provider(requested, config=config, resolve_credentials=False)
+             if requested and _normalize_custom_provider_name(requested) != "custom" else None)
+    if named and on_url(named):
+        return custom_provider_slug(str(named.get("name") or ""), str(named.get("provider_key") or ""))
     return ((target and _find_custom_identity(lambda e: on_url(e) and _entry_serves_model(e, target), config))
             or _find_custom_identity(on_url, config))
 
 
 def routed_custom_identity_in(home: Any, base_url: Optional[str] = None,
-                              model: Optional[str] = None) -> Optional[str]:
+                              model: Optional[str] = None, requested: Optional[str] = None) -> Optional[str]:
     """:func:`routed_custom_identity` against the profile at *home*: a session store names entries from
     its own profile's config, never the ambient scope's (one gateway serves many profiles)."""
     from hermes_cli.config_effective import load_user_config_effective
-    return routed_custom_identity(base_url, model, load_user_config_effective(Path(home) / "config.yaml"))
+    return routed_custom_identity(base_url, model, load_user_config_effective(Path(home) / "config.yaml"), requested)
 
 
-def _endpoint_identity(base_url: str, model: Optional[str] = None) -> Optional[str]:
+def _endpoint_identity(base_url: str, model: Optional[str] = None, requested: Optional[str] = None) -> Optional[str]:
     """The menu identity that owns ``base_url``: a configured entry, else the managed server."""
-    identity = routed_custom_identity(base_url, model)
+    identity = routed_custom_identity(base_url, model, requested=requested)
     if identity:
         return identity
     # The managed server has no custom-provider config entry. Recover its menu key
@@ -398,12 +404,12 @@ def _endpoint_identity(base_url: str, model: Optional[str] = None) -> Optional[s
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
-                              model: Optional[str] = None) -> Optional[str]:
+                              model: Optional[str] = None, requested: Optional[str] = None) -> Optional[str]:
     """Recover the durable menu identity for a bare custom provider. Match a configured
     endpoint first, then the ownership-checked managed server, then a configured model or
     provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    identity = _endpoint_identity(base_url, model) if base_url else None
+    identity = _endpoint_identity(base_url, model, requested) if base_url else None
     if identity:
         return identity
     identity = find_custom_provider_identity_by_model(model) if model else None

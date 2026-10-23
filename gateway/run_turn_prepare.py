@@ -277,10 +277,12 @@ class GatewayTurnPrepareMixin:
         try:
             db = self._session_db._db
             if runtime.get("provider") == "custom":
-                # The adapter's billing class is shared by every named endpoint: resume needs the entry.
+                # The adapter's billing class is shared by every named endpoint: resume needs the entry,
+                # the one the runtime resolved unless a fallback moved the turn off it.
                 from hermes_cli.runtime_provider_custom import routed_custom_identity_in
+                requested = None if runtime["fallback_active"] else getattr(agent, "requested_provider", None)
                 runtime["provider"] = routed_custom_identity_in(
-                    Path(db.db_path).parent, runtime.get("base_url"), model) or "custom"
+                    Path(db.db_path).parent, runtime.get("base_url"), model, requested) or "custom"
             row = db.get_session(session_id)
             if not row:
                 return

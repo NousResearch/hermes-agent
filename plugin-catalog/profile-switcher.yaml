@@ -1,7 +1,6 @@
 name: profile-switcher
 repo: https://github.com/okyssta/hermes-profile-switcher
-sha: 9cab5b3ef6d978806c6e8b0d733f5b0ef271502d
-subdir: profile-switcher
+sha: 6b4cc33e56c4cb25afc15a33c19d58bbbbe8624d
 title: Profile Switcher
 description: 'A macOS-style quick switcher for Hermes profiles in the desktop app. One chord (⌥⌘P by
   default, rebindable in the app''s own keybind panel) opens a panel of every profile with its model and
@@ -16,9 +15,9 @@ category: desktop
 version: "1.0.0"
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/okyssta/hermes-profile-switcher#readme
-image: https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/9cab5b3ef6d978806c6e8b0d733f5b0ef271502d/assets/profile-switcher.png
+image: https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/6b4cc33e56c4cb25afc15a33c19d58bbbbe8624d/assets/profile-switcher.png
 screenshots:
-  - https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/9cab5b3ef6d978806c6e8b0d733f5b0ef271502d/assets/profile-switcher.png
+  - https://raw.githubusercontent.com/okyssta/hermes-profile-switcher/6b4cc33e56c4cb25afc15a33c19d58bbbbe8624d/assets/profile-switcher.png
 readme: true
 platforms: []
 capabilities:

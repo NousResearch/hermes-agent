@@ -736,6 +736,11 @@ class PluginLiveNow(Result):
     skills: list[PluginLiveSkill] = Field(default_factory=list)
 
 
+class PluginRestartTarget(WireEnum):
+    gateway = "gateway"
+    backend = "backend"
+
+
 class PluginActivation(Result):
     """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
     kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``
@@ -744,13 +749,17 @@ class PluginActivation(Result):
     (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
     error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
     note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)
-    apply from the next session."""
+    apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a
+    running process cannot import (installed after it booted, or never); ``missing_in`` names which
+    processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them."""
 
     name: str
     key: str
     activated_now: dict[str, list[str]] = Field(default_factory=dict)
     live_now: PluginLiveNow | None = None
     deferred: dict[str, list[str]] = Field(default_factory=dict)
+    missing_dependencies: list[str] = Field(default_factory=list)
+    missing_in: list[PluginRestartTarget] = Field(default_factory=list)
 
 
 class OnboardingCatalogPlugin(Result):
@@ -795,7 +804,8 @@ class PluginsManageResult(Result):
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
     ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
     running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
-    live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
+    live now vs deferred, so ``restart_required`` is True only when no gateway answered or the running
+    gateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
     ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the
     client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /
     ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus

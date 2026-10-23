@@ -24,6 +24,7 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _MODELS_DEV_DIRECT_HOSTS = {
     "openai": "openai.com", "xai": "x.ai", "anthropic": "anthropic.com", "google": "googleapis.com",
     "deepseek": "deepseek.com", "xiaomi": "xiaomimimo.com",
+    "zai": "z.ai", "minimax": "minimax.io", "minimax-cn": "minimaxi.com",
 }
 
 # Below $0.01, render at 4 dp so cheap-model costs never display as $0.00.

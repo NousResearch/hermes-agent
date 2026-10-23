@@ -101,8 +101,12 @@ class TestInstantiationEpoch:
 
 
     def test_current_epoch_empty_when_proc_unreadable(self, monkeypatch):
-        # When neither /proc identity source is readable, the epoch is "" so
-        # the staleness check is disabled rather than crashing.
+        # When no identity source is readable the epoch is "" so the staleness
+        # check is disabled rather than crashing (never fail-closed). /proc is made
+        # unreadable; the psutil stub makes the Darwin boot-time witness unreadable
+        # too, so the same assertion holds on the host that takes that branch.
+        import sys as _sys
+        import types as _types
         from pathlib import Path as _P
 
         orig_read_text = _P.read_text
@@ -112,12 +116,61 @@ class TestInstantiationEpoch:
                 raise OSError("no /proc")
             return orig_read_text(self, *a, **k)
 
+        no_psutil = _types.ModuleType("psutil")
+
+        def _boot_time_boom():
+            raise RuntimeError("boot time unreadable")
+
+        no_psutil.boot_time = _boot_time_boom
+        monkeypatch.setitem(_sys.modules, "psutil", no_psutil)
+
         dc.current_instantiation_epoch.cache_clear()
         monkeypatch.setattr(_P, "read_text", _boom)
         try:
             assert dc.current_instantiation_epoch() == ""
         finally:
             dc.current_instantiation_epoch.cache_clear()
+
+    @pytest.mark.platforms("macos")
+    def test_current_epoch_uses_boottime_witness_on_darwin(self, monkeypatch):
+        # PR #118353 review: on Darwin there is no /proc, so the epoch used to be ""
+        # and the "epoch half must still match" check degraded to "" == "" (always
+        # true). psutil.boot_time() reads ``sysctl kern.boottime`` in-process; the
+        # epoch becomes the boot time, giving macOS the same reboot protection
+        # Linux gets. Runs the real Darwin branch; only the boot time is stubbed.
+        import sys as _sys
+        import types as _types
+
+        fake_psutil = _types.ModuleType("psutil")
+        fake_psutil.boot_time = lambda: 1_727_384_428.0
+        monkeypatch.setitem(_sys.modules, "psutil", fake_psutil)
+
+        dc.current_instantiation_epoch.cache_clear()
+        try:
+            assert dc.current_instantiation_epoch() == "1727384428"
+            # Boot-stable: a second read (fresh cache) yields the same witness.
+            dc.current_instantiation_epoch.cache_clear()
+            assert dc.current_instantiation_epoch() == "1727384428"
+        finally:
+            dc.current_instantiation_epoch.cache_clear()
+
+    @pytest.mark.platforms("macos")
+    def test_current_epoch_ignores_junk_boottime_on_darwin(self, monkeypatch):
+        # A non-positive or failing boot time is a missing witness, not a crash
+        # or a garbage epoch: back to "" so the epoch check is simply disabled.
+        import sys as _sys
+        import types as _types
+
+        for junk in (0, -5):
+            fake_psutil = _types.ModuleType("psutil")
+            fake_psutil.boot_time = lambda junk=junk: junk
+            monkeypatch.setitem(_sys.modules, "psutil", fake_psutil)
+
+            dc.current_instantiation_epoch.cache_clear()
+            try:
+                assert dc.current_instantiation_epoch() == ""
+            finally:
+                dc.current_instantiation_epoch.cache_clear()
 
 
 # ---------------------------------------------------------------------------

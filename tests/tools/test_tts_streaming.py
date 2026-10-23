@@ -1043,6 +1043,63 @@ def test_sync_pipeline_cleans_temp_files(monkeypatch):
     assert not leftovers, f"temp files not cleaned: {leftovers}"
 
 
+def test_sync_pipeline_stop_does_not_wait_for_an_unanswered_provider(monkeypatch):
+    """A barge-in while a provider is still synthesizing must end the playback phase.
+
+    ``tts_done_event`` is set in ``stream_tts_to_speaker``'s ``finally``, after
+    ``_SyncSentencePipeline.close()`` returns, so a worker that waits for the in-flight
+    synthesis call holds the playback phase (and the mic) closed for as long as the provider
+    takes to answer (#139106). The abandoned sentence must not play and must not leak its file.
+    """
+    from tools import tts_tool
+    from tools import tts_tool_speaker
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    stop, done = threading.Event(), threading.Event()
+    synth_started, release_synth = threading.Event(), threading.Event()
+    created = []
+    real_mkstemp = tempfile.mkstemp
+
+    def tracking_mkstemp(*a, **k):
+        fd, path = real_mkstemp(*a, **k)
+        created.append(path)
+        return fd, path
+
+    def fake_synth(text, output_path):
+        synth_started.set()
+        release_synth.wait(10.0)  # a provider that has not answered yet
+        with open(output_path, "wb") as fh:
+            fh.write(b"x" * 100)
+
+    monkeypatch.setattr(tts_tool_speaker.tempfile, "mkstemp", tracking_mkstemp)
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_synth)
+    fake_vm = MagicMock()
+    monkeypatch.setitem(sys.modules, "tools.voice_mode", fake_vm)
+
+    # No end sentinel: the pump stays in its idle poll until the stop arrives, so the
+    # interruption lands while the provider call is genuinely in flight.
+    q = queue.Queue()
+    q.put("First full sentence here. ")
+    runner = threading.Thread(
+        target=stream_tts_to_speaker, args=(q, stop, done), daemon=True)
+    runner.start()
+    try:
+        assert synth_started.wait(5.0), "synthesis never started"
+        assert created, "expected the sentence to be synthesized through a temp file"
+        stop.set()  # barge-in while the provider is still working
+        runner.join(timeout=5.0)
+        assert not runner.is_alive() and done.is_set(), (
+            "the playback phase stayed open while a provider call was in flight")
+        assert fake_vm.play_audio_file.call_count == 0
+    finally:
+        release_synth.set()
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and os.path.exists(created[0]):
+        time.sleep(0.01)
+    assert not os.path.exists(created[0]), "audio from the interrupted sentence was left behind"
+
+
 # ── #76466: honor the endpoint-reported PCM sample rate ────────────────────
 
 class _FakeSpeechResponse:

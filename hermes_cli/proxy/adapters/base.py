@@ -32,7 +32,7 @@ class UpstreamAdapter(ABC):
 
     @property
     @abstractmethod
-    def allowed_paths(self) -> FrozenSet[str]:
+    def allowed_paths(self) -> frozenset[str]:
         """Paths relative to the proxy's ``/v1`` mount (``"/chat/completions"`` ⇒
         ``/v1/chat/completions``); anything else gets a 404 with a helpful body."""
 

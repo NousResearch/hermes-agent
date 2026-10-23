@@ -51,6 +51,12 @@ def record_slash_command(*, command: str, surface: str) -> None:
     _emit(contract.SLASH_COMMAND_MARK, fields_.slash_command_fields, command=command, surface=surface)
 
 
+def record_tool_search(*, scope: str, hits: int, outcome: str) -> None:
+    from .shared_metrics_connectors import tool_search_fields
+
+    _emit(contract.TOOL_SEARCH_MARK, tool_search_fields, scope=scope, hits=hits, outcome=outcome)
+
+
 def record_compression(
     *, trigger: str, outcome: str, tokens_before: int | None, context_length: int | None,
     failure_class: str | None = None,
@@ -76,6 +82,11 @@ def begin_compression_attempt(trigger: str, tokens_before: Any) -> None:
     _compression_attempt.pending = (trigger, tokens_before)
 
 
+def discard_compression_attempt() -> None:
+    """Clear this thread's pending attempt without recording a shared metric."""
+    _compression_attempt.pending = None
+
+
 def finish_compression_attempt(
     commit_status: str, failure_class: str | None, context_length: Any, agent: Any = None,
 ) -> None:
@@ -84,11 +95,9 @@ def finish_compression_attempt(
     if not pending:
         return
     # Classify the stored value, so the outcome and the recorded reason always agree.
-    reason = fields_.compression_failure_class("failed", failure_class)
-    outcome = (
-        "success" if commit_status == "committed"
-        else "skipped" if reason in _SKIPPED_COMPRESSION_CLASSES else "failed"
-    )
+    committed = commit_status == "committed"
+    reason = fields_.compression_failure_class("success" if committed else "failed", failure_class)
+    outcome = "success" if committed else "skipped" if reason in _SKIPPED_COMPRESSION_CLASSES else "failed"
     record_compression(
         trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length,
         failure_class=reason,
@@ -139,8 +148,17 @@ def record_fallback(*, from_provider: str | None, to_provider: str | None, reaso
     )
 
 
-def record_extension_install(*, kind: str, source: str, name: str | None, outcome: str) -> None:
+def record_extension_install(
+    *, kind: str, source: str, name: str | None, outcome: str,
+    # ---- iuf c1 ----
+    failure_class: str | None = None, registry: str | None = None, error: BaseException | None = None,
+    # ---- end iuf c1 ----
+) -> None:
+    """``failure_class`` names why a failed install stopped (the kind's closed set); a raised
+    ``error`` is classified by its tagged class or type instead, inside the metrics guard.
+    ``registry`` is the skills-hub adapter id that resolved/served a skill."""
     _emit(
         contract.EXTENSION_INSTALL_MARK, fields_.extension_install_fields,
         kind=kind, source=source, name=name, outcome=outcome,
+        failure_class=failure_class, registry=registry, error=error,
     )

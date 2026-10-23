@@ -135,7 +135,7 @@ def invalidate_cached_token() -> None:
     _token_cache.clear()
 
 
-def _billing_not_logged_in(exc: Optional[BaseException] = None) -> "BillingAuthError":
+def _billing_not_logged_in(exc: Optional[BaseException] = None) -> BillingAuthError:
     """Build the canonical 'not logged in' BillingAuthError (single source)."""
     err = BillingAuthError("Not logged into Nous Portal — run `hermes portal` to log in.", status=401, error="invalid_token")
     if exc is not None:
@@ -317,6 +317,12 @@ def patch_auto_top_up(
     """``PATCH /api/billing/auto-top-up`` — configure auto-reload (scope required; strict body, JSON numbers)."""
     body = {"enabled": bool(enabled), "threshold": float(threshold), "topUpAmount": float(top_up_amount)}
     return _request("PATCH", "/api/billing/auto-top-up", body=body, timeout=timeout)
+
+
+def patch_keep_going_on_credits(*, enabled: bool, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
+    """``PATCH /api/billing/keep-going-on-credits``: the window plan's "Keep going on credits" setting (scope
+    required; strict ``{enabled}`` body). Turning it off skips the spending gates."""
+    return _request("PATCH", "/api/billing/keep-going-on-credits", body={"enabled": bool(enabled)}, timeout=timeout)
 
 
 def post_charge(*, amount_usd: float | str, idempotency_key: str, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:

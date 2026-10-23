@@ -47,6 +47,9 @@ CREATE_TIME_TOLERANCE_SECONDS = 2.0
 # Our own creation time re-probed by the same clock: only the marker's 3-decimal rounding differs,
 # while two processes are at least one scheduler tick (10 ms) apart.
 _OWN_CREATE_TIME_EPSILON = 0.005
+# macOS shells read a creation time from `ps -o lstart` and write it as whole seconds (`ct:N.000`),
+# truncated. A whole-second claim inside the second we started in is still our incarnation.
+_WHOLE_SECOND_CT = 1.0
 
 # A claim published by create-then-write (filesystems without hard links) is briefly empty; an
 # empty marker this young is a claim in flight, not a dead one (contract A3).
@@ -205,6 +208,7 @@ def _stdlib_create_time(pid: int) -> float | None:
             ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
             env={"PATH": os.environ.get("PATH") or "/bin:/usr/bin", "LC_ALL": "C", "TZ": "UTC0"},
+            check=False,
         ).stdout.strip()
         if not out:
             return None
@@ -295,7 +299,11 @@ def _incarnation(pid: int, recorded: float | None, w: _World) -> bool | None:
     if pid == w.pid:  # we are alive by definition: only the incarnation is in question
         if w.ct is None:
             return recorded is None
-        return recorded is not None and abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON
+        if recorded is None:
+            return False
+        if abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON:
+            return True
+        return recorded.is_integer() and 0 <= w.ct - recorded < _WHOLE_SECOND_CT
     if not w.alive(pid):
         return False
     actual = None if recorded is None else w.ct_of(pid)
@@ -478,6 +486,41 @@ def _is_ancestor_pid(pid: int) -> bool:
     except Exception as exc:
         logger.debug("Could not walk process ancestry for pid %s: %s", pid, exc)
         return False
+
+
+def _is_runtime_host(cmdline: list[str]) -> bool:
+    """A long-lived Hermes host (``gateway run`` / ``serve`` / ``dashboard``), by the canonical
+    command-line matchers (profile flags, ``hermes_cli/main.py`` paths, inline bootstraps)."""
+    from gateway.status import looks_like_gateway_command_line
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    line = " ".join(cmdline)
+    return looks_like_gateway_command_line(line) or _hermes_holder_subcommand(line) in ("serve", "dashboard")
+
+
+def _runtime_host_below(holder_pid: int) -> bool:
+    """True when a Hermes gateway/serve/dashboard sits between us and *holder_pid* (or anywhere
+    above us when the holder is not reached).
+
+    Such a host is relaunched BY an update and outlives its stages; a ``hermes update`` its agent
+    or ``/update`` starts is an independent update that must not run under the first one's claim
+    (cli §7 V9). Unreadable command lines count as not-a-host (the legacy adoption stands).
+    """
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        proc = psutil.Process().parent()
+        for _ in range(_MAX_ANCESTRY_DEPTH):
+            if proc is None or proc.pid == holder_pid:
+                return False
+            with suppress(psutil.Error):
+                if _is_runtime_host(proc.cmdline()):
+                    return True
+            proc = proc.parent()
+    except psutil.Error:
+        return False
+    return False
 
 
 # --- the marker --------------------------------------------------------------------------
@@ -1270,6 +1313,11 @@ def update_tree_job() -> int:
     return job
 
 
+def holds_checkout_lock(install_root: Path | str | None = None) -> bool:
+    """True when this process holds (or joined) the checkout lock: it IS the running update."""
+    return _HELD is not None and os.path.realpath(_HELD["path"]) == os.path.realpath(checkout_lock_path(install_root))
+
+
 def update_in_progress(install_root: Path | str | None = None) -> bool:
     """True while an update owns this install: a LIVE marker or a held checkout lock."""
     return read_live_update(install_root=install_root) is not None or checkout_lock_held(install_root)
@@ -1287,9 +1335,9 @@ def checkout_lock_held(install_root: Path | str | None = None) -> bool:
     launch the others would park. A lock call that fails outright (ENOLCK on NFS without lockd,
     EOPNOTSUPP on some SMB shares) means nothing can hold it: free, so the interrupted-pull repair
     runs unguarded there as designed."""
-    path = checkout_lock_path(install_root)
-    if _HELD is not None and _HELD["path"] == str(path):
+    if holds_checkout_lock(install_root):
         return True
+    path = checkout_lock_path(install_root)
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
     except FileNotFoundError:
@@ -1490,7 +1538,7 @@ class UpdateLock:
         """C1 rule 4: a LIVE claim by us, an ancestor or the hand-off partner is run under.
         Called inside the marker mutex."""
         partners = _live_partners(existing)
-        if not any(self._is_partner(p) for p in partners):
+        if not any(self._is_partner(p) and (p == os.getpid() or not _runtime_host_below(p)) for p in partners):
             self.holder = UpdateHolder(pid=partners[0], age_seconds=existing.age() if existing.started_at else 0.0)
             return False
         own = _identity_line()
@@ -1528,7 +1576,7 @@ class UpdateLock:
             self.acquired = self._claimed = False
             self._drop_checkout()
 
-    def __enter__(self) -> "UpdateLock":
+    def __enter__(self) -> UpdateLock:
         self.acquire()
         return self
 

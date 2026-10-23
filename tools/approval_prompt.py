@@ -23,8 +23,7 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
                               title: str | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
-    allow_permanent=False hides [a]lways (tirith warnings present: broad permanent
-    allowlisting is wrong for content-level findings). allow_session=False hides
+    allow_permanent=False hides [a]lways. allow_session=False hides
     [s]ession too — the caller grants one operation and re-asks next time (the
     protected agent-instruction gate in ``tools/file_tools.py``); offering a scope
     the caller discards makes every later write re-prompt and reads as broken.
@@ -299,6 +298,10 @@ def request_elicitation_consent(message: str, description: str, *,
         session_key = _ctx.get_current_session_key()
     except Exception as exc:  # pragma: no cover -- defensive
         logger.warning("Elicitation consent: session lookup failed: %s", exc)
+        return "decline"
+    # A finite gateway turn (``chat -q`` / ``-z`` over the daemon) has no one to answer: parking the prompt
+    # would detach the viewer mid-turn instead of failing closed like the in-process ``-q`` input() path.
+    if _ctx._is_single_query_approval_context():
         return "decline"
 
     # api_server is an unattended *platform* for the dangerous-command gate, but a live ``/v1/runs`` run

@@ -76,10 +76,10 @@ def _skills_block(stable: str) -> str:
     return m.group(0) if m else ""
 
 
-def _split_tools(tools: Sequence[dict]) -> Tuple[List[dict], List[dict], List[dict]]:
-    builtin: List[dict] = []
-    mcp: List[dict] = []
-    subagent: List[dict] = []
+def _split_tools(tools: Sequence[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    builtin: list[dict] = []
+    mcp: list[dict] = []
+    subagent: list[dict] = []
     for tool in tools:
         fn = tool.get("function") if isinstance(tool, dict) else None
         name = str((fn if isinstance(fn, dict) else tool).get("name") or "")
@@ -88,7 +88,7 @@ def _split_tools(tools: Sequence[dict]) -> Tuple[List[dict], List[dict], List[di
     return builtin, mcp, subagent
 
 
-def _memory_blocks(agent: Any) -> Tuple[str, str]:
+def _memory_blocks(agent: Any) -> tuple[str, str]:
     memory_block = user_block = ""
     store = getattr(agent, "_memory_store", None)
     try:
@@ -112,7 +112,7 @@ def _join(*parts: str) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
-def _glyph(cat: Dict[str, Any]) -> str:
+def _glyph(cat: dict[str, Any]) -> str:
     return _CATEGORIES.get(str(cat.get("id") or ""), (None, "▪"))[1]
 
 
@@ -127,7 +127,7 @@ def context_display_source(compressor: Any) -> str:
     return "local_estimate" if isinstance(real, (int, float)) and shown > 0 and shown != real else "provider_usage"
 
 
-def context_usage_fields(compressor: Any) -> Dict[str, Any]:
+def context_usage_fields(compressor: Any) -> dict[str, Any]:
     """Current occupancy only; lifetime throughput is never a context fallback."""
     used = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
     maximum = getattr(compressor, "context_length", 0) or 0
@@ -140,7 +140,7 @@ def context_usage_fields(compressor: Any) -> Dict[str, Any]:
             "context_source": source, "context_estimated": source != "provider_usage"}
 
 
-def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]] = None) -> Dict[str, Any]:
+def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]] = None) -> dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
     from agent.model_metadata import estimate_messages_tokens_rough
     from agent.usage_anchor import anchored_context_tokens
@@ -209,7 +209,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
     }
 
 
-def compute_context_details(agent: Any) -> Dict[str, Any]:
+def compute_context_details(agent: Any) -> dict[str, Any]:
     """Expanded per-skill / per-toolset cost listing for ``/context all``.
 
     Reuses the ``hermes prompt-size`` attribution (index-line bytes from the
@@ -245,12 +245,12 @@ def compute_context_details(agent: Any) -> Dict[str, Any]:
 # (monospace is not guaranteed on messaging platforms).
 
 
-def render_context_grid(payload: Dict[str, Any]) -> List[str]:
+def render_context_grid(payload: dict[str, Any]) -> list[str]:
     """Glyph grid: 100 cells, one per percent of the context window; categories
     fill in declaration order, the remainder is free space."""
     context_max = int(payload.get("context_max") or 0)
     total_cells = _GRID_COLUMNS * _GRID_ROWS
-    cells: List[str] = []
+    cells: list[str] = []
     if context_max > 0:
         for cat in payload.get("categories") or []:
             tokens = int(cat.get("tokens") or 0)
@@ -262,7 +262,7 @@ def render_context_grid(payload: Dict[str, Any]) -> List[str]:
     return [" ".join(cells[row * _GRID_COLUMNS:(row + 1) * _GRID_COLUMNS]) for row in range(_GRID_ROWS)]
 
 
-def render_context_category_lines(payload: Dict[str, Any]) -> List[str]:
+def render_context_category_lines(payload: dict[str, Any]) -> list[str]:
     """Render the 'Estimated usage by category' table as plain-text lines."""
     categories = payload.get("categories") or []
     context_max = int(payload.get("context_max") or 0)
@@ -285,12 +285,12 @@ def render_context_category_lines(payload: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _toolset_row(group: Dict[str, Any]) -> str:
+def _toolset_row(group: dict[str, Any]) -> str:
     return t("gateway.context.toolset_row", toolset=f"{group['toolset']:<24}", count=f"{group['tool_count']:>3}",
              tokens=f"{group['schema_tokens']:>8,}")
 
 
-def _skill_row(entry: Dict[str, Any]) -> str:
+def _skill_row(entry: dict[str, Any]) -> str:
     name = str(entry.get("name") or "")
     if len(name) > 28:
         name = name[:27] + "…"
@@ -299,7 +299,7 @@ def _skill_row(entry: Dict[str, Any]) -> str:
     return t("gateway.context.skill_row", name=f"{name:<28}", index_tokens=f"{entry['index_tokens']:>6,}", md_tokens=md_str)
 
 
-def _table(lines: List[str], title: str, rows: List[Dict[str, Any]], fmt) -> None:
+def _table(lines: list[str], title: str, rows: list[dict[str, Any]], fmt) -> None:
     """Append a titled, display-capped table (blank-separated from a preceding one)."""
     if not rows:
         return
@@ -311,23 +311,23 @@ def _table(lines: List[str], title: str, rows: List[Dict[str, Any]], fmt) -> Non
         lines.append(t("gateway.context.and_more", count=len(rows) - _DETAILS_TABLE_LIMIT))
 
 
-def render_context_details_lines(details: Dict[str, Any]) -> List[str]:
+def render_context_details_lines(details: dict[str, Any]) -> list[str]:
     """Render the expanded ``/context all`` per-skill / per-toolset tables."""
-    lines: List[str] = []
+    lines: list[str] = []
     _table(lines, t("gateway.context.toolsets_title"), details.get("toolsets") or [], _toolset_row)
     _table(lines, t("gateway.context.skills_title"), details.get("skills") or [], _skill_row)
     return lines
 
 
 def render_context_breakdown_lines(
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     *,
-    details: Optional[Dict[str, Any]] = None,
+    details: Optional[dict[str, Any]] = None,
     grid: bool = True,
-) -> List[str]:
+) -> list[str]:
     """Full /context view. ``grid`` prepends the glyph grid (CLI; the gateway
     keeps its own gauge); ``details`` appends the expanded listings."""
-    lines: List[str] = [*render_context_grid(payload), ""] if grid else []
+    lines: list[str] = [*render_context_grid(payload), ""] if grid else []
     lines.extend(render_context_category_lines(payload))
 
     context_max = int(payload.get("context_max") or 0)

@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { zhHantThemePicker } from './zh-hant_theme_picker'
 
 export const zhHantAssistant = {
   assistant: {
@@ -15,7 +16,7 @@ export const zhHantAssistant = {
       hideNames: '隱藏名稱',
       skill: name => `技能 ${name}`,
       kind: { plugin: '外掛', skill: '技能' },
-      tier: { official: '官方', community: '社群' },
+      tier: { official: '官方', verified: '已驗證', community: '社群' },
       targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
       sendFailed: '無法傳送你的回覆，請再試一次。',
       commitLabel: '提交',
@@ -95,6 +96,18 @@ export const zhHantAssistant = {
         ssl_cert_verification: {
           title: '安全連線失敗',
           body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
+        },
+        cron_session_read_only: {
+          title: '此聊天屬於一個排程工作',
+          body: '它只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。'
+        },
+        usage_window: {
+          title: '包含用量已用完',
+          body: '你的方案包含的用量已用完，將在重設後恢復。在 /topup 中新增額度即可繼續。'
+        },
+        workspace_unavailable: {
+          title: '此聊天的資料夾已不存在',
+          body: '此聊天使用的資料夾已被移動或刪除，因此你的訊息未被執行。請重新建立該資料夾，或使用「Move to project」為聊天指定其他資料夾，然後重試。'
         }
       },
       errorLayers: {
@@ -109,6 +122,12 @@ export const zhHantAssistant = {
         streaming: '串流連線錯誤'
       },
       errorRetry: '重試',
+      errorSwitchToModel: (model, note) => (note ? `切換到 ${model}（${note}）` : `切換到 ${model}`),
+      errorSwitchModelFailed: '無法切換模型',
+      errorUseCredits: '開啟用額度繼續',
+      errorUseCreditsFailed: '無法開啟用額度繼續',
+      errorAddCredits: '新增額度',
+      errorOpenBillingSettings: '開啟帳單設定',
       errorLimitResets: time => `限額將於 ${time} 重設`,
       errorRetryAtReset: time => `限額重設後重試（${time}）`,
       errorRetryScheduled: (time, wait) => `將於 ${time} 重試 — 還剩 ${wait}`,
@@ -170,10 +189,12 @@ export const zhHantAssistant = {
       noAnswer: '未回答',
       confirmAndContinueLabel: '確認並繼續',
       singleSelectHint: '選一個',
+      oneQuestion: '1 個問題',
       multiSelectHint: '可多選',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
+    themePicker: zhHantThemePicker,
     tool: {
       copyCode: '複製程式碼',
       renderingImage: '正在渲染圖片',

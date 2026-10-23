@@ -156,7 +156,7 @@ def _run_in_custody(argv: list, root: Path, **kwargs) -> int:
         # the rest of a committed update (sync + build), and it holds the checkout lock fd, so the
         # checkout stays locked for as long as it runs, even past this updater's death.
         # health: allow HX006 -- unbounded by design: the update's own supervised child
-        return subprocess.run(argv, **kwargs, **_checkout_custody(root)).returncode
+        return subprocess.run(argv, **kwargs, **_checkout_custody(root)).returncode  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     proc = subprocess.Popen(argv, creationflags=lock.CREATE_SUSPENDED, **kwargs)
     try:
         refusal = bind(proc)
@@ -193,7 +193,11 @@ def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
     """
     if incomplete:
         # A newly retired completion hook has no complete captured worklist.
-        # It must not start another update or invent a successful receipt.
+        # It must not start another update or invent a successful receipt. It names its stop on
+        # the receipt the loaded update_receipt keeps open (an older one lacks the call: no-op).
+        record = getattr(sys.modules.get("hermes_cli.update_receipt"), "record_stop_reason", None)
+        if record is not None:
+            record("old_version_handoff")
         print(
             "You're updating from an older version of Hermes Agent. "
             "To complete this update, run `hermes update` again.",

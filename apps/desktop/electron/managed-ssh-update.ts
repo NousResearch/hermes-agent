@@ -409,7 +409,6 @@ def marker_state():
     try:raw=marker_path.read_bytes()
     except FileNotFoundError:return {'state':'absent'}
     except OSError:return {'state':'unavailable'}
-    # update_lock.judge_marker's parser and identity rule (owner or delegate, pid + creation time).
     verdict=marker_verdict(raw)
     if verdict=='UNCERTAIN':return {'state':'malformed'}
     if verdict=='CLEAR':return {'state':'dead'}
@@ -1066,18 +1065,72 @@ function managedSshUpdateAllRow<TBase extends object>(base: TBase, result: Manag
   }
 }
 
+/** How long a local update apply waits on managed SSH updates before refusing (review H3). */
+const MANAGED_UPDATE_APPLY_JOIN_MS = 120_000
+
 // before-quit uses this to join remote update transactions before it starts
 // tearing down their SSH transports. Re-read after every batch so an operation
-// registered while the first batch settles is joined too.
-async function waitForManagedUpdateOperations(getOperations: () => Iterable<Promise<unknown>>): Promise<void> {
+// registered while the first batch settles is joined too. With `timeoutMs`
+// the join is bounded: false = operations were still pending at the deadline
+// (they keep running and keep their registration; nothing is abandoned).
+async function waitForManagedUpdateOperations(
+  getOperations: () => Iterable<Promise<unknown>>,
+  { timeoutMs = Infinity }: { timeoutMs?: number } = {}
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+
   for (;;) {
     const pending = [...getOperations()]
 
     if (pending.length === 0) {
-      return
+      return true
     }
 
-    await Promise.allSettled(pending)
+    const remaining = deadline - Date.now()
+
+    if (remaining <= 0) {
+      return false
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const settled = await Promise.race([
+      Promise.allSettled(pending).then(() => true),
+      ...(Number.isFinite(remaining)
+        ? [new Promise<boolean>(resolve => (timer = setTimeout(resolve, remaining, false)))]
+        : [])
+    ])
+
+    clearTimeout(timer)
+
+    if (!settled) {
+      return false
+    }
+  }
+}
+
+/**
+ * A local update apply's join (review H3): wait for managed SSH updates and
+ * recoveries, but only up to MANAGED_UPDATE_APPLY_JOIN_MS. Still pending, the
+ * apply is refused (no hand-off is spawned, so no local mutation overlaps a
+ * live remote writer) and the operations keep running under their own
+ * registration. Null = joined; go ahead.
+ */
+async function joinManagedUpdatesForApply(
+  getOperations: () => Iterable<Promise<unknown>>,
+  log: (line: string) => void,
+  timeoutMs = MANAGED_UPDATE_APPLY_JOIN_MS
+): Promise<{ ok: false; error: string; message: string } | null> {
+  if (await waitForManagedUpdateOperations(getOperations, { timeoutMs })) {
+    return null
+  }
+
+  log('[updates] a managed SSH update is still running; local update hand-off refused until it finishes')
+
+  return {
+    ok: false,
+    error: 'managed-update-running',
+    message: 'A remote update is still running. Try again when it finishes.'
   }
 }
 
@@ -1225,6 +1278,7 @@ export {
   DEFAULT_REMOTE_UPDATE_TIMEOUT_MS,
   executeManagedRemoteUpdate,
   fenceManagedSshBootstrapPublication,
+  joinManagedUpdatesForApply,
   launchManagedRemoteUpdate,
   ManagedConnectionUpdateGate,
   type ManagedConnectionUpdateResult,

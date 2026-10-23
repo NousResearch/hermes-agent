@@ -33,8 +33,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import { type ChatMessage, chatMessageText, finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
-import type { ErrorSurface } from '@/lib/error-surface'
+import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
@@ -54,14 +53,18 @@ import {
 import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { $projectTree } from './project-tree'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
   $connection,
+  $cronSessions,
   $currentCwd,
   $lastReadAtBySessionId,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  $unlistedSessionOwnerRows,
   $workspaceCwdOwner,
   clearReadBaseline,
   getSessionOwnerHint,
@@ -81,6 +84,7 @@ import {
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
+import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -89,7 +93,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
-import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -212,84 +216,17 @@ export function liveSessionScopes(): Set<string> {
   return scopes
 }
 
-// ── Owner hold across the create → foreground gap ───────────────────────────
-// A routed session.create returns a stored id on the owner's socket, but the
-// surface that will PIN that socket (the selected primary thread, or a tile)
-// is published later and asynchronously: navigate → route effect →
-// $selectedStoredSessionId, or openSessionTile → $sessionTiles. In that gap
-// the entry has no active request, is not yet foreground-bound and, if the
-// user switched source meanwhile, is not the active key either — so the
-// live-work pruner or a refcount-0 lease release could close the socket that
-// holds the just-minted runtime before the first prompt.submit. The hold
-// names the owner in foregroundSessionScopes from the moment the create
-// returns until the foreground publication takes over (the stored id becomes
-// selected or tiled), the caller releases it (failed create / drift close),
-// or a bounded TTL expires — nothing latches.
-const SESSION_OWNER_HOLD_TTL_MS = 60_000
-
-const sessionOwnerHolds = new Map<
-  string,
-  { owner: SessionOwnerScope; timer: ReturnType<typeof setTimeout>; until: number }
->()
-
-export const $sessionOwnerHoldRevision = atom(0)
-
-function bumpSessionOwnerHoldRevision(): void {
-  $sessionOwnerHoldRevision.set($sessionOwnerHoldRevision.get() + 1)
-}
-
-function forgetSessionOwnerHold(storedSessionId: string, publish: boolean): boolean {
-  const hold = sessionOwnerHolds.get(storedSessionId)
-
-  if (!hold) {
-    return false
-  }
-
-  clearTimeout(hold.timer)
-  sessionOwnerHolds.delete(storedSessionId)
-
-  if (publish) {
-    bumpSessionOwnerHoldRevision()
-  }
-
-  return true
-}
-
-export function holdSessionOwnerUntilForeground(storedSessionId: string, owner: SessionOwnerScope): () => void {
-  const id = storedSessionId.trim()
-
-  if (!id || !owner) {
-    return () => undefined
-  }
-
-  forgetSessionOwnerHold(id, false)
-  const until = Date.now() + SESSION_OWNER_HOLD_TTL_MS
-  const timer = setTimeout(() => releaseSessionOwnerHold(id), SESSION_OWNER_HOLD_TTL_MS)
-
-  sessionOwnerHolds.set(id, { owner, timer, until })
-  bumpSessionOwnerHoldRevision()
-
-  return () => releaseSessionOwnerHold(id)
-}
-
-export function releaseSessionOwnerHold(storedSessionId: string): void {
-  forgetSessionOwnerHold(storedSessionId.trim(), true)
-}
-
-/** @internal Tests. */
-export function _resetSessionOwnerHoldsForTests(): void {
-  const hadHolds = sessionOwnerHolds.size > 0
-
-  for (const hold of sessionOwnerHolds.values()) {
-    clearTimeout(hold.timer)
-  }
-
-  sessionOwnerHolds.clear()
-
-  if (hadHolds) {
-    bumpSessionOwnerHoldRevision()
-  }
-}
+// The owner hold itself (the map, TTL, hold/release/reset, and the
+// foreground-scope sweep) lives in ./session-owner-holds; re-exported here
+// because session-states.ts is where the rest of the ownership ladder lives
+// and most call sites already import from it.
+export {
+  $sessionOwnerHoldRevision,
+  _resetSessionOwnerHoldsForTests,
+  holdSessionOwnerUntilForeground,
+  releaseSessionOwnerHold
+} from './session-owner-holds'
+import { sweepSessionOwnerHolds } from './session-owner-holds'
 
 /**
  * Registry scopes owned by an open foreground surface, when known.
@@ -366,24 +303,7 @@ export function foregroundSessionScopes(): Set<string> {
   // Create → foreground holds. A hold whose scope the rungs above already
   // name (the runtime's event scope once selected, a mounted tile's route) is
   // covered and retires; an expired one retires too.
-  const now = Date.now()
-
-  for (const [storedSessionId, hold] of [...sessionOwnerHolds]) {
-    const scope =
-      typeof hold.owner === 'string'
-        ? normalizeProfileKey(hold.owner)
-        : hold.owner?.connectionId?.trim()
-          ? registryBackendScopeKey(hold.owner.connectionId.trim(), normalizeProfileKey(hold.owner.profile))
-          : null
-
-    if (!scope || hold.until <= now || scopes.has(scope)) {
-      // This recompute was already triggered by the covering publication (or
-      // is itself observing expiry), so avoid recursively publishing.
-      forgetSessionOwnerHold(storedSessionId, false)
-
-      continue
-    }
-
+  for (const scope of sweepSessionOwnerHolds(scopes)) {
     scopes.add(scope)
   }
 
@@ -565,63 +485,11 @@ function settleEndedLiveTurn(runtimeId: string) {
   })
 }
 
-// Raised only after the backend confirmed the turn is over and no reply reached
-// this window, so Retry cannot run the prompt twice.
-const NO_REPLY_SURFACE: ErrorSurface = { code: 'no_reply', layer: 'runtime', retryable: true }
-const NO_REPLY_ERROR = 'Hermes ended this turn without a reply.'
-
-function turnHasReply(messages: ChatMessage[]): boolean {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-
-    if (message.hidden) {
-      continue
-    }
-
-    if (message.role === 'user') {
-      return false
-    }
-
-    if (message.role === 'assistant' && (message.error || chatMessageText(message).trim())) {
-      return true
-    }
-  }
-
-  return false
-}
-
-function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
-  const last = messages.findLast(message => !message.hidden)
-
-  // A turn that ran tools but never wrote text carries the notice on its own bubble.
-  if (last?.role === 'assistant') {
-    return messages.map(message =>
-      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
-    )
-  }
-
-  const occurredAt = Date.now() / 1000
-
-  return [
-    ...messages,
-    {
-      completedAt: occurredAt,
-      error: NO_REPLY_ERROR,
-      errorSurface: NO_REPLY_SURFACE,
-      id: `assistant-no-reply-${Date.now()}`,
-      parts: [],
-      pending: false,
-      role: 'assistant',
-      timestamp: occurredAt
-    }
-  ]
-}
-
-/** Stamp the retry card on an ended turn that has no reply. A newer turn the
- *  user started meanwhile is either live (skipped) or has its own reply. */
+/** Stamp the retry card on an ended turn that has no reply, never an intentional
+ *  interruption. A newer turn is either live (skipped) or has its own reply. */
 function markTurnWithoutReply(runtimeId: string) {
   writeSessionState(runtimeId, state =>
-    isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
+    state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
       ? state
       : { ...state, messages: withNoReplyNotice(state.messages) }
   )
@@ -895,9 +763,22 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
 /** Mark a completed turn unread unless the user is already looking at it. */
 function lightUnreadCompletion(storedId: string, runtimeId?: string) {
+  // The marker's profile bucket comes from the loaded row when there is one;
+  // with no row, the socket-proven owner profile keeps a background profile's
+  // finish out of the ACTIVE profile's bucket (#91710). The same owner decides
+  // whether the completion is a messaging conversation's.
+  const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
+
+  const profileHint =
+    typeof owner === 'string'
+      ? owner
+      : typeof owner?.profile === 'string' && owner.profile.trim()
+        ? owner.profile
+        : undefined
+
   // FOCUSED, not selected: a session finishing in the tile the user is
   // watching is already seen, and a tile is never the primary selection.
-  if (storedId === $focusedStoredSessionId.get()) {
+  if (storedId === $focusedStoredSessionId.get() || isMessagingCompletion(storedId, profileHint)) {
     return
   }
 
@@ -909,20 +790,7 @@ function lightUnreadCompletion(storedId: string, runtimeId?: string) {
 
   if (Date.now() > lastReadAt) {
     // Flags the transient atom AND persists a marker, so the green dot
-    // survives an app restart (see session-unread.ts). The marker's profile
-    // bucket comes from the loaded row when there is one; with no row, the
-    // socket-proven owner profile keeps a background profile's finish out of
-    // the ACTIVE profile's bucket — the per-profile rail unread (#91710)
-    // would otherwise light the wrong square.
-    const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
-
-    const profileHint =
-      typeof owner === 'string'
-        ? owner
-        : typeof owner?.profile === 'string' && owner.profile.trim()
-          ? owner.profile
-          : undefined
-
+    // survives an app restart (see session-unread.ts).
     markSessionUnreadFinished(storedId, profileHint)
   }
 }
@@ -2311,11 +2179,11 @@ export interface SessionTileDelegate {
   branchSessionAtMessage(storedSessionId: string, runtimeId: string, messageId: string): Promise<boolean>
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */
   deleteSession(storedSessionId: string): Promise<void>
-  /** Run a slash command against a tile's session (app-level effects — e.g.
-   *  branch/handoff — act on the main surface, as they should). */
+  /** Run a slash command against a tile's session (app-level effects, e.g. branch/handoff, act on the main surface). */
   executeSlash(rawCommand: string, sessionId: string, options?: { typed?: boolean }): Promise<void>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
+  switchSessionModel?(runtimeId: string, model: string, provider: string): Promise<boolean>
   /** Drop the wiring cache's stored→runtime bindings. Called on gateway
    *  reconnect: a respawned backend re-mints runtime ids, so every binding
    *  recorded before the reconnect is suspect — without this, `resumeTile`'s
@@ -2331,8 +2199,12 @@ export interface SessionTileDelegate {
    *  the main view). Returns the runtime id, or throws.
    *  `refreshTranscript` forces a REST merge even when a warm cached
    *  transcript already exists — reopen-after-idle must not paint the
-   *  snapshot that was current when the panel last had a socket. */
-  resumeTile(storedSessionId: string, options?: { refreshTranscript?: boolean }): Promise<string>
+   *  snapshot that was current when the panel last had a socket.
+   *  `authoritativeSnapshot` forces a message-bearing gateway resume. */
+  resumeTile(
+    storedSessionId: string,
+    options?: { authoritativeSnapshot?: boolean; refreshTranscript?: boolean }
+  ): Promise<string>
   /** Retire one runtime's busy/awaiting claim through the wiring cache
    *  (updateSessionState), so cache, focused view, busyRef, and tile mirrors
    *  settle together. Returns false when the cache holds no busy state for
@@ -3095,10 +2967,42 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
   runtimeId ? states[runtimeId] : undefined
 )
 
+/** The best cached row for a stored session id, across every slice the sidebar
+ *  has loaded (#76535): the owner-lookup rows (recents + cron + messaging +
+ *  unlisted-draft/hidden stubs) and the project tree (a tile's session is
+ *  often older than the paginated recents page, so the tree is the only
+ *  loaded copy). Never a by-id fetch — a computed must stay synchronous. */
+function focusedSessionRow(storedSessionId: string): SessionInfo | undefined {
+  return (
+    ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, storedSessionId)) ??
+    $projectTree
+      .get()
+      .flatMap(project => [
+        ...(project.previewSessions ?? []),
+        ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+      ])
+      .find(s => sessionMatchesStoredId(s, storedSessionId))
+  )
+}
+
 /** The workspace CWD of the currently focused session (the focused tile's cwd,
  *  else the primary session's confirmed workspace cwd, with fallback to historical session cwd). */
 export const $focusedWorkspaceCwd = computed(
-  [$focusedStoredSessionId, $selectedStoredSessionId, $focusedSessionState, $sessions, $currentCwd, $workspaceCwdOwner],
+  [
+    $focusedStoredSessionId,
+    $selectedStoredSessionId,
+    $focusedSessionState,
+    $sessions,
+    $currentCwd,
+    $workspaceCwdOwner,
+    $unlistedSessionOwnerRows,
+    $projectTree,
+    // focusedSessionRow reads the cron/messaging slices through the owner
+    // lookup; listing them keeps a cron/messaging row landing reactive without
+    // reading them eagerly in the computed body.
+    $cronSessions,
+    $messagingSessions
+  ],
   (
     focusedStoredId,
     selectedStoredId,
@@ -3113,6 +3017,7 @@ export const $focusedWorkspaceCwd = computed(
       const tileCwd = (
         focusedSessionState?.cwd ||
         sessions.find(s => sessionMatchesStoredId(s, focusedStoredId))?.cwd ||
+        focusedSessionRow(focusedStoredId)?.cwd ||
         ''
       ).trim()
 
@@ -3129,6 +3034,7 @@ export const $focusedWorkspaceCwd = computed(
       const fallbackCwd = (
         focusedSessionState?.cwd ||
         sessions.find(s => sessionMatchesStoredId(s, selectedStoredId))?.cwd ||
+        focusedSessionRow(selectedStoredId)?.cwd ||
         ''
       ).trim()
 

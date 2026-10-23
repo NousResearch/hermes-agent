@@ -32,7 +32,7 @@ def _scan_gate_env(monkeypatch, tmp_path, *, verdict="dangerous", installed=None
     monkeypatch.setattr(hub, "append_audit_log", lambda *a, **k: audit.append(a))
     monkeypatch.setattr(hub, "HubLockFile", lambda: type(
         "Lock", (), {"get_installed": lambda self, n: installed})())
-    monkeypatch.setattr(cli_hub, "_sources", lambda: [object()])
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [type("Source", (), {"source_id": lambda self: "skills-sh"})()])
     monkeypatch.setattr(cli_hub, "_resolve_source_meta_and_bundle",
                         lambda identifier, sources: (None, bundle, sources[0]))
     monkeypatch.setattr(cli_hub, "_record_skill_install", lambda *a, **k: None)

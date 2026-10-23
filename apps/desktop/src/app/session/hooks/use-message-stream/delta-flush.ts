@@ -8,6 +8,7 @@ import {
   reasoningPart
 } from '@/lib/chat-messages'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
 
 import type { MutateStream } from './mutate-stream'
 import { MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
@@ -193,6 +194,8 @@ export function useDeltaFlush(mutateStream: MutateStream) {
     },
     [scheduleDeltaFlush]
   )
+
+  useEffect(() => registerStreamDeltaFlush(sessionId => flushQueuedDeltas(sessionId)), [flushQueuedDeltas])
 
   useEffect(
     () => () => {

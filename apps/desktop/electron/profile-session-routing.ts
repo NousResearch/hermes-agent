@@ -51,6 +51,13 @@ export function isAllProfilesSessionListRequest(method: string | undefined, path
   )
 }
 
+/** Paths whose session data must follow the legacy remote owner route. The fenced
+ *  edit reads `/mutation-snapshot` before its PATCH; both must reach the backend that
+ *  owns the row, or the revision fence compares against the wrong store (#138905). */
+export function isRemoteSessionRequestPath(pathname: string): boolean {
+  return /^\/api\/sessions\/[^/]+(?:\/(?:messages|messages\/around|mutation-snapshot|timeline))?$/.test(pathname)
+}
+
 function rowsOf(data: unknown): unknown[] {
   if (!data || typeof data !== 'object' || !('sessions' in data)) {
     return []
@@ -119,6 +126,10 @@ function nonNegativeNumber(value: unknown): number | null {
 
 function isPinned(row: unknown): boolean {
   return Boolean(row && typeof row === 'object' && 'pinned' in row && row.pinned)
+}
+
+function isArchived(row: unknown): boolean {
+  return Boolean(row && typeof row === 'object' && 'archived' in row && row.archived)
 }
 
 function profileSessionId(row: unknown): string | null {
@@ -214,15 +225,27 @@ function errorsOf(data: unknown): SessionScanError[] | undefined {
   return Array.isArray(errors) && errors.length ? (errors as SessionScanError[]) : undefined
 }
 
-/** Fetch the primary backend's profile-aware session slice. A failed read is
- *  still an empty page, but it carries `errors` naming the requested scope
- *  (`all` for the unified list), like the backend's failed profile scan, so the
+/** Fetch the primary backend's profile-aware session slice. The unified merge
+ *  needs the prefix through offset + limit because it sorts and windows again.
+ *  A failed read is still an empty page with `errors` naming the scope, so the
  *  renderer keeps the rows it could not re-read instead of clearing them. */
 export async function fetchPrimaryProfileSessions(
   searchParams: URLSearchParams,
-  fetchJsonForProfile: FetchJsonForProfile
+  fetchJsonForProfile: FetchJsonForProfile,
+  options: { prefixForMerge?: boolean } = {}
 ): Promise<ProfileSessionsResponse> {
   try {
+    if (options.prefixForMerge) {
+      const url = new URL(`/api/profiles/sessions?${searchParams}`, 'http://desktop.local')
+      const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
+      const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
+      const profile = (searchParams.get('profile') || 'all').trim() || 'all'
+
+      return (await readProfileSessionRows(url, profile, limit + offset, (_profile, path) =>
+        fetchJsonForProfile(null, path)
+      )) as ProfileSessionsResponse
+    }
+
     return (await fetchJsonForProfile(null, `/api/profiles/sessions?${searchParams}`)) as ProfileSessionsResponse
   } catch (error) {
     const profile = (searchParams.get('profile') || '').trim() || 'all'
@@ -274,6 +297,9 @@ export interface RegistrySessionSource {
    *  a shared host serving every profile via ?profile=. */
   kind: string
   backends: Array<{ descriptor: unknown; profileLabel: null | string }>
+  /** The connection's gateway install_id, when known. Sources sharing one are the same backend
+   *  and count their session totals once; a source without one is never summed with another. */
+  backendId?: string
 }
 
 type PinnedRegistrySessionSource = Pick<RegistrySessionSource, 'connectionId'> &
@@ -331,12 +357,19 @@ export function shouldIncludeLocalRegistrySessionSource(
 
 type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unknown>
 
+/** One registry source's rows plus its first page (which carries the totals), or null
+ *  when any page failed: a partial read must not contribute rows or a stale total. */
+interface PagedSessionRows {
+  rows: unknown[]
+  first: unknown
+}
+
 /** Read one registry source without sending a page larger than the backend cap. */
 async function fetchSessionRowsInPages(
   basePath: string,
   searchParams: URLSearchParams,
   getPage: (path: string) => Promise<unknown>
-): Promise<unknown[] | null> {
+): Promise<PagedSessionRows | null> {
   const requestedLimit = Number(searchParams.get('limit'))
   const requestedOffset = Number(searchParams.get('offset') || '0')
 
@@ -348,13 +381,16 @@ async function fetchSessionRowsInPages(
 
   try {
     if (!needsPaging) {
-      return rowsOf(await getPage(`${basePath}?${searchParams}`))
+      const page = await getPage(`${basePath}?${searchParams}`)
+
+      return { rows: rowsOf(page), first: page }
     }
 
     const sessions: unknown[] = []
     const backfilled: unknown[] = []
     const seenIds = new Set<string>()
     const backfilledIds = new Set<string>()
+    let first: unknown
     let pageOffset = requestedOffset
     let targetOffset = requestedOffset + requestedLimit
 
@@ -365,6 +401,7 @@ async function fetchSessionRowsInPages(
       pageParams.set('offset', String(pageOffset))
 
       const page = await getPage(`${basePath}?${pageParams}`)
+      first ??= page
       const pageRows = rowsOf(page)
 
       const total = nonNegativeNumber(page && typeof page === 'object' ? (page as { total?: unknown }).total : null)
@@ -373,7 +410,7 @@ async function fetchSessionRowsInPages(
         total !== null ? Math.min(pageLimit, Math.max(0, total - pageOffset)) : Math.min(pageLimit, pageRows.length)
 
       for (const row of pageRows.slice(0, windowedCount)) {
-        const id = sessionId(row)
+        const id = profileSessionId(row)
 
         if (id && seenIds.has(id)) {
           continue
@@ -388,7 +425,7 @@ async function fetchSessionRowsInPages(
       }
 
       for (const row of pageRows.slice(windowedCount)) {
-        const id = sessionId(row)
+        const id = profileSessionId(row)
 
         if ((id && seenIds.has(id)) || (id && backfilledIds.has(id))) {
           continue
@@ -409,7 +446,7 @@ async function fetchSessionRowsInPages(
     }
 
     for (const row of backfilled) {
-      const id = sessionId(row)
+      const id = profileSessionId(row)
 
       if (id && seenIds.has(id)) {
         continue
@@ -422,7 +459,7 @@ async function fetchSessionRowsInPages(
       sessions.push(row)
     }
 
-    return sessions
+    return { rows: sessions, first }
   } catch {
     return null
   }
@@ -445,9 +482,41 @@ async function fetchSessionRowsInPages(
 export async function fetchRegistrySessionRows(
   sources: RegistrySessionSource[],
   searchParams: URLSearchParams,
-  getJson: GetJsonForDescriptor
+  getJson: GetJsonForDescriptor,
+  reportedTotals?: Map<string, number>
 ): Promise<unknown[]> {
   const rows: unknown[] = []
+
+  const recordTotals = (page: unknown, connectionId: string, profileLabel: null | string) => {
+    if (!reportedTotals || !page || typeof page !== 'object') {
+      return
+    }
+
+    const data = page as { total?: unknown; profile_totals?: unknown }
+    const totals = data.profile_totals
+
+    if (profileLabel === null) {
+      // An older aggregate without profile_totals keeps its existing row-count fallback;
+      // assigning its grand total to "default" would double-count named profile rows.
+      if (totals && typeof totals === 'object' && !Array.isArray(totals)) {
+        for (const [profile, value] of Object.entries(totals)) {
+          const count = nonNegativeNumber(value)
+
+          if (count !== null) {
+            reportedTotals.set(`${connectionId}\0${profile}`, count)
+          }
+        }
+      }
+
+      return
+    }
+
+    const count = nonNegativeNumber(data.total)
+
+    if (count !== null) {
+      reportedTotals.set(`${connectionId}\0${profileLabel || 'default'}`, count)
+    }
+  }
 
   const tag = (sourceRows: unknown[], connectionId: string, profileLabel: null | string) => {
     for (const row of sourceRows) {
@@ -478,11 +547,11 @@ export async function fetchRegistrySessionRows(
           source.backends.map(async ({ descriptor, profileLabel }) => {
             const params = new URLSearchParams(searchParams)
             params.delete('profile')
+            const read = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
 
-            const sourceRows = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
-
-            if (sourceRows) {
-              tag(sourceRows, source.connectionId, profileLabel || 'default')
+            if (read) {
+              recordTotals(read.first, source.connectionId, profileLabel || 'default')
+              tag(read.rows, source.connectionId, profileLabel || 'default')
             }
           })
         )
@@ -500,20 +569,16 @@ export async function fetchRegistrySessionRows(
 
       const params = new URLSearchParams(searchParams)
       params.set('profile', 'all')
+      const getShared = (path: string) => getJson(shared.descriptor, path)
+      const aggregate = await fetchSessionRowsInPages('/api/profiles/sessions', params, getShared)
+      // Older remote without the aggregator: its own default-profile list.
+      const flat = new URLSearchParams(searchParams)
+      flat.delete('profile')
+      const read = aggregate ?? (await fetchSessionRowsInPages('/api/sessions', flat, getShared))
 
-      let sourceRows = await fetchSessionRowsInPages('/api/profiles/sessions', params, path =>
-        getJson(shared.descriptor, path)
-      )
-
-      if (!sourceRows) {
-        // Older remote without the aggregator: its own default-profile list.
-        const flat = new URLSearchParams(searchParams)
-        flat.delete('profile')
-        sourceRows = await fetchSessionRowsInPages('/api/sessions', flat, path => getJson(shared.descriptor, path))
-      }
-
-      if (sourceRows) {
-        tag(sourceRows, source.connectionId, null)
+      if (read) {
+        recordTotals(read.first, source.connectionId, aggregate ? null : 'default')
+        tag(read.rows, source.connectionId, null)
       }
     })
   )
@@ -522,7 +587,7 @@ export async function fetchRegistrySessionRows(
 }
 
 /** Splice registry-gateway rows into an already-merged unified list: dedupe by
- *  session id (a v1 remote-override splice may already carry a row), keep the
+ *  profile + session id (a v1 remote-override splice may already carry a row), keep the
  *  recency sort, and extend the per-profile totals so truncation flags stay
  *  honest. Mutates and returns `merged`/`profileTotals` the way the v1 splice
  *  does. */
@@ -531,11 +596,11 @@ export function spliceRegistrySessionRows(
   registryRows: unknown[],
   profileTotals: Record<string, number>
 ): { added: number } {
-  const seen = new Set(merged.map(sessionId).filter((id): id is string => id !== null))
+  const seen = new Set(merged.map(profileSessionId).filter((id): id is string => id !== null))
   let added = 0
 
   for (const row of registryRows) {
-    const id = sessionId(row)
+    const id = profileSessionId(row)
 
     if (id && seen.has(id)) {
       continue
@@ -557,6 +622,161 @@ export function spliceRegistrySessionRows(
   }
 
   return { added }
+}
+
+/** Which backend each side of a unified session list read, for counting each backend once.
+ *  Identities are the gateway `install_id` (`hermes_cli/install_identity.py`), never a row tag:
+ *  production primary rows carry no `connection_id`, so a row can't say which backend served it. */
+export interface RegistryBackendIdentity {
+  /** install_id of the backend the primary aggregate read; absent when unknown. */
+  primaryBackendId?: null | string
+  /** Profiles whose primary-side rows came from somewhere other than the primary backend
+   *  (per-profile remote overrides), so their backend is unknown. */
+  unknownPrimaryProfiles?: Iterable<string>
+  /** install_id per registry connection id; a connection without one is unknown. */
+  backendIds?: ReadonlyMap<string, string>
+}
+
+/** Recompute each profile's total once a registry scan is spliced in, counting each backend once.
+ *
+ *  The fetched prefix can be shorter than the backend's total and can include pins outside the
+ *  ordinary cursor, so each registry scope contributes its backend-reported total, not its rows.
+ *  Per profile, every contributor (the primary side and each registry scope) is grouped by the
+ *  backend it read:
+ *  - contributors with the same known install_id are one backend: the larger total counts once;
+ *  - distinct known backends are summed, since they are known to differ;
+ *  - a contributor whose backend is unknown can't be compared with anything, so it only raises
+ *    the profile to its own total (max), never adds to it. An undercount is possible there; a
+ *    double count is not.
+ *  The result never drops below the rows the merged list visibly holds for that profile.
+ *  `primaryRows` are the merged rows BEFORE the registry splice. Returns the change to the
+ *  grand total. */
+export function applyRegistrySessionTotals(
+  fetchedRows: unknown[],
+  addedRows: unknown[],
+  reportedTotals: Map<string, number>,
+  profileTotals: Record<string, number>,
+  primaryRows: unknown[] = [],
+  identity: RegistryBackendIdentity = {}
+): number {
+  const connectionOf = (row: unknown) =>
+    row && typeof row === 'object' && typeof (row as { connection_id?: unknown }).connection_id === 'string'
+      ? (row as { connection_id: string }).connection_id
+      : ''
+
+  const profileOf = (row: unknown) => {
+    const profile = row && typeof row === 'object' ? (row as { profile?: unknown }).profile : undefined
+
+    return typeof profile === 'string' && profile ? profile : 'default'
+  }
+
+  const counts = (rows: unknown[], keyOf: (row: unknown) => string) => {
+    const tally = new Map<string, number>()
+
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') {
+        continue
+      }
+
+      const key = keyOf(row)
+      tally.set(key, (tally.get(key) || 0) + 1)
+    }
+
+    return tally
+  }
+
+  const scopeOf = (row: unknown) => `${connectionOf(row)}\0${profileOf(row)}`
+  const fetched = counts(fetchedRows, scopeOf)
+  const addedPerProfile = counts(addedRows, profileOf)
+  const primaryVisible = counts(primaryRows, profileOf)
+  // Per-profile totals as the primary/override side left them, before this scan's splice.
+  const primaryTotals: Record<string, number> = { ...profileTotals }
+
+  for (const [profile, n] of addedPerProfile) {
+    primaryTotals[profile] = (primaryTotals[profile] || 0) - n
+  }
+
+  const scopes = new Map<string, Array<{ backend: null | string; total: number }>>()
+
+  for (const key of new Set([...fetched.keys(), ...reportedTotals.keys()])) {
+    const connection = key.slice(0, key.indexOf('\0'))
+    const profile = key.slice(key.indexOf('\0') + 1)
+    // An older aggregate without profile_totals: its fetched rows are all it vouches for.
+    const total = reportedTotals.get(key) ?? fetched.get(key) ?? 0
+    const list = scopes.get(profile) ?? []
+    list.push({ backend: identity.backendIds?.get(connection) || null, total })
+    scopes.set(profile, list)
+  }
+
+  const unknownPrimary = new Set(identity.unknownPrimaryProfiles ?? [])
+  const primaryBackend = identity.primaryBackendId || null
+  let contribution = 0
+
+  for (const [profile, list] of scopes) {
+    const primaryCount = Math.max(0, primaryTotals[profile] || 0)
+    const known = new Map<string, number>()
+    let unknownMax = 0
+
+    const add = (backend: null | string, total: number) => {
+      if (backend) {
+        known.set(backend, Math.max(known.get(backend) || 0, total))
+      } else {
+        unknownMax = Math.max(unknownMax, total)
+      }
+    }
+
+    if (primaryCount > 0) {
+      add(unknownPrimary.has(profile) ? null : primaryBackend, primaryCount)
+    }
+
+    for (const { backend, total } of list) {
+      add(backend, total)
+    }
+
+    let knownSum = 0
+
+    for (const total of known.values()) {
+      knownSum += total
+    }
+
+    const visible = (primaryVisible.get(profile) || 0) + (addedPerProfile.get(profile) || 0)
+    const union = Math.max(primaryCount, knownSum, unknownMax, visible)
+    profileTotals[profile] = union
+    contribution += union - primaryCount
+  }
+
+  return contribution
+}
+
+/** Fetch and merge one registry scan, retaining its backend totals for deep pages. Each source's
+ *  `backendId` and `identity.primaryBackendId` decide which totals are the same backend. */
+export async function mergeRegistrySessionRows(
+  sources: RegistrySessionSource[],
+  searchParams: URLSearchParams,
+  getJson: GetJsonForDescriptor,
+  merged: unknown[],
+  profileTotals: Record<string, number>,
+  identity: Omit<RegistryBackendIdentity, 'backendIds'> = {}
+): Promise<number> {
+  const reportedTotals = new Map<string, number>()
+  const registryRows = await fetchRegistrySessionRows(sources, searchParams, getJson, reportedTotals)
+  const before = merged.length
+  spliceRegistrySessionRows(merged, registryRows, profileTotals)
+
+  const backendIds = new Map<string, string>()
+
+  for (const source of sources) {
+    const id = typeof source.backendId === 'string' ? source.backendId.trim() : ''
+
+    if (id) {
+      backendIds.set(source.connectionId, id)
+    }
+  }
+
+  return applyRegistrySessionTotals(registryRows, merged.slice(before), reportedTotals, profileTotals, merged.slice(0, before), {
+    ...identity,
+    backendIds
+  })
 }
 
 /**
@@ -633,6 +853,17 @@ export function pathWithRemoteOwnerScope(path: string, scope: string): string {
   url.searchParams.set('profile', scoped)
 
   return `${url.pathname}${url.search}${url.hash}`
+}
+
+/** The legacy per-profile remote route for one session request: every non-profile query
+ *  param survives (pagination on reads; a DELETE's request_id/expected_revision/
+ *  expected_generation live only in the query) and the owner scope replaces ?profile=. */
+export function remoteOwnerRoutePath(pathname: string, searchParams: URLSearchParams, ownerScope: string): string {
+  const params = new URLSearchParams(searchParams)
+  params.delete('profile')
+  const query = params.toString()
+
+  return pathWithRemoteOwnerScope(query ? `${pathname}?${query}` : pathname, ownerScope)
 }
 
 export async function fetchRemoteProfileSessions(
@@ -768,6 +999,152 @@ export async function fetchRemoteProfileSessions(
   }
 }
 
+/** Per-profile budget for one remote's session read inside a sidebar aggregate.
+ * A healthy remote answers in well under a second; a dead URL hangs until the
+ * 180s backend readiness deadline. The aggregate must not inherit that deadline
+ * (#75712) — each remote gets this budget, then contributes an error entry
+ * instead of rows. */
+export const REMOTE_PROFILE_SESSION_BUDGET_MS = 10_000
+
+/** One remote profile's settled contribution to a sidebar aggregate: rows when
+ *  it answered inside its budget, otherwise a named error. Never a rejection —
+ *  one dead remote must not take the other profiles' rows down with it. */
+export interface RemoteProfileSessionsOutcome {
+  profile: string
+  list: SessionListResponse | null
+  error: string | null
+}
+
+/**
+ * #75712: fetch every remote profile's session list, each under its own
+ * bounded budget, and settle each outcome instead of letting one unavailable
+ * remote block (or silently vanish from) the whole sidebar aggregate. The
+ * underlying fetch keeps running past its budget — a remote that is merely
+ * still booting can answer on a later refresh.
+ */
+export async function settleRemoteProfileSessions(
+  remoteProfiles: readonly string[],
+  fetchRemote: (profile: string) => Promise<unknown>,
+  options: { budgetMs?: number } = {}
+): Promise<RemoteProfileSessionsOutcome[]> {
+  const budgetMs = options.budgetMs ?? REMOTE_PROFILE_SESSION_BUDGET_MS
+
+  return Promise.all(
+    remoteProfiles.map(async profile => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+
+      try {
+        const list = (await Promise.race([
+          fetchRemote(profile),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`remote profile "${profile}" did not respond within ${budgetMs}ms`)),
+              budgetMs
+            )
+          })
+        ])) as SessionListResponse
+
+        return { profile, list, error: null }
+      } catch (error) {
+        return {
+          profile,
+          list: null,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      } finally {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      }
+    })
+  )
+}
+
+/** Fold each settled remote outcome (#75712) into the unified aggregate:
+ *  answering remotes contribute rows and their real per-profile total; a
+ *  dead or still-pending remote drops its stale local total and is NAMED in
+ *  the returned error entries instead of silently vanishing. Returns the
+ *  updated grand total plus the collected errors so they can ride the
+ *  response payload. */
+export function applyRemoteProfileSessionOutcomes(
+  outcomes: readonly RemoteProfileSessionsOutcome[],
+  merged: unknown[],
+  profileTotals: Record<string, number>,
+  total: number
+): { total: number; errors: Array<{ profile: string; error: string }> } {
+  const errors: Array<{ profile: string; error: string }> = []
+
+  for (const { profile, list, error } of outcomes) {
+    if (!list) {
+      delete profileTotals[profile] // dead remote → drop its stale local total too
+      errors.push({ profile, error: error || 'unavailable' })
+
+      continue
+    }
+
+    const rows = rowsOf(list)
+    merged.push(...rows)
+    profileTotals[profile] = Number(list.total) || rows.length
+    total += profileTotals[profile]
+  }
+
+  return { total, errors }
+}
+
+function archivedOnlyWindow(merged: unknown[], offset: number, limit: number): unknown[] {
+  const window = mergeProfileSessionWindow(merged.filter(isArchived), offset, limit)
+  const ids = new Set(window.map(profileSessionId).filter((id): id is string => id !== null))
+
+  for (const row of merged) {
+    const id = profileSessionId(row)
+
+    if (!isArchived(row) && isPinned(row) && !(id && ids.has(id))) {
+      if (id) {
+        ids.add(id)
+      }
+
+      window.push(row)
+    }
+  }
+
+  return window
+}
+
+/** Compose the unified aggregate's response (#75712): failures ride the
+ *  payload, not the void — base scan errors and each dead remote's named
+ *  error entry are merged into `errors` so a failed remote profile is
+ *  identifiable. On an archived-only page the cursor counts archived rows
+ *  only, as `total` does, and live pins ride after the window: a window over
+ *  every merged row lets a page of newer pins stop the Archived loader before
+ *  an older archived row. The primary prefix reads enough archived rows for
+ *  that even from an older backend whose pins took cursor positions. */
+export function composeUnifiedSessionResponse(
+  base: unknown,
+  merged: unknown[],
+  offset: number,
+  limit: number,
+  total: number,
+  profileTotals: Record<string, number>,
+  extraErrors: Array<{ profile: string; error: string }>,
+  options: { archivedOnly?: boolean } = {}
+) {
+  const baseErrors = Array.isArray((base as { errors?: unknown })?.errors)
+    ? (base as { errors: Array<{ profile: string; error: string }> }).errors
+    : []
+
+  const scanErrors = [...baseErrors, ...extraErrors]
+
+  return {
+    ...(base as Record<string, unknown>),
+    sessions: options.archivedOnly ? archivedOnlyWindow(merged, offset, limit) : mergeProfileSessionWindow(merged, offset, limit),
+    total,
+    profile_totals: profileTotals,
+    limit,
+    offset,
+    ...(scanErrors.length ? { errors: scanErrors } : {})
+  }
+}
+
 /**
  * #85834: which remote profile owns `sessionId`, when a /api/sessions/{id}
  * caller supplied no profile hint. Reads the same per-remote lists the list
@@ -799,4 +1176,479 @@ export async function findRemoteOwnerProfileForSession(
   )
 
   return matches.find(profile => profile !== null) ?? null
+}
+
+// The backend's `/api/profiles/sessions` page cap (FastAPI `le=500`).
+const PROFILE_SESSION_PAGE_CAP = 500
+
+const SIDEBAR_SLICES = ['recents', 'cron', 'messaging'] as const
+
+type FetchProfilePage = (profile: string, path: string) => Promise<unknown>
+
+type ProfileRead = { profile: string; data: any } | { profile: string; error: string }
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function recencyOf(row: any): number {
+  return Number(row?.last_active || row?.started_at || 0)
+}
+
+function sortedWindow(rows: unknown[], key: (row: any) => number, offset: number, limit: number): unknown[] {
+  return mergeProfileSessionWindow([...rows].sort((a, b) => key(b) - key(a)), offset, limit)
+}
+
+function failedProfiles(errors: SessionScanError[]): Record<string, { failed: true; retry: true; error: string }> {
+  return Object.fromEntries(
+    errors.filter(err => err.profile).map(err => [err.profile, { failed: true, retry: true, error: err.error || '' }])
+  )
+}
+
+async function readEachProfile(
+  profiles: readonly string[],
+  read: (profile: string) => Promise<unknown>
+): Promise<ProfileRead[]> {
+  return Promise.all(
+    profiles.map(async profile => {
+      try {
+        return { profile, data: (await read(profile)) as any }
+      } catch (error) {
+        return { profile, error: errorMessage(error) }
+      }
+    })
+  )
+}
+
+/** One scope's rows from offset 0 through `want`, in backend-sized pages.
+ *  Pinned backfill repeats across pages; keep one row per profile/session before
+ *  the merged list is sorted and windowed. The first page carries totals; scan
+ *  `errors` and `storage` accumulate across pages, so a profile that fails on a
+ *  later page is not reported as a complete read. */
+async function readProfileSessionRows(url: URL, profile: string, want: number, fetchPage: FetchProfilePage) {
+  let first: any
+  const rows: unknown[] = []
+  const seen = new Set<string>()
+  const errors: SessionScanError[] = []
+  const storage: Record<string, unknown> = {}
+  // An archived-only prefix needs `want` ARCHIVED rows. An older backend lets
+  // live pins take cursor positions, so read on until enough archived rows
+  // arrived, the backend runs out, or a page brings no new row.
+  const archivedOnly = url.searchParams.get('archived') === 'only'
+  let archivedRows = 0
+
+  for (let offset = 0; ; ) {
+    const params = new URLSearchParams(url.searchParams)
+    const remaining = archivedOnly ? want - archivedRows : want - offset
+    const limit = Math.min(PROFILE_SESSION_PAGE_CAP, Math.max(0, remaining))
+    params.set('limit', String(limit))
+    params.set('offset', String(offset))
+    params.set('profile', profile)
+
+    const page = (await fetchPage(profile, `${url.pathname}?${params}`)) as any
+    const pageRows = rowsOf(page)
+    first ??= page
+
+    for (const error of errorsOf(page) ?? []) {
+      if (!errors.some(seenError => seenError.profile === error.profile && seenError.error === error.error)) {
+        errors.push(error)
+      }
+    }
+
+    if (page?.storage && typeof page.storage === 'object') {
+      Object.assign(storage, page.storage)
+    }
+
+    let newRows = 0
+
+    for (const row of pageRows) {
+      const id = profileSessionId(row)
+
+      if (id && seen.has(id)) {
+        continue
+      }
+
+      rows.push(row)
+      newRows += 1
+      archivedRows += isArchived(row) ? 1 : 0
+
+      if (id) {
+        seen.add(id)
+      }
+    }
+
+    offset += limit
+
+    const total = nonNegativeNumber(page?.total)
+
+    const done = archivedOnly
+      ? newRows === 0 || archivedRows >= Math.min(want, total ?? want)
+      : offset >= want || pageRows.length < limit
+
+    if (done) {
+      return { ...first, sessions: rows, errors, ...(first?.storage || Object.keys(storage).length ? { storage } : {}) }
+    }
+  }
+}
+
+async function allProfilesSessionList(url: URL, profiles: readonly string[], fetchPage: FetchProfilePage) {
+  const limit = Math.max(0, Number(url.searchParams.get('limit') ?? 20) || 0)
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0)
+  const created = url.searchParams.get('order') === 'created'
+  const reads = await readEachProfile(profiles, profile => readProfileSessionRows(url, profile, limit + offset, fetchPage))
+
+  const rows: unknown[] = []
+  const totals: Record<string, number> = {}
+  const errors: SessionScanError[] = []
+  const storage: Record<string, unknown> = {}
+
+  for (const read of reads) {
+    if ('error' in read) {
+      errors.push({ profile: read.profile, error: read.error })
+
+      continue
+    }
+
+    rows.push(...rowsOf(read.data))
+    Object.assign(totals, read.data?.profile_totals)
+    Object.assign(storage, read.data?.storage)
+    errors.push(...(errorsOf(read.data) ?? []))
+  }
+
+  const key = created ? (row: any) => Number(row?.started_at || 0) : recencyOf
+
+  return {
+    sessions: sortedWindow(rows, key, offset, limit),
+    total: Object.values(totals).reduce((sum, n) => sum + (Number(n) || 0), 0),
+    profile_totals: totals,
+    limit,
+    offset,
+    errors,
+    storage
+  }
+}
+
+async function allProfilesSidebar(url: URL, profiles: readonly string[], fetchPage: FetchProfilePage) {
+  const cap = (key: string, fallback: number) =>
+    Math.min(Math.max(Number(url.searchParams.get(key)) || fallback, 1), PROFILE_SESSION_PAGE_CAP)
+
+  const caps = { recents: cap('recents_limit', 20), cron: cap('cron_limit', 50), messaging: cap('messaging_limit', 100) }
+
+  const reads = await readEachProfile(profiles, profile => {
+    const params = new URLSearchParams(url.searchParams)
+    params.set('recents_profile', profile)
+
+    // A registry-routed request also carries its route's `profile`; the gateway checks every
+    // selector against the grant, so each read names only the profile it reads.
+    if (params.has('profile')) {
+      params.set('profile', profile)
+    }
+
+    return fetchPage(profile, `${url.pathname}?${params}`)
+  })
+
+  const rows: Record<(typeof SIDEBAR_SLICES)[number], unknown[]> = { recents: [], cron: [], messaging: [] }
+  const truncated: Record<string, boolean> = {}
+  const usage: Record<string, unknown> = {}
+  const errors: SessionScanError[] = []
+  const storage: Record<string, unknown> = {}
+  const failed: SessionScanError[] = []
+  let messagingTotal = 0
+  let contributed = false
+
+  for (const read of reads) {
+    if ('error' in read) {
+      errors.push({ profile: read.profile, error: read.error })
+      failed.push({ profile: read.profile, error: read.error })
+
+      continue
+    }
+
+    const data = read.data
+    Object.assign(storage, data?.storage)
+    errors.push(...(errorsOf(data) ?? []))
+
+    // A failed slice has no `sessions` key: the profile's scan failed, it is not empty.
+    if (data?.recents?.failed) {
+      failed.push(...(errorsOf(data.recents) ?? [{ profile: read.profile, error: '' }]))
+
+      continue
+    }
+
+    for (const err of Object.entries(data?.profiles_failed ?? {})) {
+      failed.push({ profile: err[0], error: String((err[1] as any)?.error ?? '') })
+    }
+
+    for (const key of SIDEBAR_SLICES) {
+      rows[key].push(...rowsOf(data?.[key]))
+    }
+
+    contributed ||= SIDEBAR_SLICES.some(key => rowsOf(data?.[key]).length > 0)
+    Object.assign(truncated, data?.recents?.profiles_truncated)
+    Object.assign(usage, data?.recents?.profiles_usage)
+    messagingTotal += Number(data?.messaging?.total) || rowsOf(data?.messaging).length
+  }
+
+  const live = profiles.filter(profile => !(profile in storage))
+
+  if (live.length && !contributed && live.every(profile => failed.some(err => err.profile === profile))) {
+    const failedSlice = (extra = {}) => ({ failed: true, retry: true, errors: failed.map(err => ({ ...err })), ...extra })
+
+    return {
+      recents: failedSlice({ profiles_truncated: {}, profiles_usage: {} }),
+      cron: failedSlice(),
+      messaging: failedSlice({ total: 0 }),
+      errors,
+      storage
+    }
+  }
+
+  const body: Record<string, any> = {
+    recents: {
+      sessions: sortedWindow(rows.recents, recencyOf, 0, caps.recents),
+      profiles_truncated: truncated,
+      profiles_usage: usage
+    },
+    cron: { sessions: sortedWindow(rows.cron, recencyOf, 0, caps.cron) },
+    messaging: { sessions: sortedWindow(rows.messaging, recencyOf, 0, caps.messaging), total: messagingTotal },
+    errors,
+    storage
+  }
+
+  const profilesFailed = failedProfiles(failed)
+
+  if (Object.keys(profilesFailed).length) {
+    body.profiles_failed = profilesFailed
+
+    for (const key of SIDEBAR_SLICES) {
+      body[key].profiles_failed = profilesFailed
+      body[key].errors = failed.map(err => ({ ...err }))
+    }
+  }
+
+  return body
+}
+
+/** An all-profiles session list (`/api/profiles/sessions` or the batched sidebar) assembled
+ *  from one read per profile.
+ *
+ *  A native gateway grant names ONE profile and the gateway refuses `all`, so a local native
+ *  backend cannot answer the unified list in one request. Each profile is read with its own
+ *  grant (`fetchPage` scopes the path to it) and merged the way the backend merges its own
+ *  per-profile scans: recency order, pinned back-fill, per-profile totals, and a profile that
+ *  cannot be read reported as a failed profile rather than as an empty one. */
+export async function fetchAllProfilesSessionsPerProfile(
+  path: string,
+  profiles: readonly string[],
+  fetchPage: FetchProfilePage
+): Promise<unknown> {
+  const url = new URL(path, 'http://desktop.local')
+
+  return url.pathname.replace(/\/+$/, '') === '/api/profiles/sessions/sidebar'
+    ? allProfilesSidebar(url, profiles, fetchPage)
+    : allProfilesSessionList(url, profiles, fetchPage)
+}
+
+/** Cross-profile reads the gateway builds by scanning every profile: the all-profiles project
+ *  tree, the PR scan and the cron job list. The renderer asks for the first two only for the
+ *  all-profiles view, so a `profile` already on their path is the route's own scope, not a
+ *  selector; the cron list is cross-profile only when it names `all` or no profile. The
+ *  per-profile reads carry their own scope and are made with `profileScoped`. */
+export function isAllProfilesAggregateRequest(method: string | undefined, path: string | undefined): boolean {
+  if (!path) {
+    return false
+  }
+
+  let url: URL
+
+  try {
+    url = new URL(path, 'http://desktop.local')
+  } catch {
+    return false
+  }
+
+  const pathname = url.pathname.replace(/\/+$/, '')
+  const verb = (method || 'GET').toUpperCase()
+
+  return (
+    (verb === 'GET' && pathname === '/api/profiles/projects/tree') ||
+    (verb === 'POST' && pathname === '/api/profiles/sessions/pull-requests') ||
+    (verb === 'GET' && pathname === '/api/cron/jobs' && (url.searchParams.get('profile') || 'all').trim().toLowerCase() === 'all')
+  )
+}
+
+function mergeTreeById(into: Map<string, any>, entries: any[], childKey: string): void {
+  for (const entry of entries) {
+    const existing = into.get(entry.id)
+
+    if (!existing) {
+      into.set(entry.id, entry)
+
+      continue
+    }
+
+    if (childKey === 'sessions') {
+      existing.sessions = [...(existing.sessions ?? []), ...(entry.sessions ?? [])]
+    } else {
+      const children = new Map<string, any>((existing[childKey] ?? []).map((child: any) => [child.id, child]))
+      mergeTreeById(children, entry[childKey] ?? [], 'sessions')
+      existing[childKey] = [...children.values()]
+    }
+
+    if ('sessionCount' in existing) {
+      existing.sessionCount = (existing.sessionCount || 0) + (entry.sessionCount || 0)
+    }
+  }
+}
+
+// One folder's group from a second profile folded into the first: repos/groups by id, totals added,
+// the newest activity and the newest previews across both.
+function mergeProjectInto(existing: any, project: any, previewLimit: number) {
+  const repos = new Map<string, any>((existing.repos ?? []).map((repo: any) => [repo.id, repo]))
+  mergeTreeById(repos, project.repos ?? [], 'groups')
+  existing.repos = [...repos.values()]
+
+  for (const total of ['sessionCount', 'totalTokens', 'totalCostUsd']) {
+    existing[total] = (existing[total] || 0) + (project[total] || 0)
+  }
+
+  existing.lastActive = Math.max(existing.lastActive || 0, project.lastActive || 0)
+  existing.previewSessions = [...(existing.previewSessions ?? []), ...(project.previewSessions ?? [])]
+    .sort((a, b) => recencyOf(b) - recencyOf(a))
+    .slice(0, previewLimit)
+}
+
+// The gateway's own cross-profile merge (`_merge_profile_tree`), keyed by the folder key each
+// per-profile read reports: one group per folder, a declared project wins over another
+// profile's auto entry, totals add up, and the previews are the newest across profiles.
+function mergeProfileProjectTrees(reads: ProfileRead[], previewLimit: number) {
+  const merged = new Map<string, any>()
+  const scopedSessionIds: unknown[] = []
+  const errors: SessionScanError[] = []
+
+  for (const read of reads) {
+    if ('error' in read) {
+      errors.push({ profile: read.profile, error: read.error })
+
+      continue
+    }
+
+    scopedSessionIds.push(...(Array.isArray(read.data?.scoped_session_ids) ? read.data.scoped_session_ids : []))
+    errors.push(...(errorsOf(read.data) ?? []))
+
+    for (const incoming of Array.isArray(read.data?.projects) ? read.data.projects : []) {
+      let project = incoming
+      const key = String(project.mergeKey ?? project.path ?? project.id)
+      let existing = merged.get(key)
+
+      if (!existing) {
+        merged.set(key, project)
+
+        continue
+      }
+
+      if (existing.isAuto && !project.isAuto) {
+        ;[existing, project] = [project, existing]
+        merged.set(key, existing)
+      }
+
+      mergeProjectInto(existing, project, previewLimit)
+    }
+  }
+
+  const projects = [...merged.values()].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))
+
+  return { projects, active_id: null, scoped_session_ids: scopedSessionIds, errors }
+}
+
+function mergeProfilePullRequests(reads: ProfileRead[]) {
+  const pullRequests: Record<string, unknown> = {}
+  let scanned: unknown[] = []
+
+  // Profile order, like the gateway's scan: a later profile's match wins.
+  for (const read of reads) {
+    if (!('error' in read)) {
+      Object.assign(pullRequests, read.data?.pull_requests)
+      scanned = Array.isArray(read.data?.scanned) ? read.data.scanned : scanned
+    }
+  }
+
+  // `scanned` lets the caller stop asking about an id. An unread profile scanned nothing, so
+  // only the ids that did resolve are settled.
+  return {
+    pull_requests: pullRequests,
+    scanned: reads.some(read => 'error' in read) ? Object.keys(pullRequests) : scanned
+  }
+}
+
+// The gateway's own cross-profile list (`_list_cron_jobs_sync`): a job copied into a second
+// profile is listed once, the default profile's copy winning, and a job without an id is never
+// folded. A profile that cannot be read is left out, as the gateway logs and skips it.
+function mergeProfileCronJobs(reads: ProfileRead[]) {
+  const byId = new Map<string, any>()
+  const unkeyed: unknown[] = []
+
+  for (const read of reads) {
+    if ('error' in read || !Array.isArray(read.data)) {
+      continue
+    }
+
+    for (const job of read.data) {
+      if (!job || typeof job !== 'object') {
+        continue
+      }
+
+      const id = job.id || job.job_id
+
+      if (!id || id === 'unknown') {
+        unkeyed.push(job)
+
+        continue
+      }
+
+      const existing = byId.get(id)
+
+      if (!existing || (job.is_default_profile && !existing.is_default_profile)) {
+        byId.set(id, job)
+      }
+    }
+  }
+
+  return [...byId.values(), ...unkeyed]
+}
+
+/** The all-profiles project tree, PR scan or cron list, assembled from one read per profile.
+ *
+ *  A native gateway grant names ONE profile, so each profile is read with its own grant
+ *  (`fetchProfile` gets the path scoped to it). A profile that cannot be read is reported in
+ *  `errors`; when none can be read the call fails, as the single request would have. */
+export async function fetchAllProfilesAggregatePerProfile(
+  path: string,
+  profiles: readonly string[],
+  fetchProfile: FetchProfilePage
+): Promise<unknown> {
+  const url = new URL(path, 'http://desktop.local')
+
+  const reads = await readEachProfile(profiles, profile => {
+    const params = new URLSearchParams(url.searchParams)
+    params.set('profile', profile)
+
+    return fetchProfile(profile, `${url.pathname}?${params}`)
+  })
+
+  if (!reads.some(read => !('error' in read))) {
+    throw new Error(reads.map(read => ('error' in read ? `${read.profile}: ${read.error}` : '')).join('; ') || 'No profiles to read')
+  }
+
+  const pathname = url.pathname.replace(/\/+$/, '')
+
+  if (pathname === '/api/profiles/projects/tree') {
+    return mergeProfileProjectTrees(reads, Math.max(0, Number(url.searchParams.get('preview_limit') ?? 3) || 0))
+  }
+
+  if (pathname === '/api/cron/jobs') {
+    return mergeProfileCronJobs(reads)
+  }
+
+  return mergeProfilePullRequests(reads)
 }

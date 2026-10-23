@@ -1,3 +1,4 @@
+import { arThemePicker } from './ar_theme_picker'
 import type { TranslationOverrides } from './define-locale'
 
 export const arAssistant = {
@@ -15,7 +16,7 @@ export const arAssistant = {
       hideNames: 'إخفاء الأسماء',
       skill: name => `المهارة ${name}`,
       kind: { plugin: 'إضافة', skill: 'مهارة' },
-      tier: { official: 'رسمي', community: 'مجتمعي' },
+      tier: { official: 'رسمي', verified: 'موثّق', community: 'مجتمعي' },
       targetProfile: profile => `يُثبَّت في ملفك الشخصي ${profile}`,
       sendFailed: 'تعذّر إرسال ردك. حاول مرة أخرى.',
       commitLabel: 'الإيداع',
@@ -55,7 +56,27 @@ export const arAssistant = {
         runtime: 'خطأ في بيئة التشغيل المحلية',
         streaming: 'خطأ في اتصال البث'
       },
+      errorCodes: {
+        cron_session_read_only: {
+          title: 'هذه المحادثة تابعة لمهمة مجدولة',
+          body: 'إنها تشغّل تلك المهمة فقط، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
+        },
+        usage_window: {
+          title: 'نفد الاستخدام المضمّن',
+          body: 'نفد الاستخدام المضمّن في خطتك حتى إعادة التعيين. أضف رصيدًا عبر /topup للمتابعة.'
+        },
+        workspace_unavailable: {
+          title: 'مجلد هذه المحادثة غير موجود',
+          body: 'نُقل المجلد الذي تعمل فيه هذه المحادثة أو حُذف، لذا لم تُنفَّذ رسالتك. أعد إنشاء المجلد، أو استخدم «Move to project» لتعيين مجلد آخر للمحادثة، ثم أعد المحاولة.'
+        }
+      },
       errorRetry: 'إعادة المحاولة',
+      errorSwitchToModel: (model, note) => (note ? `التبديل إلى ${model} (${note})` : `التبديل إلى ${model}`),
+      errorSwitchModelFailed: 'تعذر تبديل النموذج',
+      errorUseCredits: 'تفعيل الاستمرار بالرصيد',
+      errorUseCreditsFailed: 'تعذر تفعيل الاستمرار بالرصيد',
+      errorAddCredits: 'إضافة رصيد',
+      errorOpenBillingSettings: 'فتح إعدادات الفوترة',
       errorLimitResets: time => `يُعاد ضبط الحد عند ${time}`,
       errorRetryAtReset: time => `إعادة المحاولة عند إعادة ضبط الحد (${time})`,
       errorRetryScheduled: (time, wait) => `ستتم إعادة المحاولة عند ${time} — بعد ${wait}`,
@@ -117,8 +138,10 @@ export const arAssistant = {
       confirmAndContinueLabel: 'تأكيد ومتابعة',
       singleSelectHint: 'اختر واحدا',
       multiSelectHint: 'حدد كل ما ينطبق',
+      oneQuestion: 'سؤال واحد',
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },
+    themePicker: arThemePicker,
     tool: {
       copyCode: 'نسخ الكود',
       renderingImage: 'جار عرض الصورة...',

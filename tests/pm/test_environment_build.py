@@ -14,9 +14,9 @@ from pm.plugin_inputs import Members
 from tests.pm._fixtures import (
     _run,
     _wheel,
-    build_worker as build_worker,
-    client as client,
-    isolated_python as isolated_python,
+    build_worker as build_worker,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    client as client,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 
@@ -108,6 +108,8 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     dist = "construction_root-1.dist-info"
     entries = {
         "construction_root.pth": str(Path.cwd()) + "\\n",
+        # A build-machine pointer of the kind sealing must strip (pm.environment.prune_site_pth).
+        "__editable__.construction_root-1.pth": "# build machine path\\n",
         dist + "/METADATA": "Metadata-Version: 2.1\\nName: construction-root\\nVersion: 1\\nRequires-Dist: base-dep==1.0\\n",
         dist + "/WHEEL": "Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
     }
@@ -129,7 +131,7 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     import pm.paths
     import pm.workspace
 
-    source, uv, env = installable_project
+    source, _uv, env = installable_project
     monkeypatch.setattr(pm.paths, "repo_root", lambda: tmp_path / "unrelated-project")
     monkeypatch.setattr(pm.workspace, "enabled_member_dirs", lambda: pytest.fail("user plugins"))
     monkeypatch.setenv("UV_PYTHON", "/not-the-interpreter")
@@ -155,7 +157,7 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     assert executable.parent.parent == tmp_path / "native environment"
     assert not (tmp_path / "wrong-environment").exists()
     assert "root_app" not in sys.modules
-    assert (site / "_virtualenv.pth").exists() is not sealed
+    assert (site / "__editable__.construction_root-1.pth").exists() is not sealed
     assert (site / "construction_root.pth").is_file(), "load-bearing .pth must survive sealing"
     assert (source / "uv.lock").read_bytes() == locked
     assert dict(os.environ) == before
@@ -168,7 +170,7 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     ({}, [False, False]),
 ])
 def test_public_dependency_only_build_needs_no_application_source(installable_project, tmp_path, selection, expected):
-    source, uv, env = installable_project
+    source, _uv, env = installable_project
     (source / "root_app.py").unlink()
     (source / "local_backend.py").unlink()
     locked = (source / "uv.lock").read_bytes()
@@ -191,7 +193,7 @@ def test_public_dependency_only_build_needs_no_application_source(installable_pr
 
 
 def test_all_extras_build_leaves_out_opt_in_extras(installable_project, tmp_path):
-    source, uv, env = installable_project
+    source, _uv, env = installable_project
     manifest = source / "pyproject.toml"
     manifest.write_text(manifest.read_text() + '\n[tool.hermes]\nopt-in-extras=["other"]\n', encoding="utf-8")
     from pm import build_environment
@@ -546,7 +548,7 @@ def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, 
     from pm import build_environment
     from pm.package import InstallError
 
-    source, uv, env = installable_project
+    source, _uv, env = installable_project
     previous = tmp_path / "previous"
     executable = build_environment(explicit=True, source=source, python=Path(sys.executable),
                                           out=previous, env=env, cache=tmp_path / "cache", offline=True)
@@ -640,7 +642,7 @@ def test_explicit_environment_installs_locked_members_without_live_selection(loc
 
 def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_project, tmp_path, monkeypatch):
     from pm.environment import PythonEnvironment
-    import pm.workspace as workspace
+    from pm import workspace
 
     source, uv, env = locked_project
     project = source / "pyproject.toml"
@@ -709,12 +711,12 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
 @pytest.mark.parametrize("failure", ["facts", "missing-cfg", "restart"])
 def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monkeypatch, failure):
     import importlib
-    import pm.extras as extras
+    from pm import extras
     from pm import paths
     from pm.lock import Facts
     from pm.environments import selected_venv
 
-    source, uv, env = locked_project
+    source, uv, _env = locked_project
     monkeypatch.setattr(paths, "repo_root", lambda: source)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (uv, Path(sys.executable)))
     engine = importlib.import_module("pm.install")

@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
+import { rollbackRelease } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import { shortVersion } from '@/lib/version-label'
 import {
@@ -65,6 +66,12 @@ interface UpdateStatusInput {
   status: DesktopUpdateStatus | null
   target: UpdateTarget
   u: Translations['updates']
+  /** Names the pinned release when a source install is current on stable. */
+  latestRelease?: (version: string) => string
+  /** Names a move back to an older stable release the checkout already contains. */
+  rollback?: (version: string) => string
+  /** Names a stable release the updater refuses, so this install stays where it is. */
+  held?: (version: string) => string
 }
 
 export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
@@ -82,7 +89,32 @@ export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
   return ordinaryUpdateStatus(input)
 }
 
-function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStatusInput): UpdateStatusView {
+/** The waiting update, or the older stable release it would move back to. */
+function availableLine(
+  status: DesktopUpdateStatus | null,
+  behind: number,
+  u: Translations['updates'],
+  rollback?: (version: string) => string
+): string {
+  const back = rollbackRelease(status)
+
+  if (rollback && back) {
+    return rollback(back)
+  }
+
+  return behind > 0 ? u.updateReady(behind) : u.updateReadyUnknown
+}
+
+function ordinaryUpdateStatus({
+  apply,
+  checking,
+  held,
+  latestRelease,
+  rollback,
+  status,
+  target,
+  u
+}: UpdateStatusInput): UpdateStatusView {
   const behind = status?.behind ?? 0
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
@@ -112,7 +144,7 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
   if (updateAvailable) {
     return {
       applying,
-      line: behind > 0 ? u.updateReady(behind) : u.updateReadyUnknown,
+      line: availableLine(status, behind, u, rollback),
       supported,
       tone: 'available',
       updateAvailable
@@ -122,7 +154,7 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
   if (status) {
     return {
       applying,
-      line: target === 'backend' ? u.latestBodyBackend : u.latestBody,
+      line: currentLine(status, target, u, latestRelease, held),
       supported,
       tone: 'idle',
       updateAvailable
@@ -130,6 +162,36 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
   }
 
   return { applying, line: checking ? u.checking : u.tapCheck, supported, tone: 'idle', updateAvailable }
+}
+
+/** The line for an install with nothing to apply: a held release, the pinned stable release, or "latest". */
+function currentLine(
+  status: DesktopUpdateStatus,
+  target: UpdateTarget,
+  u: Translations['updates'],
+  latestRelease?: (version: string) => string,
+  held?: (version: string) => string
+): string {
+  if (held && status.held && status.sourceVersion) {
+    return held(`v${status.sourceVersion}`)
+  }
+
+  if (target === 'backend') {
+    return u.latestBodyBackend
+  }
+
+  // Stable pins to a release; name it. A checkout ahead of it (forward-only) is newer
+  // than the release, so it keeps the generic line instead of claiming to be on it.
+  const pinned =
+    latestRelease &&
+    status.channel === 'stable' &&
+    status.sourceVersion &&
+    // Older checkers omit the field and may also pin an ahead checkout to HEAD.
+    status.aheadOfRelease === false &&
+    status.targetSha &&
+    status.currentSha === status.targetSha
+
+  return pinned ? latestRelease(`v${status.sourceVersion}`) : u.latestBody
 }
 
 function relativeTime(ms: number | undefined, u: Translations['updates']): string {
@@ -278,7 +340,16 @@ export function UpdateStatusCard({
   const apply = useStore(isBackend ? $backendUpdateApply : $updateApply)
   const [justChecked, setJustChecked] = useState<boolean>(false)
 
-  const view = deriveUpdateStatus({ apply, checking, status, target, u })
+  const view = deriveUpdateStatus({
+    apply,
+    checking,
+    held: t.settings.about.channel.heldBody,
+    latestRelease: t.settings.about.channel.latestRelease,
+    rollback: t.settings.about.channel.rollbackBody,
+    status,
+    target,
+    u
+  })
 
   const handleCheck = async (): Promise<void> => {
     setJustChecked(false)

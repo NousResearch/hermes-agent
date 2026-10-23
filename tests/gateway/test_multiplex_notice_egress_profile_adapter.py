@@ -142,7 +142,7 @@ async def test_shutdown_notice_reaches_every_served_profiles_home_channel(monkey
     }
     r._profile_adapters = {"sec": {Platform.TELEGRAM: _Adapter()}, "quiet": {Platform.DISCORD: _Adapter()}}
     r._served_profile_homes = {}
-    r._snapshot_running_agents = lambda: []
+    r._snapshot_running_agents = list
 
     await r._notify_active_sessions_of_shutdown()
 

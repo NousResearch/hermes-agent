@@ -374,7 +374,7 @@ def _download_artifact(
     Returns the path to ``review-status.json`` inside the extracted dir,
     or ``None`` if the download or extraction failed.
     """
-    owner, repo_name = repo.split("/")
+    _owner, _repo_name = repo.split("/")
     archive_download_url = artifact.get("archive_download_url", "")
     if not archive_download_url:
         return None
@@ -428,8 +428,7 @@ def _parse_status_file(status_file: Path) -> list[dict]:
     """Parse a review-status.json file in GITHUB_OUTPUT format."""
     try:
         content = status_file.read_text(encoding="utf-8-sig").strip()
-        if content.startswith("review_status="):
-            content = content[len("review_status="):]
+        content = content.removeprefix("review_status=")
         statuses = json.loads(content)
         if isinstance(statuses, list):
             return statuses

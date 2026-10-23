@@ -357,6 +357,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/communication/communication-one-three-one-rule',
+                    'user-guide/skills/optional/communication/communication-telegram-checklist',
                   ],
                 },
                 {

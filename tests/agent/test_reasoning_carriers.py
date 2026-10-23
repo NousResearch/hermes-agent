@@ -14,6 +14,10 @@ from agent.transports.chat_completions import ChatCompletionsTransport
 class _Agent:
     stream_delta_callback = _stream_callback = reasoning_callback = None
     verbose_logging = False
+    api_mode = "chat_completions"
+    provider = "deepseek"
+    model = "deepseek-chat"
+    base_url = "https://api.deepseek.com/v1"
 
     def _extract_reasoning(self, msg):
         from agent.agent_runtime_helpers import extract_reasoning
@@ -37,6 +41,23 @@ class _Agent:
 
 def _stored(response):
     return build_assistant_message(_Agent(), ChatCompletionsTransport().normalize_response(response), "stop")
+
+
+def test_chat_completions_reasoning_capture_stamps_its_producing_route():
+    response = ChatCompletion.model_validate({
+        "id": "c", "object": "chat.completion", "created": 0, "model": "deepseek-chat",
+        "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+            "role": "assistant", "content": None, "reasoning_content": "think",
+            "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}}],
+        }}],
+    })
+
+    stored = _stored(response)
+
+    assert stored["reasoning_details"][-1] == {
+        "type": "hermes.reasoning_route.native_assistant",
+        "provider": "deepseek", "host": "api.deepseek.com", "model": "deepseek-chat",
+    }
 
 
 def test_gemini_native_text_turn_signature_is_captured_and_replayed_on_the_last_part():

@@ -1736,6 +1736,17 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         msg.update({k: v for k, v in record.items() if k != "type"})
         msg["reasoning_details"] = [*msg.get("reasoning_details", ()), record]
 
+    if (
+        getattr(agent, "api_mode", None) == "chat_completions"
+        and any(isinstance(msg.get(key), str) and msg[key].strip() for key in ("reasoning_content", "reasoning"))
+    ):
+        from agent.message_sanitization import reasoning_replay_issuer
+
+        msg["reasoning_details"] = [
+            *msg.get("reasoning_details", ()),
+            reasoning_replay_issuer(agent.provider, agent.model, agent.base_url),
+        ]
+
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
     return msg

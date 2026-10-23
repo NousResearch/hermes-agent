@@ -652,6 +652,7 @@ _REASONING_ECHO_RULES: tuple = (
 _REASONING_ECHO_RULE_BY_FAMILY = {rule[0]: rule for rule in _REASONING_ECHO_RULES}
 
 RC, R, RD = "reasoning_content", "reasoning", "reasoning_details"
+REASONING_ISSUER_TYPE = "hermes.reasoning_route.native_assistant"
 REASONING_CARRIERS = (RC, R, RD)
 _ALL_CARRIERS = frozenset(REASONING_CARRIERS)
 _DEFAULT_CARRIERS = frozenset({RC})
@@ -680,6 +681,30 @@ class ReasoningReplayRoute(NamedTuple):
 
     pad: bool
     carriers: frozenset | None
+    issuer: tuple[str, str, str] | None = None
+
+
+def reasoning_replay_issuer(provider: Any, model: Any, base_url: Any) -> dict:
+    """Private durable record for the chat-completions route that produced reasoning text."""
+    from utils import base_url_hostname
+
+    return {
+        "type": REASONING_ISSUER_TYPE,
+        "provider": str(provider or "").strip().lower(),
+        "host": base_url_hostname(str(base_url or "")).lower(),
+        "model": str(model or ""),
+    }
+
+
+def _reasoning_issuer(msg: dict) -> tuple[str, str, str] | None:
+    """Return a valid reasoning issuer, retaining legacy behavior for missing/malformed stamps."""
+    for detail in msg.get(RD) or ():
+        if not isinstance(detail, dict) or detail.get("type") != REASONING_ISSUER_TYPE:
+            continue
+        provider, host, model = (detail.get(key) for key in ("provider", "host", "model"))
+        if all(isinstance(value, str) and value for value in (provider, host, model)):
+            return provider.lower(), host.lower(), model
+    return None
 
 
 def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_url: Any) -> bool:
@@ -746,7 +771,8 @@ def reasoning_replay_route(
         return ReasoningReplayRoute(pad, None)
     carriers = route_reasoning_carriers(provider, base_url) - frozenset(rejected)
     # A strict route never gets a reasoning key, not even the must-echo pad.
-    return ReasoningReplayRoute(pad and RC in carriers, carriers)
+    issuer = reasoning_replay_issuer(provider, model, base_url)
+    return ReasoningReplayRoute(pad and RC in carriers, carriers, (issuer["provider"], issuer["host"], issuer["model"]))
 
 
 def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:
@@ -847,6 +873,7 @@ def _apply_legacy_must_echo_pad(source_msg: dict, api_msg: dict) -> None:
 
 def apply_reasoning_content_policy(
     source_msg: dict, api_msg: dict, needs_thinking_pad: bool, carriers: frozenset | None = None,
+    issuer: tuple[str, str, str] | None = None,
 ) -> None:
     """Shape an assistant replay message's reasoning keys for the active route (mutates ``api_msg``).
 
@@ -858,6 +885,11 @@ def apply_reasoning_content_policy(
     if source_msg.get("role") != "assistant":
         return
     text = _replayable_reasoning_text(source_msg)
+    # A stamped chat-completions thought belongs only to the exact provider/host/model that
+    # produced it. Unstamped historical rows intentionally retain legacy replay behavior.
+    if text is not None and issuer is not None and (stored_issuer := _reasoning_issuer(source_msg)) is not None:
+        if stored_issuer != issuer:
+            text = None
     effective = carriers if carriers is not None else (frozenset({RC}) if needs_thinking_pad else frozenset())
     if carriers is None and needs_thinking_pad:
         _apply_legacy_must_echo_pad(source_msg, api_msg)
@@ -886,7 +918,10 @@ def _reasoning_shape(msg: dict) -> tuple:
     return tuple(msg.get(key) for key in REASONING_CARRIERS)
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None) -> int:
+def reapply_reasoning_echo(
+    api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None,
+    issuer: tuple[str, str, str] | None = None,
+) -> int:
     """Reconcile already-built assistant turns with the ACTIVE route.
 
     ``api_messages`` is built once under the primary; a mid-conversation fallback or a recorded
@@ -902,7 +937,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
         before = _reasoning_shape(api_msg)
         if carriers is None and needs_thinking_pad and api_msg.get(RC):
             continue
-        apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad, carriers)
+        apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad, carriers, issuer)
         changed += _reasoning_shape(api_msg) != before
     return changed
 

@@ -12,3 +12,12 @@ def selected_session_db(adapter, home):
         if adapter._session_db_cache_closed:
             return None
     return authority.db
+
+
+def remove_profile_routes(store, session_id, db):
+    """Retire routing only in the same profile as the selected transcript database."""
+    from gateway.session import _session_key_namespace
+    from hermes_constants import profile_name_for_home
+
+    namespace = _session_key_namespace(profile_name_for_home(Path(db.db_path).parent))
+    return store.remove_by_session_id(session_id, namespace=namespace)

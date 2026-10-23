@@ -244,7 +244,7 @@ def test_judge_goal_renders_evidence_into_the_prompt():
         return '{"verdict": "done", "reason": "verified"}'
 
     with patch("hermes_cli.goals._call_goal_judge_llm", side_effect=_call_llm):
-        verdict, reason, parse_failed, wait, transport = goals_mod.judge_goal(
+        verdict, _reason, _parse_failed, _wait, _transport = goals_mod.judge_goal(
             "count to 25",
             "Done — goal complete.",
             subgoals=["25 is reached"],

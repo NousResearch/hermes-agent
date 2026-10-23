@@ -416,7 +416,7 @@ class LoopManager:
         self._persisted_state_json = self._state.to_json()
         return self._state
 
-    def _local_state_changes(self) -> Dict[str, Any]:
+    def _local_state_changes(self) -> dict[str, Any]:
         """Return fields explicitly changed since this manager last persisted its state."""
         if self._state is None or self._persisted_state_json is None:
             return {}
@@ -428,11 +428,11 @@ class LoopManager:
         }
 
     @staticmethod
-    def _tick_identity(state: LoopState) -> Tuple[float, int, float]:
+    def _tick_identity(state: LoopState) -> tuple[float, int, float]:
         """Identity of the claimed tick, stable across its in-flight turn."""
         return state.created_at, state.ticks_fired, state.last_fired_at
 
-    def _reconcile_tick(self, expected: Tuple[float, int, float], mutate) -> bool:
+    def _reconcile_tick(self, expected: tuple[float, int, float], mutate) -> bool:
         """Apply a completion mutation only to the same active, in-flight tick.
 
         Controls can persist while a stop-condition judge is running. Reading the row and applying

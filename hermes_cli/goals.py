@@ -216,7 +216,7 @@ def _gate_workspace() -> tuple[Optional[str], Optional[str]]:
         return None, None  # deleted launch directory: subprocess reports it per gate
 
 
-def _gate_definitions(gates: List[GoalGate]) -> List[Tuple[str, int, int]]:
+def _gate_definitions(gates: list[GoalGate]) -> list[tuple[str, int, int]]:
     """The user-owned gate definition, excluding per-turn execution receipts."""
     return [(gate.command, gate.timeout_seconds, gate.max_retries) for gate in gates]
 
@@ -722,7 +722,7 @@ def judge_goal(
     background_processes: Optional[list[dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
-    evidence: Optional[List[str]] = None,
+    evidence: Optional[list[str]] = None,
 ) -> tuple[str, str, bool, Optional[dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -990,7 +990,7 @@ class GoalManager:
             raise RuntimeError("no active goal to park")
         return self._state
 
-    def _reconcile_turn_state(self, state: GoalState, *, transform) -> Tuple[Optional[GoalState], str]:
+    def _reconcile_turn_state(self, state: GoalState, *, transform) -> tuple[Optional[GoalState], str]:
         """Atomically apply a turn's state mutation against the FRESH persisted row, fail-closed.
 
         The judge is a slow (10-40s) aux-LLM call. While it runs the user can pause/clear/done the
@@ -1058,7 +1058,7 @@ class GoalManager:
         self._state = GoalState.from_json(persisted)
         return self._state, outcome[0]
 
-    def _stopped_turn_decision(self, outcome: str, fresh: Optional[GoalState], *, verdict: str, reason: str) -> Dict[str, Any]:
+    def _stopped_turn_decision(self, outcome: str, fresh: Optional[GoalState], *, verdict: str, reason: str) -> dict[str, Any]:
         """Decision when a turn write could not be applied safely (concurrent user stop / DB failure).
 
         ``fresh`` is the untouched persisted row for ``stopped``/``replaced``; None for ``gone`` /
@@ -1181,7 +1181,7 @@ class GoalManager:
         self._save()
 
     @_goal_mutation
-    def update(self, prompt: str, *, max_turns: Optional[int] = None, criteria: Optional[List[str]] = None) -> GoalState:
+    def update(self, prompt: str, *, max_turns: Optional[int] = None, criteria: Optional[list[str]] = None) -> GoalState:
         """Edit prompt/max_turns/criteria on the active goal, preserving all runtime state."""
         state = self._state
         if state is None or state.status not in {"active", "paused"}:
@@ -1504,7 +1504,7 @@ class GoalManager:
             tgt = f"{wait_directive['seconds']}s"
         return _decision("active", False, None, "wait", reason, f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}")
 
-    def _budget_pause(self, state: GoalState, verdict: str, reason: str, note: str = "") -> Dict[str, Any]:
+    def _budget_pause(self, state: GoalState, verdict: str, reason: str, note: str = "") -> dict[str, Any]:
         def _pause(fresh: GoalState) -> None:
             fresh.turns_used = state.turns_used
             fresh.last_turn_at = state.last_turn_at
@@ -1579,7 +1579,7 @@ class GoalManager:
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[list[dict[str, Any]]] = None,
         active_delegations: int = 0,
-        evidence: Optional[List[str]] = None,
+        evidence: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our

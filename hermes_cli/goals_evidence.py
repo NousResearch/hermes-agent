@@ -27,7 +27,7 @@ JUDGE_EVIDENCE_BLOCK_TEMPLATE = (
 )
 
 
-def _append_evidence_to_judge_prompt(prompt: str, evidence: List[str]) -> str:
+def _append_evidence_to_judge_prompt(prompt: str, evidence: list[str]) -> str:
     """Append a bounded, labelled evidence block to a judge user prompt.
 
     Only the most recent ``_JUDGE_EVIDENCE_MAX_ITEMS`` items are kept, each truncated to
@@ -110,7 +110,7 @@ def _coerce_args(raw: Any) -> str:
     return _evidence_text(raw)
 
 
-def extract_turn_evidence(result: Any, *, max_items: int = _JUDGE_EVIDENCE_MAX_ITEMS) -> List[str]:
+def extract_turn_evidence(result: Any, *, max_items: int = _JUDGE_EVIDENCE_MAX_ITEMS) -> list[str]:
     """Pull the concrete work artifacts from a ``run_conversation`` result for the judge.
 
     The judge needs the *evidence* a goal was completed — a file's new content, an output line, a
@@ -130,8 +130,8 @@ def extract_turn_evidence(result: Any, *, max_items: int = _JUDGE_EVIDENCE_MAX_I
 
     # Map tool_call_id -> (name, arguments) from assistant tool_calls so each tool result can be
     # paired with the concrete call that produced it. Transports rarely emit id-less calls.
-    call_by_id: Dict[str, Tuple[str, str]] = {}
-    call_by_name: Dict[str, Tuple[str, str]] = {}
+    call_by_id: dict[str, tuple[str, str]] = {}
+    call_by_name: dict[str, tuple[str, str]] = {}
     for msg in messages:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
@@ -147,7 +147,7 @@ def extract_turn_evidence(result: Any, *, max_items: int = _JUDGE_EVIDENCE_MAX_I
             elif name:
                 call_by_name.setdefault(name, (name, args))
 
-    evidence: List[str] = []
+    evidence: list[str] = []
     for msg in reversed(messages):
         if not isinstance(msg, dict):
             continue

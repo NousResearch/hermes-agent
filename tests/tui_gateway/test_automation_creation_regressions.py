@@ -23,7 +23,7 @@ def test_concurrent_creates_cannot_replace(server, session, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from hermes_cli import heartbeat
     import time
-    sid, key, _ = session
+    sid, _key, _ = session
     load = heartbeat.load_heartbeat
     def delayed_load(key):
         state = load(key)

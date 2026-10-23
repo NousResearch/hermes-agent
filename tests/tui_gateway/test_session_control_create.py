@@ -87,7 +87,7 @@ def _forbid_dispatch(server, monkeypatch):
 
 class TestGoalCreate:
     def test_goal_create_sets_active_goal_with_prompt_and_criteria(self, server, session, monkeypatch):
-        sid, key, _ = session
+        sid, _key, _ = session
         _forbid_dispatch(server, monkeypatch)
         response = _call(server, "session.control", session_id=sid, action="goal.create", args={
             "prompt": "Fix the login bug",
@@ -103,7 +103,7 @@ class TestGoalCreate:
         assert goal["turns_used"] == 0
 
     def test_goal_create_without_criteria_succeeds(self, server, session, monkeypatch):
-        sid, key, _ = session
+        sid, _key, _ = session
         _forbid_dispatch(server, monkeypatch)
         response = _call(server, "session.control", session_id=sid, action="goal.create", args={
             "prompt": "Refactor the module",
@@ -208,7 +208,7 @@ class TestGoalCreate:
         assert err["code"] == 4004
 
     def test_goal_create_publishes_session_control_update(self, server, session, monkeypatch):
-        sid, key, _ = session
+        sid, _key, _ = session
         _forbid_dispatch(server, monkeypatch)
         emitted = []
         monkeypatch.setattr(server, "_emit", lambda event, sid_, payload=None: emitted.append((event, sid_, payload)))
@@ -231,7 +231,7 @@ class TestGoalCreate:
 
 class TestLoopCreate:
     def test_loop_create_sets_active_loop_with_interval(self, server, session, monkeypatch):
-        sid, key, _ = session
+        sid, _key, _ = session
         _forbid_dispatch(server, monkeypatch)
         response = _call(server, "session.control", session_id=sid, action="loop.create", args={
             "prompt": "Check deployment status",
@@ -356,7 +356,7 @@ class TestLoopCreate:
 
 class TestHeartbeatCreate:
     def test_heartbeat_create_sets_active_heartbeat(self, server, session, monkeypatch):
-        sid, key, _ = session
+        sid, _key, _ = session
         _forbid_dispatch(server, monkeypatch)
         response = _call(server, "session.control", session_id=sid, action="heartbeat.create", args={
             "prompt": "Check system health",
@@ -449,7 +449,7 @@ class TestHeartbeatCreate:
 
 class TestCreateNoStaleSession:
     def test_goal_create_uses_session_from_request_not_global(self, server, session, monkeypatch):
-        sid, key, _ = session
+        sid, _key, _ = session
         _forbid_dispatch(server, monkeypatch)
         response = _call(server, "session.control", session_id=sid, action="goal.create", args={
             "prompt": "Session-scoped goal",

@@ -5,8 +5,9 @@ A ``plugins/model-providers/<name>/`` profile (``providers.base.ProviderProfile`
 accepts it whatever its auth shape. Non-api-key plugins own their login through two optional profile
 callables that core consults BEFORE any built-in, name-keyed path:
 
-- ``auth_handler(action, args) -> bool`` for ``hermes auth add|status|logout|refresh <name>``
+- ``auth_handler(action, args) -> bool`` for ``hermes auth add|status|logout|refresh|remove <name>``
   (``args`` is the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path).
+  ``disconnect`` is the noninteractive full-provider removal action; it must not print to stdout.
 - ``refresh_credential(entry) -> Mapping | None`` for the credential pool: given the pooled
   ``PooledCredential`` it returns the rotated fields (``access_token``, ``refresh_token``,
   ``expires_at_ms`` …) or raises. A separate hook rather than ``auth_handler("refresh", …)`` because
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ``openrouter not in PROVIDER_REGISTRY``.
 _REGISTRY_PLUGIN_SKIP = frozenset({"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"})
 
-PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
+PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh", "remove", "disconnect")
 
 # Names whose PROVIDER_REGISTRY row came from a plugin profile (not the built-in rows). Only these
 # can be "OAuth-shaped with nobody to log them in": a bundled OAuth provider (nous, openai-codex …)

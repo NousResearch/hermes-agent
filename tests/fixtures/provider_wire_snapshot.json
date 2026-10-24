@@ -9229,6 +9229,182 @@
    ]
   }
  },
+ "openai-chatgpt": {
+  "api_mode": "codex_responses",
+  "base_url": "https://api.openai.com/v1",
+  "high": {
+   "include": [
+    "reasoning.encrypted_content"
+   ],
+   "input": [
+    {
+     "content": "list files",
+     "role": "user",
+     "type": "message"
+    },
+    {
+     "arguments": "{\"command\": \"ls\"}",
+     "call_id": "call_1",
+     "name": "terminal",
+     "type": "function_call"
+    },
+    {
+     "call_id": "call_1",
+     "output": "a.txt\nb.txt",
+     "type": "function_call_output"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user",
+     "type": "message"
+    }
+   ],
+   "instructions": "You are a test agent.",
+   "model": "test-model",
+   "parallel_tool_calls": true,
+   "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
+   "reasoning": {
+    "effort": "high",
+    "summary": "auto"
+   },
+   "store": false,
+   "timeout": 1800.0,
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "description": "Run a shell command.",
+     "name": "terminal",
+     "parameters": {
+      "properties": {
+       "command": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "command"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ]
+  },
+  "model": "test-model",
+  "off": {
+   "include": [],
+   "input": [
+    {
+     "content": "list files",
+     "role": "user",
+     "type": "message"
+    },
+    {
+     "arguments": "{\"command\": \"ls\"}",
+     "call_id": "call_1",
+     "name": "terminal",
+     "type": "function_call"
+    },
+    {
+     "call_id": "call_1",
+     "output": "a.txt\nb.txt",
+     "type": "function_call_output"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user",
+     "type": "message"
+    }
+   ],
+   "instructions": "You are a test agent.",
+   "model": "test-model",
+   "parallel_tool_calls": true,
+   "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
+   "reasoning": {
+    "effort": "none"
+   },
+   "store": false,
+   "timeout": 1800.0,
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "description": "Run a shell command.",
+     "name": "terminal",
+     "parameters": {
+      "properties": {
+       "command": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "command"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ]
+  },
+  "unset": {
+   "include": [
+    "reasoning.encrypted_content"
+   ],
+   "input": [
+    {
+     "content": "list files",
+     "role": "user",
+     "type": "message"
+    },
+    {
+     "arguments": "{\"command\": \"ls\"}",
+     "call_id": "call_1",
+     "name": "terminal",
+     "type": "function_call"
+    },
+    {
+     "call_id": "call_1",
+     "output": "a.txt\nb.txt",
+     "type": "function_call_output"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user",
+     "type": "message"
+    }
+   ],
+   "instructions": "You are a test agent.",
+   "model": "test-model",
+   "parallel_tool_calls": true,
+   "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
+   "reasoning": {
+    "effort": "medium",
+    "summary": "auto"
+   },
+   "store": false,
+   "timeout": 1800.0,
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "description": "Run a shell command.",
+     "name": "terminal",
+     "parameters": {
+      "properties": {
+       "command": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "command"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ]
+  }
+ },
  "openai-codex": {
   "api_mode": "codex_responses",
   "base_url": "https://chatgpt.com/backend-api/codex",

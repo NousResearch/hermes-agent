@@ -12,10 +12,41 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 __all__ = [
+    "disconnect_provider_auth",
     "purge_env_credential_references",
     "remove_provider_env_credential",
     "save_provider_env_credential",
 ]
+
+
+def disconnect_provider_auth(provider_id: str | None = None) -> bool:
+    """Let a provider revoke its grants before falling back to deleting local state."""
+    from types import SimpleNamespace
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _store_section
+    from hermes_cli.auth_plugin_providers import plugin_auth_handler
+
+    with _auth_store_lock():
+        store = _load_auth_store()
+        target = provider_id or store.get("active_provider")
+        if not target:
+            return False
+        handler = plugin_auth_handler(target)
+        handled = bool(handler and handler("disconnect", SimpleNamespace(provider=target)))
+        # A provider-owned disconnect may retain token-free registration metadata.
+        store = _load_auth_store() if handled else store
+        cleared = handled
+        if not handled:
+            for section in ("providers", "credential_pool"):
+                entries = _store_section(store, section)
+                if target in entries:
+                    del entries[target]
+                    cleared = True
+        if store.get("active_provider") == target:
+            store["active_provider"] = None
+            cleared = True
+        if cleared:
+            _save_auth_store(store)
+        return cleared
 
 
 def _providers_for_env_var(env_var: str) -> list[str]:

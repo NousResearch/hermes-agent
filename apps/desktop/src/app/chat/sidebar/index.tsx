@@ -1906,34 +1906,18 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
-                        {/* The flat-list header "+" is a drag source too — the
-                            same gesture as the nav's "New session" row: drag
-                            it onto a chat zone's tab strip / edge / center to
-                            create the session exactly there. Project-overview
-                            mode drags its "+" (the "New project" button) with
-                            the project-drag variant: a drop opens the SAME
-                            project dialog, and the created project starts at
-                            the dropped spot. */}
+                        {/* The sessions header "+" always creates a project.
+                            Dragging it arms where the project should start;
+                            the dialog flow consumes that placement on create. */}
                         <SidebarSectionAddButton
-                          ariaLabel={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                          onNewProjectDrag={
-                            agentsGrouped
-                              ? {
-                                  // Dragging the "New project" + arms WHERE the
-                                  // project should start; the dialog flow consumes
-                                  // it on create (see $newProjectDropPlacement).
-                                  onArm: placement => $newProjectDropPlacement.set(placement)
-                                }
-                              : undefined
-                          }
-                          onNewSessionSplit={agentsGrouped ? undefined : onNewSessionSplit}
-                          onPlainClick={() => {
-                            if (agentsGrouped) {
-                              openProjectCreate()
-                            } else {
-                              onNewSessionInWorkspace(null)
-                            }
+                          ariaLabel={s.projects.newButton}
+                          onNewProjectDrag={{
+                            // Dragging the "New project" + arms WHERE the
+                            // project should start; the dialog flow consumes
+                            // it on create (see $newProjectDropPlacement).
+                            onArm: placement => $newProjectDropPlacement.set(placement)
                           }}
+                          onPlainClick={openProjectCreate}
                         />
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />

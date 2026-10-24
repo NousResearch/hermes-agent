@@ -1135,7 +1135,8 @@ export const deOverrides = {
       timezone: 'Zeitzone',
       display: {
         personality: 'Persönlichkeit',
-        showReasoning: 'Denkblöcke'
+        showReasoning: 'Denkblöcke',
+        busyInputMode: 'Enter während der Ausführung'
       },
       desktop: {
         repoScanEnabled: 'Automatische Repository-Erkennung',
@@ -1309,7 +1310,9 @@ export const deOverrides = {
       fallbackProviders: 'Backup-Anbieter:Modell-Einträge, die versucht werden, wenn das Standardmodell fehlschlägt.',
       display: {
         personality: 'Standard-Assistentenstil für neue Sessions.',
-        showReasoning: 'Denkabschnitte anzeigen, wenn das Backend sie liefert.'
+        showReasoning: 'Denkabschnitte anzeigen, wenn das Backend sie liefert.',
+        busyInputMode:
+          'Bestimmt, was eine Nachricht bewirkt, die während der Ausführung des Agenten gesendet wird. Interrupt leitet den aktuellen Turn um, Steer fügt sie dem nächsten Tool-Ergebnis hinzu, ohne den Turn zu stoppen, und Queue führt sie als nächsten Turn aus. CLI, TUI und Messaging-Gateways lesen dieselbe Einstellung.'
       },
       desktop: {
         repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, die in Projekten angezeigt werden.',

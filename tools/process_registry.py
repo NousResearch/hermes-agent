@@ -37,7 +37,7 @@ from tools.process_registry_notifications import (
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_termination import ProcessTerminationMixin
-from tools.process_registry_results import load_completed_results, save_completed_result
+from tools.process_registry_results import exit_fields, load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
 
@@ -583,6 +583,7 @@ class ProcessSession:
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
     completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
+    cron_continuation: dict | None = None     # Cron identity; never a chat route
     watch_patterns: list[str] = field(default_factory=list)
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
@@ -656,7 +657,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log")
+    "heartbeat_seconds", "persist_on_release", "cron_continuation", "output_log")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1138,8 +1139,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         from contextvars import copy_context
 
         # Reader completion must retain the producer's multiplex profile scope.
+        # Finite cron workers must not exit before their opted-in receipts are
+        # persisted; a non-daemon reader keeps capture alive after the agent turn.
         reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
-                                  daemon=True, name=reader_name)
+                                  daemon=not bool(session.cron_continuation), name=reader_name)
         session._reader_thread = reader
         with self._lock:
             self._prune_if_needed()
@@ -1175,7 +1178,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def spawn_local(
         self, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
         env_vars: dict | None = None, use_pty: bool = False, owner_task_id: str = "",
-        persist_on_release: bool = False) -> ProcessSession:
+        persist_on_release: bool = False, cron_continuation: dict | None = None) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing.
@@ -1188,7 +1191,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
-                                    persist_on_release=persist_on_release)
+                                    persist_on_release=persist_on_release, cron_continuation=cron_continuation)
         pty_scope_attempted = False
         # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
         log = worker_output_log(session.id)
@@ -1275,14 +1278,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False,
+        cron_continuation: dict | None = None) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context. ``persist_on_release`` keeps the process out of
         agent-lifecycle kill sweeps (#41225)."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
-                                    persist_on_release=persist_on_release)
+                                    persist_on_release=persist_on_release, cron_continuation=cron_continuation)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -1597,7 +1601,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 "owner_task_id": session.owner_task_id,
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
-                **self._exit_fields(session),
+                **exit_fields(session),
                 # A consumer that relays the output (a bot DM's reply) must know it is not whole.
                 **_completion_output(session),
                 # Stable producer identity across checkpoint recovery (unlike a
@@ -1607,13 +1611,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             _redact_process_result(notification)
             self.completion_queue.put(notification)
 
-    @staticmethod
-    def _exit_fields(session: ProcessSession) -> dict:
-        return {
-            "exit_code": session.exit_code,
-            "completion_reason": session.completion_reason,
-            "termination_source": session.termination_source,
-        }
 
     def _release_finished_handles(self, session: ProcessSession):
         """Close a finished session's OS handles (Popen pipes / PTY master).
@@ -2007,7 +2004,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             **self._status_head(session), "pid": session.pid,
             "uptime_seconds": int(time.time() - session.started_at), "output_preview": output_preview}
         if exited:
-            result.update(self._exit_fields(session))
+            result.update(exit_fields(session))
             # Read-only: record in _poll_observed (CLI inline dedup) but NOT in
             # _completion_consumed, or a status check would suppress the watcher's
             # autonomous delivery turn. See __init__. A preview taken before the reader's
@@ -2124,7 +2121,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """Result dict for an exited session: exit metadata + the completion-sized output tail."""
         return {
             "status": status, "command": session.command,
-            **ProcessRegistry._exit_fields(session), **_completion_output(session)}
+            **exit_fields(session), **_completion_output(session)}
 
     def kill_process(
         self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,

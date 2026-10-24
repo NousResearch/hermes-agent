@@ -89,6 +89,8 @@ def _create(authority, actor, params):
     job = get_job(jid)
     if job is None or job.get('no_agent'):
         raise RuntimeStoreError('not_found')
+    from cron.continuations import job_for_execution
+    job = job_for_execution(job, execution_id)
     config = _load_gateway_config()
     private = {}
     launch = {'source': 'cli', 'request_id': request_id, 'toolsets': []}

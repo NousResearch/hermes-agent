@@ -689,7 +689,17 @@ def skill_view(
             result["compatibility"] = frontmatter["compatibility"]
         if isinstance(metadata, dict):
             result["metadata"] = metadata
-        return _json(result)
+        from tools.tool_output_limits import cap_json_output
+
+        return cap_json_output(
+            _json(result),
+            string_fields=("content",),
+            truncation_message=(
+                "Output capped at {cap} chars (tail-truncated '{field}' by "
+                "{dropped} chars). Use skill_view(name, file_path) to read a "
+                "specific linked file, or narrow the skill's content."
+            ),
+        )
     except Exception as e:
         return tool_error(str(e), success=False)
 

@@ -33,6 +33,12 @@ logger = logging.getLogger("agent.lsp.manager")
 DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
 _DELTA_BASELINE_CAP = 256  # per-file pre-write snapshots; paths never written again would otherwise live forever (#62950)
 MIN_IDLE_TIMEOUT = 30  # floor for config values; must exceed any per-op wait budget
+# Hard ceiling on concurrently-running language servers per service. LSP servers
+# are memory/CPU heavy (pyright/tsserver hold hundreds of MB each); without a
+# bound a worker that resolves several workspace roots can spawn a swarm of them
+# (2026-09-17: a duplicate pyright burned ~45% CPU). When the cap is exceeded the
+# least-recently-used running client is shut down. ``lsp.max_clients`` tunes it; 0 disables.
+DEFAULT_MAX_CLIENTS = 4
 
 _Key = tuple[str, str]
 _Diags = list[dict[str, Any]]
@@ -145,6 +151,7 @@ class LSPService:
         init_overrides: Optional[dict[str, dict[str, Any]]] = None,
         disabled_servers: Optional[list[str]] = None,
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+        max_clients: int = DEFAULT_MAX_CLIENTS,
         extra_servers: Optional[list[ServerDef]] = None,
         broken_retry_seconds: float = 0.0,
         warmup_timeout: float = 0.0,
@@ -160,6 +167,7 @@ class LSPService:
         self._init_overrides = init_overrides or {}
         self._disabled_servers = set(disabled_servers or [])
         self._idle_timeout = idle_timeout
+        self._max_clients = max(0, int(max_clients))
         self._extra_servers: list[ServerDef] = list(extra_servers or [])
         self._broken_retry = max(0.0, broken_retry_seconds)
         self._warmup_timeout = max(0.0, warmup_timeout)
@@ -209,6 +217,10 @@ class LSPService:
             # Below the per-op wait budget the reaper could kill a client mid-flight and the outer
             # timeout would then mark the pair broken for the process lifetime.  Clamp (0 still disables).
             idle_timeout = MIN_IDLE_TIMEOUT
+        try:
+            max_clients = int(lsp_cfg.get("max_clients", DEFAULT_MAX_CLIENTS))
+        except (TypeError, ValueError):
+            max_clients = DEFAULT_MAX_CLIENTS
         servers_cfg = lsp_cfg.get("servers") or {}
         servers = {n: c for n, c in servers_cfg.items() if isinstance(c, dict)} if isinstance(servers_cfg, dict) else {}
         return cls(
@@ -224,6 +236,7 @@ class LSPService:
                             if isinstance(c.get("initialization_options"), dict)},
             disabled_servers=[n for n, c in servers.items() if c.get("disabled")],
             idle_timeout=idle_timeout,
+            max_clients=max_clients,
             extra_servers=custom_servers(servers),
             broken_retry_seconds=_float_or(lsp_cfg.get("broken_retry_seconds"), 0.0),
             warmup_timeout=_float_or(lsp_cfg.get("warmup_timeout"), 0.0),
@@ -567,6 +580,30 @@ class LSPService:
             client = self._clients.get(self._live_key(srv, root))
         return list(client.diagnostics_for(file_path, fresh_only=True)) if client else []
 
+    def _evict_lru_if_over_cap(self) -> None:
+        """Shut down the least-recently-used running client when at the cap.
+
+        ``max_clients`` bounds how many language servers one service may keep
+        alive at once. Eviction is best-effort and must never raise into the
+        spawn path.
+        """
+        if self._max_clients <= 0:
+            return
+        with self._state_lock:
+            running = [(k, c) for k, c in self._clients.items() if c.is_running]
+            if len(running) < self._max_clients:
+                return
+            running.sort(key=lambda kc: self._last_used.get(kc[0], 0.0))
+            evict_key, evict_client = running[0]
+            self._clients.pop(evict_key, None)
+            self._last_used.pop(evict_key, None)
+        try:
+            self._loop.run(evict_client.shutdown(), timeout=5.0)
+            logger.info("lsp: evicted LRU client %s (max_clients=%d)",
+                        evict_key, self._max_clients)
+        except Exception as e:
+            logger.debug("lsp: LRU eviction failed for %s: %s", evict_key, e)
+
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
         srv = self._server_for(file_path)
         if srv is None:
@@ -586,6 +623,13 @@ class LSPService:
             return None
         if self._is_broken((srv.server_id, root)):
             return None
+        # Canonicalize so symlink/relative-path variants of the SAME directory
+        # resolve to ONE client key (otherwise each variant spawns its own
+        # server process - the duplicate-LSP leak).
+        try:
+            root = os.path.realpath(root)
+        except Exception:
+            pass
         with self._state_lock:
             key = self._live_key(srv, root)
             # Derived with the key: trust only grows, so one read before the lock could store an
@@ -615,6 +659,9 @@ class LSPService:
             except Exception:
                 return None
             return await self._attach_root(srv, client, root) if client is not None else None
+        # Bound concurrent servers: evict the LRU client before spawning another.
+        self._evict_lru_if_over_cap()
+
         try:
             client = await self._spawn_client(srv, root, trusted)
             if client is None:

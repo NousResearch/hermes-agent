@@ -802,3 +802,63 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+
+# =========================================================================
+# Output-size cap (FIX-2a, 2026-09-04)
+# =========================================================================
+
+class TestListOutputCap:
+    """cronjob(action='list') must honor tool_output.max_bytes.
+
+    A 125-job board serializes to ~88K chars of pretty JSON, refilling
+    conversation contexts and driving compaction thrash. The list action must
+    bound its output to the centralized cap while preserving list semantics
+    (the model still sees the board, just truncated with an in-band marker).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def _seed_many_jobs(self, n=125):
+        from cron.jobs import save_jobs
+
+        jobs = []
+        for i in range(n):
+            jobs.append(
+                {
+                    "id": f"job{i:04d}",
+                    "name": f"Job {i}",
+                    "prompt": f"Run task {i} " + "x" * 400,
+                    "schedule_display": "every 1h",
+                    "schedule": {"kind": "interval", "minutes": 60, "display": "every 1h"},
+                    "repeat": {"times": None, "completed": 0},
+                    "enabled": True,
+                }
+            )
+        save_jobs(jobs)
+
+    def test_list_output_respects_cap(self):
+        from tools.tool_output_limits import get_max_bytes
+
+        self._seed_many_jobs(125)
+        raw = cronjob(action="list")
+        assert len(raw) <= get_max_bytes() + 500, len(raw)
+        parsed = json.loads(raw)
+        assert parsed["success"] is True
+        # Still a valid board: count reflects the full board, jobs is a list.
+        assert parsed["count"] == 125
+        assert isinstance(parsed["jobs"], list)
+        assert parsed["truncated"] is True
+        assert parsed["truncated_count"] > 0
+
+    def test_list_under_cap_not_truncated(self):
+        self._seed_many_jobs(3)
+        raw = cronjob(action="list")
+        parsed = json.loads(raw)
+        assert parsed["success"] is True
+        assert parsed["count"] == 3
+        assert "truncated" not in parsed

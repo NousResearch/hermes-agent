@@ -960,7 +960,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _skill_catalog
-    from agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names
+    from agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_EXTRA, TIER_PROJECT, get_disabled_skill_names
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
@@ -968,7 +968,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     builtin_names = set(_read_manifest())
     # Rows are what skill_view loads: shadowed copies hidden, same-tier duplicates under their exact path.
     all_skills = [{**s, "name": s["load_name"]} for s in _skill_catalog(skip_disabled=True) if s["load_name"]]
-    root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
+    root_labels = {TIER_PROJECT: "project", TIER_EXTRA: "extra", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",

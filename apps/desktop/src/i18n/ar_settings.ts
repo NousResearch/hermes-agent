@@ -273,6 +273,7 @@ export const arSettings = {
       appearance: 'المظهر',
       workspace: 'مساحة العمل',
       safety: 'الأمان',
+      browser: 'المتصفح',
       memory: 'الذاكرة والسياق',
       voice: 'الصوت',
       advanced: 'متقدم'

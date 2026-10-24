@@ -141,6 +141,7 @@ catalog: CatalogTranslations
         serverNeedsAuth: string
         serverOff: string
         serverOn: string
+        serverOnDemand: string
         serverOnUnused: string
       }
       fact: {

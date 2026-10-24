@@ -40,6 +40,7 @@ from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from tools.process_registry_shell import background_shell_command
 
 logger = logging.getLogger(__name__)
 
@@ -1107,11 +1108,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return tempfile.gettempdir()
 
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> list[str]:
-        """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
-        sourced, user tools on PATH), wrapped in a transient systemd scope when we are
-        the supervised gateway (own cgroup: an OOM kills only the worker, not the
-        gateway and its messaging control plane)."""
-        argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
+        """Shared PTY/pipe login-shell argv, with a private systemd scope for supervised
+        gateways so worker OOMs don't kill the messaging control plane."""
+        argv = [_find_shell(), "-lic", background_shell_command(session.cwd, safe_command)]
         # This applies to both pipe mode and the PTY path above. See #70716.
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
         if in_supervised_gateway and _systemd_run_user_scope_available():

@@ -101,6 +101,32 @@ it('settles a matching partial error without discarding richer local parts or di
   ])
 })
 
+it('does not let completion already present at the snapshot settle a newer streaming projection', () => {
+  const rows: SessionMessage[] = [{ id: 1, role: 'user', content: 'Continue the investigation' }]
+  const durable = toChatMessages(rows)
+  const completed = assistant('previous-response', 'Earlier result.', { pending: false, completedAt: 10 })
+  const baseline = [...durable, completed]
+
+  const messages = reconcilePersistedLiveTurn(
+    durable,
+    baseline,
+    rows,
+    {
+      session_id: 'runtime',
+      inflight: { user: 'Continue the investigation', assistant: 'New work is running.', streaming: true }
+    },
+    baseline
+  )!
+
+  expect(messages).toContainEqual(completed)
+  expect(messages.filter(message => message.pending)).toEqual([
+    expect.objectContaining({
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'New work is running.' }]
+    })
+  ])
+})
+
 it('pairs only the queue projection, preserving equal corrections and different local queued occurrences', () => {
   const prompt = 'Inspect this file'
   const correction = 'Also inspect its tests'

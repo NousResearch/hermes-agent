@@ -1,5 +1,12 @@
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import {
+  assistantTextPart,
+  type ChatMessage,
+  type ChatMessagePart,
+  chatMessageText,
+  textPart,
+  upsertToolPart
+} from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
@@ -59,7 +66,10 @@ function candidateTurn(
         return null
       }
 
-      const raw = row.content
+      // Codex commentary can be durable only in the authorized display sidecar,
+      // while content is empty and reasoning also contains the private summary.
+      const texts = row.content ? [row.content] : (row.display_commentary ?? [])
+      const raw = texts.join('\n\n')
 
       if (!raw.trim()) {
         continue
@@ -69,13 +79,19 @@ function candidateTurn(
 
       // MEDIA rendering and folding change lengths. Only source-row provenance,
       // not equal prose elsewhere in the transcript, proves display coverage.
-      const rendered = renderedText(raw).trim()
+      const rendered = texts.map(text => renderedText(text).trim()).filter(Boolean)
+
+      const painted = turnMessages.flatMap(message =>
+        message.parts.flatMap(part =>
+          part.type === 'text' && part.sourceRowId === id && part.text.trim() ? [part.text.trim()] : []
+        )
+      )
 
       if (
         id === undefined ||
-        !turnMessages.some(message =>
-          message.parts.some(part => part.type === 'text' && part.sourceRowId === id && part.text.trim() === rendered)
-        )
+        !rendered.length ||
+        painted.length !== rendered.length ||
+        rendered.some((text, index) => text !== painted[index])
       ) {
         return null
       }
@@ -198,7 +214,8 @@ export function reconcilePersistedLiveTurn(
   messages: ChatMessage[],
   previous: ChatMessage[],
   rows: SessionMessage[],
-  projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
+  projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>,
+  snapshotBaseline?: ChatMessage[]
 ): ChatMessage[] | null {
   const inflight = projection.inflight
 
@@ -257,9 +274,22 @@ export function reconcilePersistedLiveTurn(
 
     const final = index === snapshots.length - 1
     const error = final ? inflight.error?.trim() : undefined
+    const localTerminal = pairedLocal ? cached.intervals[index]?.at(-1) : undefined
+
+    // Only a completion observed after this snapshot can overrule streaming.
+    // An already-completed cache row must not settle a later real turn.
+    const completedSinceSnapshot = Boolean(
+      final &&
+      snapshotBaseline &&
+      localTerminal?.role === 'assistant' &&
+      !localTerminal.pending &&
+      !localTerminal.interim &&
+      localTerminal.completedAt !== undefined &&
+      snapshotBaseline.find(message => message.id === localTerminal.id)?.completedAt !== localTerminal.completedAt
+    )
 
     const projected: ChatMessage[] =
-      text.trim() || final
+      text.trim() || (final && !completedSinceSnapshot)
         ? [
             {
               id: final
@@ -267,15 +297,49 @@ export function reconcilePersistedLiveTurn(
                 : `inflight-assistant-segment-${index}-${projection.session_id}`,
               role: 'assistant',
               parts: text.trim() ? [assistantTextPart(text)] : [],
-              pending: final && Boolean(inflight.streaming),
+              pending: final && Boolean(inflight.streaming) && !completedSinceSnapshot,
               ...(!final ? { interim: true } : {}),
               ...(error ? { error, errorSurface: parseErrorSurface(inflight.error_surface) ?? undefined } : {})
             }
           ]
         : []
 
-    const local = pairedLocal ? withoutCoveredAssistantPrefix(durable, cached.intervals[index] ?? []) : []
-    result.push(...durable, ...mergeLiveAssistantRun(projected, local))
+    const coveredTools = new Map<ChatMessagePart, ChatMessagePart>()
+    const local = pairedLocal ? withoutCoveredAssistantPrefix(durable, cached.intervals[index] ?? [], coveredTools) : []
+
+    // Coverage proves identity, not freshness: a consumed live call can have
+    // completed while REST still held only its start. Never borrow from a suffix.
+    // A seal also sets completedAt; only an own result proves tool.complete.
+    const completedDurable = durable.map(message => {
+      let changed = false
+
+      const parts = message.parts.map(part => {
+        const live = coveredTools.get(part)
+
+        if (
+          part.type !== 'tool-call' ||
+          part.result !== undefined ||
+          live?.type !== 'tool-call' ||
+          !Object.hasOwn(live, 'result') ||
+          live.completedAt === undefined
+        ) {
+          return part
+        }
+
+        changed = true
+
+        return upsertToolPart(
+          [part],
+          { ...live.toolResultMetadata, name: live.toolName, tool_id: live.toolCallId, result: live.result },
+          'complete',
+          live.completedAt
+        )[0]
+      })
+
+      return changed ? { ...message, parts } : message
+    })
+
+    result.push(...completedDurable, ...mergeLiveAssistantRun(projected, local))
 
     if (!final) {
       const correction = stored.users[index] ?? {

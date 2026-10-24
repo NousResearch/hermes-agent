@@ -328,6 +328,18 @@ class TestSkillsList:
 
 
 class TestSkillView:
+    def test_view_serializes_yaml_dates_in_metadata(self, tmp_path):
+        # An unquoted YAML date parses to datetime.date; skill_view must still return JSON.
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "dated-skill",
+                frontmatter_extra="metadata:\n  last_updated: 2026-08-22\n",
+            )
+            result = json.loads(skill_view("dated-skill"))
+        assert result["success"] is True
+        assert result["metadata"]["last_updated"] == "2026-08-22"
+
     def test_view_resolves_by_dir_name_and_frontmatter_name(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(

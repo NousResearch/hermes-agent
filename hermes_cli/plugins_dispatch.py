@@ -261,6 +261,8 @@ class PluginDispatchMixin:
         ``plugins.hook_callback_timeout`` (worker abandoned, never joined); ``pre_tool_call`` fails
         closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
+        ``transform_llm_output`` composes non-empty strings in registration order and returns
+        only the composed replacement, so final-response consumers never select an intermediate.
         """
         from agent.safe_worker_policy import safe_worker_enabled
 
@@ -285,7 +287,11 @@ class PluginDispatchMixin:
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
-                if ret is not None:
+                if hook_name == "transform_llm_output":
+                    if isinstance(ret, str) and ret:
+                        kwargs = {**kwargs, "response_text": ret}
+                        results[:] = [ret]
+                elif ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
@@ -558,7 +564,11 @@ class PluginDispatchMixin:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
-                if ret is not None:
+                if hook_name == "transform_llm_output":
+                    if isinstance(ret, str) and ret:
+                        kwargs = {**kwargs, "response_text": ret}
+                        results[:] = [ret]
+                elif ret is not None:
                     results.append(ret)
             except TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)

@@ -702,29 +702,88 @@ export function createReconnectScheduler(startFn, {
  * pend forever and wedge the reconnect path (the scheduler above cannot
  * retry past an await that never settles). Bound the fetch and fall back to
  * the last known-good version, or the Baileys default before first success.
+ *
+ * A fetch can also "succeed" with a build WhatsApp no longer accepts:
+ * Baileys' fetchers swallow their own transport errors (a 429 or 503 from
+ * the version host) and resolve with the version baked into the library
+ * plus `isLatest: false`. Pairing against that stale build is rejected with
+ * HTTP 405 before a QR code is ever drawn (#88516), so a stale answer is
+ * treated as a failed one and each `fallbackFetchVersionFns` entry is tried
+ * in turn. The stale version is used only when nothing fresher is available,
+ * unless `requireCurrent` is set: then the resolver throws one actionable
+ * error instead, because a stale build can only loop on 405.
  */
 export function createVersionResolver(fetchVersionFn, {
   timeoutMs = 15000,
   log = console.log,
+  fallbackFetchVersionFns = [],
+  requireCurrent = false,
 } = {}) {
+  const fetchers = [fetchVersionFn, ...fallbackFetchVersionFns].filter(
+    fn => typeof fn === 'function',
+  );
   let cachedVersion = null;
   return async function resolveVersion() {
-    let timer = null;
-    try {
-      const { version } = await Promise.race([
-        fetchVersionFn(),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('version fetch timed out')), timeoutMs);
-        }),
-      ]);
-      cachedVersion = version;
-    } catch (err) {
-      log(`⚠️  Baileys version fetch failed (${err?.message || err}); using ${cachedVersion ? 'cached version' : 'library default'}.`);
-    } finally {
-      if (timer) clearTimeout(timer);
+    let staleVersion = null;
+    for (let i = 0; i < fetchers.length; i++) {
+      const isLastFetcher = i === fetchers.length - 1;
+      const nextHint = isLastFetcher
+        ? (cachedVersion ? 'using cached version' : requireCurrent ? 'no current version left to try' : 'using library default')
+        : 'trying the next resolver';
+      let timer = null;
+      try {
+        const result = await Promise.race([
+          fetchers[i](),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('version fetch timed out')), timeoutMs);
+          }),
+        ]);
+        const version = result?.version || null;
+        if (!version) {
+          throw new Error('version missing from response');
+        }
+        if (result.isLatest === false) {
+          staleVersion = staleVersion || version;
+          const printable = Array.isArray(version) ? version.join('.') : String(version);
+          log(`⚠️  Baileys version fetch returned a stale WhatsApp build (${printable}); WhatsApp rejects it with HTTP 405, ${nextHint}.`);
+          continue;
+        }
+        cachedVersion = version;
+        return cachedVersion;
+      } catch (err) {
+        log(`⚠️  Baileys version fetch failed (${err?.message || err}); ${nextHint}.`);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     }
-    return cachedVersion;
+    // Every resolver came back stale or failed. A previously cached version
+    // is the best answer; without one, the stale build still beats no
+    // version at all (it is what Baileys would have used anyway).
+    if (cachedVersion) return cachedVersion;
+    if (requireCurrent) {
+      throw new Error(
+        'Could not fetch current WhatsApp Web version. Check that this machine can reach '
+        + 'web.whatsapp.com, wppconnect.io and raw.githubusercontent.com, then try pairing again in a few minutes.',
+      );
+    }
+    return staleVersion;
   };
+}
+
+const WPPCONNECT_TRACKER_URL = 'https://wppconnect.io/whatsapp-versions/';
+
+/**
+ * Third version source: wppconnect's public WhatsApp Web version tracker,
+ * which lists the current build first (`2.3000.<revision>-alpha`). It lives
+ * on a different host than both Baileys sources, so one per-IP rate limit
+ * cannot take every source down at once. Returns the Baileys fetcher shape.
+ */
+export async function fetchWppconnectWaVersion({ fetchFn = globalThis.fetch, timeoutMs = 5000 } = {}) {
+  const res = await fetchFn(WPPCONNECT_TRACKER_URL, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`wppconnect tracker answered ${res.status}`);
+  const match = (await res.text()).match(/2\.3000\.(\d+)/);
+  if (!match) throw new Error('no version on the wppconnect tracker page');
+  return { version: [2, 3000, Number(match[1])], isLatest: true };
 }
 
 const pad = (value, width = 2) => String(value).padStart(width, '0');

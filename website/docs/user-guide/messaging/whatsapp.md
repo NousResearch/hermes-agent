@@ -313,6 +313,7 @@ Replying to (quoting) an earlier message gives the agent the quoted text as cont
 |---------|----------|
 | **QR code not scanning** | Ensure terminal is wide enough (60+ columns). Try a different terminal. Make sure you're scanning from the correct WhatsApp account (bot number, not personal). |
 | **QR code expires** | QR codes refresh every ~20 seconds. If it times out, restart `hermes whatsapp`. |
+| **Pairing stops with "Could not fetch current WhatsApp Web version"** | The bridge asks three hosts for the WhatsApp Web build (`raw.githubusercontent.com`, `web.whatsapp.com`, `wppconnect.io`) because WhatsApp rejects an outdated build with `405` before showing a QR code. All three failed or were rate-limited; check the machine can reach them and try again in a few minutes. |
 | **Session not persisting** | Check that `~/.hermes/platforms/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
 | **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |

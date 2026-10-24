@@ -45,6 +45,19 @@ cd android
 
 These are validation commands, not a claim that the current project builds. Do not publish a release until the build, install, startup, and core interaction have been tested on a real device or emulator.
 
+## Building a signed release APK in GitHub Actions
+
+A debug APK can be built without signing secrets. To request a signed release build, run the **Android APK Build** workflow manually on `main` and enable **Build a release APK (signed)**.
+
+Configure these repository Actions secrets first:
+
+- `ANDROID_SIGNING_KEY`: the release keystore file encoded as one base64 string.
+- `ANDROID_STORE_PASSWORD`: the keystore password.
+- `ANDROID_KEY_PASSWORD`: the key password.
+- `ANDROID_KEY_ALIAS`: the key alias (optional; defaults to `hermes`).
+
+The workflow builds the release APK from source and fails if signing credentials are missing; it must never relabel or upload a debug APK as a signed release. Keep the keystore and passwords out of the repository and logs. A signed APK still does not mean the full Hermes Python package is bundled or functional on Android.
+
 ## Android limitations
 
 - Android may pause or terminate background processes to save battery. A terminal session is not a guarantee of continuous 24/7 execution.

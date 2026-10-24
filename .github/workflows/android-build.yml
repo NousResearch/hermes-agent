@@ -24,13 +24,15 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout repository
@@ -69,8 +71,10 @@ jobs:
 
       - name: Set version
         id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          VERSION=${{ inputs.version }}
+          VERSION="$REQUESTED_VERSION"
           if [ -z "$VERSION" ]; then
             # Get version from git tag or use timestamp
             if [ -n "$GITHUB_REF" ] && echo "$GITHUB_REF" | grep -q "refs/tags/v"; then
@@ -79,7 +83,11 @@ jobs:
               VERSION="1.0.0-$(date +%Y%m%d%H%M)"
             fi
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]]; then
+            echo "Invalid version string: $VERSION" >&2
+            exit 2
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building version: $VERSION"
 
       - name: Build debug APK
@@ -100,48 +108,75 @@ jobs:
           path: Hermes-Agent-*.apk
           retention-days: 7
 
-      - name: Create release (if tagged)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: Hermes-Agent-*.apk
-          generate_release_notes: true
-          make_latest: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   release:
-    name: Build Release APK
+    name: Build signed Release APK
     if: inputs.release == true && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      - name: Download APK artifact
-        uses: actions/download-artifact@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          name: hermes-agent-apk
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Set up signing
-        if: env.SIGNING_KEY != ''
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 9.0
+          accept-android-sdk-licenses: true
+
+      - name: Install Android SDK packages
         run: |
-          echo "${{ secrets.ANDROID_STORE_PASSWORD }}" > store_password.txt
-          echo "${{ secrets.ANDROID_KEY_ALIAS }}" > key_alias.txt
-          echo "${{ secrets.ANDROID_KEY_PASSWORD }}" > key_password.txt
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER" || { echo "sdkmanager not found at $SDKMANAGER"; exit 1; }
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Prepare signing key
         env:
-          SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
-
-      - name: Sign APK
-        if: env.SIGNING_KEY != ''
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
         run: |
-          # This would sign the APK with the release keystore
-          # For now, we'll just use the debug APK
-          echo "Signing would happen here with proper keystore"
+          set -euo pipefail
+          if [ -z "${ANDROID_SIGNING_KEY:-}" ]; then
+            echo "Missing repository secret ANDROID_SIGNING_KEY (base64-encoded keystore)." >&2
+            exit 1
+          fi
+          printf '%s' "$ANDROID_SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/hermes-release.keystore"
+          test -s "$RUNNER_TEMP/hermes-release.keystore" || { echo "Decoded keystore is empty." >&2; exit 1; }
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/hermes-release.keystore" >> "$GITHUB_ENV"
 
-      - name: Upload release APK
+      - name: Build signed release APK
+        env:
+          APK_VERSION: ${{ needs.build.outputs.version }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_STORE_PASSWORD" || { echo "Missing ANDROID_STORE_PASSWORD secret." >&2; exit 1; }
+          test -n "$ANDROID_KEY_PASSWORD" || { echo "Missing ANDROID_KEY_PASSWORD secret." >&2; exit 1; }
+          bash scripts/build_android_apk.sh --version "$APK_VERSION" --release
+
+      - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
           name: hermes-agent-release-apk
-          path: Hermes-Agent-*.apk
+          path: Hermes-Agent-*-release.apk
+          if-no-files-found: error
           retention-days: 30

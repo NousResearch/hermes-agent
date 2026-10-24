@@ -96,12 +96,14 @@ if [[ ! -d "$ANDROID_HOME/platform-tools" || ! -d "$ANDROID_HOME/platforms/andro
 fi
 
 if [[ "$BUILD_TYPE" == release ]]; then
-    [[ -f "$ANDROID_DIR/app/keystore/hermes-release.keystore" ]] || {
-        error "Release keystore missing at android/app/keystore/hermes-release.keystore"; exit 1;
+    KEYSTORE_PATH="${ANDROID_KEYSTORE_PATH:-$ANDROID_DIR/app/keystore/hermes-release.keystore}"
+    [[ -f "$KEYSTORE_PATH" ]] || {
+        error "Release keystore missing. Set ANDROID_KEYSTORE_PATH or place it at android/app/keystore/hermes-release.keystore."; exit 1;
     }
     [[ -n "${ANDROID_STORE_PASSWORD:-}" && -n "${ANDROID_KEY_PASSWORD:-}" ]] || {
         error "Set ANDROID_STORE_PASSWORD and ANDROID_KEY_PASSWORD for a release build"; exit 1;
     }
+    export ANDROID_KEYSTORE_PATH="$KEYSTORE_PATH"
 fi
 
 VERSION_CODE="$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || date +%s)"

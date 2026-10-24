@@ -19,11 +19,9 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         multiDexEnabled true
 
-        // This only selects the embedded interpreter. It does not package the
-        // full Hermes agent; setup.py rejects PyPI wheel builds and Android
-        // wheels for the complete dependency set have not been verified.
-        python {
-            version "3.14"
+        // Python 3.14 is 64-bit only in Chaquopy.
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
         }
     }
 
@@ -60,6 +58,12 @@ android {
     }
 }
 
+chaquopy {
+    defaultConfig {
+        version = "3.14"
+    }
+}
+
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
@@ -73,7 +77,8 @@ dependencies {
 
 // Release signing is intentionally conditional. Debug builds work without a
 // private keystore; release builds must opt in with real credentials.
-def releaseKeystore = file('keystore/hermes-release.keystore')
+def releaseKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH') ?: 'keystore/hermes-release.keystore'
+def releaseKeystore = file(releaseKeystorePath)
 def releaseStorePassword = System.getenv('ANDROID_STORE_PASSWORD')
 def releaseKeyPassword = System.getenv('ANDROID_KEY_PASSWORD')
 def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS') ?: 'hermes'

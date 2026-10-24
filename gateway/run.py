@@ -2298,15 +2298,12 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
-    """Resolve provider credentials for gateway-created AIAgent instances.
-    ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only.
-    An ``AuthError`` from the primary walks the configured fallback chain through the shared
-    ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own)."""
+    """Provider credentials for gateway-created AIAgents (env-var fallback allowed; behaviour is config.yaml
+    only). A primary ``AuthError`` walks the fallback chain via the shared ``resolve_runtime_with_fallback``."""
+    from hermes_cli.anon_auth import ANON_CHALLENGE_REQUIRED
     from hermes_cli.runtime_provider import (
         resolve_runtime_with_fallback, format_runtime_provider_error, _get_model_config)
-
-    # Capture primary provider/model from config before the try block so we
-    # can include it in the fallback notice if the primary fails (#74349).
+    # Primary provider/model from config, named in the fallback notice if the primary fails (#74349).
     _model_cfg = _get_model_config()
     _primary_model = (_model_cfg.get("default") or "").strip()
     _primary_provider = (_model_cfg.get("provider") or "").strip()
@@ -2330,7 +2327,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
     capabilities = (
         {k: v for k, v in capabilities.items() if isinstance(k, str) and isinstance(v, bool)}
         if isinstance(capabilities, dict) else {})
-
+    check = runtime.get("auth_error")
+    if getattr(check, "code", None) == ANON_CHALLENGE_REQUIRED:  # "auto" swallowed a pending free-tier check
+        from gateway.run_turn_prepare import _FREE_TIER_CHECK
+        _FREE_TIER_CHECK.set((check, runtime.get("provider"), runtime.get("base_url")))
     return {**_runtime_agent_kwargs(runtime), "capabilities": capabilities}
 
 

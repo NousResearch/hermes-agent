@@ -766,6 +766,11 @@ class GatewayBusySessionMixin:
             turn.event.absorb_reply_expected(event)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = turn.event.reply_expected
+        # The user's message (and its busy ack) now sits below the tool-progress bubble: close it,
+        # so tool lines after the steer/redirect start a new bubble under them, not above.
+        progress_queue = getattr(turn.ctx, "progress_queue", None)
+        if progress_queue is not None:
+            progress_queue.put(("__reset__",))
         return turn
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:

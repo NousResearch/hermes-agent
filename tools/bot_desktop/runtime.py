@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.web_server_lifecycle import _process_start_marker
 from tools.bot_desktop import placement
 
 logger = logging.getLogger(__name__)
@@ -178,19 +179,27 @@ def _create_time(pid: int) -> Optional[float]:
 
 
 def _launcher_pid() -> Optional[int]:
-    """The live launcher's pid, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``: a recycled pid
-    with a different start time is somebody else's process and must never be reported as ours nor
-    killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
+    """Return the live launcher while rejecting recycled PIDs.
+
+    New records use the kernel process-start marker, which is independent of wall-clock
+    adjustments. The legacy psutil timestamp format remains readable for existing screens.
+    """
     raw = _read(state_dir() / "launcher.pid")
-    pid_s, _, born_s = (raw or "").partition(" ")
-    if not pid_s.isdigit() or not born_s:
+    pid_s, _, identity = (raw or "").partition(" ")
+    if not pid_s.isdigit() or not identity:
         return None
+    pid = int(pid_s)
     try:
-        pid, born = int(pid_s), float(born_s)
-    except ValueError:
+        if identity.startswith("marker:"):
+            actual = _process_start_marker(pid)
+            matches = actual == identity.removeprefix("marker:")
+        else:
+            born = float(identity)
+            actual = _create_time(pid)
+            matches = actual is not None and abs(actual - born) < 0.01
+    except (OSError, ProcessLookupError, ValueError):
         return None
-    actual = _create_time(pid)
-    return pid if actual is not None and abs(actual - born) < 0.01 and _pid_alive(pid) else None
+    return pid if matches and _pid_alive(pid) else None
 
 
 def _recorded_launcher_pid() -> Optional[int]:
@@ -747,8 +756,12 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True)
         log.close()
-        born = _create_time(proc.pid)
-        (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
+        try:
+            identity = f"marker:{_process_start_marker(proc.pid)}"
+        except (OSError, ProcessLookupError):
+            born = _create_time(proc.pid)
+            identity = str(born if born is not None else 0)
+        (sd / "launcher.pid").write_text(f"{proc.pid} {identity}", encoding="utf-8")
 
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:

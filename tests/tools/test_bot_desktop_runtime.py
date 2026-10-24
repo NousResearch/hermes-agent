@@ -64,6 +64,20 @@ def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
     assert runtime._launcher_pid() == os.getpid()
 
 
+def test_launcher_marker_survives_wall_clock_creation_time_drift(tmp_path, monkeypatch):
+    """A stable process marker keeps a live launcher after psutil's wall-clock timestamp shifts."""
+    import os
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime, "_process_start_marker", lambda pid: "linux:123")
+    monkeypatch.setattr(runtime, "_create_time", lambda pid: 100.0)
+    monkeypatch.setattr(runtime, "_pid_alive", lambda pid: True)
+    (tmp_path / "launcher.pid").write_text(f"{os.getpid()} marker:linux:123", encoding="utf-8")
+    assert runtime._launcher_pid() == os.getpid()
+    monkeypatch.setattr(runtime, "_process_start_marker", lambda pid: "linux:124")
+    assert runtime._launcher_pid() is None
+
+
 def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypatch):
     """After profile A stops, B may take A's number; A restarting must pick another rather than
     unlink B's socket and lock."""

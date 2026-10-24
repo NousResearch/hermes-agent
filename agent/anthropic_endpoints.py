@@ -1,8 +1,8 @@
 """Endpoint-family detection for Anthropic-compatible base URLs.
 
 A dozen services speak the Anthropic Messages API but differ in auth style, accepted beta
-headers, and request quirks (MiniMax, Kimi/Moonshot, DeepSeek, OpenCode, Azure AI Foundry, Nous
-Portal, Bedrock). Every such difference is decided from the configured base URL, so the
+headers, and request quirks (MiniMax, Kimi/Moonshot, DeepSeek, GLM/Z.AI, OpenCode, Azure AI
+Foundry, Nous Portal, Bedrock). Every such difference is decided from the configured base URL, so the
 predicates live together here as pure functions (no I/O, SDK or credentials) that both
 ``agent/anthropic_adapter.py`` and ``agent/anthropic_message_convert.py`` can import without a
 cycle.
@@ -104,6 +104,45 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     return base_url_host_matches(base_url or "", "api.deepseek.com") and "/anthropic" in _normalized_lower(base_url)
 
 
+# GLM / Z.AI & BigModel Anthropic-compatible routes (GLM Coding Plan — the Claude Code
+# drop-in endpoint). Auth is Bearer (the plan API key is set as ANTHROPIC_AUTH_TOKEN);
+# thinking depth is expressed with ``thinking.type`` + ``output_config.effort``, NOT the
+# manual ``budget_tokens`` contract (docs.z.ai/devpack/latest-model).
+_GLM_ANTHROPIC_ENDPOINT_HOSTS = ("api.z.ai", "open.bigmodel.cn")
+
+# Relay spellings that drop the version dots (Fireworks ``glm-5p2``, ``zai-org-glm-5-2``…).
+_GLM_RELAY_VERSION_TOKENS = ("glm-5p2", "glm-5p3", "glm-5-2", "glm-5-3")
+
+
+def _is_glm_anthropic_endpoint(base_url: str | None) -> bool:
+    """GLM Coding Plan Anthropic Messages routes (Z.AI global, BigModel China). Pinned to the
+    ``/anthropic`` path so the OpenAI-compatible ``/paas/v4`` base URLs are not misclassified."""
+    normalized = _normalized_lower(base_url)
+    return "/anthropic" in normalized and any(
+        base_url_host_matches(normalized, host) for host in _GLM_ANTHROPIC_ENDPOINT_HOSTS
+    )
+
+
+def _model_name_is_glm_family(model: str | None) -> bool:
+    """GLM model slugs behind any Anthropic-Messages relay: official ids (``glm-5.3``,
+    ``glm-5.2[1m]``, ``glm-4.7``) and relay spellings, matched case-insensitively after
+    stripping any ``vendor/`` prefix. The upstream enforces GLM's thinking semantics
+    regardless of hostname (mirrors ``_model_name_is_kimi_family``)."""
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower().rsplit("/", 1)[-1]
+    return bool(m) and (
+        m.startswith(("glm-", "glm_"))
+        or any(token in m for token in _GLM_RELAY_VERSION_TOKENS)
+    )
+
+
+def _glm_model_has_token(model: str | None, tokens: tuple[str, ...]) -> bool:
+    """Case-insensitive substring membership of *model* against GLM alias tokens."""
+    m = (model or "").strip().lower()
+    return any(token in m for token in tokens)
+
+
 def _is_nous_portal_endpoint(base_url: str | None) -> bool:
     """Nous Portal's Anthropic Messages route (Bearer JWT, verbatim catalog ids, native
     thinking-signature replay). Trusted hosts only: prod ``inference-api.nousresearch.com`` or the
@@ -121,12 +160,14 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
-    """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, Azure AI
-    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal. Palantir/CommandCode use
-    hostname matching (not substring) so ``evil.com/palantirfoundry`` paths don't trigger it."""
+    """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, GLM/Z.AI
+    (Coding Plan keys are sent as ANTHROPIC_AUTH_TOKEN), Azure AI Foundry, Palantir Foundry's
+    LLM proxy, CommandCode, Nous Portal. Palantir/CommandCode use hostname matching (not
+    substring) so ``evil.com/palantirfoundry`` paths don't trigger it."""
     normalized = _normalized_lower(base_url)
     return (
         _is_nous_portal_endpoint(base_url)
+        or _is_glm_anthropic_endpoint(base_url)
         or normalized.startswith(_MINIMAX_ANTHROPIC_PREFIXES)
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")

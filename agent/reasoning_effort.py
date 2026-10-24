@@ -78,6 +78,14 @@ GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
+#: GLM-5.3 on the Anthropic Messages route (docs.z.ai/devpack/latest-model): the documented
+#: low/high/max trio. The OpenAI-compatible coding endpoint additionally accepts ``medium``
+#: (live-verified); on the Anthropic route the server converts ``medium`` to ``high`` (same as
+#: Kimi K3's positional middle), so the override follows the vendor mapping instead of the
+#: generic nearest-weaker clamp (which would round ``medium`` down to ``low``).
+GLM53_ANTHROPIC_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+GLM53_ANTHROPIC_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
+
 #: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.
 DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}

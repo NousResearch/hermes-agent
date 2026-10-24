@@ -83,6 +83,12 @@ export function SyncStatusCard() {
         </ul>
       )}
 
+      {summary.stash && (
+        <p className="text-xs leading-snug text-muted-foreground" data-testid="stash-outcome-line">
+          {summary.stash.detail}
+        </p>
+      )}
+
       {summary.disabledPlugins.length > 0 && (
         <ul className="grid gap-1 text-xs text-foreground">
           {summary.disabledPlugins.map(item => (

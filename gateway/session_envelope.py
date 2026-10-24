@@ -165,17 +165,23 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
 
 def snapshot_native(runner, event):
     from gateway.session_ingress_context import capture_provenance
+    from gateway.trusted_turn_origin import capture_origin_claim
     provenance = capture_provenance(runner, event)
-    return _snapshot_native(runner, _adapter_event(event), provenance)
+    projected = capture_origin_claim(runner, event, provenance=provenance, native=True)
+    return _snapshot_native(runner, _adapter_event(event), provenance, origin_claim=projected)
 
 
 async def prepare_native(runner, event):
     from gateway.session_ingress_context import capture_provenance, reauthorize_roles
+    from gateway.trusted_turn_origin import capture_origin_claim
     provenance = capture_provenance(runner, event)
     # Freeze caller-owned identity and content before the first network yield.
     # Preserve dynamic trust fields too: validation must reject forged ones,
     # not silently discard them while freezing the caller's source identity.
     frozen = _adapter_event(event, source=copy(event.source))
+    # The SDK payload is caller-owned and may mutate across the role/auth await.
+    # Keep only the validated JSON projection, never raw_message itself.
+    projected = capture_origin_claim(runner, frozen, provenance=provenance, native=True)
     fresh_roles = await reauthorize_roles(runner, frozen.source, provenance)
     encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
     # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the
@@ -204,10 +210,12 @@ async def prepare_native(runner, event):
         except BaseException:
             await abandon_capture(scope)
             raise
-    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
+    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media,
+                            origin_claim=projected)
 
 
-def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None):
+def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None,
+                     origin_claim=None):
     if encoded_source is None:
         encoded_source = _validate_native(runner, event, provenance, fresh_roles)
     envelope = {'source': encoded_source,
@@ -226,6 +234,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         envelope['reauthorize'] = 'roles'
     if provenance is not None:
         envelope['provenance'] = provenance
+    if origin_claim is not None:
+        envelope['origin_claim_v1'] = origin_claim
     # Omit new defaults so an identical retry of an older text admission retains
     # its fingerprint. Explicit context (including an empty skill list) is exact.
     envelope['event'].update({name: deepcopy(getattr(event, name)) for name in _CONTEXT_FIELDS
@@ -288,6 +298,13 @@ def restore_native(payload, runner=None):
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
+    event._native_origin_restored = True  # an old row has no claim and must not mint one at execution
+    if 'origin_claim_v1' in envelope:
+        if runner is None:
+            raise RuntimeStoreError('permission_denied', field='origin_projector')
+        from gateway.trusted_turn_origin import restore_origin_claim
+        restore_origin_claim(runner, event, envelope['origin_claim_v1'],
+                             provenance=envelope.get('provenance'))
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):

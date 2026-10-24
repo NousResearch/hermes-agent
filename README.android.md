@@ -1,230 +1,87 @@
-# Hermes Agent for Android - APK Installation
+# Hermes Agent on Android
 
-[![Download APK](https://img.shields.io/badge/Download-APK-green?style=for-the-badge)](https://github.com/luciano2-web/hermes-agent/releases/download/v1.0.0-android/Hermes-Agent-1.0.0-debug.apk)
+This guide distinguishes the supported Termux workflow from the experimental APK files in this repository. **Do not assume that the APK provides the same features as the desktop/server agent.** Check the release notes and test the exact build on your device before relying on it.
 
-This guide explains how to install and use Hermes Agent on Android devices.
+## Recommended: Termux on Android
 
-## \ud83d\udcf1 Quick Start
+Hermes' documented Android path is Termux on a 64-bit ARM (aarch64/arm64) device. Use the official [Hermes Termux installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux) as the source of truth for the current repository and package commands.
 
-### 1. Download the APK
+1. Install Termux from a trusted source linked by the [Termux project](https://termux.dev/).
+2. Open Termux and follow the current Hermes Termux guide. Do not copy a guessed package filename: package versions and repository URLs change.
+3. If installation fails, save the complete error output and check the supported Python version and architecture before changing dependencies.
+4. Start Hermes from Termux using the command documented by the installed package.
 
-**[Click here to download the APK](https://github.com/luciano2-web/hermes-agent/releases/download/v1.0.0-android/Hermes-Agent-1.0.0-debug.apk)** - Just tap and it will download automatically!
+### Android-specific limitations
 
-Or visit: [Release v1.0.0-android](https://github.com/luciano2-web/hermes-agent/releases/tag/v1.0.0-android)
+- Android may pause or terminate background processes to save battery. A terminal session is not a guarantee of continuous 24/7 execution.
+- Some desktop/server integrations depend on Docker, system services, native libraries, or tools that are unavailable or restricted on Android.
+- Keep Termux and Hermes updated using their documented update procedures. Avoid mixing package managers or installing the desktop/server installer inside Termux unless the official guide explicitly instructs you to.
+- Do not paste API keys into screenshots, public issues, or chat logs.
 
-### 2. Enable Unknown Sources
+## APK in this repository: experimental
 
-Before installing the APK, enable installation from unknown sources:
+The repository has advertised an APK at:
 
-**Android 8.0+:**
-- Open **Settings**
-- Go to **Apps & notifications** > **Special app access** > **Install unknown apps**
-- Select your browser or file manager and enable it
+- [Android APK release](https://github.com/luciano2-web/hermes-agent/releases/tag/v1.0.0-android)
+- [APK file](https://github.com/luciano2-web/hermes-agent/releases/download/v1.0.0-android/Hermes-Agent-1.0.0-debug.apk)
 
-**Older Android:**
-- Open **Settings**
-- Go to **Security**
-- Enable **Unknown sources**
+Availability of a download does **not** prove that it installs, starts, or supports all Hermes features on every Android device. Treat this APK as experimental until the project publishes reproducible build instructions, a verified checksum, tested Android versions, and CI results.
 
-### 3. Install the APK
+Before installing:
+1. Review the release assets and release notes.
+2. Verify the publisher and checksum if one is published. If there is no checksum or verifiable build provenance, understand that you cannot independently confirm the downloaded file matches the source.
+3. Only install if you trust the source. Android may require allowing your browser or file manager to install unknown apps; turn that permission back off after installation if you enabled it solely for this file.
+4. Do not uninstall a working installation or clear app data as a first troubleshooting step; either action can remove local data.
 
-- Open the downloaded file (usually in your **Downloads** folder)
-- Tap **Install**
-- Wait for installation to complete
-- Tap **Open** to launch Hermes Agent
+If installation fails, record the device Android version, CPU architecture, APK version, exact error text, and (for crashes) relevant log output. Remove secrets and personal data before sharing logs.
 
-## \ud83c\udfaf Features
+## Building the APK from source
 
-\u2705 **Full AI Agent** - Same powerful agent as desktop version
-\u2705 **Continuous Learning** - Skills improve with use
-\u2705 **Multi-Model Support** - Use OpenRouter, Nous Research, and more
-\u2705 **Background Execution** - Keep agent running
-\u2705 **Offline Mode** - Works without internet (with local models)
-\u2705 **Easy Updates** - Download new versions as they're released
+The current Android project should be treated as **unverified until a clean build succeeds in CI**. The Gradle project declares Android SDK 34, minimum Android API 24, and Chaquopy Python 3.10, while the main Python project currently declares Python `>=3.11,<3.15`. That version mismatch is a compatibility risk: do not assume that installing the Python package from PyPI into the APK will work.
 
-## \ud83d\udccb Requirements
+The repository's build script also attempts to install Android SDK components using the legacy `android update sdk` command. Modern Android SDK command-line tools use `sdkmanager`; if the legacy command is missing, install the required SDK packages with Android Studio's SDK Manager or `sdkmanager`, then rerun only after checking the script's other requirements.
 
-- **Android 7.0 (Nougat) or later**
-- **2GB RAM minimum** (4GB recommended)
-- **500MB+ free storage**
-- **Internet connection** for first setup
+### Build prerequisites
 
-## \ud83d\ude80 First Launch
+- A desktop operating system supported by Android Studio/Gradle (building directly on an Android tablet is not documented as supported).
+- JDK 17, Android SDK platform 34, and Android build-tools 34.0.0.
+- The Android Gradle wrapper and all required dependencies.
+- A compatible Python runtime/dependency strategy. Resolve the Python 3.10 versus project Python requirement before claiming the APK embeds the full agent.
 
-On first launch, Hermes Agent will:
-
-1. Request necessary permissions
-2. Initialize Python runtime (bundled with the APK via Chaquopy)
-3. Initialize your agent
-
-## \ud83d\udcac Usage
-
-### Starting a Conversation
-
-Just type your message and press Enter. Hermes will:
-- Understand your request
-- Use tools when appropriate
-- Maintain conversation context
-- Learn from interactions
-
-### Commands
+From a desktop terminal, inspect the project and run the wrapper's validation tasks first:
 
 ```bash
-# List available commands
-hermes --help
-
-# Change model
-hermes model
-
-# Start a new chat
-hermes chat
-
-# Run in gateway mode
-hermes gateway
+cd android
+./gradlew tasks
+./gradlew assembleDebug --stacktrace
 ```
 
-### Model Providers
+On Windows, use `gradlew.bat` instead of `./gradlew`. These commands are diagnostic examples, not a guarantee that the current project builds. Do not create a release build or publish an APK until the build, installation, startup, and core chat flow have been tested on a real device or emulator.
 
-Configure your preferred AI model provider:
+## Troubleshooting checklist
 
-```bash
-# Set OpenRouter (default)
-hermes config set model_provider openrouter
-hermes config set openrouter_api_key your_key
+- **“App not installed”**: check whether the APK download completed, whether the package conflicts with an existing install, available storage, and Android's reported error. Do not assume that reinstalling is safe for local data.
+- **Parse error / incompatible package**: re-download from the release page and check the device architecture and Android version against verified release metadata.
+- **Crash at startup**: collect Android logs and report the first relevant exception; clearing app data is a last resort because it can erase configuration.
+- **Python/module import error**: check the Python version, wheel availability for Android/arm64, and whether every dependency is actually packaged. Desktop PyPI compatibility does not imply Android compatibility.
+- **Network/provider errors**: check connectivity and provider configuration. Model requests generally require internet access unless a separately configured local model is genuinely supported.
+- **Background work stops**: check Android battery optimization and foreground-service behavior. Do not promise 24/7 execution unless it has been tested on the target Android version.
 
-# Set Nous Research
-hermes config set model_provider nous
-hermes config set nous_api_key your_key
+## Reporting an Android bug
 
-# Use local model
-hermes config set model_provider local
-```
+Open an issue in this repository with:
+- device model and Android version;
+- CPU architecture (for example, arm64-v8a);
+- installation method (Termux or APK) and exact version/release;
+- command or steps that reproduce the problem;
+- complete error message and relevant redacted logs;
+- expected result and actual result.
 
-## \u2699\ufe0f Configuration
+Never include API keys, tokens, passwords, private conversations, or unredacted personal information.
 
-Edit `~/.hermes/config.yaml` or use the `hermes config` command.
+## Official references
 
-### Example Configuration
-
-```yaml
-model_provider: openrouter
-openrouter_api_key: sk-or-v1-your-key
-model: openai/gpt-4o-mini
-```
-
-## \ud83d\udd27 Troubleshooting
-
-### "App not installed" Error
-
-- **Solution 1**: Uninstall any previous version first
-- **Solution 2**: Check storage space (need 500MB+ free)
-- **Solution 3**: Enable "Install unknown apps" for your browser
-
-### "Parse error" When Installing
-
-- **Solution 1**: Download the APK again (may be corrupted)
-- **Solution 2**: Check you're downloading the arm64 version
-- **Solution 3**: Try a different browser
-
-### App Crashes on Startup
-
-- **Solution 1**: Clear app data (Settings > Apps > Hermes Agent > Storage > Clear Data)
-- **Solution 2**: Reinstall the APK
-- **Solution 3**: Check logs in `/data/data/com.nousresearch.hermes/files/logs/`
-
-### Python Initialization Fails
-
-- **Solution 1**: The APK includes Python via Chaquopy, no download needed
-- **Solution 2**: Wait for initialization to complete (may take a few seconds on first launch)
-- **Solution 3**: Try on a different network
-
-### Out of Memory Errors
-
-- **Solution 1**: Use a smaller model (e.g., `mistralai/mistral-tiny`)
-- **Solution 2**: Close other apps to free memory
-- **Solution 3**: Use Termux version for better memory management
-
-## \ud83c\udfd7\ufe0f Building from Source
-
-### Prerequisites
-
-- [Android Studio](https://developer.android.com/studio) or [Android SDK](https://developer.android.com/studio#command-tools)
-- [JDK 17](https://adoptium.net/) or later
-- Internet connection
-
-### Build Steps
-
-```bash
-# Clone repository
-git clone https://github.com/luciano2-web/hermes-agent.git
-cd hermes-agent
-
-# Make build script executable
-chmod +x scripts/build_android_apk.sh
-
-# Build debug APK
-./scripts/build_android_apk.sh --version 1.0.0 --debug
-
-# APK will be at: Hermes-Agent-1.0.0-debug.apk
-```
-
-### Release Build
-
-```bash
-# Build signed APK
-./scripts/build_android_apk.sh --version 1.0.0 --release
-```
-
-\u26a0\ufe0f **Note**: Release builds require a signing keystore. Place it at `android/app/keystore/release.keystore`
-
-## \ud83d\udcda Alternative: Termux Installation
-
-For advanced users who prefer terminal access:
-
-```bash
-# In Termux:
-pkg update && pkg upgrade
-pkg install wget
-wget https://github.com/NousResearch/hermes-agent/releases/latest/download/hermes-agent_<version>_aarch64.deb
-dpkg -i hermes-agent_<version>_aarch64.deb
-hermes
-```
-
-## \ud83d\udd12 Security
-
-\u26a0\ufe0f **Important**:
-
-- Only install APKs from official sources
-- Review permissions before installing
-- Your conversation data stays on your device
-- Model interactions go through your configured provider
-
-## \ud83d\udcca Comparison: APK vs Termux
-
-| Feature | APK | Termux |
-|---------|-----|--------|
-| Easy Installation | \u2705 Yes | \u274c Manual |
-| GUI Interface | \u2705 Yes | \u274c CLI only |
-| Background Execution | \u2705 Yes | \u2705 Yes |
-| Notifications | \u2705 Yes | \u274c No |
-| Storage Access | \u2705 Yes | \u2705 Yes |
-| Updates | \u2705 Automatic | \u274c Manual |
-| Performance | \u26a0\ufe0f Good | \u2705 Better |
-| Memory Usage | \u26a0\ufe0f Higher | \u2705 Lower |
-| Offline Mode | \u2705 Yes | \u2705 Yes |
-
-## \ud83d\udcde Support
-
-- **Issues**: [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- **Discord**: [Join our server](https://discord.gg/NousResearch)
-- **Docs**: [Official Documentation](https://hermes-agent.nousresearch.com/docs/)
-
-## \ud83d\udcdc License
-
-MIT License - See [LICENSE](LICENSE) for details.
-
----
-
-**Hermes Agent - AI with Continuous Learning**
-
-*Created by [Nous Research](https://nousresearch.com)*
+- [Hermes Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux)
+- [Hermes installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation)
+- [Android SDK command-line tools](https://developer.android.com/tools/sdkmanager)
+- [Termux project](https://termux.dev/)

@@ -37,8 +37,21 @@ import http from 'node:http'
 import https from 'node:https'
 
 // JSON pool: many small concurrent calls (session lists, config, prompts).
-const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: 50 })
-const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: 50 })
+//
+// maxSockets is deliberately NOT the typical direct-TCP value (50+). When the
+// transport is an SSH mux (remote backends), all logical sockets multiplex
+// over ONE physical SSH connection: the mux serialises channel handling, so
+// ~10 concurrent channels is the observed saturation point. Exceeding it
+// queues requests behind each other, turning a healthy 0.3s round-trip into
+// 4-9s latency that the retry policy then amplifies into a connection storm
+// (conns 10 to 22, channels 3 to 11, self-resolving after ~50s). 12 leaves
+// headroom above the healthy steady-state (~10 conns) while staying below
+// the mux saturation knee, and is equally safe for direct TCP (HTTP JSON
+// payloads are small; 12 concurrent sockets suffice for interactive rates).
+const MAX_JSON_CONCURRENCY = 12
+
+const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: MAX_JSON_CONCURRENCY })
+const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: MAX_JSON_CONCURRENCY })
 
 // Download pool: few long-lived streaming bodies. Isolated from the JSON pool
 // so saturating it with large file downloads can't block interactive calls.
@@ -47,6 +60,20 @@ const HTTPS_DOWNLOAD_AGENT = new https.Agent({ keepAlive: true, maxSockets: 8 })
 
 function jsonAgentFor(protocol) {
   return protocol === 'https:' ? HTTPS_JSON_AGENT : HTTP_JSON_AGENT
+}
+
+// A keep-alive pool can hold a socket whose peer (an SSH mux forward channel)
+// wedged mid-session: the socket stays open locally but never delivers, so the
+// next reuse dies with 'socket hang up' — a false 'backend is dead' signal
+// (#131765). Probes that must distinguish "stale pooled socket" from "backend
+// actually gone" need a socket that CANNOT be a stale pool entry: a fresh
+// agent with no keep-alive, so the TCP handshake itself proves liveness. This
+// is deliberately un-pooled — callers use it for one-shot health probes only,
+// never for bulk traffic.
+function freshJsonAgentFor(protocol) {
+  return protocol === 'https:'
+    ? new https.Agent({ keepAlive: false, maxSockets: 1 })
+    : new http.Agent({ keepAlive: false, maxSockets: 1 })
 }
 
 function downloadAgentFor(protocol) {
@@ -141,8 +168,22 @@ async function withRetry(makeAttempt, options: any = {}) {
   const method = String(options.method || 'GET').toUpperCase()
   const maxRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2
 
+  // Retry delay must be proportional to the timeout that triggered the retry,
+  // not a fixed small constant. When a request times out after Nms of queueing,
+  // re-entering the queue 200ms later guarantees another timeout: the queue has
+  // not drained. Delay = timeout * 0.1 * 2^attempt, capped at 5s, plus +/-50%
+  // jitter so concurrent failures do not retry in lockstep (which would
+  // synchronise the storm instead of spreading it). For fast-fail errors
+  // (ECONNRESET) where no timeout fired, falls back to the legacy 200ms base.
   const delayFn =
-    options.delayFn || (attempt => new Promise(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000))))
+    options.delayFn ||
+    (attempt => {
+      const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 0
+      const base = timeoutMs > 0 ? timeoutMs * 0.1 : 200
+      const backoff = Math.min(base * Math.pow(2, attempt), 5000)
+      const jitter = backoff * 0.5 * Math.random()
+      return new Promise(r => setTimeout(r, backoff + jitter))
+    })
 
   let lastError
 
@@ -271,6 +312,7 @@ function isSchemeOrSlashRedirect(requestUrl: string, location: null | string): b
 export {
   destroyKeepaliveAgents,
   downloadAgentFor,
+  freshJsonAgentFor,
   htmlResponseError,
   httpStatusError,
   isIdempotentMethod,

@@ -594,6 +594,90 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.message_id == "top_post_123"
 
 
+def _thread_mode_adapter():
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+def _posted_event(*, post_id, channel_id, message, channel_type, root_id=""):
+    return {
+        "event": "posted",
+        "data": {
+            "post": json.dumps({
+                "id": post_id,
+                "user_id": "user_123",
+                "channel_id": channel_id,
+                "message": message,
+                "root_id": root_id,
+            }),
+            "channel_type": channel_type,
+            "sender_name": "@alice",
+        },
+    }
+
+
+async def _inbound_source(adapter, event):
+    await adapter._handle_ws_event(event)
+    return adapter.handle_message.call_args[0][0].source
+
+
+@pytest.mark.asyncio
+async def test_mattermost_top_level_dm_post_is_thread_root():
+    """reply_mode=thread: a top-level DM starts a new session, matching channels."""
+    adapter = _thread_mode_adapter()
+    source = await _inbound_source(adapter, _posted_event(
+        post_id="dm_top_123", channel_id="dm_chan", message="hello", channel_type="D"))
+    assert source.thread_id == "dm_top_123"
+    assert source.chat_type == "dm"
+
+
+@pytest.mark.asyncio
+async def test_mattermost_dm_reply_keeps_root_thread_id():
+    """A reply inside a DM thread stays in the root post's session."""
+    adapter = _thread_mode_adapter()
+    source = await _inbound_source(adapter, _posted_event(
+        post_id="dm_reply_456", channel_id="dm_chan", message="follow-up",
+        channel_type="D", root_id="dm_top_123"))
+    assert source.thread_id == "dm_top_123"
+
+
+@pytest.mark.asyncio
+async def test_mattermost_channel_reply_keeps_root_thread_id():
+    """Channel replies still key to root_id after DMs get the same top-level mapping."""
+    adapter = _thread_mode_adapter()
+    source = await _inbound_source(adapter, _posted_event(
+        post_id="chan_reply_456", channel_id="chan_456", message="@hermes-bot follow-up",
+        channel_type="O", root_id="top_post_123"))
+    assert source.thread_id == "top_post_123"
+
+
+@pytest.mark.asyncio
+async def test_mattermost_thread_mode_dm_sessions_split_by_top_level_post():
+    """Two top-level DMs get distinct session keys; a reply shares the root's key."""
+    from gateway.session import build_session_key
+
+    adapter = _thread_mode_adapter()
+    first = await _inbound_source(adapter, _posted_event(
+        post_id="dm_a", channel_id="dm_chan", message="topic a", channel_type="D"))
+    second = await _inbound_source(adapter, _posted_event(
+        post_id="dm_b", channel_id="dm_chan", message="topic b", channel_type="D"))
+    reply = await _inbound_source(adapter, _posted_event(
+        post_id="dm_a_reply", channel_id="dm_chan", message="more on a",
+        channel_type="D", root_id="dm_a"))
+
+    first_key = build_session_key(first)
+    second_key = build_session_key(second)
+    reply_key = build_session_key(reply)
+    assert first_key != second_key
+    assert first_key == reply_key
+    assert first_key.endswith(":dm_a")
+    assert ":dm_chan:" in first_key
+
+
 # ---------------------------------------------------------------------------
 # Multiplex secondary-profile scope
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import signal
@@ -29,6 +30,8 @@ from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
+
+logger = logging.getLogger(__name__)
 
 
 # After this many consecutive non-success attempts on a task/profile the
@@ -1204,12 +1207,46 @@ class _DeadWorker:
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
+    oom_killed: bool = False
+    """The worker's own systemd scope OOM-killed it (t_4d12c8eb). The scope's
+    ``MemoryMax`` was reached, so the death says nothing about the WORK — the
+    implementation may be complete and on disk. Booked as an infrastructure
+    failure: it must not read like a broken-code crash."""
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
         # doesn't show a phantom crash for a quota wall.
         return "rate_limited" if self.rate_limited else "crashed"
+
+
+def _worker_oom_record(pid: Optional[int] = None, task_id: Optional[str] = None):
+    """The kernel OOM record for this worker, or ``None``.
+
+    Best-effort and never raises: forensics that break the next dispatch tick
+    are worse than no forensics. A ``None`` result means "no OOM record found",
+    which on a host whose journal is intact is evidence the death was NOT an
+    OOM.
+    """
+    if not pid and not task_id:
+        return None
+    try:
+        from hermes_cli import kanban_worker_oom
+
+        return kanban_worker_oom.find_worker_oom(task_id=task_id, worker_pid=pid)
+    except Exception:  # pragma: no cover - forensics must never break a dispatch
+        logger.debug("worker OOM lookup failed", exc_info=True)
+        return None
+
+
+def _describe_worker_oom(record: dict) -> str:
+    """Human-readable one-liner for a worker OOM."""
+    try:
+        from hermes_cli import kanban_worker_oom
+
+        return kanban_worker_oom.describe_oom(record)
+    except Exception:  # pragma: no cover
+        return "worker OOM-killed by its own systemd scope (infrastructure failure)"
 
 
 def _classify_dead_worker(
@@ -1290,6 +1327,34 @@ def _classify_dead_worker_exit(
         error_text = f"pid {pid} killed by signal {code}"
     else:
         error_text = f"pid {pid} not alive"
+
+    # A worker OOM-killed by its own systemd scope is an INFRASTRUCTURE failure,
+    # not a failure of the work. The generic strings above ("pid <n> not alive",
+    # "killed by signal 9") read like the code was broken, which is exactly the
+    # misdiagnosis that made two good cards look like failures (t_4d12c8eb).
+    #
+    # The kernel's OOM record is the durable evidence: the scope is created with
+    # ``--collect`` so systemd removes it the moment the worker exits, and an
+    # OOM-killed worker never writes its exit trailer. The journal names both
+    # the scope (hence the task) and the limit that was hit.
+    oom_record = _worker_oom_record(pid=pid, task_id=task_id)
+    if oom_record is not None:
+        description = _describe_worker_oom(oom_record)
+        return _DeadWorker(
+            "oom_killed", code,
+            f"pid {pid} was OOM-killed: {description}",
+            "crashed",
+            {
+                "pid": pid,
+                "claimer": claimer,
+                "exit_kind": kind,
+                "exit_code": code,
+                "oom_killed": True,
+                "oom": oom_record,
+            },
+            oom_killed=True,
+        )
+
     event_payload = {"pid": pid, "claimer": claimer}
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
@@ -1440,6 +1505,29 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
+            )
+        elif dead.oom_killed:
+            # The worker's own scope OOM-killed it. The implementation may be
+            # COMPLETE and on disk — the death says nothing about the work, so
+            # it must not consume the crash budget or read like broken code.
+            #
+            # Booked like any other infrastructure failure: the card is released
+            # for a retry, ``consecutive_failures`` is left alone, and the reason
+            # names the OOM. Without this, two OOMs in a row trip the breaker
+            # with a ``gave_up`` that blames the code (t_4d12c8eb).
+            tripped = _record_task_failure(
+                conn, tid,
+                error=error_text,
+                outcome="crashed",
+                infrastructure=True,
+                release_claim=False,
+                end_run=False,
+                event_payload_extra={
+                    "pid": pid,
+                    "claimer": claimer,
+                    "oom_killed": True,
+                    "infrastructure": True,
+                },
             )
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3

@@ -390,7 +390,7 @@ class GatewaySlashCommandsMixin(
 
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
-        source has no platform/chat to route back to."""
+        profile disables auto-subscription or the source has no platform/chat to route back to."""
         source = event.source
 
         def _field(name: str) -> Optional[str]:
@@ -405,14 +405,30 @@ class GatewaySlashCommandsMixin(
             return False
 
         def _sub():
-            from hermes_cli import kanban_db as _kb
+            from hermes_cli.config import load_config
             from hermes_cli import kanban_db_connect as _kbc
             from hermes_cli import kanban_db_notify as _kbn
+
+            # Match kanban_create's opt-out. Read inside the worker so config
+            # I/O stays off-loop; asyncio.to_thread carries the profile scope.
+            if not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
+                return False
             conn = _kbc.connect(board=requested_board)
             try:
+                thread_id = _field("thread_id")
+                if any(
+                    sub["platform"] == platform_str
+                    and sub["chat_id"] == chat_id
+                    and (sub["thread_id"] or "") == (thread_id or "")
+                    for sub in _kbn.list_notify_subs(conn, task_id)
+                ):
+                    # An idempotent create can run this path again. Keep the
+                    # existing row's explicit delivery policy instead of
+                    # overwriting it with the automatic notify+wake default.
+                    return True
                 _kbn.add_notify_sub(
                     conn, task_id=task_id, platform=platform_str, chat_id=chat_id, chat_type=chat_type,
-                    thread_id=_field("thread_id"), user_id=_field("user_id"),
+                    thread_id=thread_id, user_id=_field("user_id"),
                     # Also persist the stable alt id (Signal UUID, Feishu union_id): build_session_key
                     # keys the participant on ``user_id_alt or user_id``, so a replayed wake rebuilds
                     # the same session key only when the alt id survives the round-trip.
@@ -420,10 +436,10 @@ class GatewaySlashCommandsMixin(
                     notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
                     # Subscribing from chat: deliver the passive message and wake the destination agent.
                     delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
+                return True
             finally:
                 conn.close()
-        await asyncio.to_thread(_sub)
-        return True
+        return await asyncio.to_thread(_sub)
 
     async def _handle_stop_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /stop command - interrupt a running agent.  A truly hung agent (blocked thread

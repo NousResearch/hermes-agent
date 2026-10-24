@@ -246,3 +246,22 @@ class TestCommandCodeBaseUrlOverride:
             )
         assert result == ["m1"]
         assert captured["url"] == cc_mod._COMMANDCODE_MODELS_URL
+
+
+# ── Response-format capability ────────────────────────────────────────────────
+
+
+class TestCommandCodeResponseFormats:
+    """The endpoint implements only ``json_object``, so a ``json_schema`` request
+    is a guaranteed HTTP 400. Declaring it lets auxiliary callers (title
+    generation, compression summaries) omit the field instead of paying the
+    round trip and logging a failure."""
+
+    def test_chat_profile_declares_json_schema_unsupported(self, commandcode_profile):
+        assert "json_schema" in commandcode_profile.unsupported_response_formats
+
+    def test_declaration_stays_off_the_anthropic_profile(self, commandcode_anthropic_profile):
+        """The Messages wire has no ``response_format`` field to omit."""
+        assert "json_schema" not in (
+            commandcode_anthropic_profile.unsupported_response_formats or ()
+        )

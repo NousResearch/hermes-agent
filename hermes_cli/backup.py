@@ -14,7 +14,7 @@ import zipfile
 import zlib
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone, UTC
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import (
@@ -328,9 +328,11 @@ def _configured_backup_exclude_prefixes(hermes_root: Path) -> list[tuple[str, ..
 
     Each entry is a HERMES_HOME-relative POSIX-style prefix for regenerable provider assets that
     the built-in rules cannot name, e.g. a local embedding GGUF under ``mnemosyne/models`` that
-    would otherwise be re-zipped into every backup. Entries that are absolute, contain ``..``, or
-    reduce to the root itself are ignored with a warning: a prefix must never reach outside
-    HERMES_HOME, and an empty one would exclude the whole home. Missing or empty key -> ``[]``.
+    would otherwise be re-zipped into every backup. Entries that are absolute (POSIX or Windows
+    drive), contain ``..``, or reduce to the root itself are ignored with a warning: a prefix must
+    never reach outside HERMES_HOME, and an empty one would exclude the whole home. Missing or
+    empty key -> ``[]``. Entries name directories: files are dropped only when they live under an
+    excluded directory, so a regular file whose path equals an entry stays archived.
 
     Applied only on the backup walk. Restore/import are deliberately not filtered by this key so
     archives created with extra members still restore.
@@ -338,7 +340,7 @@ def _configured_backup_exclude_prefixes(hermes_root: Path) -> list[tuple[str, ..
     raw_cfg = _read_raw_yaml_dict(hermes_root / "config.yaml") or {}
     updates = raw_cfg.get("updates")
     raw = updates.get("backup_exclude_dirs") if isinstance(updates, dict) else None
-    if not raw:
+    if raw is None or raw == []:
         return []
     if not isinstance(raw, list):
         logger.warning("Ignoring updates.backup_exclude_dirs: expected a list of paths")
@@ -348,9 +350,13 @@ def _configured_backup_exclude_prefixes(hermes_root: Path) -> list[tuple[str, ..
         if not isinstance(entry, str):
             logger.warning("Ignoring non-string updates.backup_exclude_dirs entry %r", entry)
             continue
-        pure = PurePosixPath(entry.strip().replace("\\", "/"))
+        entry = entry.strip()
+        # Reject Windows drive-absolute entries too: PurePosixPath reads ``C:/x`` as the relative
+        # path ``C:``/``x``, so a drive prefix must be caught before the POSIX parse.
+        win = PureWindowsPath(entry)
+        pure = PurePosixPath(entry.replace("\\", "/"))
         parts = tuple(p for p in pure.parts if p != ".")
-        if not parts or pure.is_absolute() or ".." in parts:
+        if not parts or pure.is_absolute() or win.drive or win.root or ".." in parts:
             logger.warning("Ignoring updates.backup_exclude_dirs entry %r: must be a relative path "
                            "inside HERMES_HOME without '..'", entry)
             continue
@@ -358,11 +364,20 @@ def _configured_backup_exclude_prefixes(hermes_root: Path) -> list[tuple[str, ..
     return prefixes
 
 
-def _under_prefixes(rel_path: Path, prefixes: list[tuple[str, ...]]) -> bool:
+def _dir_under_prefixes(rel_path: Path, prefixes: list[tuple[str, ...]]) -> bool:
     """True when *rel_path* equals or sits under one of *prefixes*, compared per path component
-    so excluding ``foo`` never drops ``foobar``."""
+    so excluding ``foo`` never drops ``foobar``. Used for directory pruning, where an entry that
+    equals a directory name must prune that whole tree."""
     parts = rel_path.parts
     return any(parts[:len(prefix)] == prefix for prefix in prefixes)
+
+
+def _file_under_prefixes(rel_path: Path, prefixes: list[tuple[str, ...]]) -> bool:
+    """True when *rel_path* sits strictly under one of *prefixes*. Files are only dropped when
+    they live inside an excluded directory: the key names directories, so a regular *file* whose
+    path equals an entry stays archived rather than vanishing on a name collision."""
+    parts = rel_path.parts
+    return any(len(parts) > len(prefix) and parts[:len(prefix)] == prefix for prefix in prefixes)
 
 
 def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
@@ -380,7 +395,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             d for d in dirnames
             if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
             and not _in_excluded_root_dir(rel_dir / d)
-            and not _under_prefixes(rel_dir / d, user_excludes)]
+            and not _dir_under_prefixes(rel_dir / d, user_excludes)]
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
         # No walk may follow a junction.
@@ -390,7 +405,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             fpath = hermes_root / rel
             # zipfile.write() follows file symlinks, so skip links before any archive write can
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel) or _under_prefixes(rel, user_excludes):
+            if _should_exclude(rel) or _file_under_prefixes(rel, user_excludes):
                 continue
             if _is_non_regular_path(fpath):
                 continue

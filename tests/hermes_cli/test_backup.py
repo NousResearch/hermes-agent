@@ -2829,7 +2829,9 @@ class TestBackupExcludeDirs:
 
     @staticmethod
     def _write_config(root, entries):
-        body = "updates:\n  backup_exclude_dirs:\n" + "".join(f"    - {e}\n" for e in entries)
+        def _yaml(e):
+            return f"    - '{e}'\n" if isinstance(e, str) else f"    - {e}\n"
+        body = "updates:\n  backup_exclude_dirs:\n" + "".join(_yaml(e) for e in entries)
         (root / "config.yaml").write_text(body)
 
     @staticmethod
@@ -2912,14 +2914,40 @@ class TestBackupExcludeDirs:
         self._tree(root)
         (tmp_path / "outside").mkdir()
         (tmp_path / "outside" / "secret.txt").write_text("s")
-        self._write_config(root, [str(tmp_path / "outside"), "../outside", ".", "", 7, "foo"])
+        self._write_config(root, [str(tmp_path / "outside"), "../outside", ".", "", 7, "foo",
+                                  "C:/outside", "C:\\outside", "C:foo"])
 
         with caplog.at_level("WARNING"):
             prefixes = _configured_backup_exclude_prefixes(root)
         assert prefixes == [("foo",)]
-        assert sum("Ignoring" in r.getMessage() for r in caplog.records) == 5
+        assert sum("Ignoring" in r.getMessage() for r in caplog.records) == 8
 
         selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
         assert str(Path("notes.txt")) in selected
         assert str(Path("mnemosyne/keep.db")) in selected
         assert str(Path("foo/x.txt")) not in selected
+
+    def test_falsy_non_list_value_warns_and_changes_nothing(self, tmp_path, caplog):
+        """Present-but-falsy non-list values (``false``, ``0``, ``{}``) warn instead of passing
+        through the empty-key fast path silently."""
+        from hermes_cli.backup import _configured_backup_exclude_prefixes
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._tree(root)
+        for value in ("false", "0", "{}"):
+            (root / "config.yaml").write_text(f"updates:\n  backup_exclude_dirs: {value}\n")
+            with caplog.at_level("WARNING"):
+                assert _configured_backup_exclude_prefixes(root) == []
+        assert sum("expected a list" in r.getMessage() for r in caplog.records) == 3
+
+    def test_file_named_like_entry_stays_archived(self, tmp_path):
+        """Entries name directories: a regular FILE whose path equals an entry is not excluded."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._tree(root)
+        self._write_config(root, ["notes.txt"])
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert str(Path("notes.txt")) in selected

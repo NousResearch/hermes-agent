@@ -481,17 +481,34 @@ def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
 
 
 def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
-                  heal: Optional[tuple[Path, dict]]) -> None:
+                  heal: Optional[tuple[Path, dict]], fallback_branch: Optional[str] = None) -> None:
     """Compare the checkout with ``selected_branch``'s remote tip, falling back to main if it was deleted."""
     result["branch"] = selected_branch
     remote = _branch_remote(co, selected_branch)
     target, missing, failure = _branch_tip(co.repository, selected_branch, co.root, co.git, remote)
     reason = _unhealable_reason(co, selected_branch) if missing and selected_branch != "main" else None
     if reason:
+        # The checkout is parked on a branch the remote never received. That is not a dead end:
+        # the updater lands the update target on the parked branch (merge) or moves the checkout
+        # to it (switch), and the branch's own commits stay on it either way. So report the
+        # target the update would bring — the behind-count the user can act on — instead of an
+        # error that names no target and offers no way forward.
+        target_branch = fallback_branch or "main"
         detail = ("has never been pushed" if reason == "never-pushed"
                   else "is gone from the remote but has commits that are not in main")
-        result.update(error="branch-local-only", localOnly=True,
-                      message=f"Branch '{selected_branch}' {detail}; keeping it instead of switching to main.")
+        result.update(localOnly=True, targetBranch=target_branch,
+                      message=(f"Branch '{selected_branch}' {detail}. Updates land on "
+                               f"{target_branch}; this branch's own commits stay on it."))
+        target, _, failure = _branch_tip(co.repository, target_branch, co.root, co.git,
+                                          remote if co.embedded else "origin")
+        if target is None:
+            result.update(error="fetch-failed",
+                          message=f"Could not resolve the remote branch tip: {failure}" if failure
+                          else "Could not resolve the remote branch tip.")
+            return
+        behind, commits = _behind_count(co, target)
+        result["commits"] = commits
+        result.update(targetSha=target, behind=behind, updateAvailable=behind != 0)
         return
     if missing and selected_branch != "main":
         result["branch"] = "main"
@@ -569,7 +586,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
         # Only a Desktop-configured branch the caller did not override is healed.
         heal = branch_config_path and not branch and configured_branch == selected_branch
         _check_branch(result, co, selected_branch,
-                      heal=(branch_config_path, desktop_config) if heal else None)
+                      heal=(branch_config_path, desktop_config) if heal else None,
+                      fallback_branch=source_target.branch if source_target else None)
     _write_cache(cache_file, identity, now, result)
     if result.get("channel"):
         _hold_refused_release(result, co, home)

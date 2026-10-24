@@ -378,9 +378,58 @@ def _commit_on(git, branch, message):
     return sha
 
 
+def test_unpublished_branch_reports_the_updates_waiting(installation):
+    """A branch the remote never received is not a dead end.
+
+    The updater lands the update target on a parked branch (merge) or moves the checkout
+    to it (switch), so the check must name that target and count the commits waiting
+    for it. The Desktop turns ``updateAvailable`` into an "Update now" button, so an
+    error here left the install with no way to update at all.
+    """
+    from hermes_cli.source_check import check_for_updates
+    root, _linked, home, _base, _head, _responses, _requests, git = installation
+    _bare_origin(installation)
+    git("branch", "local-work")
+    _commit_on(git, "local-work", "unpushed work")
+    # Upstream moves on after the checkout branched off.
+    git("commit", "-q", "--allow-empty", "-m", "upstream one")
+    git("commit", "-q", "--allow-empty", "-m", "upstream two")
+    git("push", "-q", "origin", "main")
+    git("fetch", "-q", "origin")
+    git("checkout", "-q", "local-work")
+    status = check_for_updates(install_root=root, home=home)
+    assert "error" not in status, status
+    assert status["localOnly"] is True
+    assert status["branch"] == "local-work", status
+    assert status["targetBranch"] == "main", status
+    assert status["targetSha"] == git("rev-parse", "origin/main")
+    assert status["updateAvailable"] is True, status
+    assert status["behind"] != 0, status
+
+
+def test_unpublished_branch_up_to_date_with_main_is_not_an_update(installation):
+    """A parked branch that already contains main's tip has nothing waiting for it."""
+    from hermes_cli.source_check import check_for_updates
+    root, _linked, home, _base, _head, _responses, _requests, git = installation
+    _bare_origin(installation)
+    git("branch", "local-work")
+    _commit_on(git, "local-work", "unpushed work")
+    git("checkout", "-q", "local-work")
+    status = check_for_updates(install_root=root, home=home)
+    assert "error" not in status, status
+    assert status["localOnly"] is True
+    assert status["behind"] == 0, status
+    assert status["updateAvailable"] is False, status
+
+
 @pytest.mark.parametrize("pinned_by", ["desktop", "current"])
 def test_never_pushed_branch_keeps_its_pin(installation, pinned_by):
-    """#105042: an empty advertisement for a branch that was never pushed is not a deletion."""
+    """#105042: an empty advertisement for a branch that was never pushed is not a deletion.
+
+    The pin is kept, and the check still names the target the update would bring: the
+    updater lands the update target on a parked branch, so the status must carry the
+    behind-count instead of an error that offers no way forward.
+    """
     from hermes_cli.source_check import check_for_updates
     root, _linked, home, _base, _head, _responses, requests, git = installation
     _bare_origin(installation)
@@ -393,10 +442,11 @@ def test_never_pushed_branch_keeps_its_pin(installation, pinned_by):
         git("checkout", "-q", "local-work")
     status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
     assert status["branch"] == "local-work", status
-    assert status["error"] == "branch-local-only"
     assert status["localOnly"] is True
     assert "never been pushed" in status["message"]
-    assert "targetSha" not in status
+    assert status["targetBranch"] == "main", status
+    assert status["targetSha"] == git("rev-parse", "origin/main")
+    assert "error" not in status, status
     if pinned_by == "desktop":
         assert json.loads(branch_file.read_text()) == {"branch": "local-work"}
     else:
@@ -428,8 +478,11 @@ def test_deleted_remote_branch_heals_only_when_its_commits_are_in_main(installat
     status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
     if merge == "unmerged":
         assert status["branch"] == "pushed", status
-        assert status["error"] == "branch-local-only"
+        assert status["localOnly"] is True
         assert "not in main" in status["message"]
+        assert status["targetBranch"] == "main", status
+        assert status["targetSha"] == git("rev-parse", "origin/main")
+        assert "error" not in status, status
         assert json.loads(branch_file.read_text())["branch"] == "pushed"
     else:
         assert "error" not in status, status

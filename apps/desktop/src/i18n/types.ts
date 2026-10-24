@@ -3249,6 +3249,7 @@ catalog: CatalogTranslations
     onLatest: string
     installing: string
     cantReach: string
+    unpublishedBranchTitle: string
     tapCheck: string
     updateReady: (count: number) => string
     updateReadyUnknown: string
@@ -3259,7 +3260,6 @@ catalog: CatalogTranslations
     minAgo: (count: number) => string
     hoursAgo: (count: number) => string
     daysAgo: (count: number) => string
-    justNowSuffix: string
     bundleOutOfSync: string
     bundleOutOfSyncDesc: string
     bundleOutOfSyncAction: string

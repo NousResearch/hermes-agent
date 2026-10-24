@@ -3776,6 +3776,7 @@ export const en: Translations = {
     onLatest: "You're on the latest version.",
     installing: 'An update is currently installing.',
     cantReach: "We couldn't reach the update server.",
+    unpublishedBranchTitle: "This install is on a branch that was never published.",
     tapCheck: 'Tap "Check now" to look for updates.',
     updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
     updateReadyUnknown: 'A new update is ready.',
@@ -3786,7 +3787,6 @@ export const en: Translations = {
     minAgo: count => `${count} min ago`,
     hoursAgo: count => `${count}h ago`,
     daysAgo: count => `${count}d ago`,
-    justNowSuffix: ' · just now',
     bundleOutOfSync: 'App build out of date',
     bundleOutOfSyncDesc:
       'The Hermes runtime was updated, but the desktop app itself is still an older build. Update it to pick up the latest fixes.',

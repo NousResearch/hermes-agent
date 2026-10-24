@@ -228,7 +228,7 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
      "OPENCODE_ZEN_BASE_URL"),
     # OpenCode Go mixes API surfaces by model (GLM/Kimi: OpenAI chat under /v1; MiniMax and
     # Qwen 3.7: Anthropic Messages under /v1/messages). Keep the base at /v1; api_mode is per-model.
-    ("opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1", ("OPENCODE_GO_API_KEY",),
+    ("opencode-go", "OpenCode Go", "https://opencode.ai/inference/go/openai/v1", ("OPENCODE_GO_API_KEY",),
      "OPENCODE_GO_BASE_URL"),
     ("kilocode", "Kilo Code", "https://api.kilo.ai/api/gateway", ("KILOCODE_API_KEY",), "KILOCODE_BASE_URL"),
     ("huggingface", "Hugging Face", "https://router.huggingface.co/v1", ("HF_TOKEN",), "HF_BASE_URL"),

@@ -282,9 +282,11 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
                 "monthly": {"status": "ok", "percent": 2, "resetsAt": "2026-10-13T02:13:38.176Z"},
             }}
 
+    requested_urls = []
+
     class _Client:
         def __init__(self, timeout=None):
-            self.urls = []
+            pass
 
         def __enter__(self):
             return self
@@ -293,7 +295,7 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
             return False
 
         def get(self, url, headers=None):
-            self.urls.append(url)
+            requested_urls.append(url)
             return _Response()
 
     monkeypatch.setattr("httpx.Client", _Client)
@@ -310,3 +312,43 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
     assert [(w.label, w.used_percent) for w in snapshot.windows] == [
         ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0)]
     assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=UTC)
+    assert requested_urls == ["https://opencode.ai/zen/go/v1/usage"]
+
+
+def test_opencode_go_defaults_and_usage_follow_the_current_inference_endpoint(opencode_go_profile, monkeypatch):
+    """Regression for #140751: new Go service-account keys use the inference relay."""
+    from agent.account_usage import fetch_account_usage
+
+    requested_urls = []
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"usage": {}}
+
+    class _Client:
+        def __init__(self, timeout=None):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers=None):
+            requested_urls.append(url)
+            return _Response()
+
+    monkeypatch.setattr("httpx.Client", _Client)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "opencode-go", "base_url": opencode_go_profile.base_url, "api_key": "sk-test"},
+    )
+
+    assert opencode_go_profile.base_url == "https://opencode.ai/inference/go/openai/v1"
+    assert fetch_account_usage("opencode-go") is not None
+    assert requested_urls == ["https://opencode.ai/inference/go/openai/v1/usage"]

@@ -55,11 +55,12 @@ class OpenCodeGoProfile(ProviderProfile):
         return self.default_max_tokens if cap is None else cap
 
     def fetch_account_usage(self, *, base_url: str | None = None, api_key: str | None = None):
-        """Go subscription windows for /usage via ``/zen/go/v1/usage`` (anomalyco/opencode#16513).
+        """Go subscription windows for the active Go relay's ``/v1/usage`` endpoint.
 
         Percent-based payload ``{"usage": {"rolling"|"weekly"|"monthly": {"percent", "resetsAt"}}}``.
-        Literal endpoint, NOT the runtime base_url: that one loses its /v1 suffix in
-        anthropic_messages mode and /usage only exists under /v1.
+        The runtime base URL can lose its ``/v1`` suffix in anthropic_messages mode, while
+        ``/usage`` only exists below ``/v1``. Preserve an explicitly configured legacy relay
+        instead of silently moving it to the current default endpoint.
         """
         from datetime import datetime, timezone
 
@@ -72,8 +73,11 @@ class OpenCodeGoProfile(ProviderProfile):
         token = str(runtime.get("api_key", "") or "").strip()
         if not token:
             return None
+        usage_base = str(runtime.get("base_url", "") or "").rstrip("/")
+        if not usage_base.endswith("/v1"):
+            usage_base += "/v1"
         with httpx.Client(timeout=10.0) as client:
-            response = client.get("https://opencode.ai/zen/go/v1/usage",
+            response = client.get(f"{usage_base}/usage",
                                   headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
             response.raise_for_status()
         usage = (response.json() or {}).get("usage") or {}
@@ -124,7 +128,7 @@ opencode_zen = OpenCodeZenProfile(
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
-    base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
+    base_url="https://opencode.ai/inference/go/openai/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should

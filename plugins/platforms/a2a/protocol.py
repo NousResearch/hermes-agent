@@ -343,10 +343,23 @@ class TaskStore:
             self._tasks[task_id] = rec
         return dict(rec)
 
+    def forwarded(self) -> list[dict]:
+        """Records that carry an owner admission (forwarded work). Caller holds no lock."""
+        with self._lock:
+            return [dict(rec) for rec in self._tasks.values() if rec.get("input_id")]
+
     def set_state(self, task_id: str, state: str) -> None:
         with self._lock:
             if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:
                 rec["state"] = state
+
+    def note(self, task_id: str, text: str) -> None:
+        """Attach a status message to a NON-terminal task (a hint for whoever polls tasks/get).
+        It lives in ``reply`` — where ``to_task`` already renders it as ``status.message`` — and is
+        overwritten by the real reply the moment the task completes, so a hint never outlives its task."""
+        with self._lock:
+            if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:
+                rec["reply"] = text
 
     def set_push_config(self, task_id: str, url: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
         """Attach a push notification config; returns the stored config or None."""
@@ -422,13 +435,19 @@ class TaskStore:
         next_offset = offset + page_size if offset + page_size < total else 0
         return (page, next_offset, total) if with_total else (page, next_offset)
 
-    def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None) -> list[str]:
+    def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None,
+                     only: set[str] | None = None,
+                     reason: str = "[task orphaned — no reply produced]") -> list[str]:
+        """Fail non-terminal tasks older than ``timeout_seconds``. ``exclude`` protects tasks a live
+        request still owns; ``only`` narrows the sweep to a named subset (the adapter uses it to give
+        parked tasks their own, longer budget without touching ordinary orphans)."""
         excluded = exclude or set()
         with self._lock:
             stale = [tid for tid, rec in self._tasks.items()
-                     if tid not in excluded and rec["state"] not in TERMINAL_STATES
+                     if tid not in excluded and (only is None or tid in only)
+                     and rec["state"] not in TERMINAL_STATES
                      and time.time() - rec["created_at"] > timeout_seconds]
-        return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+        return [tid for tid in stale if self.complete(tid, STATE_FAILED, reason)]
 
     def _trim_locked(self) -> None:
         terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]
@@ -489,3 +508,70 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 def list_conversations() -> list[str]:
     """Context-ids that have persisted conversations."""
     return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
+
+
+# A forwarded task's identity tuple is what addresses its admission on the OWNER's ledger. The
+# in-memory task store cannot answer tasks/get after a restart, so the tuple is kept on disk beside
+# the conversation log — the same durable fallback `logged_input` gives the input side. The file is
+# keyed on the task id, so writing it is an upsert: repeating it replaces one record, never adds one.
+_MAX_TASK_IDENTITIES = 500
+_TASK_IDENTITY_FIELDS = ("task_id", "context_id", "peer", "agent_slug", "tenant", "input_id")
+_LIVE_TASK_IDS: set[str] = set()
+
+
+def _task_identity_path(task_id: str) -> Path:
+    safe = "".join(c for c in (task_id or "") if c.isalnum() or c in "-_") or "task"
+    return get_hermes_home() / "a2a_tasks" / f"{safe}.json"
+
+
+def persist_task_identity(rec: dict) -> None:
+    """Record task id -> owner-admission identity on disk. Never raises, and idempotent per task."""
+    try:
+        path = _task_identity_path(rec["task_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {k: rec.get(k) or "" for k in _TASK_IDENTITY_FIELDS}
+        entry["created_iso"] = rec.get("created_iso", "")
+        path.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
+        _LIVE_TASK_IDS.add(rec["task_id"])
+        _prune_task_identities()
+    except Exception:
+        pass
+
+
+def keep_task_identity(task_id: str) -> None:
+    """Exempt a live task's identity from the dir size cap: a file on disk is live work until dropped."""
+    _LIVE_TASK_IDS.add(task_id)
+
+
+def drop_task_identity(task_id: str) -> None:
+    """Remove a task's identity (the task is terminal, or the owner refused it). Never raises."""
+    try:
+        _task_identity_path(task_id).unlink(missing_ok=True)
+    except Exception:
+        pass
+    _LIVE_TASK_IDS.discard(task_id)
+
+
+def load_task_identity(task_id: str) -> Optional[dict]:
+    """The identity a previous process persisted for this task, or None."""
+    try:
+        entry = json.loads(_task_identity_path(task_id).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _prune_task_identities() -> None:
+    """Bound the identity dir to the newest ``_MAX_TASK_IDENTITIES``, like the terminal-task cap."""
+    try:
+        directory = get_hermes_home() / "a2a_tasks"
+        files = sorted(directory.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return
+    for stale in files[_MAX_TASK_IDENTITIES:]:
+        if stale.stem in _LIVE_TASK_IDS:
+            continue  # live work is exempt: pruning it would strand an in-flight forward
+        try:
+            stale.unlink()
+        except Exception:
+            pass

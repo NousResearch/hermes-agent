@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import socket
 import re
 import socket
 import threading
@@ -21,7 +22,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -33,11 +34,21 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
+# Outcomes that end the request thread's wait but not the task (see A2AAdapter._finish -> _park_task).
+_TIMED_OUT = (protocol.STATE_FAILED, "[agent did not reply in time]")
+_CLIENT_GONE = (protocol.STATE_FAILED, "[client disconnected]")
+_STILL_WORKING = "[still working: poll tasks/get for the reply]"
 # seconds: orphan grace floor / ceiling / watchdog period. The ceiling keeps the sweep
 # meaningful when A2A_REPLY_TIMEOUT is absurd (1e18 would never fail an orphan).
 _MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
+# Job budget: how long a task may stay WORKING once its requester stopped waiting (reply window
+# elapsed, or accept-then-poll accepted). Separate knob from A2A_REPLY_TIMEOUT on purpose — the reply
+# window bounds ONE request, the job budget bounds the WORK. Doubling the reply window alone never
+# made a 60-minute suite answerable; this does.
+_JOB_TIMEOUT_DEFAULT, _MIN_JOB_TIMEOUT, _MAX_JOB_TIMEOUT = 3600, 60, 86400
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
+
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
 
 _ok = protocol.jsonrpc_result
@@ -74,6 +85,47 @@ def _reply_timeout() -> float:
 def _orphan_timeout() -> float:
     """Orphan grace must never expire before a configured reply window, but stays bounded."""
     return min(float(_MAX_ORPHAN_TIMEOUT), max(float(_MIN_ORPHAN_TIMEOUT), _reply_timeout()))
+
+
+def _job_timeout() -> float:
+    """Seconds a task may stay WORKING after its requester stopped waiting (A2A_JOB_TIMEOUT).
+    The reply window bounds ONE request; this bounds the WORK — so a 60-minute suite can still land."""
+    try:
+        budget = float(os.getenv("A2A_JOB_TIMEOUT", str(_JOB_TIMEOUT_DEFAULT)))
+    except (ValueError, TypeError):
+        budget = float(_JOB_TIMEOUT_DEFAULT)
+    return min(float(_MAX_JOB_TIMEOUT), max(float(_MIN_JOB_TIMEOUT), budget))
+
+
+# What a poller reads when the adapter stops blocking on a reply (tasks/get status.message). The rule
+# itself lives here so the *error hint* carries it: a requester hitting the ceiling is exactly the
+# audience that never finds it in a doc.
+_ASYNC_ACCEPTED_NOTE = (
+    "Task accepted for asynchronous execution — this peer answers with the task id instead of holding "
+    "the request for the whole job. Poll tasks/get until the state is terminal, or use tasks/subscribe / "
+    "message/stream for live updates. Jobs that may outlive A2A_REPLY_TIMEOUT must be sent this way "
+    "(configuration.returnImmediately=true, A2A v1.0; blocking=false, A2A v0.2) or handed off as a kanban "
+    "card — never as a blocking message/send.")
+
+# Sentinel reply used when a sweep (the job budget) tombstones a still-waiting task. It tells the
+# late-finalize callback that the outcome is already recorded, so it is not counted a second time.
+_SWEPT_REPLY = "[task already tombstoned by the A2A sweep]"
+
+# What a poller reads when the owner's admission turns `unknown`: the owner restarted mid-turn and
+# the turn is never replayed. Reporting the loss explicitly is what lets the caller decide to resend;
+# mapping `unknown` to WORKING parks the caller forever, and no sweep ends it — the task is active,
+# not parked, so the job budget never applies to it.
+_OWNER_LOST_TURN_NOTE = (
+    "Task failed: the owner restarted while this turn was running and it will not be replayed. "
+    "Send the work again if you still need it.")
+
+
+def _window_elapsed_note() -> str:
+    return (
+        f"A2A reply window ({_reply_timeout():.0f}s) elapsed while the agent was still working — the task is "
+        "NOT failed and stays pollable via tasks/get; the reply lands there when the work finishes. Send jobs "
+        "that may outlive the reply window with configuration.returnImmediately=true so you hold the task id "
+        "from the start (see the A2A long-jobs docs).")
 
 
 def _default_agent_name() -> str:
@@ -205,7 +257,9 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return self._json(200, protocol.metrics.snapshot())
         if subpath not in ("/", "/health"):
             return self._json(404, {"error": "not found"})
-        payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name}
+        payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name,
+                   # Timings an operator/requester can read live instead of guessing from .env files.
+                   "reply_timeout_seconds": int(_reply_timeout()), "job_timeout_seconds": int(_job_timeout())}
         # Agent Cards are public; profile/tenant topology is not leaked on remote unauthenticated GETs.
         sec = adapter._security_context
         if sec.localhost_only() or sec.authenticate(self.headers.get("Authorization"), self._client_ip()) is not None:
@@ -296,6 +350,13 @@ class A2AAdapter(BasePlatformAdapter):
         self._active_tasks: set[str] = set()
         # Admission ids this process already forwarded; a resend of one is a retry, not a new turn.
         self._forwarded_inputs: OrderedDict[str, None] = OrderedDict()
+        # Parked tasks: the requester stopped waiting (reply window elapsed, or the call asked for
+        # accept-then-poll) while the agent is still working. They stay in _active_tasks on purpose —
+        # that membership is what keeps the orphan sweep off them and lets the late reply land — and
+        # are bounded by _job_timeout() instead of the reply window. Maps task_id -> the pending
+        # record, because the budget sweep needs that record to mark the task tombstoned before it
+        # tears the pending entry down (otherwise its late reply steals the next reply on the context).
+        self._parked: dict[str, dict] = {}
         self._pending_lock = threading.Lock()
 
     @property
@@ -351,6 +412,7 @@ class A2AAdapter(BasePlatformAdapter):
             self._pending.clear()
             self._pending_order.clear()
             self._active_tasks.clear()
+            self._parked.clear()
 
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""
@@ -360,16 +422,79 @@ class A2AAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)
 
+    def _refresh_owner_backed_once(self) -> None:
+        """Drive forwarded tasks from the owner's ledger rather than from this process's clock.
+
+        ``tasks/get`` refreshes on every poll, but a registered ``taskPushNotificationConfig`` never
+        fires and ``tasks/subscribe`` keeps its stream on WORKING, so nothing else ends these tasks —
+        the owner can be finished for hours while our copy says WORKING. Refreshing here wakes both.
+        The refresh is idempotent: ``TaskStore.complete`` answers None once the task is terminal, so
+        a task every tick sees as finished is recorded exactly once.
+        """
+        for rec in self.tasks.forwarded():
+            try:
+                self._refresh_forwarded_state(
+                    rec, self._agents.get(rec.get("agent_slug") or "") or {}
+                )
+            except Exception:
+                logger.debug(
+                    "A2A: owner-ledger refresh for %s failed",
+                    rec.get("task_id"),
+                    exc_info=True,
+                )
+
     def _fail_orphans_once(self) -> list[str]:
-        """Fail stale tasks that no request still owns."""
+        """Fail stale tasks that no request still owns, plus parked tasks that outlived the job budget."""
+        # A forwarded task's deadline lives in the owner's admission ledger, not in this process: only
+        # an owner-ledger read ends it. Refresh those first, so a task the owner already finished
+        # records its real outcome instead of being failed on our clock.
+        self._refresh_owner_backed_once()
         with self._pending_lock:
             active_tasks = set(self._active_tasks)
+            parked = set(self._parked)
         timeout = _orphan_timeout()
         failed = self.tasks.fail_orphans(timeout, exclude=active_tasks)
         for tid in failed:
             logger.warning("A2A: orphaned task %s marked failed (timeout %gs)", tid, timeout)
-            protocol.metrics.tasks_failed += 1
+            self._drop_swept_pending(tid)
+        # Parked tasks are deliberately excluded above (a live entry is what lets the late reply land),
+        # so the job budget is the only thing that ever bounds them.
+        job = _job_timeout()
+        expired = self.tasks.fail_orphans(job, exclude=active_tasks - parked, only=parked,
+                                          reason=f"[task exceeded A2A_JOB_TIMEOUT={job:.0f}s — no reply within the job budget]")
+        for tid in expired:
+            logger.warning("A2A: parked task %s marked failed (job budget %.0fs)", tid, job)
+            # Full teardown, not just a _parked removal: a pending entry left here keeps the task id at
+            # the HEAD of _pending_order[context_id], and adapter.send() resolves replies oldest-first —
+            # so the tombstone would eat the *next* real reply on that (reused) context and lose that
+            # task's answer too. Tombstone first (see _drop_swept_pending) so a reply already in flight
+            # cannot resurrect the task behind our back.
+            self._drop_swept_pending(tid)
+        # A parked task that exhausts the job budget is a terminal failure like any other, so a
+        # registered taskPushNotificationConfig must hear about it. _drop_swept_pending resolves the
+        # waiter with the sweep sentinel, which makes the late-finalize path skip _record_outcome —
+        # and _record_outcome is the only thing that pushes. Push here instead.
+        for tid in expired:
+            rec = self.tasks.get(tid)
+            if rec is not None:
+                self._send_push_notification(tid, rec["context_id"], rec.get("reply", ""),
+                                             protocol.STATE_FAILED)
+        failed += expired
+        protocol.metrics.tasks_failed += len(failed)
         return failed
+
+    def _drop_swept_pending(self, task_id: str) -> None:
+        """Tear down a task the sweep just made terminal: cancel its waiter and drop every pending
+        container entry. Idempotent — the task store already ignores a second terminal transition,
+        so counting it twice is impossible.
+        """
+        with self._pending_lock:
+            entry = self._pending.get(task_id)
+        if entry is not None and not entry[1].done():
+            # Resolve the waiter with a sentinel the late-finalize path recognises as "already
+            # tombstoned": the store is authoritative, so the outcome is NOT recorded a second time.
+            entry[1].set_result((protocol.STATE_FAILED, _SWEPT_REPLY))
+        self._pop_pending(task_id)
 
     def _load_served_agents(self, extra: dict) -> dict[str, dict]:
         """Served-agent routing from ``platforms.a2a.extra.agents`` (top-level ``a2a_served_agents``
@@ -511,12 +636,64 @@ class A2AAdapter(BasePlatformAdapter):
     def _pop_pending(self, task_id: str) -> None:
         with self._pending_lock:
             self._active_tasks.discard(task_id)
+            self._parked.pop(task_id, None)
             entry = self._pending.pop(task_id, None)
             order = self._pending_order.get(entry[0]) if entry else None
             if order and task_id in order:
                 order.remove(task_id)
             if order is not None and not order:
                 self._pending_order.pop(entry[0], None)
+
+    def _park_task(self, pending: dict, note: str) -> dict:
+        """Stop waiting for a reply WITHOUT failing the task. The requester gets a WORKING task it can
+        poll, and the eventual reply still lands in the task store (audit, push, tasks/get) instead of
+        dying with the HTTP thread — which is exactly what a reply-window expiry used to do to a long
+        job's result."""
+        task_id = pending["task_id"]
+        if pending["future"].done():
+            # The agent answered in the same breath as the deadline (or the sweep tombstoned it):
+            # the real outcome is already available, so park nothing — reporting WORKING here would
+            # tell the caller to poll a task that is finished. Caller checks done() first in the
+            # blocking path; this keeps the accept-then-poll path consistent with it.
+            try:
+                state, reply = pending["future"].result()
+            except Exception:
+                state, reply = protocol.STATE_FAILED, "[agent reply lost]"
+            state, reply = self._finalize_task(pending, state, reply)
+            return protocol.build_task(task_id, pending["context_id"], state, reply,
+                                       created_at=pending["created_iso"])
+        with self._pending_lock:
+            self._parked[task_id] = pending
+        self._attach_late_finalize(pending)
+        self.tasks.set_state(task_id, protocol.STATE_WORKING)
+        self.tasks.note(task_id, note)
+        logger.info("A2A: task %s parked (reply window / accept-then-poll) — result lands on completion", task_id)
+        return protocol.build_task(task_id, pending["context_id"], protocol.STATE_WORKING, note,
+                                   created_at=pending["created_iso"])
+
+    def _attach_late_finalize(self, pending: dict) -> None:
+        """Hand the task's outcome to whoever resolves its future once no HTTP thread waits on it.
+        Resolvers run in the gateway's event loop (adapter.send / on_processing_complete), so the
+        finalization itself — sqlite, audit jsonl, push POST — runs on a throwaway worker thread."""
+        if pending.get("late_finalizer"):
+            return
+        pending["late_finalizer"] = True
+
+        def _land(fut: Future, owned: Optional[dict] = None) -> None:
+            owned = owned if owned is not None else dict(pending)
+            try:
+                state, reply = fut.result()
+            except Exception:
+                state, reply = protocol.STATE_FAILED, "[agent reply lost]"
+            if reply == _SWEPT_REPLY:
+                # The job-budget sweep already tombstoned this task and counted it failed. Its pending
+                # entry is gone, so re-recording the outcome here would count the SAME task as both
+                # failed and completed. _pop_pending() is already idempotent, so just leave it.
+                return
+            threading.Thread(target=self._finalize_task, args=(owned, state, reply),
+                             name="a2a-late-finalize", daemon=True).start()
+
+        pending["future"].add_done_callback(_land)
 
     def _resolve_locked(self, task_id: str, state: str, text: str) -> bool:
         entry = self._pending.get(task_id)
@@ -539,6 +716,8 @@ class A2AAdapter(BasePlatformAdapter):
     def _end_task(self, rec: dict, state: str, text: str, stored_reply: str = "") -> tuple[dict, None]:
         """Complete a task immediately (rejected / not ready) and build its terminal Task."""
         self.tasks.complete(rec["task_id"], state, stored_reply)
+        # Same terminal invariant as `_record_outcome`: a terminal task's tuple addresses nothing live.
+        protocol.drop_task_identity(rec["task_id"])
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
@@ -584,6 +763,12 @@ class A2AAdapter(BasePlatformAdapter):
         self._register_inline_push(task_id, params, agent=agent)
         if forwarded:
             self._activate_task(task_id)
+            if self._return_immediately(params):
+                # Accept-then-poll on a forwarded route — the path in the #91687 field report. Take
+                # the first durable receipt and keep the task identity, so a job longer than the reply
+                # window never rides on this request thread; tasks/get reads the owner ledger from here.
+                return self._forward_accept(rec, task_id, context_id, peer, agent, framed,
+                                            input_id or task_id), None
             try:
                 reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=input_id or task_id)
                 self._record_outcome(task_id, context_id, peer, state, reply)
@@ -631,9 +816,111 @@ class A2AAdapter(BasePlatformAdapter):
         return (security.redact_outbound(result.get('final_response') or ''),
                 protocol.STATE_COMPLETED if completed else protocol.STATE_FAILED)
 
+    def _forward_accept(self, rec: dict, task_id: str, context_id: str, peer: str,
+                        agent: dict, framed_text: str, input_id: str) -> dict:
+        """Accept-then-poll on a forwarded route: hand the caller the first durable receipt.
+
+        The owner's admission IS the task state from here on (read back through ``a2a.status``), so
+        neither the reply window nor an age budget applies: the task stays WORKING until the ledger
+        says otherwise. A receipt already terminal is recorded as any other outcome.
+        """
+        from gateway.session_a2a import forward_to_owner
+        profile = str(agent.get("profile") or agent.get("slug") or "").strip()
+        home = _profile_home(profile)
+        if not home:
+            return self._end_task(rec, protocol.STATE_FAILED, "[profile unavailable]")[0]
+        try:
+            receipt = asyncio.run(forward_to_owner(
+                home, agent=str(agent.get("slug") or profile or "agent"),
+                tenant=str(agent.get("tenant") or ""), peer=peer, context_id=context_id,
+                input_id=input_id, text=framed_text,
+                timeout=int(agent.get("timeout") or _reply_timeout()), wait=False))
+        except Exception as exc:
+            # Boundary for a network peer: the full error stays in the local log, the reply is redacted.
+            logger.warning("A2A: forwarded accept for profile %r unverified", profile, exc_info=True)
+            return self._end_task(rec, protocol.STATE_FAILED,
+                                  security.redact_outbound(f"Profile dispatch unverified: {exc}"))[0]
+        if str(receipt.get("status") or "") == "terminal":
+            result = receipt.get("result") or {}
+            completed = receipt.get("outcome") == "completed" and not result.get("failed")
+            reply = security.redact_outbound(result.get("final_response") or "")
+            outcome = protocol.STATE_COMPLETED if completed else protocol.STATE_FAILED
+            self._record_outcome(task_id, context_id, peer, outcome, reply)
+            return protocol.build_task(task_id, context_id, outcome, reply, created_at=rec["created_iso"])
+        self.tasks.set_state(task_id, protocol.STATE_WORKING)
+        self.tasks.note(task_id, _ASYNC_ACCEPTED_NOTE)
+        # The owner accepted, so the tuple must outlive this process: a restart otherwise answers
+        # tasks/get with "not found" for work that is still running.
+        protocol.persist_task_identity(rec)
+        return protocol.build_task(task_id, context_id, protocol.STATE_WORKING, _ASYNC_ACCEPTED_NOTE,
+                                   created_at=rec["created_iso"])
+
+    def _refresh_forwarded_state(self, rec: Optional[dict], agent: Optional[dict]) -> Optional[dict]:
+        """Map a forwarded task's state from the owner's admission ledger (accept-then-poll).
+
+        The plugin never opens the served profile's database — it asks the owner (``a2a.status``) and
+        maps ``queued`` -> SUBMITTED, ``started`` -> WORKING, ``unknown`` -> FAILED (the owner lost the
+        turn), ``terminal`` -> its outcome. A task with no stored identity, an unreachable owner, or a
+        missing admission keeps its state.
+        """
+        if rec is None or not rec.get("input_id") or rec.get("state") in protocol.TERMINAL_STATES:
+            return rec
+        from gateway.session_a2a import status_from_owner
+        # The destination is the identity's own slug/tenant, not the caller's agent dict: the root
+        # endpoint is a passthrough, and asking the root profile's owner for another profile's
+        # admission finds nothing — so a poll through it parks the caller forever.
+        agent = self._agents.get(rec.get("agent_slug") or "") or {}
+        home = _profile_home(str(rec.get("agent_slug") or "").strip())
+        if not home:
+            return rec
+        try:
+            state = asyncio.run(status_from_owner(
+                home, agent=rec.get("agent_slug") or "agent",
+                tenant=rec.get("tenant") or "", peer=rec["peer"], context_id=rec["context_id"],
+                input_id=rec["input_id"], timeout=int(agent.get("timeout") or _reply_timeout())))
+        except Exception:
+            logger.debug("A2A: forwarded status read for %s failed", rec.get("task_id"), exc_info=True)
+            return rec
+        ledger = str(state.get("status") or "")
+        task_id = rec["task_id"]
+        if ledger == "queued":
+            self.tasks.set_state(task_id, protocol.STATE_SUBMITTED)
+        elif ledger == "started":
+            self.tasks.set_state(task_id, protocol.STATE_WORKING)
+            self.tasks.note(task_id, _ASYNC_ACCEPTED_NOTE)
+        elif ledger == "unknown":
+            # The owner restarted mid-turn: recover_session_inputs turns `started` into `unknown` and it
+            # stays there — only an operator's resolve_unknown, or the last viewer closing the session,
+            # ends it, and an A2A forward has no viewer. Reported as WORKING the caller would poll
+            # forever, and no sweep would end it: the task is active, not parked, so the job budget
+            # never applies. Report the loss explicitly instead, so the caller can decide to resend.
+            self._record_outcome(task_id, rec["context_id"], rec["peer"], protocol.STATE_FAILED,
+                                 _OWNER_LOST_TURN_NOTE)
+        elif ledger == "terminal":
+            result = state.get("result") or {}
+            completed = state.get("outcome") == "completed" and not result.get("failed")
+            reply = security.redact_outbound(result.get("final_response") or "")
+            outcome = protocol.STATE_COMPLETED if completed else protocol.STATE_FAILED
+            self._record_outcome(task_id, rec["context_id"], rec["peer"], outcome, reply)
+        else:  # missing: no admission under this identity — leave the task as it stands
+            return rec
+        return self.tasks.get(task_id) or rec
+
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None) -> None:
-        """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
+        """Persist + audit + count a finished task, mark it terminal, and fire its push callback.
+
+        Idempotent, and gated on the store's own transition: ``TaskStore.complete`` is atomic and
+        answers None once the task is terminal, so only the caller that actually finished the task
+        writes the conversation-log line, the audit row and the metric. Two concurrent polls of a
+        forwarded task — or a poll after a restart — both read the same terminal ledger state, and
+        without this gate each of them recorded the outcome again.
+        """
+        if self.tasks.complete(task_id, state, reply) is None:
+            return
+        # Terminal: the tuple no longer addresses anything live, so a restart must not rebuild a
+        # SUBMITTED task from it. Local tasks never had one, so this is a no-op for them.
+        protocol.drop_task_identity(task_id)
         protocol.persist_message(context_id, "agent", reply, task_id)
         security.audit("outbound", peer, task_id, reply)
         m = protocol.metrics
@@ -643,7 +930,6 @@ class A2AAdapter(BasePlatformAdapter):
                 m.record_latency(time.time() - started)
         else:
             m.tasks_failed += 1
-        self.tasks.complete(task_id, state, reply)
         self._send_push_notification(task_id, context_id, reply, state)
 
     def _finalize_task(self, pending: dict, state: str, reply: str) -> tuple[str, str]:
@@ -674,19 +960,43 @@ class A2AAdapter(BasePlatformAdapter):
                     try:
                         keepalive()
                     except Exception:
-                        return (protocol.STATE_FAILED, "[client disconnected]")
+                        return _CLIENT_GONE
             except Exception:
                 return on_timeout
 
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
-        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
-                                  (protocol.STATE_FAILED, "[agent did not reply in time]"))
+        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive, _TIMED_OUT)
+
+    def _finish(self, pending: dict, keepalive=None) -> tuple[str, str]:
+        """Wait up to A2A_REPLY_TIMEOUT; past it, or once the stream client is gone, PARK the task
+        instead of failing it (see _park_task). One budget bounds a parked task: A2A_JOB_TIMEOUT."""
+        out = self._await_reply(pending, keepalive)
+        if out is _TIMED_OUT or out is _CLIENT_GONE:
+            note = _window_elapsed_note() if out is _TIMED_OUT else _STILL_WORKING
+            task = self._park_task(pending, note)
+            status = task.get("status", {})
+            return status.get("state", protocol.STATE_WORKING), protocol.extract_text(status.get("message", {}) or {})
+        return self._finalize_task(pending, *out)
+
+    @staticmethod
+    def _return_immediately(params: dict) -> bool:
+        """Accept-then-poll: v1.0 ``configuration.returnImmediately=true`` (spec default is blocking),
+        v0.2 ``configuration.blocking=false`` with the inverted polarity."""
+        cfg = params.get("configuration")
+        if not isinstance(cfg, dict):
+            return False
+        return cfg.get("returnImmediately") is True or cfg.get("blocking") is False
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)
         if task is None:
-            state, reply = self._finalize_task(pending, *self._await_reply(pending))
-            task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
+            if self._return_immediately(params):
+                # Accept-then-poll: hold the task id from the start so a long job never rides on a reply window.
+                task = self._park_task(pending, _ASYNC_ACCEPTED_NOTE)
+            else:
+                state, reply = self._finish(pending)
+                task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply,
+                                           created_at=pending["created_iso"])
         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
 
     @staticmethod
@@ -729,13 +1039,14 @@ class A2AAdapter(BasePlatformAdapter):
             task_id, context_id = pending["task_id"], pending["context_id"]
             submitted = protocol.build_task(task_id, context_id, protocol.STATE_SUBMITTED, created_at=pending["created_iso"])
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(submitted), req_id))
-            self._sse_write(handler, protocol.sse_data(protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
-            state, reply = self._finalize_task(pending, *self._await_reply(pending, keepalive=self._keepalive(handler)))
-            pending = None
+            self._sse_write(handler, protocol.sse_data(protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id=req_id))
+            state, reply = self._finish(pending, keepalive=self._keepalive(handler))
+            pending = None  # a parked task ends the stream on WORKING; the client follows it via tasks/get
             self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             if pending is not None:
-                self._finalize_task(pending, protocol.STATE_FAILED, "[client disconnected]")
+                # Client left mid-stream: park rather than fail, so the work and its result survive the socket.
+                self._park_task(pending, _STILL_WORKING)
             logger.debug("A2A: stream client disconnected")
 
     def _rpc_tasks_subscribe(self, handler, req_id: Any, params: dict, agent: Optional[dict] = None) -> None:
@@ -757,11 +1068,41 @@ class A2AAdapter(BasePlatformAdapter):
         """(task_id, record, None) for a visible task, else (task_id, None, jsonrpc_error)."""
         task_id = str(params.get("taskId") or params.get("id") or "")
         rec = self.tasks.get(task_id, *self._scope_for_agent(agent))
+        if rec is None:
+            rec = self._restore_task(task_id, agent)
         return task_id, rec, None if rec else _err(req_id, protocol.ERR_TASK_NOT_FOUND, f"task not found: {task_id}")
+
+    def _restore_task(self, task_id: str, agent: Optional[dict]) -> Optional[dict]:
+        """Rebuild a forwarded task a restart dropped, from the identity it persisted on disk.
+
+        The identity tuple is what addresses the owner's admission, so without it a tasks/get after a
+        restart answers "not found" for work that may still be running. The record comes back in
+        SUBMITTED state and tasks/get then refreshes it from the ledger, so the caller reads the real
+        state rather than a guess. A task with no persisted identity (a local task, or one we never
+        forwarded) stays not-found, exactly as before.
+        """
+        identity = protocol.load_task_identity(task_id)
+        if not identity or identity.get("task_id") != task_id or not identity.get("input_id"):
+            return None
+        if not protocol.TaskStore._in_scope(identity, *self._scope_for_agent(agent)):
+            return None
+        rec = self.tasks.create(task_id, identity.get("context_id") or "", identity.get("peer") or "",
+                                identity.get("agent_slug") or "", identity.get("tenant") or "",
+                                input_id=identity["input_id"])
+        # A restored task is owner-backed: its deadline lives in the owner's ledger, not here, so the
+        # age sweep must not fail it. The watchdog's ledger refresh is what ends it.
+        self._activate_task(task_id)
+        protocol.keep_task_identity(task_id)
+        return rec
 
     def _rpc_tasks_get(self, req_id: Any, params: dict, agent: Optional[dict] = None) -> dict:
         _task_id, rec, error = self._find_task(req_id, params, agent)
-        return error or _ok(req_id, protocol.TaskStore.to_task(rec))
+        if error:
+            return error
+        # A forwarded task's truth is the owner's admission ledger: refresh it before answering, so a
+        # poller sees SUBMITTED/WORKING/terminal without the plugin ever opening the served database.
+        rec = self._refresh_forwarded_state(rec, agent) or rec
+        return _ok(req_id, protocol.TaskStore.to_task(rec))
 
     def _rpc_tasks_list(self, req_id: Any, params: dict, agent: Optional[dict] = None) -> dict:
         offset = _to_int(params.get("pageToken") or 0, 0)

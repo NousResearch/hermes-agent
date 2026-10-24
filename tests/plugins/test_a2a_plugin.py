@@ -17,6 +17,7 @@ import re
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1146,9 +1147,12 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
-    def test_timeout_returns_failed_not_completed(self, monkeypatch):
-        """When the agent never replies, the task must FAIL (and count as a
-        failure), not report success."""
+    def test_reply_window_expiry_parks_task_and_late_reply_lands(self, monkeypatch):
+        """A reply window that elapses while the agent is still working must NOT tombstone the task.
+
+        The requester gets a WORKING task carrying the poll hint, the failure counters stay put, and
+        the reply that arrives afterwards lands in the task store (audit + tasks/get + push) instead
+        of dying with the HTTP thread — the loss class behind two A2A jobs recovered by ssh."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1")
@@ -1160,12 +1164,236 @@ class TestInboundRoundTrip:
             completed_before = protocol.metrics.tasks_completed
             resp = await asyncio.to_thread(_post_json, base + "/", _send_body("are you there"))
             task = resp["result"]
-            assert task["status"]["state"] == "TASK_STATE_FAILED"
-            assert protocol.metrics.tasks_failed == failed_before + 1
+            task_id = task["id"]
+            # Not FAILED (the work is alive) and not COMPLETED (it is not done) — WORKING + hint.
+            assert task["status"]["state"] == protocol.STATE_WORKING
+            hint = protocol.extract_text(task["status"]["message"])
+            assert "reply window" in hint and "tasks/get" in hint
+            assert protocol.metrics.tasks_failed == failed_before
             assert protocol.metrics.tasks_completed == completed_before
-            # The task store agrees.
-            rec = adapter.tasks.get(task["id"])
-            assert rec["state"] == "TASK_STATE_FAILED"
+            assert adapter.tasks.get(task_id)["state"] == protocol.STATE_WORKING
+            # tasks/get shows the same hint to a poller, not an empty shell.
+            got = await asyncio.to_thread(_post_json, base + "/",
+                                          {"jsonrpc": "2.0", "id": "r2", "method": "GetTask",
+                                           "params": {"taskId": task_id}})
+            assert got["result"]["status"]["state"] == protocol.STATE_WORKING
+            assert "tasks/get" in protocol.extract_text(got["result"]["status"]["message"])
+
+            # The job finishes after the requester gave up: it must still land.
+            assert adapter._resolve_task(task_id, protocol.STATE_COMPLETED, "LATE_RESULT")
+            for _ in range(100):
+                if adapter.tasks.get(task_id)["state"] == protocol.STATE_COMPLETED:
+                    break
+                await asyncio.sleep(0.05)
+            rec = adapter.tasks.get(task_id)
+            assert rec["state"] == protocol.STATE_COMPLETED
+            assert rec["reply"] == "LATE_RESULT"
+            assert protocol.metrics.tasks_completed == completed_before + 1
+            assert protocol.metrics.tasks_failed == failed_before
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_return_immediately_accepts_then_polls(self, monkeypatch):
+        """A2A v1.0 ``configuration.returnImmediately=true`` is accept-then-poll: answer at once with
+        a task id the caller can poll, so a 60-minute job never depends on a reply window."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "60")  # long on purpose: the answer must not be a timeout
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+
+        async def run():
+            assert await adapter.connect() is True
+            started = time.monotonic()
+            resp = await asyncio.to_thread(
+                _post_json, base + "/",
+                _send_body("run the full suite", extra_params={"configuration": {"returnImmediately": True}}))
+            elapsed = time.monotonic() - started
+            task = resp["result"]
+            assert elapsed < 5, f"accept-then-poll blocked {elapsed:.1f}s"
+            assert task["status"]["state"] == protocol.STATE_WORKING
+            task_id = task["id"]
+            assert "asynchronous" in protocol.extract_text(task["status"]["message"]).lower()
+            # The v0.2 spelling takes the same path.
+            assert adapter_mod.A2AAdapter._return_immediately({"configuration": {"blocking": False}}) is True
+            assert adapter_mod.A2AAdapter._return_immediately({"configuration": {"blocking": True}}) is False
+            assert adapter_mod.A2AAdapter._return_immediately({}) is False
+
+            # Poll, then collect the late result — the contract a2a_status relies on.
+            got = await asyncio.to_thread(_post_json, base + "/",
+                                          {"jsonrpc": "2.0", "id": "r3", "method": "GetTask",
+                                           "params": {"taskId": task_id}})
+            assert got["result"]["status"]["state"] == protocol.STATE_WORKING
+            assert adapter._resolve_task(task_id, protocol.STATE_COMPLETED, "SUITE_DONE")
+            for _ in range(100):
+                if adapter.tasks.get(task_id)["state"] == protocol.STATE_COMPLETED:
+                    break
+                await asyncio.sleep(0.05)
+            assert adapter.tasks.get(task_id)["reply"] == "SUITE_DONE"
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_parked_task_fails_after_job_budget_not_reply_window(self, monkeypatch):
+        """Parked tasks are exempt from the orphan sweep (that is what lets the late reply land), so
+        A2A_JOB_TIMEOUT is what finally bounds them — a job budget, not a reply window."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        rec = adapter.tasks.create("t-parked", "c1", "peer")
+        adapter.tasks.set_state("t-parked", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-parked"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        pending = {"task_id": "t-parked", "context_id": "c1", "peer": "peer",
+                   "future": adapter._add_pending("t-parked", "c1"), "created_iso": rec["created_iso"],
+                   "started": time.time()}
+        adapter._park_task(pending, "parked note")
+
+        # Younger than the reply window? Irrelevant — the parked sweep uses the job budget alone,
+        # and an ordinary orphan younger than the job budget is still protected.
+        assert adapter._fail_orphans_once() == ["t-parked"]
+        stored = adapter.tasks.get("t-parked")
+        assert stored["state"] == protocol.STATE_FAILED
+        assert "A2A_JOB_TIMEOUT" in stored["reply"]
+        assert "t-parked" not in adapter._parked
+
+    def test_job_budget_sweep_pushes_the_failure_to_the_registered_callback(self, monkeypatch):
+        """A parked task that exhausts A2A_JOB_TIMEOUT must notify its push callback.
+
+        The sweep tombstones through _drop_swept_pending, whose sentinel makes the late-finalize path
+        skip _record_outcome — and _record_outcome is the only thing that pushes. Without this push a
+        caller that registered taskPushNotificationConfig waits forever on a task already FAILED.
+        """
+        from plugins.platforms.a2a import adapter as adapter_mod
+        from plugins.platforms.a2a import security
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        rec = adapter.tasks.create("t-parked", "c1", "peer")
+        adapter.tasks.set_state("t-parked", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-parked"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        adapter.tasks.set_push_config("t-parked", "http://push.example/a2a")
+        pending = {"task_id": "t-parked", "context_id": "c1", "peer": "peer",
+                   "future": adapter._add_pending("t-parked", "c1"), "created_iso": rec["created_iso"],
+                   "started": time.time()}
+        adapter._park_task(pending, "parked note")
+
+        sent = []
+        monkeypatch.setattr(security, "is_safe_callback_url", lambda url, **kw: True)
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(adapter_mod.urllib.request, "urlopen",
+                            lambda req, timeout=None: (sent.append(req), _Resp())[1])
+        before = protocol.metrics.push_sent
+
+        assert adapter._fail_orphans_once() == ["t-parked"]
+        assert len(sent) == 1, "the job-budget sweep must push exactly once"
+        status = json.loads(sent[0].data.decode("utf-8"))["statusUpdate"]["status"]
+        assert status["state"] == protocol.STATE_FAILED
+        assert "A2A_JOB_TIMEOUT" in protocol.extract_text(status["message"])
+        assert protocol.metrics.push_sent == before + 1
+
+    def test_budget_sweep_leaves_no_pending_state_and_next_task_keeps_its_reply(self, monkeypatch):
+        """The job-budget sweep must FULLY tear down an over-budget task.
+
+        A pending entry left behind sits at the HEAD of _pending_order[context_id], and adapter.send()
+        resolves replies oldest-first — so the tombstone would swallow the next legitimate reply on
+        that context (context ids are reused across turns, so that is the normal case) and that task
+        would then park with its answer lost. All three containers must be clean, and the following
+        task on the same context must receive its OWN reply.
+        """
+        from plugins.platforms.a2a import adapter as adapter_mod
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+
+        # t-dead: parked, then aged past the job budget so the sweep tombstones it.
+        rec = adapter.tasks.create("t-dead", "ctx1", "peer")
+        adapter.tasks.set_state("t-dead", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-dead"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        dead_pending = {"task_id": "t-dead", "context_id": "ctx1", "peer": "peer",
+                        "future": adapter._add_pending("t-dead", "ctx1"), "created_iso": rec["created_iso"],
+                        "started": time.time()}
+        adapter._park_task(dead_pending, "parked note")
+
+        assert adapter._fail_orphans_once() == ["t-dead"]
+
+        # (1) all three containers are clean — this is the defect that stole the next reply.
+        assert "t-dead" not in adapter._pending
+        assert "t-dead" not in adapter._parked
+        assert "t-dead" not in adapter._active_tasks
+        assert adapter._pending_order.get("ctx1") is None
+
+        # (2) a following task on the SAME context receives its own reply, not the dead task's.
+        t2 = adapter._add_pending("t2", "ctx1")
+        adapter._resolve_task("t2", protocol.STATE_COMPLETED, "T2_REPLY")
+        assert t2.done(), "the real reply must resolve t2, not the tombstoned task"
+        assert t2.result() == (protocol.STATE_COMPLETED, "T2_REPLY")
+
+    def test_budget_sweep_does_not_double_count_one_task(self, monkeypatch):
+        """One task must never be counted as both failed and completed: the sweep tombstones it and
+        counts it failed, so the late-finalize callback must not record a second outcome."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        rec = adapter.tasks.create("t-once", "ctx1", "peer")
+        adapter.tasks.set_state("t-once", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-once"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        pending = {"task_id": "t-once", "context_id": "ctx1", "peer": "peer",
+                   "future": adapter._add_pending("t-once", "ctx1"), "created_iso": rec["created_iso"],
+                   "started": time.time()}
+        adapter._park_task(pending, "parked note")
+
+        failed_before = protocol.metrics.tasks_failed
+        completed_before = protocol.metrics.tasks_completed
+        assert adapter._fail_orphans_once() == ["t-once"]
+        assert protocol.metrics.tasks_failed == failed_before + 1
+        assert protocol.metrics.tasks_completed == completed_before
+
+        # A reply arriving afterwards must not resurrect the tombstone or re-count the task.
+        adapter._resolve_task("t-once", protocol.STATE_COMPLETED, "TOO_LATE")
+        time.sleep(0.3)  # the late-finalize path runs on a worker thread
+        stored = adapter.tasks.get("t-once")
+        assert stored["state"] == protocol.STATE_FAILED
+        assert protocol.metrics.tasks_failed == failed_before + 1
+        assert protocol.metrics.tasks_completed == completed_before
+        assert "t-once" not in adapter._pending and "t-once" not in adapter._parked
+
+    def test_park_task_reports_the_real_outcome_when_the_reply_already_landed(self, monkeypatch):
+        """An instant reply must be reported as finished, not as WORKING-with-poll-hint: telling a
+        caller to poll an already-completed task is what the blocking path avoids by checking done()."""
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        rec = adapter.tasks.create("t-instant", "ctx1", "peer")
+        adapter.tasks.set_state("t-instant", protocol.STATE_WORKING)
+        pending = {"task_id": "t-instant", "context_id": "ctx1", "peer": "peer",
+                   "future": adapter._add_pending("t-instant", "ctx1"), "created_iso": rec["created_iso"],
+                   "started": time.time()}
+        # The agent answers before the caller gets to decide what to do with it.
+        adapter._resolve_task("t-instant", protocol.STATE_COMPLETED, "INSTANT")
+        completed_before = protocol.metrics.tasks_completed
+
+        task = adapter._park_task(pending, "would-be-a-poll-hint")
+
+        assert task["status"]["state"] == protocol.STATE_COMPLETED
+        assert protocol.extract_text(task["status"]["message"]) == "INSTANT"
+        assert adapter.tasks.get("t-instant")["state"] == protocol.STATE_COMPLETED
+        assert protocol.metrics.tasks_completed == completed_before + 1
+        assert "t-instant" not in adapter._parked
+        assert "t-instant" not in adapter._pending
+
+    def test_health_reports_reply_and_job_windows(self, monkeypatch):
+        """The reply window must be readable live (GET /health) instead of guessed from .env files."""
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "420")
+        monkeypatch.setenv("A2A_JOB_TIMEOUT", "3600")
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+            payload = await asyncio.to_thread(_get_json, base + "/health")
+            assert payload["reply_timeout_seconds"] == 420
+            assert payload["job_timeout_seconds"] == 3600
             await adapter.disconnect()
 
         asyncio.run(run())
@@ -1568,7 +1796,7 @@ class TestClientTenantAndDiscovery:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, _state = tools._send_task(
+        reply, _ctx, _state, _task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1"
         )
         assert reply == "ok"
@@ -1640,10 +1868,11 @@ class TestV1SpecRegressionFixes:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, state = tools._send_task(
+        reply, _ctx, state, task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1")
         assert reply == "ok"
         assert state == protocol.STATE_COMPLETED
+        assert task_id == "task-1"
         assert posted["body"]["method"] == "SendMessage"
         assert posted["body"]["params"]["tenant"] == "dev-team"
 
@@ -1757,6 +1986,356 @@ class TestV1SpecRegressionFixes:
         assert calls[0][1]['tenant'] == 'team'
         assert calls[0][1]['input_id']
         assert not (tmp_path / 'state.db').exists()
+
+    def test_forwarded_accept_then_poll_returns_at_once_and_keeps_the_identity(self, monkeypatch, tmp_path):
+        """``configuration.returnImmediately`` on a FORWARDED route must not run the forward to the end.
+
+        ``_prepare_task`` blocked on the owner for the whole turn before ``_rpc_message_send`` ever read
+        the flag, so the exact path in the #91687 field report could not accept-then-poll at all.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        calls = []
+
+        async def owner(home, **params):
+            calls.append(params)
+            return {"status": "queued", "admission_id": "adm-1", "outcome": None, "result": None}
+
+        monkeypatch.setattr(session_a2a, "forward_to_owner", owner)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "agents": {"dev": {"profile": "dev", "tenant": "team", "timeout": 5}}}))
+        params = _send_body("run the full suite",
+                            extra_params={"configuration": {"returnImmediately": True}})["params"]
+
+        task, pending = adapter._prepare_task(params, "peer", adapter._agents["dev"])
+
+        assert pending is None
+        assert task["status"]["state"] == protocol.STATE_WORKING
+        assert "asynchronous" in protocol.extract_text(task["status"]["message"]).lower()
+        assert calls and calls[0]["wait"] is False, "the forwarded route must accept, not block on the owner"
+        rec = adapter.tasks.get(task["id"])
+        # The identity tasks/get reads the owner ledger with: agent slug, tenant, context, admission id.
+        assert (rec["agent_slug"], rec["tenant"], rec["input_id"]) == ("dev", "team", calls[0]["input_id"])
+
+    def test_tasks_get_reads_the_owner_ledger_for_a_forwarded_task(self, monkeypatch, tmp_path):
+        """tasks/get maps the owner admission: queued -> SUBMITTED, started -> WORKING, terminal -> outcome."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        seen = []
+
+        async def status(home, **params):
+            seen.append(params)
+            if len(seen) == 1:
+                return {"status": "queued", "outcome": None, "result": None, "admission_id": "a"}
+            if len(seen) == 2:
+                return {"status": "started", "outcome": None, "result": None, "admission_id": "a"}
+            return {"status": "terminal", "outcome": "completed",
+                    "result": {"final_response": "ledger reply"}, "admission_id": "a"}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-fwd", "c1", "peer", "dev", "", input_id="in-1")
+
+        first = adapter._rpc_tasks_get(1, {"taskId": "t-fwd"})["result"]
+        assert first["status"]["state"] == protocol.STATE_SUBMITTED
+        second = adapter._rpc_tasks_get(1, {"taskId": "t-fwd"})["result"]
+        assert second["status"]["state"] == protocol.STATE_WORKING
+        third = adapter._rpc_tasks_get(1, {"taskId": "t-fwd"})["result"]
+        assert third["status"]["state"] == protocol.STATE_COMPLETED
+        assert protocol.extract_text(third["status"]["message"]) == "ledger reply"
+        assert seen[0]["input_id"] == "in-1" and seen[0]["agent"] == "dev"
+        # A task with no forwarded identity is never read against a ledger.
+        adapter.tasks.create("t-local", "c1", "peer")
+        assert adapter._rpc_tasks_get(1, {"taskId": "t-local"})["result"]["status"]["state"] == protocol.STATE_SUBMITTED
+        assert len(seen) == 3
+
+    def test_forwarded_ledger_unknown_fails_the_task_instead_of_parking_it(self, monkeypatch, tmp_path):
+        """An `unknown` admission is a LOST turn, not a running one.
+
+        `recover_session_inputs` turns `started` into `unknown` when the owner restarts mid-turn and it
+        stays there: only an operator's resolve_unknown, or the last viewer closing the session, ends
+        it, and an A2A forward has no viewer. Reported as WORKING the caller polls forever, and no
+        sweep ends it — the task is active, not parked, so the job budget never applies to it.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        async def status(home, **params):
+            return {"status": "unknown", "outcome": None, "result": None, "admission_id": "a"}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-lost", "c1", "peer", "dev", "", input_id="in-1")
+        failed_before = protocol.metrics.tasks_failed
+
+        got = adapter._rpc_tasks_get(1, {"taskId": "t-lost"})["result"]
+
+        assert got["status"]["state"] == protocol.STATE_FAILED
+        assert "will not be replayed" in protocol.extract_text(got["status"]["message"])
+        assert adapter.tasks.get("t-lost")["state"] == protocol.STATE_FAILED
+        assert protocol.metrics.tasks_failed == failed_before + 1
+
+    def test_a_terminal_forwarded_outcome_is_recorded_once(self, monkeypatch, tmp_path):
+        """Recording a finished task twice must count once and log once.
+
+        Every poll that reads a terminal ledger state calls `_record_outcome`, so two concurrent polls
+        (or a poll after a restart) both reach it. The gate is the store's own atomic transition:
+        `TaskStore.complete` answers None once the task is terminal, so the loser writes nothing.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        persisted = []
+        monkeypatch.setattr(protocol, "persist_message",
+                            lambda context_id, role, text, task_id="", input_id="": persisted.append((role, text)))
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-once", "c1", "peer", "dev", "", input_id="in-1")
+        completed_before = protocol.metrics.tasks_completed
+
+        adapter._record_outcome("t-once", "c1", "peer", protocol.STATE_COMPLETED, "done once")
+        adapter._record_outcome("t-once", "c1", "peer", protocol.STATE_COMPLETED, "done once")
+
+        assert protocol.metrics.tasks_completed == completed_before + 1
+        assert persisted == [("agent", "done once")], persisted
+
+    def test_a_restored_forwarded_task_is_ended_by_the_owner_ledger_not_our_clock(self, monkeypatch, tmp_path):
+        """A restart must not turn a running job into `[task orphaned — no reply produced]`.
+
+        A restored task is owner-backed, so its deadline lives in the owner's admission ledger rather
+        than in this process. Before this, `_restore_task` rebuilt the record without marking it
+        active: the 300s orphan grace then failed a task the owner had finished, and no later poll
+        read the ledger again, so the caller kept that failure forever.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        async def status(home, **params):
+            return {"status": "started", "outcome": None, "result": None, "admission_id": "a"}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        protocol.persist_task_identity({"task_id": "t-restored", "context_id": "c1", "peer": "peer",
+                                        "agent_slug": "dev", "tenant": "", "input_id": "in-9"})
+        protocol.persist_task_identity({"task_id": "t-sweep-guard", "context_id": "c2", "peer": "peer",
+                                        "agent_slug": "root", "tenant": "", "input_id": "in-10"})
+
+        rec = adapter._restore_task("t-restored", {"slug": "dev"})
+        guard = adapter._restore_task("t-sweep-guard", {"slug": "root"})
+
+        assert rec is not None and guard is not None
+        assert "t-restored" in adapter._active_tasks
+        # The activation is what keeps it out of the age sweep: the guard proves the sweep is still
+        # able to take an unprotected record, so the exclusion above is a real change.
+        adapter.tasks._tasks["t-sweep-guard"]["created_at"] = 0.0
+        assert adapter.tasks.fail_orphans(300, exclude=set()) == ["t-sweep-guard"]
+        assert adapter.tasks.fail_orphans(300, exclude=adapter._active_tasks) == []
+
+        swept = adapter._fail_orphans_once()
+
+        assert "t-restored" not in swept
+        restored = adapter.tasks.get("t-restored")
+        assert restored is not None
+        assert restored["state"] == protocol.STATE_WORKING
+
+    def test_live_forwarded_identities_are_exempt_from_the_dir_size_cap(self, monkeypatch, tmp_path):
+        """The size cap must not prune the identity of a task that is still running.
+
+        The cap is an mtime-ordered sweep over the identity dir, so a long-idle live task was the
+        first thing it took. Pruning it strands the forward: after a restart there is nothing to
+        restore it from, so tasks/get answers "not found" for work that is still running.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        directory = tmp_path / "a2a_tasks"
+        directory.mkdir(parents=True, exist_ok=True)
+        for i in range(protocol._MAX_TASK_IDENTITIES + 5):
+            (directory / f"old-{i}.json").write_text("{}", encoding="utf-8")
+        protocol.persist_task_identity({"task_id": "t-live", "context_id": "c1", "peer": "peer",
+                                        "agent_slug": "dev", "tenant": "", "input_id": "in-1"})
+        # Make the live file the oldest, so an mtime-ordered prune would take it first.
+        os.utime(directory / "t-live.json", (0, 0))
+        # persist_task_identity pruned the dir back down to the cap, so top it up again: the sweep
+        # has to have something over the cap to take, or this test cannot fail either way.
+        for i in range(protocol._MAX_TASK_IDENTITIES + 5, protocol._MAX_TASK_IDENTITIES + 8):
+            (directory / f"old-{i}.json").write_text("{}", encoding="utf-8")
+
+        protocol._prune_task_identities()
+
+        assert (directory / "t-live.json").exists(), "a live task's identity was pruned by the size cap"
+        assert not (directory / "old-0.json").exists(), "the cap stopped pruning dead identities"
+
+    def test_a_forwarded_poll_asks_the_identitys_owner_not_the_caller(self, monkeypatch, tmp_path):
+        """A poll must address the task's own owner, even through the root endpoint.
+
+        The root route is a passthrough, so the caller's agent dict names the root profile. Deriving
+        the destination from it asked the root's owner for another profile's admission — which finds
+        nothing, and parks the caller forever.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        seen = {}
+
+        async def status(home, **params):
+            return {"status": "started", "outcome": None, "result": None, "admission_id": "a"}
+
+        def fake_home(profile):
+            seen["requested"] = profile
+            return str(tmp_path)
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", fake_home)
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-dest", "c1", "peer", "dev", "", input_id="in-1")
+
+        adapter._refresh_forwarded_state(adapter.tasks.get("t-dest"), {"profile": "root", "slug": "root"})
+
+        assert seen["requested"] == "dev", seen
+
+    def test_the_identity_is_written_only_once_the_owner_accepted(self, monkeypatch, tmp_path):
+        """The identity tuple belongs to accepted work, not to an attempt.
+
+        Writing it before the forward meant a refusal failed the task in memory and left the file
+        behind: after a restart the task came back SUBMITTED, with no owner left to answer it.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        agent = adapter._agents["dev"]
+
+        async def accepted(home, **params):
+            return {"status": "started", "admission_id": "a-1"}
+
+        monkeypatch.setattr(session_a2a, "forward_to_owner", accepted)
+        rec = adapter.tasks.create("t-ok", "c1", "peer", "dev", "", input_id="in-1")
+
+        task = adapter._forward_accept(rec, "t-ok", "c1", "peer", agent, "framed", "in-1")
+
+        assert task["status"]["state"] == protocol.STATE_WORKING
+        assert protocol.load_task_identity("t-ok") is not None
+
+        async def refused(home, **params):
+            raise RuntimeError("owner refused the turn")
+
+        monkeypatch.setattr(session_a2a, "forward_to_owner", refused)
+        rec2 = adapter.tasks.create("t-no", "c1", "peer", "dev", "", input_id="in-2")
+
+        refused_task = adapter._forward_accept(rec2, "t-no", "c1", "peer", agent, "framed", "in-2")
+
+        assert refused_task["status"]["state"] == protocol.STATE_FAILED
+        assert protocol.load_task_identity("t-no") is None
+
+    def test_two_concurrent_polls_of_a_terminal_ledger_record_once(self, monkeypatch, tmp_path):
+        """The concurrent shape of the same race: both polls past the terminal check before either records."""
+        import threading
+
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        persisted = []
+        monkeypatch.setattr(protocol, "persist_message",
+                            lambda context_id, role, text, task_id="", input_id="": persisted.append((role, text)))
+        both_in = threading.Barrier(2, timeout=15)
+
+        async def status(home, **params):
+            both_in.wait()  # both polls hold a non-terminal record before either records the outcome
+            return {"status": "terminal", "outcome": "completed", "admission_id": "a",
+                    "result": {"final_response": "done once"}}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-race", "c1", "peer", "dev", "", input_id="in-1")
+        completed_before = protocol.metrics.tasks_completed
+        start = threading.Barrier(2, timeout=15)
+
+        def poll():
+            start.wait()
+            adapter._rpc_tasks_get(1, {"taskId": "t-race"})
+
+        threads = [threading.Thread(target=poll) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(20)
+
+        assert protocol.metrics.tasks_completed == completed_before + 1
+        assert persisted == [("agent", "done once")], persisted
+
+    def test_forwarded_task_survives_a_restart_through_its_persisted_identity(self, monkeypatch, tmp_path):
+        """tasks/get must answer after a restart for a forwarded task whose admission is still live.
+
+        The identity tuple is the only thing that addresses the owner's admission, and it lived only
+        in the in-memory TaskStore — so a restart turned a running job into "task not found".
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+        from plugins.platforms.a2a import protocol as proto
+
+        monkeypatch.setattr(proto, "get_hermes_home", lambda: tmp_path)
+
+        async def owner(home, **params):
+            return {"status": "queued", "admission_id": "adm-1", "outcome": None, "result": None}
+
+        async def status(home, **params):
+            return {"status": "terminal", "outcome": "completed", "admission_id": "adm-1",
+                    "result": {"final_response": "finished after the restart"}}
+
+        monkeypatch.setattr(session_a2a, "forward_to_owner", owner)
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        params = _send_body("long job", extra_params={"configuration": {"returnImmediately": True}})["params"]
+        task, _pending = adapter._prepare_task(params, "peer", adapter._agents["dev"])
+        task_id = task["id"]
+
+        # A restart: the process keeps nothing, the identity on disk is all that is left.
+        adapter.tasks = proto.TaskStore()
+        got = adapter._rpc_tasks_get(1, {"taskId": task_id})
+
+        assert "result" in got, got
+        assert got["result"]["status"]["state"] == protocol.STATE_COMPLETED
+        assert protocol.extract_text(got["result"]["status"]["message"]) == "finished after the restart"
+
+    def test_task_identity_persistence_is_idempotent_and_local_tasks_stay_unrestorable(self, monkeypatch, tmp_path):
+        """Writing an identity twice leaves one record, and a task with no owner admission stays not-found."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from plugins.platforms.a2a import protocol as proto
+
+        monkeypatch.setattr(proto, "get_hermes_home", lambda: tmp_path)
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        rec = {"task_id": "t-1", "context_id": "c", "peer": "p", "agent_slug": "dev", "tenant": "team",
+               "input_id": "i-1", "created_iso": "2026-01-01T00:00:00Z"}
+        proto.persist_task_identity(rec)
+        proto.persist_task_identity(dict(rec))  # an upsert, not a second record
+
+        assert [p.name for p in (tmp_path / "a2a_tasks").glob("*.json")] == ["t-1.json"]
+        assert proto.load_task_identity("t-1")["input_id"] == "i-1"
+        restored = adapter._restore_task("t-1", None)
+        assert (restored["input_id"], restored["peer"], restored["agent_slug"]) == ("i-1", "p", "dev")
+
+        # A task that was never forwarded carries no admission to read: it stays not-found, as before.
+        proto.persist_task_identity({**rec, "task_id": "t-local", "input_id": ""})
+        assert adapter._restore_task("t-local", None) is None
+        assert adapter._restore_task("never-written", None) is None
 
 
 

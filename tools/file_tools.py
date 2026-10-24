@@ -1049,6 +1049,7 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
         return tool_error(str(e))
 
 
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str | None = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -1123,6 +1124,17 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             result_dict["_warning"] = (
                 f"You have run this exact search {count} times consecutively. "
                 "The results have not changed. Use the information you already have.")
+
+        # rg skips binary files; search the extracted text of PDFs/Office documents in
+        # scope with the same pattern (first page only: doc hits are not paginated).
+        if target == "content" and offset == 0 and not result_dict.get("error"):
+            from tools.file_tools_document_search import search_documents
+            result_dict.update(search_documents(
+                _get_file_ops(task_id), path, pattern, file_glob, output_mode,
+                admit=lambda p: not get_read_block_error(_resolved_match_path(p, task_id)),
+                redact=lambda p, text: redact_sensitive_text(
+                    text, file_read=True,
+                    secret_file=_is_secret_file_arg(_resolved_match_path(p, task_id)))))
 
         # Structured like ``_warning`` above: text appended after the JSON
         # breaks every json.loads consumer (execute_code RPC, strict tool-message

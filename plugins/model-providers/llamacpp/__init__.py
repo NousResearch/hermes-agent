@@ -182,6 +182,28 @@ class LlamaCppProfile(ProviderProfile):
     # lookup only for profiles carrying this opt-in.
     activates_on_requested_provider = True
 
+    # llama-server attaches a server-side ``timings`` block to completed
+    # responses (final SSE chunk on the streaming path). Core surfaces the
+    # server's own tokens-per-second only for profiles carrying
+    # this opt-in; a plain class attr, so the plugin still loads against a
+    # stock core that ignores the field.
+    surfaces_server_timings = True
+
+    def resident_models(self, *, base_url=None, timeout=3.0):
+        """Return the model ids llama-swap reports resident, or None.
+
+        None means the endpoint has no residency concept to show: a bare
+        llama-server, an unreachable endpoint, or an unrecognized server.
+        Callers hide the indicator on None. Reads only /running -
+        llama-swap's own management route - which never starts a model.
+        """
+        from . import probe
+
+        server = probe.detect_server(base_url or self.base_url, timeout=timeout)
+        if server.kind != "llama-swap":
+            return None
+        return server.running
+
     def probe_server_caps(self, *, base_url=None, model=None, timeout=3.0):
         """Detect server kind and served-template capabilities (read-only).
 

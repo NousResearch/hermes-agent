@@ -16,6 +16,7 @@ from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
+from hermes_cli.model_search import model_alias_canonical
 from hermes_constants import openrouter_variant_base
 
 
@@ -84,6 +85,10 @@ def _match_in_catalog(
         return display[cid] if display is not None else cid
 
     if query in set(pool):
+        return _Match(exact=True)
+    # Known vendor alias pairs (``kimi-k3`` served as ``k3``) are the same model, not a near miss.
+    canonical = model_alias_canonical(query)
+    if any(model_alias_canonical(c) == canonical for c in pool):
         return _Match(exact=True)
     suggestions = get_close_matches(suggest_query, pool, n=3, cutoff=suggest_cutoff)
     if not suggestions:

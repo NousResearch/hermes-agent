@@ -164,6 +164,7 @@ class SessionAuthority:
         # session id -> end_reason of a last-viewer close still waiting for an idle FIFO
         # (gateway/session_viewer_close); a viewer attaching again cancels it.
         self.pending_closes = {}
+        self.orphan_closes = {}  # session id -> grace timer of a session left with no viewer, never closed
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
         # that reserved it before the rotation commits on that key's current route instead.
         self.rotated_owners = {}
@@ -338,6 +339,8 @@ class SessionAuthority:
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
             self.pending_closes.pop(ref.session_id, None)
+            from gateway.session_viewer_close import cancel_orphan_close
+            cancel_orphan_close(self, ref.session_id)
             from tools.async_delegation import allow_for_session
             allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
             transport = self.events.get(actor.transport_id)
@@ -385,6 +388,8 @@ class SessionAuthority:
                     # A viewer that attached while the close was off the loop reopens it.
                     await tracked_write(self, partial(end_idle_acp_session, self, session_id),
                                         then=partial(reopen_if_reattached, self, session_id))
+                    from gateway.session_viewer_close import arm_detached_orphan_close
+                    await arm_detached_orphan_close(self, session_id)
                 return
         raise RuntimeStoreError('not_found')
 

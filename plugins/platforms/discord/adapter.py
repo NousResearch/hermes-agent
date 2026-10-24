@@ -5132,7 +5132,33 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        return bool(self._mentioned_self_role_ids(message))
+
+    def _self_managed_role_ids(self, message: Any) -> set:
+        """IDs of this bot's integration-managed role(s) in the message's guild.
+
+        Discord creates one managed role per bot and lists it next to the bot in the @-autocomplete,
+        so a human picking "@BotName" can send ``<@&role>`` instead of ``<@bot>``."""
+        me = getattr(getattr(message, "guild", None), "me", None)
+        bot_id = getattr(getattr(self._client, "user", None), "id", None)
+        ids = set()
+        for role in getattr(me, "roles", None) or []:
+            tags = getattr(role, "tags", None)
+            if getattr(role, "managed", False) and tags is not None and getattr(tags, "bot_id", None) == bot_id:
+                ids.add(str(role.id))
+        return ids
+
+    def _mentioned_self_role_ids(self, message: Any) -> set:
+        """This bot's managed role IDs that the message actually mentions (parsed or raw)."""
+        own = self._self_managed_role_ids(message)
+        if not own:
+            return set()
+        mentioned = {str(getattr(r, "id", r)) for r in getattr(message, "role_mentions", None) or []}
+        content = getattr(message, "content", "") or ""
+        mentioned |= {m.group(1) for m in re.finditer(r"<@&(\d+)>", content)}
+        return own & mentioned
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
         """True only for a literal ``<@bot>`` token: reply-pings add us to ``message.mentions``
@@ -6123,6 +6149,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if self._client.user:
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            for role_id in self._mentioned_self_role_ids(message):
+                normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

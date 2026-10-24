@@ -26,6 +26,13 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_db_dispatch_worker_text import (
+    _PROTOCOL_VIOLATION_ERROR,
+    _PROTOCOL_VIOLATION_FAILURE_LIMIT,
+    _error_fingerprint,
+    _protocol_violation_streak,
+    _worker_final_output,
+)
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -83,6 +90,51 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Spawn-seam substrate import guard (card t_a2f35c4d, ruling t_dbf5c876)
+# ---------------------------------------------------------------------------
+# The guard's body lives in ``kanban_db_dispatch_substrate``. The facade keeps only the
+# two seams a caller patches: the tree root every helper takes as data, and the one entry
+# point both spawn ``except`` sites share.
+
+
+def _dispatching_tree_root() -> Path:
+    """The tree THIS dispatcher runs from -- the closure root the guard reasons about.
+
+    Derived from this module's own file, which is the same directory the tree-skew fence
+    resolves for itself; ``kanban_db_dispatch`` deliberately does not import that fence (a
+    sibling suite pins the absence of that dependency), so the root is spelled out here rather
+    than delegated. Every guard helper takes ``tree`` explicitly and the dispatch seam reads the
+    default from THIS one function -- which is the seam a test patches instead of breaking the
+    real checkout.
+    """
+    return Path(__file__).resolve().parents[1]
+
+
+def _record_spawn_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    exc: BaseException,
+    *,
+    failure_limit: int,
+    board: Optional[str] = None,
+    prefix: str = "",
+) -> bool:
+    """Record one failed spawn through the guard: classify, name, charge-or-not, then escalate.
+
+    Returns True when the card was auto-blocked. One helper for BOTH spawn-seam ``except`` sites
+    (workspace resolution and the spawn call), so the verdict is reached exactly once, by
+    :func:`classify_spawn_failure`, and no caller re-implements the infrastructure rule beside it
+    (D5: one named classifier, no scattered ``isinstance`` checks).
+    """
+    from hermes_cli import kanban_db_dispatch_substrate as substrate
+
+    return substrate.record_spawn_failure(
+        conn, task_id, exc, failure_limit=failure_limit, board=board, prefix=prefix,
+        tree=_dispatching_tree_root(),
+    )
 
 
 @dataclass
@@ -923,120 +975,6 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     return reconciled
 
 
-def _error_fingerprint(error_text: str) -> str:
-    """Normalize an error message (strip PIDs, timestamps) so same-root-cause errors group."""
-    fp = re.sub(r'\bpid \d+\b', 'pid N', error_text[:80])
-    fp = re.sub(r'\b\d{10,}\b', '<TS>', fp)
-    return fp.lower().strip()
-
-
-# ~96% of "clean exit without a terminal tool call" tasks complete on a later
-# run, so a protocol violation gets a bounded retry before the breaker trips.
-# The budget is a violation-only STREAK (``_protocol_violation_streak``),
-# independent of ``consecutive_failures``: other failure kinds neither consume
-# nor extend it. Per-task ``max_retries`` overrides it.
-_PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
-
-# Closed runs to walk when counting the streak; it trips at a handful anyway.
-_PROTOCOL_VIOLATION_SCAN_LIMIT = 50
-
-
-def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
-    """Count the task's trailing run of clean-exit protocol violations.
-
-    Walks closed runs newest-first (including the one ``detect_crashed_workers``
-    just closed). ``rate_limited`` runs are neutral and skipped (a quota wall
-    says nothing about the task); any other closed run breaks the streak, so
-    the budget counts ONLY protocol violations. Violations are recognized by the
-    ``protocol_violation`` run-metadata marker, with the error text as fallback
-    for runs recorded before the marker existed.
-    """
-    streak = 0
-    rows = conn.execute(
-        "SELECT outcome, error, metadata FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY id DESC LIMIT ?",
-        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
-    ).fetchall()
-    for row in rows:
-        outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
-            continue
-        if outcome == "crashed" and (
-            _kb._json_dict(row["metadata"]).get("protocol_violation")
-            or "protocol violation" in (row["error"] or "")
-        ):
-            streak += 1
-            continue
-        break
-    return streak
-
-
-_PROTOCOL_VIOLATION_ERROR = (
-    # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
-    # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
-    # paperwork was skipped, so a retry usually completes; the corrective sentence below is surfaced to the
-    # retry worker via the prior-attempt error in ``build_worker_context`` (guidance approach from #61817).
-    # Keep this short: ``_record_task_failure`` caps the stored error at 500 chars and the worker's own
-    # last output (``_worker_final_output``, up to 400 chars) is appended after it — a longer preamble
-    # truncates away the worker's explanation, which is the part the board and the retry worker need.
-    "worker exited cleanly (rc=0) without kanban_complete, kanban_block "
-    "or kanban_request_review — protocol violation. "
-    "If the prior run already did the work, verify it and "
-    "report it via kanban_complete (or kanban_request_review); "
-    "a run without a terminal kanban call counts as failed no "
-    "matter what it did."
-)
-
-
-# Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
-_LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
-
-
-def _exit_summary_marker() -> str:
-    """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
-    from agent.i18n import t
-    return t("cli.session.exit_resume_hint")
-
-
-def _log_noise_prefixes() -> tuple[str, ...]:
-    from agent.i18n import t
-    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
-
-
-def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
-    """Best-effort read of a dead worker's last printed text, for the board diagnostic.
-
-    A ``chat -q`` worker's stdout/stderr are redirected to its per-task log
-    (``_default_spawn``), so when it exits without a terminal board call the
-    reason is usually sitting there: the model's own explanation of why it could
-    not comply (#88603), or the rendered provider error (#46593). The reap used to
-    discard it in favour of a canned message on every retry. Trims the CLI exit
-    summary, rule lines and the ``session_id:`` trailer; returns "" (never raises)
-    on a missing/empty log.
-
-    ``board`` must come from the dispatching tick: ambient current-board resolution
-    is wrong for every board but the one the dispatcher thread happens to call
-    "current", so the log would silently not be found.
-    """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return ""
-    if not raw:
-        return ""
-    raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_exit_summary_marker())
-    if cut != -1:
-        raw = raw[:cut]
-    lines = []
-    for ln in raw.splitlines():
-        ln = _LOG_CHROME.sub("", ln).strip()
-        if ln and not ln.startswith(_log_noise_prefixes()):
-            lines.append(ln)
-    return " ".join(lines)[-400:]
-
-
 @dataclass
 class _DeadWorker:
     """How ``detect_crashed_workers`` should book one dead worker."""
@@ -1381,6 +1319,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    metadata_extra: Optional[dict] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1399,6 +1338,13 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+
+    ``metadata_extra``: structured facts that belong on the run AND the event
+    alongside the failure — the spawn-seam substrate guard puts
+    ``substrate_import`` / ``substrate_signature`` here so the lane actor can
+    dedupe on the signature later without re-deriving it from prose. Applied on
+    both branches (charged and not), because the guard reads the events of the
+    not-charged one.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1445,6 +1391,8 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
+                if metadata_extra:
+                    detail.update(metadata_extra)
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )
@@ -1472,15 +1420,18 @@ def _record_task_failure(
         run_id = None
         if end_run:
             # Only the spawn path has an open run to close.
+            run_meta = {
+                "failures": failures,
+                "trigger_outcome": outcome,
+                "effective_limit": effective_limit,
+                "limit_source": limit_source,
+                "retry_status": retry_status,
+            }
+            if metadata_extra:
+                run_meta.update(metadata_extra)
             run_id = _kb._end_run(
                 conn, task_id, outcome="gave_up", status="gave_up", error=error,
-                metadata={
-                    "failures": failures,
-                    "trigger_outcome": outcome,
-                    "effective_limit": effective_limit,
-                    "limit_source": limit_source,
-                    "retry_status": retry_status,
-                },
+                metadata=run_meta,
             )
         if force_trip:
             # The caller applied its own bounded policy, so the counter cannot
@@ -1488,6 +1439,8 @@ def _record_task_failure(
             payload["sticky"] = True
         if event_payload_extra:
             payload.update(event_payload_extra)
+        if metadata_extra:
+            payload.update(metadata_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
         return True
 
@@ -1560,6 +1513,10 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
+    ``"substrate_cooldown"`` (latest run is a ``spawn_failed`` on THIS tree's
+    own import disagreement — nothing of the card ran; never counted, and it
+    never falls through to ``blocker_auth`` because the naming line quotes
+    module paths the quota/auth pattern would match),
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
     refused — no restart-safe scope — within the cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
@@ -1597,7 +1554,21 @@ def check_respawn_guard(
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "spawn_failed":
-        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
+        latest_meta = _kb._json_dict(latest_run["metadata"])
+        if latest_meta.get("substrate_import"):
+            # The dispatching tree's own modules disagree (spawn-seam guard, t_a2f35c4d): nothing
+            # of the card ran, so the card is spaced by its OWN reason and RETURNS here either
+            # way. Returning matters: the naming line quotes module paths, so it can contain a
+            # word the quota/auth pattern matches (``agent/auth.py``) and ``blocker_auth`` would
+            # park the card forever on a failure that was never the card's. Retry (spaced) until
+            # the tree is repaired; the lane actor is what escalates.
+            if rl_cooldown <= 0:
+                return None
+            ended_at = _kb._to_epoch(latest_run["ended_at"])
+            if ended_at is not None and (now - ended_at) < rl_cooldown:
+                return "substrate_cooldown"
+            return None
+        if rl_cooldown > 0 and latest_meta.get("infrastructure"):
             ended_at = _kb._to_epoch(latest_run["ended_at"])
             if ended_at is not None and (now - ended_at) < rl_cooldown:
                 return "infrastructure_cooldown"
@@ -2134,9 +2105,8 @@ def _dispatch_lane_task(
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)
     except Exception as exc:
-        if _record_task_failure(
-            conn, claimed.id, f"workspace: {exc}",
-            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+        if _record_spawn_failure(
+            conn, claimed.id, exc, failure_limit=failure_limit, board=board, prefix="workspace: ",
         ):
             result.auto_blocked.append(claimed.id)
         return False
@@ -2161,17 +2131,11 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
-        from tools.process_registry import RestartSafeScopeUnavailable
-
-        # The host refused the spawn (no restart-safe scope): nothing about the
-        # card ran, so it must not spend the card's retry budget (#114720).
-        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
-        if infrastructure:
-            _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
-        if _record_task_failure(
-            conn, claimed.id, str(exc),
-            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
-            infrastructure=infrastructure,
+        # ONE classifier decides the owner of this failure (D5): the host refusing to place
+        # the worker, THIS tree's own modules disagreeing, or the card. Only the last one
+        # spends the card's retry budget.
+        if _record_spawn_failure(
+            conn, claimed.id, exc, failure_limit=failure_limit, board=board,
         ):
             result.auto_blocked.append(claimed.id)
         return False

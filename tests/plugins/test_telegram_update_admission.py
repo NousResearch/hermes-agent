@@ -19,7 +19,11 @@ from telegram.ext import ApplicationHandlerStop, ConversationHandler, Defaults, 
 from telegram.request import BaseRequest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageType
+from gateway.config import GatewayConfig, Platform
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource, build_session_context
+from gateway.session_context import get_session_env
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
@@ -49,6 +53,34 @@ class NoNetwork(BaseRequest):
         return 200, json.dumps({"ok": True, "result": {
             "id": self.bot_id, "is_bot": True, "first_name": "Offline", "username": "offline_bot",
         }}).encode()
+
+
+def test_observe_attribution_keeps_live_actor_outside_shared_source():
+    """Regression for #140059: a mentioned turn keeps its trusted Telegram author."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, extra={
+        "observe_unmentioned_group_messages": True, "allowed_chats": ["42"],
+    }))
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="42", chat_type="group",
+        user_id="current-author", user_name="Current Author",
+    )
+    raw_message = SimpleNamespace(chat=SimpleNamespace(id=42, type="supergroup"))
+    event = MessageEvent(
+        text="@bot save this", source=source, raw_message=raw_message,
+        user_id=source.user_id, user_name=source.user_name,
+    )
+
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+
+    assert attributed.source.user_id is None  # shared session routing stays sender-less
+    context = build_session_context(attributed.source, GatewayConfig(), event=attributed)
+    runner = object.__new__(GatewayRunner)
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_USER_ID") == "current-author"
+        assert get_session_env("HERMES_SESSION_USER_NAME") == "Current Author"
+    finally:
+        runner._clear_session_env(tokens)
 
 
 def update(bot, uid=10, kind="text", *, edited=False, chat=42, text="hello", group=False, user=88):

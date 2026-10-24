@@ -169,6 +169,11 @@ class SessionContext:
     source: SessionSource
     connected_platforms: list[Platform]
     home_channels: dict[Platform, HomeChannel]
+    # The current inbound actor may differ from the session route. Telegram observe mode, for
+    # example, deliberately removes a group sender from ``source`` to share the conversation.
+    # Keep that trusted event identity task-local; it must never alter the stored route.
+    actor_user_id: Optional[str] = None
+    actor_user_name: Optional[str] = None
     shared_multi_user_session: bool = False
     session_key: str = ""
     session_id: str = ""
@@ -1342,7 +1347,7 @@ class SessionStore(
 
 
 def build_session_context(
-    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
+    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None, event: Any = None,
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
     connected = config.get_connected_platforms()
@@ -1350,8 +1355,10 @@ def build_session_context(
         source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
     )
+    actor = event if getattr(event, "user_id", None) is not None else source
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
+        actor_user_id=getattr(actor, "user_id", None), actor_user_name=getattr(actor, "user_name", None),
         home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
     )
     if session_entry:

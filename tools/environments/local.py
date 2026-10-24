@@ -257,6 +257,22 @@ def _inject_session_context_env(env: dict) -> None:
             env[var_name] = "" if value is None else str(value)
         elif _engaged:
             env.pop(var_name, None)
+    # Cron provenance propagation (gate 2, G2-R1-A): HERMES_CRON_SESSION's
+    # ContextVar is only bound later (_CronRunScope), AFTER pre-run/direct
+    # scripts have already spawned — a dynamically assembled deferred-restart
+    # command inside such a script would reach the CLI without the marker. The
+    # trusted execution identity (_CURRENT) is bound at dispatch time, so
+    # promote it to the child env here, at the spawn boundary. Covers direct
+    # scripts, pre-run scripts and monitor executables (env inherits down the
+    # process tree). Never downgrades an already-bound value.
+    if not env.get("HERMES_CRON_SESSION"):
+        try:
+            from cron.execution_identity import current_cron_execution
+
+            if current_cron_execution() is not None:
+                env["HERMES_CRON_SESSION"] = "1"
+        except Exception:
+            pass
 
 
 def _filter_secret_env(

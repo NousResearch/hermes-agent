@@ -42,6 +42,10 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
             _apply_schedule_update(merged, updates, str(merged.get("id") or "imported job"))
         else:
             merged["next_run_at"] = None
+    # G3 (gateway-deferred-restart spec): the import path rejects payloads referencing the
+    # deferred-restart entrypoint, same as create/edit — nothing is written for a bad record.
+    from cron.lifecycle_guard import check_deferred_restart_job
+    check_deferred_restart_job(merged)
     return merged
 
 

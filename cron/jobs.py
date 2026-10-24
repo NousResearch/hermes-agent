@@ -1851,8 +1851,12 @@ def create_job(
     if not prompt_text and not f["script"] and not normalized_skills:
         raise ValueError(EMPTY_PAYLOAD_ERROR)
     # Reject gateway-lifecycle commands (respawn loops) here, not just in the CLI: covers the tool.
-    from cron.lifecycle_guard import check_gateway_lifecycle
+    from cron.lifecycle_guard import check_deferred_restart_job, check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, f["script"])
+    # G3 (gateway-deferred-restart spec): the deferred channel is likewise forbidden to scheduled
+    # jobs — three-layer coverage starts at the definition path.
+    check_deferred_restart_job({"prompt": prompt_text, "script": f["script"],
+                                "monitor_script": f.get("monitor_script") or ""})
 
     label_source = (
         prompt_text
@@ -2083,6 +2087,21 @@ def _fill_missing_next_run(updated: dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
+def _reject_deferred_restart_payload(old: dict, merged: dict, updates: dict) -> None:
+    """G3 layer 1: edits and re-activations must not reference ``hermes gateway defer-restart``.
+
+    Scoped to payload edits (prompt/script) and re-enable transitions so unrelated bookkeeping
+    updates to legacy records keep loading (parity with ``_validate_job_mode_invariants``'s
+    changed-fields scoping). Pre-existing payloads are additionally re-checked fail-closed at
+    dispatch (G3 layer 2), so this scoping cannot let one through to execution."""
+    editing = any(k in updates for k in ("prompt", "script", "monitor_script"))
+    re_enabling = bool(updates.get("enabled")) and not old.get("enabled")
+    if not (editing or re_enabling):
+        return
+    from cron.lifecycle_guard import check_deferred_restart_job
+    check_deferred_restart_job(merged)
+
+
 def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
@@ -2096,6 +2115,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
+        _reject_deferred_restart_payload(job, updated, updates)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
             _validate_job_mode_invariants(

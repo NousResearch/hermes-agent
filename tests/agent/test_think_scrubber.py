@@ -78,19 +78,14 @@ class TestPartialTagsAcrossDeltas:
             == "done"
         )
 
-    def test_split_open_tag_not_at_boundary(self) -> None:
-        """Mid-line split '<' + 'think>X</think>' is a closed pair.
-
-        Closed pairs are always stripped (matching
-        ``_strip_think_blocks`` case 1), even without a block
-        boundary — a closed pair is an intentional bounded construct.
-        """
+    def test_split_close_after_midline_open_is_hidden(self) -> None:
         s = StreamingThinkScrubber()
-        out = _drive(s, ["word<", "think>prose</think>more"])
-        assert out == "wordmore"
+        assert _drive(s, ["hello <think>SECRET</thi", "nk> world"]) == "hello  world"
 
-
-
+    def test_unclosed_midline_open_is_released_on_flush(self) -> None:
+        s = StreamingThinkScrubber()
+        assert s.feed("hello <think>prose mention") == "hello "
+        assert s.flush() == "<think>prose mention"
 
 class TestTheMiniMaxScenario:
     """The exact pattern run_agent per-delta regex strip breaks."""

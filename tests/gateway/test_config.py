@@ -1763,3 +1763,29 @@ class TestTopLevelBlockVsAuthoredExtra:
             adapter.config = config.platforms[Platform.TELEGRAM]
             assert adapter._telegram_require_mention() is True
             assert os.environ["TELEGRAM_REQUIRE_MENTION"] == "true"
+
+
+def test_claim_lock_defaults_fail_open():
+    """gateway.claim_lock defaults: enabled, monitor mode — the fail-open rollout phase
+    that keeps an upstream merge behavior-neutral (t_e4138b0a)."""
+    cfg = GatewayConfig()
+    assert cfg.claim_lock.enabled is True
+    assert cfg.claim_lock.mode == "monitor"
+    assert GatewayConfig.from_dict({}).claim_lock.mode == "monitor"
+    assert GatewayConfig.from_dict({"gateway": {}}).claim_lock.enabled is True
+
+
+def test_claim_lock_parses_and_round_trips():
+    cfg = GatewayConfig.from_dict(
+        {"gateway": {"claim_lock": {"enabled": False, "mode": "enforce"}}})
+    assert cfg.claim_lock.enabled is False
+    assert cfg.claim_lock.mode == "enforce"
+    assert cfg.to_dict()["claim_lock"] == {"enabled": False, "mode": "enforce"}
+
+
+def test_claim_lock_unknown_mode_falls_back_to_monitor(caplog):
+    """An unparseable mode fails open (monitor) with a warning — a typo in config.yaml
+    never arms enforcement."""
+    cfg = GatewayConfig.from_dict({"gateway": {"claim_lock": {"mode": "loud"}}})
+    assert cfg.claim_lock.mode == "monitor"
+    assert any("gateway.claim_lock.mode" in r.getMessage() for r in caplog.records)

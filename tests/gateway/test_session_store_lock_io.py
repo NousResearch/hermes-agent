@@ -65,6 +65,9 @@ def _db_with_rows(rows: dict) -> MagicMock:
     db.create_session.return_value = None
     # Identity compression tip (no child session).
     db.get_compression_tip.side_effect = lambda sid: sid
+    # Claim gate stand-in: acquire_channel_claim unpacks (acquired, claim) from
+    # _execute_write; these lock-IO tests treat the channel as always-acquire.
+    db._execute_write.return_value = (True, {})
     return db
 
 

@@ -328,6 +328,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         # Reuse the existing private automation envelope: public native admission
         # continues to reject internal events and arbitrary metadata.
         from datetime import datetime, timezone
+        from gateway.parked_route_refusal import ParkedRouteRefused
         from gateway.platforms.webhook_ingress import producer_scope
         from gateway.session_ingress_context import capture_provenance
         from hermes_state_runtime import admit_session_input, RuntimeStoreError
@@ -338,7 +339,18 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             if provenance is None:
                 raise RuntimeStoreError('permission_denied')
             # The routing reservation writes too: off the owner loop like the admission below.
-            ref = authority._publish_route(event.source, *await asyncio.to_thread(authority._reserve_route, event.source))
+            try:
+                ref = authority._publish_route(event.source,
+                    *await asyncio.to_thread(authority._reserve_route, event.source))
+            except RuntimeStoreError as exc:
+                if exc.reason == 'channel_claim_inflight':
+                    # A concurrent admission holds the gate's create window: redeliver via the
+                    # parked-route retry status — the retry then joins the live channel session.
+                    raise ParkedRouteRefused(
+                        'A concurrent admission is opening this channel; retry this delivery') from exc
+                if exc.reason == 'channel_claimed_elsewhere':
+                    return None  # another gateway owns the channel: acknowledge, never answer (design §8.2)
+                raise
             route = authority.sessions[ref.session_id].route
             source = event.source.to_dict()
             source['is_bot'] = event.source.is_bot

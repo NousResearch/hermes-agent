@@ -35,6 +35,7 @@ def cold_review_parent(runner, source, session_key, session_id):
     own LLM clients are released: ``close()`` would tear down the session's terminal and browser, and the
     reviewer it dispatched is detached and builds its own clients."""
     from gateway.run import _load_gateway_config, _platform_config_key
+    from gateway.session_api_turn import api_runtime_locked
     from gateway.session_authorities import active_authority
     from gateway.session_policy import policy_for_source, policy_scope, policy_turn_toolsets
     from run_agent import AIAgent
@@ -60,6 +61,8 @@ def cold_review_parent(runner, source, session_key, session_id):
             provider_data_collection=pr.get("data_collection"),
             session_id=session_id, platform=platform_key, gateway_session_key=session_key,
             session_db=getattr(runner._session_db, "_db", runner._session_db),
+            # The session's backup providers, as its next turn would carry them: the reviewer inherits the chain.
+            fallback_model=None if api_runtime_locked() else runner._refresh_fallback_model(),
             # The reviewer reads the transcript excerpt; this agent never runs a turn of its own.
             skip_memory=True)
         agent._end_session_on_close = False

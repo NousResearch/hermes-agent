@@ -1,7 +1,7 @@
 name: kinocut
 title: Kinocut
 repo: https://github.com/KyaniteLabs/kinocut
-sha: 2bb755d191ea00885a6861d61bb39965b13122f4
+sha: 31ddab08a99e09fb50e0855c61e1627d02050ac1
 subdir: plugins/kinocut
 version: "1.16.7"
 description: >-

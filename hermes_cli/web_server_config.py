@@ -69,6 +69,12 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         *_timezone_options(), searchable=True, clearable=True,
     ),
     "memory.provider": _select("Memory provider plugin", *_memory_provider_options()),
+    # Static fallback lists every supported browser; the per-request schema narrows it to the
+    # installed ones (_real_profile_browser_schema_options).
+    "browser.real_profile_browser": _select(
+        "Chromium browser whose profile use_real_profile snapshots ('' = system default)",
+        "", "chrome", "chromium", "brave", "brave-origin", "edge",
+    ),
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",
@@ -357,6 +363,24 @@ def _memory_provider_schema_options(cfg: dict[str, Any]) -> list[str]:
     return options
 
 
+def _real_profile_browser_schema_options(cfg: dict[str, Any]) -> list[str]:
+    """``""`` (system default) plus the Chromium browsers installed on this machine, plus the
+    configured value even when not installed, so a saved choice never vanishes. Detection is
+    PATH/file lookups only; on failure the static all-browsers list is kept."""
+    try:
+        from hermes_cli.browser_connect import installed_chromium_browsers
+
+        options = ["", *installed_chromium_browsers()]
+    except Exception:
+        _log.debug("installed browser detection failed", exc_info=True)
+        return list(_schema_select_options("browser.real_profile_browser") or [""])
+    browser = cfg.get("browser")
+    current = browser.get("real_profile_browser") if isinstance(browser, dict) else None
+    if isinstance(current, str) and current.strip() and current.strip() not in options:
+        options.append(current.strip())
+    return options
+
+
 def _schema_select_options(key: str) -> Optional[list[str]]:
     entry = CONFIG_SCHEMA.get(key)
     options = entry.get("options") if isinstance(entry, dict) else None
@@ -391,6 +415,7 @@ def _schema_with_dynamic_provider_options() -> dict[str, dict[str, Any]]:
             merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
 
     merge("memory.provider", _memory_provider_schema_options(cfg))
+    merge("browser.real_profile_browser", _real_profile_browser_schema_options(cfg))
 
     tb_options = _schema_select_options("terminal.backend")
     if tb_options is not None:

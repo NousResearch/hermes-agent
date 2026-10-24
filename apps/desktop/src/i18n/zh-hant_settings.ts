@@ -475,7 +475,8 @@ export const zhHantSettings = {
       browser: {
         allowPrivateUrls: '瀏覽器私有 URL',
         autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器',
-        useRealProfile: '使用我的真實瀏覽器設定檔'
+        useRealProfile: '使用我的真實瀏覽器設定檔',
+        realProfileBrowser: '真實設定檔所用瀏覽器'
       },
       checkpoints: {
         enabled: '檔案檢查點',
@@ -657,7 +658,9 @@ export const zhHantSettings = {
       },
       browser: {
         useRealProfile:
-          '本機瀏覽會使用你的真實登入狀態。Hermes 會將預設瀏覽器的設定（Cookie、登入資訊與偏好）複製成受管理的快照，再以內建的 Chromium 驅動它——不會直接開啟你正在使用的設定檔，且每次執行都會從目前的設定檔重新整理副本。設定雲端瀏覽器後端時，也允許代理視需要開啟本機真實設定檔工作階段。僅支援 Chromium 系瀏覽器（Chrome、Edge、Brave、Brave Origin、Chromium）；若預設瀏覽器並非 Chromium 系，會顯示明確錯誤。預設關閉。'
+          '本機瀏覽會使用你的真實登入狀態。Hermes 會將預設瀏覽器的設定（Cookie、登入資訊與偏好）複製成受管理的快照，再以內建的 Chromium 驅動它——不會直接開啟你正在使用的設定檔，且每次執行都會從目前的設定檔重新整理副本。設定雲端瀏覽器後端時，也允許代理視需要開啟本機真實設定檔工作階段。僅支援 Chromium 系瀏覽器（Chrome、Edge、Brave、Brave Origin、Chromium）；若預設瀏覽器並非 Chromium 系，會顯示明確錯誤。預設關閉。',
+        realProfileBrowser:
+          '從哪個已安裝的 Chromium 瀏覽器複製真實設定檔。留空則使用系統預設瀏覽器。'
       },
       voice: {
         autoTts: '自動朗讀助手回覆。',
@@ -1590,6 +1593,10 @@ export const zhHantSettings = {
         disabledTitle: '真實設定檔瀏覽：已關閉',
         disabledMessage: '設定檔快照將被刪除；新工作階段使用乾淨的瀏覽器。',
         failedSave: '無法儲存真實設定檔設定',
+        browserLabel: '複製來源瀏覽器',
+        browserDescription: '要快照其設定檔的已安裝 Chromium 瀏覽器。系統預設使用作業系統的預設瀏覽器。',
+        browserSavedTitle: '已儲存真實設定檔瀏覽器',
+        browserSavedMessage: '新工作階段將複製此瀏覽器的設定檔。',
         prompt: {
           title: '讓網站保持登入狀態',
           body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，網站開啟時即已登入。',

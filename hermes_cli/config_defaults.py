@@ -456,6 +456,9 @@ DEFAULT_CONFIG = {
         # Windows browser holding its cookies) gives a fresh, signed-out browser plus a note saying why.
         # Also gates the browser_exec `local` arg (real-profile session under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
+        # Which Chromium browser use_real_profile snapshots: chrome | chromium | brave |
+        # brave-origin | edge. Empty = the OS default browser (fails closed if not Chromium).
+        "real_profile_browser": "",
         # Windows only: a running Chrome/Edge/Brave locks its cookie DB (the last snapshot is reused;
         # with none yet, a fresh browser runs). When on, the agent ASKS first; on approval it runs
         # `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost) so a

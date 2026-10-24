@@ -306,6 +306,20 @@ re-synced from your real profile whenever a fresh session is launched, so logins
 you do in your own browser show up in the agent's session. Only the active
 profile is copied — other Chrome profiles are never snapshotted.
 
+To snapshot a Chromium browser other than your OS default — for example when
+your daily browser is Firefox or Zen but you keep Chrome around for the agent —
+set `browser.real_profile_browser` to `chrome`, `chromium`, `brave`,
+`brave-origin`, or `edge`. Leave it empty (the default) to follow the OS default
+browser; an unrecognized value is ignored with a warning. In the desktop app the
+same choice is the **Browser to copy from** selector under the real-profile
+toggle (Capabilities → Tools → Browser).
+
+```yaml
+browser:
+  use_real_profile: true
+  real_profile_browser: chrome
+```
+
 The snapshot browser runs **headless** — it drives your profile in the
 background with no visible window and never steals focus, so you can keep
 working while the agent tweets, fills forms, or scrapes on your behalf.

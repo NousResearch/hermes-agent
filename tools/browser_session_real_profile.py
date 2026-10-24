@@ -41,7 +41,8 @@ def _unsupported_reason(browser) -> Optional[str]:
     from hermes_cli.browser_connect import UNSUPPORTED_CHANNEL
     if browser is None:
         return (_RP + "your default browser is not a supported Chromium browser (Chrome, Edge, Brave, "
-                "Brave Origin, Chromium). Real-profile browsing requires a Chromium default; set one or turn the toggle off.")
+                "Brave Origin, Chromium). Real-profile browsing requires a Chromium default; set one, set "
+                "browser.real_profile_browser (Desktop: Browser to copy from), or turn the toggle off.")
     if browser == UNSUPPORTED_CHANNEL:
         return (_RP + "your default browser is a pre-release Chromium channel (Beta / Dev / Canary), which "
                 "real-profile browsing does not support. Set your default to a "

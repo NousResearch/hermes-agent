@@ -1180,7 +1180,8 @@ export const deOverrides = {
       browser: {
         allowPrivateUrls: 'Private Browser-URLs',
         autoLocalForPrivateUrls: 'Lokaler Browser für private URLs',
-        useRealProfile: 'Mein echtes Browser-Profil verwenden'
+        useRealProfile: 'Mein echtes Browser-Profil verwenden',
+        realProfileBrowser: 'Browser für das echte Profil'
       },
       checkpoints: {
         enabled: 'Datei-Checkpoints',
@@ -1319,7 +1320,9 @@ export const deOverrides = {
       timezone: 'IANA-Zeitzonenkennung. Leer verwendet die Systemzeitzone.',
       browser: {
         useRealProfile:
-          'Lokales Browsen nutzt Ihre echten Anmeldungen. Hermes kopiert das Profil Ihres Standardbrowsers (Cookies, Anmeldungen, Einstellungen) in einen verwalteten Schnappschuss und steuert ihn mit seinem gebündelten Chromium – Ihr Live-Profil wird nie direkt geöffnet, und die Kopie wird bei jedem Lauf daraus aktualisiert. Erlaubt dem Agenten außerdem, auf Anfrage eine lokale Session mit echtem Profil zu öffnen, selbst wenn ein Cloud-Browser-Backend konfiguriert ist. Nur Chromium-Browser (Chrome, Edge, Brave, Brave Origin, Chromium) werden unterstützt; ein Nicht-Chromium-Standard schlägt mit einer klaren Meldung fehl. Standardmäßig aus.'
+          'Lokales Browsen nutzt Ihre echten Anmeldungen. Hermes kopiert das Profil Ihres Standardbrowsers (Cookies, Anmeldungen, Einstellungen) in einen verwalteten Schnappschuss und steuert ihn mit seinem gebündelten Chromium – Ihr Live-Profil wird nie direkt geöffnet, und die Kopie wird bei jedem Lauf daraus aktualisiert. Erlaubt dem Agenten außerdem, auf Anfrage eine lokale Session mit echtem Profil zu öffnen, selbst wenn ein Cloud-Browser-Backend konfiguriert ist. Nur Chromium-Browser (Chrome, Edge, Brave, Brave Origin, Chromium) werden unterstützt; ein Nicht-Chromium-Standard schlägt mit einer klaren Meldung fehl. Standardmäßig aus.',
+        realProfileBrowser:
+          'Aus welchem installierten Chromium-Browser das echte Profil kopiert wird. Leer verwendet den Standardbrowser des Systems.'
       },
       agent: {
         imageInputMode: 'Steuert, wie Bildanhänge an das Modell gesendet werden.',
@@ -2374,6 +2377,10 @@ export const deOverrides = {
         disabledTitle: 'Echtes Profil-Browsen deaktiviert',
         disabledMessage: 'Der Profil-Schnappschuss wird gelöscht; neue Sessions verwenden einen sauberen Browser.',
         failedSave: 'Die Echtes-Profil-Einstellung konnte nicht gespeichert werden',
+        browserLabel: 'Browser als Quelle',
+        browserDescription: 'Das Profil welches installierten Chromium-Browsers kopiert wird. Systemstandard nutzt den Standardbrowser des Betriebssystems.',
+        browserSavedTitle: 'Browser für echtes Profil gespeichert',
+        browserSavedMessage: 'Neue Sitzungen kopieren das Profil dieses Browsers.',
         prompt: {
           title: 'Auf Ihren Websites angemeldet bleiben',
           body: 'Lassen Sie Hermes mit einem Schnappschuss Ihres Standard-Browserprofils browsen, damit Websites bereits angemeldet öffnen.',

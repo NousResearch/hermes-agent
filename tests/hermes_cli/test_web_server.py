@@ -2729,6 +2729,35 @@ class TestBuildSchemaFromConfig:
         assert fields["memory.provider"]["type"] == "select"
         assert _web_server_config.CONFIG_SCHEMA["memory.provider"] is not fields["memory.provider"]
 
+    def test_schema_real_profile_browser_lists_installed_plus_configured(self, monkeypatch):
+        """browser.real_profile_browser offers only installed Chromium browsers, plus the
+        configured value (even if uninstalled) so a saved choice never disappears."""
+        import hermes_cli.browser_connect as _bc
+
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {"browser": {"real_profile_browser": "chromium"}})
+        monkeypatch.setattr(_bc, "installed_chromium_browsers", lambda system=None: ["chrome", "brave"])
+
+        fields = _web_server_config._schema_with_dynamic_provider_options()
+
+        assert fields["browser.real_profile_browser"]["options"] == ["", "chrome", "brave", "chromium"]
+        assert fields["browser.real_profile_browser"]["type"] == "select"
+        assert _web_server_config.CONFIG_SCHEMA["browser.real_profile_browser"]["options"] == [
+            "", "chrome", "chromium", "brave", "brave-origin", "edge"]
+
+    def test_schema_real_profile_browser_detection_failure_keeps_static_list(self, monkeypatch):
+        import hermes_cli.browser_connect as _bc
+
+        def boom(system=None):
+            raise OSError("no PATH")
+
+        monkeypatch.setattr(_cfg_mod, "load_config", dict)
+        monkeypatch.setattr(_bc, "installed_chromium_browsers", boom)
+
+        fields = _web_server_config._schema_with_dynamic_provider_options()
+
+        assert fields["browser.real_profile_browser"]["options"] == [
+            "", "chrome", "chromium", "brave", "brave-origin", "edge"]
+
 
 # ---------------------------------------------------------------------------
 # Config round-trip tests

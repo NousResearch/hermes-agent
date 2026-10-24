@@ -195,10 +195,27 @@ def cmd_status(args: argparse.Namespace) -> int:
         if who:
             console.print(f"\n  [green]Active op session:[/green] {who}")
         else:
-            console.print(
-                f"\n  [yellow]No active op session and {token_env} is unset — "
-                "Hermes will warn and skip 1Password on next startup.[/yellow]"
+            connect_env = bool(
+                os.environ.get("OP_CONNECT_HOST")
+                and os.environ.get("OP_CONNECT_TOKEN")
             )
+            if connect_env:
+                # The backend passes OP_CONNECT_HOST/OP_CONNECT_TOKEN through
+                # to the op child (agent/secret_sources/onepassword.py) and
+                # resolves references via ``op read`` — Connect credentials
+                # authenticate that path even though ``op whoami`` cannot
+                # verify them, so the skip warning would be a false
+                # positive (#95866).
+                console.print(
+                    "\n  [green]1Password Connect credentials detected "
+                    "(OP_CONNECT_HOST/OP_CONNECT_TOKEN) — startup resolves "
+                    "references through the configured op binary.[/green]"
+                )
+            else:
+                console.print(
+                    f"\n  [yellow]No active op session and {token_env} is unset — "
+                    "Hermes will warn and skip 1Password on next startup.[/yellow]"
+                )
     if not references:
         console.print(
             "\n  [yellow]No references mapped yet.[/yellow]  Add one: "

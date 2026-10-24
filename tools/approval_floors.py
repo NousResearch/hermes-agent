@@ -15,7 +15,8 @@ import time
 import uuid
 from tools import approval_context as _ctx
 from tools.approval_detection import (
-    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
+    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants,
+    _wrapped_command_projections, detect_dangerous_command, detect_hardline_command)
 
 logger = logging.getLogger("tools.approval")
 
@@ -198,7 +199,18 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
         patterns = tuple(_a._permanent_set())
     for pattern in patterns:
         pattern = pattern.strip() if isinstance(pattern, str) else ""
-        if pattern and (command == pattern or (any(ch in pattern for ch in "*?[")
-                                               and fnmatch.fnmatchcase(command, pattern))):
+        if not pattern:
+            continue
+        if command == pattern:
+            return True
+        if not any(ch in pattern for ch in "*?[") or not fnmatch.fnmatchcase(command, pattern):
+            continue
+        for projection in _wrapped_command_projections(command):
+            projection = projection.strip()
+            if not projection or projection == command:
+                continue
+            if detect_dangerous_command(projection)[0] or detect_hardline_command(projection)[0]:
+                break
+        else:
             return True
     return False

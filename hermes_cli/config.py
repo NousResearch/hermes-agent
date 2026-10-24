@@ -46,7 +46,7 @@ from hermes_constants import (
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
-from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
+from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside, mtime_is_racy
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
@@ -1974,12 +1974,30 @@ def read_raw_config_readonly() -> dict[str, Any]:
     return _read_raw_config_impl(want_deepcopy=False)
 
 
+# Cache for require_readable_config_before_write: (path_str, file_signature) -> parsed dict.
+# Keyed by file signature so a file edit invalidates the entry. Never caches failures —
+# malformed/unreadable files are re-validated and refused on every call.
+_READABLE_CONFIG_CACHE: dict[tuple[str, tuple[int, int, int, int]], dict[str, Any]] = {}
+
+
+def clear_readable_config_cache() -> None:
+    """Clear the require_readable_config_before_write cache (for tests)."""
+    _READABLE_CONFIG_CACHE.clear()
+
+
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> dict[str, Any]:
     """Refuse to replace an existing config.yaml that cannot be read or parsed; return the mapping.
     Guards two collapse-to-empty failure modes that would let a read-then-write caller silently
     wipe user overrides: an unreadable file (permissions / broken mount) and an unparseable or
     non-mapping root — bare-``except`` loaders treat both as ``{}``, so a subsequent write would
-    replace the recoverable file with only the caller's partial dict. Fails closed."""
+    replace the recoverable file with only the caller's partial dict. Fails closed.
+
+    Results are memoized on (path, file_signature) while the file is unchanged. Plugins that
+    resolve their state directory through this function call it from tool hooks (pre/post/transform),
+    so a gateway serving many sessions would otherwise re-parse the whole config several times per
+    tool call while holding the GIL (~18ms per call, ~9% of GIL-held samples with ~11 sessions).
+    Failures are never cached: a malformed or unreadable file is re-validated on every call.
+    """
     if config_path is None:
         snapshot = _worker_config_snapshot()
         if snapshot is not None:
@@ -1987,12 +2005,15 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
             return copy.deepcopy(snapshot)
         config_path = get_config_path()
     try:
-        config_path.stat()
+        st = config_path.stat()
     except FileNotFoundError:
         return {}
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
-
+    sig = file_signature(st)
+    cache_key = (str(config_path), sig)
+    if cache_key in _READABLE_CONFIG_CACHE:
+        return copy.deepcopy(_READABLE_CONFIG_CACHE[cache_key])
     try:
         with open(config_path, encoding="utf-8-sig") as f:
             loaded = fast_safe_load(f)
@@ -2010,6 +2031,10 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         raise _refuse_overwrite(
             config_path, f"must start with settings names, but its top level is a {type(loaded).__name__}",
             exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
+    # Only cache when the mtime is not racily fresh (a write in the same tick as the stat
+    # would leave the signature unchanged — don't trust it as "nothing changed since").
+    if not mtime_is_racy(st.st_mtime_ns):
+        _READABLE_CONFIG_CACHE[cache_key] = loaded
     return loaded
 
 

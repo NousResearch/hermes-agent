@@ -458,6 +458,8 @@ def apply_gemma4_text_protocol(agent: Any, message: Any) -> None:
 
     Mutates *message* (content, reasoning, tool_calls, finish_reason). A
     length-truncated reply may end mid-call, so it is never parsed for calls.
+    On a tool turn whose stripped thought block opened the reply, the text
+    before the call becomes reasoning rather than visible content.
     """
     raw = message.content
     if not raw or not is_gemma4_model(agent.model) or not strips_special_tokens(getattr(agent, "provider", None)):
@@ -470,9 +472,14 @@ def apply_gemma4_text_protocol(agent: Any, message: Any) -> None:
         if calls:
             message.tool_calls = calls
             content = cleaned
+            # Gemma closes its thought channel right before calling a tool; with the
+            # <channel|> stripped the boundary is gone, but on a tool turn the whole
+            # preamble after a bare "thought" prefix is that thought block.
+            if raw.startswith("thought\n") and cleaned and not getattr(message, "reasoning", None):
+                message.reasoning, content = cleaned, ""
             if message.finish_reason == "stop":
                 message.finish_reason = "tool_calls"
             logger.info("Gemma 4 text extraction: %d tool call(s) from content", len(calls))
-            _reconcile_streamed_text(agent, raw, cleaned)
+            _reconcile_streamed_text(agent, raw, content)
     if content != raw:
         message.content = content or None

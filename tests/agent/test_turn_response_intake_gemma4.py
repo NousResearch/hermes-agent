@@ -36,10 +36,36 @@ def test_glued_parallel_calls_become_tool_calls():
     assert message.content is None
 
 
-def test_leaked_thought_prefix_is_stripped_and_call_extracted():
-    message, calls, _ = _apply("thought\nI need the weather in Oslo.`city`call:get_weather{city:Oslo}")
+def test_thought_preamble_on_a_tool_turn_becomes_reasoning():
+    raw = "thought\nI need the weather in Oslo.`city`call:get_weather{city:Oslo}"
+    message, calls, agent = _apply(raw, streamed=raw)
     assert calls == [("get_weather", {"city": "Oslo"})]
-    assert message.content == "I need the weather in Oslo.`city`"
+    assert message.reasoning == "I need the weather in Oslo.`city`"
+    assert message.content is None
+    assert agent._current_streamed_assistant_text == ""
+
+
+def test_thought_prefixed_final_answer_stays_visible():
+    message, calls, _ = _apply("thought\nThe user wants 2+2.\n\n2 + 2 = 4")
+    assert calls == []
+    assert message.reasoning is None
+    assert message.content == "The user wants 2+2.\n\n2 + 2 = 4"
+
+
+def test_preamble_without_thought_prefix_stays_visible():
+    message, calls, _ = _apply("Let me check.call:get_weather{city:Paris}")
+    assert calls == [("get_weather", {"city": "Paris"})]
+    assert message.reasoning is None
+    assert message.content == "Let me check."
+
+
+def test_native_reasoning_is_not_overwritten():
+    agent = SimpleNamespace(model=GEMMA, provider="hf", tools=TOOLS, _current_streamed_assistant_text="")
+    message = _message("thought\nPlan.call:get_weather{city:Rome}")
+    message.reasoning = "native reasoning"
+    apply_gemma4_text_protocol(agent, message)
+    assert message.reasoning == "native reasoning"
+    assert message.content == "Plan."
 
 
 def test_length_truncated_reply_is_never_parsed_for_calls():

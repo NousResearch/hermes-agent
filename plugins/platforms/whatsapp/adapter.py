@@ -958,7 +958,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return _NATIVE_MEDIA_TYPES[media_type]
         if not data.get("hasMedia"):
             return MessageType.TEXT
-        return next((kind for needle, kind in _MEDIA_NEEDLES if needle in media_type), MessageType.DOCUMENT)
+        kind = next((kind for needle, kind in _MEDIA_NEEDLES if needle in media_type), MessageType.DOCUMENT)
+        # Forwarded voice notes arrive without the ptt flag; Opus-in-Ogg is still a voice note.
+        if kind is MessageType.AUDIO and "opus" in str(data.get("mime", "") or "").lower():
+            return MessageType.VOICE
+        return kind
 
     async def _collect_bridge_media(self, data: dict[str, Any], msg_type: MessageType) -> tuple[list, list]:
         """``mediaUrls`` → ``(cached_urls, media_types)``: remote image/audio cached locally; absolute paths only inside a cache dir."""
@@ -1042,8 +1046,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
-            if msg_type == MessageType.VOICE and cached_urls and str(body).strip().lower() == "[ptt received]":
-                body = ""  # Bridge placeholder for captionless voice notes; the audio is the payload.
+            if msg_type == MessageType.VOICE and cached_urls and str(body).strip().lower() in ("[ptt received]", "[audio received]"):
+                body = ""  # Bridge placeholder for captionless voice notes (forwarded ones say "audio").
             # Quoted message stays in structured fields only — GatewayRunner renders the "[Replying to: ...]" pointer.
             quoted = bool(data.get("hasQuotedMessage"))
             raw_reply_id = data.get("quotedMessageId") if quoted else None

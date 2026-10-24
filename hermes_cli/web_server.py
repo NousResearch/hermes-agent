@@ -2869,11 +2869,17 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     """
     try:
         from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
+        from hermes_cli.web_routers.profiles import _isolated_profile_scope
+        import hermes_cli.profiles as profiles_mod
         from gateway.status import read_runtime_status
         homes = profiles_to_serve(True)
+        scope = _isolated_profile_scope(profiles_mod)
+        if scope is not None:
+            homes = [(name, home) for name, home in homes if name == scope]
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
         return {"profiles": [], "gateway_mode": "unknown", "gateways": []}
+
 
     profile_names = [name for name, _home in homes]
     gateways: List[Dict[str, Any]] = []

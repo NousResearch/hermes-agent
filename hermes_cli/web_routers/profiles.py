@@ -106,8 +106,13 @@ def get_profiles_sessions(
     from hermes_state import SessionDB
     from hermes_cli import profiles as profiles_mod
 
+    scope = _isolated_profile_scope(profiles_mod)
     targets: List[Tuple[str, Path]] = []
-    if profile and profile != "all":
+    if scope is not None:
+        if profile and profile != "all" and profile != scope:
+            raise HTTPException(status_code=403, detail="profile access restricted on isolated server")
+        targets.append((scope, profiles_mod.get_profile_dir(scope)))
+    elif profile and profile != "all":
         name, home = _cron_profile_home(profile)
         targets.append((name, home))
     else:
@@ -119,6 +124,7 @@ def get_profiles_sessions(
             targets = []
         if not targets:
             targets.append(("default", profiles_mod.get_profile_dir("default")))
+
 
     min_message_count = max(0, min_messages)
     archived_only = archived == "only"

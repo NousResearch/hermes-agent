@@ -1929,6 +1929,33 @@ class TestNewEndpoints:
         assert resp.status_code == 200
         assert sorted(opened) == sorted(str(h / "state.db") for h in homes.values())
 
+    def test_profiles_sessions_isolated_scope_forbids_foreign_profile(
+        self, monkeypatch
+    ):
+        """Requesting another profile's sessions on an isolated server must 403 (#76932)."""
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "wife")
+        resp = self.client.get("/api/profiles/sessions?profile=husband")
+        assert resp.status_code == 403
+        assert "profile access restricted" in resp.json()["detail"]
+
+    def test_profile_gateway_topology_isolated_scope_restricts_to_own_profile(
+        self, monkeypatch, tmp_path
+    ):
+        """Collecting profile gateway topology on an isolated server scopes homes (#76932)."""
+        from hermes_cli import web_server
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "wife")
+        monkeypatch.setattr(
+            profiles_mod,
+            "profiles_to_serve",
+            lambda all_profiles: [("default", tmp_path / "default"), ("wife", tmp_path / "wife"), ("husband", tmp_path / "husband")],
+        )
+        topology = web_server._collect_profile_gateway_topology()
+        assert topology["profiles"] == ["wife"]
+
     def test_profiles_create_builder_mcp_auth_is_profile_scoped(
         self, monkeypatch
     ):

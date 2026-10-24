@@ -215,10 +215,21 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
     def _on_tick(res):
         ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
-        if ready_pending and not res.spawned:
-            health_state["bad_ticks"] += 1
-        else:
+        # AT CAPACITY is not a fault: the ready queue stays non-empty precisely
+        # because the running workers are busy, and 0 spawns is the expected
+        # outcome. Counting it as a "bad tick" made the daemon cry wolf about
+        # a perfectly healthy board (2026-10-24: 3 running workers against
+        # ``kanban.max_spawn: 3`` produced "dispatcher stuck" for 11 ticks).
+        saturated = bool(getattr(res, "capacity_saturated", None))
+        if saturated:
             health_state["bad_ticks"] = 0
+            health_state["saturated_ticks"] = health_state.get("saturated_ticks", 0) + 1
+        else:
+            health_state["saturated_ticks"] = 0
+            if ready_pending and not res.spawned:
+                health_state["bad_ticks"] += 1
+            else:
+                health_state["bad_ticks"] = 0
         # Warn once per HEALTH_WINDOW bad ticks, at most every 5 minutes.
         if health_state["bad_ticks"] >= HEALTH_WINDOW:
             now = int(time.time())
@@ -234,6 +245,17 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                     file=sys.stderr, flush=True,
                 )
                 health_state["last_warn_at"] = now
+        elif saturated:
+            # Informational, not a warning: the cap is doing its job.
+            health_state["last_warn_at"] = int(time.time())
+            if verbose:
+                held = kbd.describe_suppression([res])
+                print(
+                    f"[{_fmt_ts(int(time.time()))}] INFO dispatcher at capacity: "
+                    f"0 workers spawned because the concurrency cap is reached"
+                    f"{f' ({held})' if held else ''} — the running workers are still busy.",
+                    flush=True,
+                )
         if not verbose:
             return
         did_work = (

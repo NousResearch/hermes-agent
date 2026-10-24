@@ -7756,6 +7756,20 @@ def _credential_rung_accepts(exc: Exception) -> bool:
 
 
 # Immutable route context shared by the recovery rungs.
+#
+# NAMEDTUPLE FIELD-ADDITION RULE (repo-wide, enforced by
+# scripts/check_namedtuple_required_fields.py): a field added to an EXISTING
+# NamedTuple MUST have a default, or the type breaks every positional
+# constructor of it. The cron external worker imports the LIVE checkout, so
+# such a break fails EVERY cron job on the gateway delivery path at once, at
+# import time, with an opaque "exited before ownership acknowledgement" — the
+# 2026-10-24 outage (17 jobs, one line of code). Give the field a default, or
+# convert the type to a dataclass with keyword-only construction.
+#
+# ORDERING RULE (same check): a REQUIRED field may not FOLLOW a defaulted one.
+# Python rejects the class at import time ("Non-default namedtuple field 'x'
+# cannot follow default field 'y'") — the 2026-10-24 06:49Z wave, 8 jobs
+# across 2 profiles. Required fields come FIRST; defaulted ones after.
 class _LadderRoute(NamedTuple):
     client: Any
     task: Optional[str]

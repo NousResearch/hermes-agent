@@ -47,6 +47,19 @@ def _tick_admitted(
             _sched.logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
+        # Import-chain smoke test BEFORE any job is dispatched. The external cron
+        # worker imports the LIVE checkout, so one module-level error in the
+        # shared gateway/agent chain would fail EVERY due job identically with
+        # an opaque "exited before ownership acknowledgement". Probing here
+        # turns that into ONE diagnostic naming the broken module, before any
+        # job burns a claim (2026-10-24 incident: 17 jobs, one root cause).
+        _import_failure = _sched._probe_cron_dispatch_imports()
+        if _import_failure:
+            _sched._log_cron_dispatch_import_failure(_import_failure)
+            # Leave the due jobs for a later tick: they are NOT consumed, and the
+            # next tick re-probes (the tree may have been fixed in between).
+            return 0
+
         from cron.bot_chat_delivery import drain, drain_in_background
         if sync:
             drain()

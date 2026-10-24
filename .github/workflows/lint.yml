@@ -227,6 +227,21 @@ jobs:
       - name: Keep every AGENTS.md under its truncation cap
         run: python scripts/ci/check_agents_md_size.py
 
+      # A REQUIRED field added to an EXISTING NamedTuple breaks every positional
+      # constructor of that type. The cron external worker imports the LIVE
+      # checkout, so such a break fails EVERY cron job on the gateway delivery
+      # path at once, at import time — the 2026-10-24 outage (17 jobs, one
+      # line of code). A 5-second check instead of a 17-job outage.
+      - name: Forbid a required field added to an existing NamedTuple
+        run: python scripts/check_namedtuple_required_fields.py
+
+      # The cron external worker imports the LIVE checkout, so a module-level
+      # error in the shared delivery/agent chain fails EVERY job on the
+      # gateway delivery path at once — the 2026-10-24 outage (17 jobs, one
+      # line of code). Import the chain for real before such a tree ships.
+      - name: Keep the cron dispatch import chain importable
+        run: python scripts/check_cron_import_chain.py
+
       # Advisory: profile-scope hazard shapes on the lines this PR adds (child env from os.environ,
       # raw os.getenv of a platform credential, HOME-only RPC binding, bare-PID liveness). One
       # process serves many profiles; every pattern leaked the launch profile at least once. Printed

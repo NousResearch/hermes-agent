@@ -111,6 +111,17 @@ _GUARDS = {
     "case-collisions": ["scripts/check-case-collisions.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
+    # A REQUIRED field added to an existing NamedTuple breaks every positional
+    # constructor of that type. Because the cron external worker imports the
+    # LIVE checkout, such a break surfaces as a simultaneous failure of every
+    # cron job on the gateway delivery path (2026-10-24: 17 jobs, one line).
+    "namedtuple-fields": ["scripts/check_namedtuple_required_fields.py"],
+    # The cron external worker imports the LIVE checkout, so a module-level
+    # error anywhere in the shared delivery/agent chain fails EVERY job on the
+    # gateway delivery path at once (2026-10-24: 17 jobs, one line). This
+    # imports the chain for real, in a subprocess, before such a tree can be
+    # committed.
+    "cron-import-chain": ["scripts/check_cron_import_chain.py"],
 }
 _CHECKS = (*_GUARDS, "ruff", "health")
 

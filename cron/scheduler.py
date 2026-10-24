@@ -184,6 +184,55 @@ def _detect_gateway_code_skew() -> tuple[str, str] | None:
         return None
 
 
+def _probe_cron_dispatch_imports() -> Optional[str]:
+    """Probe the cron dispatch import chain; return a diagnostic when it is broken.
+
+    The external cron worker imports the LIVE checkout, so a module-level error
+    anywhere in the shared gateway/agent chain fails EVERY job that touches the
+    delivery path, at once. Probed once per tree state (see
+    ``cron/import_smoke.py``), so a broken tree costs ONE diagnostic per tick
+    instead of N identical per-job failures.
+
+    Returns ``None`` when the chain is healthy. Test seam: the probe itself is
+    monkeypatchable.
+    """
+    try:
+        from cron.import_smoke import check_import_chain
+    except ImportError:
+        # The smoke-test module itself is broken — never let it take the tick
+        # down; the per-job failure path still reports the real error.
+        logger.debug("cron dispatch import smoke module is missing", exc_info=True)
+        return None
+    try:
+        result = check_import_chain()
+    except Exception as exc:
+        # A probe that RAISES is not a verdict about the tree. The probe is
+        # advisory: it must never be the reason a job does not run, and the
+        # per-job failure path still reports the real error.
+        logger.warning(
+            "cron dispatch import smoke probe failed (%s: %s); continuing without it",
+            type(exc).__name__, exc, exc_info=True,
+        )
+        return None
+    if result is None or result.ok:
+        return None
+    return result.diagnostic()
+
+
+def _log_cron_dispatch_import_failure(diagnostic: str) -> None:
+    """Record the ONE diagnostic for a broken cron dispatch import chain.
+
+    Logged at ERROR with the failing module named, and raised as a
+    ``CronImportChainBroken`` so the tick stops BEFORE it dispatches N jobs that
+    would each fail with the same opaque message.
+    """
+    logger.error(
+        "Cron dispatch aborted: %s The external cron worker imports the live "
+        "checkout, so dispatching now would fail every job the same way.",
+        diagnostic,
+    )
+
+
 def _current_gateway_code_sha() -> str | None:
     """Full revision currently on disk; kept separate from display-shortened skew labels."""
     try:
@@ -3949,6 +3998,11 @@ def _launch_external_cron_worker(job: dict) -> bool:
             payload_path.unlink(missing_ok=True)
             from cron.scheduler_diagnostics import external_worker_stderr_tail
             stderr_tail = external_worker_stderr_tail(stderr_path)
+            stderr_text = ""
+            try:
+                stderr_text = stderr_path.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                pass
             stderr_path.unlink(missing_ok=True)
             if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
                 # systemd-run itself failed before any worker ran, so the captured stderr
@@ -3959,9 +4013,39 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     "system-level service install, run `sudo loginctl enable-linger <gateway-user>`; "
                     "the next fire dispatches without scope isolation."
                 )
+            # A worker that died at IMPORT time reports the same opaque "exit 1"
+            # as any other early death. Name the module so the operator does not
+            # have to read the traceback to learn which file broke (the
+            # 2026-10-24 incident: 17 jobs, one root cause, one line to fix).
+            import_summary = ""
+            try:
+                from cron.import_smoke import summarize_worker_import_failure
+
+                summary = summarize_worker_import_failure(stderr_text)
+            except ImportError:
+                # The summariser is missing: the stderr tail still names the
+                # failure, just less precisely than the summariser would.
+                summary = None
+            except Exception as exc:
+                # The summariser itself failed. The worker's real error is
+                # still in the stderr tail below, so this must not replace it.
+                logger.debug(
+                    "cron worker import-failure summary unavailable (%s: %s)",
+                    type(exc).__name__, exc, exc_info=True,
+                )
+                summary = None
+            if summary:
+                import_summary = (
+                    f" The cron worker failed while importing the checkout "
+                    f"({summary}) — every job on this dispatch path fails the "
+                    f"same way until that import is fixed."
+                )
+                logger.error(
+                    "Cron external worker for job '%s' died at import: %s", job_id, summary,
+                )
             raise RuntimeError(
                 f"cron external worker exited before ownership acknowledgement "
-                f"(exit {returncode}){stderr_tail}"
+                f"(exit {returncode}){import_summary}{stderr_tail}"
             )
         time.sleep(0.05)
 

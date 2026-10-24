@@ -302,6 +302,19 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    capacity_saturated: Optional[str] = None
+    """Why the tick spawned NO workers because the concurrency cap was already
+    reached: ``"max_spawn"`` (the board's own cap), ``"max_in_progress"`` (the
+    host-level cap, counting running workers on OTHER boards), or ``None`` when
+    the tick was not cap-blocked.
+
+    This is the distinction the "dispatcher stuck" warning needs. A board that
+    is AT CAPACITY is working correctly — the ready queue stays non-empty
+    because the running workers are still busy, and 0 spawns is the expected
+    outcome, not a symptom of a broken profile. Reporting that as "stuck"
+    cried wolf during exactly the incidents when triage attention is scarce
+    (2026-10-24: 3 running workers against ``kanban.max_spawn: 3`` produced
+    "0 workers spawned" warnings for 11 consecutive ticks)."""
 
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
@@ -316,6 +329,7 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
+    capacity: Optional[str] = None
     for res in results:
         if res is None:
             continue
@@ -327,9 +341,13 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
+        if res.capacity_saturated:
+            capacity = res.capacity_saturated
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
     if pressure:
         parts.append(f"memory_pressure={pressure}")
+    if capacity:
+        parts.append(f"at_capacity={capacity}")
     return ", ".join(parts)
 
 
@@ -2444,12 +2462,16 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
+            # AT CAPACITY, not broken. The running workers are still busy; the
+            # ready queue stays non-empty precisely BECAUSE they are working.
+            result.capacity_saturated = "max_spawn"
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
+            result.capacity_saturated = "max_in_progress"
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:

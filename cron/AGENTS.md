@@ -80,6 +80,45 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   exits before its ownership ack (a reported dispatch failure) rather than run on an unleased
   generation the collector may delete. The gateway never re-runs the boot — `hermes_bootstrap`
   already did at its own launch (#122222).
+- **The cron worker imports the LIVE checkout, so a module-level error in the shared
+  delivery/agent chain fails EVERY job at once.** `cron/scheduler.py` puts the repo root on
+  `sys.path`, so the external worker imports the working tree — not a pinned ref, not a wheel.
+  One import-time error anywhere in `gateway.delivery` → `gateway.session` →
+  `gateway.session_transcript` → `agent.turn_context` → `agent.conversation_compression` →
+  `agent.auxiliary_client` therefore killed 17 cron jobs in the same second on 2026-10-24, each
+  with the opaque `exited before ownership acknowledgement (exit 1)`. Two guards now prevent a
+  recurrence: (1) the tick runs an **import-chain smoke probe** (`cron/import_smoke.py`) BEFORE
+  dispatching, and a broken chain aborts the tick with ONE diagnostic naming the module and
+  carrying the traceback — the due jobs are NOT consumed, so the next tick re-probes; (2) a
+  worker that still dies at import (the tree was edited between probe and spawn) has its stderr
+  summarised into the per-job error, so the message names the file instead of just the exit code.
+  The probe runs in a SUBPROCESS: the gateway's own `sys.modules` is frozen at boot, so
+  re-importing in-process cannot reveal a fresh error. Never add a module-level side effect to
+  anything on this chain that can raise.
+- **Never test a broken import against the LIVE checkout.** The live tree IS the dispatch
+  surface: the gateway's cron tick fires every minute, so a deliberately-broken module in
+  `agent/` or `gateway/` takes every due job down within the same minute, with the same
+  opaque error the guards above exist to prevent. Reproduce an import failure in a SCRATCH COPY
+  (`shutil.copytree` the packages into a temp dir, break the module THERE, and probe the copy —
+  `scripts/verify_cron_import_gate.py` does exactly this) or with a monkeypatched seam, never
+  by editing the module the gateway is about to import. The probe's subprocess is the only thing
+  that makes a deliberate break safe; the gateway's own tick is not.
+- The probe only protects a gateway whose process has the NEW `cron/scheduler.py` loaded. A
+  gateway running since before the probe landed has the old scheduler in memory and will NOT
+  report the broken chain — it will fan the failure out across every job again. After landing
+  this change, restart the gateway to pick it up; until then the guards are dormant.
+- **A field added to an EXISTING NamedTuple must have a default.** A required field breaks every
+  positional constructor of that type, and the break surfaces at RUNTIME in whichever module
+  constructs it first — which, on the chain above, is every cron job at once. Give the field a
+  default (`= None`) or convert the type to a dataclass with keyword-only construction. The
+  FUNCTIONAL `NamedTuple("Name", [...])` form accepts NEITHER `defaults=` nor per-field defaults
+  ("Either list of fields or keywords can be provided to NamedTuple, not both", raised at import
+  time — the 2026-10-24 crash). A REQUIRED field may not FOLLOW a defaulted one either:
+  Python rejects the class at import time ("Non-default namedtuple field 'x' cannot follow default
+  field 'y'") — the 2026-10-24 06:49Z wave, 8 jobs across 2 profiles. Required fields come
+  FIRST, defaulted ones after.
+  `scripts/check_namedtuple_required_fields.py` fails the build on any of these; suppress a
+  deliberate exception with `# namedtuple-required-field: ok -- <why>`.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
@@ -127,6 +166,15 @@ substring (root). Worker liveness is `(worker_pid, worker_started_at)` — the s
 (`gateway.status.get_process_start_time`) recorded at claim time — never bare PID existence, or a
 recycled PID gets killed on reclaim.
 
+- **The dispatcher distinguishes AT CAPACITY from genuinely STUCK.** A ready queue that stays
+  non-empty while 0 workers spawn is the NORMAL state of a saturated board: the running workers
+  are busy, and that is why the queue has not drained. `DispatchResult.capacity_saturated` carries
+  the reason (`"max_spawn"` — the board's own cap; `"max_in_progress"` — the host-level cap counting
+  workers on other boards) and the warning path downgrades to INFO when it is set. Only a tick
+  that was NOT cap-blocked and still spawned nothing is a fault (broken venv, PATH drift,
+  credential loss). Never treat a saturated board as a stuck one: on 2026-10-24 a healthy board at
+  `kanban.max_spawn: 3` with 3 live workers produced "dispatcher stuck" for 11 consecutive ticks,
+  burning triage attention during exactly the incidents when attention is scarce.
 - **Notifications leave through the task's owning profile.** `hermes_cli/kanban_db_notify.py`
   subscriptions carry the profile; `gateway/kanban_watchers_notifier.py` delivers via THAT
   profile's adapter under its scope (`_notify_profile_filter`), never the multiplexer's launch

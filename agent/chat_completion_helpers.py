@@ -2341,7 +2341,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         return is_headed_mode()
 
     for label, skip, skip_what, cleanup in (
-        ("VM", is_persistent_env, "cleanup_vm for persistent env", lambda: _ra().cleanup_vm(task_id)),
+        ("VM", is_persistent_env, "cleanup_vm for persistent env", lambda: _ra().cleanup_vm(task_id, **({"keep_write_baselines": True} if task_id == getattr(agent, "session_id", None) else {}))),
         ("browser", lambda _tid: _headed(), "cleanup_browser for headed session", lambda: _ra().cleanup_browser(task_id)),
     ):
         try:

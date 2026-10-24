@@ -282,6 +282,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+            # The final the adapter sends for this event is an agent turn's, even when the event is a
+            # slash command (gateway_message_delivered skips command replies that ran no turn).
+            event._delivered_from_agent_turn = True
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that
@@ -295,6 +298,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     event.metadata["notification_category"] = agent_result["queued_terminal_notification_category"]
                 if isinstance(agent_result.get("_notification_reply_muted"), bool):
                     event._notification_reply_muted = agent_result["_notification_reply_muted"]
+                # The turn's final session id (post-compression, the one post_llm_call reported), so
+                # the adapter's ledgered final can hand it to gateway_message_delivered.
+                event._delivered_turn_session_id = agent_result.get("session_id")
 
             await self._hmwa_stop_typing_for_turn(event, source)
 
@@ -2051,6 +2057,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result: str, fail_exc: str,
+        session_key: Optional[str] = None, session_id: Optional[str] = None,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
         ``response["already_sent"]`` and log ``ok``. A returned failure logs ``fail_result`` as
@@ -2068,6 +2075,21 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             return
         response["already_sent"] = True
         logger.info(*ok)
+        self._notify_streamed_final_delivered(_sc, source, session_key, content, session_id=session_id)
+
+    def _notify_streamed_final_delivered(self, _sc, source, session_key, text, *, session_id=None) -> None:
+        """``gateway_message_delivered`` (kind="final", streamed=True) once the runner has confirmed the
+        stream delivered the final reply. Scheduled in the turn's profile scope as a background task.
+        Only the final message id is known here (the consumer keeps no ordered id list); never raises."""
+        try:
+            from gateway.delivery_hooks import notify_message_delivered
+
+            notify_message_delivered(
+                kind="final", platform=getattr(source, "platform", None), chat_id=getattr(source, "chat_id", None),
+                thread_id=getattr(source, "thread_id", None), message_ids=[getattr(_sc, "message_id", None)],
+                text=text, session_key=session_key, session_id=session_id, streamed=True)
+        except Exception:
+            logger.debug("gateway_message_delivered notify failed (streamed final)", exc_info=True)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
@@ -2079,6 +2101,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed") or finite_turn_required() is True:
             return
+        # The turn's final session id (post-compression, as post_llm_call reported it).
+        _turn_session_id = response.get("session_id") or getattr(turn_ctx, "session_id", None)
         _final = response.get("final_response") or ""
         _is_empty_sentinel = not _final or _final == "(empty)"
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
@@ -2114,6 +2138,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
+            # An ambiguous fallback resend (timed out in flight) is assumed, not confirmed: no notice.
+            if _sc is not None and not getattr(_sc, "_delivery_ambiguous", False):
+                self._notify_streamed_final_delivered(
+                    _sc, source, session_key, getattr(_sc, "_delivered_final_text", None) or _final,
+                    session_id=_turn_session_id)
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.
@@ -2129,6 +2158,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
+                    session_key=session_key, session_id=_turn_session_id,
                 )
             else:
                 logger.info(
@@ -2143,6 +2173,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
                     fail_exc="Failed to edit streamed message for session %s: %s",
+                    session_key=session_key, session_id=_turn_session_id,
                 )
         elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log

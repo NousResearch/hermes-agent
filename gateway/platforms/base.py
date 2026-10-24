@@ -4366,7 +4366,39 @@ class BasePlatformAdapter(ABC):
         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        if result.success and not is_ephemeral_response and not self._is_command_reply(event):
+            self._notify_final_delivered(event, session_key, text_content, result, delivery_adapter)
         return result, delivery_adapter
+
+    def _is_command_reply(self, event: MessageEvent) -> bool:
+        """The reply answers a slash command that ran no agent turn (``/resume`` refused, ``/status``,
+        a usage error): a system reply, not a turn's final, so ``gateway_message_delivered`` skips
+        it like the ephemeral ``/stop`` and ``/new`` notices. A command that runs an agent turn
+        (the runner stamps ``_delivered_from_agent_turn``) still reports that turn's final."""
+        if getattr(event, "_delivered_from_agent_turn", False):
+            return False
+        return str(event.text or "").lstrip().startswith(("/", self.typed_command_prefix or "!"))
+
+    def _notify_final_delivered(
+        self, event: MessageEvent, session_key: str, text_content: str, result: "SendResult",
+        delivery_adapter: "BasePlatformAdapter",
+    ) -> None:
+        """``gateway_message_delivered`` (kind="final") for a non-streamed final, after the ledger
+        finalize. Scheduled inside the source's routed profile scope (the handler scope is already
+        reset here) so that profile's plugins receive it; the dispatch runs as a background task and
+        never delays or fails the delivery."""
+        try:
+            from gateway.delivery_hooks import delivered_message_ids, notify_message_delivered
+
+            source = event.source
+            with self._media_delivery_scope(source):
+                notify_message_delivered(
+                    kind="final", platform=delivery_adapter.platform, chat_id=source.chat_id,
+                    thread_id=source.thread_id, message_ids=delivered_message_ids(result),
+                    text=text_content, session_key=session_key,
+                    session_id=getattr(event, "_delivered_turn_session_id", None))
+        except Exception:
+            logger.debug("[%s] gateway_message_delivered notify failed", self.name, exc_info=True)
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:
         """Clear the crash marker handed to this delivery lifecycle only once the final reply is ledgered or

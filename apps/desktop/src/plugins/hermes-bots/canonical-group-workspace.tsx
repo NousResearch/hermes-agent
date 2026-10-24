@@ -38,6 +38,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [uploading, setUploading] = useState(false)
   const [restored, setRestored] = useState(false)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
+  const [restoredPending, setRestoredPending] = useState(false)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const alive = useRef(true)
@@ -55,6 +56,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
       if (entry) {
         setPending(entry)
+        setRestoredPending(true)
         setDraft(String(entry.params.payload.text ?? ''))
         setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
       }
@@ -146,6 +148,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         const held = heldDraft.current
         heldDraft.current = null
         setPending(null)
+        setRestoredPending(false)
         setDraft(held?.text ?? '')
         setAttachments(held?.attachments ?? [])
       }
@@ -185,7 +188,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <Button disabled={busy} onClick={() => { const exact = discard; setDiscard(null); void act(exact) }}>{labels.confirmDiscard}</Button>
       <Button onClick={() => setDiscard(null)}>{labels.cancel}</Button>
     </div>}
-    {pending && <p role="status">{labels.restoredPendingSend}</p>}
+    {restoredPending && <p role="status">{labels.restoredPendingSend}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
       <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} />
       <Textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} onChange={e => setDraft(e.target.value)} value={draft} />

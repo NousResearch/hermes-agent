@@ -13,6 +13,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+from contextlib import ExitStack
 import signal
 import sys
 import types
@@ -74,7 +75,10 @@ def _connect_patches(mock_proc, mock_fh):
     base = [
         patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
         patch.object(Path, "exists", return_value=True),
+        patch.object(Path, "is_file", return_value=True),
+        patch.object(Path, "stat", return_value=MagicMock(st_size=100)),
         patch.object(Path, "mkdir", return_value=None),
+        patch("plugins.platforms.whatsapp.adapter.ensure_aiohttp", return_value=None),
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
         patch("subprocess.Popen", return_value=mock_proc),
         patch("builtins.open", return_value=mock_fh),
@@ -149,8 +153,9 @@ class TestFileHandleClosedOnError:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             result = await adapter.connect()
 
         assert result is False
@@ -172,6 +177,9 @@ class TestConnectCleanup:
 
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
+             patch.object(Path, "is_file", return_value=True), \
+             patch.object(Path, "stat", return_value=MagicMock(st_size=100)), \
+             patch("plugins.platforms.whatsapp.adapter.ensure_aiohttp", return_value=None), \
              patch("subprocess.run", return_value=install_result), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
@@ -547,6 +555,64 @@ class TestNoCredsPreflight:
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
 
+    @pytest.mark.asyncio
+    async def test_connect_fast_fails_when_creds_missing(self, tmp_path):
+        """When creds.json does not exist, connect() fast-fails as non-retryable."""
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+        adapter.platform = Platform.WHATSAPP
+        adapter.config = MagicMock()
+        adapter._bridge_port = 19877
+        bridge = tmp_path / "bridge.js"
+        bridge.write_text("// stub", encoding="utf-8")
+        adapter._bridge_script = str(bridge)
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        # creds.json NOT created
+        adapter._session_path = session_dir
+        adapter._bridge_log_fh = None
+        adapter._fatal_error_code = None
+        adapter._fatal_error_message = None
+        adapter._fatal_error_retryable = True
+        adapter._acquire_platform_lock = MagicMock(return_value=False)
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True):
+            result = await adapter.connect()
+
+        assert result is False
+        assert adapter._fatal_error_code == "whatsapp_not_paired"
+        assert adapter._fatal_error_retryable is False
+
+    @pytest.mark.asyncio
+    async def test_connect_fast_fails_when_creds_empty(self, tmp_path):
+        """When creds.json exists but is 0 bytes (corrupted/truncated), connect() fast-fails."""
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+        adapter.platform = Platform.WHATSAPP
+        adapter.config = MagicMock()
+        adapter._bridge_port = 19877
+        bridge = tmp_path / "bridge.js"
+        bridge.write_text("// stub", encoding="utf-8")
+        adapter._bridge_script = str(bridge)
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        (session_dir / "creds.json").write_text("", encoding="utf-8")  # 0 bytes
+        adapter._session_path = session_dir
+        adapter._bridge_log_fh = None
+        adapter._fatal_error_code = None
+        adapter._fatal_error_message = None
+        adapter._fatal_error_retryable = True
+        adapter._acquire_platform_lock = MagicMock(return_value=False)
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True):
+            result = await adapter.connect()
+
+        assert result is False
+        assert adapter._fatal_error_code == "whatsapp_not_paired"
+        assert adapter._fatal_error_retryable is False
+
 
 class TestNamedConnectFailures:
     """A failed connect names its cause; an unnamed False loops forever as an unclassified failure (#126358)."""
@@ -566,7 +632,10 @@ class TestNamedConnectFailures:
         adapter._acquire_platform_lock = MagicMock(return_value=False)
         ensure_import = MagicMock(side_effect=InstallError("venv", cause))
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch.object(Path, "exists", return_value=True), patch.dict(sys.modules, {"aiohttp": aiohttp_module}), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "is_file", return_value=True), \
+             patch.object(Path, "stat", return_value=MagicMock(st_size=100)), \
+             patch.dict(sys.modules, {"aiohttp": aiohttp_module}), \
              patch("pm.extras.ensure_import", ensure_import), \
              patch("pm.install.lazy_installs_allowed", return_value=lazy_allowed), \
              patch("pm.environments.running_from_selected_environment", return_value=True):

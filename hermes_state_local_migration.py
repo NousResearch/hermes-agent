@@ -14,7 +14,22 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # ``acp`` is main's in-process editor server (Zed, VS Code, JetBrains): adopted under its own source.
 LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
 # Legacy labels that are not creation sources of their own (session_policy.SURFACES).
-LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
+LEGACY_CREATION_SOURCES = {'desktop': 'gui', 'gateway_botmode': 'gui'}
+
+
+def _legacy_canonical_bot_chat(row):
+    """The pre-authority Bot Mode row is safe to adopt only by its exact registry shape.
+
+    Older Desktop releases persisted the root bot's hidden forever-chat through
+    the gateway Bot Mode writer.  It has no local-session receipt yet, but the
+    hidden exact title is the durable canonical identity.  Do not generalize
+    this exception to arbitrary gateway-owned rows.
+    """
+    return (
+        row['source'] == 'gateway_botmode'
+        and row.get('title') == 'Bot Chat'
+        and bool(row.get('hidden'))
+    )
 
 
 def legacy_account_label(row):
@@ -48,7 +63,7 @@ def validate_legacy_row(db, row, *, subject=None):
     # stamp equal to ``subject`` itself names that principal: it is already its history by
     # ``authorize_history``'s rule, so it adopts like an unstamped row.
     user_id = row.get('user_id')
-    if (row['source'] not in LEGACY_LOCAL_SOURCES
+    if (row['source'] not in LEGACY_LOCAL_SOURCES and not _legacy_canonical_bot_chat(row)
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
             or (user_id and user_id != subject and not legacy_account_label(row)
                 and not login_owned_by(row, subject))

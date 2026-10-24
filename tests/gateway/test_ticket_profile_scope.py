@@ -69,10 +69,27 @@ async def test_profile_bound_ticket_never_reaches_a_sibling_authority(tmp_path, 
         assert 'result' in await call(alpha, 'session.list', profile='alpha')  # own-profile selector
         assert (await call(alpha, 'session.list', profile='default'))['error']['message'] == 'profile_mismatch'
         # The Desktop's shared-primary socket asks for a host-scoped grant and keeps its sibling route.
-        host = connect(str(root.resolve()), scope='host')
+        host = connect(alpha_id, scope='host')
         listed = await call(host, 'session.list', profile='beta')
         assert [row['session_id'] for row in listed['result']['sessions']] == ['beta-private'], listed
         assert (await call(host, 'session.list', profile='gamma'))['error']['message'] == 'profile_mismatch'
+        # A root-profile Bot Chat written by pre-authority Bot Mode must be
+        # reachable through the multiplexer's host-scoped connection. The
+        # route starts on the named primary, then selects ``default`` here.
+        default = authority_for_profile_id(runner, str(root.resolve()))
+        default.db.create_session('root-bot-chat', source='gateway_botmode', model='old', cwd=str(root))
+        default.db.set_session_title('root-bot-chat', 'Bot Chat')
+        default.db.set_session_hidden('root-bot-chat', True)
+        root_chat = await call(host, 'session.list', profile='default', title='Bot Chat', include_hidden=True)
+        assert 'result' in root_chat, root_chat
+        assert root_chat['result']['sessions'][0]['id'] == 'root-bot-chat', root_chat
+        # The compatibility exception is registry-shaped, not a way to open
+        # arbitrary gateway-owned history from the local Desktop transport.
+        default.db.create_session('other-bot-row', source='gateway_botmode', model='old', cwd=str(root))
+        default.db.set_session_title('other-bot-row', 'Other Bot Row')
+        default.db.set_session_hidden('other-bot-row', True)
+        rejected = await call(host, 'session.list', profile='default', title='Other Bot Row', include_hidden=True)
+        assert rejected['error']['message'] == 'not_found', rejected
         with pytest.raises(PermissionError):
             store.mint(profile_id=alpha_id, subject='uid:1', purpose='native-http', scope='host')
     finally:

@@ -15,6 +15,8 @@ import sys
 import threading
 from typing import Iterator, TextIO
 
+from agent.stdio_wrappers import find_stdio_wrapper
+
 __all__ = ["thread_scoped_silence"]
 
 _install_lock = threading.Lock()
@@ -38,6 +40,8 @@ class _RoutingState:
 class _ThreadRoutingStream:
     """``sys.stdout``/``sys.stderr`` stand-in routing writes per calling thread;
     unknown attributes delegate to the current thread's target."""
+
+    _hermes_stdio_inner_attr = "_passthrough"
 
     def __init__(self, passthrough: TextIO, state: _RoutingState) -> None:
         self._passthrough = passthrough
@@ -90,15 +94,14 @@ class _ThreadRoutingStream:
 def _ensure_installed(attr: str, passthrough: TextIO) -> _ThreadRoutingStream:
     """Install (idempotently) a routing proxy as ``sys.<attr>`` and return it."""
     with _install_lock:
-        proxy = _installed.get(attr)
         current = getattr(sys, attr, None)
-        if isinstance(current, _ThreadRoutingStream):
+        proxy = find_stdio_wrapper(current, _ThreadRoutingStream)
+        if proxy is not None:
             # A redirect context may restore an older proxy; adopt it rather
             # than wrapping it into an unbounded chain.
-            _installed[attr] = current
-            _routing_states[attr] = current._state
-            return current
-        if proxy is not None and current is proxy:
+            # Leave any outer safety/redaction layers bound to sys.<attr>.
+            _installed[attr] = proxy
+            _routing_states[attr] = proxy._state
             return proxy
         # Route non-silenced threads to whatever is currently bound (an active
         # global redirect keeps its old behavior).

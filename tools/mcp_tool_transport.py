@@ -115,7 +115,7 @@ def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
 
 def _http_endpoint(server_name: str, config: dict) -> tuple[str, dict]:
     """URL + configured headers, overlaid by a ``server_json`` live endpoint's URL and bearer."""
-    url, headers = config["url"], dict(config.get("headers") or {})
+    url, headers = config["url"], _config._configured_headers(config)
     live = _live_endpoint(server_name)
     if live is not None:
         url, live_headers = live
@@ -378,7 +378,7 @@ class MCPServerTransportMixin:
         self._resolved_identity = _registration._identity_digest(inputs)
         command, safe_env, stdio_cwd = inputs
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
-        command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
+        command, args = await _core._preflight_stdio_command(self.name, command, _config._configured_args(config))
         server_params = _core.StdioServerParameters(
             command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.

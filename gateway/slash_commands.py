@@ -21,7 +21,12 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base import (
+    EphemeralReply,
+    _mark_notify_metadata,
+    _reply_anchor_for_event,
+    _thread_metadata_for_event,
+)
 from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
@@ -34,6 +39,8 @@ from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 
 logger = logging.getLogger("gateway.run")
+
+_RESTART_ACK_TIMEOUT_SECONDS = 10.0
 
 
 # /rollback result keys -> i18n line for files the safe restore left alone.
@@ -535,6 +542,31 @@ class GatewaySlashCommandsMixin(
         self._resume_paused_platform(platform)
         return t("gateway.platform.resumed", name=name)
 
+    async def _send_restart_acknowledgement(self, event: MessageEvent, active_agents: int) -> None:
+        """Deliver the command reply before teardown can close its transport."""
+        adapter = self._delivery_adapter_for(event.source)
+        if adapter is None:
+            logger.warning("Cannot acknowledge /restart: no delivery adapter")
+            return
+        notice = (t("gateway.draining", count=active_agents) if active_agents
+                  else EphemeralReply(t("gateway.restart.restarting")))
+        try:
+            text, ttl = adapter._unwrap_ephemeral(notice)
+            async with asyncio.timeout(_RESTART_ACK_TIMEOUT_SECONDS):
+                result = await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=text,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_mark_notify_metadata(_thread_metadata_for_event(event)),
+                )
+            if not result.success:
+                logger.warning("Failed to acknowledge /restart: %s", result.error)
+            elif ttl > 0 and result.message_id:
+                adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ttl)
+        except Exception:
+            # A failed or stalled transport must not prevent the requested restart.
+            logger.warning("Failed to acknowledge /restart", exc_info=True)
+
     async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
@@ -587,13 +619,14 @@ class GatewaySlashCommandsMixin(
         # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
         from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
         via_service = is_gateway_supervisor_process() or is_container_restart_context()
-        self.request_restart(detached=not via_service, via_service=via_service)
-        # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
-        # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
-        # restarts while active), the next startup auto-suspends it — breaking the loop.
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+        # Reject new turns while acknowledging. Returning a reply after request_restart() races
+        # the adapter's send against teardown, especially when there is no active work to drain.
+        self._draining = True
+        try:
+            await self._send_restart_acknowledgement(event, active_agents)
+        finally:
+            self.request_restart(detached=not via_service, via_service=via_service)
+        return ""  # Already delivered inline; the adapter must not send a second reply.
 
     async def _handle_autoprune_command(self, event: MessageEvent) -> str:
         """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""

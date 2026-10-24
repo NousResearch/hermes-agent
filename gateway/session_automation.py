@@ -326,8 +326,16 @@ def admission_display(payload):
     return card
 
 
+# Fields that do not identify the route: ``message_id`` is the reply anchor a synthetic wake
+# deliberately clears (#52694, #123097); ``chat_topic`` is a mutable display label (a forum topic or
+# channel topic can be renamed after the turn committed, and the completion's persisted origin keeps
+# whatever label the routing entry last recorded). Chat/thread/profile/participants still identify the
+# route, and the caller still requires the committed envelope's provenance and the same adapter.
+_NON_IDENTITY_SOURCE_KEYS = frozenset({'message_id', 'chat_topic'})
+
+
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    return {key: value for key, value in source.to_dict().items() if key not in _NON_IDENTITY_SOURCE_KEYS}
 
 
 def committed_route_envelope(authority, entry):

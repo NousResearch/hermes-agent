@@ -490,6 +490,15 @@ _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "dynamic shell word may expand to arbitrary program execution flag",
 })
 
+# Content-level rules (ported from tirith in #133832, where they were separate findings with their own
+# keys). They describe WHAT the command carries rather than which verb runs it, so a command that also
+# matches one of them needs consent for it even when its first, verb-level rule is already approved.
+_CONTENT_RULE_DESCRIPTIONS = frozenset({
+    "upload a secret or credential file via curl/wget (possible exfiltration)",
+    "pipe a credential file into a curl/wget upload (possible exfiltration)",
+    "invisible or bidirectional Unicode control character (possible obfuscation)",
+})
+
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
     "script execution via -e/-c flag": "(python[23]?|perl|ruby|node)\\s+-[ec]\\s+",
@@ -1545,12 +1554,13 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
-def detect_dangerous_command(command: str) -> tuple:
-    """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
+def _iter_dangerous_descriptions(command: str):
+    """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat."""
     if _command_parser_limit_exceeded(command):
-        return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
+        yield _PARSER_LIMIT_DESCRIPTION
+        return
     if _is_verification_artifact_cleanup(command):
-        return (False, None, None)
+        return
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
@@ -1561,12 +1571,26 @@ def detect_dangerous_command(command: str) -> tuple:
                         _mask_quoted_prose(command_variant)
                     )
                 if pattern_re.search(masked_lower):
-                    return (True, description, description)
+                    yield description
             elif pattern_re.search(command_lower):
-                return (True, description, description)
+                yield description
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
-        return (True, description, description)
+        yield description
     if _is_shell_token_spliced_gateway_lifecycle(command):
-        return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
-    return (False, None, None)
+        yield _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION
+
+
+def detect_dangerous_command(command: str) -> tuple:
+    """Check dangerous patterns -> (is_dangerous, pattern_key, description) for the first match."""
+    description = next(_iter_dangerous_descriptions(command), None)
+    if description is None:
+        return (False, None, None)
+    return (True, description, description)
+
+
+def detect_content_rule_keys(command: str) -> list[str]:
+    """Pattern keys of every content-level rule (``_CONTENT_RULE_DESCRIPTIONS``) the command matches,
+    wherever they fall in detection order. The approval gates require consent for these on top of
+    the first match, so an approved pipe-to-shell cannot wave through a credential upload."""
+    return [d for d in dict.fromkeys(_iter_dangerous_descriptions(command)) if d in _CONTENT_RULE_DESCRIPTIONS]

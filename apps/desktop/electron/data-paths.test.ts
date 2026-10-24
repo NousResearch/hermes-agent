@@ -76,3 +76,26 @@ test('explicit homes and userData retain precedence, and suffixed Windows homes 
     'C:\\custom'
   )
 })
+
+test('a literal leading ~ in HERMES_HOME resolves against the home directory, not cwd', (): void => {
+  assert.equal(
+    resolveDesktopHermesHome({ home: '/Users/test', env: { HERMES_HOME: '~/.hermes' }, platform: 'darwin' }),
+    '/Users/test/.hermes'
+  )
+  assert.equal(
+    resolveDesktopHermesHome({
+      home: '/Users/test',
+      env: { HERMES_HOME: '~/.hermes/profiles/oracle' },
+      platform: 'darwin'
+    }),
+    '/Users/test/.hermes'
+  )
+  assert.equal(
+    resolveDesktopHermesHome({ home: 'C:\\Users\\test', env: { HERMES_HOME: '~\\.hermes' }, platform: 'win32' }),
+    'C:\\Users\\test\\.hermes'
+  )
+  assert.equal(
+    resolveDesktopHermesHome({ home: '/Users/test', env: { HERMES_HOME: '~' }, platform: 'linux' }),
+    '/Users/test'
+  )
+})

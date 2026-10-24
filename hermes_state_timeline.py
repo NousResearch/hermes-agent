@@ -98,43 +98,72 @@ def _register_functions(db, conn):
                          deterministic=True)
 
 
-def get_session_messages_around(db, session_id, row_id, *, limit=120):
-    """Read at most *limit* display rows starting at an exact human prompt.
+def get_session_messages_around(
+    db, session_id, row_id=None, *, limit=120, before_cursor=None, after_cursor=None,
+):
+    """Read one bounded display page, at a prompt or adjacent to a stable cursor.
 
-    Existence probes/counts contain ids only. Full payloads are fetched only for
-    the selected bounded page, even when the anchor is deep in a transcript.
+    Cursors are display sort ids, not payload row ids or offsets into hydrated
+    bubbles. They survive protected-tail replacement during compaction. Only
+    the selected page's payloads cross the SQLite/Python boundary.
     """
+    if sum(value is not None for value in (row_id, before_cursor, after_cursor)) != 1:
+        raise ValueError("Provide exactly one of row_id, before_cursor, after_cursor")
     with _snapshot(db) as conn:
         _register_functions(db, conn)
-        anchor = conn.execute(
-            "SELECT content, display_kind, _compressed_summary FROM messages "
-            "WHERE session_id = ? AND id = ? AND role = 'user' AND (active = 1 OR compacted = 1)",
-            (session_id, row_id),
-        ).fetchone()
-        if anchor is None or not _prompt_preview(db, *anchor):
-            return None
         sql = _display_rows_sql(conn, session_id)
-        params = {"sid": session_id, "row_id": row_id, "limit": limit}
-        selected = conn.execute(sql + """
-            SELECT sort_id FROM display_rows WHERE row_id = :row_id
-        """, params).fetchone()
-        if selected is None:
-            return None
-        params["start"] = selected["sort_id"]
-        counts = conn.execute(sql + """
-            SELECT COUNT(*) AS total, COALESCE(SUM(sort_id < :start), 0) AS offset FROM display_rows
-        """, params).fetchone()
-        rows = conn.execute(sql + """
-            SELECT m.* FROM (SELECT row_id, sort_id FROM display_rows
-                            WHERE sort_id >= :start ORDER BY sort_id LIMIT :limit) AS page
+        params = {"sid": session_id, "limit": limit}
+        if row_id is not None:
+            # The existing jump contract remains prompt-only and owner-exact.
+            anchor = conn.execute(
+                "SELECT content, display_kind, _compressed_summary FROM messages "
+                "WHERE session_id = ? AND id = ? AND role = 'user' AND (active = 1 OR compacted = 1)",
+                (session_id, row_id),
+            ).fetchone()
+            if anchor is None or not _prompt_preview(db, *anchor):
+                return None
+            selected = conn.execute(sql + "SELECT sort_id FROM display_rows WHERE row_id = :row_id",
+                                    {"sid": session_id, "row_id": row_id}).fetchone()
+            if selected is None:
+                return None
+            params["start"] = selected["sort_id"]
+            predicate, order = "sort_id >= :start", "ASC"
+        elif before_cursor is not None:
+            params["start"] = before_cursor
+            predicate, order = "sort_id < :start", "DESC"
+        else:
+            params["start"] = after_cursor
+            predicate, order = "sort_id > :start", "ASC"
+        # Predicate/order are fixed SQL fragments above, never request strings.
+        rows = conn.execute(sql + f"""
+            SELECT m.*, page.sort_id AS timeline_cursor
+            FROM (SELECT row_id, sort_id FROM display_rows
+                  WHERE {predicate} ORDER BY sort_id {order} LIMIT :limit) AS page
             JOIN messages m ON m.id = page.row_id ORDER BY page.sort_id
         """, params).fetchall()
+        # Offsets are informational only. Navigation uses the two boundary cursors.
+        params["first"] = rows[0]["timeline_cursor"] if rows else params["start"]
+        counts = conn.execute(sql + """
+            SELECT COUNT(*) AS total, COALESCE(SUM(sort_id < :first), 0) AS offset FROM display_rows
+        """, params).fetchone()
+        # A page can begin in the middle of a single long tool turn. Keep its
+        # rail identity even after the prompt's payload page is released.
+        leading = conn.execute(_display_rows_sql(conn, session_id, users_only=True) + """
+            SELECT row_id FROM display_rows JOIN messages m ON m.id = row_id
+            WHERE sort_id <= :first
+              AND timeline_preview(m.content, m.display_kind, m._compressed_summary) <> ''
+            ORDER BY sort_id DESC LIMIT 1
+        """, params).fetchone() if rows else None
     messages = [db._row_to_message_dict(row, warn_context="timeline jump", summary_flag=True) for row in rows]
+    offset = counts["offset"] if rows else (0 if before_cursor is not None else counts["total"])
     return {"messages": messages, "pagination": {
         "row_id": row_id, "limit": limit, "returned": len(messages), "order": "oldest",
-        "offset": counts["offset"], "total": counts["total"],
-        "has_older": counts["offset"] > 0,
-        "has_newer": counts["offset"] + len(messages) < counts["total"],
+        "offset": offset, "total": counts["total"],
+        "has_older": offset > 0,
+        "has_newer": offset + len(messages) < counts["total"],
+        "first_cursor": rows[0]["timeline_cursor"] if rows else None,
+        "last_cursor": rows[-1]["timeline_cursor"] if rows else None,
+        "leading_prompt_row_id": leading["row_id"] if leading else None,
     }}
 
 

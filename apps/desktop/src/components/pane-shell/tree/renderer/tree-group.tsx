@@ -574,6 +574,7 @@ export function TreeGroup({
             <div
               className={cn(
                 'flex min-w-0 flex-1 items-stretch overflow-hidden',
+                tabsInTitlebar && '[-webkit-app-region:drag]',
                 tabsBelowControls && 'absolute inset-x-0 bottom-0 h-7'
               )}
               data-panel-page-header=""

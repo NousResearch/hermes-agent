@@ -2801,6 +2801,18 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
+    # The worker is spawned as `sys.executable -m hermes_cli.main` (see
+    # _module_hermes_argv) rather than through the hermes.cmd/hermes.exe launcher
+    # shim. That shim is what normally makes `hermes_cli` importable at all — it
+    # does an in-process `sys.path.insert(0, <hermes-agent root>)` after first
+    # deleting any inherited PYTHONPATH. `sys.path.insert` only affects the
+    # current process, never a spawned child, so a worker launched this way has
+    # no way to import `hermes_cli` and crashes with ModuleNotFoundError before
+    # doing any work (dispatcher issue: worker spawn argv assumes the module is
+    # importable in a fresh interpreter just because it is in the parent).
+    # Fix: hand the child the one thing that *is* inherited across a spawn —
+    # set PYTHONPATH to the same root the launcher inserts into sys.path.
+    env.setdefault("PYTHONPATH", str(Path(__file__).resolve().parent.parent))
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP

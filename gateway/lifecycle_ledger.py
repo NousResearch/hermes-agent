@@ -253,6 +253,31 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
             "missing until it is repaired. Run `hermes doctor`.",
             verdict,
         )
+    # Classify the DEATH, not just the store. "Exited UNCLEANLY" is true but not
+    # actionable: it cannot say whether the kernel OOM-killed the gateway or something
+    # outside it sent the SIGKILL. On 2026-10-23 the leading hypothesis (host OOM under
+    # exhausted swap) turned out to be wrong — the kernel journal had no OOM record for
+    # the window at all, while the same box did produce cgroup OOM kills hours later, so
+    # the kernel was capable of writing those records and simply did not kill anything
+    # then. Nothing in the gateway could have said so at the time; this can next time.
+    try:
+        from gateway.unclean_death_forensics import (
+            append_forensics, classify_unclean_death, format_verdict,
+        )
+
+        forensics = classify_unclean_death(
+            prior_pid=evidence.get("prior_pid"),
+            last_heartbeat_at=evidence.get("last_heartbeat_at"),
+            last_heartbeat_mem=evidence.get("last_heartbeat_mem"),
+            home=home,
+        )
+        evidence["death_forensics"] = forensics
+        append_forensics(forensics, home)
+        logger.warning(
+            "Unclean gateway death classified: %s", format_verdict(forensics)
+        )
+    except Exception:
+        logger.debug("Unclean-death forensics failed", exc_info=True)
     _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "

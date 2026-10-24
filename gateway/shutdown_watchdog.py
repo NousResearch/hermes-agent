@@ -20,7 +20,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_constants import get_hermes_home, get_process_hermes_home
@@ -188,6 +188,22 @@ def get_loop_heartbeat_path(home: Optional[Path] = None) -> Path:
     return _home(home).joinpath(*_HEARTBEAT_RELATIVE)
 
 
+def get_loop_heartbeat_history_path(home: Optional[Path] = None) -> Path:
+    """``<HERMES_HOME>/state/gateway.heartbeat.history`` — the last N heartbeat payloads.
+
+    The heartbeat FILE holds one record (the latest), and the journal does not carry the
+    heartbeat payloads at all, so after an unclean death only a single memory snapshot
+    survives. One snapshot is a point, not a trend: it cannot distinguish a gateway whose
+    memory was climbing (the gateway was the cause of host pressure) from one whose
+    memory was flat (something else killed it).
+
+    This append-only history keeps the last N payloads so the trend survives the death.
+    It is best-effort: a write failure must never break the heartbeat, and the file is
+    trimmed to the last N records on every write so it cannot grow without bound.
+    """
+    return _home(home) / "state" / "gateway.heartbeat.history"
+
+
 def get_loop_tick_socket_path(home: Optional[Path] = None, pid: Optional[int] = None) -> Path:
     """``<HERMES_HOME>/state/gateway.loop-tick.<pid>.sock`` — PID-suffixed so a stale node from a
     dead process is never mistaken for this gateway's witness. Served by the loop itself
@@ -226,7 +242,35 @@ def write_loop_heartbeat(
         atomic_json_write(path, payload, indent=None)
     except Exception:
         logger.debug("Failed to write gateway loop heartbeat", exc_info=True)
+    _append_heartbeat_history(payload, home=home)
     return path
+
+
+# How many heartbeat payloads the history keeps. Ten beats at the default 30s interval
+# cover five minutes of memory trend — enough to see a climb, and short enough that the
+# file stays small.
+_HEARTBEAT_HISTORY_LIMIT = 10
+
+
+def _append_heartbeat_history(payload: Dict[str, Any], *, home: Optional[Path] = None) -> None:
+    """Append one heartbeat payload to the bounded history file; never raises."""
+    try:
+        history_path = get_loop_heartbeat_history_path(home)
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        lines: List[str] = []
+        with history_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+        # Trim to the last N records. Rewriting the file on every beat is cheap at this
+        # size and keeps the file bounded without a separate rotation pass.
+        with history_path.open("r", encoding="utf-8") as fh:
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        if len(lines) > _HEARTBEAT_HISTORY_LIMIT:
+            trimmed = lines[-_HEARTBEAT_HISTORY_LIMIT:]
+            tmp_path = history_path.with_suffix(".history.tmp")
+            tmp_path.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+            os.replace(tmp_path, history_path)
+    except Exception:
+        logger.debug("Failed to append gateway loop heartbeat history", exc_info=True)
 
 
 def resolve_shutdown_watchdog_delay(

@@ -677,6 +677,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # long-poll task is simply gone, so neither the connectivity probe nor PTB's error_callback ever
         # fires and the gateway silently stops receiving messages with the process still alive (#55769).
         self._send_path_degraded: bool = False
+        # Inbound held by Telegram that this gateway has not yet been handed (kanban t_1915c9a3).
+        #
+        # ``get_webhook_info().pending_update_count`` counts updates still queued SERVER-SIDE. When
+        # the getUpdates consumer is wedged, a DM sits in that queue: it was never handed to the
+        # gateway at all, so it never becomes a ``_pending_messages`` entry, never produces a
+        # ``delivery_obligations`` row, and never yields a "response ready" line. On 2026-10-23 that
+        # is exactly what happened to five of the operator's DMs — Telegram held them and nothing
+        # local said so. The silent discard, not the crash, is what cost the hour.
+        #
+        # These two fields make the held inbound OBSERVABLE: the count and the time it was first
+        # seen are published into the platform's runtime status (so `hermes gateway status` and the
+        # desktop Channels page show it) and logged explicitly (so the journal shows the message was
+        # held by the platform rather than lost). ``_outstanding_updates_since`` is the first-seen
+        # timestamp for the CURRENT outstanding episode — it is cleared when the queue drains, so a
+        # later episode measures its own age rather than inheriting the old one.
+        self._outstanding_updates_count: int = 0
+        self._outstanding_updates_since: Optional[float] = None
+        self._outstanding_updates_peak: int = 0
         self._general_request_drain_lock = asyncio.Lock()
         self._dm_topics: Dict[str, int] = {}  # topic_name -> message_thread_id
         self._forum_command_registered: set[int] = set()  # forum chats with commands registered
@@ -2232,16 +2250,111 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         pending = int(getattr(info, "pending_update_count", 0) or 0)
         if pending <= 0:
             self._polling_pending_stuck_count = 0
+            self._record_outstanding_updates(0)
             return
         self._polling_pending_stuck_count += 1
+        self._record_outstanding_updates(pending)
         logger.warning(
-            "[%s] Telegram polling heartbeat: %d update(s) queued but not consumed (stuck probe %d/2)", self.name,
-            pending, self._polling_pending_stuck_count)
+            "[%s] Telegram polling heartbeat: %d update(s) queued but not consumed (stuck probe %d/2)",
+            self.name, pending, self._polling_pending_stuck_count)
         if self._polling_pending_stuck_count >= 2:
             self._polling_pending_stuck_count = 0
             self._escalate_stuck_consumer(
                 "[%s] getUpdates consumer appears wedged (queue not draining); triggering polling restart",
                 "getUpdates consumer wedged: pending updates not draining")
+
+    def _record_outstanding_updates(self, count: int) -> None:
+        """Publish the number of inbound updates Telegram is holding for us.
+
+        A DM queued server-side has not been handed to this gateway, so it is invisible to every
+        local structure: no ``_pending_messages`` entry, no ``delivery_obligations`` row, no
+        "response ready" line. On 2026-10-23 five of the operator's DMs sat in exactly that gap
+        and nothing said so — the only evidence was a log line about a non-zero
+        ``pending_update_count``, which nobody was reading. This makes the held inbound visible
+        where an operator actually looks:
+
+        * the platform's runtime status (``hermes gateway status``, the desktop Channels page) —
+          via ``needs_attention`` and an explicit error message, so a held DM cannot be mistaken
+          for a quiet platform;
+        * the journal — an explicit "held by the platform" line naming the count and the age of
+          the episode.
+
+        The episode age matters more than the count: one update queued for a second is normal
+        (a DM lands between two probes), while one queued for minutes is a DM nobody has been
+        answered. ``_outstanding_updates_since`` is stamped on the first observation of an
+        episode and cleared when the queue drains, so each episode measures its own age.
+
+        Publishing is best-effort: a status-write failure must never break the probe, and the
+        journal line is the durable record either way.
+        """
+        count = max(0, int(count or 0))
+        previous = self._outstanding_updates_count
+        self._outstanding_updates_count = count
+        if count > 0:
+            if self._outstanding_updates_since is None:
+                self._outstanding_updates_since = time.time()
+            self._outstanding_updates_peak = max(self._outstanding_updates_peak, count)
+        else:
+            # The queue drained: close the episode so the next one measures its own age.
+            self._outstanding_updates_since = None
+        if count == previous:
+            return
+        now = time.time()
+        held_for = (now - self._outstanding_updates_since) if self._outstanding_updates_since else 0.0
+        if count > 0:
+            logger.warning(
+                "[%s] Telegram is holding %d inbound update(s) that this gateway has not received "
+                "(held for %.0fs; peak %d). These messages are NOT lost — Telegram has them and "
+                "will deliver them once the getUpdates consumer drains. If this persists, the "
+                "polling consumer is wedged.",
+                self.name, count, held_for, self._outstanding_updates_peak,
+            )
+        else:
+            logger.info(
+                "[%s] Telegram inbound queue drained (was holding %d update(s)); any held message "
+                "is now delivered to the gateway.",
+                self.name, previous,
+            )
+        self._publish_outstanding_updates_status(count, held_for)
+
+    def _publish_outstanding_updates_status(self, count: int, held_for: float) -> None:
+        """Mirror the held-inbound count into the platform's runtime status (best-effort).
+
+        The platform's ``state`` is deliberately NOT changed: the send path is healthy and
+        the platform is up — it is the INBOUND queue that is not draining. Marking the
+        platform ``retrying`` would misreport a connected platform as reconnecting, and
+        the clearing path would then have to know it had to put the state back.
+
+        Instead the held count rides on ``needs_attention`` + an explicit error message,
+        which is exactly the channel the operator's status view already reads for "this
+        platform needs a human". The state is only set to ``retrying`` when the platform
+        really is retrying, which the recovery ladder owns.
+        """
+        try:
+            from gateway.status import publish_runtime_status
+            platform_key = getattr(self, "_runtime_status_platform_key", None) or self.platform.value
+            if count > 0:
+                publish_runtime_status(
+                    platform=platform_key,
+                    needs_attention=True,
+                    error_code="inbound_updates_outstanding",
+                    error_message=(
+                        f"{count} inbound update(s) held by Telegram for {int(held_for)}s — the "
+                        "getUpdates consumer is not draining them. Messages are not lost, but they "
+                        "are not being answered yet."
+                    ),
+                )
+            else:
+                # The queue drained: clear the flag. The platform's own state is left
+                # alone — whoever set it (the recovery ladder) owns putting it back.
+                publish_runtime_status(
+                    platform=platform_key,
+                    needs_attention=False,
+                    error_code=None,
+                    error_message=None,
+                )
+        except Exception:
+            logger.debug("Failed to publish outstanding inbound update status", exc_info=True)
 
     def _escalate_stuck_consumer(self, log_message: str, reason: str) -> None:
         """Second consecutive stuck probe: restart polling via the network-error ladder (unless tearing down)."""

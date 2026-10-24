@@ -101,6 +101,64 @@ def test_runtime_health_lines_render_watchdog_degraded_exit(monkeypatch):
     assert not [ln for ln in _runtime_health_lines() if "degraded" in ln]
 
 
+def test_runtime_health_lines_show_a_platform_holding_undelivered_inbound(monkeypatch):
+    """A DM held by the platform must be visible in `hermes gateway status`.
+
+    Kanban t_1915c9a3 (C3): when the getUpdates consumer is wedged, Telegram holds the
+    operator's messages server-side. They are not lost, but nothing local says so — the
+    status file carried only a fatal-platform error line, so a platform that was UP but
+    holding an unanswered DM rendered as silently healthy.
+
+    The platform is flagged ``needs_attention`` while connected; the health lines must
+    name it, so the operator can tell "held, not lost" from "gone".
+    """
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "pid": 4242,
+            "start_time": 111,
+            "updated_at": _iso_age(5),
+            "platforms": {
+                "telegram": {
+                    # The platform's own state stays "connected": the send path is
+                    # healthy and the platform is up. It is the INBOUND queue that is
+                    # not draining, and that is what needs_attention is for.
+                    "state": "connected",
+                    "needs_attention": True,
+                    "error_code": "inbound_updates_outstanding",
+                    "error_message": "3 inbound update(s) held by Telegram for 900s — the "
+                                      "getUpdates consumer is not draining them. Messages are "
+                                      "not lost, but they are not being answered yet.",
+                }
+            },
+        },
+    )
+
+    lines = _runtime_health_lines()
+
+    held = [ln for ln in lines if ln.startswith("⚠ telegram:")]
+    assert len(held) == 1, lines
+    assert "3 inbound update(s) held by Telegram" in held[0]
+    assert "not lost" in held[0]
+
+
+def test_runtime_health_lines_stay_silent_for_a_healthy_connected_platform(monkeypatch):
+    """A connected platform with no attention flag must not produce a warning line."""
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "pid": 4242,
+            "start_time": 111,
+            "updated_at": _iso_age(5),
+            "platforms": {"telegram": {"state": "connected"}},
+        },
+    )
+
+    assert not [ln for ln in _runtime_health_lines() if ln.startswith("⚠ telegram:")]
+
+
 def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     from gateway import status as status_mod
 

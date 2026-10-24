@@ -4833,6 +4833,17 @@ def _runtime_health_lines() -> list[str]:
         if pdata.get("state") == "fatal"
     ]
 
+    # A platform flagged NEEDS_ATTENTION while still connected: the inbound path is degraded but
+    # the platform is up. This is where a DM HELD BY THE PLATFORM surfaces (kanban t_1915c9a3) —
+    # Telegram is holding updates the gateway has not been handed, so the operator can see the
+    # messages are outstanding rather than having been lost. Without this arm the status file
+    # carries the flag but `hermes gateway status` says nothing about it.
+    for platform, pdata in (state.get("platforms", {}) or {}).items():
+        if pdata.get("state") == "fatal" or not pdata.get("needs_attention"):
+            continue
+        detail = pdata.get("error_message") or "needs attention"
+        lines.append(f"⚠ {platform}: {detail}")
+
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past
     # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.
     if gateway_state in ("running", "degraded", "starting", "draining") and runtime_status_is_stale(state):

@@ -1,0 +1,23 @@
+manifest_version: 1
+
+name: magic-hour
+description: Create and edit images and videos with Magic Hour.
+source: https://docs.magichour.ai/integration/model-context-protocol
+
+transport:
+  type: http
+  url: https://mcp.magichour.ai/
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_MAGIC_HOUR_API_KEY
+      prompt: "Magic Hour API key (https://magichour.ai/developer?tab=api-keys)"
+
+post_install: |
+  Start a new Hermes session and ask it to call account_retrieve to confirm
+  API authorization without generating media. Tool discovery alone does not
+  verify access. Creating media uses Magic Hour credits.
+
+  Keep the accepted project ID. After an interruption, resume its matching
+  wait tool rather than submitting another paid generation.

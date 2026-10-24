@@ -2,8 +2,7 @@
 token reload (mtime-based disk watch so tokens refreshed by cron/another CLI are picked up without a restart), 401
 deduplication (N concurrent 401s with the same access_token trigger one recovery) and reconnect signalling
 (``MCPServerTask`` drives the reconnect; the manager decides when). The ONLY place that instantiates the SDK's
-``OAuthClientProvider`` for runtime use; refresh stays lazy in the SDK — one ``stat()`` per tool call is cheaper
-than an await + refresh round-trip."""
+``OAuthClientProvider`` for runtime use. Expiring refreshable grants renew early on requests and while a transport is connected."""
 
 from __future__ import annotations
 
@@ -89,6 +88,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 self.context.token_expiry_time = time.time() - 1
             else:
                 self.context.update_token_expiry(tokens)
+        from tools.mcp_oauth_refresh import cache_issued_lifetime
+        cache_issued_lifetime(self)
         if tokens is not None and self.context.oauth_metadata is None:
             try:
                 await self._prefetch_oauth_metadata()
@@ -243,6 +244,9 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
         except Exception as exc:  # pragma: no cover — defensive
             self._log_nonfatal("pre-flow disk-watch", exc)
+        from tools.mcp_oauth_refresh import refresh_if_due
+        self.context.protocol_version = getattr(request, "headers", {}).get("mcp-protocol-version")
+        await refresh_if_due(self, initialize=True)
         # Bridge the bidirectional generator by hand: a naive ``async for item in inner: yield
         # item`` DISCARDS the responses httpx sends back via ``asend``, and the SDK crashes on None.
         # Manually bridge the bidirectional generator protocol. httpx's auth_flow driver

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from agent.prompt_cache_scope import conversation_id
 from tools.arg_coercion import coerce_tool_args
 
 
@@ -25,6 +26,7 @@ def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) ->
         "tool_call_id": tool_call_id or "",
         "turn_id": getattr(agent, "_current_turn_id", "") or "",
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+        "conversation_id": conversation_id(agent),
     }
 
 

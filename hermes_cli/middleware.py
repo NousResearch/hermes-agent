@@ -160,6 +160,7 @@ class _DownstreamExecutionError(Exception):
 
 def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwargs: Any) -> Any:
     from hermes_cli.plugins import _delivery_manager
+    from hermes_cli.plugins_dispatch import PluginDispatchMixin
 
     payload_key = "request" if "request" in kwargs else "args"
     manager = _delivery_manager()
@@ -198,7 +199,7 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         call_kwargs[payload_key] = payload
         call_kwargs["next_call"] = next_call
         try:
-            return callback(**call_kwargs)
+            return callback(**PluginDispatchMixin._hook_callback_kwargs(callback, call_kwargs))  # narrow signatures, as hooks
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:

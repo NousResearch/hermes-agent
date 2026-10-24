@@ -629,8 +629,9 @@ class GatewayBusySessionMixin:
             # canonical /approve and /deny handlers rather than re-deriving the resolution + i18n messaging:
             # they resolve the waiting thread, resume typing, AND return a localized confirmation string.
             # The busy-handler path does not auto-send that return, so we deliver it ourselves (mirroring
-            # the draining-case send above).
-            if event.allow_gateway_control and has_blocking_approval(session_key):
+            # the draining-case send above). Only a human answers: this runs before
+            # pre_gateway_dispatch, so a bot admitted by allow_bots must not approve here.
+            if event.allow_gateway_control and not event.source.is_bot and has_blocking_approval(session_key):
                 _raw_text = (event.text or "").strip().lower()
                 _match = self._plaintext_approval_words().get(_raw_text)
                 if _match is not None:

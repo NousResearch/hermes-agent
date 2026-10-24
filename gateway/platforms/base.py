@@ -617,10 +617,54 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     return str(filepath)
 
 
+# ISO-BMFF HEIF family (iPhone photos, macOS/iOS screenshots): 'ftyp' at 4..8, brand at 8..12.
+_HEIF_BRANDS = frozenset((b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis"))
+
+
+def _looks_like_heif(data: bytes) -> bool:
+    """Return True if *data* is an ISO-BMFF HEIF/HEIC container."""
+    return len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _HEIF_BRANDS
+
+
+def _heif_to_jpeg(data: bytes) -> Optional[bytes]:
+    """Decode HEIF/HEIC with pillow-heif and re-encode as JPEG; None when impossible.
+
+    Converted at cache time so every consumer downstream (vision tools, native image
+    routing, tools that open the cached path) sees a universally supported format.
+    EXIF orientation is applied so rotated phone photos stay upright after the
+    metadata is dropped."""
+    try:
+        import io
+
+        import pillow_heif  # type: ignore
+        from PIL import Image, ImageOps
+
+        pillow_heif.register_heif_opener()
+        with Image.open(io.BytesIO(data)) as im:
+            im = ImageOps.exif_transpose(im)
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=90)
+            return buf.getvalue()
+    except Exception as exc:
+        logger.info("Could not convert HEIC/HEIF image to JPEG: %s", exc)
+        return None
+
+
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     """Save raw image bytes to the cache and return the absolute path; raises
-    ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
+    ValueError when *data* isn't an image (e.g. an upstream HTML error page).
+
+    HEIC/HEIF bytes are converted to JPEG and cached as ``.jpg``."""
     validate_inbound_media_size(len(data), media_type="image")
+    if _looks_like_heif(data):
+        converted = _heif_to_jpeg(data)
+        if converted is None:
+            raise ValueError(
+                "Could not convert HEIC/HEIF image to JPEG (is pillow-heif installed?); "
+                "send it as PNG or JPEG instead")
+        return _write_cache_file(get_image_cache_dir(), "img", ".jpg", converted)
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(f"Refusing to cache non-image data as {ext} (starts with: {snippet!r})")

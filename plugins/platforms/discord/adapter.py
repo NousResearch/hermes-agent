@@ -37,8 +37,23 @@ from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
-_DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
 _DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+# Characters Discord reads as formatting inside a line: emphasis/underline/strike (* _ ~), code (`),
+# spoilers (|), masked links ([ ]), mentions/timestamps (<) and the escape itself (\).
+_DISCORD_MARKDOWN_SPECIAL_RE = re.compile(r"([\\*_~`|\[\]<])")
+_DISCORD_BARE_URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+
+
+def _escape_discord_markdown(text: str) -> str:
+    """Backslash-escape Discord formatting so literal text (a glob like ``*Loader*``, a
+    ``snake_case`` name) renders as typed. Bare URLs are left alone so autolinking keeps working."""
+    out, pos = [], 0
+    for m in _DISCORD_BARE_URL_RE.finditer(text):
+        out.append(_DISCORD_MARKDOWN_SPECIAL_RE.sub(r"\\\1", text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_DISCORD_MARKDOWN_SPECIAL_RE.sub(r"\\\1", text[pos:]))
+    return "".join(out)
 
 
 def _voice_mixer_module():
@@ -66,7 +81,7 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     """Return a Discord Markdown link whose label is not itself a URL (URL-shaped labels can
     win as a broken link; the ``<url>`` angle brackets stop Discord unfurling an embed)."""
     label = _DISCORD_URL_LABEL_SCHEME_RE.sub("", label, count=1)
-    escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
+    escaped_label = _DISCORD_MARKDOWN_SPECIAL_RE.sub(r"\\\1", label)
     escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
     return f"[{escaped_label}](<{escaped_url}>)"
 
@@ -1239,9 +1254,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     PLAYBACK_TIMEOUT_PADDING = 30
 
     def format_tool_preview(self, preview: ToolPreview) -> str:
-        """Keep a truncated URL preview clickable in Discord markdown."""
+        """Show the preview literally (``*`` in a glob is not italics) and keep a truncated URL
+        preview clickable in Discord markdown."""
         if not preview.url:
-            return preview.text
+            return _escape_discord_markdown(preview.text)
         return _format_discord_markdown_link(preview.text, preview.url)
 
     def __init__(self, config: PlatformConfig):

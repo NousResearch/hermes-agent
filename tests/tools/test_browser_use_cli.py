@@ -730,7 +730,6 @@ class TestHeaderVariants:
         monkeypatch.setattr(
             "tools.vision_tools._should_use_native_vision_fast_path", lambda: False
         )
-        monkeypatch.setattr("tools.vision_tools.check_vision_requirements", lambda: False)
         monkeypatch.setattr(
             "tools.browser_lightpanda.lightpanda_engine_status", lambda: (False, "")
         )
@@ -738,8 +737,8 @@ class TestHeaderVariants:
 
     def test_non_native_header_never_calls_the_model_blind(self, monkeypatch):
         """The gate measures whether screenshots ride back in THIS tool's results, not whether the
-        model sees (#131568: "your model cannot view images" made a model skip a user image). With a
-        vision route (an explicit auxiliary.vision pin) the header names it; without one it says so."""
+        model sees (#131568: "your model cannot view images" made a model skip a user image). The
+        header names no other toolset's tool; model_tools adds the vision_analyze pointer."""
         monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: False)
         monkeypatch.setattr("tools.browser_lightpanda.lightpanda_engine_status", lambda: (False, ""))
         for aux_route in (True, False):
@@ -748,7 +747,7 @@ class TestHeaderVariants:
             assert "cannot view images" not in header and "your model cannot" not in header
             assert "described below" not in header  # no screenshot section follows the header
             assert "not attached to this tool's results" in header and "text-first" in header
-            assert ("vision_analyze" in header) is aux_route
+            assert "vision_analyze" not in header
 
 
 class TestSkillTextDescription:

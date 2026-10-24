@@ -505,7 +505,7 @@ class PeerRunsHTTPClient:
             return []
         status = self._poll_receipt(receipt, grant=grant)
         state = str(status.get("status") or "")
-        if state not in {"completed", "failed", "interrupted"}:
+        if state not in _TERMINAL_RUN_STATES:
             return []
         return [{
             "role": "assistant", "task_id": receipt["task_id"],

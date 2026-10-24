@@ -1349,16 +1349,23 @@ class GatewayAdapterLifecycleMixin:
 
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
-        busy_session_handler=None, authorization_check=None, platform_event_handler=None,
+        busy_session_handler=None, pre_gateway_dispatch_handler=None,
+        authorization_check=None, platform_event_handler=None,
         busy_text_mode: Optional[str] = None, busy_text_timing: Optional[tuple[float, float]] = None,
         human_delay: Optional[tuple[int, int]] | object = _UNSET,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
-        secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
+        secondary wiring passes profile-scoped variants). Newer optional adapter setters are
+        feature-detected so lightweight test and third-party adapter doubles keep working."""
         adapter.set_message_handler(message_handler or self._primary_message_handler())
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(busy_session_handler or self._primary_busy_session_handler())
+        _set_pre_dispatch = getattr(adapter, "set_pre_gateway_dispatch_handler", None)
+        if callable(_set_pre_dispatch):
+            _set_pre_dispatch(
+                pre_gateway_dispatch_handler or self._primary_pre_gateway_dispatch_handler()
+            )
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
@@ -1398,6 +1405,7 @@ class GatewayAdapterLifecycleMixin:
             message_handler=self._make_profile_message_handler(profile_name),
             fatal_error_handler=self._make_profile_fatal_error_handler(profile_name, platform),
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
+            pre_gateway_dispatch_handler=self._make_profile_pre_gateway_dispatch_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
             busy_text_mode=(

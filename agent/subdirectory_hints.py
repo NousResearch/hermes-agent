@@ -1,6 +1,6 @@
 """Progressive subdirectory hint discovery: as the agent navigates into
-subdirectories via tool calls, load project context files (AGENTS.md, CLAUDE.md,
-.cursorrules) from them and append to the tool result — context arrives without
+subdirectories via tool calls, load project context files (.hermes.md/HERMES.md,
+AGENTS.md, CLAUDE.md, .cursorrules) from them and append to the tool result — context arrives without
 touching the system prompt (prompt caching preserved). Complements the startup
 CWD-only loading in ``prompt_builder.py``."""
 
@@ -17,7 +17,9 @@ from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 logger = logging.getLogger(__name__)
 
 # Same filenames as prompt_builder.py, in priority order (first match wins per dir).
-_HINT_FILENAMES = ["AGENTS.override.md", "AGENTS.md", "agents.md", "CLAUDE.md", "claude.md", ".cursorrules"]
+_HINT_FILENAMES = [
+    ".hermes.md", "HERMES.md", "AGENTS.override.md", "AGENTS.md", "agents.md", "CLAUDE.md", "claude.md", ".cursorrules",
+]
 # Per-file ceiling for on-demand subdirectory hints. 32 KiB matches Codex's `project_doc_max_bytes` default
 # (Claude Code and Cursor apply none); it is a guard against a stray huge CLAUDE.md in a vendored tree, not a
 # target — keep area AGENTS.md files well under it (~8k) because this text lands in a tool result on the first

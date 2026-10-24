@@ -6,6 +6,7 @@ export interface EditProfileLook {
   image: null | string
   shape: BotMeta['shape']
   title: string
+  circle: string
 }
 
 /** The fields the user actually changed since the dialog opened, as a
@@ -37,5 +38,17 @@ export function editedLook(opened: EditProfileLook, current: EditProfileLook): B
     patch.title = current.title.trim()
   }
 
+  // Circle is mesh membership, not look: it never marks the look custom.
+  const circle = normalizeCircle(current.circle)
+
+  if (circle !== normalizeCircle(opened.circle)) {
+    patch.circle = circle
+  }
+
   return Object.keys(patch).length > 0 ? patch : null
+}
+
+/** Same rule as the gateway's circle reader: trimmed, case-insensitive, capped at 64. */
+function normalizeCircle(value: string): string {
+  return value.trim().toLowerCase().slice(0, 64)
 }

@@ -24,6 +24,7 @@ export function createMainProcessLagWatchdog({
 }: MainProcessLagWatchdogOptions) {
   let timer: IntervalHandle | undefined
   let expectedAt = 0
+  let suspended = false
 
   const tick = () => {
     if (!timer) {
@@ -44,22 +45,46 @@ export function createMainProcessLagWatchdog({
     expectedAt = observedAt + cadenceMs
   }
 
+  const start = () => {
+    if (timer) {
+      return
+    }
+
+    expectedAt = now() + cadenceMs
+    timer = setInterval(tick, cadenceMs)
+  }
+
+  const stop = () => {
+    if (!timer) {
+      return
+    }
+
+    clearInterval(timer)
+    timer = undefined
+  }
+
   return {
-    start: () => {
-      if (timer) {
-        return
-      }
-
-      expectedAt = now() + cadenceMs
-      timer = setInterval(tick, cadenceMs)
-    },
+    start,
     stop: () => {
-      if (!timer) {
-        return
+      suspended = false
+      stop()
+    },
+    // System sleep freezes this process, so the first tick after wake lands
+    // minutes "late" and would be logged as a stall that never happened (in
+    // the field every long lag lined up with a Sleep entry in `pmset -g log`).
+    // Stand down for the suspend; resume restarts with a fresh baseline, but
+    // only a watchdog that was running when the machine went to sleep.
+    suspend: () => {
+      if (timer) {
+        stop()
+        suspended = true
       }
-
-      clearInterval(timer)
-      timer = undefined
+    },
+    resume: () => {
+      if (suspended) {
+        suspended = false
+        start()
+      }
     }
   }
 }

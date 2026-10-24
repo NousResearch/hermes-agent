@@ -2,6 +2,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { type MutableRefObject, useLayoutEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { dismissFailedTurn } from '@/app/chat/failed-turn-dismissal'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -845,6 +846,19 @@ function assistantError(id: string, error: string): ChatMessage {
   return { id, role: 'assistant', parts: [], error, pending: false }
 }
 
+function assistantPartialError(id: string, error: string): ChatMessage {
+  return {
+    id,
+    role: 'assistant',
+    parts: [
+      { type: 'reasoning', text: 'failed turn thought' },
+      { type: 'text', text: 'failed turn partial result' }
+    ],
+    error,
+    pending: false
+  }
+}
+
 function transcriptForCache(id: string): ChatMessage[] {
   return [userMessage(`${id}-user`, id), assistantText(`${id}-assistant`, `reply ${id}`)]
 }
@@ -946,6 +960,77 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     })
 
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
+  })
+
+  it('does not restore a dismissed recovered failed turn on warm switch', () => {
+    $messages.set([])
+    let cache!: Cache
+    const { rerender } = render(<ViewHarness activeSessionId="thread-A" onReady={value => (cache = value)} />)
+
+    const authoritative = [
+      userMessage('user-a-before', 'before'),
+      assistantText('assistant-a-before', 'before answer'),
+      userMessage('user-a-after', 'after'),
+      assistantText('assistant-a-after', 'after answer')
+    ]
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: authoritative }), 'stored-A')
+    })
+
+    $messages.set([
+      authoritative[0],
+      authoritative[1],
+      userMessage('user-1723000000000-abc123', 'failed prompt'),
+      assistantPartialError('assistant-a-partial', 'Connection error.'),
+      authoritative[2],
+      authoritative[3]
+    ])
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: authoritative }))
+    })
+
+    const recoveredTail = $messages.get()
+    // Current reconciliation re-grafts the kept failed-turn run at its original
+    // mid-transcript position (insertPreservedErrorRuns anchors runs to the
+    // refreshed row that preceded them locally, #118002), not at the tail.
+    expect(recoveredTail.map(message => message.id)).toEqual([
+      'user-a-before',
+      'assistant-a-before',
+      'user-1723000000000-abc123',
+      'assistant-a-partial',
+      'user-a-after',
+      'assistant-a-after'
+    ])
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, messages: recoveredTail }))
+    })
+
+    // Drive the real dismissal path (ContribWiring's dismissError body): it
+    // must update BOTH the live view and the cached state in one call.
+    act(() => {
+      dismissFailedTurn('thread-A', 'assistant-a-partial', cache.updateSessionState)
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(authoritative.map(message => message.id))
+
+    rerender(<ViewHarness activeSessionId="thread-B" onReady={value => (cache = value)} />)
+    act(() => {
+      cache.updateSessionState('thread-B', state => ({
+        ...state,
+        busy: false,
+        messages: [userMessage('user-b', 'other thread'), assistantText('assistant-b', 'other answer')]
+      }))
+    })
+
+    rerender(<ViewHarness activeSessionId="thread-A" onReady={value => (cache = value)} />)
+    act(() => {
+      cache.syncSessionStateToView('thread-A', cache.sessionStateByRuntimeIdRef.current.get('thread-A')!)
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(authoritative.map(message => message.id))
   })
 
   it('evicts the oldest warm transcript with its reverse ownership while retaining lightweight state', () => {

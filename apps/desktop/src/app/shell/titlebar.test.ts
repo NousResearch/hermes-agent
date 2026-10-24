@@ -25,6 +25,10 @@ describe('titlebarControlsPosition', () => {
     expect(titlebarControlsPosition(null).left).toBe(TITLEBAR_EDGE_INSET)
   })
 
+  it('clears native controls the desktop placed on the left', () => {
+    expect(titlebarControlsPosition(null, false, 72).left).toBe(72 + TITLEBAR_EDGE_INSET)
+  })
+
   it('does not move macOS tools when the native traffic-light position arrives', () => {
     vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
     expect(titlebarControlsPosition(undefined)).toEqual(titlebarControlsPosition({ x: 12, y: 10 }))

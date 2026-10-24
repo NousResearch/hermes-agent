@@ -1479,6 +1479,18 @@ class TestFormatMessage:
         assert "\U0001f469" in out
         assert "\U0001f467" in out
 
+    def test_bold_wrapping_inline_code_restores_correctly(self):
+        """Bold wrapping inline code (**`code`**) must resolve outermost
+        first — insertion-order restoration buries the inner placeholder
+        inside the outer one before it's replaced. Also guards against
+        the null-byte delimiter regressing: Chat's API strips \x00, so
+        it would surface as literal text instead of the real content.
+        """
+        src = "**`hello world`**"
+        out = GoogleChatAdapter.format_message(src)
+        assert out == "*`hello world`*"
+        assert "\x00" not in out
+
 
 class TestADCFallback:
     """When no SA JSON is configured, fall back to Application Default Credentials.

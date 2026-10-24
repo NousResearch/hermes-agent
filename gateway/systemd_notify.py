@@ -37,14 +37,32 @@ def watchdog_interval_seconds() -> float | None:
 
 
 class SystemdWatchdog:
-    """Feed systemd while the asyncio event loop continues to make progress."""
+    """Feed systemd while the asyncio event loop continues to make progress.
 
-    def __init__(self, *, config_enabled: bool = True, lag_tolerance_seconds: float | None = None):
+    A SINGLE late tick must not condemn the gateway. The loop legitimately stalls for
+    tens of seconds during MCP discovery, long cron turns, and adapter reconnects;
+    killing the service on one late tick turns a transient stall into a restart loop
+    (#t_b3e3f2cb). So the watchdog now requires SUSTAINED lag: consecutive late ticks
+    must add up to ``max_lag_seconds`` of cumulative lateness before the watchdog stops
+    feeding systemd and lets systemd reclaim the unit.
+
+    The wedge this is meant to catch is persistent, not momentary: on 2026-10-23 the
+    gateway's event loop froze for 27 minutes inside the inbound image/vision path and
+    the in-process loop-liveness watchdog never fired, because a GIL-holding C call
+    starves that watchdog's probe thread. systemd's timer lives in the systemd manager
+    process and never touches the gateway's GIL, so it is the one backstop that still
+    works under that failure mode.
+    """
+
+    def __init__(self, *, config_enabled: bool = True, lag_tolerance_seconds: float | None = None,
+                 max_lag_seconds: float | None = None):
         self._config_enabled = bool(config_enabled)
         self.interval_seconds = watchdog_interval_seconds()
         self._lag_tolerance_seconds = lag_tolerance_seconds
+        self._max_lag_seconds = max_lag_seconds
         self._task: asyncio.Task[None] | None = None
         self._unhealthy = self._stopping = self._stopping_notified = False
+        self._cumulative_lag = 0.0
 
     enabled = property(lambda self: self._config_enabled and self.interval_seconds is not None)
     unhealthy = property(lambda self: self._unhealthy)
@@ -56,6 +74,22 @@ class SystemdWatchdog:
             value = float(self._lag_tolerance_seconds)
             return max(0.0, value) if math.isfinite(value) else default
         return default
+
+    def _max_lag(self) -> float:
+        """Cumulative lateness that condemns the gateway.
+
+        Defaults to the systemd watchdog interval itself: a loop that stays behind by
+        more than a whole watchdog period, cumulatively, is wedged rather than busy.
+        """
+        default = max(1.0, float(self.interval_seconds or 0.0))
+        value = self._max_lag_seconds
+        if value is None:
+            return default
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return default
+        return numeric if math.isfinite(numeric) and numeric > 0 else default
 
     def start(self) -> bool:
         if not self.enabled:
@@ -75,17 +109,34 @@ class SystemdWatchdog:
         return self.enabled and notify(f"READY=1\nSTATUS={safe_status}")
 
     def record_tick(self, *, scheduled_at: float, now: float) -> bool:
-        """Feed systemd only when the event loop woke within its lag budget."""
+        """Feed systemd only when the event loop woke within its lag budget.
+
+        A late tick ACCUMULATES lateness instead of condemning the gateway on the
+        first one: the loop gets a grace budget of ``_max_lag()`` seconds of
+        cumulative lateness before the watchdog gives up on it. Feeding systemd on a
+        late tick keeps the unit alive during a transient stall (MCP discovery, a long
+        cron turn, an adapter reconnect); only a persistently late loop — the actual
+        wedge — stops the heartbeat and lets systemd reclaim the unit.
+        """
         if not self.enabled or self._stopping or self._unhealthy:
             return False
         try:
             lag = float(now) - float(scheduled_at)
         except (TypeError, ValueError):
             lag = float("inf")
-        if not math.isfinite(lag) or lag > self._lag_tolerance():
-            self._unhealthy = True
-            notify("STATUS=watchdog unhealthy: event loop progress is late")
-            return False
+        if not math.isfinite(lag) or lag < 0:
+            # A clock that went backwards (or a bogus value) is not evidence of a wedge.
+            lag = 0.0
+        if lag > self._lag_tolerance():
+            self._cumulative_lag += lag
+            if self._cumulative_lag >= self._max_lag():
+                self._unhealthy = True
+                notify("STATUS=watchdog unhealthy: event loop progress is late")
+                return False
+            # Still late, but within the grace budget: keep systemd fed.
+            notify("WATCHDOG=1")
+            return True
+        self._cumulative_lag = 0.0
         notify("WATCHDOG=1")
         return True
 

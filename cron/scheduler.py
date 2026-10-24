@@ -436,20 +436,38 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
 
 
 def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]:
-    """Layer enabled MCP servers onto a per-job ``enabled_toolsets`` allowlist (else a per-job list
-    silently drops every MCP server). Mirrors ``_get_platform_tools``: ``no_mcp`` sentinel -> none
-    (stripped); any MCP server already listed -> allowlist, add nothing; else union all enabled."""
-    result = [t for t in per_job if t != "no_mcp"]
-    if "no_mcp" in per_job:
-        return result
-    # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
-    from hermes_cli.tools_config import enabled_mcp_server_names
-    enabled_mcp = enabled_mcp_server_names(cfg)
-    if set(result) & enabled_mcp:
-        return result
-    for name in sorted(enabled_mcp):
-        if name not in result:
-            result.append(name)
+    """Layer enabled MCP servers and plugin toolsets onto a per-job ``enabled_toolsets`` allowlist.
+
+    Without this merge a per-job list silently drops every MCP server and every plugin toolset —
+    the agent cannot see tools its own skills or AGENTS.md direct it to call.
+
+    Sentinels: ``no_mcp`` suppresses MCP merging; ``no_plugins`` suppresses plugin merging.
+    Both are stripped from the result.  Same logic for each: any member of the class already
+    listed → allowlist mode, add nothing extra for that class; else union all enabled members."""
+    result = [t for t in per_job if t not in ("no_mcp", "no_plugins")]
+    skip_mcp = "no_mcp" in per_job
+    skip_plugins = "no_plugins" in per_job
+
+    if not skip_mcp:
+        # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
+        from hermes_cli.tools_config import enabled_mcp_server_names
+        enabled_mcp = enabled_mcp_server_names(cfg)
+        if not (set(result) & enabled_mcp):
+            for name in sorted(enabled_mcp):
+                if name not in result:
+                    result.append(name)
+
+    if not skip_plugins:
+        try:
+            from toolsets import _get_plugin_toolset_names
+            enabled_plugins = _get_plugin_toolset_names()
+            if enabled_plugins and not (set(result) & enabled_plugins):
+                for name in sorted(enabled_plugins):
+                    if name not in result:
+                        result.append(name)
+        except Exception:
+            logger.debug("Failed to merge plugin toolsets into cron per-job allowlist", exc_info=True)
+
     return result
 
 
@@ -459,8 +477,9 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     installs run without ``moa``). A lookup failure fails CLOSED: the run errors out.
 
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update). Keeps the agent's
-    job-scoped toolset override intact — #6130. Enabled MCP servers are layered on per
-    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools.
+    job-scoped toolset override intact — #6130. Enabled MCP servers and plugin toolsets are layered on per
+    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP or
+    plugin tools. Use the ``no_plugins`` sentinel to suppress plugin merging (mirrors ``no_mcp``).
     An explicitly-set EMPTY list is a zero-toolset allowlist, not a clear to the platform default —
     it is falsy, so it must be compared with ``is not None``, else it fell through to the config
     default and widened an unattended job back to every toolset (#82010). 2.

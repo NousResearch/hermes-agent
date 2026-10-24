@@ -116,7 +116,7 @@ export function setAppearance(appearance: Appearance): void {
 
 /** The resolved state for the painted appearance — the shape every consumer reads. */
 export const $translucency = computed([$translucencyBook, $appearance], (book, appearance) =>
-  resolveTranslucency(book, appearance, isWindowsPlatform())
+  resolveTranslucency(book, appearance, isWindowsPlatform(), TRANSLUCENCY_SUPPORTED)
 )
 
 /** Write an edit against the appearance being painted. */
@@ -317,8 +317,9 @@ const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void
   // Clear mode fades the whole window uniformly, so overlay text and the
   // covered transcript blend; styles.css strengthens the overlay scrim while
   // this attribute is present. Native opacity applies in every window kind, so
-  // no chat-window gate.
-  const clearOn = mode === 'clear' && intensity > 0
+  // no chat-window gate — but an OS with no translucency gets neither the
+  // attribute nor the fade (see `supported` in resolveTranslucency).
+  const clearOn = TRANSLUCENCY_SUPPORTED && mode === 'clear' && intensity > 0
 
   root.toggleAttribute('data-hermes-glass-on', glassLive)
   root.toggleAttribute('data-hermes-glass', glassOn)

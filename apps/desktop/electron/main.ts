@@ -574,12 +574,12 @@ import { installSystemCaTrust } from './system-ca'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
+  applyWindowOpacity as applyNativeWindowOpacity,
   applyWindowsBackdrop,
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
   normalizeState as normalizeTranslucency,
-  opacityNeedsSetting,
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
   windowBackgroundMaterialOptions,
@@ -1503,14 +1503,23 @@ const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucenc
 
 function readPersistedTranslucency() {
   try {
-    return normalizeTranslucency(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), GLASS_SUPPORTED)
+    return normalizeTranslucency(
+      JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')),
+      GLASS_SUPPORTED,
+      TRANSLUCENCY_SUPPORTED
+    )
   } catch {
     // Nothing persisted yet — a first launch. Glass ships on, so the FIRST
     // window has to be created with the glass backing already: a window born
     // opaque cannot reliably be swapped to glass afterwards (see
     // windowBackingOptions). nativeTheme is the only appearance signal main
     // has this early; the renderer's first resolved send corrects it.
-    return defaultTranslucencyState(nativeTheme.shouldUseDarkColors ? 'dark' : 'light', GLASS_SUPPORTED, IS_WINDOWS)
+    return defaultTranslucencyState(
+      nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+      GLASS_SUPPORTED,
+      IS_WINDOWS,
+      TRANSLUCENCY_SUPPORTED
+    )
   }
 }
 
@@ -1536,11 +1545,7 @@ const translucencyBackedWindows = new WeakSet()
 // window's own opacity is the record of whether that door was ever opened; see
 // opacityNeedsSetting for why it matters that it stays shut.
 function applyWindowOpacity(win) {
-  const opacity = windowOpacityFor(translucencyState)
-
-  if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
-    win.setOpacity(opacity)
-  }
+  applyNativeWindowOpacity(win, translucencyState, TRANSLUCENCY_SUPPORTED)
 }
 
 // Re-apply translucency to a live window (runtime toggle, no recreation).
@@ -1636,7 +1641,7 @@ function chatWindowSurfaceOptions() {
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
     ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
-    ...windowOpacityOptions(translucencyState),
+    ...windowOpacityOptions(translucencyState, TRANSLUCENCY_SUPPORTED),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
 }
@@ -16791,7 +16796,7 @@ ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {
-  const next = normalizeTranslucency(payload, GLASS_SUPPORTED)
+  const next = normalizeTranslucency(payload, GLASS_SUPPORTED, TRANSLUCENCY_SUPPORTED)
   const previous = translucencyState
 
   if (

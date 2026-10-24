@@ -144,9 +144,33 @@ export function opacityNeedsSetting(next: number, current = 1): boolean {
 /**
  * BrowserWindow constructor options for a chat window's native opacity. Empty
  * unless the state actually asks the window to fade — see opacityNeedsSetting.
+ *
+ * `supported` is the platform's answer (`translucencySupportedOn`). Electron
+ * documents `setOpacity` as a no-op on Linux, and while that was believed to be
+ * true it cost nothing to hand an unsupported platform a fade it could not show.
+ * Wayland compositors do honour the alpha, so it does cost something: a Linux
+ * window faded to 0.94 with every Settings row hidden, because the row is gated
+ * on this same flag. A platform that cannot offer the feature never receives it.
  */
-export function windowOpacityOptions(state: TranslucencyState): { opacity?: number } {
+export function windowOpacityOptions(state: TranslucencyState, supported = true): { opacity?: number } {
   const opacity = windowOpacityFor(state)
 
-  return opacityNeedsSetting(opacity) ? { opacity } : {}
+  return supported && opacityNeedsSetting(opacity) ? { opacity } : {}
+}
+
+/** Set a live window's native opacity, inert where the OS has no translucency. */
+export function applyWindowOpacity(
+  win: Pick<BrowserWindow, 'setOpacity'> & Partial<Pick<BrowserWindow, 'getOpacity'>>,
+  state: TranslucencyState,
+  supported = true
+): void {
+  if (!supported || typeof win.setOpacity !== 'function') {
+    return
+  }
+
+  const opacity = windowOpacityFor(state)
+
+  if (opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
+    win.setOpacity(opacity)
+  }
 }

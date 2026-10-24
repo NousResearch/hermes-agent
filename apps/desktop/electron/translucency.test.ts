@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  applyWindowOpacity,
   backgroundMaterialFor,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,
@@ -513,6 +514,58 @@ describe('windowOpacityOptions', () => {
       expect(windowOpacityOptions(state), appearance).toStrictEqual({})
     }
   })
+
+  // Linux has no translucency at all, and Electron documents `setOpacity` there
+  // as a no-op — but Wayland compositors honour the alpha. Handing an
+  // unsupported platform a fade is how a Linux chat window shipped at 0.94 with
+  // every Settings row hidden, so the option is withheld, not clamped.
+  it('never fades a window on a platform without translucency', () => {
+    expect(windowOpacityOptions(clear(29), false)).toStrictEqual({})
+    expect(windowOpacityOptions(clear(100), false)).toStrictEqual({})
+    // ...and the same state still fades where the feature exists.
+    expect(windowOpacityOptions(clear(29), true)).toStrictEqual({ opacity: windowOpacityFor(clear(29)) })
+  })
+})
+
+describe('applyWindowOpacity', () => {
+  const recordingWindow = (current = 1) => {
+    const calls: number[] = []
+
+    return {
+      calls,
+      win: {
+        setOpacity: (opacity: number) => void calls.push(opacity),
+        getOpacity: () => current
+      }
+    }
+  }
+
+  it('sets the native fade a supported platform asked for', () => {
+    const { calls, win } = recordingWindow()
+
+    applyWindowOpacity(win, clear(29), true)
+
+    expect(calls).toStrictEqual([windowOpacityFor(clear(29))])
+  })
+
+  // The regression: a Linux window faded to 0.94113 (the mac glass default of 29
+  // resolved as clear mode) with no Settings row to undo it, because the support
+  // check gated the row and nothing else.
+  it('leaves the window untouched on a platform without translucency', () => {
+    const { calls, win } = recordingWindow()
+
+    applyWindowOpacity(win, clear(29), false)
+
+    expect(calls).toStrictEqual([])
+  })
+
+  it('still returns an already-faded window to opaque', () => {
+    const { calls, win } = recordingWindow(0.5)
+
+    applyWindowOpacity(win, clear(0), true)
+
+    expect(calls).toStrictEqual([1])
+  })
 })
 
 describe('opacityNeedsSetting', () => {
@@ -703,5 +756,44 @@ describe('resolving the book for the painted appearance', () => {
 
     expect(resolveTranslucency(book, 'light', false).mode).toBe('clear')
     expect(resolveTranslucency(book, 'dark', false).mode).toBe('clear')
+  })
+})
+
+// One rule, four entry points: an OS with no translucency resolves to OFF,
+// whatever a persisted book or a carried-over profile says. `supported` used to
+// gate only the Settings row, so a Linux profile inherited the mac glass default
+// (29) and main handed it to `setOpacity`, which the compositor honoured.
+describe('a platform with no translucency', () => {
+  it('has no value to inherit', () => {
+    for (const appearance of ['light', 'dark'] as const) {
+      expect(defaultTranslucencyValues(appearance, false, false)).toEqual({
+        intensity: 0,
+        fade: 0,
+        material: DEFAULT_GLASS_MATERIAL,
+        scope: DEFAULT_GLASS_SCOPE
+      })
+    }
+  })
+
+  it('boots its first window opaque, while a supported platform keeps its preset', () => {
+    expect(defaultTranslucencyState('dark', false, false, false)).toMatchObject({ intensity: 0, fade: 0 })
+    expect(defaultTranslucencyState('dark', false, false, true).intensity).toBeGreaterThan(0)
+  })
+
+  it('zeroes an intensity it is handed, at the persisted and IPC edges', () => {
+    const payload = { intensity: 80, fade: 40, mode: 'clear' }
+
+    expect(normalizeState(payload, false, false)).toMatchObject({ intensity: 0, fade: 0, mode: 'clear' })
+    // ...and a supported platform still keeps exactly what it was given.
+    expect(normalizeState(payload, false, true)).toMatchObject({ intensity: 80, fade: 40 })
+  })
+
+  // The upgrade path that shipped the bug: the file on disk already said 29.
+  it('resolves a persisted non-zero intensity to off', () => {
+    const book = normalizeBook({ intensity: 29, mode: 'clear' }, false)
+
+    expect(resolveTranslucency(book, 'dark', false, false)).toMatchObject({ intensity: 0, fade: 0, mode: 'clear' })
+    // The same book is honoured in full where translucency exists.
+    expect(resolveTranslucency(book, 'dark', false, true).intensity).toBe(29)
   })
 })

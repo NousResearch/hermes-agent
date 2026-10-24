@@ -1,8 +1,8 @@
 name: burnclock
 repo: https://github.com/jersilb/burnclock-hermes
-sha: "bb4981294fcd95301ab184d5d7d7dd4a9e825851"
+sha: "80a505a5910e2ca1bfb48801a09797072c935590"
 title: Burnclock
-description: "Status-bar chip and left-nav dashboard for the MIT burnclock CLI. The chip reads burnclock's local badge cache; the dashboard adds balance, runway, budget and the DeepSeek Flash off-peak clock, with an explicit refresh. Requires the separately installed burnclock CLI (pip install burnclock) and a populated cache. Disclosure — the chip runs a read-only shell command (cat of the cache) in your active local session every 60 seconds; the dashboard runs the pure-clock offpeak subcommand every 60 seconds, and its explicit Refresh button may invoke burnclock to collect balances using keys you configured separately. The plugin reads no credentials itself."
+description: "Status-bar chip and left-nav dashboard for the MIT burnclock CLI. The chip reads burnclock's local badge cache; the dashboard adds cached balance, runway, budget and the DeepSeek Flash off-peak clock. The plugin runs no provider refresh and reads no credentials — balances are refreshed by running `burnclock badge --refresh` in a terminal, where the CLI has its own environment. Requires the separately installed burnclock CLI (pip install burnclock) and a populated cache. Disclosure — the chip runs a read-only shell command (cat of the cache) in your active local session every 60 seconds; the dashboard runs the pure-clock offpeak subcommand every 60 seconds. Nothing else is read and no other command is executed."
 maintainer: jersilb
 tier: community
 category: desktop
@@ -10,9 +10,9 @@ version: "0.2.0"
 requires_hermes: ">=0.22.0"
 platforms: [macos]
 docs_url: https://github.com/jersilb/burnclock-hermes
-image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/bb4981294fcd95301ab184d5d7d7dd4a9e825851/docs/banner.png
+image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/80a505a5910e2ca1bfb48801a09797072c935590/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/jersilb/burnclock-hermes/bb4981294fcd95301ab184d5d7d7dd4a9e825851/docs/chip.png
+  - https://raw.githubusercontent.com/jersilb/burnclock-hermes/80a505a5910e2ca1bfb48801a09797072c935590/docs/chip.png
 capabilities:
   provides_tools: []
   provides_hooks: []

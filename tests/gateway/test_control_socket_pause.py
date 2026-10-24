@@ -107,3 +107,21 @@ def test_pause_client_none_when_gateway_lacks_verb(tmp_path):
 
 def test_pause_client_none_when_no_socket(tmp_path):
     assert pause_gateway_for_update(tmp_path, timeout=0.5) is None
+def test_control_traffic_is_served_while_the_fleet_is_paused(tmp_path, monkeypatch):
+    """`hermes pause` holds NEW agent turns, never control traffic. A paused gateway must
+    still answer the control socket — otherwise the pause has no way back in over the wire."""
+
+    from agent import estop
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    estop.engage(reason="update window", ttl="45m")
+    try:
+        assert estop.is_engaged() is True
+        server = GatewayControlServer(home=tmp_path, verb_handlers={"pause-for-update": lambda: {
+            "pausing": True, "already_stopping": False, "pid": 9, "drain_timeout": 5.0}})
+        raw = json.dumps({"verb": "pause-for-update", "id": 1}).encode()
+        response = json.loads(server.handle_request_line(raw).decode())
+        assert response["ok"] is True
+        assert response["result"]["drain_timeout"] == 5.0
+    finally:
+        estop.disengage()

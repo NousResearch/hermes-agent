@@ -14,8 +14,9 @@ import { modeBound } from '@/store/interface-mode'
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { noteAreaClosed, recordFeatureUse } from './desktop-metrics'
 import { stampSessionPrBranch } from './pull-requests'
-import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
-import { $sessionStates } from './session-states'
+import { $busy, $selectedStoredSessionId } from './session'
+import { $focusedSessionIsTile, $focusedStoredSessionId } from './session-focus'
+import { $focusedWorkspaceCwd, $sessionStates, focusedSessionRow } from './session-states'
 import { $workspaceChangeTick } from './workspace-events'
 
 // State for the review pane: the working-tree changed-file list, the selected
@@ -145,8 +146,8 @@ export const $reviewShipBusy = atom(false)
 // True while a commit message is being generated (drives the input's spinner).
 export const $reviewCommitMsgBusy = atom(false)
 
-// The pane's repo scope. Null = follow the ACTIVE session's cwd (the classic
-// behavior). A tile's rail opens the pane pinned to ITS worktree instead —
+// The pane's repo scope. Null = follow the FOCUSED chat's cwd, like Files.
+// A tile's rail opens the pane pinned to ITS worktree instead —
 // tiles can sit in different worktrees than main, and reviewing "the diff I'm
 // looking at" must mean that tile's repo, not whatever main happens to be on.
 export const $reviewScopeCwd = atom<null | string>(null)
@@ -155,9 +156,22 @@ export const $reviewScopeCwd = atom<null | string>(null)
 // whose worktree the user is reviewing, not broadcast to every mounted tile.
 export const $reviewScopeTarget = atom('main')
 
-/** The repo the pane is reading right now: its pinned scope, else the active
+export const $reviewCwd = computed(
+  [$reviewScopeCwd, $focusedWorkspaceCwd],
+  (scope, focused) => scope?.trim() || focused.trim() || null
+)
+
+const $focusedReviewTarget = computed([$focusedSessionIsTile, $focusedStoredSessionId], (isTile, id) =>
+  isTile && id ? `tile:${id}` : 'main'
+)
+
+function reviewTarget(scopeCwd: null | string, scopeTarget: string): string {
+  return scopeCwd?.trim() ? scopeTarget.trim() || 'main' : $focusedReviewTarget.get()
+}
+
+/** The repo the pane is reading right now: its pinned scope, else the focused
  *  session's cwd. Exported for pane helpers that join repo-relative paths. */
-export const reviewRepoCwd = (): null | string => $reviewScopeCwd.get()?.trim() || $currentCwd.get()?.trim() || null
+export const reviewRepoCwd = (): null | string => $reviewCwd.get()
 
 const repoCwd = reviewRepoCwd
 
@@ -374,7 +388,7 @@ function refreshShipInfoIfStale(): void {
  *  composer target alongside it for agent-ship actions. */
 export function openReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
   $reviewScopeCwd.set(scopeCwd?.trim() || null)
-  $reviewScopeTarget.set(scopeTarget.trim() || 'main')
+  $reviewScopeTarget.set(reviewTarget(scopeCwd, scopeTarget))
   $reviewOpen.set(true)
   recordFeatureUse('review_pane')
   void refreshReview()
@@ -394,7 +408,7 @@ export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main
   // Make sure its data is loaded, then slide it in/out via the forced-reveal pin
   // — never the docked open state, which a 0px track would render invisibly.
   if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
-    const target = scopeTarget.trim() || 'main'
+    const target = reviewTarget(scopeCwd, scopeTarget)
 
     const originChanged =
       ($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== target
@@ -427,7 +441,7 @@ export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main
  */
 export function revealReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
   const wasOpen = $reviewOpen.get()
-  const target = scopeTarget.trim() || 'main'
+  const target = reviewTarget(scopeCwd, scopeTarget)
 
   if (!wasOpen) {
     openReview(scopeCwd, target)
@@ -667,6 +681,11 @@ export async function createOrOpenPr(): Promise<void> {
     return
   }
 
+  const target = $reviewScopeTarget.get()
+  const sessionId = target.startsWith('tile:') ? target.slice(5) : $selectedStoredSessionId.get()
+  const session = sessionId ? focusedSessionRow(sessionId) : undefined
+  const branch = repoStatusForCwd(ctx.cwd).get()?.branch
+
   await runShip(async () => {
     const { url } = await ctx.review.createPr(ctx.cwd)
 
@@ -678,9 +697,6 @@ export async function createOrOpenPr(): Promise<void> {
     // moved since, so bind the conversation to the branch the PR actually came
     // from — otherwise a session that began on trunk badges whatever else lives
     // on trunk, or nothing.
-    const session = $sessions.get().find(s => s.id === $selectedStoredSessionId.get())
-    const branch = repoStatusForCwd(ctx.cwd).get()?.branch
-
     if (session?.git_repo_root && branch) {
       stampSessionPrBranch(session.id, session.git_repo_root, branch)
     }
@@ -756,6 +772,10 @@ $sessionStates.subscribe(states => {
 // straight to its loading skeleton instead of blipping the previous repo's
 // diff into the new one.
 function onReviewRepoMoved(): void {
+  cancelRevert()
+  cancelCommitMessage()
+  $reviewShipInfo.set({ ghReady: false, pr: null })
+
   if ($reviewOpen.get()) {
     clearReviewSelection()
     $reviewFiles.set([])
@@ -765,18 +785,11 @@ function onReviewRepoMoved(): void {
   }
 }
 
-$currentCwd.subscribe(() => {
+$reviewCwd.listen(onReviewRepoMoved)
+
+$focusedReviewTarget.listen(target => {
   if (!$reviewScopeCwd.get()) {
-    onReviewRepoMoved()
-  }
-})
-
-let prevScopeCwd = $reviewScopeCwd.get()
-
-$reviewScopeCwd.subscribe(scope => {
-  if (scope !== prevScopeCwd) {
-    prevScopeCwd = scope
-    onReviewRepoMoved()
+    $reviewScopeTarget.set(target)
   }
 })
 

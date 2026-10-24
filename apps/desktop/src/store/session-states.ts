@@ -2972,7 +2972,7 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
  *  unlisted-draft/hidden stubs) and the project tree (a tile's session is
  *  often older than the paginated recents page, so the tree is the only
  *  loaded copy). Never a by-id fetch — a computed must stay synchronous. */
-function focusedSessionRow(storedSessionId: string): SessionInfo | undefined {
+export function focusedSessionRow(storedSessionId: string): SessionInfo | undefined {
   return (
     ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, storedSessionId)) ??
     $projectTree

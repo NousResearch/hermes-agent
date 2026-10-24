@@ -2194,6 +2194,54 @@ def _windows_gateway_breakaway_state() -> bool | None:
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
+# Type=notify units wait for READY=1 under TimeoutStartSec (systemd's user-unit default is
+# 90s). A tight TimeoutStartSec would kill the gateway mid-boot and restart-loop it, so
+# the notify unit gets a window sized from the gateway's REAL startup budget.
+#
+# That budget is NOT the 300s startup-watchdog timeout: the watchdog can extend its own
+# deadline (see hermes_startup_watchdog.py):
+#   * base            DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S = 300s
+#   * CPU fallback    up to _MAX_CPU_EXTENSIONS = 3 extensions of 300s each  => +900s
+#   * phase leases    _MAX_LEASE_S = 900s per call, RENEWABLE by the phase
+# The lease path is unbounded in principle, so the value below is the CPU-extension worst
+# case (300 + 3*300 = 1200s) plus one lease margin (900s) = 2100s, rounded up. Observed
+# 2026-10-23: the startup watchdog was still honoring a 'state_db_unclean_integrity_check'
+# lease 33 minutes after start (3.18GB state.db repair).
+#
+# Overridable with HERMES_SYSTEMD_TIMEOUT_START_SEC for a host whose state.db is smaller
+# (or a deployment that prefers a tighter boot budget). The value must stay comfortably
+# above the watchdog interval, since a Type=notify unit that never reaches READY=1 is
+# killed and restarted in a loop.
+_SYSTEMD_WATCHDOG_TIMEOUT_START_SEC = 2100
+
+
+def _systemd_timeout_start_sec() -> int:
+    """TimeoutStartSec for the Type=notify watchdog unit, in seconds.
+
+    Defaults to ``_SYSTEMD_WATCHDOG_TIMEOUT_START_SEC``; overridable via
+    ``HERMES_SYSTEMD_TIMEOUT_START_SEC``. Garbage or a non-positive value falls back to
+    the default rather than emitting a unit systemd would reject.
+    """
+    raw = os.environ.get("HERMES_SYSTEMD_TIMEOUT_START_SEC", "").strip()
+    if not raw:
+        return int(_SYSTEMD_WATCHDOG_TIMEOUT_START_SEC)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring non-numeric HERMES_SYSTEMD_TIMEOUT_START_SEC=%r; using %ss",
+            raw, _SYSTEMD_WATCHDOG_TIMEOUT_START_SEC,
+        )
+        return int(_SYSTEMD_WATCHDOG_TIMEOUT_START_SEC)
+    if value <= 0:
+        logger.warning(
+            "Ignoring non-positive HERMES_SYSTEMD_TIMEOUT_START_SEC=%r; using %ss",
+            raw, _SYSTEMD_WATCHDOG_TIMEOUT_START_SEC,
+        )
+        return int(_SYSTEMD_WATCHDOG_TIMEOUT_START_SEC)
+    return value
+
+
 _SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
 
 
@@ -3307,7 +3355,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)
     systemd_type, systemd_watchdog_directives = "simple", ""
     if watchdog_seconds > 0:
-        systemd_type, systemd_watchdog_directives = "notify", f"NotifyAccess=main\nWatchdogSec={watchdog_seconds}s\n"
+        # Type=notify makes systemd wait for READY=1, and the default TimeoutStartSec (90s)
+        # is far below this gateway's real startup budget: the startup watchdog allows 300s
+        # and MCP discovery alone waits 120s (observed 2026-10-23: ready at +300s+). Without a
+        # generous TimeoutStartSec systemd would kill the gateway mid-boot and restart-loop it.
+        systemd_type, systemd_watchdog_directives = (
+            "notify",
+            f"NotifyAccess=main\nWatchdogSec={watchdog_seconds}s\n"
+            f"TimeoutStartSec={_systemd_timeout_start_sec()}s\n",
+        )
     path_entries.extend(_build_user_local_paths(user_home, path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])

@@ -1442,6 +1442,11 @@ _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 # Pause before re-sampling a fire-claim heartbeat miss; a genuinely re-owned claim misses twice.
 _FIRE_CLAIM_MISS_CONFIRM_SECONDS = 1.0
+# Wall-clock cap for one LLM cron job (HERMES_CRON_MAX_RUNTIME; 0 = unlimited). The inactivity
+# watchdog cannot bound a job that keeps calling the API — observed 2026-10-23, job
+# ``d03b9c4f77ff`` ran 16 minutes / 44 API calls and never went idle long enough to trip it.
+# 1800s matches the longest sane dispatch and still fits a 30-minute schedule.
+_DEFAULT_CRON_MAX_RUNTIME_SECONDS = 1800
 
 
 def _cron_cleanup_timeout_seconds() -> float:
@@ -1956,6 +1961,33 @@ def _open_cron_session_db(job: dict):
     return None
 
 
+def _cron_max_runtime_seconds() -> float:
+    """Parse HERMES_CRON_MAX_RUNTIME (seconds): the WALL-CLOCK cap for one agent cron run.
+
+    0 = unlimited. Bad input = 1800.
+
+    The inactivity watchdog (HERMES_CRON_TIMEOUT) only fires when the agent goes quiet.
+    A job that keeps making API calls never goes idle, so it can run unbounded: observed
+    2026-10-23, job ``d03b9c4f77ff`` ran 44 API calls over 16 minutes while the gateway
+    event loop was wedged, and the inactivity limit never tripped. This cap bounds the
+    blast radius of any single LLM cron job regardless of how chatty it is.
+    """
+    raw = cron_env_setting("HERMES_CRON_MAX_RUNTIME").strip()
+    if not raw:
+        return float(_DEFAULT_CRON_MAX_RUNTIME_SECONDS)
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_MAX_RUNTIME=%r; using default %ss",
+                       raw, _DEFAULT_CRON_MAX_RUNTIME_SECONDS)
+        return float(_DEFAULT_CRON_MAX_RUNTIME_SECONDS)
+    if value < 0:
+        logger.warning("Invalid HERMES_CRON_MAX_RUNTIME=%r; using default %ss",
+                       raw, _DEFAULT_CRON_MAX_RUNTIME_SECONDS)
+        return float(_DEFAULT_CRON_MAX_RUNTIME_SECONDS)
+    return value
+
+
 def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
     """Log the agent's last activity, hard-interrupt it and raise TimeoutError."""
     _activity = {}
@@ -1977,6 +2009,26 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
         f"— last activity: {_last_desc}")
 
 
+def _raise_runtime_timeout(agent, job_name: str, limit_s: float, elapsed_s: float) -> None:
+    """Hard-interrupt an agent cron run that exceeded its wall-clock cap and raise TimeoutError."""
+    _activity = {}
+    if hasattr(agent, "get_activity_summary"):
+        with contextlib.suppress(Exception):
+            _activity = agent.get_activity_summary()
+    _last_desc = _activity.get("last_activity_desc", "unknown")
+    logger.error(
+        "Job '%s' exceeded its wall-clock cap: %.0fs elapsed (limit %.0fs) "
+        "| last_activity=%s | iteration=%s/%s | tool=%s",
+        job_name, elapsed_s, limit_s,
+        _last_desc, _activity.get("api_call_count", 0), _activity.get("max_iterations", 0),
+        _activity.get("current_tool") or "none")
+    request_hard_interrupt(agent, "Cron job timed out (max runtime)",
+                           tool_reason="cron max-runtime watchdog")
+    raise TimeoutError(
+        f"Cron job '{job_name}' exceeded its {int(limit_s)}s wall-clock cap "
+        f"(ran {int(elapsed_s)}s) — last activity: {_last_desc}")
+
+
 def _run_agent_with_watchdog(
     agent, prompt: str, job: dict, job_id: str, job_name: str, task_id: str, cancel_event,
     worker_state: Optional[dict] = None,
@@ -1985,6 +2037,11 @@ def _run_agent_with_watchdog(
     watchdog: default 600s, override HERMES_CRON_TIMEOUT, 0 = unlimited."""
     _cron_timeout = _cron_inactivity_seconds()
     _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+    # Wall-clock cap for this run (HERMES_CRON_MAX_RUNTIME; 0 = unlimited). Independent of the
+    # inactivity limit: a job that keeps calling the API never goes idle, so only a wall-clock
+    # bound can cap it (kanban t_b3e3f2cb: job d03b9c4f77ff ran 16 min / 44 API calls).
+    _cron_runtime_cap = _cron_max_runtime_seconds()
+    _cron_runtime_limit = _cron_runtime_cap if _cron_runtime_cap > 0 else None
     _POLL_INTERVAL = 5.0
     # Heartbeat the one-shot run_claim while alive: without it a long run looks like a dead owner
     # and gets re-dispatched / stale-removed out from under the live run.
@@ -2029,6 +2086,8 @@ def _run_agent_with_watchdog(
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
+    _runtime_timeout = False
+    _runtime_elapsed = 0.0
     _watch_stop = threading.Event()
 
     def _idle_seconds() -> float:
@@ -2049,8 +2108,26 @@ def _run_agent_with_watchdog(
             stop=_watch_stop, future_done=_cron_future.done, meter=_awake_idle):
             _inactivity_timeout = True
 
+    def _watch_max_runtime() -> None:
+        """Wall-clock cap: bound one cron job even when it never goes idle."""
+        nonlocal _runtime_timeout, _runtime_elapsed
+        if _cron_runtime_limit is None:
+            return
+        # Kernel ``Event.wait`` timeout, so the cap advances even if the agent thread is
+        # wedged (the same independence the inactivity watcher relies on).
+        deadline = time.monotonic() + _cron_runtime_limit
+        while not _watch_stop.wait(timeout=_POLL_INTERVAL):
+            if _cron_future.done():
+                return
+            if time.monotonic() >= deadline:
+                _runtime_elapsed = _cron_runtime_limit
+                _runtime_timeout = True
+                return
+
     _watch_thread = threading.Thread(
         target=_watch_inactivity, name=f"cron-inactivity-{str(job_id)[:8]}", daemon=True)
+    _runtime_watch_thread = threading.Thread(
+        target=_watch_max_runtime, name=f"cron-maxruntime-{str(job_id)[:8]}", daemon=True)
     try:
         if _cron_inactivity_limit is not None:
             # Separate daemon thread so a hung get_activity_summary can't stop the limit firing.
@@ -2058,7 +2135,10 @@ def _run_agent_with_watchdog(
             # loop / hung ``get_activity_summary`` on this thread can no longer keep the 600s inactivity
             # limit from firing (#94285).
             _watch_thread.start()
-        if _cron_inactivity_limit is None and not _is_oneshot and cancel_event is None:
+        if _cron_runtime_limit is not None:
+            _runtime_watch_thread.start()
+        if _cron_inactivity_limit is None and _cron_runtime_limit is None \
+                and not _is_oneshot and cancel_event is None:
             result = _cron_future.result()
         else:
             result = None
@@ -2070,6 +2150,8 @@ def _run_agent_with_watchdog(
                     break
                 if _inactivity_timeout:
                     break
+                if _runtime_timeout:
+                    break
                 _abort_if_fire_claim_lost()
                 _heartbeat_run_claim_if_due()
     except Exception:
@@ -2079,6 +2161,8 @@ def _run_agent_with_watchdog(
         _watch_stop.set()
         _cron_pool.shutdown(wait=False, cancel_futures=True)
 
+    if _runtime_timeout:
+        _raise_runtime_timeout(agent, job_name, _cron_runtime_limit, _runtime_elapsed)
     if _inactivity_timeout:
         _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit)
 

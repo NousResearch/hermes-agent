@@ -40,8 +40,8 @@ def mirror_to_session(
     """Append a delivery-mirror message to the target session's SQLite transcript.
 
     Pass ``session_id`` when the caller already holds the exact session (e.g. the
-    cron in_channel seed) to skip the origin scan, which refuses to guess on a
-    populated chat (flat + N thread sessions per chat_id) and would drop the mirror.
+    cron in_channel seed) to skip the origin scan, which drops the mirror when a bare
+    target's room can't be told apart (no General/thread-1 and no flat session).
     Text that is NOT the agent speaking (e.g. a cron brief) must pass
     ``role="user"``: ``mirror`` metadata is dropped at the SQLite boundary, so an
     assistant-role mirror replays as a real turn and yields assistant→assistant
@@ -81,9 +81,19 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     origin.  With *user_id*, exact sender matches win; several same-chat candidates
     with no user match → None rather than contaminate another participant's session.
 
+    A bare (thread-less) target is the chat's General room (thread 1):
+    probe thread 1, then the flat session, and refuse (None) otherwise — a thread-less
+    scan would return the newest-started room of a threaded chat instead of General.
+
     Queries state.db gateway session rows (primary source since #9006); falls back to scanning sessions.json
     for pre-migration databases.
     """
+    if thread_id is None:
+        for probe in ("1", ""):
+            found = _find_session_id(platform, chat_id, thread_id=probe, user_id=user_id)
+            if found:
+                return found
+        return None
     try:
         from hermes_state_registry import acquire, release_or_close
         db = acquire()

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { expect, test } from 'vitest'
@@ -60,5 +60,49 @@ test('OS file-manager metadata landing in hashed trees never invalidates a recor
   } finally {
     rmSync(source, { recursive: true, force: true })
     rmSync(out, { recursive: true, force: true })
+  }
+})
+
+// Prebuilt products: a TUI/web receipt written in one checkout must certify the same bytes in
+// another checkout of the same tree and on another platform/arch (the bundles are pure JS),
+// while desktop stays bound to the platform/arch that packed its native addons.
+test('a TUI/web receipt certifies the same tree in another checkout and on another host', async () => {
+  const { buildInputs, recordProduct, productCurrent } = await import('../scripts/build/freshness.mjs')
+  const root = mkdtempSync(path.join(tmpdir(), 'freshness-portable-'))
+  const built = path.join(root, 'built-here')
+  mkdirSync(built)
+  const source = fixture('freshness-portable-src-')
+  const icons = path.join(source, 'web/public')
+  mkdirSync(icons, { recursive: true })
+  writeFileSync(path.join(icons, 'favicon.ico'), 'icon')
+  try {
+    const out = path.join(source, 'hermes_cli/web_dist')
+    mkdirSync(out, { recursive: true })
+    writeFileSync(path.join(out, 'index.html'), '<html></html>')
+    recordProduct({ source, product: 'web', out, inputs: buildInputs(source, 'web', { icons }) })
+    const receipt = path.join(out, 'hermes-build.json')
+    const saved = JSON.parse(readFileSync(receipt, 'utf8'))
+    expect(saved.inputs.prepared[0].path).toBe('web/public')
+
+    // The same tree in another directory (a moved checkout, a worktree, a CI runner).
+    cpSync(source, built, { recursive: true })
+    expect(productCurrent({ source: built, product: 'web', out: path.join(built, 'hermes_cli/web_dist') })).toBe(true)
+
+    // Compiled on another platform/arch by the same Node.
+    writeFileSync(receipt, JSON.stringify({ ...saved, platform: 'other-os', arch: 'other-arch' }) + '\n')
+    expect(productCurrent({ source, product: 'web', out })).toBe(true)
+    // ...but never by another Node, and a desktop receipt never crosses platforms.
+    writeFileSync(receipt, JSON.stringify({ ...saved, node: '0.0.0' }) + '\n')
+    expect(productCurrent({ source, product: 'web', out })).toBe(false)
+    // A genuine desktop receipt for this tree: current here, never on another platform.
+    const desktopInputs = buildInputs(source, 'desktop')
+    recordProduct({ source, product: 'desktop', out, inputs: desktopInputs })
+    expect(productCurrent({ source, product: 'desktop', out })).toBe(true)
+    const desktop = JSON.parse(readFileSync(receipt, 'utf8'))
+    writeFileSync(receipt, JSON.stringify({ ...desktop, platform: 'other-os', arch: 'other-arch' }) + '\n')
+    expect(productCurrent({ source, product: 'desktop', out })).toBe(false)
+  } finally {
+    rmSync(source, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
   }
 })

@@ -210,7 +210,10 @@ updates:
   backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
   auto_switch_parked_branch: true       # auto-switch a clean, fully merged parked branch back to main
+  prebuilt_products: true        # install CI's TUI/web build of exactly this checkout instead of compiling
 ```
+
+`prebuilt_products` lets a source update skip compiling the TUI and web UI. CI publishes them for every `main` commit, keyed by the hash of their source inputs, on the same asset host as Hermes releases. The update downloads a build only when that key matches this checkout's tree exactly, checks its size and SHA-256, and checks that its build receipt certifies this tree with the pinned Node before swapping it in. Forks, local edits, unpublished commits, an unreachable asset host and any verification failure all fall back to a normal local build. Set it to `false` to always build from source and trust only git.
 
 `pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
 

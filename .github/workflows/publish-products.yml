@@ -1,0 +1,66 @@
+name: Publish frontend products
+
+# Builds the TUI and web UI of every main commit and publishes them under the hash of their
+# input tree (scripts/build/freshness.mjs sourceHash), so `hermes update` on a source checkout
+# can install the exact build of its tree instead of compiling it
+# (hermes_cli/source_products.py). The bundles are platform-neutral JavaScript: one Linux
+# build serves macOS, Linux and Windows. Objects are immutable; a commit that changed no
+# frontend input re-derives an existing key and the upload is a verified no-op, so there is
+# deliberately no `paths:` filter to drift from the key's inputs.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-products-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish TUI + web
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: release-signing
+    timeout-minutes: 30
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          persist-credentials: false
+      # The pinned Node (pm/lock.json) is part of every receipt: a build made with any other Node
+      # never certifies a user's checkout.
+      - name: Set up the locked Node toolchain
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+      # npm lifecycle scripts and the bundlers run third-party code: no publishing credential is
+      # in their environment. The R2 secrets exist only in the Publish step below.
+      - name: Prepare Node dependencies
+        run: node scripts/build/node-deps.mjs --source . --workspace ui-tui --workspace web
+      # The same commands `hermes update` runs on a source checkout (hermes_cli/source_build.py);
+      # the web build consumes the committed default-brand icons (--icons .).
+      - name: Build the TUI and web UI
+        run: |
+          node scripts/build/tui.mjs
+          node scripts/build/web.mjs --source . --icons . --out hermes_cli/web_dist
+      # A step `if` cannot read `secrets`; probe for them in an env-scoped step so forks and an
+      # unprovisioned release-signing environment skip the upload instead of turning main red.
+      - name: Check for publishing credentials
+        id: r2
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+        run: echo "configured=${{ env.CLOUDFLARE_R2_ACCOUNT_ID != '' }}" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        if: steps.r2.outputs.configured == 'true'
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+        run: python3 -m scripts.ci.publish_products --source .
+      - name: Report the unprovisioned publication
+        if: steps.r2.outputs.configured != 'true'
+        run: echo "::notice::CLOUDFLARE_R2_* secrets are not configured; frontend products were not published."

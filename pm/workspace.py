@@ -134,6 +134,27 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
+def _drop_android_split(uv_policy: dict, platform: Optional[str] = None) -> None:
+    """Narrow a generated workspace's resolution to the platforms this host can install for.
+
+    ``uv lock`` resolves every split it can express and validates wheel availability per
+    split. Android is one of them, and a plugin can carry a dependency with no Android
+    wheels at any version (an embeddings extra capping ``onnxruntime`` below the first
+    release that even ships an Android-compatible tag), so the whole generation fails on a
+    host that will never install for Android. Termux keeps the split: there it is the
+    platform being installed for.
+    """
+    import sys
+
+    if (sys.platform if platform is None else platform) == "android":
+        return
+    environments = uv_policy.get("environments")
+    if environments:
+        uv_policy["environments"] = [
+            f"({expression}) and sys_platform != 'android'" for expression in environments
+        ]
+
+
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path) -> None:
     """Snapshot core and plugin build inputs into a fresh generation."""
     source = source.resolve()
@@ -159,6 +180,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
+        _drop_android_split(uv_policy)
         text = tomli_w.dumps(document)
     else:
         # A member-less generation syncs frozen against core's own lock.

@@ -117,6 +117,52 @@ def test_core_only_generation_carries_no_release_age_cutoff(layout):
     assert "exclude-newer" not in generated and "[tool.uv]" in generated
 
 
+def test_generated_root_excludes_the_android_platform_split(tmp_path):
+    """``uv lock`` validates wheels for every split it resolves, so a plugin whose deps have
+    no Android wheels (an embeddings extra capping onnxruntime below 1.29) failed the whole
+    generation on a desktop host. The root resolves only for platforms it can install for."""
+    import tomllib
+
+    source = tmp_path / "core"
+    source.mkdir()
+    environments = "[\"python_version >= '3.14'\"]"
+    (source / "pyproject.toml").write_text(
+        '[project]\nname = "core"\nversion = "1"\nrequires-python = ">=3.14"\n'
+        f'dependencies = []\n[tool.uv]\npackage = false\nenvironments = {environments}\n',
+        encoding="utf-8",
+    )
+    plugin = tmp_path / "plugins" / "desktop-only"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "desktop-only"\nversion = "1"\nrequires-python = ">=3.11"\n'
+        'dependencies = ["member-dep==1"]\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "workspace"
+    ws._generate_pyproject([plugin], root, source=source)
+
+    generated = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert generated["tool"]["uv"]["environments"] == (
+        ["python_version >= '3.14'"] if sys.platform == "android"
+        else ["(python_version >= '3.14') and sys_platform != 'android'"]
+    )
+
+
+def test_android_split_is_kept_only_when_installing_for_android():
+    """Termux imports the fork core pins there, so its split must stay resolvable."""
+    policy = {"environments": ["python_version >= '3.14'"]}
+    ws._drop_android_split(policy, platform="linux")
+    assert policy["environments"] == ["(python_version >= '3.14') and sys_platform != 'android'"]
+
+    termux = {"environments": ["python_version >= '3.14'"]}
+    ws._drop_android_split(termux, platform="android")
+    assert termux["environments"] == ["python_version >= '3.14'"]
+
+    bare = {"workspace": {"members": ["plugin-sources/p"]}}
+    ws._drop_android_split(bare, platform="linux")
+    assert "environments" not in bare
+
+
 def test_undated_index_failure_names_the_index_not_a_conflict():
     """uv's "has no publish time" is the index omitting upload times (#135589), not a conflict."""
     from pm.workspace import ResolutionConflict, classify_uv_failure

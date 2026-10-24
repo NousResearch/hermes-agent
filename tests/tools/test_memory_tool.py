@@ -1017,3 +1017,95 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestOversizedOldTextFuzzyResolution:
+    """A model regenerating an entry from context produces DRIFTED text
+    (punctuation, spacing, small rewording) that fails the exact and folded
+    substring tests. Fuzzy best-match accepts such a paste when one entry is
+    clearly identified, and still rejects genuinely unresolvable pastes."""
+
+    ENTRY = ("The inference server port is dynamic — query it directly, not the fixed gateway "
+             "(gateway /props shows spec none even with MTP active; check the server cmdline + /metrics). "
+             "Spec decoding Auto = draft-mtp n_max 2, ~70% acceptance on the test model, so keep it on "
+             "Auto and do not pin a fixed draft count in the launch flags. Verify before changing.")
+    # Drifted re-paste: one word changed ("+" -> "and"), same meaning.
+    DRIFTED = ("The inference server port is dynamic — query it directly, not the fixed gateway "
+               "(gateway /props shows spec none even with MTP active; check the server cmdline and /metrics). "
+               "Spec decoding Auto = draft-mtp n_max 2, ~70% acceptance on the test model, so keep it on "
+               "Auto and do not pin a fixed draft count in the launch flags. Verify before changing.")
+
+    UNRELATED = ("This note is about an entirely different topic: the quarterly garden irrigation schedule "
+                 "uses drip lines on Tuesdays and Fridays, with the sprinkler heads rotated clockwise each "
+                 "cycle to even out the coverage across the back beds near the fence line.")
+
+    def test_drifted_full_paste_removes(self, store):
+        store.add("memory", self.ENTRY)
+        result = store.remove("memory", self.DRIFTED)
+        assert result["success"] is True
+        assert self.ENTRY not in store._entries_for("memory")
+
+    def test_drifted_full_paste_patches_whole_entry(self, store):
+        store.add("memory", self.ENTRY)
+        result = store.patch("memory", self.DRIFTED, "compressed entry")
+        assert result["success"] is True
+        assert store._entries_for("memory") == ["compressed entry"]
+
+    def test_unrelated_long_old_text_still_rejected(self, store):
+        store.add("memory", self.ENTRY)
+        before = list(store._entries_for("memory"))
+        result = store.patch("memory", self.UNRELATED, "should not land")
+        assert result["success"] is False
+        assert store._entries_for("memory") == before
+
+    def test_ambiguous_similar_entries_still_rejected(self, store):
+        # Two near-identical OVERSIZED entries: a drifted paste can't pick one safely.
+        e1 = ("server A runs nginx with the standard config and default listen port settings applied "
+              "on the primary host, with the tls terminator in front and cert renewal handled by a "
+              "nightly cron job that reloads the service after each renewal.")
+        e2 = ("server B runs nginx with the standard config and default listen port settings applied "
+              "on the primary host, with the tls terminator in front and cert renewal handled by a "
+              "nightly cron job that reloads the service after each renewal.")
+        drifted = e1.replace("settings applied", "setting applied")
+        assert len(drifted) > 200  # oversized: this exercises the fuzzy path
+        store.add("memory", e1)
+        store.add("memory", e2)
+        result = store.remove("memory", drifted)
+        assert result["success"] is False
+        assert len(store._entries_for("memory")) == 2
+
+    def test_exact_long_unique_paste_still_works(self, store):
+        # Regression: a long-but-unique exact substring must keep working.
+        store.add("memory", self.ENTRY)
+        result = store.patch("memory", self.ENTRY[:150], "compressed entry")
+        assert result["success"] is True
+        assert store._entries_for("memory") == ["compressed entry" + self.ENTRY[150:]]
+
+    def test_short_old_text_unchanged_exact_semantics(self, store):
+        # Short old_text keeps exact-substring matching; no fuzzy fallback there.
+        store.add("memory", "alpha beta gamma delta")
+        store.add("memory", "alpha beta gamma epsilon")
+        result = store.patch("memory", "alpha beta", "hit")
+        assert result["success"] is False  # ambiguous, as before
+        result = store.patch("memory", "epsilon", "delta2")
+        assert result["success"] is True
+
+    def test_batch_drifted_paste_applies(self, store):
+        store.add("memory", self.ENTRY)
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[{"action": "patch", "old_text": self.DRIFTED, "content": "batch compressed"}],
+            store=store))
+        assert result["success"] is True
+        assert "batch compressed" in store._entries_for("memory")
+
+    def test_batch_unresolvable_paste_rejected_atomically(self, store):
+        store.add("memory", self.ENTRY)
+        before = list(store._entries_for("memory"))
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[{"action": "add", "content": "a new fact"},
+                        {"action": "patch", "old_text": self.UNRELATED, "content": "should not land"}],
+            store=store))
+        assert result["success"] is False
+        assert store._entries_for("memory") == before

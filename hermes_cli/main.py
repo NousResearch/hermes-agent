@@ -1378,104 +1378,7 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
-def _create_titled_session(title: str) -> Optional[str]:
-    """Create a fresh titled session (``chat -c <title> --create-if-missing``).
-
-    The gateway is the single writer: it creates the session and records the title with user
-    provenance, so auto-titling never overwrites it (gateway_session_store.create_titled_session).
-
-    Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic callers (plugins, scripts) that
-    want "send to this named thread, making it if needed" get a deterministic outcome instead of a silent
-    no-op.
-    """
-    try:
-        from hermes_cli.gateway_session_store import create_titled_session
-        return create_titled_session(title)
-    except Exception:
-        # Programmatic callers rely on --create-if-missing being deterministic;
-        # swallow the failure but log the cause so it lands in errors.log
-        # (DB lock, I/O error, import error — all otherwise invisible).
-        # See #86794.
-        logger.exception("Failed to create titled session %r", title)
-        return None
-
-
-def _resolve_continue_arg(args, *, use_tui: bool) -> None:
-    """Resolve ``-c/--continue`` into ``args.resume``.
-
-    ``-c <name>``: resolve by title/ID; on miss fail loudly on **stderr** (exit
-    1) so programmatic callers see it even under quiet mode, or with
-    ``--create-if-missing`` create a fresh titled session. Bare ``-c``: this
-    terminal's breadcrumb session if valid, else the MRU session.
-
-    Handles both forms: See #86794.
-    """
-    continue_val = getattr(args, "continue_last", None)
-    if continue_val and not getattr(args, "resume", None):
-        if isinstance(continue_val, str):
-            resolved = _resolve_session_by_name_or_id(continue_val)
-            if resolved:
-                args.resume = resolved
-            elif getattr(args, "create_if_missing", False):
-                # "send to this named thread, making it if needed" — without it
-                # a quiet send to a not-yet-existing session silently no-ops.
-                # --create-if-missing: no session matches the title — create a new session with that title
-                # and proceed. See #86794. The classic CLI's gateway writes it (the single writer);
-                # the TUI keeps main's local row.
-                if use_tui:
-                    new_sid = _create_titled_session(continue_val)
-                else:
-                    from hermes_cli.gateway_session_store import create_titled_session
-                    new_sid = create_titled_session(continue_val)
-                if new_sid:
-                    args.resume = new_sid
-                else:
-                    print(
-                        f"No session found matching '{continue_val}' and "
-                        "a new titled session could not be created.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-            else:
-                print(f"No session found matching '{continue_val}'.", file=sys.stderr)
-                print(
-                    "Use 'hermes sessions list' to see available sessions, or "
-                    "pass --create-if-missing to start a new session with that title.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-        else:
-            # Bare -c: this terminal's breadcrumb (so side-by-side terminals
-            # each continue their own conversation), else the MRU session
-            # (also when session.terminal_continue is false).
-            if getattr(args, "create_if_missing", False):
-                # Nothing to create without a name — surface the no-op.
-                print(
-                    "--create-if-missing requires a session name: "
-                    "`-c <name> --create-if-missing`",
-                    file=sys.stderr,
-                )
-            try:
-                from hermes_cli.terminal_breadcrumbs import resolve_breadcrumb_session
-
-                _crumb_id = resolve_breadcrumb_session()
-            except Exception:
-                _crumb_id = None
-            if _crumb_id:
-                args.resume = _crumb_id
-            else:
-                # No valid breadcrumb — continue the most recent session
-                last_id = _latest_session_id(use_tui)
-                if last_id:
-                    args.resume = last_id
-                else:
-                    kind = "TUI" if use_tui else "CLI"
-                    print(
-                        f"No previous {kind} session to continue. Start a new one with "
-                        "`hermes`, or list sessions with `hermes sessions list`.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
+from hermes_cli.main_resume_args import _create_titled_session, _resolve_continue_arg
 
 
 def _apply_in_dir(args) -> None:
@@ -1533,15 +1436,20 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
             print("Use 'hermes sessions list' to see available sessions.")
             sys.exit(1)
 
-    _resolve_continue_arg(args, use_tui=use_tui)
+    from hermes_cli.main_resume_args import (
+        import_foreign_resume,
+        recreate_resumed_tui_worktree,
+        resolve_interactive_resume,
+        resolve_session_name_or_search,
+    )
+    resolve_interactive_resume(args, use_tui=use_tui)
 
-    from hermes_cli.main_resume_args import import_foreign_resume, recreate_resumed_tui_worktree
+    _resolve_continue_arg(args, use_tui=use_tui)
     import_foreign_resume(args)
 
     resume_val = getattr(args, "resume", None)
-    if resume_val:
-        # On miss keep the original so _init_agent reports "Session not found" with it.
-        args.resume = _resolve_session_by_name_or_id(resume_val) or resume_val
+    if isinstance(resume_val, str) and resume_val:
+        resolve_session_name_or_search(args, resume_val, use_tui=use_tui, resolve_fn=_resolve_session_by_name_or_id)
 
     recreate_resumed_tui_worktree(args)
 

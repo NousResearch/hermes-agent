@@ -255,6 +255,8 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     target_error = _memory_target_error(store, target, operations)
     if target_error is not None:
         return "rejected", json.dumps(target_error)
+    if action == "read":
+        return _applied(store.read(target))
     if operations:
         if not isinstance(operations, list):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
@@ -401,7 +403,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "patch", "remove"],
+                "enum": ["add", "patch", "remove", "read"],
                 "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
             "target": {
@@ -431,7 +433,7 @@ MEMORY_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["add", "patch", "remove"]},
+                        "action": {"type": "string", "enum": ["add", "patch", "remove", "read"]},
                         "content": {"type": "string", "description": "Required for add and patch, as 'content' above."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
                         "old_text": {"type": "string", "description": "As 'old_text' above."},

@@ -83,13 +83,13 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         add_yes_flag(p, "Skip confirmation")
 
     sessions_export = sessions_subparsers.add_parser(
-        "export", help="Export sessions to JSONL, Markdown, or QMD")
+        "export", help="Export sessions to JSONL, CSV, Markdown, QMD, HTML, or trace")
     sessions_export.add_argument("output", nargs="?", metavar="OUTPUT",
-        help="Where to write. jsonl/html/trace: a file path, or a directory (existing, or ending in /) "
-            "to write a default-named file into; - for stdout (jsonl/trace only; jsonl requires OUTPUT). "
+        help="Where to write. jsonl/csv/html/trace: a file path, or a directory (existing, or ending in /) "
+            "to write a default-named file into; - for stdout (jsonl/csv/trace; jsonl/csv require OUTPUT). "
             "md/qmd: a directory, one file per session (default: <hermes home>/session-exports)")
     sessions_export.add_argument(
-        "--format", choices=["jsonl", "md", "qmd", "html", "trace"], default="jsonl",
+        "--format", choices=["jsonl", "md", "qmd", "html", "trace", "csv"], default="jsonl",
         help="Export format (default: jsonl). 'trace' emits Claude Code JSONL "
             "for the Hugging Face Agent Trace Viewer")
     _flag(sessions_export, "--upload",
@@ -101,7 +101,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help=("trace only: skip the forced secret redaction; only use after manual review"))
     sessions_export.add_argument("--only", choices=["user-prompts"],
         help="Export only a filtered view (user-prompts: one prompt record "
-            "per line for jsonl, headed sections for md)")
+            "per line for jsonl, a CSV row for csv, headed sections for md)")
     sessions_export.add_argument("--session-id", help="Session ID or unique prefix to export")
     _add_session_filter_args(
         sessions_export, "Only export sessions older than AGE (duration like '5h'/'2d', "

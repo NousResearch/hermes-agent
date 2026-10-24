@@ -87,12 +87,18 @@ def _output_file_in_dir(output, default_name: str):
     return output
 
 
-def _write_output(output, text, summary) -> None:
+def _write_output(output, text, summary, *, newline=None) -> None:
     """Write to stdout when *output* is empty or ``-``; else to the file + print *summary*."""
     if not output or output == "-":
-        sys.stdout.write(text)
+        # CSV cells may contain CR/LF: text-stream translation corrupts them on Windows.
+        if newline == "" and hasattr(sys.stdout, "buffer"):
+            sys.stdout.flush()
+            sys.stdout.buffer.write(text.encode(sys.stdout.encoding or "utf-8", sys.stdout.errors or "strict"))
+            sys.stdout.buffer.flush()
+        else:
+            sys.stdout.write(text)
         return
-    with open(output, "w", encoding="utf-8") as f:
+    with open(output, "w", encoding="utf-8", newline=newline) as f:
         f.write(text)
     print(summary)
 
@@ -364,7 +370,7 @@ def _cmd_export(db, args):
 
     from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS, export_projection
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
-    shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
+    shown = args.format in SAVE_TRANSCRIPT_FORMATS or args.format == "csv" or bool(getattr(args, "only", None))
     projection = export_projection(shown)
 
     def _too_large(session_ids=None) -> bool:
@@ -421,9 +427,9 @@ def _cmd_export(db, args):
 
 
 def _render_only(args, sessions):
-    """--only user-prompts: one prompt record per line (jsonl) or headed sections (md)."""
+    """--only user-prompts: prompt records (jsonl/csv) or headed sections (md)."""
     from hermes_cli.session_export import export_record_count, render_sessions_export
-    rendered = render_sessions_export(sessions, fmt="markdown" if args.format == "md" else "jsonl", only=args.only)
+    rendered = render_sessions_export(sessions, fmt=args.format, only=args.only)
     count, noun = export_record_count(sessions, only=args.only)
     return rendered, f"Exported {count} {noun}{'' if count == 1 else 's'} to {args.output}"
 
@@ -441,11 +447,18 @@ def _render_jsonl(args, sessions):
     return lines, f"Exported {len(sessions)} {'session' if args.session_id else 'sessions'} to {args.output}"
 
 
+def _render_csv(args, sessions):
+    from hermes_cli.session_export import render_sessions_export
+    content = render_sessions_export(sessions, fmt="csv")
+    return content, f"Exported {len(sessions)} session(s) to {args.output} (CSV)"
+
+
 #: kind -> (usage error when the --output/--format combination is unusable, renderer)
 _FLAT_EXPORTERS = {
     "only": (
-        lambda a: a.format not in ("jsonl", "md"), "--only user-prompts supports --format jsonl or md.", _render_only
+        lambda a: a.format not in ("jsonl", "md", "csv"), "--only user-prompts supports --format jsonl, md or csv.", _render_only
     ),
+    "csv": (lambda a: not a.output, "CSV export requires an output path (use - for stdout).", _render_csv),
     "html": (lambda a: not a.output or a.output == "-", "HTML export requires an output file path.", _render_html),
     "jsonl": (lambda a: not a.output, "JSONL export requires an output path (use - for stdout).", _render_jsonl),
 }
@@ -463,7 +476,7 @@ def _export_flat(kind, args, collect):
         name = (default_save_filename(sessions[0].get("id", ""), args.format) if len(sessions) == 1
                 else f"hermes_sessions.{args.format}")
         args.output = _output_file_in_dir(args.output, name)
-        _write_output(args.output, *render(args, sessions))
+        _write_output(args.output, *render(args, sessions), newline="" if args.format == "csv" else None)
 
 
 def _export_trace(db, args, filters):

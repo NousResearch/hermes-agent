@@ -314,6 +314,8 @@ class PluginHost:
     # -- parent -> host -----------------------------------------------------------------------------
     def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None,
               timeout: Optional[float] = None) -> Any:
+        from tools.interrupt import acting_for_tid
+        owner = acting_for_tid.set(acting_for_tid.get() or threading.get_ident())
         channel = self._channel
         try:
             if channel is None:
@@ -326,6 +328,8 @@ class PluginHost:
             return decode(channel.call(method, params, timeout=timeout), self._resolve_ref)
         except PluginHostUnavailable as exc:
             raise PluginHostUnavailable(self._exit_reason()) from exc
+        finally:
+            acting_for_tid.reset(owner)
 
     def _release(self, generation: int, ref: int) -> None:
         """Finalizer of an object proxy (any thread, GC time): queue only; sent with the next call."""
@@ -437,7 +441,12 @@ class PluginHost:
         ref_id, generation = int(ref["__callable__"]), self._generation
 
         async def async_proxy(*args: Any, **kwargs: Any) -> Any:
-            return await asyncio.to_thread(self.invoke, ref_id, args, kwargs, generation=generation)
+            from tools.interrupt import acting_for_tid
+            owner = acting_for_tid.set(acting_for_tid.get() or threading.get_ident())
+            try:
+                return await asyncio.to_thread(self.invoke, ref_id, args, kwargs, generation=generation)
+            finally:
+                acting_for_tid.reset(owner)
 
         def sync_proxy(*args: Any, **kwargs: Any) -> Any:
             return self.invoke(ref_id, args, kwargs, generation=generation)

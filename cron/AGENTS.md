@@ -29,6 +29,13 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
   that profile's store; never a `~/.hermes/...` literal.
+- **`jobs.json` is declarations; `runtime.db` is scheduler state** (`cron/runtime_state.py`,
+  #75607). `load_jobs()`/`save_jobs()` merge and split: `JOB_DEFINITION_FIELDS` +
+  `DECLARATIVE_JOB_EXTRAS` (`cron/constants.py`) stay in `jobs.json`, every other key is runtime,
+  so a fire never rewrites `jobs.json`. New AUTHORED fields belong in `JOB_DEFINITION_FIELDS`
+  (unlisted = runtime.db, still never lost); new scheduler fields need no registration. A save
+  changing both files journals in `runtime.db` before the rename; never write one without the
+  other outside `save_jobs()`.
 - **Headless ticks refuse, never spawn.** `hermes cron tick` (system crontab / external scheduler)
   calls `tick(headless=True)`; `cron/scheduler_gateway_gate.py` skips agent jobs when discovery
   says no gateway owns the home (`last_fire_error` stamped, one warning per tick, due instant

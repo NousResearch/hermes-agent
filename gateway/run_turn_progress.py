@@ -260,16 +260,16 @@ class GatewayTurnProgressMixin:
 
     @staticmethod
     def _preview_cap() -> int:
-        """tool_preview_length (default 40): the one-line preview budget for "all"/"new" modes."""
+        """tool_preview_length for the "all"/"new" previews; 0 = no limit (documented contract)."""
         from agent.display import get_tool_preview_max_len
-        pl = get_tool_preview_max_len()
-        return pl if pl > 0 else 40
+        return get_tool_preview_max_len()
 
     def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
         """(full, short) fenced blocks for a terminal command on markdown platforms, else (None, None).
 
         No language tag: Slack mrkdwn renders it as a literal first code line. Verbose shows the FULL
-        command; "all"/"new" truncate to one line capped at ``tool_preview_length``. Consecutive
+        command; "all"/"new" show the whole command when it fits ``tool_preview_length`` (0 = no
+        limit) and otherwise truncate to one line capped at that budget. Consecutive
         terminal calls drop the repeated header so back-to-back commands render as adjacent blocks.
         """
         if not (
@@ -282,8 +282,10 @@ class GatewayTurnProgressMixin:
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
-        if len(cmd_short) > cap:
-            cmd_short = cmd_short[:cap - 3] + "..."
+        if cap <= 0 or len(cmd_full) <= cap:
+            cmd_short = cmd_full  # fits the budget (or no budget): eliding a visible command is noise
+        elif len(cmd_short) > cap:
+            cmd_short = "." * cap if cap <= 3 else cmd_short[:cap - 3] + "..."
         elif len(lines) > 1:
             cmd_short += " ..."
         return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"

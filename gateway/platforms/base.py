@@ -2051,7 +2051,7 @@ class BasePlatformAdapter(ABC):
     def format_tool_event(self, event: Any, *, mode: str = "all", preview_max_len: int = 40) -> Optional[str]:
         """Rendered chrome for a ToolCallChunk, or None to eat it (adapters without editing/rich
         text override to None). ``mode``: tool-progress mode ("all"/"new"/"verbose");
-        ``preview_max_len`` mirrors ``tool_preview_length`` (0 = no cap in verbose)."""
+        ``preview_max_len`` mirrors ``tool_preview_length`` (0 = no cap)."""
         from gateway.stream_events import ToolCallChunk
         if not isinstance(event, ToolCallChunk):
             return None
@@ -2065,9 +2065,9 @@ class BasePlatformAdapter(ABC):
         if mode == "verbose":
             return t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=event.preview)
         # "all" / "new": short capped preview (default 40; progress bubbles persist as messages).
-        cap = preview_max_len if preview_max_len > 0 else 40
+        # 0 = no cap, the documented meaning of tool_preview_length: 0 (never coerce it to 40).
         prepared = prepare_tool_preview(
-            event.tool_name, event.args, fallback=event.preview, max_len=cap)
+            event.tool_name, event.args, fallback=event.preview, max_len=preview_max_len)
         return t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=self.format_tool_preview(prepared))
 
 

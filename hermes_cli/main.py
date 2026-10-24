@@ -45,6 +45,7 @@ _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pa
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 from hermes_cli import _startup_fast
+from hermes_cli.stdio import tolerate_closed_stdout
 import itertools
 
 # A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
@@ -3442,6 +3443,7 @@ def _default_to_chat(args) -> None:
     cmd_chat(args)
 
 
+@tolerate_closed_stdout
 def main():
     """Main entry point for hermes CLI."""
     _set_process_title()
@@ -3464,7 +3466,6 @@ def main():
     # One TLS authority: trust the OS store before any outbound call resolves a
     # CA bundle (agent/ssl_verify.py). Never raises; False just means OpenSSL's paths.
     from agent.ssl_verify import install_truststore
-
     install_truststore()
 
     # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
@@ -3495,7 +3496,6 @@ def main():
             print(f"⚠ {problem}", file=sys.stderr)
     except Exception:
         import logging
-
         logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
 
     if _try_termux_fast_tui_launch():

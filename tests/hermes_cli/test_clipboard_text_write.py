@@ -26,6 +26,20 @@ def test_darwin_uses_pbcopy():
     assert run.call_args[1]["input"] == b"hello"
 
 
+@pytest.mark.platforms("macos")
+def test_pbcopy_reads_stdin_as_utf8_whatever_the_inherited_locale(monkeypatch):
+    # Under LC_ALL=C (or LANG unset) pbcopy decoded the UTF-8 bytes as MacRoman: /copy of
+    # "日本語" pasted as "Êó•Êú¨Ë™û". The child's locale must name the charset of its input.
+    monkeypatch.setenv("LC_ALL", "C")
+    monkeypatch.delenv("LANG", raising=False)
+    text = "日本語 😀 café"
+    with patch.object(clip.subprocess, "run", return_value=_completed()) as run:
+        assert clip.write_clipboard_text(text) is True
+    kwargs = run.call_args[1]
+    assert kwargs["input"] == text.encode("utf-8")
+    assert kwargs["env"]["LC_ALL"].lower().endswith((".utf-8", ".utf8"))
+
+
 @pytest.mark.platforms("linux")
 def test_linux_falls_through_backends_until_success():
     calls = []

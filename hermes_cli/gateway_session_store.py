@@ -54,6 +54,15 @@ def _noop(*_a, **_k):
     return None
 
 
+def _session_cwd():
+    # The gateway validates session cwd locally; a remote terminal cwd belongs to its backend.
+    terminal_env = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    cwd = os.getcwd()
+    if terminal_env in ("", "local"):
+        cwd = os.getenv("TERMINAL_CWD") or cwd
+    return os.path.realpath(cwd)
+
+
 def _zero(*_a, **_k):
     return 0
 
@@ -164,7 +173,7 @@ class GatewaySessionStore:
         ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
         from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
         params = _creation_policy(launch or {})
-        params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+        params["cwd"] = _session_cwd()
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
         params["source"] = session_source_for("cli")
         # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
@@ -542,7 +551,7 @@ def create_titled_session(title):
     (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
     "could not be created" copy)."""
     params = _creation_policy({})
-    params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+    params["cwd"] = _session_cwd()
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:

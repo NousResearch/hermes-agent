@@ -1,8 +1,8 @@
 name: ha-sidebar-navigator
 repo: https://github.com/badiyee85/HA-Plugins-sidebar-navigator
-sha: 18a25d0dfc82d379a753035cfe398ddb9ca3531e
-version: "0.8.2"
-image: https://raw.githubusercontent.com/badiyee85/HA-Plugins-sidebar-navigator/18a25d0dfc82d379a753035cfe398ddb9ca3531e/docs/images/banner.png
+sha: b5dc25fabf7696adc0cae2bf3aa90456b365812a
+version: "0.9.1"
+image: https://raw.githubusercontent.com/badiyee85/HA-Plugins-sidebar-navigator/b5dc25fabf7696adc0cae2bf3aa90456b365812a/docs/images/banner.png
 description: "Full-power sidebar navigator & uncapped project/session explorer for Hermes Desktop. Bypasses the 3-session overview cap with searchable, scrollable project trees and timeline view. Disclosure — browses and acts on sessions of every Hermes profile and connection you pick (rename, archive, delete with confirmation, branch, move to a project, create, including bulk archive/delete/move of selected sessions), exports a session's full transcript as a downloaded JSON file on request, and keeps its own pins, colours, unread marks and tags in its plugin storage, mirroring pin and colour changes to the Desktop sidebar for the profile the window is showing."
 maintainer: badiyee85
 tier: community

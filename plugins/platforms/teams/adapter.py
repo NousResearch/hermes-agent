@@ -116,6 +116,42 @@ def _validate_teams_service_url(raw: str) -> Optional[str]:
     return raw if raw.endswith("/") else raw + "/"
 
 
+def _body_decode_reason(exc: ValueError) -> tuple[str, Optional[int]]:
+    """``(message, position)`` of a body-decode failure, and never any of its bytes.
+
+    Covers both exceptions the parse can raise: ``JSONDecodeError`` carries
+    ``msg``/``pos``, ``UnicodeDecodeError`` carries ``reason``/``start``. Neither
+    ``str(UnicodeDecodeError)`` (the offending byte) nor ``JSONDecodeError.doc``
+    (the whole body) is read, so nothing of the request body can reach the log.
+    """
+    reason = getattr(exc, "msg", None) or getattr(exc, "reason", None) or type(exc).__name__
+    position = getattr(exc, "pos", None)
+    if position is None:
+        position = getattr(exc, "start", None)
+    return str(reason), position
+
+
+def _body_json_type_name(value: object) -> str:
+    """The JSON type of a parsed body, named as JSON names it -- and nothing else.
+
+    ``json.loads`` yields only the five non-object types named here, so the
+    fallback is unreachable for this body; it exists so that a loader which
+    widens the set cannot put an exception's own text into the WARNING. The
+    value itself is never read: only its type is.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):  # before int: bool is an int subclass
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    return type(value).__name__
+
+
 class _AiohttpBridgeAdapter:
     """HttpServerAdapter bridging SDK route registrations into our aiohttp app; without it
     ``App()`` unconditionally imports fastapi/uvicorn and allocates a ``FastAPI()``."""
@@ -125,7 +161,41 @@ class _AiohttpBridgeAdapter:
 
     def register_route(self, method: HttpMethod, path: str, handler: HttpRouteHandler) -> None:
         async def _aiohttp_handler(request: web.Request) -> web.Response:
-            result: HttpResponse = await handler(HttpRequest(body=await request.json(), headers=dict(request.headers)))
+            try:
+                body = await request.json()
+            except ValueError as exc:
+                reason, position = _body_decode_reason(exc)
+                logger.warning(
+                    "[teams] refused a request body that is not valid JSON: %s %s from %s "
+                    "(%s bytes): %s (position %s)",
+                    request.method,
+                    request.path,
+                    request.remote,
+                    request.content_length if request.content_length is not None else "unknown",
+                    reason,
+                    position if position is not None else "unknown",
+                )
+                return web.Response(
+                    status=400,
+                    body=json.dumps({"error": "invalid JSON body"}),
+                    content_type="application/json",
+                )
+            if not isinstance(body, dict):
+                logger.warning(
+                    "[teams] refused a request body that is not a JSON object: %s %s from %s "
+                    "(%s bytes): top-level %s",
+                    request.method,
+                    request.path,
+                    request.remote,
+                    request.content_length if request.content_length is not None else "unknown",
+                    _body_json_type_name(body),
+                )
+                return web.Response(
+                    status=400,
+                    body=json.dumps({"error": "invalid JSON body"}),
+                    content_type="application/json",
+                )
+            result: HttpResponse = await handler(HttpRequest(body=body, headers=dict(request.headers)))
             status = result.get("status", 200)
             resp_body = result.get("body")
             if resp_body is not None:

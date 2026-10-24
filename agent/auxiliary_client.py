@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.local_prompt_progress import (
@@ -34,6 +34,7 @@ from agent.error_classifier import (
     is_reasoning_required_rejection,
 )
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
+from agent.auxiliary_fallback import _fallback_provider_from_label, _next_fallback_after_quarantine
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
 from agent.codex_headers import (
@@ -3952,12 +3953,6 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     return _coerce_positive_timeout(entry.get("timeout") if entry else None)
 
 
-def _fallback_provider_from_label(label: str) -> str:
-    """Recover the provider identifier from a fallback display label."""
-    match = re.match(r"(?:fallback_chain\[\d+\]|fallback_providers\[\d+\]|main-agent)\(([^)]+)\)$", label or "")
-    return match.group(1).strip() if match else str(label or "").strip()
-
-
 class _FallbackDestination(NamedTuple):
     provider: str
     base_url: str
@@ -4085,9 +4080,12 @@ def _quarantine_fallback_candidate(
     """The candidate cannot serve this walk (``reason`` = its ``_FALLBACK_REASONS`` capacity label,
     None = dead token): mark it unhealthy so the ordered re-walk skips it and the caller moves on to
     the next entry. Transient classes get a short hold, payment/quota and dead tokens the long one."""
-    _mark_provider_unhealthy(
-        fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
-        base_url=base_url, reason=reason or "stale fallback credential")
+    # A model-scoped HTTP outage must not hide sibling models on the same endpoint.
+    # The request-local configured-entry exclusion advances the walk instead.
+    if reason != "server error" or not fb_label.startswith("fallback_chain["):
+        _mark_provider_unhealthy(
+            fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
+            base_url=base_url, reason=reason or "stale fallback credential")
     why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
     logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
                    task or "call", tag, fb_label, why, fb_err)
@@ -4171,8 +4169,14 @@ def _call_fallback_candidate_sync(
             try:
                 return _send_recovering(*retry)
             except Exception as retry_err:
-                if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
-                    raise
+                if not _is_auth_error(retry_err):
+                    capacity = fallback_candidate_unavailable_reason(retry_err)
+                    if capacity is None:
+                        raise
+                    _quarantine_fallback_candidate(
+                        task, fb_label, retry[2].provider, retry_err,
+                        base_url=retry[2].base_url, reason=capacity)
+                    return None
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
         )
@@ -4223,8 +4227,14 @@ async def _call_fallback_candidate_async(
             try:
                 return await _send_recovering(*retry)
             except Exception as retry_err:
-                if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
-                    raise
+                if not _is_auth_error(retry_err):
+                    capacity = fallback_candidate_unavailable_reason(retry_err)
+                    if capacity is None:
+                        raise
+                    _quarantine_fallback_candidate(
+                        task, fb_label, retry[2].provider, retry_err,
+                        base_url=retry[2].base_url, tag=" (async)", reason=capacity)
+                    return None
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err,
             base_url=failed_destination.base_url, tag=" (async)",
@@ -4390,10 +4400,12 @@ def _context_too_small(
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
     failed_base_url: str = "", failure_scope: Any = None,
+    excluded_labels: Optional[set[str]] = None,
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
-    run after a model-scoped failure). Returns (client, model, provider_label) or (None, None, "")."""
+    run after a model-scoped failure). ``excluded_labels`` skips entries already called by this
+    request. Returns (client, model, provider_label) or (None, None, "")."""
     if not task:
         return None, None, ""
     chain = _get_auxiliary_task_config(task).get("fallback_chain")
@@ -4419,6 +4431,8 @@ def _try_configured_fallback_chain(
             continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
+        if label in (excluded_labels or ()):
+            continue
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception:
@@ -7546,6 +7560,9 @@ _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
     # Before the connection-error rung (its superset): a full-budget timeout must be named as one, or
     # a slow local model reads as an unreachable endpoint (#89445).
     (_is_timeout_error, "request timed out"), (_is_connection_error, "connection error"),
+    # Keep specific reasons above; structured 408/5xx join the fallback walk only
+    # after the caller has exhausted its existing same-target retry budget.
+    (_is_transient_transport_error, "server error"),
 )
 
 
@@ -7803,31 +7820,6 @@ def _ladder_credential_rungs(
     return None, first_err
 
 
-def _next_fallback_after_quarantine(
-    task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
-    failed_model: Optional[str], failure_scope: Any, *, task_chain_only: bool = False,
-) -> tuple[Optional[Any], Optional[str], str]:
-    """Next candidate after a fallback entry was quarantined mid-request (dead credential or a
-    capacity error): remaining configured entries (task chain, then main chain on auto) before the
-    discovery chain. ``task_chain_only`` (explicit-provider auth error) stops at the task chain —
-    the user never opted that task into discovery or the main model."""
-    reason = "fallback candidate unavailable"
-    fb = _try_configured_fallback_chain(
-        task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
-        failed_base_url=route.base_info, failure_scope=failure_scope)
-    if task_chain_only:
-        return fb
-    if fb[0] is None and is_auto:
-        fb = _try_main_fallback_chain(
-            task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
-            failed_base_url=route.base_info, failure_scope=failure_scope)
-    if fb[0] is None:
-        fb = _try_payment_fallback(
-            resolved_provider, task, reason=reason, failed_base_url=route.base_info,
-            failure_scope=failure_scope, main_runtime=route.main_runtime)
-    return fb
-
-
 def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
@@ -7898,9 +7890,13 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
     # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
     # lands on the next entry, then discovery where the selection policy allows it (#106367).
-    # Bounded: each pass quarantines its candidate and a re-selected lane ends the walk (≤1 try each).
-    # Candidates overwrite route_info; on exhaustion the PRIMARY error is raised, so restore its route.
+    # A tried configured entry is excluded locally; other unavailable lanes use their existing
+    # quarantine. Repeated lanes stop the walk, and configured selector calls also have a hard
+    # bound even if a config edit changes the labels between iterations.
     tried_lanes: set = set()
+    excluded_labels: set[str] = set()
+    configured_attempt_limit = len(task_chain) + 1 if isinstance(task_chain, list) else 1
+    # Candidates overwrite route_info; on exhaustion the PRIMARY error is raised, so restore its route.
     primary_route = dict(route.route_info) if route.route_info is not None else None
     while fb_client is not None:
         lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
@@ -7911,9 +7907,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
         if fb_resp is not None:
             return fb_resp
+        excluded_labels.add(fb_label)
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
-            task_chain_only=explicit_auth_with_task_chain)
+            task_chain_only=explicit_auth_with_task_chain, excluded_labels=excluded_labels,
+            configured_attempt_limit=configured_attempt_limit)
     # All fallback layers exhausted: one user-visible warning (#26882), then the caller re-raises.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    "(fallback_chain + main agent model). Raising the primary error.",

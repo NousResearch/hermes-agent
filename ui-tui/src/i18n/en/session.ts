@@ -17,6 +17,7 @@ export const sessionEn = {
       waitingForInput: 'waiting for input…',
       switchingSession: 'switching session…',
       resuming: 'resuming…',
+      resumeFailed: 'resume failed',
       interrupting: 'interrupting…',
       reconnecting: 'reconnecting…',
       restarting: 'restarting…',

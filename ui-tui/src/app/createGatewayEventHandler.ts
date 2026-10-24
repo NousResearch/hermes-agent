@@ -1104,8 +1104,34 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     if (STARTUP_RESUME_ID) {
       patchUiState({ status: t('session.status.resuming') })
-      resumeById(STARTUP_RESUME_ID)
-      scheduleStartupPrompt()
+      // An explicit --resume is a contract: if the gateway refuses it, the TUI
+      // must not silently continue into a fresh chat (#143907). Wait for the
+      // outcome instead of fire-and-forget: on refusal, keep the failure in
+      // the transcript (panel, not a one-line flash), hold a failure status,
+      // and do NOT schedule the startup prompt — a new session now requires
+      // an explicit /new. A superseded flight (undefined) keeps the previous
+      // behaviour: the newer attach owns the outcome.
+      void Promise.resolve(resumeById(STARTUP_RESUME_ID)).then(
+        resumed => {
+          if (resumed) {
+            scheduleStartupPrompt()
+
+            return
+          }
+
+          if (resumed === null) {
+            panel(t('gatewayMsg.startup.resumeFailedTitle', STARTUP_RESUME_ID), [
+              { text: t('gatewayMsg.startup.resumeFailedBody') },
+              {
+                rows: [['/new', t('gatewayMsg.startup.resumeFailedNewRow')]],
+                title: t('gatewayMsg.startup.resumeFailedActionsTitle')
+              }
+            ])
+            patchUiState({ status: t('session.status.resumeFailed') })
+          }
+        },
+        () => undefined
+      )
 
       return
     }

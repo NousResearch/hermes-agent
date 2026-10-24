@@ -224,6 +224,12 @@ class GatewaySessionCommandsMixin:
 
         new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
+        # The route kept its key but got a fresh session id, so the old session's
+        # standing /goal and /loop rows are now unreachable. Retire them instead
+        # of leaving them reporting "active" forever.
+        if _old_sid:
+            from hermes_cli.session_standing_state import retire_standing_state
+            await asyncio.to_thread(retire_standing_state, _old_sid, reason="session_reset")
         from gateway.session_automation import move_route_wakes
         await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
         await self._fire_session_reset_hooks(source, session_key, _old_sid,

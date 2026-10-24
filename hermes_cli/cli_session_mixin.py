@@ -592,6 +592,11 @@ class CLISessionMixin:
                         self.conversation_history, conversation_history=self.conversation_history)
             with contextlib.suppress(Exception):
                 self._session_db.end_session(old_session_id, "new_session")
+            # The conversation is over, so its standing /goal and /loop go with it.
+            # Compression mints a child session for the SAME conversation and carries
+            # the goal across (migrate_goal_to_session); /new does not.
+            from hermes_cli.session_standing_state import retire_standing_state
+            retire_standing_state(old_session_id, reason="new_session")
             self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()

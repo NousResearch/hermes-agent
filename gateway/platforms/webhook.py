@@ -873,7 +873,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)
         # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.
+        # Todoist (homelab patch, 2026-10-21): X-Todoist-Hmac-SHA256 = base64 HMAC-SHA256 of the raw
+        # body, keyed with the app's client secret (developer.todoist.com, "Webhooks"). Body-only, so
+        # it has the same replay caveat as generic V1; the route secret is the Todoist client secret.
         for provided, expected in (
+                (_header("X-Todoist-Hmac-SHA256"),
+                 lambda: base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()),
                 (_header("linear-signature"), lambda: _hex_hmac(secret, body)),
                 (headers.get("X-Hub-Signature-256", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
                 (headers.get("X-Gitlab-Token", ""), lambda: secret)):

@@ -147,6 +147,7 @@ import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayInsets } from '../shell/hooks/use-window-controls-overlay-width'
 import {
+  knownWindowButtonPosition,
   TITLEBAR_CHROME_CHANGED_EVENT,
   titlebarControlsPosition,
   titlebarControlsYNudge,
@@ -1214,8 +1215,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const overlayInsets = useWindowControlsOverlayInsets()
   const nativeOverlayWidth = overlayInsets?.right ?? connection?.nativeOverlayWidth ?? 0
 
+  const windowButtonPosition = knownWindowButtonPosition(connection?.windowButtonPosition)
+
   const controlsPos = titlebarControlsPosition(
-    connection?.windowButtonPosition,
+    windowButtonPosition,
     Boolean(connection?.isFullscreen),
     overlayInsets?.left
   )
@@ -1224,7 +1227,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const titlebarChrome = {
     darwinMajor: connection?.darwinMajor ?? 0,
     isFullscreen: Boolean(connection?.isFullscreen),
-    windowButtonPosition: connection?.windowButtonPosition
+    windowButtonPosition
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)

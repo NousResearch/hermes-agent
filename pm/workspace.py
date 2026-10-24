@@ -66,6 +66,9 @@ def _copytree_fold_aware(source: Path, destination: Path, keep) -> None:
     # The destination may already hold the surviving spelling (a merge): those entries
     # join the sorted competition so a later file still loses to a copied one.
     taken = {name.casefold(): name for name in os.listdir(destination)}
+    # Real on-disk spellings: a folding volume answers Path.exists()/is_file() for
+    # either spelling, so which one the source actually holds comes from the listing.
+    source_names = {p.name for p in source.iterdir()}
     to_copy: list[str] = []
     to_merge: list[tuple[Path, Path]] = []
     identical: list[str] = []
@@ -84,8 +87,8 @@ def _copytree_fold_aware(source: Path, destination: Path, keep) -> None:
         # The survivor's bytes sit either beside the drop (same directory) or in the
         # already-copied merge target; compare against whichever exists to decide
         # whether dropping this name is a true duplicate or a capability change.
-        reference = next((p for p in (source / survivor, slot) if p.is_file()), None)
-        if reference is not None and filecmp.cmp(entry, reference, shallow=False):
+        reference = source / survivor if survivor in source_names else slot
+        if reference.is_file() and filecmp.cmp(entry, reference, shallow=False):
             identical.append(name)
         else:
             differing.append((name, survivor))

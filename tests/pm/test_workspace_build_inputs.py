@@ -430,6 +430,35 @@ def test_copy_core_inputs_reports_matching_folds_as_true_duplicates(tmp_path, mo
     assert not [r for r in caplog.records if r.levelname == "WARNING" and "kterm" in r.message]
 
 
+def test_copytree_fold_aware_compares_a_merged_spelling_against_the_destination(tmp_path, caplog):
+    """A merged spelling folds onto a file already sitting in the destination: the bytes
+    to compare against come from the destination, not from a case-insensitive probe of
+    the source (which on a folding host answers for either spelling and would compare
+    the dropped file with itself, passing every differing pair off as a duplicate).
+
+    This merge shape needs no case-sensitive source volume, so it runs on any host.
+    """
+    source = tmp_path / "later"
+    destination = tmp_path / "surviving"
+    source.mkdir()
+    destination.mkdir()
+    (destination / "Eterm").write_text("x11 entry\n", encoding="utf-8")
+    (source / "eterm").write_text("gnu entry\n", encoding="utf-8")
+    (destination / "Kterm").write_text("k entry\n", encoding="utf-8")
+    (source / "kterm").write_text("k entry\n", encoding="utf-8")
+
+    with caplog.at_level("INFO", logger="pm.workspace"):
+        workspace._copytree_fold_aware(source, destination, lambda directory, name: True)
+
+    assert (destination / "Eterm").read_text(encoding="utf-8") == "x11 entry\n", \
+        "the dropped spelling never overwrites the kept bytes"
+    lossy = [r for r in caplog.records if "lossy" in r.message]
+    assert lossy and "eterm -> Eterm" in lossy[0].message, \
+        "bytes differing from the destination's entry are reported as a capability change"
+    assert any("match the surviving bytes" in r.message and "kterm" in r.message
+               for r in caplog.records)
+
+
 def test_copy_core_inputs_keeps_both_spellings_when_the_destination_folds_nothing(tmp_path, monkeypatch):
     """A case-sensitive destination keeps both spellings: nothing is merged or dropped there."""
     _skip_when_source_volume_folds_case(tmp_path)

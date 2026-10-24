@@ -44,7 +44,12 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  catalogProviderMatches,
+  currentCatalogId,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
@@ -535,7 +540,12 @@ export function ModelCatalogMenu({
       : row.kind === 'custom'
         ? false
         : catalogProviderMatches(row.provider, current.provider) &&
-          (row.family.id === current.model || row.family.fastId === current.model)
+          currentCatalogId(
+            row.provider.slug,
+            [row.family.id, row.family.fastId],
+            current.model,
+            row.provider.models ?? []
+          ) !== null
 
   const autoIndex = q ? (kbRows.length > 0 ? 0 : -1) : kbRows.findIndex(row => rowIsCurrent(row))
 
@@ -1035,12 +1045,14 @@ function ModelFamilyRow({
   const rowKey = `${provider.slug}:${family.id}`
 
   // The active id may be the base or its -fast sibling; either way this one
-  // family row represents both.
-  const activeId =
-    catalogProviderMatches(provider, current.provider) &&
-    (current.model === family.id || current.model === family.fastId)
-      ? current.model
-      : null
+  // family row represents both. Ollama lists ids BARE in `/v1/models` yet
+  // accepts the `:cloud` tag form interchangeably, so a `:cloud` pick names
+  // the bare catalog row — one model, two spellings. The id stays CANONICAL
+  // (the catalog's own), so capability, pricing and fast-sibling lookups
+  // keep resolving against real catalog entries.
+  const activeId = catalogProviderMatches(provider, current.provider)
+    ? currentCatalogId(provider.slug, [family.id, family.fastId], current.model, provider.models ?? [])
+    : null
 
   const isCurrent = activeId !== null
   const { name, tag } = modelDisplayParts(family.id)
@@ -1366,10 +1378,18 @@ function groupModels(
     // or the picker has no active-model row at all (#57534). The backend
     // injects current_model into the row when it can, but the renderer cannot
     // rely on that — the row may arrive from a cache that predates the switch.
+    //
+    // Ollama serves bare ids in /v1/models yet accepts the `:cloud` tag form
+    // interchangeably, so a tag-spelled pick needs no synthetic twin of its bare
+    // family (#57534's hint list and the pick are the same model there).
     if (
       catalogProviderMatches(provider, current.provider) &&
       current.model &&
-      !allFamilies.some(family => family.id === current.model || family.fastId === current.model)
+      !allFamilies.some(
+        family =>
+          currentCatalogId(provider.slug ?? '', [family.id, family.fastId], current.model, provider.models ?? []) !==
+          null
+      )
     ) {
       allFamilies = recommendedFirst(provider, [{ fastId: null, id: current.model }, ...allFamilies])
     }
@@ -1403,7 +1423,15 @@ function groupModels(
     // SEARCHING the pin is skipped: a query means "show me matches".
     const activeId =
       !q && catalogProviderMatches(provider, current.provider) && current.model
-        ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
+        ? allFamilies.find(
+            family =>
+              currentCatalogId(
+                provider.slug ?? '',
+                [family.id, family.fastId],
+                current.model,
+                provider.models ?? []
+              ) !== null
+          )?.id
         : undefined
 
     // Favorites already paint in the Favorites section, so drop them here:

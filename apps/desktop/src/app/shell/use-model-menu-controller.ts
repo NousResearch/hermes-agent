@@ -7,7 +7,7 @@ import { useRef } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { modelOptionsQueryKey, requestModelOptions, sameSessionModel } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import {
   $modelPresets,
@@ -133,7 +133,10 @@ export function useModelMenuController({
           optionEdits.get(stamp.ownerKey) === stamp.owner &&
           latestHostScope.current === hostScope &&
           view.$runtimeId.get() === activeSessionId &&
-          (!view.$model.get() || view.$model.get().replace(/-fast$/, '') === row.model) &&
+          // The session's model may carry ollama's `:cloud` tag form while the
+          // row's canonical id is the bare spelling the catalog lists — one
+          // model, two spellings, so the edit still targets the live model.
+          (!view.$model.get() || sameSessionModel(row.provider, view.$model.get(), row.model)) &&
           (!view.$provider.get() || view.$provider.get() === row.provider)
         )
       },

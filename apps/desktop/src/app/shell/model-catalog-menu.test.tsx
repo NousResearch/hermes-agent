@@ -515,6 +515,63 @@ describe('the current model the catalog omits (#57534)', () => {
   })
 })
 
+describe('the ollama :cloud pick (one model, two spellings)', () => {
+  // The row's name, variant tag and effort chip are separate elements, so match
+  // on the assembled row text rather than a single node.
+  const rows = () => screen.getAllByRole('menuitem')
+  const named = (needle: string) => rows().filter(row => row.textContent?.includes(needle))
+  const checked = (needle: string) => named(needle).filter(row => row.querySelector('.codicon-check'))
+
+  it('marks the bare catalog row current instead of rendering a twin', async () => {
+    // Ollama lists ids BARE in /v1/models but accepts the `:cloud` tag form
+    // interchangeably, so a pinned `:cloud` pick names the bare catalog row.
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['deepseek-v4.1-flash', 'glm-5.3'], name: 'Ollama Cloud', slug: 'ollama-cloud' }]
+    })
+
+    renderMenu({ model: 'deepseek-v4.1-flash:cloud', provider: 'ollama-cloud' })
+
+    await screen.findByText('DeepSeek V4.1')
+
+    // The surviving row carries the current-model marker...
+    expect(checked('DeepSeek')).toHaveLength(1)
+    // ...and no `:cloud` twin was rendered beside it.
+    expect(named('DeepSeek')).toHaveLength(1)
+    expect(named('Flash:Cloud')).toHaveLength(0)
+  })
+
+  it('keeps the checkmark off a row the pick does not name', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['deepseek-v4.1-flash', 'glm-5.3'], name: 'Ollama Cloud', slug: 'ollama-cloud' }]
+    })
+
+    renderMenu({ model: 'glm-5.3:cloud', provider: 'ollama-cloud' })
+
+    await screen.findByText('DeepSeek V4.1')
+
+    expect(checked('GLM')).toHaveLength(1)
+    expect(checked('DeepSeek')).toHaveLength(0)
+  })
+
+  it('does not fold a model whose own name the catalog lists', async () => {
+    // The catalog lists the pick under its own name — that row is the current
+    // one, and the bare row is a separate entry that stays unmarked.
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['deepseek-v4.1-flash', 'deepseek-v4.1-flash:cloud'], name: 'Ollama Cloud', slug: 'ollama-cloud' }
+      ]
+    })
+
+    renderMenu({ model: 'deepseek-v4.1-flash:cloud', provider: 'ollama-cloud' })
+
+    await screen.findByText('DeepSeek V4.1')
+
+    expect(named('DeepSeek')).toHaveLength(2)
+    expect(checked('DeepSeek')).toHaveLength(1)
+    expect(checked('Flash:Cloud')).toHaveLength(1)
+  })
+})
+
 describe('in-flight local downloads', () => {
   const DOWNLOAD_JOB: LocalRuntimeJob = {
     job_id: 'dl1',

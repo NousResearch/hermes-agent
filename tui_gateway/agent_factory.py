@@ -212,8 +212,14 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     return config
 
 
-def _persist_live_session_runtime(session: dict | None) -> None:
-    """Persist active session runtime so future resumes restore the same footer."""
+def _persist_live_session_runtime(session: dict | None, *, pin_route: bool = False) -> None:
+    """Persist active session runtime so future resumes restore the same footer.
+
+    ``pin_route`` (a committed model switch) also rewrites the nested ``gateway_runtime``, the shape
+    ``session_gateway_runtime`` reads FIRST: a route the messaging gateway synced before this pick would
+    otherwise win on the next rebuild and resume the picked model on the old provider (#143157). Same
+    both-shapes write as ``update_session_model`` (#79536). Plain persists leave it alone, so a live
+    fallback route is never pinned."""
     live = _live_session_agent_db(session)
     if live is None:
         return
@@ -221,6 +227,12 @@ def _persist_live_session_runtime(session: dict | None) -> None:
     try:
         row = db.get_session(session_key) or {}
         model_config = _runtime_model_config(agent, _parse_model_config(row.get("model_config")))
+        if pin_route:
+            route = {k: model_config.get(k) or None for k in ("provider", "base_url", "api_mode")}
+            if route["provider"]:
+                model_config["gateway_runtime"] = route
+            else:
+                model_config.pop("gateway_runtime", None)
         if isinstance(composer_profile := session.get("composer_override_profile"), dict):
             model_config["composer_override_profile"] = composer_profile
         elif "composer_override_profile" in session:

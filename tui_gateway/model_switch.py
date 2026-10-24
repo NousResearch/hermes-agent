@@ -295,7 +295,8 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
                          f"staying on {getattr(agent, 'model', current_model)}.") from exc
     _restart_slash_worker(sid, session)
-    _persist_live_session_runtime(session)
+    # A one-turn (--once) switch is reverted after the turn, so only a lasting switch pins the route.
+    _persist_live_session_runtime(session, pin_route=snapshot is None)
     _persist_live_session_system_prompt(session)
     _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
     _emit_session_info(sid, session)
